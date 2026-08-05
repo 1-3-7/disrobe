@@ -44,7 +44,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 |---|---|---|---|---|
 | Python bytecode | Recover | <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> per code object, 122 of <!-- m:py_stdlib_pinned_modules -->200<!-- /m --> modules whole | strong `[CI]` | [python](docs/src/languages/python.md) |
 | PyArmor | Recover | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decode one complete header-anchored root `CodeObject` | coverage-self-reported `[CI]` | [python](docs/src/languages/python.md) |
-| Python pickle | Recover | 470 / 470 re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
+| Python pickle | Recover | <!-- m:pickle_roundtrip_frac -->470 / 470<!-- /m --> reconstructed fixtures re-execute equal | strong `[CI]` | [pickle](docs/src/languages/pickle.md) |
 | JVM classfile | Recover | <!-- m:jvm_per_method_count -->131 of 131<!-- /m --> methods recompile | recompile-only `[CI]` | [jvm](docs/src/languages/jvm-android.md) |
 | Android DEX | Recover | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes | strong `[CI]` | [android](docs/src/languages/jvm-android.md) |
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
@@ -210,7 +210,7 @@ Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and nat
 | Surface | `disrobe` | Leading tool | Result | Reproduce |
 |---|---|---|---|---|
 | <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 131 / 131 methods recompile | CFR 0.152: not certified: 106 methods emitted | no lead: the shared compiler never type-checked the CFR file, so its methods are neither certified nor faulted | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
-| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 20 / 132 methods recompile | JADX 1.5.5: not certified: 130 methods emitted | no lead: the shared compiler never type-checked the JADX file, so its methods are neither certified nor faulted | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 22 / 132 methods recompile | JADX 1.5.5: not certified: 130 methods emitted | no lead: the shared compiler never type-checked the JADX file, so its methods are neither certified nor faulted | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | APK secrets | 8 / 8 planted secrets | apkleaks 2.6.3: 5 / 8 | `disrobe` catches the AWS secret key, Basic credential, and JWT apkleaks misses | `cargo run -p disrobe-bench-head-to-head` |
 
 Missing rows are not implied wins. Every surface without a same-input runner stays in the edge table below until one exists.
@@ -236,7 +236,9 @@ Recovery is bounded by what the compiler or protector left in the artifact. `dis
 
 PyArmor BCC native blobs are carved and passed to an in-memory static lift attempt under `--allow-bcc`. The current CLI records the boundary and limitations in `manifest.json`; it does not serialize the lift or emit a function map, pseudo-C, or recovered Python. Nuitka, Nim, Zig, and Crystal native bodies are compiled machine code present in the artifact rather than absent; their dedicated recovery paths report what they can lift instead of inheriting a claim from the PyArmor path.
 
-Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting. On large, deeply nested native binaries Ghidra and IDA still lead. Rather than compete there, `disrobe` unpacks, recovers symbols, and exports straight into them (`native export --format ghidra|ida|json`), and it can drive ghidra-headless itself (`native decompile --backend ghidra`).
+Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting.
+
+Native decompilation runs on an in-tree backend, which is the default: x86-64 to C or to Rust, AArch64 to pseudo-C, and it rejects a form it cannot recover rather than guessing at one. The two grading levels are separate and are not interchangeable. Leaf-level recompile equivalence is gated by `pseudo_c_leaf_oracle.rs` and `pseudo_rust_leaf_oracle.rs`; whole-program by `pseudo_c_wholeprog_oracle.rs` and `pseudo_rust_wholeprog_oracle.rs`. AArch64 is behind x86-64, emits no Rust, and its whole-program path covers validated direct same-image calls in linked ELF inputs only. No committed benchmark compares this backend with Ghidra or IDA, so this page states no ranking against them. Ghidra remains available through `native decompile --backend ghidra`, and `native export --format ghidra|ida|json` hands either one unpacked, symbol-rich input.
 
 ## CLI surface
 

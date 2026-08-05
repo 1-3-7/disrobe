@@ -1,6 +1,6 @@
 # Native (PE / ELF / Mach-O)
 
-`disrobe` ships its own in-tree x86-64 and AArch64 decompiler, and around it the layer that recovers a binary's symbols, disassembles it, identifies what built and protected it, and patches, fingerprints, or diffs it. Ghidra and IDA still lead on large, deeply nested native binaries, so `disrobe` also hands them clean, unpacked, symbol-rich input and can drive Ghidra headlessly in one command.
+`disrobe` ships its own in-tree x86-64 and AArch64 decompiler, and around it the layer that recovers a binary's symbols, disassembles it, identifies what built and protected it, and patches, fingerprints, or diffs it. It also hands Ghidra and IDA clean, unpacked, symbol-rich input, and can drive Ghidra headlessly in one command.
 
 Two adjacent surfaces have their own pages: [native decompile](./native-decompile.md) for the in-tree decompiler and the Ghidra backend, and [native unpacking](./native-unpack.md) for packers, protectors, and bytecode-VM devirtualization.
 
@@ -128,7 +128,7 @@ The reusable rendering logic lives in `disrobe_pass_native::entropy_viz` (`entro
 
 ## Limits
 
-- Ghidra and IDA still lead on large, deeply nested native binaries. `disrobe`'s job there is to hand them a clean, unpacked, symbol-rich input; see [native decompile](./native-decompile.md) for the in-tree decompiler and the Ghidra backend.
+- No committed benchmark compares the in-tree decompiler with Ghidra or IDA, so this guide states no ranking against them. What it does state: `disrobe` hands either one clean, unpacked, symbol-rich input, and can drive Ghidra headlessly. See [native decompile](./native-decompile.md) for the in-tree decompiler, its two grading levels, and the Ghidra backend.
 - Virtualizing protectors (Themida, VMProtect) are detect-and-carve only, never a fabricated devirtualization. See [native unpacking](./native-unpack.md) for what survives and why.
 - Authenticode chain validation walks to an embedded bundle of eight trusted code-signing roots and covers RSA PKCS#1 v1.5 and ECDSA P-256/P-384. Anything outside that lands as `UnsupportedAlgorithm` or `UntrustedChain` rather than a pass.
 - The Delphi VMT walk accepts a class only when its VMT is self-consistent, so a partially-overwritten or hand-built table yields no class rather than a guessed one.

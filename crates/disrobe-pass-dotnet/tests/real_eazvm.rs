@@ -21,6 +21,7 @@ use disrobe_pass_dotnet::peel::eazvm::{
 use disrobe_pass_dotnet::peel::{PeelReport, PeelStrategy, peel_eazfuscator};
 
 const EXPECTED_STDOUT: &str = "5\n69\n55\n-1\n9\n";
+const CLEAN_BASELINE_INSTRUCTIONS: u32 = 57;
 
 fn corpus_dir() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -94,8 +95,10 @@ fn devirtualizes_every_method_to_ordered_cil() {
         "ordered CIL recovery: {total_matched}/{total_length} instructions matched in order ({pct:.2}%)"
     );
     assert_eq!(
-        total_length, 57,
-        "the five Compute bodies hold 57 instructions in the clean baseline"
+        total_length, CLEAN_BASELINE_INSTRUCTIONS,
+        "the five Compute bodies hold {CLEAN_BASELINE_INSTRUCTIONS} instructions in the clean \
+         baseline, and that count is the denominator the documents publish, so a shorter baseline \
+         must fail here rather than raise the rate against a smaller population"
     );
     assert!(
         (pct - 100.0).abs() < f64::EPSILON,

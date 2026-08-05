@@ -712,6 +712,18 @@
           },
           "detail": "102 of the 102 pickle fixtures committed under corpus/pickle disassemble, trace and classify in agreement with CPython's own pickletools, which is the reference this figure is graded against rather than the pass reading its own output. The denominator is pinned by equality against the committed fixture set, so a run that inspects fewer fixtures scores worse instead of shrinking what it is measured against, and the figure is a named fixture set rather than a bare count, so one fixture cannot start failing while another starts passing.",
           "source": "crates/disrobe-pass-pickle/tests/corpus.rs test published_pickle_corpus_bar_is_pinned_to_the_graded_fixture_set, with the_pinned_corpus_check_rejects_a_dropped_fixture_and_a_shrunken_denominator refuting both weakenings; reference = the opcode and argument tables CPython's pickletools emits, committed beside the corpus"
+        },
+        {
+          "label": "reconstruction roundtrip, re-executed",
+          "value": 100.0,
+          "num": 470,
+          "den": 470,
+          "detail": "470 of 470 emitted fixtures reconstruct to a value that re-executes equivalently under a real CPython interpreter. A case walled as an information-theoretic ceiling is refused rather than counted, so a wall cannot inflate the denominator, and the gate asserts the emitted fixture set rather than a bare percentage.",
+          "source": "crates/disrobe-pass-pickle/tests/roundtrip.rs pins PINNED_FIXTURES = 470 and PINNED_REEXECUTED = 470, names the bar `reconstruction roundtrip, re-executed` that it grades, reconstructs every committed fixture, and re-executes each under a real CPython interpreter. An absent interpreter is fatal on every host, so the case cannot pass while grading nothing. It carries its own emptiness check: dropping one re-executed case must produce a defect naming what this run reconstructed.",
+          "verified_by": {
+            "path": "crates/disrobe-pass-pickle/tests/roundtrip.rs",
+            "function": "cpython_roundtrip_differential_oracle"
+          }
         }
       ]
     },

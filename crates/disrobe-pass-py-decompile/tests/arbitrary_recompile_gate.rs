@@ -23,6 +23,8 @@ const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
 
 const OBJECT_PCT_FLOOR: f64 = 96.60;
 const MODULES_EXACT_FLOOR: u64 = 122;
+const MODULES_EXACT_PCT_FLOOR: f64 = 61.0;
+const PINNED_MODULE_COUNT: u64 = 200;
 
 const PINNED_BAR_LABEL: &str = "200-module pinned corpus";
 
@@ -191,6 +193,18 @@ fn arbitrary_recompile_equivalence_gate() {
         m.modules_exact,
         m.modules,
         m.missing_from_lib
+    );
+
+    let exact_pct: f64 = f64::from(u32::try_from(m.modules_exact).unwrap_or(u32::MAX))
+        / f64::from(u32::try_from(PINNED_MODULE_COUNT).unwrap_or(u32::MAX))
+        * 100.0;
+    assert!(
+        exact_pct >= MODULES_EXACT_PCT_FLOOR,
+        "the documents publish {MODULES_EXACT_PCT_FLOOR}% as the whole-module rate over the \
+         {PINNED_MODULE_COUNT}-module pinned corpus, and this run measured {exact_pct:.1}% from \
+         {} modules. The percentage is cut from the same numerator as the count, so it is floored \
+         here rather than left as a hand-typed derivative nothing checks",
+        m.modules_exact
     );
 
     let doc: serde_json::Value = recovery_document();

@@ -48,15 +48,89 @@ struct FigureClaim {
 }
 
 const DALVIK_VERIFIER_GATE: &str = "crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs";
+const PICKLE_ROUNDTRIP_GATE: &str = "crates/disrobe-pass-pickle/tests/roundtrip.rs";
 const PACKER_BYTE_GATE: &str = "crates/disrobe-pass-native/tests/committed_packer_byte_recovery.rs";
+const EAZVM_GATE: &str = "crates/disrobe-pass-dotnet/tests/real_eazvm.rs";
+const PY_ARBITRARY_GATE: &str =
+    "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs";
 const README_DOC: &str = "README.md";
 const CATALOG_DOC: &str = "docs/src/catalog.md";
 const NATIVE_DOC: &str = "docs/src/languages/native.md";
+const WHITEPAPER_DOC: &str = "docs/src/architecture/whitepaper.md";
 
 const CONTENT_SPAN: &str = "the content span that counts `.rsrc`, not the older whole-image span \
                             measured over `.text`, `.rdata` and `.data` only";
 
-const CLAIMS: [FloorClaim; 6] = [
+const CLAIMS: [FloorClaim; 12] = [
+    FloorClaim {
+        constant: "CLEAN_BASELINE_INSTRUCTIONS",
+        source: EAZVM_GATE,
+        sites: &[
+            (WHITEPAPER_DOC, "The result is 57 of {} instructions"),
+            (WHITEPAPER_DOC, "The EazVM ordered-CIL grade, 57 of {}"),
+            (WHITEPAPER_DOC, "at 57 of {} instructions in order"),
+        ],
+    },
+    FloorClaim {
+        constant: "MODULES_EXACT_FLOOR",
+        source: PY_ARBITRARY_GATE,
+        sites: &[
+            (README_DOC, "{} of 200 modules whole"),
+            (
+                README_DOC,
+                "whole-module figure of {} of 200 modules (61.0%)",
+            ),
+            (
+                README_DOC,
+                "{} of 200 modules recompile whole, floor {} `[CI]`",
+            ),
+            (
+                WHITEPAPER_DOC,
+                "equivalent, is {} of the 200 modules in the pinned corpus, 61.0%",
+            ),
+        ],
+    },
+    FloorClaim {
+        constant: "MODULES_EXACT_PCT_FLOOR",
+        source: PY_ARBITRARY_GATE,
+        sites: &[
+            (README_DOC, "of 200 modules ({}%)"),
+            (
+                WHITEPAPER_DOC,
+                "is 122 of the 200 modules in the pinned corpus, {}%",
+            ),
+            (WHITEPAPER_DOC, "rate and the {}% per-module rate"),
+            (WHITEPAPER_DOC, "96.6% and the {}% figures"),
+        ],
+    },
+    FloorClaim {
+        constant: "PINNED_MODULE_COUNT",
+        source: PY_ARBITRARY_GATE,
+        sites: &[
+            (README_DOC, "122 of {} modules whole"),
+            (
+                WHITEPAPER_DOC,
+                "is 122 of the {} modules in the pinned corpus",
+            ),
+            (WHITEPAPER_DOC, "over the {}-module pinned corpus"),
+        ],
+    },
+    FloorClaim {
+        constant: "PINNED_REEXECUTED",
+        source: PICKLE_ROUNDTRIP_GATE,
+        sites: &[(
+            README_DOC,
+            "{} / 470 reconstructed fixtures re-execute equal",
+        )],
+    },
+    FloorClaim {
+        constant: "PINNED_FIXTURES",
+        source: PICKLE_ROUNDTRIP_GATE,
+        sites: &[(
+            README_DOC,
+            "470 / {} reconstructed fixtures re-execute equal",
+        )],
+    },
     FloorClaim {
         constant: "OBJECT_PCT_FLOOR",
         source: "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs",
@@ -401,8 +475,16 @@ pub(crate) fn run(root: &Path) -> Result<()> {
                     continue;
                 }
             };
-            let expected: String = template.replace("{}", &value);
             checked += 1;
+            if !template.contains("{}") {
+                issues.push(format!(
+                    "the {doc} site for `{}` carries no placeholder, so it is compared against a \
+                     fixed string and stays green whatever that constant becomes",
+                    claim.constant
+                ));
+                continue;
+            }
+            let expected: String = template.replace("{}", &value);
             if !without_marker_delimiters(&doc_text).contains(&expected) {
                 issues.push(format!(
                     "{doc} does not state the floor as `{expected}`, but `{}` in {} is {value}; a \

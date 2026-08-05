@@ -326,6 +326,19 @@ jobs:
           fi
           echo "r $r_version"
           echo "DISROBE_REQUIRE_R=1" >> "$GITHUB_ENV"
+      - name: require XLMMacroDeobfuscator 0.2.7, the deobfuscator that grades the recovered XLM formulas
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_xlm_version="0.2.7"
+          python -m pip install --disable-pip-version-check "XLMMacroDeobfuscator==${expected_xlm_version}"
+          xlm_version="$(python -c 'import importlib.metadata as m; print(m.version("XLMMacroDeobfuscator"))')"
+          if [ "$xlm_version" != "$expected_xlm_version" ]; then
+            echo "the interpreter carries XLMMacroDeobfuscator $xlm_version, expected exactly $expected_xlm_version, which is the release the XLM grader is pinned to"
+            exit 1
+          fi
+          echo "xlmmacrodeobfuscator $xlm_version"
+          echo "DISROBE_REQUIRE_XLM_REFERENCE=1" >> "$GITHUB_ENV"
       - name: require the interpreters and archivers this runner already carries, so an absent one fails instead of skipping
         shell: bash
         run: |
@@ -435,6 +448,8 @@ jobs:
         run: cargo test -p disrobe-pass-beam --test elixir_source_recover -- --nocapture
       - name: R serialization differential, printing the graded object count
         run: cargo test -p disrobe-pass-scriptlang --test real_r_reference_grade -- --nocapture
+      - name: XLM formula differential against an independent deobfuscator, printing the graded cell count
+        run: cargo test -p disrobe-pass-shell --test xlm_independent_reference -- --nocapture
       - run: cargo test --workspace --all-features --no-fail-fast
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
