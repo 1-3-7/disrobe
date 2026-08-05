@@ -185,6 +185,14 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
             structured.unresolved_jumps
         ));
     }
+    if structured.truncated_regions > 0 {
+        state.fully_structured = false;
+        state.warnings.push(format!(
+            "{} region(s) exceeded the structuring budget, so their statements stand outside the \
+             block that held them",
+            structured.truncated_regions
+        ));
+    }
     Some(LiftedProto {
         source: body,
         warnings: state.warnings,
@@ -2404,6 +2412,95 @@ mod tests {
     const OP54_SETLIST: u32 = 78;
     const OP54_VARARG: u32 = 80;
     const OP54_EXTRAARG: u32 = 82;
+
+    const OP51_CLOSURE: u32 = 36;
+
+    fn branch_ladder_code(branches: usize) -> Vec<u32> {
+        let mut code: Vec<u32> = Vec::with_capacity(branches * 3 + 1);
+        for _ in 0..branches {
+            code.push(enc_abc(OP51_LT, 1, 0, 1));
+            code.push(enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51));
+            code.push(enc_abc(OP51_LOADBOOL, 2, 0, 0));
+        }
+        code.push(enc_abc(OP51_RETURN, 0, 1, 0));
+        code
+    }
+
+    #[test]
+    fn a_ladder_past_the_structuring_budget_refuses_to_claim_a_complete_structure() {
+        let branches: usize = 4200;
+        let p: LuaProto = proto(branch_ladder_code(branches), 2, 4);
+
+        let out: LiftedProto =
+            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+
+        assert!(
+            !out.fully_structured,
+            "a body whose regions ran past the structuring budget has statements standing outside \
+             the branch that held them, so it must never report a complete structure"
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|warning: &String| warning.contains("structuring budget")),
+            "the refusal must name the budget so a reader can act on it, got {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn a_child_that_ran_past_the_budget_lowers_the_flag_of_the_function_holding_it() {
+        let branches: usize = 4200;
+        let mut child: LuaProto = proto(branch_ladder_code(branches), 2, 4);
+        child.num_params = 2;
+        let mut parent: LuaProto = proto(
+            vec![enc_abx(OP51_CLOSURE, 0, 0), enc_abc(OP51_RETURN, 0, 2, 0)],
+            0,
+            2,
+        );
+        parent.protos = vec![child];
+
+        let out: LiftedProto =
+            lift_structured(&parent, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+
+        assert!(
+            !out.fully_structured,
+            "the parent body itself structures cleanly, so this flag can only be honest if a \
+             child that lost structure carries its refusal outward; source:\n{}",
+            out.source
+        );
+        assert!(
+            out.warnings
+                .iter()
+                .any(|warning: &String| warning.contains("structuring budget")),
+            "the child's reason must reach the parent rather than being dropped at the boundary, \
+             got {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn every_declared_dialect_states_which_structuring_path_carries_it() {
+        const PATHS: [(LuaDialect, bool); 8] = [
+            (LuaDialect::Lua51, true),
+            (LuaDialect::Lua52, true),
+            (LuaDialect::Lua53, true),
+            (LuaDialect::Lua54, true),
+            (LuaDialect::GLua, true),
+            (LuaDialect::LuaJit20, false),
+            (LuaDialect::LuaJit21, false),
+            (LuaDialect::Luau, false),
+        ];
+        let p: LuaProto = proto(vec![enc_abc(OP51_RETURN, 0, 1, 0)], 0, 2);
+        for (dialect, structured_path) in PATHS {
+            let reached: bool = lift_structured(&p, dialect, 0).is_some();
+            assert_eq!(
+                reached, structured_path,
+                "{dialect:?} must either reach this structurer or be routed to its own lifter, \
+                 with no third outcome"
+            );
+        }
+    }
 
     #[test]
     fn lua51_single_comparison_recovers_boolean_value_not_literal_false() {
