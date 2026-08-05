@@ -344,9 +344,9 @@ fn classify(
         }
         "apply" | "apply_last" | "call_fun" | "call_fun2" | "make_fun" | "make_fun2"
         | "make_fun3" => (NirOp::IndirectCall, Vec::new()),
-        "gc_bif1" | "gc_bif2" | "gc_bif3" => classify_bif(ops.get(2), ctx, imports),
-        "bif0" => classify_bif(ops.first(), ctx, imports),
-        "bif1" | "bif2" | "bif3" => classify_bif(ops.get(1), ctx, imports),
+        "gc_bif1" | "gc_bif2" | "gc_bif3" => classify_bif(instr, ops.get(2), ctx, imports),
+        "bif0" => classify_bif(instr, ops.first(), ctx, imports),
+        "bif1" | "bif2" | "bif3" => classify_bif(instr, ops.get(1), ctx, imports),
         "int_band" | "int_bor" | "int_bxor" | "int_bsl" | "int_bsr" | "int_div" | "int_rem"
         | "int_bnot" | "m_plus" | "m_minus" | "m_times" | "m_div" | "fadd" | "fsub" | "fmul"
         | "fdiv" | "fnegate" => (
@@ -386,7 +386,27 @@ fn classify(
             },
             Vec::new(),
         ),
-        _ => (NirOp::Nop, Vec::new()),
+        _ if is_effect_free(instr.name) => (NirOp::Nop, Vec::new()),
+        _ => (unmodeled(instr), Vec::new()),
+    }
+}
+
+const EFFECT_FREE_NAMES: [&str; 5] = [
+    "label",
+    "line",
+    "func_info",
+    "executable_line",
+    "debug_line",
+];
+
+fn is_effect_free(name: &str) -> bool {
+    EFFECT_FREE_NAMES.contains(&name)
+}
+
+fn unmodeled(instr: &Instruction) -> NirOp {
+    NirOp::Unmodeled {
+        opcode: (instr.opcode & 0xFF) as u8,
+        offset: usize_u32(instr.offset),
     }
 }
 
@@ -426,15 +446,16 @@ fn classify_ext_call(
 }
 
 fn classify_bif(
+    instr: &Instruction,
     name_op: Option<&Operand>,
     ctx: &ResolveCtx<'_>,
     imports: &mut ImportTable,
 ) -> (NirOp, Vec<String>) {
     let Some(index): Option<u32> = value_u32(name_op) else {
-        return (NirOp::Nop, Vec::new());
+        return (unmodeled(instr), Vec::new());
     };
     let Some(name) = ctx.bif_name(index) else {
-        return (NirOp::Nop, Vec::new());
+        return (unmodeled(instr), Vec::new());
     };
     if let Some(op) = arithmetic_bif(&name) {
         return (NirOp::BinOp { op }, Vec::new());
