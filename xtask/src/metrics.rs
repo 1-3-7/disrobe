@@ -378,6 +378,30 @@ const KEYS: &[KeySpec] = &[
         },
     },
     KeySpec {
+        name: "dalvik_verifier_frac",
+        formatter: Formatter::Frac,
+        nouns: &["verifier-presented classes"],
+        extract: |r: &Recovery| {
+            r.bar("Dalvik recovered bodies", "verifier-clean (committed, CI)")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
+        name: "wasm_execution_frac",
+        formatter: Formatter::Frac,
+        nouns: &["eligible functions"],
+        extract: |r: &Recovery| r.bar("WebAssembly", "execution-equivalence")?.count_ratio(),
+    },
+    KeySpec {
+        name: "beam_recompile_frac",
+        formatter: Formatter::Frac,
+        nouns: &["stripped Core Erlang cases"],
+        extract: |r: &Recovery| {
+            r.bar("BEAM stripped Core Erlang", "recompile-execution")?
+                .count_ratio()
+        },
+    },
+    KeySpec {
         name: "dalvik_link_skipped_count",
         formatter: Formatter::OfPlain,
         nouns: &[],

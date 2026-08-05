@@ -8,6 +8,31 @@ use crate::fileio::read_text_bounded;
 
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DOC_BYTES: u64 = 4 * 1024 * 1024;
+const MARKER_OPEN: &str = "<!-- m:";
+const MARKER_CLOSE: &str = "<!-- /m -->";
+const COMMENT_END: &str = "-->";
+
+fn without_marker_delimiters(text: &str) -> String {
+    let mut out: String = String::with_capacity(text.len());
+    let mut rest: &str = text;
+    loop {
+        let Some(at): Option<usize> = rest.find(MARKER_OPEN) else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        let tail: &str = &rest[at..];
+        let Some(end): Option<usize> = tail.find(COMMENT_END) else {
+            out.push_str(tail);
+            return out;
+        };
+        rest = &tail[end + COMMENT_END.len()..];
+        if let Some(close) = rest.find(MARKER_CLOSE) {
+            out.push_str(&rest[..close]);
+            rest = &rest[close + MARKER_CLOSE.len()..];
+        }
+    }
+}
 
 struct FloorClaim {
     constant: &'static str,
@@ -330,7 +355,7 @@ fn check_figure_claims(root: &Path, issues: &mut Vec<String>, checked: &mut usiz
                 ));
                 continue;
             }
-            if !doc_text.contains(&expected) {
+            if !without_marker_delimiters(doc_text).contains(&expected) {
                 issues.push(format!(
                     "{doc} does not state `{expected}`; `{}` in {} measures {}, so the page \
                      publishes a figure the gate does not enforce",
@@ -378,7 +403,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
             };
             let expected: String = template.replace("{}", &value);
             checked += 1;
-            if !doc_text.contains(&expected) {
+            if !without_marker_delimiters(&doc_text).contains(&expected) {
                 issues.push(format!(
                     "{doc} does not state the floor as `{expected}`, but `{}` in {} is {value}; a \
                      document publishing a floor other than the one the gate enforces understates \
