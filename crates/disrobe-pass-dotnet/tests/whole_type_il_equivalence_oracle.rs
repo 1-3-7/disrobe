@@ -1774,6 +1774,8 @@ const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "Cat",
     "CollectionPlayground",
     "ConditionalCompilation",
+    "ConfigParser",
+    "DeconstructPlayground",
     "DisposableScope",
     "Dog",
     "JsonLite",
