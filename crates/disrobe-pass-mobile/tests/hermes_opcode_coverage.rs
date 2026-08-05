@@ -18,7 +18,9 @@ use disrobe_pass_mobile::{
 };
 use hermes_production_bundle::{PUBLISHED_FUNCTION_COUNT, load_bundle};
 
-const TRACKED_V96_SAMPLES: [[&str; 2]; 5] = [
+const TRACKED_V96_SAMPLE_COUNT: usize = 5;
+
+const TRACKED_V96_SAMPLES: [[&str; 2]; TRACKED_V96_SAMPLE_COUNT] = [
     ["sample", "sample.hbc.v96"],
     ["regex", "regexes.hbc.v96"],
     ["regex", "edge.hbc.v96"],
@@ -44,10 +46,19 @@ fn corpus(parts: &[&str]) -> PathBuf {
     path
 }
 
-fn report_for(parts: &[&str]) -> Option<DecompileReport> {
-    let bytes: Vec<u8> = std::fs::read(corpus(parts)).ok()?;
-    let module: HermesModule = parse_hermes_module(&bytes).ok()?;
-    Some(decompile_hermes_module(&module))
+fn report_for(parts: &[&str]) -> DecompileReport {
+    let path: PathBuf = corpus(parts);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is committed to this repository, so a run that cannot read it must fail rather \
+             than report a green that graded nothing: {error}",
+            path.display()
+        )
+    });
+    let module: HermesModule = parse_hermes_module(&bytes).unwrap_or_else(|error| {
+        panic!("{} must parse as a Hermes module: {error}", path.display())
+    });
+    decompile_hermes_module(&module)
 }
 
 fn decoded_instructions(report: &DecompileReport) -> usize {
@@ -103,13 +114,15 @@ fn describe_tail(counts: &[OpcodeCount], width: usize) -> String {
 
 #[test]
 fn every_decoded_opcode_in_the_tracked_corpus_lands_in_exactly_one_column() {
-    let mut graded: usize = 0;
+    assert_eq!(
+        TRACKED_V96_SAMPLES.len(),
+        TRACKED_V96_SAMPLE_COUNT,
+        "the graded corpus is pinned by equality, so deleting a sample fails here rather than \
+         quietly narrowing what this gate reads"
+    );
     for parts in TRACKED_V96_SAMPLES {
         let label: String = parts.join("/");
-        let Some(report): Option<DecompileReport> = report_for(&parts) else {
-            eprintln!("{label} missing; skipping opcode-accounting gate");
-            continue;
-        };
+        let report: DecompileReport = report_for(&parts);
         assert!(report.lift_supported, "{label}");
         assert_columns_partition_the_stream(&report, &label);
         assert!(
@@ -124,24 +137,14 @@ fn every_decoded_opcode_in_the_tracked_corpus_lands_in_exactly_one_column() {
             report.total_unaccounted_ops,
             report.reconstructed_opcodes.len()
         );
-        graded += 1;
     }
-    assert_eq!(
-        graded,
-        TRACKED_V96_SAMPLES.len(),
-        "every tracked v96 sample is committed, so a run that grades fewer of them is reading the \
-         wrong corpus path rather than meeting a legitimate absence"
-    );
 }
 
 #[test]
 fn the_tracked_corpus_declines_no_opcode_and_names_any_that_it_would() {
     for parts in TRACKED_V96_SAMPLES {
         let label: String = parts.join("/");
-        let Some(report): Option<DecompileReport> = report_for(&parts) else {
-            eprintln!("{label} missing; skipping decline-enumeration gate");
-            continue;
-        };
+        let report: DecompileReport = report_for(&parts);
         assert!(
             report.declined_opcodes.is_empty(),
             "{label}: every opcode in this sample has a lifting rule; declined {:?}",
@@ -157,10 +160,7 @@ fn the_tracked_corpus_declines_no_opcode_and_names_any_that_it_would() {
 
 #[test]
 fn the_histogram_is_ordered_so_the_long_tail_reads_from_the_end() {
-    let Some(report): Option<DecompileReport> = report_for(&["sample", "sample.hbc.v96"]) else {
-        eprintln!("hermes v96 sample missing; skipping histogram-order gate");
-        return;
-    };
+    let report: DecompileReport = report_for(&["sample", "sample.hbc.v96"]);
     let counts: &[OpcodeCount] = &report.reconstructed_opcodes;
     assert!(counts.len() > 1, "the sample must exercise several opcodes");
     for pair in counts.windows(2) {

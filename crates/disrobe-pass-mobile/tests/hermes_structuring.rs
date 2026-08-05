@@ -28,10 +28,19 @@ fn corpus(parts: &[&str]) -> PathBuf {
     path
 }
 
-fn report_for(parts: &[&str]) -> Option<DecompileReport> {
-    let bytes: Vec<u8> = std::fs::read(corpus(parts)).ok()?;
-    let module: HermesModule = parse_hermes_module(&bytes).ok()?;
-    Some(decompile_hermes_module(&module))
+fn report_for(parts: &[&str]) -> DecompileReport {
+    let path: PathBuf = corpus(parts);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is committed to this repository, so a run that cannot read it must fail rather \
+             than report a green that graded nothing: {error}",
+            path.display()
+        )
+    });
+    let module: HermesModule = parse_hermes_module(&bytes).unwrap_or_else(|error| {
+        panic!("{} must parse as a Hermes module: {error}", path.display())
+    });
+    decompile_hermes_module(&module)
 }
 
 fn parses_as_javascript(source: &str) -> bool {
@@ -53,10 +62,7 @@ const SAMPLE_FUNCTIONS: usize = 8;
 
 #[test]
 fn every_function_in_the_v96_sample_reaches_structured_control_flow() {
-    let Some(report): Option<DecompileReport> = report_for(&["sample", "sample.hbc.v96"]) else {
-        eprintln!("hermes v96 sample missing; skipping structuring gate");
-        return;
-    };
+    let report: DecompileReport = report_for(&["sample", "sample.hbc.v96"]);
     assert!(report.lift_supported);
     assert_eq!(
         report.function_count, SAMPLE_FUNCTIONS,
@@ -101,10 +107,7 @@ fn every_function_in_the_v96_sample_reaches_structured_control_flow() {
 
 #[test]
 fn the_counted_loop_recovers_as_a_loop_and_not_as_a_jump_ladder() {
-    let Some(report): Option<DecompileReport> = report_for(&["sample", "sample.hbc.v96"]) else {
-        eprintln!("hermes v96 sample missing; skipping loop-form gate");
-        return;
-    };
+    let report: DecompileReport = report_for(&["sample", "sample.hbc.v96"]);
     let sum_range: &str = &function(&report, "sumRange").source;
     assert!(
         sum_range.contains("do {") && sum_range.contains("} while ("),
@@ -127,10 +130,7 @@ fn the_counted_loop_recovers_as_a_loop_and_not_as_a_jump_ladder() {
 #[test]
 fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
     for (file, version) in [("sample.hbc.v84", 84u32), ("sample.hbc.v76", 76)] {
-        let Some(report): Option<DecompileReport> = report_for(&["sample", file]) else {
-            eprintln!("{file} missing; skipping version gate");
-            continue;
-        };
+        let report: DecompileReport = report_for(&["sample", file]);
         assert_eq!(report.hermes_version, version);
         assert!(
             !report.lift_supported,
@@ -195,10 +195,7 @@ fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
 #[test]
 fn every_declined_function_in_the_regex_bundles_names_its_reason() {
     for file in ["regexes.hbc.v96", "edge.hbc.v96", "nest.hbc.v96"] {
-        let Some(report): Option<DecompileReport> = report_for(&["regex", file]) else {
-            eprintln!("{file} missing; skipping decline-accounting gate");
-            continue;
-        };
+        let report: DecompileReport = report_for(&["regex", file]);
         assert!(report.lift_supported, "{file}");
         let declined: usize = report
             .functions
@@ -241,11 +238,7 @@ fn every_declined_function_in_the_regex_bundles_names_its_reason() {
 
 #[test]
 fn a_bundle_from_an_android_asset_structures_the_same_way() {
-    let Some(report): Option<DecompileReport> = report_for(&["hello", "index.android.bundle"])
-    else {
-        eprintln!("hello bundle missing; skipping asset-container gate");
-        return;
-    };
+    let report: DecompileReport = report_for(&["hello", "index.android.bundle"]);
     assert_eq!(report.hermes_version, HERMES_LIFT_VERSION);
     assert!(report.lift_supported);
     assert!(report.functions_with_body > 0);
