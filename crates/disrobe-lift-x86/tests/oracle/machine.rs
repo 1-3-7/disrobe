@@ -152,9 +152,8 @@ impl StateDelta {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Outcome {
     Completed(Box<StateDelta>),
-    Faulted,
-    Rejected,
-    Unmodeled(String),
+    Faulted(String),
+    Rejected(String),
 }
 
 impl Outcome {
@@ -163,12 +162,15 @@ impl Outcome {
             "ok" => {
                 StateDelta::parse(payload).map(|delta: StateDelta| Self::Completed(Box::new(delta)))
             }
-            "fault" => Some(Self::Faulted),
-            "reject" => Some(Self::Rejected),
-            "unmodeled" => Some(Self::Unmodeled(payload.to_owned())),
+            "fault" if !payload.is_empty() => Some(Self::Faulted(payload.to_owned())),
+            "reject" if !payload.is_empty() => Some(Self::Rejected(payload.to_owned())),
             _ => None,
         }
     }
+}
+
+pub(crate) fn is_address_fault(reason: &str) -> bool {
+    reason.ends_with("_UNMAPPED") || reason.ends_with("_PROT")
 }
 
 pub(crate) fn flag_label(bit: u32) -> &'static str {

@@ -18,7 +18,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::machine::{
     ADJUST_BIT, CARRY_BIT, GPR_COUNT, IMAGE_BASE, OBSERVED_FLAGS, OVERFLOW_BIT, Outcome,
-    PARITY_BIT, SIGN_BIT, StateDelta, ZERO_BIT, flag_label, register_label,
+    PARITY_BIT, SIGN_BIT, StateDelta, ZERO_BIT, flag_label, is_address_fault, register_label,
 };
 use crate::{corpus_path, evaluator, generator};
 
@@ -30,6 +30,8 @@ const SWEEP_BUDGET: Duration = Duration::from_mins(3);
 const REFERENCE_TIMEOUT: Duration = Duration::from_mins(15);
 const REFERENCE_CAPTURE_BYTES: usize = 1 << 22;
 const DIVERGENCE_SAMPLE: usize = 200;
+const COMPARED_CASE_FLOOR: usize = 4992;
+const COMPARED_MNEMONIC_FLOOR: usize = 122;
 
 const OUT_OF_SCOPE_MNEMONICS: [&str; 11] = [
     "andps",
@@ -144,6 +146,7 @@ struct Tally {
     diverge: usize,
     faults: usize,
     reference_absent: usize,
+    unmapped: usize,
     reference_deviation: usize,
     undefined_result: usize,
     not_modeled: usize,
@@ -154,7 +157,8 @@ enum Verdict {
     Agree,
     Faulted,
     Diverge(String),
-    ReferenceAbsent,
+    ReferenceAbsent(String),
+    UnmappedAccess(String),
     ReferenceDeviation(&'static str),
     UndefinedResult(&'static str),
     NotModeled(String),
@@ -202,6 +206,7 @@ fn lifted_state_matches_committed_cpu_reference() {
     let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut deviations: BTreeMap<String, usize> = BTreeMap::new();
     let mut undefined: BTreeMap<String, usize> = BTreeMap::new();
+    let mut absences: BTreeMap<String, usize> = BTreeMap::new();
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     let mut graded: BTreeSet<String> = BTreeSet::new();
     for report in &reports {
@@ -228,8 +233,15 @@ fn lifted_state_matches_committed_cpu_reference() {
                     divergences.push(detail.clone());
                 }
             }
-            Verdict::ReferenceAbsent => {
+            Verdict::ReferenceAbsent(reason) => {
                 tally.reference_absent = tally.reference_absent.saturating_add(1);
+                let seen: &mut usize = absences.entry(reason.clone()).or_default();
+                *seen = seen.saturating_add(1);
+            }
+            Verdict::UnmappedAccess(reason) => {
+                tally.unmapped = tally.unmapped.saturating_add(1);
+                let seen: &mut usize = absences.entry(reason.clone()).or_default();
+                *seen = seen.saturating_add(1);
             }
             Verdict::ReferenceDeviation(reason) => {
                 tally.reference_deviation = tally.reference_deviation.saturating_add(1);
@@ -278,6 +290,11 @@ fn lifted_state_matches_committed_cpu_reference() {
     for (reason, count) in &reasons {
         println!("x86-64 differential unevaluable effect: {reason} on {count} cases");
     }
+    for (reason, count) in &absences {
+        println!(
+            "x86-64 differential uncompared for a reference reason on {count} cases: {reason}"
+        );
+    }
     for (reason, count) in &deviations {
         println!("x86-64 differential reference deviation on {count} cases: {reason}");
     }
@@ -293,6 +310,47 @@ fn lifted_state_matches_committed_cpu_reference() {
         tallies.len()
     );
     println!("x86-64 differential unreached modeled mnemonics: {unreached:?}");
+    let compared: usize = reports
+        .iter()
+        .filter(|report: &&CaseReport| {
+            matches!(
+                report.verdict,
+                Verdict::Agree | Verdict::Faulted | Verdict::Diverge(_)
+            )
+        })
+        .count();
+    let uncompared: usize = tallies
+        .values()
+        .map(|tally: &Tally| {
+            tally.reference_absent
+                + tally.unmapped
+                + tally.reference_deviation
+                + tally.undefined_result
+                + tally.not_modeled
+        })
+        .sum();
+    println!(
+        "x86-64 differential compared {compared} cases over {} mnemonics; {uncompared} cases carry a stated reason for not being compared",
+        graded.len()
+    );
+    assert_eq!(
+        compared + uncompared,
+        reports.len(),
+        "every case must either be compared or carry a stated reason"
+    );
+    assert!(
+        compared >= COMPARED_CASE_FLOOR,
+        "only {compared} cases reached a comparison, below the {COMPARED_CASE_FLOOR} the committed corpus measures"
+    );
+    assert!(
+        graded.len() >= COMPARED_MNEMONIC_FLOOR,
+        "only {} mnemonics reached a comparison, below the {COMPARED_MNEMONIC_FLOOR} the committed corpus measures",
+        graded.len()
+    );
+    assert!(
+        unreached.is_empty(),
+        "these mnemonics the lifter models reached no comparison: {unreached:?}"
+    );
     assert!(
         divergences.is_empty(),
         "lifted semantics disagree with the reference on {} cases:\n{}",
@@ -513,10 +571,25 @@ fn grade_case(case: &generator::Case, reference: &Outcome) -> CaseReport {
             claimed,
         };
     }
-    if matches!(reference, Outcome::Rejected) {
+    if let Outcome::Rejected(reason) = reference {
         return CaseReport {
             mnemonic: case.mnemonic.clone(),
-            verdict: Verdict::ReferenceAbsent,
+            verdict: Verdict::ReferenceAbsent(format!(
+                "the reference refused the encoding ({reason})"
+            )),
+            undefined: architectural,
+            declared,
+            claimed,
+        };
+    }
+    if let Outcome::Faulted(reason) = reference
+        && is_address_fault(reason)
+    {
+        return CaseReport {
+            mnemonic: case.mnemonic.clone(),
+            verdict: Verdict::UnmappedAccess(format!(
+                "the generated address left the mapped image ({reason})"
+            )),
             undefined: architectural,
             declared,
             claimed,
@@ -550,7 +623,7 @@ fn grade_case(case: &generator::Case, reference: &Outcome) -> CaseReport {
             declared,
             claimed,
         },
-        (evaluator::Evaluation::Faulted, Outcome::Faulted) => CaseReport {
+        (evaluator::Evaluation::Faulted, Outcome::Faulted(_)) => CaseReport {
             mnemonic: case.mnemonic.clone(),
             verdict: Verdict::Faulted,
             undefined: architectural,
@@ -567,7 +640,7 @@ fn grade_case(case: &generator::Case, reference: &Outcome) -> CaseReport {
             declared,
             claimed,
         },
-        (evaluator::Evaluation::Completed(_, _), Outcome::Faulted) => CaseReport {
+        (evaluator::Evaluation::Completed(_, _), Outcome::Faulted(_)) => CaseReport {
             mnemonic: case.mnemonic.clone(),
             verdict: Verdict::Diverge(format!(
                 "{} the reference faulted while the lifted form completed",
@@ -592,9 +665,11 @@ fn grade_case(case: &generator::Case, reference: &Outcome) -> CaseReport {
                 claimed,
             }
         }
-        (_, Outcome::Rejected | Outcome::Unmodeled(_)) => CaseReport {
+        (_, Outcome::Rejected(reason)) => CaseReport {
             mnemonic: case.mnemonic.clone(),
-            verdict: Verdict::ReferenceAbsent,
+            verdict: Verdict::ReferenceAbsent(format!(
+                "the reference refused the encoding ({reason})"
+            )),
             undefined: architectural,
             declared,
             claimed,
@@ -776,16 +851,17 @@ fn shift_count(case: &generator::Case, decoded: &Instruction) -> Option<u64> {
 
 fn print_table(tallies: &BTreeMap<String, Tally>) {
     println!(
-        "mnemonic\trun\tagree\tdiverge\tfault\treference-absent\treference-deviation\tundefined\tnot-modeled"
+        "mnemonic\trun\tagree\tdiverge\tfault\treference-absent\tunmapped\treference-deviation\tundefined\tnot-modeled"
     );
     for (mnemonic, tally) in tallies {
         println!(
-            "{mnemonic}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{mnemonic}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             tally.run,
             tally.agree,
             tally.diverge,
             tally.faults,
             tally.reference_absent,
+            tally.unmapped,
             tally.reference_deviation,
             tally.undefined_result,
             tally.not_modeled

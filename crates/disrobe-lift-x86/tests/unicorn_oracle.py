@@ -15,6 +15,12 @@ IMAGE_BYTES: Final[int] = 0x3000
 RESERVED_FLAG: Final[int] = 0x2
 OBSERVED_FLAGS: Final[int] = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 10) | (1 << 11)
 
+ERROR_NAMES: Final[dict[int, str]] = {
+    getattr(unicorn, name): name
+    for name in dir(unicorn)
+    if name.startswith("UC_ERR_") and isinstance(getattr(unicorn, name), int)
+}
+
 REGISTERS: Final[tuple[int, ...]] = (
     x86_const.UC_X86_REG_RAX,
     x86_const.UC_X86_REG_RCX,
@@ -110,7 +116,8 @@ def execute(machine: Uc, case: Case, image: bytes, /) -> tuple[str, Uc]:
         machine.emu_start(case.rip, case.rip + len(case.code), 0, 1)
     except UcError as error:
         status = "reject" if error.errno == unicorn.UC_ERR_INSN_INVALID else "fault"
-        return f"{status}\t-", new_machine(image)
+        named = ERROR_NAMES.get(error.errno, f"UC_ERR_{error.errno}")
+        return f"{status}\t{named}", new_machine(image)
     produced = tuple(machine.reg_read(slot) for slot in REGISTERS)
     flags = machine.reg_read(x86_const.UC_X86_REG_EFLAGS)
     rip = machine.reg_read(x86_const.UC_X86_REG_RIP)
