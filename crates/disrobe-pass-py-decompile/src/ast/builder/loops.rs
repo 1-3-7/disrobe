@@ -1541,6 +1541,61 @@ pub(super) fn loop_enclosed_by_guard(
     })
 }
 
+const fn transfers_control(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::JumpForward(_)
+            | CanonicalOp::JumpAbsolute(_)
+            | CanonicalOp::JumpBackward(_)
+            | CanonicalOp::JumpBackwardNoInterrupt(_)
+            | CanonicalOp::ContinueLoop(_)
+            | CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::ForIter(_)
+            | CanonicalOp::ForLoopLegacy(_)
+            | CanonicalOp::Send(_)
+            | CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+    )
+}
+
+pub(super) fn loop_header_owns_test(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    test: usize,
+) -> bool {
+    let Some(region): Option<LoopRegion> = find_loop(stream, lo, hi) else {
+        return false;
+    };
+    if region.infinite
+        || !matches!(region.kind, LoopKind::While)
+        || test < region.header
+        || test >= region.back_edge
+        || region.back_edge >= stream.ops.len()
+        || test >= stream.ops.len()
+    {
+        return false;
+    }
+    if resolve_jump_target(stream, region.back_edge, &stream.ops[region.back_edge])
+        != Some(region.header)
+    {
+        return false;
+    }
+    if (region.header..test).any(|k: usize| transfers_control(&stream.ops[k])) {
+        return false;
+    }
+    resolve_jump_target(stream, test, &stream.ops[test]).is_some_and(|target: usize| target > test)
+}
+
 pub(super) fn try_enclosed_by_loop(
     stream: &DecodedStream,
     lo: usize,

@@ -6,8 +6,8 @@ use super::exprs::{
 };
 use super::function_meta::load_const;
 use super::loops::{
-    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, non_empty,
-    try_enclosed_by_loop,
+    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, loop_header_owns_test,
+    non_empty, try_enclosed_by_loop,
 };
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
@@ -1722,6 +1722,9 @@ pub(super) fn try_structure_guarded_try(
     }) else {
         return Ok(None);
     };
+    if loop_header_owns_test(stream, lo, hi, first_cond) {
+        return Ok(None);
+    }
     let compound: Option<CompoundIf> = try_recover_compound_if(code, stream, lo, hi)?;
     let conjunct_guard: Option<usize> = compound
         .as_ref()

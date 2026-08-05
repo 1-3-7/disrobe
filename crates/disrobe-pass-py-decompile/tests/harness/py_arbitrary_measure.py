@@ -305,7 +305,16 @@ def main():
     ap.add_argument("--lib", required=True)
     ap.add_argument("--modules", required=True)
     ap.add_argument("--strict-tier", action="store_true")
+    ap.add_argument("--object-ledger", default=None)
     args = ap.parse_args()
+
+    ledger: list[str] = []
+
+    def record(module_path: str, qualname: str, position: int, verdict: str) -> None:
+        if args.object_ledger is None:
+            return
+        rel = os.path.relpath(module_path, args.lib).replace(os.sep, "/")
+        ledger.append(f"{rel}\t{qualname}\t{position}\t{verdict}")
 
     warnings.simplefilter("ignore")
     files = read_pinned(args.modules, args.lib)
@@ -356,6 +365,9 @@ def main():
             mod_ok = 0
             if rec is None:
                 reasons["DECOMPILE_ERR"] = reasons.get("DECOMPILE_ERR", 0) + nobj
+                for q, alist in ga.items():
+                    for i in range(len(alist)):
+                        record(f, q, i, "DECOMPILE_ERR")
             else:
                 try:
                     b = compile(
@@ -383,8 +395,10 @@ def main():
                             for i in range(len(alist)):
                                 if i >= len(blist):
                                     reasons["MISSING"] = reasons.get("MISSING", 0) + 1
+                                    record(f, q, i, "MISSING")
                                 else:
                                     reasons["COLLISION"] = reasons.get("COLLISION", 0) + 1
+                                    record(f, q, i, "COLLISION")
                                     samples.setdefault("COLLISION", [])
                                     if len(samples["COLLISION"]) < 12:
                                         samples["COLLISION"].append(
@@ -392,8 +406,9 @@ def main():
                                             f"({len(alist)} orig vs {len(blist)} rec)"
                                         )
                             continue
-                        for ac, bc in zip(alist, blist):
+                        for position, (ac, bc) in enumerate(zip(alist, blist)):
                             eq, why = own_equiv(ac, bc)
+                            record(f, q, position, "OK" if eq else why)
                             if eq:
                                 ok_obj += 1
                                 mod_ok += 1
@@ -420,6 +435,9 @@ def main():
                                     samples[why].append(f"{os.path.basename(f)}:{q}")
                 except SyntaxError as e:
                     reasons["SYNTAX_ERR"] = reasons.get("SYNTAX_ERR", 0) + nobj
+                    for q, alist in ga.items():
+                        for i in range(len(alist)):
+                            record(f, q, i, "SYNTAX_ERR")
                     samples.setdefault("SYNTAX_ERR", [])
                     if len(samples["SYNTAX_ERR"]) < 12:
                         samples["SYNTAX_ERR"].append(
@@ -485,6 +503,12 @@ def main():
         )
     else:
         print(json.dumps(result))
+
+    if args.object_ledger is not None:
+        ledger.sort()
+        with open(args.object_ledger, "w", encoding="utf-8", newline="\n") as ledger_file:
+            ledger_file.write("\n".join(ledger))
+            ledger_file.write("\n")
 
     print("\n=== failure reasons (by code-object count) ===", file=sys.stderr)
     for why, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
