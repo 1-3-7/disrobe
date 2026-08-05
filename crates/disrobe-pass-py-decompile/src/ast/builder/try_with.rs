@@ -1,7 +1,8 @@
 use super::branches::{CompoundIf, jump_taken_if_true, try_recover_compound_if};
 use super::exprs::{
     build_linear_stmts_sim, inner_short_circuit_polarity, is_chain_compare_jump,
-    is_chain_cond_jump, local_name_at, local_target, name_at,
+    is_chain_cond_jump, local_name_at, local_target, name_at, recover_chain_target,
+    unrecovered_context,
 };
 use super::function_meta::load_const;
 use super::loops::{
@@ -11,7 +12,7 @@ use super::loops::{
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
     append_handler_loop_jump, detect_inline_comprehension, first_significant,
-    last_significant_back, loads_none, resolve_jump_target, structure_stmts,
+    last_significant_back, loads_none, resolve_jump_target, single_store_target, structure_stmts,
     test_is_polarity_sensitive, then_continues_to_loop, then_terminating_jump,
     trailing_loop_jump_stmt,
 };
@@ -512,6 +513,9 @@ pub(super) fn find_try_region(stream: &DecodedStream, lo: usize, hi: usize) -> O
     }
     let mut best: Option<TryRegion> = None;
     for entry in &stream.exception_table {
+        if entry.length == 0 {
+            continue;
+        }
         let Some(try_start): Option<usize> = stream.index_for_offset(entry.start) else {
             continue;
         };
@@ -1218,8 +1222,9 @@ fn async_with_prologue_start(stream: &DecodedStream, try_start: usize, lo: usize
     match stream.ops.get(before) {
         Some(CanonicalOp::BeforeAsyncWith) => Some(with_prologue_walk_back(stream, before, lo)),
         Some(CanonicalOp::Copy(1))
-            if first_significant(stream, before + 1, awaitable)
-                .is_some_and(|s: usize| matches!(stream.ops[s], CanonicalOp::LoadSpecial(_))) =>
+            if first_significant(stream, before + 1, awaitable).is_some_and(|s: usize| {
+                stream.ops[s] == CanonicalOp::LoadSpecial(SPECIAL_AEXIT)
+            }) =>
         {
             Some(with_prologue_walk_back(stream, before, lo))
         }
@@ -1237,7 +1242,7 @@ fn modern_with_prologue_start(stream: &DecodedStream, store_at: usize, lo: usize
     let enter: usize = (lo..call)
         .rev()
         .find(|&k: &usize| !matches!(stream.ops[k], CanonicalOp::Cache | CanonicalOp::Nop))?;
-    if !matches!(stream.ops[enter], CanonicalOp::LoadSpecial(0)) {
+    if stream.ops[enter] != CanonicalOp::LoadSpecial(SPECIAL_ENTER) {
         return None;
     }
     let copy: usize = (lo..enter)
@@ -6208,13 +6213,43 @@ pub(super) fn region_is_linear(stream: &DecodedStream, lo: usize, hi: usize) -> 
     })
 }
 
-pub(super) fn special_method_name(slot: u32) -> &'static str {
+pub(super) const SPECIAL_ENTER: u32 = 0;
+pub(super) const SPECIAL_EXIT: u32 = 1;
+pub(super) const SPECIAL_AENTER: u32 = 2;
+pub(super) const SPECIAL_AEXIT: u32 = 3;
+
+pub(super) fn special_method_name(slot: u32) -> Option<&'static str> {
     match slot {
-        0 => "__enter__",
-        1 => "__exit__",
-        2 => "__aenter__",
-        _ => "__aexit__",
+        SPECIAL_ENTER => Some("__enter__"),
+        SPECIAL_EXIT => Some("__exit__"),
+        SPECIAL_AENTER => Some("__aenter__"),
+        SPECIAL_AEXIT => Some("__aexit__"),
+        _ => None,
     }
+}
+
+fn find_special_pair_setup_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    exit_slot: u32,
+    enter_slot: u32,
+) -> Option<(usize, usize)> {
+    let mut i: usize = lo;
+    while i < hi {
+        if matches!(stream.ops[i], CanonicalOp::Copy(1))
+            && let Some(special) = first_significant(stream, i + 1, hi)
+            && stream.ops[special] == CanonicalOp::LoadSpecial(exit_slot)
+        {
+            let enter: usize = (special + 1..hi)
+                .find(|&k: &usize| stream.ops[k] == CanonicalOp::LoadSpecial(enter_slot))?;
+            let call: usize = (enter + 1..hi)
+                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
+            return Some((i, call + 1));
+        }
+        i += 1;
+    }
+    None
 }
 
 fn find_async_with_setup_end(
@@ -6222,39 +6257,11 @@ fn find_async_with_setup_end(
     lo: usize,
     hi: usize,
 ) -> Option<(usize, usize)> {
-    let mut i: usize = lo;
-    while i < hi {
-        if matches!(stream.ops[i], CanonicalOp::Copy(1))
-            && let Some(special) = first_significant(stream, i + 1, hi)
-            && matches!(stream.ops[special], CanonicalOp::LoadSpecial(_))
-        {
-            let enter: usize = (special + 1..hi)
-                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadSpecial(2)))?;
-            let call: usize = (enter + 1..hi)
-                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
-            return Some((i, call + 1));
-        }
-        i += 1;
-    }
-    None
+    find_special_pair_setup_end(stream, lo, hi, SPECIAL_AEXIT, SPECIAL_AENTER)
 }
 
 fn find_with_setup_end(stream: &DecodedStream, lo: usize, hi: usize) -> Option<(usize, usize)> {
-    let mut i: usize = lo;
-    while i < hi {
-        if matches!(stream.ops[i], CanonicalOp::Copy(1))
-            && let Some(special) = first_significant(stream, i + 1, hi)
-            && matches!(stream.ops[special], CanonicalOp::LoadSpecial(_))
-        {
-            let enter: usize = (special + 1..hi)
-                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::LoadSpecial(0)))?;
-            let call: usize = (enter + 1..hi)
-                .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::CallFunction(_)))?;
-            return Some((i, call + 1));
-        }
-        i += 1;
-    }
-    None
+    find_special_pair_setup_end(stream, lo, hi, SPECIAL_EXIT, SPECIAL_ENTER)
 }
 
 fn structure_async_with(
@@ -6287,10 +6294,10 @@ fn structure_async_with(
     };
     let (_, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[region.try_start..context_end])?;
-    let context_expr: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
-        value: ConstValue::None,
-        line: None,
-    });
+    let context_expr: Expr = residual
+        .into_iter()
+        .next_back()
+        .unwrap_or_else(unrecovered_context);
     let enter_await: usize = (setup_end..region.try_end)
         .find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAwaitable))
         .unwrap_or(setup_end);
@@ -6549,6 +6556,88 @@ struct WithSetup {
 
 type WithChainEntry = (WithItem, Option<u32>);
 
+const fn is_with_target_address_op(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Cache
+            | CanonicalOp::Nop
+            | CanonicalOp::ExtendedArg(_)
+            | CanonicalOp::LoadConst(_)
+            | CanonicalOp::LoadSmallInt(_)
+            | CanonicalOp::LoadCommonConst(_)
+            | CanonicalOp::LoadFast(_)
+            | CanonicalOp::LoadFastLoadFast(_, _)
+            | CanonicalOp::LoadName(_)
+            | CanonicalOp::LoadGlobal(_)
+            | CanonicalOp::LoadAttr(_)
+            | CanonicalOp::LoadSubscr
+            | CanonicalOp::LoadFromDictOrDeref(_)
+            | CanonicalOp::LoadFromDictOrGlobals(_)
+            | CanonicalOp::BuildSlice(_)
+            | CanonicalOp::BuildTuple(_)
+    )
+}
+
+fn with_target_chain_end(stream: &DecodedStream, from: usize, hi: usize) -> Option<usize> {
+    let bound: usize = hi.min(stream.ops.len());
+    let mut i: usize = from;
+    while i < bound {
+        match &stream.ops[i] {
+            CanonicalOp::StoreAttr(_) | CanonicalOp::StoreSubscr | CanonicalOp::StoreSlice => {
+                return Some(i + 1);
+            }
+            op if is_with_target_address_op(op) => i += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn recover_with_target(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    setup_end: usize,
+    hi: usize,
+) -> (Option<Expr>, usize) {
+    let bound: usize = hi.min(stream.ops.len());
+    let declined: (Option<Expr>, usize) = (None, setup_end);
+    let Some(op): Option<&CanonicalOp> = stream.ops.get(setup_end) else {
+        return declined;
+    };
+    match op {
+        CanonicalOp::StoreFast(slot) => (
+            local_target(code, *slot, setup_end).ok(),
+            setup_end.saturating_add(1),
+        ),
+        CanonicalOp::StoreName(slot) | CanonicalOp::StoreGlobal(slot) => (
+            name_at(&code.names, *slot, setup_end, "name")
+                .ok()
+                .map(|id: String| Expr::Name {
+                    id,
+                    ctx: ExprCtx::Store,
+                    line: None,
+                }),
+            setup_end.saturating_add(1),
+        ),
+        CanonicalOp::StoreFastLoadFast(slot, _) => {
+            (local_target(code, *slot, setup_end).ok(), setup_end)
+        }
+        CanonicalOp::Pop => (None, setup_end.saturating_add(1)),
+        CanonicalOp::UnpackSequence(_) | CanonicalOp::UnpackEx(_) => {
+            single_store_target(code, &stream.ops[..bound], setup_end)
+                .map_or(declined, |(target, next): (Expr, usize)| {
+                    (Some(target), next)
+                })
+        }
+        _ => with_target_chain_end(stream, setup_end, bound)
+            .and_then(|end: usize| {
+                recover_chain_target(code, &stream.ops, setup_end, end)
+                    .map(|target: Expr| (Some(target), end))
+            })
+            .unwrap_or(declined),
+    }
+}
+
 fn recover_with_setup(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -6575,30 +6664,12 @@ fn recover_with_setup(
     if stmts.len() > carried_fused_store {
         return Ok(None);
     }
-    let context_expr: Expr = residual.into_iter().next_back().unwrap_or(Expr::Constant {
-        value: ConstValue::None,
-        line: None,
-    });
-    let (optional_vars, next_start): (Option<Expr>, usize) = match stream.ops.get(setup_end) {
-        Some(CanonicalOp::StoreFast(slot)) => {
-            (local_target(code, *slot, setup_end).ok(), setup_end + 1)
-        }
-        Some(CanonicalOp::StoreName(slot)) => (
-            name_at(&code.names, *slot, setup_end, "name")
-                .ok()
-                .map(|id: String| Expr::Name {
-                    id,
-                    ctx: ExprCtx::Store,
-                    line: None,
-                }),
-            setup_end + 1,
-        ),
-        Some(CanonicalOp::StoreFastLoadFast(slot, _)) => {
-            (local_target(code, *slot, setup_end).ok(), setup_end)
-        }
-        Some(CanonicalOp::Pop) => (None, setup_end + 1),
-        _ => (None, setup_end),
-    };
+    let context_expr: Expr = residual
+        .into_iter()
+        .next_back()
+        .unwrap_or_else(unrecovered_context);
+    let (optional_vars, next_start): (Option<Expr>, usize) =
+        recover_with_target(code, stream, setup_end, hi);
     Ok(Some(WithSetup {
         item: WithItem {
             context_expr,
@@ -6645,10 +6716,7 @@ fn structure_with(
         return Ok((
             Stmt::With {
                 items: vec![WithItem {
-                    context_expr: Expr::Constant {
-                        value: ConstValue::None,
-                        line: None,
-                    },
+                    context_expr: unrecovered_context(),
                     optional_vars: None,
                 }],
                 body: non_empty(body),
@@ -8727,4 +8795,137 @@ fn handler_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
         end -= 1;
     }
     end
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod with_region_bounds {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::super::DecodedStream;
+    use super::{
+        SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
+        special_method_name,
+    };
+    use crate::bytecode::flow::ExceptionTableEntry;
+    use crate::bytecode::opcode::CanonicalOp;
+    use crate::bytecode::version::PyVersion;
+
+    fn stream_with(ops: Vec<CanonicalOp>, table: Vec<ExceptionTableEntry>) -> DecodedStream {
+        let n: usize = ops.len();
+        DecodedStream {
+            ops,
+            offsets: (0..n).map(|i: usize| (i as u32) * 2).collect(),
+            next_offsets: (0..n).map(|i: usize| (i as u32 + 1) * 2).collect(),
+            code_len: (n as u32) * 2,
+            lines: vec![None; n],
+            wordcode: true,
+            instr_unit_jumps: true,
+            relative_cond_jumps: true,
+            exception_table: table,
+            pre311_end_finally_idx: BTreeSet::new(),
+            pre311_pop_block_idx: BTreeSet::new(),
+            pre311_break_loop_idx: BTreeSet::new(),
+            setup_loop_end: BTreeMap::new(),
+            none_jump_kind: BTreeMap::new(),
+            version: PyVersion::V3_14,
+        }
+    }
+
+    fn with_shaped_ops() -> Vec<CanonicalOp> {
+        vec![
+            CanonicalOp::LoadFast(0),
+            CanonicalOp::Copy(1),
+            CanonicalOp::LoadSpecial(SPECIAL_EXIT),
+            CanonicalOp::Swap(2),
+            CanonicalOp::Swap(3),
+            CanonicalOp::LoadSpecial(SPECIAL_ENTER),
+            CanonicalOp::CallFunction(0),
+            CanonicalOp::Pop,
+            CanonicalOp::Return,
+            CanonicalOp::PushExcInfo,
+            CanonicalOp::WithExceptStart,
+            CanonicalOp::Reraise(2),
+        ]
+    }
+
+    const fn entry(start: u32, length: u32, target: u32) -> ExceptionTableEntry {
+        ExceptionTableEntry {
+            start,
+            length,
+            target,
+            depth: 2,
+            lasti: true,
+        }
+    }
+
+    #[test]
+    fn every_special_slot_the_compiler_emits_names_a_method_and_no_other_does() {
+        assert_eq!(special_method_name(SPECIAL_ENTER), Some("__enter__"));
+        assert_eq!(special_method_name(SPECIAL_EXIT), Some("__exit__"));
+        assert_eq!(special_method_name(SPECIAL_AENTER), Some("__aenter__"));
+        assert_eq!(special_method_name(SPECIAL_AEXIT), Some("__aexit__"));
+        for slot in [4u32, 5, 255, u32::MAX] {
+            assert_eq!(
+                special_method_name(slot),
+                None,
+                "slot {slot} is not one CPython emits, and naming it __aexit__ would turn a decode \
+                 failure into a context manager the reader believes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_table_still_yields_its_with_region() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 4, 18)]);
+        let region: TryRegion =
+            find_try_region(&stream, 0, 12).expect("a well formed entry yields a region");
+        assert!(
+            region.is_with(),
+            "the handler shape names this a with region"
+        );
+    }
+
+    #[test]
+    fn a_zero_length_protected_range_is_rejected_rather_than_followed() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 0, 18)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "a protected range covering no instruction protects nothing, and building a region \
+             from it invents a body"
+        );
+    }
+
+    #[test]
+    fn a_handler_target_past_the_code_is_rejected_rather_than_followed() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(14, 4, 4096)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "a handler outside the code object cannot be entered, so no region may claim it"
+        );
+    }
+
+    #[test]
+    fn a_protected_start_off_an_instruction_boundary_is_rejected() {
+        let stream: DecodedStream = stream_with(with_shaped_ops(), vec![entry(15, 4, 18)]);
+        assert!(
+            find_try_region(&stream, 0, 12).is_none(),
+            "an odd start lands inside an instruction, and rounding it to a neighbour would move \
+             the body the region claims"
+        );
+    }
+
+    #[test]
+    fn overlapping_entries_resolve_to_the_earliest_body_and_never_panic() {
+        let stream: DecodedStream = stream_with(
+            with_shaped_ops(),
+            vec![entry(14, 4, 18), entry(12, 6, 18), entry(0, 0, 18)],
+        );
+        let region: TryRegion =
+            find_try_region(&stream, 0, 12).expect("the sound entries still yield a region");
+        assert!(
+            region.try_start <= 7,
+            "the earliest protected body wins, and the zero-length sibling contributes nothing"
+        );
+    }
 }
