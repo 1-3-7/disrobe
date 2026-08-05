@@ -1,4 +1,6 @@
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, parse_method_body};
+use crate::cil::{
+    FlowControl, Instruction, MethodBody, OperandValue, SlotOp, parse_method_body, slot_index_of,
+};
 use crate::cil_emulator::{StubInput, StubOutput, emulate_stub};
 use crate::pe::PeImage;
 use crate::tables::MethodDefRow;
@@ -141,31 +143,11 @@ fn is_pure_value_op(name: &str) -> bool {
 }
 
 fn load_local_index(ins: &Instruction) -> Option<u32> {
-    local_index(ins.name.as_str(), "ldloc", &ins.operand)
+    slot_index_of(ins, SlotOp::LoadLocal).map(u32::from)
 }
 
 fn store_local_index(ins: &Instruction) -> Option<u32> {
-    local_index(ins.name.as_str(), "stloc", &ins.operand)
-}
-
-fn local_index(name: &str, prefix: &str, operand: &OperandValue) -> Option<u32> {
-    let dotted: String = format!("{prefix}.");
-    if let Some(rest) = name.strip_prefix(dotted.as_str()) {
-        if rest == "s" {
-            return match operand {
-                OperandValue::U8(b) => Some(u32::from(*b)),
-                _ => None,
-            };
-        }
-        return rest.parse::<u32>().ok();
-    }
-    if name == prefix {
-        return match operand {
-            OperandValue::U16(v) => Some(u32::from(*v)),
-            _ => None,
-        };
-    }
-    None
+    slot_index_of(ins, SlotOp::StoreLocal).map(u32::from)
 }
 
 fn method_body(image: &[u8], pe: &PeImage, method: &MethodDefRow) -> Option<MethodBody> {

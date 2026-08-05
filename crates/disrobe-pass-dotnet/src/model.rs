@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, SlotOp};
 use crate::error::{Error, Result};
 use crate::metadata::{MetadataRoot, decompress_uint};
 use crate::pe::{ClrHeader, PeImage};
@@ -506,28 +506,32 @@ impl Resolver {
                 FlowControl::Branch | FlowControl::CondBranch
             ) => {}
             "ldloc.0" | "ldloc.1" | "ldloc.2" | "ldloc.3" | "ldloc" | "ldloc.s" => {
-                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
-                let fact: ReceiverFact = outgoing
-                    .locals
-                    .get(&slot)
-                    .map_or(ReceiverFact::Unknown, |fact: &ReceiverFact| *fact);
+                let fact: ReceiverFact = crate::cil::slot_index_of(instruction, SlotOp::LoadLocal)
+                    .and_then(|slot: u16| outgoing.locals.get(&u32::from(slot)).copied())
+                    .unwrap_or(ReceiverFact::Unknown);
                 outgoing.stack.push(fact);
             }
             "stloc.0" | "stloc.1" | "stloc.2" | "stloc.3" | "stloc" | "stloc.s" => {
-                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
                 let value: ReceiverFact = pop_receiver_fact(&mut outgoing);
-                match value {
-                    ReceiverFact::Exact(_) => {
-                        outgoing.locals.insert(slot, value);
-                    }
-                    ReceiverFact::Unknown => {
-                        outgoing.locals.remove(&slot);
-                    }
+                match crate::cil::slot_index_of(instruction, SlotOp::StoreLocal) {
+                    Some(slot) => match value {
+                        ReceiverFact::Exact(_) => {
+                            outgoing.locals.insert(u32::from(slot), value);
+                        }
+                        ReceiverFact::Unknown => {
+                            outgoing.locals.remove(&u32::from(slot));
+                        }
+                    },
+                    None => outgoing.locals.clear(),
                 }
             }
             "ldloca" | "ldloca.s" => {
-                let slot: u32 = crate::cil_emulator::slot_index(instruction, &instruction.name);
-                outgoing.locals.remove(&slot);
+                match crate::cil::slot_index_of(instruction, SlotOp::LocalAddress) {
+                    Some(slot) => {
+                        outgoing.locals.remove(&u32::from(slot));
+                    }
+                    None => outgoing.locals.clear(),
+                }
                 outgoing.stack.push(ReceiverFact::Unknown);
             }
             "ldarga" | "ldarga.s" => outgoing.stack.push(ReceiverFact::Unknown),

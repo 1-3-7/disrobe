@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::cfg::{BlockId, Cfg, Terminator};
-use crate::cil::{Instruction, MethodBody, OperandValue};
+use crate::cil::{Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 
 #[must_use]
 pub(crate) fn normalize_move_next(cfg: &mut Cfg, body: &MethodBody) -> bool {
@@ -137,33 +137,11 @@ fn state_mirror_local(cfg: &Cfg, body: &MethodBody, state_token: u32) -> Option<
 }
 
 fn stloc_slot(ins: &Instruction) -> Option<u16> {
-    match ins.name.as_str() {
-        "stloc.0" => Some(0),
-        "stloc.1" => Some(1),
-        "stloc.2" => Some(2),
-        "stloc.3" => Some(3),
-        "stloc.s" | "stloc" => match ins.operand {
-            OperandValue::U8(v) => Some(u16::from(v)),
-            OperandValue::U16(v) => Some(v),
-            _ => None,
-        },
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::StoreLocal)
 }
 
 fn ldloc_slot(ins: &Instruction) -> Option<u16> {
-    match ins.name.as_str() {
-        "ldloc.0" => Some(0),
-        "ldloc.1" => Some(1),
-        "ldloc.2" => Some(2),
-        "ldloc.3" => Some(3),
-        "ldloc.s" | "ldloc" => match ins.operand {
-            OperandValue::U8(v) => Some(u16::from(v)),
-            OperandValue::U16(v) => Some(v),
-            _ => None,
-        },
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadLocal)
 }
 
 fn dispatch_blocks(cfg: &Cfg, body: &MethodBody, mirror: u16) -> BTreeSet<BlockId> {

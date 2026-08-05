@@ -822,6 +822,92 @@ pub enum OperandValue {
     Switch(Vec<i32>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotOp {
+    LoadLocal,
+    StoreLocal,
+    LocalAddress,
+    LoadArgument,
+    StoreArgument,
+    ArgumentAddress,
+}
+
+impl SlotOp {
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(
+            self,
+            Self::LoadLocal | Self::StoreLocal | Self::LocalAddress
+        )
+    }
+
+    #[must_use]
+    pub const fn is_argument(self) -> bool {
+        !self.is_local()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotDecodeError {
+    NotSlotAccess,
+    UndecodableOperand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SlotAccess {
+    pub op: SlotOp,
+    pub index: u16,
+}
+
+const fn slot_base(base: &str) -> Option<(SlotOp, bool)> {
+    match base.as_bytes() {
+        b"ldloc" => Some((SlotOp::LoadLocal, true)),
+        b"stloc" => Some((SlotOp::StoreLocal, true)),
+        b"ldloca" => Some((SlotOp::LocalAddress, false)),
+        b"ldarg" => Some((SlotOp::LoadArgument, true)),
+        b"starg" => Some((SlotOp::StoreArgument, false)),
+        b"ldarga" => Some((SlotOp::ArgumentAddress, false)),
+        _ => None,
+    }
+}
+
+fn operand_slot_index(operand: &OperandValue) -> Option<u16> {
+    match *operand {
+        OperandValue::U8(value) => Some(u16::from(value)),
+        OperandValue::U16(value) => Some(value),
+        _ => None,
+    }
+}
+
+pub fn decode_slot(instruction: &Instruction) -> std::result::Result<SlotAccess, SlotDecodeError> {
+    let name: &str = instruction.name.as_str();
+    let (base, suffix): (&str, &str) = name
+        .find('.')
+        .map_or((name, ""), |dot: usize| name.split_at(dot));
+    let Some((op, numeric_short_forms)): Option<(SlotOp, bool)> = slot_base(base) else {
+        return Err(SlotDecodeError::NotSlotAccess);
+    };
+    let index: u16 = match suffix {
+        "" | ".s" => {
+            operand_slot_index(&instruction.operand).ok_or(SlotDecodeError::UndecodableOperand)?
+        }
+        ".0" if numeric_short_forms => 0,
+        ".1" if numeric_short_forms => 1,
+        ".2" if numeric_short_forms => 2,
+        ".3" if numeric_short_forms => 3,
+        _ => return Err(SlotDecodeError::NotSlotAccess),
+    };
+    Ok(SlotAccess { op, index })
+}
+
+#[must_use]
+pub fn slot_index_of(instruction: &Instruction, op: SlotOp) -> Option<u16> {
+    match decode_slot(instruction) {
+        Ok(access) if access.op == op => Some(access.index),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExceptionClauseKind {
     Catch,
@@ -1563,6 +1649,167 @@ mod tests {
         let def: &OpcodeDef = lookup(0x00).expect("nop");
         assert_eq!(def.name, "nop");
         assert_eq!(def.operand, OperandKind::InlineNone);
+    }
+
+    fn slot_ins(name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: FlowControl::Next,
+        }
+    }
+
+    #[test]
+    fn decode_slot_reads_every_numeric_suffix_form() {
+        for (name, op, index) in [
+            ("ldloc.0", SlotOp::LoadLocal, 0_u16),
+            ("ldloc.1", SlotOp::LoadLocal, 1),
+            ("ldloc.2", SlotOp::LoadLocal, 2),
+            ("ldloc.3", SlotOp::LoadLocal, 3),
+            ("stloc.0", SlotOp::StoreLocal, 0),
+            ("stloc.1", SlotOp::StoreLocal, 1),
+            ("stloc.2", SlotOp::StoreLocal, 2),
+            ("stloc.3", SlotOp::StoreLocal, 3),
+            ("ldarg.0", SlotOp::LoadArgument, 0),
+            ("ldarg.1", SlotOp::LoadArgument, 1),
+            ("ldarg.2", SlotOp::LoadArgument, 2),
+            ("ldarg.3", SlotOp::LoadArgument, 3),
+        ] {
+            assert_eq!(
+                decode_slot(&slot_ins(name, OperandValue::None)),
+                Ok(SlotAccess { op, index }),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_slot_reads_every_short_form_operand() {
+        for (name, op) in [
+            ("ldloc.s", SlotOp::LoadLocal),
+            ("stloc.s", SlotOp::StoreLocal),
+            ("ldloca.s", SlotOp::LocalAddress),
+            ("ldarg.s", SlotOp::LoadArgument),
+            ("starg.s", SlotOp::StoreArgument),
+            ("ldarga.s", SlotOp::ArgumentAddress),
+        ] {
+            for raw in [0_u8, 1, 254, 255] {
+                assert_eq!(
+                    decode_slot(&slot_ins(name, OperandValue::U8(raw))),
+                    Ok(SlotAccess {
+                        op,
+                        index: u16::from(raw)
+                    }),
+                    "{name} {raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_slot_reads_every_long_form_operand() {
+        for (name, op) in [
+            ("ldloc", SlotOp::LoadLocal),
+            ("stloc", SlotOp::StoreLocal),
+            ("ldloca", SlotOp::LocalAddress),
+            ("ldarg", SlotOp::LoadArgument),
+            ("starg", SlotOp::StoreArgument),
+            ("ldarga", SlotOp::ArgumentAddress),
+        ] {
+            for index in [0_u16, 255, 256, 65_534, 65_535] {
+                assert_eq!(
+                    decode_slot(&slot_ins(name, OperandValue::U16(index))),
+                    Ok(SlotAccess { op, index }),
+                    "{name} {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_slot_rejects_every_operand_kind_that_cannot_carry_a_slot() {
+        for operand in [
+            OperandValue::None,
+            OperandValue::I32(-1),
+            OperandValue::I32(0),
+            OperandValue::I32(70_000),
+            OperandValue::I64(3),
+            OperandValue::F32Bits(0),
+            OperandValue::F64Bits(0),
+            OperandValue::BrTarget(-4),
+            OperandValue::Token(0x0A00_0001),
+            OperandValue::Switch(vec![1, 2]),
+        ] {
+            for name in [
+                "ldloc", "stloc", "ldloca", "ldarg", "starg", "ldarga", "ldloc.s", "stloc.s",
+                "ldloca.s", "ldarg.s", "starg.s", "ldarga.s",
+            ] {
+                assert_eq!(
+                    decode_slot(&slot_ins(name, operand.clone())),
+                    Err(SlotDecodeError::UndecodableOperand),
+                    "{name} {operand:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_slot_rejects_a_suffix_no_encoding_produces() {
+        for name in [
+            "ldloc.4", "stloc.9", "ldarg.4", "starg.0", "ldloca.0", "ldarga.2", "ldloc.q",
+        ] {
+            assert_eq!(
+                decode_slot(&slot_ins(name, OperandValue::None)),
+                Err(SlotDecodeError::NotSlotAccess),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_slot_rejects_a_mnemonic_that_only_looks_like_a_slot_access() {
+        for name in [
+            "ldc.i4.2", "ldlen", "ldstr", "ldloc_", "stloca", "ldargx", "nop", "",
+        ] {
+            assert_eq!(
+                decode_slot(&slot_ins(name, OperandValue::U8(1))),
+                Err(SlotDecodeError::NotSlotAccess),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn slot_index_of_filters_by_access_kind() {
+        let load: Instruction = slot_ins("ldloc.s", OperandValue::U8(4));
+        assert_eq!(slot_index_of(&load, SlotOp::LoadLocal), Some(4));
+        assert_eq!(slot_index_of(&load, SlotOp::StoreLocal), None);
+        assert_eq!(slot_index_of(&load, SlotOp::LoadArgument), None);
+        assert!(SlotOp::LocalAddress.is_local());
+        assert!(SlotOp::ArgumentAddress.is_argument());
+    }
+
+    #[test]
+    fn every_disassembled_slot_opcode_decodes() {
+        let code: [u8; 48] = [
+            0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x01,
+            0x0F, 0x02, 0x10, 0x03, 0x11, 0x04, 0x12, 0x05, 0x13, 0x06, 0xFE, 0x09, 0x07, 0x00,
+            0xFE, 0x0A, 0x08, 0x00, 0xFE, 0x0B, 0x09, 0x00, 0xFE, 0x0C, 0x0A, 0x00, 0xFE, 0x0D,
+            0x0B, 0x00, 0xFE, 0x0E, 0x0C, 0x00,
+        ];
+        let instrs: Vec<Instruction> = disassemble(&code).expect("disasm");
+        assert_eq!(instrs.len(), 24);
+        for instruction in &instrs {
+            let decoded: std::result::Result<SlotAccess, SlotDecodeError> =
+                decode_slot(instruction);
+            assert!(
+                decoded.is_ok(),
+                "{} did not decode: {decoded:?}",
+                instruction.name
+            );
+        }
     }
 
     #[test]

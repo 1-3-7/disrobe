@@ -1,9 +1,10 @@
-use crate::cil::{Instruction, MethodBody, OperandValue};
+use crate::cil::{Instruction, MethodBody, OperandValue, SlotDecodeError, decode_slot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmulationError {
     UnsupportedOpcode(String),
     StackUnderflow,
+    UndecodableSlot(String),
     BadLocal(u32),
     BadArgument(u32),
     StepLimitExceeded,
@@ -311,22 +312,22 @@ impl<'a> Vm<'a> {
                     self.stack.push(v);
                 }
                 n if n.starts_with("ldloc") => {
-                    let idx: u32 = slot_index(ins, n);
+                    let idx: u32 = decoded_slot(ins)?;
                     let v: Value = *self.local(idx)?;
                     self.stack.push(v);
                 }
                 n if n.starts_with("stloc") => {
-                    let idx: u32 = slot_index(ins, n);
+                    let idx: u32 = decoded_slot(ins)?;
                     let v: Value = self.pop()?;
                     *self.local(idx)? = v;
                 }
                 n if n.starts_with("ldarg") => {
-                    let idx: u32 = slot_index(ins, n);
+                    let idx: u32 = decoded_slot(ins)?;
                     let v: Value = self.arg(idx)?;
                     self.stack.push(v);
                 }
                 n if n.starts_with("starg") => {
-                    let idx: usize = slot_index(ins, n) as usize;
+                    let idx: usize = decoded_slot(ins)? as usize;
                     let v: Value = self.pop()?;
                     if idx < self.args.len() {
                         self.args[idx] = v;
@@ -692,17 +693,12 @@ fn int_const(ins: &Instruction, name: &str) -> i32 {
     0
 }
 
-pub(crate) fn slot_index(ins: &Instruction, name: &str) -> u32 {
-    if let Some(rest) = name.rsplit('.').next()
-        && let Ok(n) = rest.parse::<u32>()
-    {
-        return n;
-    }
-    match ins.operand {
-        OperandValue::U8(b) => u32::from(b),
-        OperandValue::U16(v) => u32::from(v),
-        OperandValue::I32(v) => v.cast_unsigned(),
-        _ => 0,
+fn decoded_slot(ins: &Instruction) -> Result<u32, EmulationError> {
+    match decode_slot(ins) {
+        Ok(access) => Ok(u32::from(access.index)),
+        Err(SlotDecodeError::NotSlotAccess | SlotDecodeError::UndecodableOperand) => {
+            Err(EmulationError::UndecodableSlot(ins.name.clone()))
+        }
     }
 }
 
@@ -932,43 +928,80 @@ mod tests {
         }
     }
 
+    fn slot_ins(name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: crate::cil::FlowControl::Next,
+        }
+    }
+
     #[test]
-    fn slot_index_decodes_suffix_then_operand_and_maps_negative_to_out_of_range() {
-        let suffixed: Instruction = Instruction {
-            offset: 0,
-            opcode: 0,
-            name: "ldloc.2".to_owned(),
-            operand: OperandValue::None,
-            flow: crate::cil::FlowControl::Next,
-        };
-        assert_eq!(slot_index(&suffixed, &suffixed.name), 2);
+    fn decoded_slot_reads_every_encodable_form() {
+        assert_eq!(
+            decoded_slot(&slot_ins("ldloc.2", OperandValue::None)),
+            Ok(2)
+        );
+        assert_eq!(
+            decoded_slot(&slot_ins("ldloc.s", OperandValue::U8(7))),
+            Ok(7)
+        );
+        assert_eq!(
+            decoded_slot(&slot_ins("ldloc", OperandValue::U16(300))),
+            Ok(300)
+        );
+    }
 
-        let short_form: Instruction = Instruction {
-            offset: 0,
-            opcode: 0,
-            name: "ldloc.s".to_owned(),
-            operand: OperandValue::U8(7),
-            flow: crate::cil::FlowControl::Next,
-        };
-        assert_eq!(slot_index(&short_form, &short_form.name), 7);
+    #[test]
+    fn decoded_slot_rejects_a_negative_operand_instead_of_reading_slot_zero() {
+        let malformed: Instruction = slot_ins("ldloc", OperandValue::I32(-1));
+        assert_eq!(
+            decoded_slot(&malformed),
+            Err(EmulationError::UndecodableSlot("ldloc".to_owned()))
+        );
+    }
 
-        let wide_form: Instruction = Instruction {
-            offset: 0,
-            opcode: 0,
-            name: "ldloc".to_owned(),
-            operand: OperandValue::U16(300),
-            flow: crate::cil::FlowControl::Next,
-        };
-        assert_eq!(slot_index(&wide_form, &wide_form.name), 300);
+    #[test]
+    fn decoded_slot_rejects_every_operand_kind_that_cannot_carry_a_slot() {
+        for operand in [
+            OperandValue::None,
+            OperandValue::I32(4),
+            OperandValue::I64(4),
+            OperandValue::Token(0x0400_0001),
+            OperandValue::BrTarget(4),
+            OperandValue::F32Bits(0),
+            OperandValue::F64Bits(0),
+            OperandValue::Switch(vec![0]),
+        ] {
+            let ins: Instruction = slot_ins("stloc", operand);
+            assert_eq!(
+                decoded_slot(&ins),
+                Err(EmulationError::UndecodableSlot("stloc".to_owned()))
+            );
+        }
+    }
 
-        let malformed: Instruction = Instruction {
-            offset: 0,
-            opcode: 0,
-            name: "ldloc".to_owned(),
-            operand: OperandValue::I32(-1),
-            flow: crate::cil::FlowControl::Next,
+    #[test]
+    fn undecodable_slot_stops_emulation_rather_than_writing_slot_zero() {
+        let body: MethodBody = MethodBody {
+            max_stack: 8,
+            code_size: 0,
+            local_var_sig_tok: 0,
+            init_locals: true,
+            instructions: vec![
+                slot_ins("ldc.i4.5", OperandValue::None),
+                slot_ins("stloc", OperandValue::I32(-1)),
+                slot_ins("ldloc.0", OperandValue::None),
+                slot_ins("ret", OperandValue::None),
+            ],
+            exception_clauses: Vec::new(),
         };
-        assert_eq!(slot_index(&malformed, &malformed.name), u32::MAX);
+        assert_eq!(
+            emulate_stub(&body, &StubInput::default()),
+            Err(EmulationError::UndecodableSlot("stloc".to_owned()))
+        );
     }
 
     #[test]

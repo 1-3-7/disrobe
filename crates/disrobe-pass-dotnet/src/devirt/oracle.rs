@@ -374,9 +374,9 @@ fn requires_i8_arithmetic(body: &MethodBody) -> bool {
 
 fn skip_cause(error: EmulationError) -> SkipCause {
     match error {
-        EmulationError::UnsupportedOpcode(_) | EmulationError::ExternalCall => {
-            SkipCause::UnsupportedOp
-        }
+        EmulationError::UnsupportedOpcode(_)
+        | EmulationError::ExternalCall
+        | EmulationError::UndecodableSlot(_) => SkipCause::UnsupportedOp,
         EmulationError::StackUnderflow
         | EmulationError::BadLocal(_)
         | EmulationError::BadArgument(_)

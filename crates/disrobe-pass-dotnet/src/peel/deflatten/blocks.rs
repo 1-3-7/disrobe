@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 
 pub type BlockId = usize;
 
@@ -129,18 +129,7 @@ fn match_header(instrs: &[Instruction], switch_idx: usize) -> Option<(u32, u32)>
 }
 
 fn store_local(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "stloc.0" => Some(0),
-        "stloc.1" => Some(1),
-        "stloc.2" => Some(2),
-        "stloc.3" => Some(3),
-        "stloc.s" | "stloc" => match ins.operand {
-            OperandValue::U8(b) => Some(u32::from(b)),
-            OperandValue::U16(v) => Some(u32::from(v)),
-            _ => None,
-        },
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::StoreLocal).map(u32::from)
 }
 
 #[must_use]
