@@ -5289,12 +5289,14 @@ mod tests {
         }
     }
 
-    fn drive_hostile_names<F: Fn(&str, &[u8]) -> Vec<u8>>(
+    fn drive_hostile_names<F: Fn(&str, &[u8]) -> Option<Vec<u8>>>(
         kind: ContainerKind,
         slip_tag: &str,
         label: &str,
+        minimum_exercised: usize,
         build: F,
     ) {
+        let mut exercised: usize = 0;
         for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
             if name.is_empty() {
                 continue;
@@ -5302,7 +5304,10 @@ mod tests {
             let scratch: disrobe_core::scratch::ScratchDir = temp_dir(label);
             let out: PathBuf = scratch.path().to_path_buf();
             std::fs::create_dir_all(&out).expect("out dir");
-            let bytes: Vec<u8> = build(name, b"payload");
+            let Some(bytes): Option<Vec<u8>> = build(name, b"payload") else {
+                continue;
+            };
+            exercised += 1;
             let result: ExtractionResult = match extract_to(kind, &bytes, &out) {
                 Ok(result) => result,
                 Err(e) => {
@@ -5350,6 +5355,10 @@ mod tests {
                 }
             }
         }
+        assert!(
+            exercised >= minimum_exercised,
+            "{label} exercised only {exercised} hostile names, expected at least {minimum_exercised}"
+        );
     }
 
     #[test]
@@ -5358,7 +5367,8 @@ mod tests {
             ContainerKind::Zip,
             "zip-slip",
             "zip-hostile",
-            |name: &str, body: &[u8]| synth_zip_raw_name(name, body),
+            HOSTILE_NAMES_MINUS_EMPTY,
+            |name: &str, body: &[u8]| Some(synth_zip_raw_name(name, body)),
         );
     }
 
@@ -5368,8 +5378,113 @@ mod tests {
             ContainerKind::Tar,
             "tar-slip",
             "tar-hostile",
-            |name: &str, body: &[u8]| synth_tar_with_raw_name(name.as_bytes(), body),
+            HOSTILE_NAMES_MINUS_EMPTY,
+            |name: &str, body: &[u8]| Some(synth_tar_with_raw_name(name.as_bytes(), body)),
         );
+    }
+
+    const HOSTILE_NAMES_MINUS_EMPTY: usize = crate::quota::HOSTILE_ENTRY_NAMES.len() - 1;
+
+    #[test]
+    fn every_hostile_name_is_refused_or_contained_by_the_cpio_write_path() {
+        drive_hostile_names(
+            ContainerKind::Cpio,
+            "cpio-slip",
+            "cpio-hostile",
+            HOSTILE_NAMES_MINUS_EMPTY,
+            |name: &str, body: &[u8]| Some(newc_entry(name.as_bytes(), 0o100_644, body)),
+        );
+    }
+
+    #[test]
+    fn every_hostile_name_is_refused_or_contained_by_the_asar_write_path() {
+        drive_hostile_names(
+            ContainerKind::Asar,
+            "asar-slip",
+            "asar-hostile",
+            HOSTILE_NAMES_MINUS_EMPTY,
+            |name: &str, body: &[u8]| Some(synth_asar_raw_name(name, body)),
+        );
+    }
+
+    #[test]
+    fn every_hostile_name_is_refused_or_contained_by_the_sevenz_write_path() {
+        drive_hostile_names(
+            ContainerKind::SevenZ,
+            "sevenz-slip",
+            "7z-hostile",
+            HOSTILE_NAMES_MINUS_EMPTY - 1,
+            synth_sevenz_raw_name,
+        );
+    }
+
+    fn synth_sevenz_raw_name(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        let name_terminates_early_inside_the_sevenz_reader: bool = name.contains('\u{0}');
+        if name_terminates_early_inside_the_sevenz_reader {
+            return None;
+        }
+        Some(synth_sevenz(&[(name, body)]))
+    }
+
+    #[test]
+    fn every_representable_hostile_name_is_refused_or_contained_by_the_ar_write_path() {
+        drive_hostile_names(
+            ContainerKind::Ar,
+            "ar-slip",
+            "ar-hostile",
+            20,
+            |name: &str, body: &[u8]| synth_ar_raw_name(name, body),
+        );
+    }
+
+    fn synth_ar_raw_name(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 16 || name.contains(' ') || name.ends_with('/') {
+            return None;
+        }
+        let mut out: Vec<u8> = Vec::with_capacity(8 + 60 + body.len() + 1);
+        out.extend_from_slice(b"!<arch>\n");
+        let mut header: [u8; 60] = [b' '; 60];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        let size_text: String = body.len().to_string();
+        header[48..48 + size_text.len()].copy_from_slice(size_text.as_bytes());
+        header[58] = 0x60;
+        header[59] = b'\n';
+        out.extend_from_slice(&header);
+        out.extend_from_slice(body);
+        if !body.len().is_multiple_of(2) {
+            out.push(b'\n');
+        }
+        Some(out)
+    }
+
+    fn synth_asar_raw_name(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut file: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        file.insert("size".to_owned(), serde_json::json!(body.len()));
+        file.insert("offset".to_owned(), serde_json::json!("0"));
+        let mut files: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        files.insert(name.to_owned(), serde_json::Value::Object(file));
+        let mut root: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        root.insert("files".to_owned(), serde_json::Value::Object(files));
+        let header: String =
+            serde_json::to_string(&serde_json::Value::Object(root)).expect("asar header json");
+        asar_container(&header, body)
+    }
+
+    fn asar_container(header: &str, body: &[u8]) -> Vec<u8> {
+        let header_bytes: &[u8] = header.as_bytes();
+        let header_size: u32 = u32::try_from(header_bytes.len()).expect("hdr size");
+        let aligned: u32 = header_size.next_multiple_of(4);
+        let string_pickle_size: u32 = aligned + 4;
+        let header_pickle_size: u32 = string_pickle_size + 4;
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&header_pickle_size.to_le_bytes());
+        out.extend_from_slice(&string_pickle_size.to_le_bytes());
+        out.extend_from_slice(&header_size.to_le_bytes());
+        out.extend_from_slice(header_bytes);
+        out.extend(std::iter::repeat_n(0u8, (aligned - header_size) as usize));
+        out.extend_from_slice(body);
+        out
     }
 
     fn synth_zip_raw_name(name: &str, body: &[u8]) -> Vec<u8> {
@@ -5498,6 +5613,73 @@ mod tests {
         out.extend_from_slice(&header);
         out.extend(std::iter::repeat_n(0u8, 1024));
         out
+    }
+
+    #[test]
+    fn cpio_link_entries_are_never_materialised_and_a_write_through_one_stays_inside() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("cpio-symlink-escape");
+        let out: PathBuf = scratch.path().to_path_buf();
+        let mut bytes: Vec<u8> = newc_entry(b"link", 0o120_777, b"../..");
+        bytes.extend_from_slice(&newc_entry(b"link/escape.txt", 0o100_644, b"payload"));
+        let result: ExtractionResult =
+            extract_to(ContainerKind::Cpio, &bytes, &out).expect("extract cpio");
+        assert!(
+            result
+                .entries
+                .iter()
+                .all(|e: &ExtractedEntry| e.name != "link"),
+            "a cpio symlink entry must never be materialised: {:?}",
+            result.entries
+        );
+        assert_result_stays_inside(&result, &out);
+        assert_no_escape_around(&out);
+        assert_eq!(
+            std::fs::read(out.join("link").join("escape.txt")).expect("contained write"),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn zip_names_colliding_only_by_case_stay_under_the_root() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-case-collision");
+        let out: PathBuf = scratch.path().to_path_buf();
+        let bytes: Vec<u8> = synth_zip(&[("Data.TXT", b"upper"), ("data.txt", b"lower")]);
+        let result: ExtractionResult =
+            extract_to(ContainerKind::Zip, &bytes, &out).expect("extract zip");
+        assert_eq!(result.entries.len(), 2);
+        assert_result_stays_inside(&result, &out);
+        assert_no_escape_around(&out);
+        let bodies: Vec<Vec<u8>> = result
+            .entries
+            .iter()
+            .filter_map(|e: &ExtractedEntry| e.disk_path.as_ref())
+            .map(|p: &PathBuf| std::fs::read(p).expect("written body"))
+            .collect();
+        assert!(
+            bodies
+                .iter()
+                .all(|b: &Vec<u8>| b == b"upper" || b == b"lower"),
+            "a case collision must resolve to one of the two written bodies"
+        );
+    }
+
+    #[test]
+    fn a_zip_entry_colliding_with_an_earlier_directory_never_escapes_the_root() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-dir-collision");
+        let out: PathBuf = scratch.path().to_path_buf();
+        let bytes: Vec<u8> = synth_zip(&[("dir/inner.txt", b"inner"), ("dir", b"clobber")]);
+        match extract_to(ContainerKind::Zip, &bytes, &out) {
+            Ok(result) => assert_result_stays_inside(&result, &out),
+            Err(e) => assert!(
+                matches!(e, Error::Io(_)),
+                "a name colliding with a directory must fail as io, got {e:?}"
+            ),
+        }
+        assert_no_escape_around(&out);
+        assert_eq!(
+            std::fs::read(out.join("dir").join("inner.txt")).expect("first write survives"),
+            b"inner"
+        );
     }
 
     #[test]
