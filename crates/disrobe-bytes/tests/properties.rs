@@ -1,9 +1,51 @@
 #![allow(clippy::unwrap_used)]
 use disrobe_bytes::{
-    AddressError, ByteReadError, ByteReader, FileOffset, Rva, SectionMap, SectionSpan, Size, Va,
-    align_down_u32, align_down_u64, align_up_u32, align_up_u64, align_up_usize,
+    AddressError, ByteReadError, ByteReader, CStrOptions, CStrRun, CStrSpan, FileOffset, Rva,
+    SectionMap, SectionSpan, Size, Va, align_down_u32, align_down_u64, align_up_u32, align_up_u64,
+    align_up_usize, cstr_runs, read_cstr_at, read_cstr_span_at,
 };
 use proptest::prelude::*;
+
+fn reference_ascii_split(bytes: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start: usize = 0;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == 0 {
+            if i > start {
+                let chunk: &[u8] = &bytes[start..i];
+                if chunk
+                    .iter()
+                    .all(|c: &u8| c.is_ascii_graphic() || *c == b' ')
+                {
+                    out.push(String::from_utf8_lossy(chunk).into_owned());
+                }
+            }
+            start = i + 1;
+        }
+    }
+    out
+}
+
+fn reference_utf8_split(bytes: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start: usize = 0;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == 0 {
+            if i > start {
+                let chunk: &[u8] = &bytes[start..i];
+                if let Ok(s) = std::str::from_utf8(chunk) {
+                    out.push(s.to_owned());
+                }
+            }
+            start = i + 1;
+        }
+    }
+    out
+}
+
+fn nul_heavy_bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
+    proptest::collection::vec(prop_oneof![Just(0u8), any::<u8>(), 0x20u8..0x7Fu8], 0..max)
+}
 
 fn encode_uleb128_for_test(value: u64) -> Vec<u8> {
     let mut remaining: u64 = value;
@@ -403,6 +445,103 @@ proptest! {
                 .is_some_and(|delta: Size| delta.get() < u64::from(raw_size));
             let overflows: bool = file_offset.checked_add(u64::from(probe)).is_none();
             prop_assert!(!contained || !has_bytes || overflows);
+        }
+    }
+
+    #[test]
+    fn read_cstr_at_never_panics_and_never_escapes_its_window(
+        bytes in nul_heavy_bytes(96),
+        offset in 0usize..128,
+        max_len in 0usize..160,
+        require_terminator in any::<bool>(),
+    ) {
+        let options: CStrOptions = CStrOptions::new(max_len, require_terminator);
+        let Ok(value): Result<&[u8], ByteReadError> = read_cstr_at(&bytes, offset, options) else {
+            prop_assert!(
+                offset > bytes.len()
+                    || require_terminator
+            );
+            return Ok(());
+        };
+        prop_assert!(value.len() <= max_len);
+        prop_assert!(offset + value.len() <= bytes.len());
+        prop_assert!(!value.contains(&0u8));
+        prop_assert_eq!(value, &bytes[offset..offset + value.len()]);
+
+        let span: CStrSpan = read_cstr_span_at(&bytes, offset, options).unwrap();
+        prop_assert_eq!(span.offset, offset);
+        prop_assert_eq!(span.len, value.len());
+        prop_assert!(span.end() <= bytes.len());
+        if span.terminated {
+            prop_assert_eq!(bytes[offset + span.len], 0u8);
+        }
+    }
+
+    #[test]
+    fn read_cstr_at_never_panics_at_extreme_offsets(
+        bytes in nul_heavy_bytes(32),
+        max_len in prop_oneof![Just(0usize), Just(1usize), Just(usize::MAX), Just(usize::MAX - 1)],
+        require_terminator in any::<bool>(),
+    ) {
+        let options: CStrOptions = CStrOptions::new(max_len, require_terminator);
+        for offset in [0usize, bytes.len(), bytes.len() + 1, usize::MAX / 2, usize::MAX] {
+            let result: Result<&[u8], ByteReadError> = read_cstr_at(&bytes, offset, options);
+            if offset > bytes.len() {
+                prop_assert!(result.is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn the_run_iterator_reproduces_both_reference_splitters(bytes in nul_heavy_bytes(128)) {
+        let ascii: Vec<String> = cstr_runs(&bytes, CStrOptions::UNBOUNDED)
+            .filter(|run: &CStrRun<'_>| run.terminated && !run.bytes.is_empty())
+            .filter(|run: &CStrRun<'_>| {
+                run.bytes
+                    .iter()
+                    .all(|c: &u8| c.is_ascii_graphic() || *c == b' ')
+            })
+            .map(|run: CStrRun<'_>| String::from_utf8_lossy(run.bytes).into_owned())
+            .collect();
+        prop_assert_eq!(ascii, reference_ascii_split(&bytes));
+
+        let utf8: Vec<String> = cstr_runs(&bytes, CStrOptions::UNBOUNDED)
+            .filter(|run: &CStrRun<'_>| run.terminated && !run.bytes.is_empty())
+            .filter_map(|run: CStrRun<'_>| std::str::from_utf8(run.bytes).ok().map(str::to_owned))
+            .collect();
+        prop_assert_eq!(utf8, reference_utf8_split(&bytes));
+    }
+
+    #[test]
+    fn the_run_iterator_covers_the_input_without_overlapping(bytes in nul_heavy_bytes(96)) {
+        let mut expected_offset: usize = 0;
+        for run in cstr_runs(&bytes, CStrOptions::LENIENT) {
+            prop_assert_eq!(run.offset, expected_offset);
+            prop_assert!(!run.bytes.contains(&0u8));
+            expected_offset = run.offset + run.bytes.len() + usize::from(run.terminated);
+            prop_assert!(expected_offset <= bytes.len());
+        }
+        prop_assert_eq!(expected_offset, bytes.len());
+    }
+
+    #[test]
+    fn the_reader_companion_matches_the_slice_form(
+        bytes in nul_heavy_bytes(64),
+        offset in 0usize..64,
+    ) {
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        if reader.seek(offset.min(bytes.len())).is_err() {
+            return Ok(());
+        }
+        let start: usize = reader.position();
+        let direct: Result<&[u8], ByteReadError> =
+            read_cstr_at(&bytes, start, CStrOptions::LENIENT);
+        let through_reader: Result<&[u8], ByteReadError> = reader.read_cstr(CStrOptions::LENIENT);
+        prop_assert_eq!(direct.is_ok(), through_reader.is_ok());
+        if let (Ok(left), Ok(right)) = (direct, through_reader) {
+            prop_assert_eq!(left, right);
+            let span: CStrSpan = read_cstr_span_at(&bytes, start, CStrOptions::LENIENT).unwrap();
+            prop_assert_eq!(reader.position(), span.end());
         }
     }
 
