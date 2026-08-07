@@ -9,7 +9,8 @@
 | Commercial encoders | ionCube, SourceGuardian, Zend Guard: envelope detect and wall (the decrypt key is native-loader-resident); a partial `op_array` skeleton only for legacy statically-keyed cases (Zend legacy XOR), graded `StructuralOnly` otherwise |
 | Phar archives | Manifest walker with path-sanitized extraction |
 | Eval-chain layers | `base64_decode`, `gzinflate`, `gzuncompress`, `gzdecode`, `bzdecompress`, `str_rot13`, `strrev`, `str_replace`, `urldecode` / `rawurldecode`, hex and octal escapes, `pack`-hex, `chr()` concatenation, uudecode, single-key XOR, `create_function`, nested `eval`, FOPO, Better PHP Obfuscator |
-| Decode loops | `for`, `while`, `do`-`while` and `foreach` over `str_split`, with modulo, plain, reversed, stride, rotating and nested indices, and XOR, add and subtract with wraparound, rotate, negate, table substitution and index-parity byte operations. The key must be present in the file. A bounded interpreter runs the loop body under explicit step, wall-clock, output-size, expression-depth and loop-count budgets, and refuses every call outside a pure-function allowlist |
+| Decode loops | `for`, `while`, `do`-`while` and `foreach` over `str_split`, with modulo, plain, reversed, stride, rotating and nested indices, and XOR, add and subtract with wraparound, rotate, negate, table substitution and index-parity byte operations. The key must be present in the file. A bounded interpreter runs the loop body under explicit step, wall-clock, output-size, heap, expression-depth, frame-depth and loop-count budgets, and refuses every call outside a pure-function allowlist |
+| Decode helpers | A helper function declared at the top level of the file, called directly or through a variable holding its name, including recursion, mutual recursion, default arguments and array arguments. The helper runs in its own scope, as php runs it, so it reads only what it is passed |
 | Recovery grading | `EvalChainPeeled` / `OpArrayDecompiled` / `StructuralOnly` / `PlainSource` |
 
 ## Commands
@@ -63,5 +64,6 @@ The commercial PHP encoder market has no maintained FOSS competition offline. Ev
 - ionCube, SourceGuardian, and Zend Guard keys live in the native loader, not the file. Those envelopes are detected and walled. A partial `op_array` skeleton is recovered only for legacy statically-keyed cases (Zend legacy XOR).
 - When an encoder's key lives only in its runtime loader, the decode is graded `StructuralOnly` and the manifest carries the residual ciphertext length rather than pretending at plaintext.
 - A decode loop whose key arrives at run time, from `$_GET`, `$_POST`, a header or the network, is not statically recoverable. The loop is left in place and no plaintext is produced.
-- A decode loop written as a recursive helper function is not evaluated. The interpreter runs loop bodies, not user-defined functions.
+- A helper declared inside a conditional or inside another function is not evaluated. Only a declaration at the top level of the file is, which matches where php makes a function callable before its own text.
+- A helper taking a parameter by reference, or a variadic parameter, is not evaluated, because the interpreter models values rather than references.
 - The interpreter reads a variable only when the file defines it. An undefined read, a call outside the pure-function allowlist, or any exceeded budget abstains and leaves the loop in place.

@@ -14,6 +14,7 @@ pub struct Budget {
     pub output_bytes: usize,
     pub heap_bytes: usize,
     pub expr_depth: u32,
+    pub frame_depth: u32,
     pub rounds: u32,
     pub wall: Duration,
 }
@@ -22,6 +23,7 @@ pub const DEFAULT_MAX_STEPS: u64 = 4_000_000;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_HEAP_BYTES: usize = 64 * 1024 * 1024;
 pub const DEFAULT_MAX_EXPR_DEPTH: u32 = 64;
+pub const DEFAULT_MAX_FRAME_DEPTH: u32 = 64;
 pub const DEFAULT_MAX_ROUNDS: u32 = 64;
 pub const DEFAULT_MAX_WALL: Duration = Duration::from_secs(2);
 
@@ -32,6 +34,7 @@ impl Default for Budget {
             output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             heap_bytes: DEFAULT_MAX_HEAP_BYTES,
             expr_depth: DEFAULT_MAX_EXPR_DEPTH,
+            frame_depth: DEFAULT_MAX_FRAME_DEPTH,
             rounds: DEFAULT_MAX_ROUNDS,
             wall: DEFAULT_MAX_WALL,
         }
@@ -45,6 +48,7 @@ pub enum Abstain {
     OutputBudget,
     HeapBudget,
     DepthBudget,
+    FrameBudget,
     RoundBudget,
     UndefinedRead,
     RefusedCall,
@@ -138,6 +142,10 @@ enum LExpr {
         name: Vec<u8>,
         args: Vec<Self>,
     },
+    DynCall {
+        callee: Box<Self>,
+        args: Vec<Self>,
+    },
     ArrayLit(Vec<Self>),
 }
 
@@ -188,13 +196,21 @@ enum LStmt {
     Continue(u32),
     Expr(LExpr),
     Nop,
+    Return(Option<LExpr>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FnDef {
+    params: Vec<(Vec<u8>, Option<LExpr>)>,
+    body: Vec<LStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Flow {
     Normal,
     Break(u32),
     Continue(u32),
+    Return(Val),
 }
 
 const MAX_PARSE_DEPTH: u32 = 128;
@@ -356,6 +372,16 @@ impl<'a> LoopParser<'a> {
         }
         if self.eat_keyword(b"do") {
             return self.parse_do_while();
+        }
+        if self.eat_keyword(b"return") {
+            self.skip_trivia();
+            if self.peek() == Some(b';') {
+                self.pos += 1;
+                return Some(LStmt::Return(None));
+            }
+            let value: LExpr = self.parse_expr()?;
+            self.expect_semicolon();
+            return Some(LStmt::Return(Some(value)));
         }
         if self.eat_keyword(b"break") {
             let levels: u32 = self.parse_optional_level();
@@ -545,6 +571,88 @@ impl<'a> LoopParser<'a> {
             value,
             body: Box::new(body),
         })
+    }
+
+    fn parse_function_decl(&mut self) -> Option<(Vec<u8>, FnDef)> {
+        self.skip_trivia();
+        if !self.eat_keyword(b"function") {
+            return None;
+        }
+        self.skip_trivia();
+        if self.peek() == Some(b'&') {
+            return None;
+        }
+        let name: Vec<u8> = self.parse_ident()?;
+        if !self.eat(b"(") {
+            return None;
+        }
+        let params: Vec<(Vec<u8>, Option<LExpr>)> = self.parse_param_list()?;
+        self.skip_trivia();
+        if self.peek() == Some(b':') {
+            self.pos += 1;
+            self.skip_trivia();
+            while self.peek().is_some_and(|b: u8| b != b'{') {
+                self.pos += 1;
+            }
+        }
+        if !self.eat(b"{") {
+            return None;
+        }
+        let body: Vec<LStmt> = self.parse_block_body()?;
+        Some((name.to_ascii_lowercase(), FnDef { params, body }))
+    }
+
+    fn parse_param_list(&mut self) -> Option<Vec<(Vec<u8>, Option<LExpr>)>> {
+        let mut out: Vec<(Vec<u8>, Option<LExpr>)> = Vec::new();
+        self.skip_trivia();
+        if self.peek() == Some(b')') {
+            self.pos += 1;
+            return Some(out);
+        }
+        loop {
+            self.skip_trivia();
+            if matches!(self.peek(), Some(b'&')) || self.buf[self.pos..].starts_with(b"...") {
+                return None;
+            }
+            if self.peek() != Some(b'$') {
+                self.skip_param_type()?;
+            }
+            let name: Vec<u8> = self.parse_plain_var_name()?;
+            self.skip_trivia();
+            let default: Option<LExpr> = if self.peek() == Some(b'=') {
+                self.pos += 1;
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            out.push((name, default));
+            self.skip_trivia();
+            match self.peek() {
+                Some(b',') => self.pos += 1,
+                Some(b')') => {
+                    self.pos += 1;
+                    return Some(out);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn skip_param_type(&mut self) -> Option<()> {
+        self.skip_trivia();
+        if self.peek() == Some(b'?') {
+            self.pos += 1;
+        }
+        loop {
+            self.skip_trivia();
+            self.parse_ident()?;
+            self.skip_trivia();
+            if matches!(self.peek(), Some(b'|' | b'&')) && self.peek_at(1) != Some(b'$') {
+                self.pos += 1;
+                continue;
+            }
+            return Some(());
+        }
     }
 
     fn parse_plain_var_name(&mut self) -> Option<Vec<u8>> {
@@ -778,18 +886,28 @@ impl<'a> LoopParser<'a> {
         let mut base: LExpr = self.parse_primary()?;
         loop {
             self.skip_trivia();
-            if self.peek() != Some(b'[') {
-                return Some(base);
+            match self.peek() {
+                Some(b'[') => {
+                    self.pos += 1;
+                    let idx: LExpr = self.parse_expr()?;
+                    if !self.eat(b"]") {
+                        return None;
+                    }
+                    base = LExpr::Index {
+                        base: Box::new(base),
+                        idx: Box::new(idx),
+                    };
+                }
+                Some(b'(') if matches!(base, LExpr::Var(_) | LExpr::Index { .. }) => {
+                    self.pos += 1;
+                    let args: Vec<LExpr> = self.parse_arg_list(b')')?;
+                    base = LExpr::DynCall {
+                        callee: Box::new(base),
+                        args,
+                    };
+                }
+                _ => return Some(base),
             }
-            self.pos += 1;
-            let idx: LExpr = self.parse_expr()?;
-            if !self.eat(b"]") {
-                return None;
-            }
-            base = LExpr::Index {
-                base: Box::new(base),
-                idx: Box::new(idx),
-            };
         }
     }
 
@@ -1011,6 +1129,9 @@ pub(crate) struct Interp {
     steps: u64,
     rounds: u32,
     live_bytes: usize,
+    frames_deep: u32,
+    functions: BTreeMap<Vec<u8>, FnDef>,
+    refused_names: std::collections::BTreeSet<Vec<u8>>,
     started: Instant,
 }
 
@@ -1022,6 +1143,9 @@ impl Interp {
             steps: 0,
             rounds: 0,
             live_bytes: 0,
+            frames_deep: 0,
+            functions: BTreeMap::new(),
+            refused_names: std::collections::BTreeSet::new(),
             started: Instant::now(),
         }
     }
@@ -1063,6 +1187,76 @@ impl Interp {
             })
             .collect();
         self.bind_unchecked(name.to_vec(), Val::Arr(map));
+    }
+
+    pub(crate) fn declare_function(&mut self, raw: &[u8]) {
+        let mut parser: LoopParser<'_> = LoopParser::new(raw);
+        let Some((name, def)): Option<(Vec<u8>, FnDef)> = parser.parse_function_decl() else {
+            return;
+        };
+        if PURE_BUILTINS.contains(&name.as_slice()) || self.functions.contains_key(&name) {
+            self.functions.remove(&name);
+            self.refused_names.insert(name);
+            return;
+        }
+        self.functions.insert(name, def);
+    }
+
+    fn call_function(&mut self, name: &[u8], args: &[Val]) -> Eval<Val> {
+        let def: FnDef = self
+            .functions
+            .get(name)
+            .cloned()
+            .ok_or(Abstain::RefusedCall)?;
+        let mut frame: BTreeMap<Vec<u8>, Val> = BTreeMap::new();
+        for (index, (param, default)) in def.params.iter().enumerate() {
+            let value: Val = if let Some(supplied) = args.get(index) {
+                supplied.clone()
+            } else {
+                let Some(expr): Option<&LExpr> = default.as_ref() else {
+                    return Err(Abstain::Unsupported);
+                };
+                self.eval(expr, 0)?
+            };
+            frame.insert(param.clone(), value);
+        }
+        if self.frames_deep >= self.budget.frame_depth {
+            return Err(Abstain::FrameBudget);
+        }
+        self.frames_deep += 1;
+        let entering: usize = scope_size(&frame);
+        let caller: BTreeMap<Vec<u8>, Val> = std::mem::replace(&mut self.scope, frame);
+        self.live_bytes = self.live_bytes.saturating_add(entering);
+        let outcome: Eval<Flow> = self.exec_all(&def.body);
+        let leaving: usize = scope_size(&self.scope);
+        self.scope = caller;
+        self.live_bytes = self.live_bytes.saturating_sub(leaving);
+        self.frames_deep -= 1;
+        match outcome? {
+            Flow::Return(value) => Ok(value),
+            Flow::Normal | Flow::Break(_) | Flow::Continue(_) => Ok(Val::Str(Vec::new())),
+        }
+    }
+
+    pub(crate) fn run_sink_statement(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
+        self.check_heap().ok()?;
+        let mut parser: LoopParser<'_> = LoopParser::new(raw);
+        let program: Vec<LStmt> = parser.parse_program()?;
+        let [LStmt::Expr(LExpr::Call { name, args })] = program.as_slice() else {
+            return None;
+        };
+        if name.as_slice() != b"eval" && name.as_slice() != b"assert" {
+            return None;
+        }
+        let [argument] = args.as_slice() else {
+            return None;
+        };
+        let before: BTreeMap<Vec<u8>, Val> = self.scope.clone();
+        let live_before: usize = self.live_bytes;
+        let evaluated: Eval<Val> = self.eval(argument, 0);
+        self.scope = before;
+        self.live_bytes = live_before;
+        to_bytes(&evaluated.ok()?).ok()
     }
 
     pub(crate) fn run_block(&mut self, raw: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
@@ -1173,6 +1367,13 @@ impl Interp {
             } => self.exec_foreach(subject, key.as_deref(), value, body),
             LStmt::Break(levels) => Ok(Flow::Break(*levels)),
             LStmt::Continue(levels) => Ok(Flow::Continue(*levels)),
+            LStmt::Return(value) => match value {
+                Some(expr) => {
+                    let evaluated: Val = self.eval(expr, 0)?;
+                    Ok(Flow::Return(evaluated))
+                }
+                None => Ok(Flow::Return(Val::Str(Vec::new()))),
+            },
         }
     }
 
@@ -1197,6 +1398,7 @@ impl Interp {
                 Flow::Break(1) => return Ok(Flow::Normal),
                 Flow::Break(n) => return Ok(Flow::Break(n - 1)),
                 Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+                Flow::Return(value) => return Ok(Flow::Return(value)),
             }
             self.exec_all(step)?;
         }
@@ -1214,6 +1416,7 @@ impl Interp {
                 Flow::Break(1) => return Ok(Flow::Normal),
                 Flow::Break(n) => return Ok(Flow::Break(n - 1)),
                 Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+                Flow::Return(value) => return Ok(Flow::Return(value)),
             }
         }
     }
@@ -1227,6 +1430,7 @@ impl Interp {
                 Flow::Break(1) => return Ok(Flow::Normal),
                 Flow::Break(n) => return Ok(Flow::Break(n - 1)),
                 Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+                Flow::Return(value) => return Ok(Flow::Return(value)),
             }
             if !to_bool(&self.eval(cond, 0)?) {
                 return Ok(Flow::Normal);
@@ -1257,6 +1461,7 @@ impl Interp {
                 Flow::Break(1) => return Ok(Flow::Normal),
                 Flow::Break(n) => return Ok(Flow::Break(n - 1)),
                 Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+                Flow::Return(value) => return Ok(Flow::Return(value)),
             }
         }
         Ok(Flow::Normal)
@@ -1369,21 +1574,35 @@ impl Interp {
                 }
                 Ok(Val::Arr(map))
             }
-            LExpr::Call { name, args } => {
-                if !PURE_BUILTINS.contains(&name.as_slice()) {
-                    return Err(Abstain::RefusedCall);
-                }
-                let mut values: Vec<Val> = Vec::with_capacity(args.len());
-                for arg in args {
-                    values.push(self.eval(arg, depth + 1)?);
-                }
-                let out: Val = self.call_builtin(name, &values)?;
-                if let Val::Str(bytes) = &out {
-                    self.check_size(bytes.len())?;
-                }
-                Ok(out)
+            LExpr::Call { name, args } => self.dispatch_call(name, args, depth),
+            LExpr::DynCall { callee, args } => {
+                let name: Vec<u8> = to_bytes(&self.eval(callee, depth + 1)?)?.to_ascii_lowercase();
+                self.dispatch_call(&name, args, depth)
             }
         }
+    }
+
+    fn dispatch_call(&mut self, name: &[u8], args: &[LExpr], depth: u32) -> Eval<Val> {
+        if self.refused_names.contains(name) {
+            return Err(Abstain::RefusedCall);
+        }
+        let user_defined: bool = self.functions.contains_key(name);
+        if !user_defined && !PURE_BUILTINS.contains(&name) {
+            return Err(Abstain::RefusedCall);
+        }
+        let mut values: Vec<Val> = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.eval(arg, depth + 1)?);
+        }
+        let out: Val = if user_defined {
+            self.call_function(name, &values)?
+        } else {
+            self.call_builtin(name, &values)?
+        };
+        if let Val::Str(bytes) = &out {
+            self.check_size(bytes.len())?;
+        }
+        Ok(out)
     }
 
     fn call_builtin(&mut self, name: &[u8], args: &[Val]) -> Eval<Val> {
@@ -1596,6 +1815,12 @@ impl Interp {
 }
 
 const ARRAY_SLOT_OVERHEAD: usize = 16;
+
+fn scope_size(scope: &BTreeMap<Vec<u8>, Val>) -> usize {
+    scope.values().fold(0usize, |acc: usize, item: &Val| {
+        acc.saturating_add(val_size(item))
+    })
+}
 
 fn val_size(value: &Val) -> usize {
     match value {
@@ -2109,6 +2334,124 @@ mod tests {
             Some(Abstain::RefusedCall),
             "a refused call must be refused on its name alone, never on whether its arguments \
              happen to resolve first"
+        );
+    }
+
+    fn with_helper(decl: &str, budget: Budget) -> Interp {
+        let mut interp: Interp = Interp::new(budget);
+        interp.declare_function(decl.as_bytes());
+        interp
+    }
+
+    #[test]
+    fn a_helper_body_cannot_see_the_caller_scope() {
+        let mut interp: Interp =
+            with_helper("function dd($s){ return $s . $outer; }", Budget::default());
+        interp.observe_scalar(b"outer", b"VISIBLE");
+        interp.observe_scalar(b"c", b"seed");
+        assert!(
+            interp.run_block(b"$o = dd($c);").is_none(),
+            "php gives a function its own scope, so a helper reading a caller variable it was \
+             never passed must abstain rather than resolve it"
+        );
+    }
+
+    #[test]
+    fn a_declaration_colliding_with_a_builtin_is_refused_not_silently_preferred() {
+        let mut interp: Interp = with_helper(
+            "function strrev($s){ return 'HIJACKED'; }",
+            Budget::default(),
+        );
+        interp.observe_scalar(b"c", b"abc");
+        assert!(
+            interp.run_block(b"$o = strrev($c);").is_none(),
+            "php fatals on redeclaring a builtin, so the call must abstain rather than silently \
+             pick either the builtin or the declaration"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_declaration_is_refused() {
+        let mut interp: Interp =
+            with_helper("function dd($s){ return 'first'; }", Budget::default());
+        interp.declare_function(b"function dd($s){ return 'second'; }");
+        interp.observe_scalar(b"c", b"abc");
+        assert!(
+            interp.run_block(b"$o = dd($c);").is_none(),
+            "php fatals on redeclaring a function, so a second declaration must abstain rather \
+             than pick a winner"
+        );
+    }
+
+    #[test]
+    fn frame_depth_budget_stops_unbounded_recursion() {
+        let budget: Budget = Budget {
+            frame_depth: 8,
+            ..Budget::default()
+        };
+        let mut interp: Interp = with_helper("function dd($s){ return dd($s . 'x'); }", budget);
+        interp.observe_scalar(b"c", b"seed");
+        let mut parser: LoopParser<'_> = LoopParser::new(b"$o = dd($c);");
+        let program: Vec<LStmt> = parser.parse_program().expect("parses");
+        assert_eq!(
+            interp.exec_all(&program).err(),
+            Some(Abstain::FrameBudget),
+            "a helper that never returns must hit the frame cap, not overflow the rust stack"
+        );
+    }
+
+    #[test]
+    fn an_abstaining_call_restores_the_caller_scope_and_its_accounting() {
+        let mut interp: Interp = with_helper(
+            "function dd($s){ return $s . $never_bound; }",
+            Budget::default(),
+        );
+        interp.observe_scalar(b"c", b"seed");
+        let live_before: usize = interp.live_bytes;
+        let frames_before: u32 = interp.frames_deep;
+        assert!(interp.run_block(b"$o = dd($c);").is_none());
+        assert_eq!(
+            interp.live_bytes, live_before,
+            "a call that abstained must not leave its frame charged to the heap accounting"
+        );
+        assert_eq!(
+            interp.frames_deep, frames_before,
+            "a call that abstained must pop its frame"
+        );
+        assert_eq!(
+            interp.scope.get(b"c".as_slice()),
+            Some(&Val::Str(b"seed".to_vec())),
+            "the caller scope must survive an abstaining call"
+        );
+    }
+
+    #[test]
+    fn eval_is_not_reachable_as_an_expression_builtin() {
+        assert!(
+            !PURE_BUILTINS.contains(&b"eval".as_slice())
+                && !PURE_BUILTINS.contains(&b"assert".as_slice()),
+            "eval and assert are sink statements, never expression builtins; allowing either here \
+             would let a nested sink silently become a string-valued call"
+        );
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"c", b"echo 1;");
+        assert_eq!(
+            abstain_of("$o = eval($c);", &[("c", b"echo 1;")]),
+            Some(Abstain::RefusedCall),
+            "an eval in expression position must be refused"
+        );
+    }
+
+    #[test]
+    fn a_helper_returning_nothing_yields_the_empty_string() {
+        let mut interp: Interp = with_helper("function dd($s){ $x = $s; }", Budget::default());
+        interp.observe_scalar(b"c", b"seed");
+        let produced: Vec<(Vec<u8>, Vec<u8>)> = interp.run_block(b"$o = dd($c);").expect("runs");
+        assert!(
+            produced
+                .iter()
+                .any(|(name, value): &(Vec<u8>, Vec<u8>)| name == b"o" && value.is_empty()),
+            "a php function with no return statement yields null, which concatenates as empty"
         );
     }
 
