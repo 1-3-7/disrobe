@@ -69,7 +69,7 @@
       "version": "n/a (in-process)"
     },
     {
-      "detail": "apkleaks 2.6.3 pinned rule set applied over the same jadx output it scans internally (its CLI shells out and fails on some Windows hosts); identical rules, identical result",
+      "detail": "apkleaks CLI",
       "display": "5/8 (62.5%)",
       "found": 5,
       "metric": "recall %",
