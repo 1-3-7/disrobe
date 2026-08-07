@@ -7,9 +7,22 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+default = ["chain"]
+chain = []
+
+[lib]
+path = "src/lib.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = "0.4"
+disrobe-binfmt = { path = "../crates/disrobe-binfmt" }
+disrobe-bytes = { path = "../crates/disrobe-bytes" }
 disrobe-core = { path = "../crates/disrobe-core", features = ["chain"] }
+serde_json = "1"
 
 [[bin]]
 name = "chain_driver"
@@ -28,6 +41,20 @@ bench = false
 [[bin]]
 name = "hex_decode"
 path = "fuzz_targets/hex_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_dispatch"
+path = "fuzz_targets/container_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_formats"
+path = "fuzz_targets/native_formats.rs"
 test = false
 doc = false
 bench = false

@@ -72,10 +72,11 @@ impl PassRunner for FuzzRunner {
     fn run(
         &self,
         pick: &DetectorPick,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         _config: &ChainConfig,
+        _path_hint: Option<&str>,
     ) -> Result<PassRunOutcome, String> {
-        let artifact: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0u8; 32]);
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out_artifact: Artifact = pick.pass.run(&artifact).map_err(|e| format!("{e}"))?;
         let kind: OutputKind = pick.pass.output_kind(&out_artifact);
         Ok(PassRunOutcome {
