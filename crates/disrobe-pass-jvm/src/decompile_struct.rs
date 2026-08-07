@@ -994,6 +994,46 @@ impl<'a> Structurer<'a> {
         Some(body)
     }
 
+    fn pc_after_last(&self, seq: &[Instruction]) -> Option<u32> {
+        let last: &Instruction = seq.last()?;
+        let idx: usize = self
+            .insns
+            .binary_search_by_key(&last.pc, |ins: &Instruction| ins.pc)
+            .ok()?;
+        self.insns.get(idx + 1).map(|ins: &Instruction| ins.pc)
+    }
+
+    fn finally_copy_matches(&self, body: &[Instruction], copy: &[Instruction]) -> bool {
+        if body.len() != copy.len() || body.is_empty() {
+            return false;
+        }
+        let body_end: Option<u32> = self.pc_after_last(body);
+        let copy_end: Option<u32> = self.pc_after_last(copy);
+        body.iter()
+            .zip(copy.iter())
+            .all(|(a, b): (&Instruction, &Instruction)| {
+                if a.opcode != b.opcode {
+                    return false;
+                }
+                let (Operands::Branch(_), Operands::Branch(_)) = (&a.operands, &b.operands) else {
+                    return a.operands == b.operands;
+                };
+                let (Some(a_target), Some(b_target)): (Option<u32>, Option<u32>) =
+                    (branch_target(a), branch_target(b))
+                else {
+                    return false;
+                };
+                match (
+                    body_target_index(body, body_end, a_target),
+                    body_target_index(copy, copy_end, b_target),
+                ) {
+                    (Some(a_idx), Some(b_idx)) => a_idx == b_idx,
+                    (None, None) => a_target == b_target,
+                    _ => false,
+                }
+            })
+    }
+
     fn finally_body_instructions(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
         let body: Vec<Instruction> = self.finally_body_span(chain)?;
         if body.is_empty() {
@@ -1157,13 +1197,7 @@ impl<'a> Structurer<'a> {
             return false;
         };
         let cont_insns: &[Instruction] = self.block_instructions(cont);
-        cont_insns.len() == body.len()
-            && body
-                .iter()
-                .zip(cont_insns.iter())
-                .all(|(a, b): (&Instruction, &Instruction)| {
-                    a.opcode == b.opcode && a.operands == b.operands
-                })
+        self.finally_copy_matches(&body, cont_insns)
     }
 
     fn finally_inline_skip(&self, chain: &FinallyChain, cont: BlockId) -> Option<usize> {
@@ -1172,25 +1206,15 @@ impl<'a> Structurer<'a> {
         if cont_insns.len() <= body.len() {
             return None;
         }
-        let matched: bool =
-            body.iter()
-                .zip(cont_insns.iter())
-                .all(|(a, b): (&Instruction, &Instruction)| {
-                    a.opcode == b.opcode && a.operands == b.operands
-                });
-        matched.then_some(body.len())
+        let head: &[Instruction] = cont_insns.get(..body.len())?;
+        self.finally_copy_matches(&body, head).then_some(body.len())
     }
 
     fn finally_inline_prefix(&self, chain: &FinallyChain, cont: BlockId) -> Option<usize> {
         let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
         let cont_insns: &[Instruction] = self.block_instructions(cont);
         let head: &[Instruction] = cont_insns.get(..body.len())?;
-        body.iter()
-            .zip(head.iter())
-            .all(|(a, b): (&Instruction, &Instruction)| {
-                a.opcode == b.opcode && a.operands == b.operands
-            })
-            .then_some(body.len())
+        self.finally_copy_matches(&body, head).then_some(body.len())
     }
 
     fn continuation_joins(&self, after_try: Option<BlockId>) -> BTreeSet<BlockId> {
@@ -1253,11 +1277,7 @@ impl<'a> Structurer<'a> {
         }
         let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
         let head: &[Instruction] = insns.get(1..=body.len())?;
-        body.iter()
-            .zip(head.iter())
-            .all(|(a, b): (&Instruction, &Instruction)| {
-                a.opcode == b.opcode && a.operands == b.operands
-            })
+        self.finally_copy_matches(&body, head)
             .then_some(body.len() + 1)
     }
 
@@ -2102,6 +2122,13 @@ fn if_targets(block: &BasicBlock) -> (BlockId, BlockId) {
         }
     }
     (true_t, false_t)
+}
+
+fn body_target_index(seq: &[Instruction], end_pc: Option<u32>, target: u32) -> Option<usize> {
+    if end_pc == Some(target) {
+        return Some(seq.len());
+    }
+    seq.iter().position(|ins: &Instruction| ins.pc == target)
 }
 
 const fn astore_slot(ins: &Instruction) -> Option<u16> {
