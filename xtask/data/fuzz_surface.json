@@ -5,19 +5,19 @@
   "totals": {
     "entry_points": 1331,
     "parse_shaped": 553,
-    "coverage_guided_targets_in_tree": 4,
-    "targets_declaring_entry_points": 1,
-    "with_declared_coverage_guided_target": 64,
+    "coverage_guided_targets_in_tree": 11,
+    "targets_declaring_entry_points": 8,
+    "with_declared_coverage_guided_target": 118,
     "named_by_a_resilience_suite": 610,
     "named_by_a_suite_recording_seed_reach": 123,
-    "named_by_neither": 703
+    "named_by_neither": 689
   },
   "crates": [
     {
       "crate": "disrobe-binfmt",
       "entry_points": 224,
       "parse_shaped": 158,
-      "with_declared_coverage_guided_target": 64,
+      "with_declared_coverage_guided_target": 76,
       "named_by_a_resilience_suite": 156,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
@@ -69,8 +69,7 @@
         "disrobe-binfmt/src/containers/vhdx.rs::materialize_logical_disk",
         "disrobe-binfmt/src/containers/wim_image.rs::extract_wim_files",
         "disrobe-binfmt/src/containers/wim_lzx.rs::lzx_compress_chunk",
-        "disrobe-binfmt/src/containers/xar.rs::file_data",
-        "disrobe-binfmt/src/native_image.rs::parse_native_image"
+        "disrobe-binfmt/src/containers/xar.rs::file_data"
       ]
     },
     {
@@ -187,14 +186,12 @@
       "crate": "disrobe-ir",
       "entry_points": 8,
       "parse_shaped": 4,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 4,
       "named_by_a_resilience_suite": 4,
       "named_by_a_suite_recording_seed_reach": 0,
       "named_by_neither": [
         "disrobe-ir/src/envelope.rs::compute_root_hash",
-        "disrobe-ir/src/io.rs::hot",
-        "disrobe-ir/src/payload.rs::decode_disasm",
-        "disrobe-ir/src/payload.rs::decode_raw"
+        "disrobe-ir/src/io.rs::hot"
       ]
     },
     {
@@ -246,16 +243,13 @@
       "crate": "disrobe-nir-lift",
       "entry_points": 17,
       "parse_shaped": 1,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 4,
       "named_by_a_resilience_suite": 1,
       "named_by_a_suite_recording_seed_reach": 0,
       "named_by_neither": [
         "disrobe-nir-lift/src/avm2.rs::lift_abc",
         "disrobe-nir-lift/src/avm2.rs::lift_swf_abc",
         "disrobe-nir-lift/src/beam.rs::lift_beam_module",
-        "disrobe-nir-lift/src/cil.rs::lift_pe",
-        "disrobe-nir-lift/src/dalvik.rs::lift_dex",
-        "disrobe-nir-lift/src/jvm.rs::lift_classfile",
         "disrobe-nir-lift/src/lua.rs::lift_lua_chunk",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_arch",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_for_arch",
@@ -264,7 +258,6 @@
         "disrobe-nir-lift/src/pcode/mod.rs::lower_mips32",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_x86_64",
         "disrobe-nir-lift/src/python.rs::lift_pyc",
-        "disrobe-nir-lift/src/wasm.rs::lift_wasm_module",
         "disrobe-nir-lift/src/yarv.rs::lift_ruby_iseq"
       ]
     },
@@ -292,7 +285,7 @@
       "crate": "disrobe-pass-dotnet",
       "entry_points": 113,
       "parse_shaped": 29,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 9,
       "named_by_a_resilience_suite": 50,
       "named_by_a_suite_recording_seed_reach": 8,
       "named_by_neither": [
@@ -303,8 +296,6 @@
         "disrobe-pass-dotnet/src/aot/metadata_records.rs::recover_metadata_attribution",
         "disrobe-pass-dotnet/src/devirt/cil_handler.rs::summarize_cil_handler",
         "disrobe-pass-dotnet/src/devirt/extract.rs::models_from_eazvm_image",
-        "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
-        "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_dual_xor",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_pro_xtea",
         "disrobe-pass-dotnet/src/peel/agile_net_bodies.rs::decrypt_body_single_xor",
@@ -407,7 +398,7 @@
       "crate": "disrobe-pass-jvm",
       "entry_points": 60,
       "parse_shaped": 26,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 9,
       "named_by_a_resilience_suite": 18,
       "named_by_a_suite_recording_seed_reach": 5,
       "named_by_neither": [
@@ -418,7 +409,6 @@
         "disrobe-pass-jvm/src/apk_resources.rs::from_apk",
         "disrobe-pass-jvm/src/apk_sig.rs::verify",
         "disrobe-pass-jvm/src/apk_sig.rs::verify_v4",
-        "disrobe-pass-jvm/src/arsc.rs::parse_arsc",
         "disrobe-pass-jvm/src/dalvik_decompile.rs::decompile_dex_bytes",
         "disrobe-pass-jvm/src/dalvik_pack_recover.rs::verify_recovered_dex",
         "disrobe-pass-jvm/src/dalvik_pack_stub_loader.rs::encode_container",
@@ -965,15 +955,11 @@
       "crate": "disrobe-pass-wasm-deob",
       "entry_points": 48,
       "parse_shaped": 9,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 14,
       "named_by_a_resilience_suite": 19,
       "named_by_a_suite_recording_seed_reach": 3,
       "named_by_neither": [
         "disrobe-pass-wasm-deob/src/component/mod.rs::classify_preamble",
-        "disrobe-pass-wasm-deob/src/component/mod.rs::parse_component_manifest",
-        "disrobe-pass-wasm-deob/src/dwarf/mod.rs::has_dwarf",
-        "disrobe-pass-wasm-deob/src/dwarf/mod.rs::recover_source_map",
-        "disrobe-pass-wasm-deob/src/eh.rs::scan_module",
         "disrobe-pass-wasm-deob/src/fingerprint.rs::add_labeled_module",
         "disrobe-pass-wasm-deob/src/fingerprint.rs::match_module",
         "disrobe-pass-wasm-deob/src/lib.rs::recover_types_full",
@@ -1038,7 +1024,7 @@
       "crate": "disrobe-py-marshal",
       "entry_points": 2,
       "parse_shaped": 1,
-      "with_declared_coverage_guided_target": 0,
+      "with_declared_coverage_guided_target": 2,
       "named_by_a_resilience_suite": 2,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": []

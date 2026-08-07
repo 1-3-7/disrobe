@@ -18,10 +18,17 @@ doc = false
 bench = false
 
 [dependencies]
-libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 disrobe-binfmt = { path = "../crates/disrobe-binfmt" }
 disrobe-bytes = { path = "../crates/disrobe-bytes" }
 disrobe-core = { path = "../crates/disrobe-core", features = ["chain"] }
+disrobe-ir = { path = "../crates/disrobe-ir" }
+disrobe-nir-lift = { path = "../crates/disrobe-nir-lift", features = ["wasm"] }
+disrobe-pass-dotnet = { path = "../crates/disrobe-pass-dotnet" }
+disrobe-pass-jvm = { path = "../crates/disrobe-pass-jvm" }
+disrobe-pass-wasm-deob = { path = "../crates/disrobe-pass-wasm-deob", features = ["dwarf"] }
+disrobe-py-marshal = { path = "../crates/disrobe-py-marshal" }
 serde_json = "1"
 
 [[bin]]
@@ -55,6 +62,48 @@ bench = false
 [[bin]]
 name = "native_formats"
 path = "fuzz_targets/native_formats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "python_bytecode"
+path = "fuzz_targets/python_bytecode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dr_envelope"
+path = "fuzz_targets/dr_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dex_jvm_classfile"
+path = "fuzz_targets/dex_jvm_classfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cil_metadata"
+path = "fuzz_targets/cil_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_sections"
+path = "fuzz_targets/wasm_sections.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nested_dispatch"
+path = "fuzz_targets/nested_dispatch.rs"
 test = false
 doc = false
 bench = false
