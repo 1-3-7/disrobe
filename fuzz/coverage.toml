@@ -1,6 +1,21 @@
 declaration = "fuzz target to parse entry point mapping, validated by the parse-surface inventory"
 
 [[target]]
+name = "cil_metadata.rs"
+entry_points = [
+  "disrobe-nir-lift/src/cil.rs::lift_pe",
+  "disrobe-pass-dotnet/src/cil.rs::disassemble",
+  "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+  "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+  "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+  "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+  "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap",
+  "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings",
+  "disrobe-pass-dotnet/src/pe.rs::parse",
+  "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+]
+
+[[target]]
 name = "container_dispatch.rs"
 entry_points = [
   "disrobe-binfmt/src/carve.rs::is_skip_magic",
@@ -9,7 +24,6 @@ entry_points = [
   "disrobe-binfmt/src/classify.rs::native_lang_fingerprint",
   "disrobe-binfmt/src/container.rs::detect_container",
   "disrobe-binfmt/src/container.rs::detect_container_with_hint",
-  "disrobe-binfmt/src/structural.rs::identify_by_structure",
   "disrobe-binfmt/src/containers/apfs.rs::detect_apfs",
   "disrobe-binfmt/src/containers/ar.rs::detect_ar",
   "disrobe-binfmt/src/containers/arc.rs::detect_arc",
@@ -67,4 +81,83 @@ entry_points = [
   "disrobe-binfmt/src/containers/xalz.rs::detect_xalz",
   "disrobe-binfmt/src/containers/xar.rs::detect_xar",
   "disrobe-binfmt/src/containers/yaffs.rs::detect_yaffs2",
+  "disrobe-binfmt/src/structural.rs::identify_by_structure",
+]
+
+[[target]]
+name = "dex_jvm_classfile.rs"
+entry_points = [
+  "disrobe-binfmt/src/structural.rs::validate_dex",
+  "disrobe-binfmt/src/structural.rs::validate_java_class",
+  "disrobe-nir-lift/src/dalvik.rs::lift_dex",
+  "disrobe-nir-lift/src/jvm.rs::lift_classfile",
+  "disrobe-pass-jvm/src/arsc.rs::parse_arsc",
+  "disrobe-pass-jvm/src/axml.rs::parse",
+  "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+  "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+  "disrobe-pass-jvm/src/classfile.rs::parse",
+  "disrobe-pass-jvm/src/dex.rs::extract_native_methods",
+  "disrobe-pass-jvm/src/dex.rs::parse",
+  "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+  "disrobe-pass-jvm/src/dex.rs::parse_header",
+]
+
+[[target]]
+name = "dr_envelope.rs"
+entry_points = [
+  "disrobe-ir/src/envelope.rs::decode",
+  "disrobe-ir/src/payload.rs::decode_disasm",
+  "disrobe-ir/src/payload.rs::decode_raw",
+  "disrobe-ir/src/sidecar.rs::decode",
+]
+
+[[target]]
+name = "native_formats.rs"
+entry_points = [
+  "disrobe-binfmt/src/native.rs::parse_native",
+  "disrobe-binfmt/src/native_image.rs::parse_native_image",
+  "disrobe-binfmt/src/structural.rs::locate_pe_header",
+  "disrobe-binfmt/src/structural.rs::locate_zip_central_directory",
+  "disrobe-binfmt/src/structural.rs::validate_elf",
+  "disrobe-binfmt/src/structural.rs::validate_macho",
+  "disrobe-binfmt/src/structural.rs::validate_macho_fat",
+  "disrobe-binfmt/src/structural.rs::validate_pe",
+  "disrobe-binfmt/src/structural.rs::validate_zip",
+]
+
+[[target]]
+name = "nested_dispatch.rs"
+entry_points = [
+  "disrobe-binfmt/src/classify.rs::classify_input",
+  "disrobe-binfmt/src/container.rs::detect_container",
+  "disrobe-binfmt/src/container.rs::detect_container_with_hint",
+  "disrobe-binfmt/src/structural.rs::identify_by_structure",
+]
+
+[[target]]
+name = "python_bytecode.rs"
+entry_points = [
+  "disrobe-py-marshal/src/pyc.rs::read_pyc",
+  "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+]
+
+[[target]]
+name = "wasm_sections.rs"
+entry_points = [
+  "disrobe-binfmt/src/structural.rs::validate_wasm",
+  "disrobe-nir-lift/src/wasm.rs::lift_wasm_module",
+  "disrobe-pass-wasm-deob/src/analyze.rs::analyze_module",
+  "disrobe-pass-wasm-deob/src/component/mod.rs::parse_component_manifest",
+  "disrobe-pass-wasm-deob/src/custom_page_sizes.rs::scan_custom_page_sizes",
+  "disrobe-pass-wasm-deob/src/detect.rs::detect",
+  "disrobe-pass-wasm-deob/src/dwarf/mod.rs::has_dwarf",
+  "disrobe-pass-wasm-deob/src/dwarf/mod.rs::recover_source_map",
+  "disrobe-pass-wasm-deob/src/eh.rs::scan_module",
+  "disrobe-pass-wasm-deob/src/fingerprint.rs::fingerprint_module",
+  "disrobe-pass-wasm-deob/src/fingerprint.rs::strip_name_section",
+  "disrobe-pass-wasm-deob/src/function_refs.rs::scan_function_refs",
+  "disrobe-pass-wasm-deob/src/gc_extern.rs::scan_gc_extern",
+  "disrobe-pass-wasm-deob/src/gc_types.rs::recover_gc_types",
+  "disrobe-pass-wasm-deob/src/js_string_builtins.rs::scan_js_string_builtins",
+  "disrobe-pass-wasm-deob/src/memory64.rs::scan_memories",
 ]

@@ -1,4 +1,4 @@
-declaration = "fuzz target to committed-corpus seed mapping, materialized by scripts/fuzz_seeds.py"
+declaration = "fuzz target to committed-corpus seed mapping, materialized by `cargo run -p xtask -- fuzz-seeds`"
 
 [[target]]
 name = "container_dispatch"
@@ -21,4 +21,44 @@ sources = [
   "corpus/native/d",
   "corpus/go",
   "corpus/mac",
+]
+
+[[target]]
+name = "python_bytecode"
+sources = [
+  "corpus/python",
+  "corpus/pickle",
+]
+
+[[target]]
+name = "dex_jvm_classfile"
+sources = [
+  "corpus/jvm",
+  "corpus/apk",
+]
+
+[[target]]
+name = "cil_metadata"
+sources = [
+  "corpus/dotnet",
+]
+
+[[target]]
+name = "wasm_sections"
+sources = [
+  "corpus/wasm",
+  "corpus/binfmt/blazor",
+]
+
+[[target]]
+name = "dr_envelope"
+sources = [
+  "corpus/chain",
+  "corpus/src",
+]
+
+[[target]]
+name = "nested_dispatch"
+sources = [
+  "corpus/binfmt/carve",
 ]

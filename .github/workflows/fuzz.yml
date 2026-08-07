@@ -1,6 +1,17 @@
 name: fuzz
 
 on:
+  pull_request:
+    paths:
+      - 'fuzz/**'
+      - 'crates/disrobe-binfmt/**'
+      - 'crates/disrobe-bytes/**'
+      - 'crates/disrobe-ir/**'
+      - 'crates/disrobe-nir-lift/**'
+      - 'crates/disrobe-pass-dotnet/**'
+      - 'crates/disrobe-pass-jvm/**'
+      - 'crates/disrobe-pass-wasm-deob/**'
+      - 'crates/disrobe-py-marshal/**'
   schedule:
     - cron: '0 3 * * 1'  # weekly, monday 03:00 UTC
   workflow_dispatch:
@@ -10,9 +21,58 @@ on:
         required: false
         default: '300'
 
+env:
+  CARGO_INCREMENTAL: 0
+  MEMORY_LIMIT_MEGABYTES: 2048
+  PER_INPUT_TIMEOUT_SECONDS: 25
+
 jobs:
-  fuzz:
-    name: fuzz (${{ matrix.target }})
+  smoke:
+    name: smoke (${{ matrix.target }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - container_dispatch
+          - native_formats
+          - python_bytecode
+          - dex_jvm_classfile
+          - cil_metadata
+          - wasm_sections
+          - dr_envelope
+          - nested_dispatch
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: seed the corpus from committed samples
+        run: cargo run -p xtask -- fuzz-seeds --target ${{ matrix.target }}
+      - name: every committed seed runs without a crash
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- \
+            -runs=0 \
+            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
+            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
+      - name: short search
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- \
+            -max_total_time=60 \
+            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
+            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
+      - name: upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+
+  campaign:
+    name: campaign (${{ matrix.target }})
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -20,17 +80,39 @@ jobs:
         target:
           - chain_driver
           - chain_spec_parser
+          - hex_decode
+          - container_dispatch
+          - native_formats
+          - python_bytecode
+          - dex_jvm_classfile
+          - cil_metadata
+          - wasm_sections
+          - dr_envelope
+          - nested_dispatch
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: install cargo-fuzz
         run: cargo install cargo-fuzz --locked
-      - name: fuzz
+      - name: seed the corpus from committed samples
+        run: cargo run -p xtask -- fuzz-seeds --target ${{ matrix.target }} || true
+      - name: sustained search under the address sanitizer, with crash deduplication by stack hash
         run: |
           DURATION=${{ github.event.inputs.duration || '300' }}
-          cargo fuzz run ${{ matrix.target }} -- -max_total_time=${DURATION}
-      - name: upload corpus on failure
+          cargo fuzz run ${{ matrix.target }} -- \
+            -fork=1 \
+            -max_total_time=${DURATION} \
+            -rss_limit_mb=${MEMORY_LIMIT_MEGABYTES} \
+            -timeout=${PER_INPUT_TIMEOUT_SECONDS}
+      - name: minimize any crash the search found
+        if: failure()
+        run: |
+          for artifact in fuzz/artifacts/${{ matrix.target }}/*; do
+            [ -f "$artifact" ] || continue
+            cargo fuzz tmin ${{ matrix.target }} "$artifact" || true
+          done
+      - name: upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
