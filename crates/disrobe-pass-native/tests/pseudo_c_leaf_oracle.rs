@@ -12979,10 +12979,9 @@ fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() 
     );
 }
 
-const MS_X64_INDEXED_REFUSALS: [&str; 3] = [
+const MS_X64_INDEXED_REFUSALS: [&str; 2] = [
     "sits on an allocated stack-pointer frame",
     "the frame is built by pushes rather than one allocation",
-    "escapes a fixed-offset slot access",
 ];
 
 #[test]
