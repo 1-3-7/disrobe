@@ -1863,8 +1863,13 @@ pub(super) fn try_structure_guarded_try(
     } else {
         let prelude: Vec<Stmt> = structure_stmts(code, stream, guard + 1, region.try_start)?;
         let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
-        let handlers: Vec<ExceptHandler> =
-            parse_except_handlers(code, stream, region.handler_start, handler_region_end)?;
+        let handler_matches_exception_group: bool =
+            handler_is_except_star(stream, region.handler_start);
+        let handlers: Vec<ExceptHandler> = if handler_matches_exception_group {
+            parse_except_star_handlers(code, stream, region.handler_start, handler_region_end)?
+        } else {
+            parse_except_handlers(code, stream, region.handler_start, handler_region_end)?
+        };
         let span_is_else: bool = guarded_span_is_try_else(
             stream,
             region.try_start,
@@ -1878,12 +1883,22 @@ pub(super) fn try_structure_guarded_try(
         } else {
             Vec::new()
         };
-        let try_stmt: Stmt = Stmt::Try {
-            body: non_empty(try_body),
-            handlers,
-            orelse: try_orelse,
-            finalbody: Vec::new(),
-            line: None,
+        let try_stmt: Stmt = if handler_matches_exception_group {
+            Stmt::TryStar {
+                body: non_empty(try_body),
+                handlers,
+                orelse: try_orelse,
+                finalbody: Vec::new(),
+                line: None,
+            }
+        } else {
+            Stmt::Try {
+                body: non_empty(try_body),
+                handlers,
+                orelse: try_orelse,
+                finalbody: Vec::new(),
+                line: None,
+            }
         };
         let mut body: Vec<Stmt> = prelude;
         body.push(try_stmt);

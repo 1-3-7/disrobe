@@ -269,6 +269,89 @@ const HEADER_OWNERSHIP: &[HeaderOwnershipCase] = &[
     },
 ];
 
+const EXCEPT_GROUP_BANDS: &[&str] = &["3.11", "3.12", "3.13", "3.14", "3.15"];
+
+const EXCEPT_GROUP_SOURCES: &[(&str, &str)] = &[
+    (
+        "while_body",
+        "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except* LookupError:\n            sink(1)\n",
+    ),
+    (
+        "while_body_named",
+        "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except* LookupError as eg:\n            sink(eg)\n",
+    ),
+    (
+        "for_body",
+        "def f(xs, nxt, sink):\n    for x in xs:\n        try:\n            sink(nxt(x))\n        except* LookupError:\n            sink(1)\n",
+    ),
+    (
+        "while_body_two_handlers",
+        "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except* LookupError:\n            sink(1)\n        except* ValueError:\n            sink(2)\n",
+    ),
+    (
+        "guarded_inside_while",
+        "def f(active, g, nxt, sink):\n    while active():\n        if g():\n            try:\n                sink(nxt())\n            except* LookupError:\n                sink(1)\n",
+    ),
+    (
+        "outside_any_loop",
+        "def f(g, nxt, sink):\n    if g():\n        try:\n            sink(nxt())\n        except* LookupError:\n            sink(1)\n",
+    ),
+];
+
+#[test]
+fn an_exception_group_handler_is_never_recovered_as_a_plain_except() {
+    let scratch: PathBuf = PathBuf::from("../../target/py-except-group-kind");
+    fs::create_dir_all(&scratch).expect("scratch");
+
+    let mut graded: usize = 0;
+    let mut failures: Vec<String> = Vec::new();
+
+    for &alias in EXCEPT_GROUP_BANDS {
+        let Some(interpreter): Option<PathBuf> = find_interpreter(alias) else {
+            continue;
+        };
+        for &(label, source) in EXCEPT_GROUP_SOURCES {
+            let source_path: PathBuf = scratch.join(format!("{label}.{alias}.py"));
+            fs::write(&source_path, source).expect("write fixture");
+            let orig_pyc: PathBuf = scratch.join(format!("{label}.{alias}.pyc"));
+            if compile_source(&interpreter, &source_path, &orig_pyc).is_err() {
+                continue;
+            }
+            let (original, marshal_version): (CodeObject, MarshalVersion) =
+                read_code(&orig_pyc).unwrap_or_else(|e| panic!("py{alias}/{label} read: {e}"));
+            let version: PyVersion = marshal_to_decompile(marshal_version)
+                .unwrap_or_else(|e| panic!("py{alias}/{label} version map: {e:?}"));
+            let recovered: String = build_real_source(&original, &version, marshal_version)
+                .unwrap_or_else(|e| panic!("py{alias}/{label} decompile: {e}"));
+            graded += 1;
+
+            let downgraded: Vec<&str> = recovered
+                .lines()
+                .map(str::trim_start)
+                .filter(|line: &&str| line.starts_with("except") && !line.starts_with("except*"))
+                .collect();
+            if !downgraded.is_empty() {
+                failures.push(format!(
+                    "py{alias}/{label}: every handler in this source is an exception group, so a \
+                     recovered `except` without the star silently rewrites the semantics; found \
+                     {downgraded:?}\n{recovered}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        graded > 0,
+        "no CPython 3.11 through 3.15 interpreter resolved, so this case graded nothing"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} exception group handlers recovered as a plain except:\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
 #[test]
 fn a_loop_header_is_never_consumed_as_a_guard_over_its_own_body_try() {
     let scratch: PathBuf = PathBuf::from("../../target/py-loop-header-ownership");
