@@ -422,12 +422,16 @@ fn link_and_run_sysv(tag: &str, driver: &str, host_object: &[u8], watchdog_secs:
     } else {
         format!("{tag}_sysv_harness")
     });
-    let link: std::process::Output = Command::new(&host_cc)
+    let mut link_command: Command = Command::new(&host_cc);
+    link_command
         .args(["-O1", "-o"])
         .arg(&harness_exe)
         .arg(&driver_c)
-        .arg(&host_o)
-        .arg("-lm")
+        .arg(&host_o);
+    if !cfg!(windows) {
+        link_command.arg("-lm");
+    }
+    let link: std::process::Output = link_command
         .output()
         .expect("invoke host cc to link sysv harness");
     assert!(
@@ -9428,12 +9432,16 @@ fn link_and_run_round_sysv(
     } else {
         format!("{tag}_sysv_round_harness")
     });
-    let link: std::process::Output = Command::new(&host_cc)
+    let mut link_command: Command = Command::new(&host_cc);
+    link_command
         .args(["-O1", "-msse4.1", "-o"])
         .arg(&harness_exe)
         .arg(&driver_c)
-        .arg(&host_o)
-        .arg("-lm")
+        .arg(&host_o);
+    if !cfg!(windows) {
+        link_command.arg("-lm");
+    }
+    let link: std::process::Output = link_command
         .output()
         .expect("invoke host cc to link sysv round harness");
     assert!(
@@ -12686,6 +12694,21 @@ const INDEXED_FRAME_BATTERY: &[Case] = &[
         arity: 3,
         c_source: "long long sw_arr_mask1(long long i, long long a, long long b){ long long v[3]; v[0]=a; v[1]=b; v[2]=a+b; return v[i & 1] + v[2]; }",
     },
+    Case {
+        name: "sw_arr_u16",
+        arity: 3,
+        c_source: "long long sw_arr_u16(long long i, long long a, long long b){ unsigned short v[4]; v[0]=(unsigned short)a; v[1]=(unsigned short)b; v[2]=(unsigned short)(a+b); v[3]=(unsigned short)(a^b); return (long long)v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_u8",
+        arity: 3,
+        c_source: "long long sw_arr_u8(long long i, long long a, long long b){ unsigned char v[4]; v[0]=(unsigned char)a; v[1]=(unsigned char)b; v[2]=(unsigned char)(a+b); v[3]=(unsigned char)(a^b); return (long long)v[i & 3]; }",
+    },
+    Case {
+        name: "sw_arr_wide8",
+        arity: 3,
+        c_source: "long long sw_arr_wide8(long long i, long long a, long long b){ long long v[8]; v[0]=a; v[1]=b; v[2]=a+b; v[3]=a-b; v[4]=a^b; v[5]=a&b; v[6]=a|b; v[7]=a*b; return v[i & 7]; }",
+    },
 ];
 
 struct IndexedFrameShape {
@@ -12723,6 +12746,23 @@ fn parse_masm_i64(token: &str) -> Option<i64> {
     Some(if negative { -value } else { value })
 }
 
+fn split_index_scale_and_displacement(inner: &str) -> Option<(&str, u8, &str)> {
+    if let Some((index, after)) = inner.split_once('*') {
+        let digits: usize = after.chars().take_while(char::is_ascii_digit).count();
+        let scale: u8 = after.get(..digits)?.parse::<u8>().ok()?;
+        return Some((index, scale, after.get(digits..)?));
+    }
+    let name: usize = inner
+        .chars()
+        .take_while(char::is_ascii_alphanumeric)
+        .count();
+    let index: &str = inner.get(..name)?;
+    if !index.starts_with('r') {
+        return None;
+    }
+    Some((index, 1, inner.get(name..)?))
+}
+
 fn indexed_rsp_accesses(operands: &str) -> Vec<(String, u8, i64)> {
     let mut out: Vec<(String, u8, i64)> = Vec::new();
     let mut rest: &str = operands;
@@ -12733,14 +12773,11 @@ fn indexed_rsp_accesses(operands: &str) -> Vec<(String, u8, i64)> {
         };
         let inner: &str = tail.get(..close).unwrap_or_default();
         rest = tail.get(close..).unwrap_or_default();
-        let Some((index, after)): Option<(&str, &str)> = inner.split_once('*') else {
+        let Some((index, scale, disp_token)): Option<(&str, u8, &str)> =
+            split_index_scale_and_displacement(inner)
+        else {
             continue;
         };
-        let scale_digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-        let Ok(scale): Result<u8, _> = scale_digits.parse::<u8>() else {
-            continue;
-        };
-        let disp_token: &str = after.get(scale_digits.len()..).unwrap_or_default();
         let disp: i64 = if disp_token.is_empty() {
             0
         } else {
@@ -12875,9 +12912,11 @@ fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() 
     let mut recovered_decls: String = String::new();
     let mut driver_body: String = String::new();
     let mut widest: i64 = 0;
+    let mut strides: BTreeSet<u8> = BTreeSet::new();
     for case in INDEXED_FRAME_BATTERY {
         let shape: IndexedFrameShape = assert_indexed_frame_encoding(&objs.sysv_object, case.name);
         widest = widest.max(shape.elements);
+        strides.insert(shape.scale);
         println!(
             "indexed-frame row {} accesses [rsp+{}*{}{:+}] over {} elements",
             case.name, shape.index, shape.scale, shape.disp, shape.elements
@@ -12918,8 +12957,13 @@ fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() 
         driver_body.push_str(&lifted.driver_snippet);
     }
     assert!(
-        widest >= 4,
-        "the indexed-frame battery must reach a four-element region, widest was {widest}"
+        widest >= 8,
+        "the indexed-frame battery must reach an eight-element region, widest was {widest}"
+    );
+    assert_eq!(
+        strides,
+        BTreeSet::from([1_u8, 2, 4, 8]),
+        "the indexed-frame battery must grade every machine element width, saw {strides:?}"
     );
 
     let driver: String = build_indexed_frame_driver(&recovered_decls, &driver_body);
@@ -12932,6 +12976,89 @@ fn sysv_mask_bounded_indexed_frame_arrays_recompile_to_behavioral_equivalence() 
     println!(
         "SysV indexed-frame behavioral differential PASSED for {} mask-bounded runtime-index leaf functions (SysV ABI)",
         INDEXED_FRAME_BATTERY.len()
+    );
+}
+
+const MS_X64_INDEXED_REFUSALS: [&str; 3] = [
+    "sits on an allocated stack-pointer frame",
+    "the frame is built by pushes rather than one allocation",
+    "escapes a fixed-offset slot access",
+];
+
+#[test]
+fn the_microsoft_x64_lowering_of_the_indexed_frame_battery_is_refused_by_frame_class() {
+    let Some(clang_cc): Option<String> = clang() else {
+        return;
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let battery_c: PathBuf = dir.join("ix_ms_battery.c");
+    std::fs::write(&battery_c, battery_source(INDEXED_FRAME_BATTERY).as_bytes())
+        .expect("write the microsoft x64 indexed battery");
+    let battery_o: PathBuf = dir.join("ix_ms_battery.o");
+    let compile: std::process::Output = Command::new(&clang_cc)
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O1",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&battery_o)
+        .arg(&battery_c)
+        .output()
+        .expect("invoke clang for the microsoft x64 indexed object");
+    if !compile.status.success() {
+        eprintln!(
+            "skipping the microsoft x64 indexed-frame class check: clang cannot emit a windows object here: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        return;
+    }
+    let object_bytes: Vec<u8> = std::fs::read(&battery_o).expect("read the microsoft x64 object");
+
+    let mut refused: usize = 0;
+    let mut reasons: BTreeSet<&str> = BTreeSet::new();
+    for case in INDEXED_FRAME_BATTERY {
+        let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object_bytes, case.name)
+        else {
+            panic!(
+                "indexed-frame row {}: symbol not located in the microsoft x64 object",
+                case.name
+            );
+        };
+        match recover_leaf_function_abi(&code, base, PseudoAbi::MsX64) {
+            Ok(recovery) => panic!(
+                "indexed-frame row {} must not recover under Microsoft x64, which reserves nothing below the stack pointer, so the same array lands in a frame whose bytes are not proven scratch:\n{}",
+                case.name, recovery.source
+            ),
+            Err(err) => {
+                let message: String = format!("{err}");
+                let reason: &str = MS_X64_INDEXED_REFUSALS
+                    .iter()
+                    .find(|known: &&&str| message.contains(*known))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "indexed-frame row {} must name why its frame cannot model the region, got an unlisted reason: {message}",
+                            case.name
+                        )
+                    });
+                reasons.insert(reason);
+                refused += 1;
+            }
+        }
+    }
+    assert_eq!(
+        refused,
+        INDEXED_FRAME_BATTERY.len(),
+        "every row System V models must be refused under Microsoft x64"
+    );
+    assert!(
+        reasons.contains(&MS_X64_INDEXED_REFUSALS[0]),
+        "at least one row must be refused by the frame class itself rather than by an earlier frame guard, saw {reasons:?}"
+    );
+    println!(
+        "microsoft x64 refused all {refused} indexed-frame rows that System V models, for reasons {reasons:?}"
     );
 }
 
