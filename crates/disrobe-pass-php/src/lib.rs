@@ -10,6 +10,7 @@ pub mod chain_detector;
 pub(crate) mod debug;
 #[cfg(feature = "chain")]
 pub use chain_detector::{PhpCatalogEntry, PhpDetectorImpl};
+pub mod decode_loop;
 pub mod decompile;
 pub mod deflatten;
 pub mod detect;

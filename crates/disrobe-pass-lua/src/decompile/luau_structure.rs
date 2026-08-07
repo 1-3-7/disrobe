@@ -341,7 +341,9 @@ fn structure_seq(
             Node::Jump { target } => {
                 *pos += 1;
                 ctx.edges.carry(cur_index);
-                if cur_loop.is_some_and(|l: LoopRef| l.exit == target) {
+                let is_break: bool =
+                    target == usize::MAX || cur_loop.is_some_and(|l: LoopRef| l.exit == target);
+                if is_break {
                     out.push(StructuredBlock::Break);
                 } else {
                     out.push(StructuredBlock::Goto { pc: target });
@@ -954,6 +956,40 @@ mod tests {
             "a conditional branch to a target the walk never places is a dropped edge even when \
              it never survives as a goto in the tree; the edge ledger, not a walk over the \
              finished tree, is what has to catch it; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_sentinel_jump_target_is_placed_and_leaves_the_report_clean() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("r0 = 1".to_owned())),
+            lifted(1, LStmt::Jump { target: usize::MAX }),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 2);
+
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "the sentinel target means the jump has no successor, so discarding it is correct \
+             and must not read as a lost edge; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_plain_jump_past_the_region_is_reported_as_a_lost_edge() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("r0 = 1".to_owned())),
+            lifted(1, LStmt::Jump { target: 100 }),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 2);
+
+        assert!(
+            result.unresolved_jumps > 0,
+            "this jump names a real target no structure here carries, and it is not the sentinel, \
+             so it must read as a lost edge; blocks: {:?}",
             result.blocks
         );
     }

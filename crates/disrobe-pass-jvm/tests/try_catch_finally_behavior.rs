@@ -308,24 +308,42 @@ struct Jdk {
     java: PathBuf,
 }
 
-fn jdk() -> Option<Jdk> {
+fn jdk() -> Jdk {
     let (Some(javac), Some(java)): (Option<PathBuf>, Option<PathBuf>) =
         (find_on_path("javac"), find_on_path("java"))
     else {
-        eprintln!(
-            "SKIP: javac/java not on PATH; the try-catch-finally behavior gate is NOT enforced \
-             on this machine. A green result here is a SKIP, not a measured pass."
-        );
-        return None;
+        panic!("try-catch-finally behavior gate requires javac and java on PATH");
     };
-    Some(Jdk { javac, java })
+    Jdk { javac, java }
+}
+
+#[test]
+fn the_behavior_gate_fails_when_jdk_tools_are_unavailable() {
+    let test_binary: PathBuf = std::env::current_exe().expect("current test binary");
+    let output: std::process::Output = Command::new(test_binary)
+        .arg("--exact")
+        .arg("try_catch_finally_recovers_with_the_same_observable_behavior")
+        .arg("--test-threads=1")
+        .env("PATH", "")
+        .output()
+        .expect("run behavior gate without JDK tools");
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the behavior gate passed without JDK tools, so a green run proves nothing; stdout:\n\
+         {stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        format!("{stdout}\n{stderr}")
+            .contains("try-catch-finally behavior gate requires javac and java on PATH"),
+        "the behavior gate failed for an unrelated reason; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 #[test]
 fn try_catch_finally_recovers_with_the_same_observable_behavior() {
-    let Some(jdk): Option<Jdk> = jdk() else {
-        return;
-    };
+    let jdk: Jdk = jdk();
     let purpose: String = format!("disrobe_tcf_behavior_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
@@ -377,9 +395,7 @@ fn try_catch_finally_recovers_with_the_same_observable_behavior() {
 
 #[test]
 fn the_behavior_gate_reports_a_double_counted_exception_path() {
-    let Some(jdk): Option<Jdk> = jdk() else {
-        return;
-    };
+    let jdk: Jdk = jdk();
     let mutant: String = TCF_SRC.replace(
         "        } catch (ArithmeticException ex) {\n            return Integer.MIN_VALUE;\n",
         "        } catch (ArithmeticException ex) {\n            CTR++;\n            return \

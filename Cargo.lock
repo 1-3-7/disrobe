@@ -1832,6 +1832,7 @@ dependencies = [
  "lzfse_rust",
  "lzma-rs",
  "lzokay",
+ "memchr",
  "miette",
  "msi",
  "ntfs",

@@ -958,6 +958,9 @@ fn render_method_mode(
         bool_return,
     ) {
         Ok(body) => body,
+        Err(Error::UnrecoveredRegion { reason }) => {
+            return render_unrecovered_method(signature, cf, name, reason);
+        }
         Err(error) => {
             let reason: String = error.to_string();
             return render_refused_method(signature, cf, name, &reason);
@@ -1511,6 +1514,37 @@ fn render_refused_method(
     }
 }
 
+fn render_unrecovered_method(
+    mut signature: String,
+    cf: &ClassFile,
+    name: &str,
+    reason: &'static str,
+) -> RenderedMethod {
+    crate::debug::dbg_kv("method-region-unrecovered", || {
+        format!(
+            "{} method {name}: {reason}",
+            cf.this_class_name().unwrap_or("<unknown>")
+        )
+    });
+    if name == "<clinit>" {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: not recovered: {reason}>\n    }}"
+        );
+    } else {
+        let _: std::fmt::Result = write!(
+            signature,
+            " {{\n        // <decompile: not recovered: {reason}>\n        throw new UnsupportedOperationException(\"region not recovered\");\n    }}"
+        );
+    }
+    RenderedMethod {
+        text: signature,
+        fully_lifted: false,
+        has_body: true,
+        refused: true,
+    }
+}
+
 fn render_refused_declaration(
     mut signature: String,
     cf: &ClassFile,
@@ -1926,30 +1960,43 @@ fn lift_method_body(
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
     let allocations: DeferredAllocationPlan = deferred_allocation_plan(cf, code, &insns, has_this);
-    let body: MethodBody = with_object_locals(object_locals, boolean_locals, array_casts, || {
-        with_deferred_allocations(allocations, || {
-            if let Some(body) = lift_structured(
-                cf,
-                code,
-                &insns,
-                params,
-                param_types,
-                &bootstraps,
-                has_this,
-                bool_return,
-            ) {
-                crate::debug::dbg_line(|| {
-                    "method body lifted via structured (CFG) reconstruction".to_owned()
-                });
-                return body;
-            }
-            crate::debug::dbg_line(|| {
-                "structured lift declined; falling back to flat linear lift".to_owned()
-            });
-            lift_method_body_flat(cf, &insns, params, &bootstraps, has_this, bool_return)
-        })
-    });
-    Ok(body)
+    let lifted: std::result::Result<MethodBody, &'static str> =
+        with_object_locals(object_locals, boolean_locals, array_casts, || {
+            with_deferred_allocations(allocations, || {
+                match lift_structured(
+                    cf,
+                    code,
+                    &insns,
+                    params,
+                    param_types,
+                    &bootstraps,
+                    has_this,
+                    bool_return,
+                ) {
+                    StructuredLift::Body(body) => {
+                        crate::debug::dbg_line(|| {
+                            "method body lifted via structured (CFG) reconstruction".to_owned()
+                        });
+                        Ok(body)
+                    }
+                    StructuredLift::Unrecovered(reason) => Err(reason),
+                    StructuredLift::Declined => {
+                        crate::debug::dbg_line(|| {
+                            "structured lift declined; falling back to flat linear lift".to_owned()
+                        });
+                        Ok(lift_method_body_flat(
+                            cf,
+                            &insns,
+                            params,
+                            &bootstraps,
+                            has_this,
+                            bool_return,
+                        ))
+                    }
+                }
+            })
+        });
+    lifted.map_err(|reason: &'static str| Error::UnrecoveredRegion { reason })
 }
 
 fn deferred_allocation_plan(
@@ -2026,6 +2073,12 @@ fn lift_method_body_flat(
     }
 }
 
+enum StructuredLift {
+    Body(MethodBody),
+    Declined,
+    Unrecovered(&'static str),
+}
+
 fn lift_structured(
     cf: &ClassFile,
     code: &CodeAttribute,
@@ -2035,14 +2088,17 @@ fn lift_structured(
     bootstraps: &[crate::attributes::BootstrapMethod],
     has_this: bool,
     bool_return: bool,
-) -> Option<MethodBody> {
+) -> StructuredLift {
     let (folded, _): (Vec<Instruction>, crate::const_fold::ConstFoldReport) =
         crate::const_fold::fold_constants(cf, insns);
     let insns: &[Instruction] = &folded;
-    let mut cfg: Cfg = build_cfg(insns, code, |idx: u16| {
-        cf.class_name(idx).ok().map(str::to_string)
-    })
-    .ok()?;
+    let Ok(mut cfg): std::result::Result<Cfg, crate::decompile_struct::StructureError> =
+        build_cfg(insns, code, |idx: u16| {
+            cf.class_name(idx).ok().map(str::to_string)
+        })
+    else {
+        return StructuredLift::Declined;
+    };
     if !crate::decompile_struct::cfg_has_string_switch(cf, &cfg, insns) {
         let _: crate::sccp::SccpReport = crate::sccp::simplify_flattened_cfg(&mut cfg, insns);
     }
@@ -2056,7 +2112,7 @@ fn lift_structured(
         has_this,
         bool_return,
     ) {
-        return Some(body);
+        return StructuredLift::Body(body);
     }
     if let Some(body) = try_reconstruct_instanceof_deconstruction(
         cf,
@@ -2068,7 +2124,7 @@ fn lift_structured(
         has_this,
         bool_return,
     ) {
-        return Some(body);
+        return StructuredLift::Body(body);
     }
     if bool_return
         && let Some(body) = try_reconstruct_boolean_method(
@@ -2081,12 +2137,18 @@ fn lift_structured(
             has_this,
         )
     {
-        return Some(body);
+        return StructuredLift::Body(body);
     }
     let dom: Dominators = compute_dominators(&cfg);
     let loops: Vec<NaturalLoop> = find_natural_loops(&cfg, &dom);
     let mut structurer: Structurer<'_> = Structurer::new(&cfg, &dom, &loops, insns).with_class(cf);
+    if let Some(reason) = structurer.unmodelled_finally_reason() {
+        return StructuredLift::Unrecovered(reason);
+    }
     let root: Region = structurer.structure();
+    if let Some(reason) = structurer.structured_finally_defect() {
+        return StructuredLift::Unrecovered(reason);
+    }
     let string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable> =
         structurer.take_string_switch_tables();
     let finally_inline_skips: BTreeMap<BlockId, usize> = structurer.take_finally_inline_skips();
@@ -2125,7 +2187,7 @@ fn lift_structured(
     };
     let mut out: String = String::new();
     render_region(&mut ctx, &root, &mut out, 2);
-    append_unrendered_terminal_tail(&mut ctx, insns, &mut out);
+    append_unrendered_terminal_tail(&mut ctx, insns, &root, &mut out);
     append_shared_fallthrough_tail(&ctx, insns, &root, &mut out);
     let mut hidden_slots: BTreeSet<u16> = ctx.pattern_binding_slots.clone();
     hidden_slots.extend(ctx.foreach_hidden_slots.iter().copied());
@@ -2133,7 +2195,7 @@ fn lift_structured(
     hidden_slots.extend(ctx.finally_return_stores.values().copied());
     let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
-    Some(MethodBody {
+    StructuredLift::Body(MethodBody {
         text: body,
         fully_lifted: ctx.fully_lifted,
     })
@@ -2361,14 +2423,23 @@ fn region_falls_through(region: &Region, cfg: &Cfg) -> bool {
                     .iter()
                     .any(|(_, body): &(SwitchKey, Region)| region_falls_through(body, cfg))
         }
-        Region::Try { try_body, handlers }
-        | Region::TryFinally {
-            try_body, handlers, ..
-        } => {
+        Region::Try { try_body, handlers } => {
             region_falls_through(try_body, cfg)
                 || handlers
                     .iter()
                     .any(|(_, body): &(Vec<String>, Region)| region_falls_through(body, cfg))
+        }
+        Region::TryFinally {
+            try_body,
+            handlers,
+            finally_trim,
+            ..
+        } => {
+            *finally_trim != 0
+                && (region_falls_through(try_body, cfg)
+                    || handlers
+                        .iter()
+                        .any(|(_, body): &(Vec<String>, Region)| region_falls_through(body, cfg)))
         }
         Region::TryWithResources { try_body, .. } => region_falls_through(try_body, cfg),
         Region::Synchronized { body, .. } => region_falls_through(body, cfg),
@@ -2436,12 +2507,16 @@ fn shared_terminal_tail_statement(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<S
 fn append_unrendered_terminal_tail(
     ctx: &mut RenderCtx<'_>,
     insns: &[Instruction],
+    root: &Region,
     out: &mut String,
 ) {
     let Some(last): Option<&Instruction> = insns.last() else {
         return;
     };
     if !matches!(last.opcode, 0xAC..=0xB0 | 0xBF) {
+        return;
+    }
+    if !region_falls_through(root, ctx.cfg) {
         return;
     }
     let tail_bid: BlockId = match ctx.cfg.blocks.iter().rev().find(|b: &&BasicBlock| {

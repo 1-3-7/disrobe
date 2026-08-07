@@ -30,7 +30,7 @@ Run `disrobe passes` for the live list. As of the current release:
 | `native` | In-tree x86-64 decompile to C and Rust, and AArch64 decompile to pseudo-C, with ghidra-headless as an opt-in backend / symbol dump / unpack / devirt / entropy / crypto signatures / disasm / callgraph / patch / sigmaker / diff. |
 | `jvm` | Classfile / `.jar` / `.dex` / `.apk` decompile via CFR / Vineflower / Procyon / JADX. |
 | `apk` | AndroidManifest.xml decode + resource id-to-name map + signer-cert SHA-256. |
-| `dotnet` | .NET PE decompile via ILSpy / dnSpyEx / de4dot + protector detection. |
+| `dotnet` | .NET PE decompile via ILSpy / dnSpyEx / de4dot + protector detection. Single-file bundles (manifest majors 1 / 2 / 6) are read as a container, so `extract` and `auto` reach the embedded assemblies. |
 | `hermes` | React Native Hermes bundle disasm + JS surface lift. |
 | `macho` | Mach-O / fat / `.ipa` dump + ObjC + Swift class-dump on raw thin and fat Mach-O. |
 | `lua` | Lua 5.1-5.4 / LuaJIT / Luau / GLua decompile + obfuscator peel. |

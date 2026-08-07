@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="652" viewBox="0 0 920 652" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from ecosystems.json sha256:744f520ebfa40c4bdefee752ea3a90fc</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="652" viewBox="0 0 920 652" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from ecosystems.json sha256:c19be05f2216504b4e368edf43672dda</desc>
   <rect x="0" y="0" width="920" height="652" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="651" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Ecosystem coverage</text>
@@ -96,7 +96,7 @@
   <rect x="321.33" y="512.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
   <rect x="321.33" y="512.00" width="3.50" height="50.00" fill="#828282"/>
   <text x="335.33" y="533.00" font-size="12.5" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Containers</text>
-  <text x="335.33" y="550.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">100 formats in-tree</text>
+  <text x="335.33" y="550.00" font-size="10.5" fill="#828282" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">101 formats in-tree</text>
   <rect x="28.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#8fb3d9"/>
   <text x="50.00" y="580.00" font-size="10.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">recovers source</text>
   <rect x="152.00" y="571.00" width="16.00" height="10.00" rx="2.00" fill="#9cc2c4"/>

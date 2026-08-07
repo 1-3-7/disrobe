@@ -1439,6 +1439,161 @@ mod tests {
         );
     }
 
+    const SJ_BIAS_54: u32 = 0xFF_FFFF;
+    const OP51_JMP: u32 = 22;
+    const OP51_LT: u32 = 24;
+    const OP51_TESTSET: u32 = 27;
+    const OP51_RETURN: u32 = 30;
+    const OP51_TFORLOOP: u32 = 33;
+    const OP51_CLOSURE: u32 = 36;
+    const OP51_PAST_THE_TABLE: u32 = 63;
+    const OP54_JMP: u32 = 56;
+    const OP54_EQK: u32 = 60;
+    const OP54_RETURN0: u32 = 71;
+    const OP54_TFORCALL: u32 = 76;
+
+    #[test]
+    fn every_linear_lifter_arm_that_loses_an_edge_lowers_the_flag() {
+        let cases: Vec<(&str, LuaDialect, Vec<u32>)> = vec![
+            (
+                "a 5.4 EQK branches on a constant compare, and the branch it takes is never \
+                 placed as a structure",
+                LuaDialect::Lua54,
+                vec![
+                    enc54_abc(OP54_EQK, 0, 0, 0, 0),
+                    OP54_JMP | ((1 + SJ_BIAS_54) << 7),
+                    enc54_abc(OP54_RETURN0, 0, 1, 0, 0),
+                ],
+            ),
+            (
+                "a 5.1 TESTSET with no branch to fold into copies a register and drops the \
+                 conditional edge that chose it",
+                LuaDialect::Lua51,
+                vec![
+                    enc_abc(OP51_TESTSET, 0, 1, 0),
+                    enc_abc(OP51_RETURN, 0, 1, 0),
+                ],
+            ),
+            (
+                "a 5.4 TFORCALL opens a generic for whose closing edge this lifter never places",
+                LuaDialect::Lua54,
+                vec![
+                    enc54_abc(OP54_TFORCALL, 0, 0, 1, 0),
+                    enc54_abc(OP54_RETURN0, 0, 1, 0, 0),
+                ],
+            ),
+            (
+                "a 5.1 TFORLOOP carries the loop test itself rather than closing a block, so its \
+                 back edge is not placed",
+                LuaDialect::Lua51,
+                vec![
+                    enc_abc(OP51_TFORLOOP, 0, 0, 1),
+                    enc_abc(OP51_RETURN, 0, 1, 0),
+                ],
+            ),
+            (
+                "an opcode past the end of the 5.1 table decodes to nothing this lifter can \
+                 place",
+                LuaDialect::Lua51,
+                vec![OP51_PAST_THE_TABLE, enc_abc(OP51_RETURN, 0, 1, 0)],
+            ),
+            (
+                "a 5.1 LT emits a comparison whose branch stays a goto rather than a structure",
+                LuaDialect::Lua51,
+                vec![
+                    enc_abc(OP51_LT, 0, 0, 1),
+                    enc_abx(OP51_JMP, 0, 1 + SBX_BIAS_51),
+                    enc_abc(OP51_RETURN, 0, 1, 0),
+                ],
+            ),
+            (
+                "a CLOSURE naming a child proto the chunk does not carry recovers no body at all",
+                LuaDialect::Lua51,
+                vec![enc_abx(OP51_CLOSURE, 0, 7), enc_abc(OP51_RETURN, 0, 1, 0)],
+            ),
+        ];
+
+        for (why, dialect, code) in cases {
+            let p: LuaProto = proto(code, Vec::new(), 8);
+
+            let out: LiftedProto = lift_proto_dialect(&p, dialect, 0);
+
+            assert!(
+                !out.fully_structured,
+                "{why}; the flag must not claim a complete structure here, got:\n{}",
+                out.source
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_whose_every_opcode_is_placed_keeps_the_flag() {
+        let p: LuaProto = proto(
+            vec![enc_abc(0, 1, 0, 0), enc_abc(OP51_RETURN, 0, 1, 0)],
+            Vec::new(),
+            4,
+        );
+
+        let out: LiftedProto = lift_proto_dialect(&p, LuaDialect::Lua51, 0);
+
+        assert!(
+            out.fully_structured,
+            "a move and a return transfer no control, so no arm here may clear the flag; \
+             without this the suite would pass with every arm clearing unconditionally, got:\n{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn every_register_dialect_lowers_the_flag_for_a_jump_its_own_table_names() {
+        const CASES: [(LuaDialect, u32, u32); 5] = [
+            (LuaDialect::Lua51, 22, 30),
+            (LuaDialect::GLua, 22, 30),
+            (LuaDialect::Lua52, 23, 31),
+            (LuaDialect::Lua53, 30, 38),
+            (LuaDialect::Lua54, 56, 70),
+        ];
+
+        for (dialect, jmp_op, return_op) in CASES {
+            let code: Vec<u32> = if matches!(dialect, LuaDialect::Lua54) {
+                vec![
+                    jmp_op | ((1 + SJ_BIAS_54) << 7),
+                    enc54_abc(return_op, 0, 1, 0, 0),
+                ]
+            } else {
+                vec![
+                    enc_abx(jmp_op, 0, 1 + SBX_BIAS_51),
+                    enc_abc(return_op, 0, 1, 0),
+                ]
+            };
+            let p: LuaProto = proto(code, Vec::new(), 4);
+
+            let out: LiftedProto = lift_proto_dialect(&p, dialect, 0);
+
+            assert!(
+                !out.fully_structured,
+                "{dialect:?} names its jump at a different index and reads its displacement from \
+                 a different field, so an arm that clears for one dialect proves nothing about \
+                 another; got:\n{}",
+                out.source
+            );
+            assert!(
+                out.source.contains("goto lbl_"),
+                "{dialect:?} has to reach the jump arm and leave the edge as a labelled jump; an \
+                 opcode this dialect does not carry would clear the flag through the unknown arm \
+                 instead and this case would prove nothing; got:\n{}",
+                out.source
+            );
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|warning: &String| warning.contains("unknown opcode")),
+                "{dialect:?} must name both opcodes in its own table, got {:?}",
+                out.warnings
+            );
+        }
+    }
+
     #[test]
     fn lift_string_escaping() {
         let s: String = quote_lua_string("a\"b\nc");

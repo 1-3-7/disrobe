@@ -116,8 +116,10 @@ pub use cython::{
 pub use dmg::{DmgSummary, KolyTrailer, detect_dmg, parse_koly, reconstruct_image};
 pub use docker::{DockerManifest, parse_docker_manifest};
 pub use dotnet_bundle::{
-    BundleFileType, BundleLocation, DotnetBundle, DotnetBundleEntry, DotnetBundleFile,
-    bundle_file_bytes, detect_dotnet_bundle, extract_dotnet_bundle, parse_dotnet_bundle,
+    BundleFileType, BundleLocation, DepsLibrary, DepsManifest, DepsRuntimeTarget,
+    DepsTargetLibrary, DotnetBundle, DotnetBundleEntry, DotnetBundleFile, bundle_deps_manifest,
+    bundle_file_bytes, detect_dotnet_bundle, extract_dotnet_bundle, parse_deps_manifest,
+    parse_dotnet_bundle, write_bundle_file,
 };
 pub use elf_overlay::{
     ElfOverlay, ElfOverlayCarve, carve_elf_overlay, detect_elf_overlay, elf_image_end,

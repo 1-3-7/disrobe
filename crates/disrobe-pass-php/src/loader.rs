@@ -852,6 +852,8 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut bound: usize = 0;
     let mut sink_result: Option<LoaderReport> = None;
     let mut loop_src: Vec<u8> = Vec::new();
+    let mut interp: crate::decode_loop::Interp =
+        crate::decode_loop::Interp::new(crate::decode_loop::Budget::default());
     for stmt in &stmts {
         match stmt {
             Stmt::Assign { target, op, value } => {
@@ -864,9 +866,12 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                             env.set_code(name, Value::Str(body));
                             bound += 1;
                         } else if let Some(elements) = inline_array_elements(value, &env, depth) {
+                            interp.observe_array(&name, &elements);
                             env.set_array(name, elements);
                             bound += 1;
                         } else if let Some(v) = eval_expr(value, &env, depth) {
+                            let Value::Str(bytes): &Value = &v;
+                            interp.observe_scalar(&name, bytes);
                             env.set(name, v);
                             bound += 1;
                         }
@@ -881,6 +886,7 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                             None => Vec::new(),
                         };
                         buf.extend_from_slice(&rhs);
+                        interp.observe_scalar(&name, &buf);
                         env.set(name, Value::Str(buf));
                         bound += 1;
                     }
@@ -890,11 +896,18 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                 loop_src.extend_from_slice(raw);
                 loop_src.push(b'\n');
                 if let Some((name, plaintext)) = eval_rc4_loop(&loop_src, &env) {
+                    interp.observe_scalar(&name, &plaintext);
                     env.set(name, Value::Str(plaintext));
                     bound += 1;
                 } else if let Some((name, plaintext)) = eval_xor_keystream_loop(raw, &env) {
+                    interp.observe_scalar(&name, &plaintext);
                     env.set(name, Value::Str(plaintext));
                     bound += 1;
+                } else if let Some(produced) = interp.run_block(raw) {
+                    for (name, plaintext) in produced {
+                        env.set(name, Value::Str(plaintext));
+                        bound += 1;
+                    }
                 }
             }
             Stmt::Expression(expr) => {
@@ -1192,6 +1205,7 @@ fn apply_string_fn(fname: &[u8], args: &[Expr], env: &Env, depth: u32) -> Option
         b"gzinflate" => inflate_raw(&first?).map(Value::Str),
         b"gzuncompress" => inflate_zlib(&first?).map(Value::Str),
         b"gzdecode" => gunzip(&first?).map(Value::Str),
+        b"bzdecompress" => bzdecompress_bounded(&first?).map(Value::Str),
         b"str_rot13" => Some(Value::Str(first?.iter().copied().map(rot13_byte).collect())),
         b"strrev" => Some(Value::Str(first?.iter().copied().rev().collect())),
         b"convert_uudecode" => Some(Value::Str(uudecode(&first?))),
@@ -1283,19 +1297,26 @@ fn inflate_bounded<R: std::io::Read>(mut dec: R) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn inflate_raw(body: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn inflate_raw(body: &[u8]) -> Option<Vec<u8>> {
     inflate_bounded(DeflateDecoder::new(body))
 }
 
-fn inflate_zlib(body: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn inflate_zlib(body: &[u8]) -> Option<Vec<u8>> {
     inflate_bounded(flate2::read::ZlibDecoder::new(body))
 }
 
-fn gunzip(body: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn bzdecompress_bounded(body: &[u8]) -> Option<Vec<u8>> {
+    if body.is_empty() {
+        return None;
+    }
+    inflate_bounded(bzip2_rs::DecoderReader::new(body))
+}
+
+pub(crate) fn gunzip(body: &[u8]) -> Option<Vec<u8>> {
     inflate_bounded(flate2::read::GzDecoder::new(body))
 }
 
-const fn rot13_byte(b: u8) -> u8 {
+pub(crate) const fn rot13_byte(b: u8) -> u8 {
     match b {
         b'A'..=b'M' | b'a'..=b'm' => b + 13,
         b'N'..=b'Z' | b'n'..=b'z' => b - 13,
@@ -1303,12 +1324,12 @@ const fn rot13_byte(b: u8) -> u8 {
     }
 }
 
-fn decode_hex_stream_skip_ws(buf: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn decode_hex_stream_skip_ws(buf: &[u8]) -> Option<Vec<u8>> {
     disrobe_core::codec::hex::decode_with(buf, disrobe_core::codec::hex::WRAPPED_STREAM_NONEMPTY)
         .ok()
 }
 
-fn uudecode(buf: &[u8]) -> Vec<u8> {
+pub(crate) fn uudecode(buf: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     for line in buf.split(|&b: &u8| b == b'\n') {
         let line: &[u8] = line.strip_suffix(b"\r").unwrap_or(line);
@@ -1351,7 +1372,7 @@ const fn uu_byte(c: u8) -> u8 {
 
 const STR_REPLACE_OUTPUT_CAP: usize = EXPR_INFLATE_CAP;
 
-fn str_replace_bytes(buf: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn str_replace_bytes(buf: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
     str_replace_bytes_with_cap(buf, from, to, STR_REPLACE_OUTPUT_CAP)
 }
 
@@ -1390,7 +1411,7 @@ fn extend_checked(out: &mut Vec<u8>, bytes: &[u8], cap: usize) -> Option<()> {
 
 const STR_REPEAT_OUTPUT_CAP: usize = 256 * 1024 * 1024;
 
-fn bin2hex(buf: &[u8]) -> Vec<u8> {
+pub(crate) fn bin2hex(buf: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(buf.len() * 2);
     for &b in buf {
         out.push(hex_digit(b >> 4));
@@ -1406,7 +1427,7 @@ const fn hex_digit(nibble: u8) -> u8 {
     }
 }
 
-fn str_repeat(s: &[u8], times: i64) -> Option<Vec<u8>> {
+pub(crate) fn str_repeat(s: &[u8], times: i64) -> Option<Vec<u8>> {
     let count: usize = usize::try_from(times).ok()?;
     let total: usize = s.len().checked_mul(count)?;
     if total > STR_REPEAT_OUTPUT_CAP {
@@ -1415,7 +1436,7 @@ fn str_repeat(s: &[u8], times: i64) -> Option<Vec<u8>> {
     Some(s.repeat(count))
 }
 
-fn substr(s: &[u8], start: i64, len: Option<i64>) -> Vec<u8> {
+pub(crate) fn substr(s: &[u8], start: i64, len: Option<i64>) -> Vec<u8> {
     let n: i64 = s.len() as i64;
     let begin: i64 = if start < 0 {
         (n + start).max(0)
@@ -1431,7 +1452,7 @@ fn substr(s: &[u8], start: i64, len: Option<i64>) -> Vec<u8> {
     s.get(b..e).map(<[u8]>::to_vec).unwrap_or_default()
 }
 
-fn html_entity_decode(buf: &[u8]) -> Vec<u8> {
+pub(crate) fn html_entity_decode(buf: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(buf.len());
     let mut i: usize = 0;
     while i < buf.len() {
@@ -1510,7 +1531,7 @@ fn inline_array_elements(expr: &Expr, env: &Env, depth: u32) -> Option<Vec<Vec<u
     Some(out)
 }
 
-fn strtr_bytes(subject: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+pub(crate) fn strtr_bytes(subject: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let n: usize = from.len().min(to.len());
     let mut map: [Option<u8>; 256] = [None; 256];
     for i in 0..n {

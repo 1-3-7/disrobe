@@ -36,7 +36,33 @@ disrobe auto App.exe --out recovered/     # ConfuserEx2 PE -> de4dot -> ILSpy ->
 
 ### Single-file bundles
 
-A .NET single-file deployment packs application files into a host executable; self-contained deployments can also include native runtime components. The `disrobe-binfmt` bundle reader (`disrobe_binfmt::containers::dotnet_bundle`) locates the bundle marker inside an MZ, ELF, or Mach-O host, parses the manifest, and returns each embedded member (managed assemblies, native libraries, `deps.json`, `runtimeconfig.json`, and symbol files) with its sanitized recorded relative path, raw-inflating any deflate-compressed member. Manifest major versions 1, 2, and 6 through 64 are read, while the intermediate 3 to 5 range is rejected. A synthetic round-trip fixture reconstructs its three members byte-for-byte, and a declared member size that runs past the buffer is rejected rather than read out of bounds.
+A .NET single-file deployment packs application files into a host executable. A self-contained
+deployment can also carry native runtime components. The bundle reader
+(`disrobe_binfmt::containers::dotnet_bundle`) finds the bundle marker inside a PE, ELF or Mach-O
+host, reads the manifest, and returns each embedded member under its sanitized relative path. It
+inflates a deflate-compressed member and returns a stored member as it lies. Members are managed
+assemblies, native libraries, `deps.json`, `runtimeconfig.json` and symbol files. The reader also
+parses `deps.json` into a typed manifest rather than only carving it, so the runtime assembly list
+and the library table are readable as data.
+
+`disrobe extract` writes the members to disk, and `disrobe auto` routes them onward with no
+dedicated flag: an embedded managed assembly reaches the CIL pass on its own.
+
+The format defines exactly three manifest major versions, and the reader accepts those three and
+refuses any other by number. Major 1 is what .NET Core 3.x wrote, major 2 is .NET 5, and major 6 is
+.NET 6 and later. Major 1 has no deps or runtimeconfig block and records every entry as type
+`Unknown`. Compression exists only from major 6.
+
+Coverage is graded against bundles the real .NET tooling produced, in
+`corpus/binfmt/dotnet-single-file`. Each extracted assembly is compared byte for byte with the
+assembly the compiler emitted before bundling. The committed set spans all three major versions,
+PE, ELF and Mach-O hosts, every one of the six entry types, and a bundle that mixes compressed and
+stored entries. A declared member size that runs past the buffer, a path that escapes the output
+directory, a duplicate path and a decompression bomb are each refused.
+
+A universal (fat) Mach-O host is not supported. Its header-offset field is relative to the slice
+rather than to the file, so the reader sees an implausible version and refuses the file instead of
+reading the wrong offset.
 
 ### Obfuscator reversal
 

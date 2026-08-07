@@ -1,0 +1,2320 @@
+use crate::loader::{
+    bin2hex, bzdecompress_bounded, decode_hex_stream_skip_ws, gunzip, html_entity_decode,
+    inflate_raw, inflate_zlib, rot13_byte, str_repeat, str_replace_bytes, strtr_bytes, substr,
+    uudecode,
+};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64_STD;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    pub steps: u64,
+    pub output_bytes: usize,
+    pub heap_bytes: usize,
+    pub expr_depth: u32,
+    pub rounds: u32,
+    pub wall: Duration,
+}
+
+pub const DEFAULT_MAX_STEPS: u64 = 4_000_000;
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_HEAP_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_MAX_EXPR_DEPTH: u32 = 64;
+pub const DEFAULT_MAX_ROUNDS: u32 = 64;
+pub const DEFAULT_MAX_WALL: Duration = Duration::from_secs(2);
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            steps: DEFAULT_MAX_STEPS,
+            output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            heap_bytes: DEFAULT_MAX_HEAP_BYTES,
+            expr_depth: DEFAULT_MAX_EXPR_DEPTH,
+            rounds: DEFAULT_MAX_ROUNDS,
+            wall: DEFAULT_MAX_WALL,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Abstain {
+    StepBudget,
+    WallBudget,
+    OutputBudget,
+    HeapBudget,
+    DepthBudget,
+    RoundBudget,
+    UndefinedRead,
+    RefusedCall,
+    Unsupported,
+    TypeMismatch,
+    OutOfRange,
+}
+
+type Eval<T> = Result<T, Abstain>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Val {
+    Int(i64),
+    Str(Vec<u8>),
+    Arr(BTreeMap<i64, Self>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Concat,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+    Eq,
+    Ne,
+    Identical,
+    NotIdentical,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    LogicAnd,
+    LogicOr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnOp {
+    Neg,
+    Plus,
+    Not,
+    BitNot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssignOp {
+    Set,
+    Concat,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LExpr {
+    Int(i64),
+    Str(Vec<u8>),
+    Var(Vec<u8>),
+    Index {
+        base: Box<Self>,
+        idx: Box<Self>,
+    },
+    Unary {
+        op: UnOp,
+        operand: Box<Self>,
+    },
+    Bin {
+        op: BinOp,
+        lhs: Box<Self>,
+        rhs: Box<Self>,
+    },
+    Ternary {
+        cond: Box<Self>,
+        then: Box<Self>,
+        other: Box<Self>,
+    },
+    Call {
+        name: Vec<u8>,
+        args: Vec<Self>,
+    },
+    ArrayLit(Vec<Self>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LValue {
+    Var(Vec<u8>),
+    Index { name: Vec<u8>, idx: Option<LExpr> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LStmt {
+    Assign {
+        target: LValue,
+        op: AssignOp,
+        value: LExpr,
+    },
+    IncDec {
+        target: LValue,
+        delta: i64,
+    },
+    Block(Vec<Self>),
+    If {
+        cond: LExpr,
+        then: Box<Self>,
+        other: Option<Box<Self>>,
+    },
+    For {
+        init: Vec<Self>,
+        cond: Option<LExpr>,
+        step: Vec<Self>,
+        body: Box<Self>,
+    },
+    While {
+        cond: LExpr,
+        body: Box<Self>,
+    },
+    DoWhile {
+        body: Box<Self>,
+        cond: LExpr,
+    },
+    Foreach {
+        subject: LExpr,
+        key: Option<Vec<u8>>,
+        value: Vec<u8>,
+        body: Box<Self>,
+    },
+    Break(u32),
+    Continue(u32),
+    Expr(LExpr),
+    Nop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    Normal,
+    Break(u32),
+    Continue(u32),
+}
+
+const MAX_PARSE_DEPTH: u32 = 128;
+const MAX_STATEMENTS: usize = 4096;
+
+struct LoopParser<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    depth: u32,
+}
+
+const fn is_ident_byte(b: u8) -> bool {
+    b == b'_' || b.is_ascii_alphanumeric()
+}
+
+const fn is_ident_start(b: u8) -> bool {
+    b == b'_' || b.is_ascii_alphabetic()
+}
+
+impl<'a> LoopParser<'a> {
+    const fn new(buf: &'a [u8]) -> Self {
+        Self {
+            buf,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.buf.get(self.pos).copied()
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<u8> {
+        self.buf.get(self.pos + offset).copied()
+    }
+
+    fn eof(&self) -> bool {
+        self.pos >= self.buf.len()
+    }
+
+    fn skip_trivia(&mut self) {
+        loop {
+            let before: usize = self.pos;
+            while self.pos < self.buf.len() && self.buf[self.pos].is_ascii_whitespace() {
+                self.pos += 1;
+            }
+            let rest: &[u8] = &self.buf[self.pos..];
+            if rest.starts_with(b"//") || (rest.starts_with(b"#") && !rest.starts_with(b"#[")) {
+                while self.pos < self.buf.len() && self.buf[self.pos] != b'\n' {
+                    self.pos += 1;
+                }
+            } else if rest.starts_with(b"/*") {
+                self.pos += 2;
+                while self.pos < self.buf.len() && !self.buf[self.pos..].starts_with(b"*/") {
+                    self.pos += 1;
+                }
+                self.pos = (self.pos + 2).min(self.buf.len());
+            }
+            if self.pos == before {
+                return;
+            }
+        }
+    }
+
+    fn eat(&mut self, tok: &[u8]) -> bool {
+        self.skip_trivia();
+        if self.buf[self.pos.min(self.buf.len())..].starts_with(tok) {
+            self.pos += tok.len();
+            return true;
+        }
+        false
+    }
+
+    fn eat_keyword(&mut self, kw: &[u8]) -> bool {
+        self.skip_trivia();
+        let end: usize = self.pos + kw.len();
+        let Some(slice): Option<&[u8]> = self.buf.get(self.pos..end) else {
+            return false;
+        };
+        if !slice.eq_ignore_ascii_case(kw) {
+            return false;
+        }
+        if self.buf.get(end).copied().is_some_and(is_ident_byte) {
+            return false;
+        }
+        self.pos = end;
+        true
+    }
+
+    fn enter(&mut self) -> Option<()> {
+        self.depth += 1;
+        (self.depth <= MAX_PARSE_DEPTH).then_some(())
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    fn parse_program(&mut self) -> Option<Vec<LStmt>> {
+        let mut out: Vec<LStmt> = Vec::new();
+        loop {
+            self.skip_trivia();
+            if self.eof() {
+                return Some(out);
+            }
+            if out.len() >= MAX_STATEMENTS {
+                return None;
+            }
+            out.push(self.parse_stmt()?);
+        }
+    }
+
+    fn parse_block_body(&mut self) -> Option<Vec<LStmt>> {
+        let mut out: Vec<LStmt> = Vec::new();
+        loop {
+            self.skip_trivia();
+            if self.eof() {
+                return None;
+            }
+            if self.peek() == Some(b'}') {
+                self.pos += 1;
+                return Some(out);
+            }
+            if out.len() >= MAX_STATEMENTS {
+                return None;
+            }
+            out.push(self.parse_stmt()?);
+        }
+    }
+
+    fn parse_stmt(&mut self) -> Option<LStmt> {
+        self.enter()?;
+        let stmt: Option<LStmt> = self.parse_stmt_inner();
+        self.leave();
+        stmt
+    }
+
+    fn parse_stmt_inner(&mut self) -> Option<LStmt> {
+        self.skip_trivia();
+        if self.peek() == Some(b';') {
+            self.pos += 1;
+            return Some(LStmt::Nop);
+        }
+        if self.peek() == Some(b'{') {
+            self.pos += 1;
+            return Some(LStmt::Block(self.parse_block_body()?));
+        }
+        if self.eat_keyword(b"if") {
+            return self.parse_if();
+        }
+        if self.eat_keyword(b"foreach") {
+            return self.parse_foreach();
+        }
+        if self.eat_keyword(b"for") {
+            return self.parse_for();
+        }
+        if self.eat_keyword(b"while") {
+            return self.parse_while();
+        }
+        if self.eat_keyword(b"do") {
+            return self.parse_do_while();
+        }
+        if self.eat_keyword(b"break") {
+            let levels: u32 = self.parse_optional_level();
+            self.expect_semicolon();
+            return Some(LStmt::Break(levels));
+        }
+        if self.eat_keyword(b"continue") {
+            let levels: u32 = self.parse_optional_level();
+            self.expect_semicolon();
+            return Some(LStmt::Continue(levels));
+        }
+        let stmt: LStmt = self.parse_simple_stmt()?;
+        self.expect_semicolon();
+        Some(stmt)
+    }
+
+    fn parse_optional_level(&mut self) -> u32 {
+        self.skip_trivia();
+        let start: usize = self.pos;
+        while self.pos < self.buf.len() && self.buf[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return 1;
+        }
+        std::str::from_utf8(&self.buf[start..self.pos])
+            .ok()
+            .and_then(|t: &str| t.parse::<u32>().ok())
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    fn expect_semicolon(&mut self) {
+        self.skip_trivia();
+        if self.peek() == Some(b';') {
+            self.pos += 1;
+        }
+    }
+
+    fn parse_if(&mut self) -> Option<LStmt> {
+        if !self.eat(b"(") {
+            return None;
+        }
+        let cond: LExpr = self.parse_expr()?;
+        if !self.eat(b")") {
+            return None;
+        }
+        let then: LStmt = self.parse_stmt()?;
+        let save: usize = self.pos;
+        if self.eat_keyword(b"elseif") {
+            let other: LStmt = self.parse_if()?;
+            return Some(LStmt::If {
+                cond,
+                then: Box::new(then),
+                other: Some(Box::new(other)),
+            });
+        }
+        if self.eat_keyword(b"else") {
+            self.skip_trivia();
+            if self.eat_keyword(b"if") {
+                let other: LStmt = self.parse_if()?;
+                return Some(LStmt::If {
+                    cond,
+                    then: Box::new(then),
+                    other: Some(Box::new(other)),
+                });
+            }
+            let other: LStmt = self.parse_stmt()?;
+            return Some(LStmt::If {
+                cond,
+                then: Box::new(then),
+                other: Some(Box::new(other)),
+            });
+        }
+        self.pos = save;
+        Some(LStmt::If {
+            cond,
+            then: Box::new(then),
+            other: None,
+        })
+    }
+
+    fn parse_for(&mut self) -> Option<LStmt> {
+        if !self.eat(b"(") {
+            return None;
+        }
+        let init: Vec<LStmt> = self.parse_simple_stmt_list(b';')?;
+        if !self.eat(b";") {
+            return None;
+        }
+        self.skip_trivia();
+        let cond: Option<LExpr> = if self.peek() == Some(b';') {
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        if !self.eat(b";") {
+            return None;
+        }
+        let step: Vec<LStmt> = self.parse_simple_stmt_list(b')')?;
+        if !self.eat(b")") {
+            return None;
+        }
+        let body: LStmt = self.parse_stmt()?;
+        Some(LStmt::For {
+            init,
+            cond,
+            step,
+            body: Box::new(body),
+        })
+    }
+
+    fn parse_simple_stmt_list(&mut self, terminator: u8) -> Option<Vec<LStmt>> {
+        let mut out: Vec<LStmt> = Vec::new();
+        self.skip_trivia();
+        if self.peek() == Some(terminator) {
+            return Some(out);
+        }
+        loop {
+            out.push(self.parse_simple_stmt()?);
+            self.skip_trivia();
+            if self.peek() == Some(b',') {
+                self.pos += 1;
+                continue;
+            }
+            return Some(out);
+        }
+    }
+
+    fn parse_while(&mut self) -> Option<LStmt> {
+        if !self.eat(b"(") {
+            return None;
+        }
+        let cond: LExpr = self.parse_expr()?;
+        if !self.eat(b")") {
+            return None;
+        }
+        let body: LStmt = self.parse_stmt()?;
+        Some(LStmt::While {
+            cond,
+            body: Box::new(body),
+        })
+    }
+
+    fn parse_do_while(&mut self) -> Option<LStmt> {
+        let body: LStmt = self.parse_stmt()?;
+        if !self.eat_keyword(b"while") {
+            return None;
+        }
+        if !self.eat(b"(") {
+            return None;
+        }
+        let cond: LExpr = self.parse_expr()?;
+        if !self.eat(b")") {
+            return None;
+        }
+        self.expect_semicolon();
+        Some(LStmt::DoWhile {
+            body: Box::new(body),
+            cond,
+        })
+    }
+
+    fn parse_foreach(&mut self) -> Option<LStmt> {
+        if !self.eat(b"(") {
+            return None;
+        }
+        let subject: LExpr = self.parse_expr()?;
+        if !self.eat_keyword(b"as") {
+            return None;
+        }
+        let first: Vec<u8> = self.parse_plain_var_name()?;
+        self.skip_trivia();
+        let (key, value): (Option<Vec<u8>>, Vec<u8>) = if self.eat(b"=>") {
+            let second: Vec<u8> = self.parse_plain_var_name()?;
+            (Some(first), second)
+        } else {
+            (None, first)
+        };
+        if !self.eat(b")") {
+            return None;
+        }
+        let body: LStmt = self.parse_stmt()?;
+        Some(LStmt::Foreach {
+            subject,
+            key,
+            value,
+            body: Box::new(body),
+        })
+    }
+
+    fn parse_plain_var_name(&mut self) -> Option<Vec<u8>> {
+        self.skip_trivia();
+        if self.peek() != Some(b'$') {
+            return None;
+        }
+        self.pos += 1;
+        self.parse_ident()
+    }
+
+    fn parse_ident(&mut self) -> Option<Vec<u8>> {
+        let start: usize = self.pos;
+        if !self.peek().is_some_and(is_ident_start) {
+            return None;
+        }
+        while self.peek().is_some_and(is_ident_byte) {
+            self.pos += 1;
+        }
+        Some(self.buf[start..self.pos].to_vec())
+    }
+
+    fn parse_simple_stmt(&mut self) -> Option<LStmt> {
+        self.enter()?;
+        let stmt: Option<LStmt> = self.parse_simple_stmt_inner();
+        self.leave();
+        stmt
+    }
+
+    fn parse_simple_stmt_inner(&mut self) -> Option<LStmt> {
+        self.skip_trivia();
+        if self.eat(b"++") {
+            let target: LValue = self.parse_lvalue()?;
+            return Some(LStmt::IncDec { target, delta: 1 });
+        }
+        if self.eat(b"--") {
+            let target: LValue = self.parse_lvalue()?;
+            return Some(LStmt::IncDec { target, delta: -1 });
+        }
+        let save: usize = self.pos;
+        self.skip_trivia();
+        if self.peek() == Some(b'$') && self.peek_at(1).is_some_and(is_ident_start) {
+            if let Some(target) = self.parse_lvalue() {
+                self.skip_trivia();
+                if self.eat(b"++") {
+                    return Some(LStmt::IncDec { target, delta: 1 });
+                }
+                if self.eat(b"--") {
+                    return Some(LStmt::IncDec { target, delta: -1 });
+                }
+                if let Some(op) = self.match_assign_op() {
+                    let value: LExpr = self.parse_expr()?;
+                    return Some(LStmt::Assign { target, op, value });
+                }
+            }
+            self.pos = save;
+        }
+        Some(LStmt::Expr(self.parse_expr()?))
+    }
+
+    fn match_assign_op(&mut self) -> Option<AssignOp> {
+        self.skip_trivia();
+        for (tok, op) in ASSIGN_OPS {
+            if self.buf[self.pos.min(self.buf.len())..].starts_with(tok) {
+                self.pos += tok.len();
+                return Some(*op);
+            }
+        }
+        if self.peek() == Some(b'=') && !matches!(self.peek_at(1), Some(b'=' | b'>' | b'<')) {
+            self.pos += 1;
+            return Some(AssignOp::Set);
+        }
+        None
+    }
+
+    fn parse_lvalue(&mut self) -> Option<LValue> {
+        self.skip_trivia();
+        if self.peek() != Some(b'$') {
+            return None;
+        }
+        self.pos += 1;
+        let name: Vec<u8> = self.parse_ident()?;
+        self.skip_trivia();
+        if self.peek() != Some(b'[') {
+            return Some(LValue::Var(name));
+        }
+        self.pos += 1;
+        self.skip_trivia();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Some(LValue::Index { name, idx: None });
+        }
+        let idx: LExpr = self.parse_expr()?;
+        if !self.eat(b"]") {
+            return None;
+        }
+        self.skip_trivia();
+        if self.peek() == Some(b'[') {
+            return None;
+        }
+        Some(LValue::Index {
+            name,
+            idx: Some(idx),
+        })
+    }
+
+    fn parse_expr(&mut self) -> Option<LExpr> {
+        self.enter()?;
+        let expr: Option<LExpr> = self.parse_ternary();
+        self.leave();
+        expr
+    }
+
+    fn parse_ternary(&mut self) -> Option<LExpr> {
+        let cond: LExpr = self.parse_binary(0)?;
+        self.skip_trivia();
+        if self.peek() != Some(b'?') || self.peek_at(1) == Some(b'?') {
+            return Some(cond);
+        }
+        self.pos += 1;
+        let then: LExpr = self.parse_expr()?;
+        if !self.eat(b":") {
+            return None;
+        }
+        let other: LExpr = self.parse_expr()?;
+        Some(LExpr::Ternary {
+            cond: Box::new(cond),
+            then: Box::new(then),
+            other: Box::new(other),
+        })
+    }
+
+    fn parse_binary(&mut self, level: usize) -> Option<LExpr> {
+        const LEVELS: &[&[(&[u8], BinOp)]] = &[
+            &[(b"||", BinOp::LogicOr)],
+            &[(b"&&", BinOp::LogicAnd)],
+            &[(b"|", BinOp::BitOr)],
+            &[(b"^", BinOp::BitXor)],
+            &[(b"&", BinOp::BitAnd)],
+            &[
+                (b"===", BinOp::Identical),
+                (b"!==", BinOp::NotIdentical),
+                (b"==", BinOp::Eq),
+                (b"!=", BinOp::Ne),
+                (b"<>", BinOp::Ne),
+            ],
+            &[
+                (b"<=", BinOp::Le),
+                (b">=", BinOp::Ge),
+                (b"<", BinOp::Lt),
+                (b">", BinOp::Gt),
+            ],
+            &[(b"<<", BinOp::Shl), (b">>", BinOp::Shr)],
+            &[(b".", BinOp::Concat)],
+            &[(b"+", BinOp::Add), (b"-", BinOp::Sub)],
+            &[(b"*", BinOp::Mul), (b"/", BinOp::Div), (b"%", BinOp::Mod)],
+        ];
+        let Some(ops): Option<&&[(&[u8], BinOp)]> = LEVELS.get(level) else {
+            return self.parse_unary();
+        };
+        self.enter()?;
+        let parsed: Option<LExpr> = self.parse_binary_at(level, ops);
+        self.leave();
+        parsed
+    }
+
+    fn parse_binary_at(&mut self, level: usize, ops: &[(&[u8], BinOp)]) -> Option<LExpr> {
+        let mut lhs: LExpr = self.parse_binary(level + 1)?;
+        loop {
+            self.skip_trivia();
+            let mut matched: Option<BinOp> = None;
+            for (tok, op) in ops {
+                if !self.buf[self.pos.min(self.buf.len())..].starts_with(tok) {
+                    continue;
+                }
+                if self.is_ambiguous_operator(tok) {
+                    continue;
+                }
+                self.pos += tok.len();
+                matched = Some(*op);
+                break;
+            }
+            let Some(op): Option<BinOp> = matched else {
+                return Some(lhs);
+            };
+            let rhs: LExpr = self.parse_binary(level + 1)?;
+            lhs = LExpr::Bin {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            };
+        }
+    }
+
+    fn is_ambiguous_operator(&self, tok: &[u8]) -> bool {
+        let next: Option<u8> = self.peek_at(tok.len());
+        match tok {
+            b"." => next.is_some_and(|b: u8| b == b'=' || b.is_ascii_digit()),
+            b"|" | b"^" | b"&" | b"+" | b"-" | b"*" | b"/" | b"%" => next == Some(b'='),
+            b"<" => matches!(next, Some(b'<' | b'=' | b'>')),
+            b">" => matches!(next, Some(b'>' | b'=')),
+            _ => false,
+        }
+    }
+
+    fn parse_unary(&mut self) -> Option<LExpr> {
+        self.skip_trivia();
+        for (tok, op) in UNARY_OPS {
+            if self.peek() != Some(*tok) {
+                continue;
+            }
+            if *tok == b'!' && self.peek_at(1) == Some(b'=') {
+                break;
+            }
+            if matches!(*tok, b'-' | b'+') && matches!(self.peek_at(1), Some(b'-' | b'+')) {
+                break;
+            }
+            self.pos += 1;
+            self.enter()?;
+            let operand: Option<LExpr> = self.parse_unary();
+            self.leave();
+            return Some(LExpr::Unary {
+                op: *op,
+                operand: Box::new(operand?),
+            });
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Option<LExpr> {
+        let mut base: LExpr = self.parse_primary()?;
+        loop {
+            self.skip_trivia();
+            if self.peek() != Some(b'[') {
+                return Some(base);
+            }
+            self.pos += 1;
+            let idx: LExpr = self.parse_expr()?;
+            if !self.eat(b"]") {
+                return None;
+            }
+            base = LExpr::Index {
+                base: Box::new(base),
+                idx: Box::new(idx),
+            };
+        }
+    }
+
+    fn parse_primary(&mut self) -> Option<LExpr> {
+        self.skip_trivia();
+        let c: u8 = self.peek()?;
+        if c == b'(' {
+            self.pos += 1;
+            let inner: LExpr = self.parse_expr()?;
+            if !self.eat(b")") {
+                return None;
+            }
+            return Some(inner);
+        }
+        if c == b'$' {
+            self.pos += 1;
+            let name: Vec<u8> = self.parse_ident()?;
+            return Some(LExpr::Var(name));
+        }
+        if c == b'\'' || c == b'"' {
+            return self.parse_string(c);
+        }
+        if c == b'[' {
+            self.pos += 1;
+            let args: Vec<LExpr> = self.parse_arg_list(b']')?;
+            return Some(LExpr::ArrayLit(args));
+        }
+        if c.is_ascii_digit() {
+            return self.parse_number();
+        }
+        if is_ident_start(c) {
+            let name: Vec<u8> = self.parse_ident()?;
+            self.skip_trivia();
+            if self.peek() != Some(b'(') {
+                return None;
+            }
+            self.pos += 1;
+            let args: Vec<LExpr> = self.parse_arg_list(b')')?;
+            if name.eq_ignore_ascii_case(b"array") {
+                return Some(LExpr::ArrayLit(args));
+            }
+            return Some(LExpr::Call {
+                name: name.to_ascii_lowercase(),
+                args,
+            });
+        }
+        None
+    }
+
+    fn parse_arg_list(&mut self, close: u8) -> Option<Vec<LExpr>> {
+        let mut args: Vec<LExpr> = Vec::new();
+        self.skip_trivia();
+        if self.peek() == Some(close) {
+            self.pos += 1;
+            return Some(args);
+        }
+        loop {
+            args.push(self.parse_expr()?);
+            self.skip_trivia();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                    self.skip_trivia();
+                    if self.peek() == Some(close) {
+                        self.pos += 1;
+                        return Some(args);
+                    }
+                }
+                Some(b) if b == close => {
+                    self.pos += 1;
+                    return Some(args);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn parse_number(&mut self) -> Option<LExpr> {
+        let start: usize = self.pos;
+        if self.buf[self.pos..].starts_with(b"0x") || self.buf[self.pos..].starts_with(b"0X") {
+            self.pos += 2;
+            let digits_at: usize = self.pos;
+            while self
+                .peek()
+                .is_some_and(|b: u8| b.is_ascii_hexdigit() || b == b'_')
+            {
+                self.pos += 1;
+            }
+            let text: String = self.buf[digits_at..self.pos]
+                .iter()
+                .filter(|b: &&u8| **b != b'_')
+                .map(|b: &u8| char::from(*b))
+                .collect();
+            return i64::from_str_radix(&text, 16).ok().map(LExpr::Int);
+        }
+        while self
+            .peek()
+            .is_some_and(|b: u8| b.is_ascii_digit() || b == b'_')
+        {
+            self.pos += 1;
+        }
+        if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b: u8| b.is_ascii_digit()) {
+            return None;
+        }
+        let text: String = self.buf[start..self.pos]
+            .iter()
+            .filter(|b: &&u8| **b != b'_')
+            .map(|b: &u8| char::from(*b))
+            .collect();
+        text.parse::<i64>().ok().map(LExpr::Int)
+    }
+
+    fn parse_string(&mut self, quote: u8) -> Option<LExpr> {
+        self.pos += 1;
+        let mut out: Vec<u8> = Vec::new();
+        while let Some(c) = self.peek() {
+            if c == b'\\' {
+                let next: u8 = self.peek_at(1)?;
+                if quote == b'\'' {
+                    if next == b'\\' || next == b'\'' {
+                        out.push(next);
+                        self.pos += 2;
+                    } else {
+                        out.push(c);
+                        self.pos += 1;
+                    }
+                } else {
+                    self.pos += self.push_double_escape(next, &mut out);
+                }
+            } else if c == quote {
+                self.pos += 1;
+                if quote == b'"' && out.contains(&b'$') {
+                    return None;
+                }
+                return Some(LExpr::Str(out));
+            } else {
+                out.push(c);
+                self.pos += 1;
+            }
+        }
+        None
+    }
+
+    fn push_double_escape(&self, next: u8, out: &mut Vec<u8>) -> usize {
+        match next {
+            b'x' | b'X' => {
+                let mut value: u32 = 0;
+                let mut digits: usize = 0;
+                while digits < 2 {
+                    let Some(d): Option<u8> = self.peek_at(2 + digits) else {
+                        break;
+                    };
+                    let Some(nib): Option<u8> = disrobe_core::codec::hex::nibble(d) else {
+                        break;
+                    };
+                    value = value * 16 + u32::from(nib);
+                    digits += 1;
+                }
+                if digits == 0 {
+                    out.push(b'\\');
+                    out.push(next);
+                    return 2;
+                }
+                out.push(value as u8);
+                2 + digits
+            }
+            b'0'..=b'7' => {
+                let mut value: u32 = 0;
+                let mut digits: usize = 0;
+                while digits < 3 {
+                    let Some(d): Option<u8> = self.peek_at(1 + digits) else {
+                        break;
+                    };
+                    if !(b'0'..=b'7').contains(&d) {
+                        break;
+                    }
+                    value = value * 8 + u32::from(d - b'0');
+                    digits += 1;
+                }
+                out.push(value as u8);
+                1 + digits
+            }
+            b'n' => {
+                out.push(b'\n');
+                2
+            }
+            b'r' => {
+                out.push(b'\r');
+                2
+            }
+            b't' => {
+                out.push(b'\t');
+                2
+            }
+            b'v' => {
+                out.push(0x0b);
+                2
+            }
+            b'f' => {
+                out.push(0x0c);
+                2
+            }
+            b'e' => {
+                out.push(0x1b);
+                2
+            }
+            other => {
+                out.push(other);
+                2
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Interp {
+    scope: BTreeMap<Vec<u8>, Val>,
+    budget: Budget,
+    steps: u64,
+    rounds: u32,
+    live_bytes: usize,
+    started: Instant,
+}
+
+impl Interp {
+    pub(crate) fn new(budget: Budget) -> Self {
+        Self {
+            scope: BTreeMap::new(),
+            budget,
+            steps: 0,
+            rounds: 0,
+            live_bytes: 0,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn observe_scalar(&mut self, name: &[u8], value: &[u8]) {
+        self.bind_unchecked(name.to_vec(), Val::Str(value.to_vec()));
+    }
+
+    fn bind_unchecked(&mut self, name: Vec<u8>, value: Val) {
+        let added: usize = val_size(&value);
+        let removed: usize = self.scope.get(&name).map_or(0, val_size);
+        self.live_bytes = self
+            .live_bytes
+            .saturating_sub(removed)
+            .saturating_add(added);
+        self.scope.insert(name, value);
+    }
+
+    fn bind(&mut self, name: Vec<u8>, value: Val) -> Eval<()> {
+        self.bind_unchecked(name, value);
+        self.check_heap()
+    }
+
+    fn check_heap(&self) -> Eval<()> {
+        if self.live_bytes > self.budget.heap_bytes {
+            return Err(Abstain::HeapBudget);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_array(&mut self, name: &[u8], elements: &[Vec<u8>]) {
+        let map: BTreeMap<i64, Val> = elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item): (usize, &Vec<u8>)| {
+                i64::try_from(i)
+                    .ok()
+                    .map(|k: i64| (k, Val::Str(item.clone())))
+            })
+            .collect();
+        self.bind_unchecked(name.to_vec(), Val::Arr(map));
+    }
+
+    pub(crate) fn run_block(&mut self, raw: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.check_heap().ok()?;
+        let mut parser: LoopParser<'_> = LoopParser::new(raw);
+        let program: Vec<LStmt> = parser.parse_program()?;
+        if program.is_empty() {
+            return None;
+        }
+        let before: BTreeMap<Vec<u8>, Val> = self.scope.clone();
+        let live_before: usize = self.live_bytes;
+        if self.exec_all(&program).is_err() {
+            self.scope = before;
+            self.live_bytes = live_before;
+            return None;
+        }
+        let mut produced: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for (name, value) in &self.scope {
+            let Val::Str(bytes) = value else {
+                continue;
+            };
+            if before.get(name) == Some(value) {
+                continue;
+            }
+            produced.push((name.clone(), bytes.clone()));
+        }
+        (!produced.is_empty()).then_some(produced)
+    }
+
+    fn tick(&mut self) -> Eval<()> {
+        self.steps += 1;
+        if self.steps > self.budget.steps {
+            return Err(Abstain::StepBudget);
+        }
+        if self.steps.is_multiple_of(1024) && self.started.elapsed() > self.budget.wall {
+            return Err(Abstain::WallBudget);
+        }
+        Ok(())
+    }
+
+    fn enter_loop(&mut self) -> Eval<()> {
+        self.rounds += 1;
+        if self.rounds > self.budget.rounds {
+            return Err(Abstain::RoundBudget);
+        }
+        Ok(())
+    }
+
+    fn check_size(&self, len: usize) -> Eval<()> {
+        if len > self.budget.output_bytes {
+            return Err(Abstain::OutputBudget);
+        }
+        Ok(())
+    }
+
+    fn exec_all(&mut self, stmts: &[LStmt]) -> Eval<Flow> {
+        for stmt in stmts {
+            match self.exec(stmt)? {
+                Flow::Normal => {}
+                flow => return Ok(flow),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn exec(&mut self, stmt: &LStmt) -> Eval<Flow> {
+        self.tick()?;
+        match stmt {
+            LStmt::Nop => Ok(Flow::Normal),
+            LStmt::Expr(expr) => {
+                self.eval(expr, 0)?;
+                Ok(Flow::Normal)
+            }
+            LStmt::Assign { target, op, value } => {
+                let rhs: Val = self.eval(value, 0)?;
+                self.assign(target, *op, rhs)?;
+                Ok(Flow::Normal)
+            }
+            LStmt::IncDec { target, delta } => {
+                let current: Val = self.read_lvalue(target)?;
+                let n: i64 = to_int(&current)?;
+                let next: i64 = n.checked_add(*delta).ok_or(Abstain::OutOfRange)?;
+                self.assign(target, AssignOp::Set, Val::Int(next))?;
+                Ok(Flow::Normal)
+            }
+            LStmt::Block(body) => self.exec_all(body),
+            LStmt::If { cond, then, other } => {
+                if to_bool(&self.eval(cond, 0)?) {
+                    return self.exec(then);
+                }
+                other
+                    .as_deref()
+                    .map_or(Ok(Flow::Normal), |branch: &LStmt| self.exec(branch))
+            }
+            LStmt::For {
+                init,
+                cond,
+                step,
+                body,
+            } => self.exec_for(init, cond.as_ref(), step, body),
+            LStmt::While { cond, body } => self.exec_while(cond, body),
+            LStmt::DoWhile { body, cond } => self.exec_do_while(body, cond),
+            LStmt::Foreach {
+                subject,
+                key,
+                value,
+                body,
+            } => self.exec_foreach(subject, key.as_deref(), value, body),
+            LStmt::Break(levels) => Ok(Flow::Break(*levels)),
+            LStmt::Continue(levels) => Ok(Flow::Continue(*levels)),
+        }
+    }
+
+    fn exec_for(
+        &mut self,
+        init: &[LStmt],
+        cond: Option<&LExpr>,
+        step: &[LStmt],
+        body: &LStmt,
+    ) -> Eval<Flow> {
+        self.enter_loop()?;
+        self.exec_all(init)?;
+        loop {
+            self.tick()?;
+            if let Some(test) = cond
+                && !to_bool(&self.eval(test, 0)?)
+            {
+                return Ok(Flow::Normal);
+            }
+            match self.exec(body)? {
+                Flow::Normal | Flow::Continue(1) => {}
+                Flow::Break(1) => return Ok(Flow::Normal),
+                Flow::Break(n) => return Ok(Flow::Break(n - 1)),
+                Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+            }
+            self.exec_all(step)?;
+        }
+    }
+
+    fn exec_while(&mut self, cond: &LExpr, body: &LStmt) -> Eval<Flow> {
+        self.enter_loop()?;
+        loop {
+            self.tick()?;
+            if !to_bool(&self.eval(cond, 0)?) {
+                return Ok(Flow::Normal);
+            }
+            match self.exec(body)? {
+                Flow::Normal | Flow::Continue(1) => {}
+                Flow::Break(1) => return Ok(Flow::Normal),
+                Flow::Break(n) => return Ok(Flow::Break(n - 1)),
+                Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+            }
+        }
+    }
+
+    fn exec_do_while(&mut self, body: &LStmt, cond: &LExpr) -> Eval<Flow> {
+        self.enter_loop()?;
+        loop {
+            self.tick()?;
+            match self.exec(body)? {
+                Flow::Normal | Flow::Continue(1) => {}
+                Flow::Break(1) => return Ok(Flow::Normal),
+                Flow::Break(n) => return Ok(Flow::Break(n - 1)),
+                Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+            }
+            if !to_bool(&self.eval(cond, 0)?) {
+                return Ok(Flow::Normal);
+            }
+        }
+    }
+
+    fn exec_foreach(
+        &mut self,
+        subject: &LExpr,
+        key: Option<&[u8]>,
+        value: &[u8],
+        body: &LStmt,
+    ) -> Eval<Flow> {
+        self.enter_loop()?;
+        let items: Vec<(i64, Val)> = match self.eval(subject, 0)? {
+            Val::Arr(map) => map.into_iter().collect(),
+            Val::Str(_) | Val::Int(_) => return Err(Abstain::TypeMismatch),
+        };
+        for (k, v) in items {
+            self.tick()?;
+            if let Some(key_name) = key {
+                self.bind(key_name.to_vec(), Val::Int(k))?;
+            }
+            self.bind(value.to_vec(), v)?;
+            match self.exec(body)? {
+                Flow::Normal | Flow::Continue(1) => {}
+                Flow::Break(1) => return Ok(Flow::Normal),
+                Flow::Break(n) => return Ok(Flow::Break(n - 1)),
+                Flow::Continue(n) => return Ok(Flow::Continue(n - 1)),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    fn read_lvalue(&mut self, target: &LValue) -> Eval<Val> {
+        match target {
+            LValue::Var(name) => self.scope.get(name).cloned().ok_or(Abstain::UndefinedRead),
+            LValue::Index { name, idx } => {
+                let Some(index_expr): Option<&LExpr> = idx.as_ref() else {
+                    return Err(Abstain::Unsupported);
+                };
+                let key: i64 = to_int(&self.eval(index_expr, 0)?)?;
+                let container: &Val = self.scope.get(name).ok_or(Abstain::UndefinedRead)?;
+                index_value(container, key)
+            }
+        }
+    }
+
+    fn assign(&mut self, target: &LValue, op: AssignOp, rhs: Val) -> Eval<()> {
+        let value: Val = if matches!(op, AssignOp::Set) {
+            rhs
+        } else {
+            let current: Val = self.read_lvalue(target)?;
+            apply_binary(assign_op_to_binary(op), &current, &rhs)?
+        };
+        if let Val::Str(bytes) = &value {
+            self.check_size(bytes.len())?;
+        }
+        match target {
+            LValue::Var(name) => self.bind(name.clone(), value),
+            LValue::Index { name, idx } => {
+                let key: Option<i64> = match idx {
+                    Some(expr) => Some(to_int(&self.eval(expr, 0)?)?),
+                    None => None,
+                };
+                let slot: &mut Val = self
+                    .scope
+                    .entry(name.clone())
+                    .or_insert_with(|| Val::Arr(BTreeMap::new()));
+                let Val::Arr(map) = slot else {
+                    return Err(Abstain::TypeMismatch);
+                };
+                let key: i64 = key.unwrap_or_else(|| {
+                    map.keys()
+                        .next_back()
+                        .map_or(0, |k: &i64| k.saturating_add(1))
+                });
+                let added: usize = val_size(&value).saturating_add(ARRAY_SLOT_OVERHEAD);
+                let removed: usize = map.insert(key, value).map_or(0, |old: Val| {
+                    val_size(&old).saturating_add(ARRAY_SLOT_OVERHEAD)
+                });
+                self.live_bytes = self
+                    .live_bytes
+                    .saturating_sub(removed)
+                    .saturating_add(added);
+                self.check_heap()
+            }
+        }
+    }
+
+    fn eval(&mut self, expr: &LExpr, depth: u32) -> Eval<Val> {
+        self.tick()?;
+        if depth > self.budget.expr_depth {
+            return Err(Abstain::DepthBudget);
+        }
+        match expr {
+            LExpr::Int(n) => Ok(Val::Int(*n)),
+            LExpr::Str(s) => Ok(Val::Str(s.clone())),
+            LExpr::Var(name) => self.scope.get(name).cloned().ok_or(Abstain::UndefinedRead),
+            LExpr::Index { base, idx } => {
+                let container: Val = self.eval(base, depth + 1)?;
+                let key: i64 = to_int(&self.eval(idx, depth + 1)?)?;
+                index_value(&container, key)
+            }
+            LExpr::Unary { op, operand } => {
+                let value: Val = self.eval(operand, depth + 1)?;
+                apply_unary(*op, &value)
+            }
+            LExpr::Bin { op, lhs, rhs } => {
+                if matches!(op, BinOp::LogicAnd | BinOp::LogicOr) {
+                    let left: bool = to_bool(&self.eval(lhs, depth + 1)?);
+                    let short_circuit: bool = matches!(op, BinOp::LogicOr);
+                    if left == short_circuit {
+                        return Ok(Val::Int(i64::from(left)));
+                    }
+                    let right: bool = to_bool(&self.eval(rhs, depth + 1)?);
+                    return Ok(Val::Int(i64::from(right)));
+                }
+                let left: Val = self.eval(lhs, depth + 1)?;
+                let right: Val = self.eval(rhs, depth + 1)?;
+                let out: Val = apply_binary(*op, &left, &right)?;
+                if let Val::Str(bytes) = &out {
+                    self.check_size(bytes.len())?;
+                }
+                Ok(out)
+            }
+            LExpr::Ternary { cond, then, other } => {
+                if to_bool(&self.eval(cond, depth + 1)?) {
+                    self.eval(then, depth + 1)
+                } else {
+                    self.eval(other, depth + 1)
+                }
+            }
+            LExpr::ArrayLit(items) => {
+                let mut map: BTreeMap<i64, Val> = BTreeMap::new();
+                for (i, item) in items.iter().enumerate() {
+                    let value: Val = self.eval(item, depth + 1)?;
+                    map.insert(i64::try_from(i).map_err(|_| Abstain::OutOfRange)?, value);
+                }
+                Ok(Val::Arr(map))
+            }
+            LExpr::Call { name, args } => {
+                if !PURE_BUILTINS.contains(&name.as_slice()) {
+                    return Err(Abstain::RefusedCall);
+                }
+                let mut values: Vec<Val> = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(self.eval(arg, depth + 1)?);
+                }
+                let out: Val = self.call_builtin(name, &values)?;
+                if let Val::Str(bytes) = &out {
+                    self.check_size(bytes.len())?;
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    fn call_builtin(&mut self, name: &[u8], args: &[Val]) -> Eval<Val> {
+        let arg0: Eval<&Val> = args.first().ok_or(Abstain::Unsupported);
+        match name {
+            b"strlen" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                Ok(Val::Int(
+                    i64::try_from(s.len()).map_err(|_| Abstain::OutOfRange)?,
+                ))
+            }
+            b"count" | b"sizeof" => match arg0? {
+                Val::Arr(map) => Ok(Val::Int(
+                    i64::try_from(map.len()).map_err(|_| Abstain::OutOfRange)?,
+                )),
+                Val::Str(_) | Val::Int(_) => Err(Abstain::TypeMismatch),
+            },
+            b"ord" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                Ok(Val::Int(i64::from(s.first().copied().unwrap_or(0))))
+            }
+            b"chr" => {
+                let n: i64 = to_int(arg0?)?;
+                let byte: u8 = u8::try_from(n.rem_euclid(256)).map_err(|_| Abstain::OutOfRange)?;
+                Ok(Val::Str(vec![byte]))
+            }
+            b"abs" => Ok(Val::Int(
+                to_int(arg0?)?.checked_abs().ok_or(Abstain::OutOfRange)?,
+            )),
+            b"intval" => Ok(Val::Int(to_int(arg0?)?)),
+            b"min" | b"max" => {
+                let mut best: i64 = to_int(arg0?)?;
+                for value in args.iter().skip(1) {
+                    let n: i64 = to_int(value)?;
+                    best = if name == b"min" {
+                        best.min(n)
+                    } else {
+                        best.max(n)
+                    };
+                }
+                Ok(Val::Int(best))
+            }
+            b"dechex" => Ok(Val::Str(format!("{:x}", to_int(arg0?)?).into_bytes())),
+            b"hexdec" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let text: &str = std::str::from_utf8(&s).map_err(|_| Abstain::TypeMismatch)?;
+                i64::from_str_radix(text.trim(), 16)
+                    .map(Val::Int)
+                    .map_err(|_| Abstain::TypeMismatch)
+            }
+            b"base64_decode" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let clean: Vec<u8> = s
+                    .into_iter()
+                    .filter(|b: &u8| !b.is_ascii_whitespace())
+                    .collect();
+                B64_STD
+                    .decode(&clean)
+                    .map(Val::Str)
+                    .map_err(|_| Abstain::TypeMismatch)
+            }
+            b"base64_encode" => Ok(Val::Str(B64_STD.encode(to_bytes(arg0?)?).into_bytes())),
+            b"gzinflate" => inflate_raw(&to_bytes(arg0?)?)
+                .map(Val::Str)
+                .ok_or(Abstain::TypeMismatch),
+            b"gzuncompress" => inflate_zlib(&to_bytes(arg0?)?)
+                .map(Val::Str)
+                .ok_or(Abstain::TypeMismatch),
+            b"gzdecode" => gunzip(&to_bytes(arg0?)?)
+                .map(Val::Str)
+                .ok_or(Abstain::TypeMismatch),
+            b"bzdecompress" => bzdecompress_bounded(&to_bytes(arg0?)?)
+                .map(Val::Str)
+                .ok_or(Abstain::TypeMismatch),
+            b"str_rot13" => Ok(Val::Str(
+                to_bytes(arg0?)?.into_iter().map(rot13_byte).collect(),
+            )),
+            b"strrev" => Ok(Val::Str(to_bytes(arg0?)?.into_iter().rev().collect())),
+            b"strtolower" => Ok(Val::Str(to_bytes(arg0?)?.to_ascii_lowercase())),
+            b"strtoupper" => Ok(Val::Str(to_bytes(arg0?)?.to_ascii_uppercase())),
+            b"trim" | b"ltrim" | b"rtrim" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let trimmed: &[u8] = match name {
+                    b"ltrim" => s.trim_ascii_start(),
+                    b"rtrim" => s.trim_ascii_end(),
+                    _ => s.trim_ascii(),
+                };
+                Ok(Val::Str(trimmed.to_vec()))
+            }
+            b"convert_uudecode" => Ok(Val::Str(uudecode(&to_bytes(arg0?)?))),
+            b"urldecode" => Ok(Val::Str(
+                disrobe_core::codec::web_escape::percent_decode_lenient(&to_bytes(arg0?)?, true),
+            )),
+            b"rawurldecode" => Ok(Val::Str(
+                disrobe_core::codec::web_escape::percent_decode_lenient(&to_bytes(arg0?)?, false),
+            )),
+            b"hex2bin" => decode_hex_stream_skip_ws(&to_bytes(arg0?)?)
+                .map(Val::Str)
+                .ok_or(Abstain::TypeMismatch),
+            b"bin2hex" => Ok(Val::Str(bin2hex(&to_bytes(arg0?)?))),
+            b"html_entity_decode" | b"htmlspecialchars_decode" => {
+                Ok(Val::Str(html_entity_decode(&to_bytes(arg0?)?)))
+            }
+            b"pack" | b"unpack" => {
+                let fmt: Vec<u8> = to_bytes(arg0?)?;
+                if fmt.trim_ascii() != b"H*" {
+                    return Err(Abstain::Unsupported);
+                }
+                let body: Vec<u8> = to_bytes(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                if name == b"pack" {
+                    return decode_hex_stream_skip_ws(&body)
+                        .map(Val::Str)
+                        .ok_or(Abstain::TypeMismatch);
+                }
+                Ok(Val::Str(bin2hex(&body)))
+            }
+            b"substr" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let start: i64 = to_int(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                let len: Option<i64> = match args.get(2) {
+                    Some(value) => Some(to_int(value)?),
+                    None => None,
+                };
+                Ok(Val::Str(substr(&s, start, len)))
+            }
+            b"str_repeat" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let times: i64 = to_int(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                str_repeat(&s, times)
+                    .map(Val::Str)
+                    .ok_or(Abstain::OutputBudget)
+            }
+            b"str_replace" => {
+                let from: Vec<u8> = to_bytes(arg0?)?;
+                let to: Vec<u8> = to_bytes(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                let subject: Vec<u8> = to_bytes(args.get(2).ok_or(Abstain::Unsupported)?)?;
+                str_replace_bytes(&subject, &from, &to)
+                    .map(Val::Str)
+                    .ok_or(Abstain::OutputBudget)
+            }
+            b"strtr" => {
+                let subject: Vec<u8> = to_bytes(arg0?)?;
+                let from: Vec<u8> = to_bytes(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                let to: Vec<u8> = to_bytes(args.get(2).ok_or(Abstain::Unsupported)?)?;
+                Ok(Val::Str(strtr_bytes(&subject, &from, &to)))
+            }
+            b"str_split" => {
+                let s: Vec<u8> = to_bytes(arg0?)?;
+                let size: i64 = match args.get(1) {
+                    Some(value) => to_int(value)?,
+                    None => 1,
+                };
+                let width: usize = usize::try_from(size).map_err(|_| Abstain::OutOfRange)?;
+                if width == 0 {
+                    return Err(Abstain::OutOfRange);
+                }
+                let mut map: BTreeMap<i64, Val> = BTreeMap::new();
+                for (i, chunk) in s.chunks(width).enumerate() {
+                    map.insert(
+                        i64::try_from(i).map_err(|_| Abstain::OutOfRange)?,
+                        Val::Str(chunk.to_vec()),
+                    );
+                }
+                Ok(Val::Arr(map))
+            }
+            b"implode" | b"join" => {
+                let (glue, list): (Vec<u8>, &Val) = match (args.first(), args.get(1)) {
+                    (Some(Val::Arr(_)), None) => (Vec::new(), arg0?),
+                    (Some(sep), Some(list)) => (to_bytes(sep)?, list),
+                    _ => return Err(Abstain::Unsupported),
+                };
+                let Val::Arr(map) = list else {
+                    return Err(Abstain::TypeMismatch);
+                };
+                let mut out: Vec<u8> = Vec::new();
+                for (i, value) in map.values().enumerate() {
+                    if i > 0 {
+                        out.extend_from_slice(&glue);
+                    }
+                    out.extend_from_slice(&to_bytes(value)?);
+                    self.check_size(out.len())?;
+                }
+                Ok(Val::Str(out))
+            }
+            b"range" => {
+                let from: i64 = to_int(arg0?)?;
+                let to: i64 = to_int(args.get(1).ok_or(Abstain::Unsupported)?)?;
+                let span: u64 = from.abs_diff(to);
+                if span >= u64::try_from(self.budget.output_bytes).unwrap_or(u64::MAX) {
+                    return Err(Abstain::OutputBudget);
+                }
+                let step: i64 = if to >= from { 1 } else { -1 };
+                let mut map: BTreeMap<i64, Val> = BTreeMap::new();
+                let mut current: i64 = from;
+                let mut index: i64 = 0;
+                loop {
+                    self.tick()?;
+                    map.insert(index, Val::Int(current));
+                    if current == to {
+                        break;
+                    }
+                    current = current.checked_add(step).ok_or(Abstain::OutOfRange)?;
+                    index = index.checked_add(1).ok_or(Abstain::OutOfRange)?;
+                }
+                Ok(Val::Arr(map))
+            }
+            _ => Err(Abstain::RefusedCall),
+        }
+    }
+}
+
+const ARRAY_SLOT_OVERHEAD: usize = 16;
+
+fn val_size(value: &Val) -> usize {
+    match value {
+        Val::Int(_) => size_of::<i64>(),
+        Val::Str(bytes) => bytes.len(),
+        Val::Arr(map) => map.values().fold(0usize, |acc: usize, item: &Val| {
+            acc.saturating_add(val_size(item))
+                .saturating_add(ARRAY_SLOT_OVERHEAD)
+        }),
+    }
+}
+
+const ASSIGN_OPS: &[(&[u8], AssignOp)] = &[
+    (b"<<=", AssignOp::Shl),
+    (b">>=", AssignOp::Shr),
+    (b".=", AssignOp::Concat),
+    (b"+=", AssignOp::Add),
+    (b"-=", AssignOp::Sub),
+    (b"*=", AssignOp::Mul),
+    (b"/=", AssignOp::Div),
+    (b"%=", AssignOp::Mod),
+    (b"^=", AssignOp::BitXor),
+    (b"&=", AssignOp::BitAnd),
+    (b"|=", AssignOp::BitOr),
+];
+
+const UNARY_OPS: &[(u8, UnOp)] = &[
+    (b'!', UnOp::Not),
+    (b'~', UnOp::BitNot),
+    (b'-', UnOp::Neg),
+    (b'+', UnOp::Plus),
+];
+
+const PURE_BUILTINS: &[&[u8]] = &[
+    b"abs",
+    b"base64_decode",
+    b"base64_encode",
+    b"bin2hex",
+    b"bzdecompress",
+    b"chr",
+    b"convert_uudecode",
+    b"count",
+    b"dechex",
+    b"gzdecode",
+    b"gzinflate",
+    b"gzuncompress",
+    b"hex2bin",
+    b"hexdec",
+    b"html_entity_decode",
+    b"htmlspecialchars_decode",
+    b"implode",
+    b"intval",
+    b"join",
+    b"ltrim",
+    b"max",
+    b"min",
+    b"ord",
+    b"pack",
+    b"range",
+    b"rawurldecode",
+    b"rtrim",
+    b"sizeof",
+    b"str_repeat",
+    b"str_replace",
+    b"str_rot13",
+    b"str_split",
+    b"strlen",
+    b"strrev",
+    b"strtolower",
+    b"strtoupper",
+    b"strtr",
+    b"substr",
+    b"trim",
+    b"unpack",
+    b"urldecode",
+];
+
+fn index_value(container: &Val, key: i64) -> Eval<Val> {
+    match container {
+        Val::Arr(map) => map.get(&key).cloned().ok_or(Abstain::UndefinedRead),
+        Val::Str(s) => {
+            let len: i64 = i64::try_from(s.len()).map_err(|_| Abstain::OutOfRange)?;
+            let offset: i64 = if key < 0 { len + key } else { key };
+            if offset < 0 || offset >= len {
+                return Err(Abstain::OutOfRange);
+            }
+            let at: usize = usize::try_from(offset).map_err(|_| Abstain::OutOfRange)?;
+            s.get(at)
+                .map(|b: &u8| Val::Str(vec![*b]))
+                .ok_or(Abstain::OutOfRange)
+        }
+        Val::Int(_) => Err(Abstain::TypeMismatch),
+    }
+}
+
+const fn assign_op_to_binary(op: AssignOp) -> BinOp {
+    match op {
+        AssignOp::Set | AssignOp::Concat => BinOp::Concat,
+        AssignOp::Add => BinOp::Add,
+        AssignOp::Sub => BinOp::Sub,
+        AssignOp::Mul => BinOp::Mul,
+        AssignOp::Div => BinOp::Div,
+        AssignOp::Mod => BinOp::Mod,
+        AssignOp::BitXor => BinOp::BitXor,
+        AssignOp::BitAnd => BinOp::BitAnd,
+        AssignOp::BitOr => BinOp::BitOr,
+        AssignOp::Shl => BinOp::Shl,
+        AssignOp::Shr => BinOp::Shr,
+    }
+}
+
+fn to_int(value: &Val) -> Eval<i64> {
+    match value {
+        Val::Int(n) => Ok(*n),
+        Val::Str(s) => {
+            let text: &str = std::str::from_utf8(s).map_err(|_| Abstain::TypeMismatch)?;
+            let trimmed: &str = text.trim();
+            if trimmed.is_empty() {
+                return Ok(0);
+            }
+            trimmed.parse::<i64>().map_err(|_| Abstain::TypeMismatch)
+        }
+        Val::Arr(_) => Err(Abstain::TypeMismatch),
+    }
+}
+
+fn to_bytes(value: &Val) -> Eval<Vec<u8>> {
+    match value {
+        Val::Int(n) => Ok(n.to_string().into_bytes()),
+        Val::Str(s) => Ok(s.clone()),
+        Val::Arr(_) => Err(Abstain::TypeMismatch),
+    }
+}
+
+fn to_bool(value: &Val) -> bool {
+    match value {
+        Val::Int(n) => *n != 0,
+        Val::Str(s) => !s.is_empty() && s.as_slice() != b"0",
+        Val::Arr(map) => !map.is_empty(),
+    }
+}
+
+fn is_numeric(value: &Val) -> bool {
+    match value {
+        Val::Int(_) => true,
+        Val::Str(s) => std::str::from_utf8(s)
+            .is_ok_and(|t: &str| !t.trim().is_empty() && t.trim().parse::<i64>().is_ok()),
+        Val::Arr(_) => false,
+    }
+}
+
+fn apply_unary(op: UnOp, value: &Val) -> Eval<Val> {
+    match op {
+        UnOp::Not => Ok(Val::Int(i64::from(!to_bool(value)))),
+        UnOp::Neg => Ok(Val::Int(
+            to_int(value)?.checked_neg().ok_or(Abstain::OutOfRange)?,
+        )),
+        UnOp::Plus => Ok(Val::Int(to_int(value)?)),
+        UnOp::BitNot => match value {
+            Val::Str(s) => Ok(Val::Str(s.iter().map(|b: &u8| !*b).collect())),
+            Val::Int(_) => Ok(Val::Int(!to_int(value)?)),
+            Val::Arr(_) => Err(Abstain::TypeMismatch),
+        },
+    }
+}
+
+fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
+    match op {
+        BinOp::Concat => {
+            let mut out: Vec<u8> = to_bytes(lhs)?;
+            out.extend_from_slice(&to_bytes(rhs)?);
+            Ok(Val::Str(out))
+        }
+        BinOp::BitXor | BinOp::BitAnd | BinOp::BitOr => bitwise(op, lhs, rhs),
+        BinOp::Shl | BinOp::Shr => {
+            let a: i64 = to_int(lhs)?;
+            let b: u32 = u32::try_from(to_int(rhs)?).map_err(|_| Abstain::OutOfRange)?;
+            if b >= 64 {
+                return Ok(Val::Int(0));
+            }
+            let shifted: i64 = if matches!(op, BinOp::Shl) {
+                a.wrapping_shl(b)
+            } else {
+                a.wrapping_shr(b)
+            };
+            Ok(Val::Int(shifted))
+        }
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            let a: i64 = to_int(lhs)?;
+            let b: i64 = to_int(rhs)?;
+            let out: i64 = match op {
+                BinOp::Add => a.checked_add(b).ok_or(Abstain::OutOfRange)?,
+                BinOp::Sub => a.checked_sub(b).ok_or(Abstain::OutOfRange)?,
+                BinOp::Mul => a.checked_mul(b).ok_or(Abstain::OutOfRange)?,
+                BinOp::Div => {
+                    if b == 0 || a % b != 0 {
+                        return Err(Abstain::TypeMismatch);
+                    }
+                    a.checked_div(b).ok_or(Abstain::OutOfRange)?
+                }
+                _ => {
+                    if b == 0 {
+                        return Err(Abstain::TypeMismatch);
+                    }
+                    a.checked_rem(b).ok_or(Abstain::OutOfRange)?
+                }
+            };
+            Ok(Val::Int(out))
+        }
+        BinOp::Eq | BinOp::Ne | BinOp::Identical | BinOp::NotIdentical => {
+            let equal: bool = match op {
+                BinOp::Identical | BinOp::NotIdentical => lhs == rhs,
+                _ if is_numeric(lhs) && is_numeric(rhs) => to_int(lhs)? == to_int(rhs)?,
+                _ => to_bytes(lhs)? == to_bytes(rhs)?,
+            };
+            let negate: bool = matches!(op, BinOp::Ne | BinOp::NotIdentical);
+            Ok(Val::Int(i64::from(equal != negate)))
+        }
+        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+            let ordering: std::cmp::Ordering = if is_numeric(lhs) && is_numeric(rhs) {
+                to_int(lhs)?.cmp(&to_int(rhs)?)
+            } else {
+                to_bytes(lhs)?.cmp(&to_bytes(rhs)?)
+            };
+            let holds: bool = match op {
+                BinOp::Lt => ordering.is_lt(),
+                BinOp::Gt => ordering.is_gt(),
+                BinOp::Le => ordering.is_le(),
+                _ => ordering.is_ge(),
+            };
+            Ok(Val::Int(i64::from(holds)))
+        }
+        BinOp::LogicAnd => Ok(Val::Int(i64::from(to_bool(lhs) && to_bool(rhs)))),
+        BinOp::LogicOr => Ok(Val::Int(i64::from(to_bool(lhs) || to_bool(rhs)))),
+    }
+}
+
+fn bitwise(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
+    if let (Val::Str(a), Val::Str(b)) = (lhs, rhs) {
+        let out: Vec<u8> = match op {
+            BinOp::BitOr => {
+                let width: usize = a.len().max(b.len());
+                (0..width)
+                    .map(|i: usize| a.get(i).copied().unwrap_or(0) | b.get(i).copied().unwrap_or(0))
+                    .collect()
+            }
+            BinOp::BitAnd => a
+                .iter()
+                .zip(b.iter())
+                .map(|(x, y): (&u8, &u8)| x & y)
+                .collect(),
+            _ => a
+                .iter()
+                .zip(b.iter())
+                .map(|(x, y): (&u8, &u8)| x ^ y)
+                .collect(),
+        };
+        return Ok(Val::Str(out));
+    }
+    let a: i64 = to_int(lhs)?;
+    let b: i64 = to_int(rhs)?;
+    let out: i64 = match op {
+        BinOp::BitOr => a | b,
+        BinOp::BitAnd => a & b,
+        _ => a ^ b,
+    };
+    Ok(Val::Int(out))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn seeded(budget: Budget, seed: &[(&str, &[u8])]) -> Interp {
+        let mut interp: Interp = Interp::new(budget);
+        for (name, value) in seed {
+            interp.observe_scalar(name.as_bytes(), value);
+        }
+        interp
+    }
+
+    fn run(src: &str, seed: &[(&str, &[u8])]) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
+        let mut parser: LoopParser<'_> = LoopParser::new(src.as_bytes());
+        let program: Vec<LStmt> = parser.parse_program()?;
+        let mut interp: Interp = seeded(Budget::default(), seed);
+        interp.exec_all(&program).ok()?;
+        Some(
+            interp
+                .scope
+                .iter()
+                .filter_map(|(k, v): (&Vec<u8>, &Val)| match v {
+                    Val::Str(s) => Some((k.clone(), s.clone())),
+                    Val::Int(_) | Val::Arr(_) => None,
+                })
+                .collect(),
+        )
+    }
+
+    fn abstain_of(src: &str, seed: &[(&str, &[u8])]) -> Option<Abstain> {
+        let mut parser: LoopParser<'_> = LoopParser::new(src.as_bytes());
+        let program: Vec<LStmt> = parser.parse_program()?;
+        let mut interp: Interp = seeded(Budget::default(), seed);
+        interp.exec_all(&program).err()
+    }
+
+    fn abstain_under(budget: Budget, src: &str) -> Option<Abstain> {
+        let mut parser: LoopParser<'_> = LoopParser::new(src.as_bytes());
+        let program: Vec<LStmt> = parser.parse_program()?;
+        let mut interp: Interp = Interp::new(budget);
+        interp.exec_all(&program).err()
+    }
+
+    fn out_of(src: &str, seed: &[(&str, &[u8])]) -> Vec<u8> {
+        run(src, seed)
+            .expect("program runs")
+            .get(b"o".as_slice())
+            .cloned()
+            .expect("accumulator bound")
+    }
+
+    #[test]
+    fn for_loop_with_modulo_key_index_xors() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= $d[$i] ^ $k[$i % strlen($k)]; }",
+            &[("d", b"\x0a\x0d\x08"), ("k", b"ko")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn while_loop_with_manual_index_decodes() {
+        let out: Vec<u8> = out_of(
+            "$o=''; $i=0; while($i<strlen($d)){ $o .= chr(ord($d[$i]) ^ 32); $i++; }",
+            &[("d", b"ABC")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn foreach_over_str_split_decodes() {
+        let out: Vec<u8> = out_of(
+            "$o=''; foreach(str_split($d) as $c){ $o .= chr(ord($c) - 1); }",
+            &[("d", b"bcd")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn do_while_loop_decodes() {
+        let out: Vec<u8> = out_of(
+            "$o=''; $i=0; do { $o .= chr(ord($d[$i]) ^ 1); $i++; } while($i<strlen($d));",
+            &[("d", b"`cb")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn reversed_index_reads_from_the_end() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= $d[strlen($d)-1-$i]; }",
+            &[("d", b"cba")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn stride_index_skips_padding_bytes() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i+=2){ $o .= $d[$i]; }",
+            &[("d", b"aXbXcX")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn rotating_index_advances_its_own_counter() {
+        let out: Vec<u8> = out_of(
+            "$o=''; $j=0; for($i=0;$i<strlen($d);$i++){ $o .= $d[$i] ^ $k[$j]; $j=($j+1)%strlen($k); }",
+            &[("d", b"\x0a\x0d\x08"), ("k", b"ko")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn nested_inner_loop_walks_two_dimensions() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<2;$i++){ for($j=0;$j<2;$j++){ $o .= $d[$i*2+$j]; } }",
+            &[("d", b"abcd")],
+        );
+        assert_eq!(out, b"abcd");
+    }
+
+    #[test]
+    fn addition_wraps_around_the_byte_range() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= chr((ord($d[$i]) + 200) % 256); }",
+            &[("d", &[0x99, 0x9a, 0x9b])],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn subtraction_wraps_around_the_byte_range() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= chr((ord($d[$i]) - 200 + 256) % 256); }",
+            &[("d", &[0x29, 0x2a, 0x2b])],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn byte_rotation_recombines_both_halves() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= chr(((ord($d[$i]) << 3) | (ord($d[$i]) >> 5)) & 255); }",
+            &[("d", &[0x2c, 0x4c, 0x6c])],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn negation_recovers_the_complement() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= chr(~ord($d[$i]) & 255); }",
+            &[("d", &[0x9e, 0x9d, 0x9c])],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn table_substitution_reads_the_array() {
+        let out: Vec<u8> = out_of(
+            "$o=''; $t=array(98,99,100); for($i=0;$i<3;$i++){ $o .= chr($t[$i] - 1); }",
+            &[],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn parity_selected_operation_switches_per_index() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<strlen($d);$i++){ if($i % 2 == 0){ $o .= chr(ord($d[$i]) - 1); } else { $o .= chr(ord($d[$i]) + 1); } }",
+            &[("d", b"bad")],
+        );
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn undefined_variable_read_abstains_instead_of_guessing() {
+        assert_eq!(
+            abstain_of(
+                "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= $d[$i] ^ $k[$i % strlen($k)]; }",
+                &[("d", b"\x0b\x1e\x1c")],
+            ),
+            Some(Abstain::UndefinedRead),
+            "a key absent from the file must abstain, never resolve to an invented value"
+        );
+    }
+
+    #[test]
+    fn an_impure_call_is_refused_by_the_allowlist() {
+        for call in [
+            "system('id')",
+            "exec('id')",
+            "shell_exec('id')",
+            "file_get_contents('/etc/passwd')",
+            "fopen('x','r')",
+            "curl_exec($h)",
+            "include('x.php')",
+            "passthru('id')",
+            "proc_open('id',$a,$b)",
+        ] {
+            let src: String = format!("$o=''; for($i=0;$i<1;$i++){{ $o .= {call}; }}");
+            assert_eq!(
+                abstain_of(&src, &[]),
+                Some(Abstain::RefusedCall),
+                "{call} must be refused by the pure-function allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn every_allowlisted_name_is_dispatched_and_is_sorted() {
+        let mut sorted: Vec<&[u8]> = PURE_BUILTINS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, PURE_BUILTINS,
+            "the allowlist must stay sorted so a duplicate or a stray entry is visible"
+        );
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            PURE_BUILTINS.len(),
+            "duplicate allowlist entry"
+        );
+        let mut interp: Interp = Interp::new(Budget::default());
+        for name in PURE_BUILTINS {
+            assert_ne!(
+                interp.call_builtin(name, &[]),
+                Err(Abstain::RefusedCall),
+                "{} is allowlisted but reaches no dispatch arm, so the allowlist over-promises",
+                String::from_utf8_lossy(name)
+            );
+        }
+    }
+
+    #[test]
+    fn an_argument_that_cannot_resolve_never_softens_a_refusal() {
+        assert_eq!(
+            abstain_of("$o = system($undefined_variable);", &[]),
+            Some(Abstain::RefusedCall),
+            "a refused call must be refused on its name alone, never on whether its arguments \
+             happen to resolve first"
+        );
+    }
+
+    #[test]
+    fn step_budget_stops_a_huge_trip_count() {
+        let budget: Budget = Budget {
+            steps: 5_000,
+            ..Budget::default()
+        };
+        let src: &str = "$o=''; for($i=0;$i<100000000;$i++){ $o .= 'a'; }";
+        let mut parser: LoopParser<'_> = LoopParser::new(src.as_bytes());
+        let program: Vec<LStmt> = parser.parse_program().expect("parses");
+        let mut interp: Interp = Interp::new(budget);
+        assert_eq!(interp.exec_all(&program).err(), Some(Abstain::StepBudget));
+        assert!(
+            interp.steps <= budget.steps + 1,
+            "the step counter must stop at the cap, ran {} steps",
+            interp.steps
+        );
+    }
+
+    #[test]
+    fn wall_clock_budget_stops_a_long_run() {
+        let budget: Budget = Budget {
+            wall: Duration::from_millis(1),
+            steps: u64::MAX,
+            ..Budget::default()
+        };
+        let src: &str = "$o=0; for($i=0;$i<1000000000;$i++){ $o = $o + 1; }";
+        let started: Instant = Instant::now();
+        assert_eq!(abstain_under(budget, src), Some(Abstain::WallBudget));
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the wall-clock budget must end the run promptly"
+        );
+    }
+
+    #[test]
+    fn output_budget_stops_an_expanding_accumulator() {
+        let budget: Budget = Budget {
+            output_bytes: 64,
+            ..Budget::default()
+        };
+        let src: &str = "$o=''; for($i=0;$i<1000;$i++){ $o .= 'aaaaaaaa'; }";
+        assert_eq!(abstain_under(budget, src), Some(Abstain::OutputBudget));
+    }
+
+    #[test]
+    fn heap_budget_stops_many_large_array_slots() {
+        let budget: Budget = Budget {
+            heap_bytes: 1024,
+            ..Budget::default()
+        };
+        let src: &str = "for($i=0;$i<1000;$i++){ $a[$i] = str_repeat('x', 4096); }";
+        assert_eq!(
+            abstain_under(budget, src),
+            Some(Abstain::HeapBudget),
+            "each slot is under the single-value output cap, so only a total-heap budget can stop \
+             a loop that fills many of them"
+        );
+    }
+
+    #[test]
+    fn heap_accounting_releases_bytes_when_a_slot_is_overwritten() {
+        let budget: Budget = Budget {
+            heap_bytes: 64 * 1024,
+            ..Budget::default()
+        };
+        let src: &str = "for($i=0;$i<1000;$i++){ $a[0] = str_repeat('x', 4096); }";
+        assert_eq!(
+            abstain_under(budget, src),
+            None,
+            "rewriting one slot a thousand times holds one slot of bytes, so the accounting must \
+             subtract the value it replaced instead of only ever adding"
+        );
+    }
+
+    #[test]
+    fn a_failed_block_restores_the_heap_accounting() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"d", b"abc");
+        let live_before: usize = interp.live_bytes;
+        assert!(
+            interp
+                .run_block(b"$o=''; for($i=0;$i<3;$i++){ $o .= $missing[$i]; }")
+                .is_none(),
+            "an undefined read must abstain"
+        );
+        assert_eq!(
+            interp.live_bytes, live_before,
+            "a block that abstained rolled its scope back, so its byte accounting must roll back \
+             too or a later block inherits a phantom charge"
+        );
+    }
+
+    #[test]
+    fn expression_depth_budget_stops_deep_nesting() {
+        let budget: Budget = Budget {
+            expr_depth: 4,
+            ..Budget::default()
+        };
+        let src: &str = "$o = ((((((((1+1)+1)+1)+1)+1)+1)+1)+1);";
+        assert_eq!(abstain_under(budget, src), Some(Abstain::DepthBudget));
+    }
+
+    #[test]
+    fn round_budget_stops_too_many_loop_constructs() {
+        let budget: Budget = Budget {
+            rounds: 2,
+            ..Budget::default()
+        };
+        let src: &str = "$o=''; for($i=0;$i<1;$i++){} for($i=0;$i<1;$i++){} for($i=0;$i<1;$i++){}";
+        assert_eq!(abstain_under(budget, src), Some(Abstain::RoundBudget));
+    }
+
+    #[test]
+    fn a_zero_length_key_never_divides_by_zero() {
+        assert_eq!(
+            abstain_of(
+                "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= $d[$i] ^ $k[$i % strlen($k)]; }",
+                &[("d", b"abc"), ("k", b"")],
+            ),
+            Some(Abstain::TypeMismatch),
+            "a modulo by an empty key length must abstain rather than panic"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_string_offset_abstains() {
+        assert_eq!(
+            abstain_of("$o=''; $o .= $d[99];", &[("d", b"abc")]),
+            Some(Abstain::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn integer_overflow_in_an_index_expression_abstains() {
+        assert_eq!(
+            abstain_of(
+                "$o=''; $i=9223372036854775807; $o .= $d[$i + 1];",
+                &[("d", b"abc")]
+            ),
+            Some(Abstain::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn break_and_continue_control_the_loop() {
+        let out: Vec<u8> = out_of(
+            "$o=''; for($i=0;$i<10;$i++){ if($i==1){ continue; } if($i==4){ break; } $o .= chr(97+$i); }",
+            &[],
+        );
+        assert_eq!(out, b"acd");
+    }
+
+    #[test]
+    fn php_string_xor_truncates_to_the_shorter_operand() {
+        let out: Vec<u8> = out_of("$o = $a ^ $b;", &[("a", b"abcdef"), ("b", b"\x00\x00")]);
+        assert_eq!(out, b"ab");
+    }
+
+    #[test]
+    fn php_string_or_pads_to_the_longer_operand() {
+        let out: Vec<u8> = out_of("$o = $a | $b;", &[("a", b"\x00\x00\x63"), ("b", b"ab")]);
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn malformed_loop_sources_never_panic() {
+        let cases: &[&str] = &[
+            "",
+            "for(",
+            "for(;;)",
+            "for(;;){",
+            "while()",
+            "foreach( as $x)",
+            "do",
+            "$o .= ;",
+            "$o = 'unterminated",
+            "if(",
+            "$a[",
+            "for($i=0;$i<1;$i++) $o .= $d[$i",
+        ];
+        for case in cases {
+            let _: Option<Vec<(Vec<u8>, Vec<u8>)>> =
+                Interp::new(Budget::default()).run_block(case.as_bytes());
+        }
+    }
+
+    #[test]
+    fn deeply_nested_parens_never_stack_overflow_the_loop_parser() {
+        const NESTING: usize = 50_000;
+        let mut src: Vec<u8> = b"$a = ".to_vec();
+        src.extend(std::iter::repeat_n(b'(', NESTING));
+        src.push(b'1');
+        src.extend(std::iter::repeat_n(b')', NESTING));
+        src.push(b';');
+        let _: Option<Vec<(Vec<u8>, Vec<u8>)>> = Interp::new(Budget::default()).run_block(&src);
+    }
+
+    #[test]
+    fn deeply_nested_blocks_never_stack_overflow_the_loop_parser() {
+        const NESTING: usize = 50_000;
+        let mut src: Vec<u8> = Vec::new();
+        src.extend(std::iter::repeat_n(b'{', NESTING));
+        src.extend(std::iter::repeat_n(b'}', NESTING));
+        let _: Option<Vec<(Vec<u8>, Vec<u8>)>> = Interp::new(Budget::default()).run_block(&src);
+    }
+}

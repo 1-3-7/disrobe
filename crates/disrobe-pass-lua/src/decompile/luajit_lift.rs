@@ -2007,6 +2007,118 @@ mod tests {
         );
     }
 
+    fn lift_once(proto: &LjProto) -> (String, bool) {
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+        let body: String = lift_proto(proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+        (body, fully_structured)
+    }
+
+    #[test]
+    fn every_luajit_arm_that_loses_an_edge_lowers_the_flag() {
+        let cases: Vec<(&str, u32)> = vec![
+            (
+                "a JMP is an edge this lifter replaces with a goto rather than a structure",
+                u32::from(OP_JMP) | (0x8001 << 16),
+            ),
+            (
+                "a register-to-register comparison branches past the instruction after it",
+                u32::from(OP_ISLT),
+            ),
+            (
+                "a comparison against a string constant branches the same way",
+                u32::from(OP_ISEQS),
+            ),
+            (
+                "a comparison against a number constant branches the same way",
+                u32::from(OP_ISEQN),
+            ),
+            (
+                "a comparison against a primitive branches the same way",
+                u32::from(OP_ISEQP),
+            ),
+            (
+                "a truth test branches on the value it read",
+                u32::from(OP_IST),
+            ),
+            (
+                "a falsity test branches on the value it read",
+                u32::from(OP_ISF),
+            ),
+            (
+                "a copying truth test branches and assigns on the same edge",
+                u32::from(OP_ISTC),
+            ),
+            (
+                "a copying falsity test branches and assigns on the same edge",
+                u32::from(OP_ISFC),
+            ),
+            (
+                "an FNEW naming a child proto the chunk does not carry recovers no body at all",
+                u32::from(OP_FNEW),
+            ),
+        ];
+
+        for (why, raw) in cases {
+            let proto: LjProto = minimal_lj_proto(vec![raw, u32::from(OP_RET0)]);
+
+            let (body, fully_structured): (String, bool) = lift_once(&proto);
+
+            assert!(
+                !fully_structured,
+                "{why}; the flag must not claim a complete structure here, got:\n{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proto_nested_past_the_lift_depth_limit_lowers_the_flag() {
+        let proto: LjProto = minimal_lj_proto(vec![u32::from(OP_RET0)]);
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+
+        let body: String = lift_proto(
+            &proto,
+            &[],
+            MAX_LIFT_DEPTH + 1,
+            &[],
+            &mut warnings,
+            &mut fully_structured,
+        );
+
+        assert!(
+            !fully_structured,
+            "past this depth the body is never lifted at all, so every edge it holds is lost and \
+             the flag cannot stand; body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn no_opcode_value_reaches_the_unknown_arm() {
+        let mut reached: Vec<u8> = Vec::new();
+        for raw_op in 0..=u8::MAX {
+            let proto: LjProto = minimal_lj_proto(vec![u32::from(raw_op), u32::from(OP_RET0)]);
+            let mut warnings: Vec<String> = Vec::new();
+            let mut fully_structured: bool = true;
+
+            let _: String = lift_proto(&proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+
+            if warnings
+                .iter()
+                .any(|w: &String| w.contains("unknown luajit opcode"))
+            {
+                reached.push(raw_op);
+            }
+        }
+
+        assert!(
+            reached.is_empty(),
+            "the opcode table names every value below the function-header range and the guard \
+             above it takes the rest, so the unknown arm is a exhaustiveness placeholder that no \
+             input reaches; a value arriving there means a real arm was dropped: {reached:?}"
+        );
+    }
+
     #[test]
     fn quote_lua_escapes_specials() {
         assert_eq!(quote_lua("a\"b\nc"), "\"a\\\"b\\nc\"");

@@ -552,6 +552,7 @@ pub struct Structurer<'a> {
     depth: usize,
     work: usize,
     pub had_irreducible: bool,
+    unmodelled_finally: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -617,6 +618,7 @@ impl<'a> Structurer<'a> {
             depth: 0,
             work: 0,
             had_irreducible: false,
+            unmodelled_finally: None,
         }
     }
 
@@ -965,7 +967,7 @@ impl<'a> Structurer<'a> {
         })
     }
 
-    fn finally_body_instructions(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
+    fn finally_body_span(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
         let (&first, &last): (&BlockId, &BlockId) =
             chain.blocks.first().zip(chain.blocks.last())?;
         let mut body: Vec<Instruction> = Vec::new();
@@ -980,8 +982,13 @@ impl<'a> Structurer<'a> {
             if lo > hi {
                 return None;
             }
-            body.extend_from_slice(&insns[lo..hi]);
+            body.extend_from_slice(insns.get(lo..hi)?);
         }
+        Some(body)
+    }
+
+    fn finally_body_instructions(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
+        let body: Vec<Instruction> = self.finally_body_span(chain)?;
         if body.is_empty() {
             return None;
         }
@@ -1347,6 +1354,87 @@ impl<'a> Structurer<'a> {
         self.finally_handler_chain(handler_bid).is_some()
     }
 
+    fn rethrows_stored_exception(&self, handler_bid: BlockId) -> bool {
+        let Some(slot): Option<u16> = self
+            .block_instructions(handler_bid)
+            .first()
+            .and_then(astore_slot)
+        else {
+            return false;
+        };
+        let mut seen: BTreeSet<BlockId> = BTreeSet::new();
+        let mut stack: Vec<BlockId> = vec![handler_bid];
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur) || seen.len() > MAX_BLOCKS {
+                continue;
+            }
+            let insns: &[Instruction] = self.block_instructions(cur);
+            if insns
+                .last()
+                .is_some_and(|last: &Instruction| last.opcode == 0xBF)
+                && insns
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|i: usize| insns.get(i))
+                    .and_then(aload_slot)
+                    == Some(slot)
+            {
+                return true;
+            }
+            for edge in &self.cfg.blocks[cur.0 as usize].successors {
+                if !matches!(edge.kind, EdgeKind::Exception) {
+                    stack.push(edge.target);
+                }
+            }
+        }
+        false
+    }
+
+    #[must_use]
+    pub const fn structured_finally_defect(&self) -> Option<&'static str> {
+        self.unmodelled_finally
+    }
+
+    #[must_use]
+    pub fn unmodelled_finally_reason(&self) -> Option<&'static str> {
+        for group in &self.try_groups {
+            for (catch_type, handler_pc) in &group.handlers {
+                if catch_type.is_some() {
+                    continue;
+                }
+                let Some(&handler_bid): Option<&BlockId> = self.cfg.pc_to_block.get(handler_pc)
+                else {
+                    continue;
+                };
+                if self.try_with_resources_slot(handler_bid).is_some() {
+                    continue;
+                }
+                match self.finally_handler_chain(handler_bid) {
+                    Some(chain) => {
+                        let empty_finally: bool = self
+                            .finally_body_span(&chain)
+                            .is_some_and(|body: Vec<Instruction>| body.is_empty());
+                        if !empty_finally && self.finally_body_instructions(&chain).is_none() {
+                            return Some(
+                                "a finally body with internal control flow cannot be folded back \
+                                 out of every exit path",
+                            );
+                        }
+                    }
+                    None => {
+                        if self.rethrows_stored_exception(handler_bid) {
+                            return Some(
+                                "a compiler-inserted finally handler with internal control flow \
+                                 has no source form this structurer can build",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn absorbable_value_return(
         &self,
         group: &GroupedTry,
@@ -1628,6 +1716,12 @@ impl<'a> Structurer<'a> {
                             }
                         }
                     }
+                    if chain.trim == 0 && after_try.is_some() {
+                        self.unmodelled_finally.get_or_insert(
+                            "a finally that returns still leaves a reachable continuation, so the \
+                             recovered try would run code the class cannot reach",
+                        );
+                    }
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
                         handlers: handlers_out,
@@ -1756,6 +1850,7 @@ impl<'a> Structurer<'a> {
             depth: self.depth,
             work: self.work,
             had_irreducible: false,
+            unmodelled_finally: None,
         };
         inner.visited.insert(loop_info.header);
         let header_block: &BasicBlock = &self.cfg.blocks[loop_info.header.0 as usize];
@@ -1771,6 +1866,7 @@ impl<'a> Structurer<'a> {
         self.work = inner.work;
         self.next_label = inner.next_label;
         self.had_irreducible |= inner.had_irreducible;
+        self.unmodelled_finally = self.unmodelled_finally.or(inner.unmodelled_finally);
         self.string_switch_tables
             .extend(inner.take_string_switch_tables());
         self.finally_inline_skips

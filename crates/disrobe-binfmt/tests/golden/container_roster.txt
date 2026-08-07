@@ -25,6 +25,7 @@ dlink-fpkg	payload
 dlink-shrs	payload
 dmg	payload
 docker-image	payload
+dotnet-single-file	payload
 egg	payload
 engenius	payload
 erofs	payload

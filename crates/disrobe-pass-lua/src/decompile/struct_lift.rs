@@ -2504,6 +2504,95 @@ mod tests {
         }
     }
 
+    const OP51_TESTSET: u32 = 27;
+    const OP51_PAST_THE_TABLE: u32 = 63;
+
+    #[test]
+    fn a_dropped_plain_jump_lowers_the_flag_this_lifter_reports() {
+        let p: LuaProto = proto(
+            vec![
+                enc_abx(OP51_JMP, 0, 4 + SBX_BIAS_51),
+                enc_abc(OP51_RETURN, 0, 1, 0),
+            ],
+            0,
+            2,
+        );
+
+        let out: LiftedProto =
+            lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
+
+        assert!(
+            !out.fully_structured,
+            "the jump names a target outside every region this walk visits, so no structure \
+             carries it; the count the structurer reports has to reach the flag this lifter \
+             publishes, not stop at the structurer; source:\n{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn every_structured_lifter_arm_that_loses_an_edge_lowers_the_flag() {
+        let cases: Vec<(&str, LuaDialect, Vec<u32>)> = vec![
+            (
+                "a 5.1 LOADBOOL with its skip bit set materialises a comparison result by \
+                 stepping over the instruction after it",
+                LuaDialect::Lua51,
+                vec![
+                    enc_abc(OP51_LOADBOOL, 0, 0, 1),
+                    enc_abc(OP51_LOADBOOL, 0, 1, 0),
+                    enc_abc(OP51_RETURN, 0, 1, 0),
+                ],
+            ),
+            (
+                "a 5.4 LFALSESKIP does the same by stepping over the load that follows it",
+                LuaDialect::Lua54,
+                vec![
+                    enc54_abc(OP54_LFALSESKIP, 0, 0, 0, 0),
+                    enc54_abc(OP54_LOADTRUE, 0, 0, 0, 0),
+                    enc54_abc(OP54_RETURN0, 0, 1, 0, 0),
+                ],
+            ),
+            (
+                "a 5.1 TESTSET with no branch to fold into leaves the conditional copy without \
+                 the edge that chose it",
+                LuaDialect::Lua51,
+                vec![
+                    enc_abc(OP51_TESTSET, 0, 1, 0),
+                    enc_abc(OP51_RETURN, 0, 1, 0),
+                ],
+            ),
+            (
+                "an opcode past the end of the 5.1 table decodes to nothing this lifter can place",
+                LuaDialect::Lua51,
+                vec![OP51_PAST_THE_TABLE, enc_abc(OP51_RETURN, 0, 1, 0)],
+            ),
+            (
+                "a 5.1 LT with no jump after it states a condition whose target the chunk never \
+                 gives",
+                LuaDialect::Lua51,
+                vec![enc_abc(OP51_LT, 0, 0, 1), enc_abc(OP51_RETURN, 0, 1, 0)],
+            ),
+            (
+                "a CLOSURE naming a child proto the chunk does not carry recovers no body at all",
+                LuaDialect::Lua51,
+                vec![enc_abx(OP51_CLOSURE, 0, 7), enc_abc(OP51_RETURN, 0, 1, 0)],
+            ),
+        ];
+
+        for (why, dialect, code) in cases {
+            let p: LuaProto = proto(code, 0, 8);
+
+            let out: LiftedProto =
+                lift_structured(&p, dialect, 0).expect("structured lift succeeds");
+
+            assert!(
+                !out.fully_structured,
+                "{why}; the flag must not claim a complete structure here, got:\n{}",
+                out.source
+            );
+        }
+    }
+
     #[test]
     fn lua51_single_comparison_recovers_boolean_value_not_literal_false() {
         let code: Vec<u32> = vec![

@@ -182,7 +182,7 @@ impl PhpRuntime {
         self.run_with(
             label,
             source,
-            &["error_reporting=E_ALL", "display_errors=1"],
+            &["error_reporting=E_ALL", "display_errors=stderr"],
         )
     }
 
