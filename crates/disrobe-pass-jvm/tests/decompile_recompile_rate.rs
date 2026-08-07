@@ -656,6 +656,18 @@ fn measure_per_method_javac_recompile(
 fn decompile_edgecases() -> Option<String> {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let classes: Vec<(String, Vec<u8>)> = classes_from_jar(&jar)?;
+    let top_level: Vec<&str> = classes
+        .iter()
+        .map(|(name, _bytes): &(String, Vec<u8>)| name.as_str())
+        .filter(|name: &&str| !name.contains('$'))
+        .collect();
+    assert_eq!(
+        top_level,
+        vec!["EdgeCases.class"],
+        "the per-method gate compiles one unit, EdgeCases.java, with every inner class inlined \
+         into it, so the type-check probe attests over the whole corpus only while EdgeCases is \
+         the single top-level class; a second one would be measured by nothing"
+    );
     let (_name, bytes): &(String, Vec<u8>) =
         classes.iter().find(|(n, _)| n == "EdgeCases.class")?;
     let cf: ClassFile = parse_classfile(bytes).expect("parse EdgeCases");
