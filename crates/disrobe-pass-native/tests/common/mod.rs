@@ -18,6 +18,10 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_native::PseudoAbi;
 
+#[path = "../support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+
 pub const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
 } else {
@@ -125,26 +129,17 @@ pub fn msvc_probe_reason() -> Option<String> {
 
 #[must_use]
 pub fn cc() -> Option<String> {
-    available_compilers()
-        .into_iter()
-        .find(|c: &CompilerId| c.bin == "gcc" || c.bin == "clang" || c.bin == "cc")
-        .map(|c: CompilerId| c.bin.to_owned())
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
 #[must_use]
 pub fn gcc() -> Option<String> {
-    available_compilers()
-        .into_iter()
-        .find(|c: &CompilerId| c.family == CompilerFamily::Gcc)
-        .map(|_| "gcc".to_owned())
+    compiler_toolchain::probe_one("gcc")
 }
 
 #[must_use]
 pub fn clang() -> Option<String> {
-    available_compilers()
-        .into_iter()
-        .find(|c: &CompilerId| c.family == CompilerFamily::Clang)
-        .map(|_| "clang".to_owned())
+    compiler_toolchain::probe_one("clang")
 }
 
 #[must_use]

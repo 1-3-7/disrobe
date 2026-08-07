@@ -22,6 +22,10 @@ use disrobe_pass_native::{
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+
 const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
 } else {
@@ -184,24 +188,11 @@ const DIV_INPUTS: &[[i64; 3]] = &[
 ];
 
 fn cc() -> Option<String> {
-    for c in ["gcc", "clang", "cc"] {
-        if Command::new(c)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
-        {
-            return Some(c.to_owned());
-        }
-    }
-    None
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
 fn rustc() -> Option<String> {
-    Command::new("rustc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "rustc".to_owned())
+    compiler_toolchain::probe_one("rustc")
 }
 
 fn scratch_dir() -> ScratchDir {
@@ -689,11 +680,7 @@ fn branchless_minmax_leaf_functions_recompile_to_rust_equivalence() {
 }
 
 fn gcc() -> Option<String> {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "gcc".to_owned())
+    compiler_toolchain::probe_one("gcc")
 }
 
 fn function_code_at(object_bytes: &[u8], addr: u64) -> Option<(Vec<u8>, u64, String)> {
@@ -1632,11 +1619,7 @@ fn switch_dense_jump_table_leaf_functions_recompile_to_rust_equivalence() {
 }
 
 fn clang() -> Option<String> {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "clang".to_owned())
+    compiler_toolchain::probe_one("clang")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2413,10 +2396,10 @@ fn build_fp_switch_rust_driver(prepared: &[PreparedFpSwitch]) -> String {
     for p in prepared {
         let call: String = match p.ret {
             FpRet::Double | FpRet::LongLong => {
-                format!("rec_{}(a, b, disc as u64).to_bits()", p.name)
+                format!("rec_{}(disc as u64, a, b).to_bits()", p.name)
             }
             FpRet::Float => format!(
-                "(rec_{}(a as f32, b as f32, disc as u64).to_bits() as u64)",
+                "(rec_{}(disc as u64, a as f32, b as f32).to_bits() as u64)",
                 p.name
             ),
         };
