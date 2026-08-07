@@ -23,6 +23,7 @@ mod facts;
 mod fileio;
 mod floors;
 mod fuzz_scope;
+mod fuzz_seeds;
 mod fuzz_surface;
 mod graph_disjointness;
 mod graphs;
@@ -89,6 +90,10 @@ enum Cmd {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         check: bool,
     },
+    FuzzSeeds {
+        #[arg(long)]
+        target: Option<String>,
+    },
     Metrics {
         #[arg(long, action = clap::ArgAction::SetTrue)]
         write: bool,
@@ -152,6 +157,7 @@ fn main() -> ExitCode {
         Cmd::GenErrorDocs { check } => run_gen_error_docs(check),
         Cmd::Regen { check } => run_regen(check),
         Cmd::FuzzSurface { check } => run_fuzz_surface(check),
+        Cmd::FuzzSeeds { target } => run_fuzz_seeds(target.as_deref()),
         Cmd::Metrics { write, check } => run_metrics(write, check),
         Cmd::Graphs { check } => run_graphs(check),
         Cmd::Demo { check } => run_demo(check),
@@ -366,6 +372,11 @@ pub(crate) fn run_gen_error_docs(check: bool) -> Result<()> {
 fn run_fuzz_surface(check: bool) -> Result<()> {
     let root: PathBuf = workspace_root()?;
     fuzz_surface::run(&root, check)
+}
+
+fn run_fuzz_seeds(target: Option<&str>) -> Result<()> {
+    let root: PathBuf = workspace_root()?;
+    fuzz_seeds::run(&root, target)
 }
 
 fn run_regen(check: bool) -> Result<()> {

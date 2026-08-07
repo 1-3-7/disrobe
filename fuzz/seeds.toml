@@ -1,0 +1,24 @@
+declaration = "fuzz target to committed-corpus seed mapping, materialized by scripts/fuzz_seeds.py"
+
+[[target]]
+name = "container_dispatch"
+sources = [
+  "corpus/binfmt",
+  "corpus/native/overlay",
+  "corpus/native/packers",
+  "corpus/webview",
+  "corpus/apk",
+]
+
+[[target]]
+name = "native_formats"
+sources = [
+  "corpus/native/formats",
+  "corpus/native/compilers",
+  "corpus/native/nim",
+  "corpus/native/zig",
+  "corpus/native/crystal",
+  "corpus/native/d",
+  "corpus/go",
+  "corpus/mac",
+]
