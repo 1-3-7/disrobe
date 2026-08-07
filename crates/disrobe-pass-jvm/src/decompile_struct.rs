@@ -478,7 +478,7 @@ pub enum Region {
         try_body: Box<Self>,
         handlers: Vec<(Vec<String>, Self)>,
         finally_chain: Vec<BlockId>,
-        finally_trim: usize,
+        finally_completes_normally: bool,
     },
     TryWithResources {
         resource_slot: u16,
@@ -537,6 +537,7 @@ pub struct Structurer<'a> {
     switch_map: BTreeMap<BlockId, PrecomputedSwitch>,
     string_switch_tables: BTreeMap<BlockId, StringSwitchTable>,
     finally_inline_skips: BTreeMap<BlockId, usize>,
+    finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
     finally_exception_slots: BTreeSet<u16>,
     visited: BTreeSet<BlockId>,
@@ -603,6 +604,7 @@ impl<'a> Structurer<'a> {
             switch_map,
             string_switch_tables: BTreeMap::new(),
             finally_inline_skips: BTreeMap::new(),
+            finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
             visited: BTreeSet::new(),
@@ -636,6 +638,11 @@ impl<'a> Structurer<'a> {
     #[must_use]
     pub fn take_finally_inline_skips(&mut self) -> BTreeMap<BlockId, usize> {
         std::mem::take(&mut self.finally_inline_skips)
+    }
+
+    #[must_use]
+    pub fn take_finally_tail_trims(&mut self) -> BTreeMap<BlockId, usize> {
+        std::mem::take(&mut self.finally_tail_trims)
     }
 
     #[must_use]
@@ -1722,10 +1729,18 @@ impl<'a> Structurer<'a> {
                              recovered try would run code the class cannot reach",
                         );
                     }
+                    if let Some(&head) = chain.blocks.first() {
+                        self.finally_inline_skips.entry(head).or_insert(1);
+                    }
+                    if let Some(&tail) = chain.blocks.last()
+                        && chain.trim > 0
+                    {
+                        self.finally_tail_trims.insert(tail, chain.trim);
+                    }
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
                         handlers: handlers_out,
-                        finally_trim: chain.trim,
+                        finally_completes_normally: chain.trim == 2,
                         finally_chain: chain.blocks,
                     });
                 } else {
@@ -1835,6 +1850,7 @@ impl<'a> Structurer<'a> {
             switch_map: self.switch_map.clone(),
             string_switch_tables: BTreeMap::new(),
             finally_inline_skips: BTreeMap::new(),
+            finally_tail_trims: BTreeMap::new(),
             finally_return_stores: BTreeMap::new(),
             finally_exception_slots: BTreeSet::new(),
             visited: BTreeSet::new(),
@@ -1871,6 +1887,8 @@ impl<'a> Structurer<'a> {
             .extend(inner.take_string_switch_tables());
         self.finally_inline_skips
             .extend(inner.take_finally_inline_skips());
+        self.finally_tail_trims
+            .extend(inner.take_finally_tail_trims());
         self.finally_return_stores
             .extend(inner.take_finally_return_stores());
         self.finally_exception_slots
