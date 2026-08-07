@@ -7,7 +7,7 @@ use disrobe_nir::{
 
 use crate::abi::CallAbi;
 use crate::callgraph::scc_bottom_up;
-use crate::config::{ResolvedSinkPolicy, TaintConfig};
+use crate::config::{OutArgument, ResolvedSinkPolicy, TaintConfig};
 use crate::report::{TaintFinding, TaintReport, TaintStep, UnresolvedCall, UnresolvedCallKind};
 use crate::summary::{
     Arena, FeatureSet, FunctionSummary, KindSet, OutPort, PathId, SinkFrame, SummaryKey,
@@ -333,6 +333,7 @@ fn solve_component(
 struct BlockState {
     values: BTreeMap<PathId, FactMap>,
     flag: FactMap,
+    established: BTreeMap<PathId, Option<String>>,
 }
 
 impl BlockState {
@@ -345,6 +346,7 @@ impl BlockState {
         StateKey {
             values,
             flag: fact_signature(&self.flag),
+            established: self.established.clone(),
         }
     }
 
@@ -357,6 +359,9 @@ impl BlockState {
         }
         for fact in incoming.flag.values() {
             merge_fact(&mut self.flag, fact.clone());
+        }
+        for (loc, expr) in &incoming.established {
+            self.established.entry(*loc).or_insert_with(|| expr.clone());
         }
     }
 }
@@ -372,6 +377,7 @@ fn fact_signature(facts: &FactMap) -> FactSig {
 struct StateKey {
     values: ValueSig,
     flag: FactSig,
+    established: BTreeMap<PathId, Option<String>>,
 }
 
 fn merge_fact(map: &mut FactMap, fact: Fact) {
@@ -478,6 +484,7 @@ fn walk_block(
     let mut state: BlockState = incoming;
     for instr in &block.instructions {
         let defuse: DefUse = taint_def_use(ctx.resolved.abi, instr);
+        let is_call: bool = instr.op.class() == NirClass::Call;
         if let Some(callee) = ctx.resolved.callee_internal(instr) {
             instantiate_callee(ctx, arena, mode, instr, callee, &mut state, out);
         } else if let Some(symbol) = ctx.resolved.external_symbol(instr) {
@@ -493,7 +500,13 @@ fn walk_block(
                 out,
             );
         } else {
+            if !is_call {
+                track_established_registers(ctx.resolved.abi, arena, &defuse, &mut state);
+            }
             propagate(arena, instr, &defuse, &mut state);
+        }
+        if is_call {
+            clear_established_argument_registers(ctx, arena, &mut state);
         }
         if mode == WalkMode::Summarize && matches!(instr.op, NirOp::Return) {
             extract_outputs(ctx.resolved.abi, arena, instr, &state, &mut out.summary);
@@ -557,7 +570,7 @@ fn dispatch_external(
     out: &mut Outputs,
 ) {
     if let Some(kind) = ctx.config.source_kind(symbol) {
-        apply_source(arena, instr, symbol, kind, defuse, state);
+        apply_source(ctx, arena, instr, symbol, kind, defuse, state);
     } else if let Some(policy) = ctx.config.sink_policy(symbol) {
         apply_sink(ctx, arena, mode, instr, symbol, &policy, defuse, state, out);
     } else if let Some(feature) = ctx.config.sanitizer_feature(symbol) {
@@ -568,6 +581,7 @@ fn dispatch_external(
 }
 
 fn apply_source(
+    ctx: &Ctx<'_>,
     arena: &mut Arena,
     instr: &NirInstr,
     symbol: &str,
@@ -583,13 +597,125 @@ fn apply_source(
         origin_site: instr.address,
         path: vec![step(instr.address, symbol, "source")],
     };
-    for def in &defuse.defs {
+    let out_argument_defs: Vec<ValueId> =
+        established_out_argument_defs(ctx, arena, instr, symbol, state);
+    for def in defuse.defs.iter().chain(out_argument_defs.iter()) {
         let loc: PathId = arena.location(def);
         let mut map: FactMap = FactMap::new();
         map.insert(fact.key, fact.clone());
         state.values.insert(loc, map);
     }
     state.flag.insert(fact.key, fact);
+}
+
+fn established_out_argument_defs(
+    ctx: &Ctx<'_>,
+    arena: &mut Arena,
+    instr: &NirInstr,
+    symbol: &str,
+    state: &BlockState,
+) -> Vec<ValueId> {
+    if !crate::abi::is_native(instr.source.lang) {
+        return Vec::new();
+    }
+    let abi: CallAbi = ctx.resolved.abi;
+    let register_count: usize = abi.argument_registers().len();
+    let mut defs: Vec<ValueId> = Vec::new();
+    let out_arguments: &[OutArgument] = ctx.config.source_out_arguments(symbol);
+    for out_argument in out_arguments {
+        for index in out_argument.indices(register_count) {
+            let Ok(index): Result<u16, _> = u16::try_from(index) else {
+                continue;
+            };
+            for register in abi.out_argument_candidates(index) {
+                let value: ValueId = ValueId::register(register);
+                let loc: PathId = arena.location(&value);
+                let Some(established_via) = state.established.get(&loc) else {
+                    continue;
+                };
+                defs.push(value);
+                if let Some(reduced) = established_via {
+                    defs.push(ValueId::memory(reduced));
+                }
+            }
+        }
+    }
+    defs
+}
+
+fn clear_established_argument_registers(ctx: &Ctx<'_>, arena: &mut Arena, state: &mut BlockState) {
+    for register in ctx.resolved.abi.argument_registers() {
+        let loc: PathId = reg_loc(arena, register);
+        state.established.remove(&loc);
+    }
+}
+
+fn track_established_registers(
+    abi: CallAbi,
+    arena: &mut Arena,
+    defuse: &DefUse,
+    state: &mut BlockState,
+) {
+    let established_via: Option<String> =
+        defuse.uses.iter().find_map(|value: &ValueId| match value {
+            ValueId::Memory(expr) => reduce_indexed_memory_expr(abi, expr),
+            ValueId::Register(_) | ValueId::Stack(_) => None,
+        });
+    for def in &defuse.defs {
+        if matches!(def, ValueId::Register(_)) {
+            let loc: PathId = arena.location(def);
+            state.established.insert(loc, established_via.clone());
+        }
+    }
+}
+
+fn reduce_indexed_memory_expr(abi: CallAbi, expr: &str) -> Option<String> {
+    let inner: &str = expr.strip_prefix('[')?.strip_suffix(']')?;
+    let mut base: Option<&str> = None;
+    let mut displacement_terms: Vec<&str> = Vec::new();
+    let mut dropped_index: bool = false;
+    for (offset, term) in signed_terms(inner) {
+        let register_part: &str = term
+            .trim_start_matches(['+', '-'])
+            .split('*')
+            .next()
+            .unwrap_or_default();
+        if abi.canonical_register(register_part).is_some() {
+            if offset == 0 && base.is_none() {
+                base = Some(term);
+            } else {
+                dropped_index = true;
+            }
+        } else {
+            displacement_terms.push(term);
+        }
+    }
+    if !dropped_index {
+        return None;
+    }
+    let base: &str = base?;
+    let mut reduced: String = String::from("[");
+    reduced.push_str(base);
+    for term in displacement_terms {
+        reduced.push_str(term);
+    }
+    reduced.push(']');
+    Some(reduced)
+}
+
+fn signed_terms(inner: &str) -> Vec<(usize, &str)> {
+    let mut terms: Vec<(usize, &str)> = Vec::new();
+    let mut start: usize = 0;
+    for (offset, ch) in inner.char_indices() {
+        if offset > start && matches!(ch, '+' | '-') {
+            terms.push((start, &inner[start..offset]));
+            start = offset;
+        }
+    }
+    if start < inner.len() {
+        terms.push((start, &inner[start..]));
+    }
+    terms
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -963,4 +1089,63 @@ const fn propagates(instr: &NirInstr) -> bool {
         instr.op,
         NirOp::BinOp { .. } | NirOp::Load | NirOp::Store | NirOp::Phi
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod reduction_tests {
+    use super::{CallAbi, reduce_indexed_memory_expr};
+
+    #[test]
+    fn a_base_plus_index_plus_displacement_reduces_by_dropping_the_index() {
+        assert_eq!(
+            reduce_indexed_memory_expr(CallAbi::X86, "[rsp+r9+30h]").as_deref(),
+            Some("[rsp+30h]")
+        );
+    }
+
+    #[test]
+    fn a_base_plus_index_with_no_displacement_reduces_to_the_bare_base() {
+        assert_eq!(
+            reduce_indexed_memory_expr(CallAbi::X86, "[rsp+r9]").as_deref(),
+            Some("[rsp]")
+        );
+    }
+
+    #[test]
+    fn a_base_with_no_index_has_nothing_to_reduce() {
+        assert_eq!(reduce_indexed_memory_expr(CallAbi::X86, "[rax-63h]"), None);
+        assert_eq!(reduce_indexed_memory_expr(CallAbi::X86, "[rsp+30h]"), None);
+        assert_eq!(reduce_indexed_memory_expr(CallAbi::X86, "[rax]"), None);
+    }
+
+    #[test]
+    fn a_rip_relative_expression_has_no_recognizable_base_and_is_not_reduced() {
+        assert_eq!(
+            reduce_indexed_memory_expr(CallAbi::X86, "[rel 140005050h]"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_scaled_index_still_reduces_to_the_base_and_displacement() {
+        assert_eq!(
+            reduce_indexed_memory_expr(CallAbi::X86, "[rsp+r9*4+30h]").as_deref(),
+            Some("[rsp+30h]")
+        );
+    }
+
+    #[test]
+    fn a_malformed_expression_without_brackets_is_not_reduced() {
+        assert_eq!(reduce_indexed_memory_expr(CallAbi::X86, "rsp+r9+30h"), None);
+        assert_eq!(reduce_indexed_memory_expr(CallAbi::X86, ""), None);
+    }
+
+    #[test]
+    fn a_base_that_is_not_the_first_term_is_not_reduced() {
+        assert_eq!(
+            reduce_indexed_memory_expr(CallAbi::X86, "[30h+r9+rsp]"),
+            None
+        );
+    }
 }

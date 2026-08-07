@@ -388,9 +388,28 @@ pub fn walk_minixfs(bytes: &[u8], max_total: u64) -> Result<MinixWalk> {
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    const V3_DIRECTORY_NAME_FIELD_BYTES: usize = 60;
+    let name_field_is_nul_padded_so_it_ends_at_the_first_nul: bool = name.contains('\u{0}');
+    let dropped_by_the_walker_as_a_self_or_parent_link: bool = name == "." || name == "..";
+    if name.is_empty()
+        || name.len() > V3_DIRECTORY_NAME_FIELD_BYTES
+        || name_field_is_nul_padded_so_it_ends_at_the_first_nul
+        || dropped_by_the_walker_as_a_self_or_parent_link
+    {
+        return None;
+    }
+    Some(tests::build_single_file_minixfs(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    pub(super) fn build_single_file_minixfs(name: &str, body: &[u8]) -> Vec<u8> {
+        MinixBuilder::new(MinixVersion::V3).build(&[(name, body, true)])
+    }
 
     struct MinixBuilder {
         version: MinixVersion,

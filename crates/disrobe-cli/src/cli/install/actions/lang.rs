@@ -244,4 +244,68 @@ pub(super) fn add_lang_and_packaging_pkgs(m: &mut BTreeMap<&'static str, Install
             pip: None,
         },
     );
+    add_simple_pkg(
+        m,
+        "7z",
+        "7-Zip archiver; Homebrew installs the `7zz` binary",
+        ToolPkg {
+            winget: Some("7zip.7zip"),
+            brew: Some("sevenzip"),
+            brew_cask: false,
+            apt: Some("p7zip-full"),
+            dnf: Some("p7zip"),
+            pacman: Some("p7zip"),
+            apk: Some("p7zip"),
+            cargo: None,
+            pip: None,
+        },
+    );
+    add_simple_pkg(
+        m,
+        "unrar",
+        "RARLab unrar; Debian and Ubuntu carry it in a non-free component",
+        ToolPkg {
+            winget: None,
+            brew: None,
+            brew_cask: false,
+            apt: Some("unrar"),
+            dnf: None,
+            pacman: Some("unrar"),
+            apk: None,
+            cargo: None,
+            pip: None,
+        },
+    );
+    add_simple_pkg(
+        m,
+        "wasmtime",
+        "WebAssembly runtime from the Bytecode Alliance",
+        ToolPkg {
+            winget: Some("BytecodeAlliance.Wasmtime"),
+            brew: Some("wasmtime"),
+            brew_cask: false,
+            apt: None,
+            dnf: None,
+            pacman: None,
+            apk: None,
+            cargo: Some("wasmtime-cli"),
+            pip: None,
+        },
+    );
+    add_simple_pkg(
+        m,
+        "wat2wasm",
+        "part of the WABT WebAssembly Binary Toolkit",
+        ToolPkg {
+            winget: None,
+            brew: Some("wabt"),
+            brew_cask: false,
+            apt: Some("wabt"),
+            dnf: None,
+            pacman: None,
+            apk: None,
+            cargo: None,
+            pip: None,
+        },
+    );
 }

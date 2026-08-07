@@ -780,25 +780,99 @@ mod tests {
         assert!(synthesize_with(&residual, Width::W32, &config).is_none());
     }
 
+    fn splitmix64_next(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z: u64 = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    const RANDOM_SAMPLE_COUNT: u32 = 4096;
+
+    fn agree_on_random_samples(
+        residual: &Expr,
+        got: &Expr,
+        width: Width,
+        var_count: u32,
+        seed: u64,
+    ) -> bool {
+        let mut state: u64 = seed;
+        for _ in 0..RANDOM_SAMPLE_COUNT {
+            let env: Vec<u64> = (0..var_count)
+                .map(|_| splitmix64_next(&mut state))
+                .collect();
+            if residual.eval(&env, width) != got.eval(&env, width) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn assert_independently_equivalent(
+        residual: &Expr,
+        got: &Expr,
+        width: Width,
+        var_count: u32,
+        exhaustively_graded: &mut u32,
+        sampled: &mut u32,
+    ) {
+        if crate::expr::equivalent_exhaustive_runnable(width, var_count) {
+            assert!(
+                crate::expr::equivalent_exhaustive(residual, got, width, var_count),
+                "returned {got} does not exhaustively evaluate equal to {residual} at {width:?} \
+                 over {var_count} variables; verify_equivalent's BDD path is not consulted here, \
+                 so a blast() bug that wrongly proves a non-equivalent pair cannot hide behind it"
+            );
+            *exhaustively_graded = exhaustively_graded.saturating_add(1);
+        } else {
+            assert!(
+                agree_on_random_samples(residual, got, width, var_count, 0x00D1_5C0B_B1E5_u64),
+                "returned {got} does not evaluate equal to {residual} at {width:?} on at least \
+                 one of {RANDOM_SAMPLE_COUNT} sampled assignments; verify_equivalent's BDD path \
+                 is not consulted here, so a blast() bug that wrongly proves a non-equivalent \
+                 pair cannot hide behind it"
+            );
+            *sampled = sampled.saturating_add(1);
+        }
+    }
+
     #[test]
     fn any_returned_form_is_proven_equivalent_and_not_larger() {
-        let cases: [Expr; 4] = [
-            xor_carry_add(),
-            Expr::add(Expr::and(v(0), v(1)), Expr::xor(v(0), v(1))),
-            Expr::xor(Expr::mul(v(0), v(1)), Expr::mul(v(2), v(2))),
-            Expr::sub(Expr::or(v(0), v(1)), Expr::and(v(0), v(1))),
+        let cases: [(Expr, u32); 4] = [
+            (xor_carry_add(), 2),
+            (Expr::add(Expr::and(v(0), v(1)), Expr::xor(v(0), v(1))), 2),
+            (Expr::xor(Expr::mul(v(0), v(1)), Expr::mul(v(2), v(2))), 3),
+            (Expr::sub(Expr::or(v(0), v(1)), Expr::and(v(0), v(1))), 2),
         ];
-        for residual in &cases {
+        let mut returned: u32 = 0;
+        let mut exhaustively_graded: u32 = 0;
+        let mut sampled: u32 = 0;
+        for (residual, var_count) in &cases {
             for width in [Width::W8, Width::W32] {
                 if let Some(got) = synthesize(residual, width) {
-                    assert!(
-                        verify_equivalent(residual, &got, width).is_proven(),
-                        "returned {got} is not proven equal to {residual} at {width:?}"
+                    returned = returned.saturating_add(1);
+                    assert_independently_equivalent(
+                        residual,
+                        &got,
+                        width,
+                        *var_count,
+                        &mut exhaustively_graded,
+                        &mut sampled,
                     );
                     assert!(got.node_count() <= residual.node_count());
                 }
             }
         }
+        assert!(returned > 0, "no case exercised synthesize at all");
+        assert!(
+            exhaustively_graded > 0,
+            "no case exercised the exhaustive-evaluator width class"
+        );
+        assert!(
+            sampled > 0,
+            "no case exercised the wide, sampled-evaluator width class"
+        );
     }
 
     #[test]

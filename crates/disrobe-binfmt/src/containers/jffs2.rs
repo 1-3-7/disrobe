@@ -527,9 +527,34 @@ fn rtime_decompress(input: &[u8], destlen: usize) -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let dirent_name_length_field_is_one_byte: bool = name.len() > u8::MAX as usize;
+    if name.is_empty() || dirent_name_length_field_is_one_byte {
+        return None;
+    }
+    Some(tests::build_single_file_jffs2(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    pub(super) fn build_single_file_jffs2(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut builder: Jffs2Builder = Jffs2Builder::new(Jffs2Endian::Little);
+        builder.dirent(ROOT_INO, 2, 1, 0, name);
+        builder.inode(&InodeSpec {
+            ino: 2,
+            version: 1,
+            mode: S_IFREG | 0o644,
+            isize_field: body.len() as u32,
+            offset: 0,
+            dsize: body.len() as u32,
+            compr: JFFS2_COMPR_NONE,
+            data: body,
+        });
+        builder.finish()
+    }
 
     struct Jffs2Builder {
         endian: Jffs2Endian,

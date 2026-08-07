@@ -8,6 +8,7 @@ pub mod envelope;
 pub mod error;
 pub mod markdown;
 pub mod pack;
+pub mod pii;
 pub mod selection;
 pub mod shape;
 pub mod trait_def;
@@ -24,6 +25,7 @@ pub use envelope::PerPassEnvelope;
 pub use error::LlmMetadataError;
 pub use markdown::{render_agents_md, render_skill_md};
 pub use pack::Pack;
+pub use pii::{PII_CAPABILITY, PII_PASS, PiiScan, PiiScanOutcome};
 pub use selection::{MetadataFormat, MetadataSelection, SelectionBuilder};
 pub use trait_def::LlmMetadataEmitter;
 pub use usage_inference::{

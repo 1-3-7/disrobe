@@ -6,6 +6,7 @@
 )]
 
 mod attack_surface;
+mod capability_reachability;
 mod card;
 mod catalog_counts;
 mod codegen;

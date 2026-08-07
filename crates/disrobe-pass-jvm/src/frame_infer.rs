@@ -486,13 +486,16 @@ fn apply_transfer(
         }
         0xB6..=0xBA => invoke_transfer(insn, state, resolver, opcode),
         0xBB => {
-            let name: String = match insn.operands {
+            let class: String = match insn.operands {
                 Operands::ConstPool(idx) => {
                     (resolver.class_ref)(idx).unwrap_or_else(|| "java/lang/Object".to_owned())
                 }
                 _ => "java/lang/Object".to_owned(),
             };
-            state.push(VerificationType::Object(name));
+            state.push(VerificationType::Uninitialized {
+                offset: insn.pc,
+                class,
+            });
         }
         0xBC | 0xBD => {
             state.pop();
@@ -616,70 +619,86 @@ fn field_ref_type(insn: &Instruction, resolver: &OpcodeResolver<'_>) -> Verifica
     }
 }
 
+fn invoked_member(insn: &Instruction, resolver: &OpcodeResolver<'_>) -> Option<(String, String)> {
+    match insn.operands {
+        Operands::ConstPool(idx) | Operands::InvokeDynamic(idx) => (resolver.method_ref)(idx),
+        Operands::InvokeInterface { index, .. } => (resolver.method_ref)(index),
+        _ => None,
+    }
+}
+
+fn argument_slot_count(descriptor: &MethodDescriptor) -> usize {
+    descriptor
+        .params
+        .iter()
+        .map(|param: &JavaType| usize::from(is_wide(&java_type_to_vt(param))) + 1)
+        .sum()
+}
+
+fn initialize_allocation(state: &mut FrameState, receiver: &VerificationType) {
+    let VerificationType::Uninitialized { class, .. } = receiver else {
+        return;
+    };
+    let initialized: VerificationType = VerificationType::Object(class.clone());
+    for entry in state.locals.iter_mut().chain(state.stack.iter_mut()) {
+        if entry == receiver {
+            entry.clone_from(&initialized);
+        }
+    }
+}
+
 fn invoke_transfer(
     insn: &Instruction,
     state: &mut FrameState,
     resolver: &OpcodeResolver<'_>,
     opcode: u8,
 ) {
-    let descriptor: Option<String> = match insn.operands {
-        Operands::ConstPool(idx) | Operands::InvokeDynamic(idx) => {
-            (resolver.method_ref)(idx).map(|(_, d): (String, String)| d)
-        }
-        Operands::InvokeInterface { index, .. } => {
-            (resolver.method_ref)(index).map(|(_, d): (String, String)| d)
-        }
-        _ => None,
+    let Some((name, descriptor)): Option<(String, String)> = invoked_member(insn, resolver) else {
+        return;
     };
-    let parsed: Option<MethodDescriptor> = descriptor.as_deref().and_then(parse_method);
-    if let Some(md) = parsed {
-        for param in md.params.iter().rev() {
-            let vt: VerificationType = java_type_to_vt(param);
+    let Some(md): Option<MethodDescriptor> = parse_method(&descriptor) else {
+        return;
+    };
+    for param in md.params.iter().rev() {
+        let vt: VerificationType = java_type_to_vt(param);
+        if is_wide(&vt) {
+            state.pop();
+        }
+        state.pop();
+    }
+    if opcode != 0xB8 && opcode != 0xBA {
+        let receiver: VerificationType = state.pop();
+        if opcode == 0xB7 && name == "<init>" {
+            initialize_allocation(state, &receiver);
+        }
+    }
+    match md.returns {
+        JavaType::Void => {}
+        ref other => {
+            let vt: VerificationType = java_type_to_vt(other);
             if is_wide(&vt) {
-                state.pop();
-            }
-            state.pop();
-        }
-        if opcode != 0xB8 && opcode != 0xBA {
-            state.pop();
-        }
-        match md.returns {
-            JavaType::Void => {}
-            ref other => {
-                let vt: VerificationType = java_type_to_vt(other);
-                if is_wide(&vt) {
-                    state.push_wide(vt);
-                } else {
-                    state.push(vt);
-                }
+                state.push_wide(vt);
+            } else {
+                state.push(vt);
             }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[must_use]
-pub fn infer_frames(
+struct SolvedFrames {
+    block_entry: BTreeMap<BlockId, FrameState>,
+    outcome: FrameInferOutcome,
+    modeled: usize,
+    total: usize,
+    first_unmodeled: Option<(u32, String)>,
+}
+
+fn solve_block_entries(
     cfg: &Cfg,
     insns: &[Instruction],
-    descriptor: &MethodDescriptor,
-    is_static: bool,
-    is_init_ctor: bool,
-    this_class: &str,
-    field_ref: &dyn Fn(u16) -> Option<String>,
-    method_ref: &dyn Fn(u16) -> Option<(String, String)>,
-    class_ref: &dyn Fn(u16) -> Option<String>,
-    ldc_type: &dyn Fn(u16) -> Option<VerificationType>,
-) -> FrameInferReport {
-    let resolver: OpcodeResolver<'_> = OpcodeResolver {
-        field_ref,
-        method_ref,
-        class_ref,
-        ldc_type,
-    };
-    let entry_locals: Vec<VerificationType> =
-        crate::stackmap::entry_frame_locals(descriptor, is_static, is_init_ctor, this_class);
-
+    resolver: &OpcodeResolver<'_>,
+    entry_locals: Vec<VerificationType>,
+) -> SolvedFrames {
     let mut block_entry: BTreeMap<BlockId, FrameState> = BTreeMap::new();
     block_entry.insert(cfg.entry, FrameState::entry(entry_locals));
 
@@ -712,7 +731,7 @@ pub fn infer_frames(
         let (lo, hi): (usize, usize) = block.insn_range;
         for insn in insns.get(lo..hi).unwrap_or(&[]) {
             total += 1;
-            match apply_transfer(insn, &mut state, &resolver) {
+            match apply_transfer(insn, &mut state, resolver) {
                 Ok(()) => modeled += 1,
                 Err(reason) => {
                     if first_unmodeled.is_none() {
@@ -748,7 +767,41 @@ pub fn infer_frames(
         }
     }
 
-    let block_entry_frames: BTreeMap<u32, FrameState> = block_entry
+    SolvedFrames {
+        block_entry,
+        outcome,
+        modeled,
+        total,
+        first_unmodeled,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn infer_frames(
+    cfg: &Cfg,
+    insns: &[Instruction],
+    descriptor: &MethodDescriptor,
+    is_static: bool,
+    is_init_ctor: bool,
+    this_class: &str,
+    field_ref: &dyn Fn(u16) -> Option<String>,
+    method_ref: &dyn Fn(u16) -> Option<(String, String)>,
+    class_ref: &dyn Fn(u16) -> Option<String>,
+    ldc_type: &dyn Fn(u16) -> Option<VerificationType>,
+) -> FrameInferReport {
+    let resolver: OpcodeResolver<'_> = OpcodeResolver {
+        field_ref,
+        method_ref,
+        class_ref,
+        ldc_type,
+    };
+    let entry_locals: Vec<VerificationType> =
+        crate::stackmap::entry_frame_locals(descriptor, is_static, is_init_ctor, this_class);
+    let solved: SolvedFrames = solve_block_entries(cfg, insns, &resolver, entry_locals);
+
+    let block_entry_frames: BTreeMap<u32, FrameState> = solved
+        .block_entry
         .into_iter()
         .filter_map(|(bid, state): (BlockId, FrameState)| {
             cfg.blocks
@@ -759,12 +812,190 @@ pub fn infer_frames(
         .collect();
 
     FrameInferReport {
-        outcome,
+        outcome: solved.outcome,
         block_entry_frames,
-        modeled_instructions: modeled,
-        total_instructions: total,
-        first_unmodeled,
+        modeled_instructions: solved.modeled,
+        total_instructions: solved.total,
+        first_unmodeled: solved.first_unmodeled,
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeferredAllocationPlan {
+    pub elided_stores: BTreeSet<u32>,
+    pub merged_constructions: BTreeMap<u32, String>,
+}
+
+impl DeferredAllocationPlan {
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.elided_stores.is_empty() && self.merged_constructions.is_empty()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn elides_store_at(&self, pc: u32) -> bool {
+        self.elided_stores.contains(&pc)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn merged_construction_at(&self, pc: u32) -> Option<&str> {
+        self.merged_constructions.get(&pc).map(String::as_str)
+    }
+}
+
+const fn reference_store_slot(insn: &Instruction) -> Option<u16> {
+    match insn.opcode {
+        0x3A => match insn.operands {
+            Operands::Local(idx) => Some(idx),
+            _ => None,
+        },
+        0x4B..=0x4E => Some((insn.opcode - 0x4B) as u16),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct AllocationSites {
+    stores: BTreeMap<u32, Vec<(u32, u16)>>,
+    constructions: BTreeMap<u32, Vec<(u32, String)>>,
+    disqualified: BTreeSet<u32>,
+}
+
+fn record_reference_store(
+    insn: &Instruction,
+    before: &FrameState,
+    after: &FrameState,
+    has_this: bool,
+    sites: &mut AllocationSites,
+) {
+    let Some(slot): Option<u16> = reference_store_slot(insn) else {
+        return;
+    };
+    let Some(stored @ VerificationType::Uninitialized { offset, .. }): Option<&VerificationType> =
+        before.stack.last()
+    else {
+        return;
+    };
+    if has_this && slot == 0 {
+        sites.disqualified.insert(*offset);
+        return;
+    }
+    let survivors: usize = after
+        .locals
+        .iter()
+        .chain(after.stack.iter())
+        .filter(|entry: &&VerificationType| *entry == stored)
+        .count();
+    if survivors != 1 {
+        sites.disqualified.insert(*offset);
+        return;
+    }
+    sites
+        .stores
+        .entry(*offset)
+        .or_default()
+        .push((insn.pc, slot));
+}
+
+fn record_construction(
+    insn: &Instruction,
+    before: &FrameState,
+    resolver: &OpcodeResolver<'_>,
+    sites: &mut AllocationSites,
+) {
+    if insn.opcode != 0xB7 {
+        return;
+    }
+    let Some((name, descriptor)): Option<(String, String)> = invoked_member(insn, resolver) else {
+        return;
+    };
+    if name != "<init>" {
+        return;
+    }
+    let Some(parsed): Option<MethodDescriptor> = parse_method(&descriptor) else {
+        return;
+    };
+    let Some(depth): Option<usize> = before
+        .stack
+        .len()
+        .checked_sub(argument_slot_count(&parsed) + 1)
+    else {
+        return;
+    };
+    let Some(VerificationType::Uninitialized { offset, class }): Option<&VerificationType> =
+        before.stack.get(depth)
+    else {
+        return;
+    };
+    sites
+        .constructions
+        .entry(*offset)
+        .or_default()
+        .push((insn.pc, class.clone()));
+}
+
+#[must_use]
+pub fn plan_deferred_allocations(
+    cfg: &Cfg,
+    insns: &[Instruction],
+    has_this: bool,
+    field_ref: &dyn Fn(u16) -> Option<String>,
+    method_ref: &dyn Fn(u16) -> Option<(String, String)>,
+    class_ref: &dyn Fn(u16) -> Option<String>,
+) -> DeferredAllocationPlan {
+    let ldc_type: &dyn Fn(u16) -> Option<VerificationType> = &|_| None;
+    let resolver: OpcodeResolver<'_> = OpcodeResolver {
+        field_ref,
+        method_ref,
+        class_ref,
+        ldc_type,
+    };
+    let solved: SolvedFrames = solve_block_entries(cfg, insns, &resolver, Vec::new());
+    if solved.outcome != FrameInferOutcome::Converged {
+        return DeferredAllocationPlan::default();
+    }
+
+    let mut sites: AllocationSites = AllocationSites::default();
+    for block in &cfg.blocks {
+        let Some(entry) = solved.block_entry.get(&block.id) else {
+            continue;
+        };
+        let mut state: FrameState = entry.clone();
+        let (lo, hi): (usize, usize) = block.insn_range;
+        for insn in insns.get(lo..hi).unwrap_or(&[]) {
+            let before: FrameState = state.clone();
+            record_construction(insn, &before, &resolver, &mut sites);
+            if apply_transfer(insn, &mut state, &resolver).is_err() {
+                return DeferredAllocationPlan::default();
+            }
+            record_reference_store(insn, &before, &state, has_this, &mut sites);
+        }
+    }
+
+    let mut plan: DeferredAllocationPlan = DeferredAllocationPlan::default();
+    for (offset, stores) in &sites.stores {
+        if sites.disqualified.contains(offset) {
+            continue;
+        }
+        let [(store_pc, _slot)]: &[(u32, u16)] = stores.as_slice() else {
+            continue;
+        };
+        let Some(constructions): Option<&Vec<(u32, String)>> = sites.constructions.get(offset)
+        else {
+            continue;
+        };
+        if constructions.is_empty() {
+            continue;
+        }
+        plan.elided_stores.insert(*store_pc);
+        for (init_pc, class) in constructions {
+            plan.merged_constructions.insert(*init_pc, class.clone());
+        }
+    }
+    plan
 }
 
 #[cfg(test)]
@@ -838,6 +1069,150 @@ mod tests {
         assert_eq!(report.outcome, FrameInferOutcome::Converged);
         let entry: &FrameState = report.block_entry_frames.get(&0).unwrap();
         assert_eq!(entry.locals.first(), Some(&VerificationType::Integer));
+    }
+
+    const FOO_CLASS_INDEX: u16 = 1;
+    const FOO_INIT_INDEX: u16 = 2;
+    const BAR_CLASS_INDEX: u16 = 3;
+    const BAR_INIT_INDEX: u16 = 4;
+
+    fn allocation_class(index: u16) -> Option<String> {
+        match index {
+            FOO_CLASS_INDEX => Some("Foo".to_owned()),
+            BAR_CLASS_INDEX => Some("Bar".to_owned()),
+            _ => None,
+        }
+    }
+
+    fn constructor_member(index: u16) -> Option<(String, String)> {
+        match index {
+            FOO_INIT_INDEX | BAR_INIT_INDEX => Some(("<init>".to_owned(), "()V".to_owned())),
+            _ => None,
+        }
+    }
+
+    fn allocation_plan(code: Vec<u8>, has_this: bool) -> DeferredAllocationPlan {
+        let insns: Vec<Instruction> = disassemble(&code).unwrap();
+        let attr: CodeAttribute = code_attr(code);
+        let cfg: Cfg = build_cfg(&insns, &attr, allocation_class).unwrap();
+        plan_deferred_allocations(
+            &cfg,
+            &insns,
+            has_this,
+            &|_| None,
+            &constructor_member,
+            &allocation_class,
+        )
+    }
+
+    fn merged(plan: &DeferredAllocationPlan) -> Vec<(u32, String)> {
+        plan.merged_constructions
+            .iter()
+            .map(|(pc, class): (&u32, &String)| (*pc, class.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_spilled_allocation_pairs_with_the_constructor_call_that_follows_a_join() {
+        let code: Vec<u8> = vec![
+            0xBB, 0x00, 0x01, 0x4C, 0x03, 0x99, 0x00, 0x06, 0xA7, 0x00, 0x03, 0x2B, 0xB7, 0x00,
+            0x02, 0xB1,
+        ];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert_eq!(
+            plan.elided_stores.iter().copied().collect::<Vec<u32>>(),
+            vec![3],
+            "the store that parks the uninitialized reference must be held back, because the \
+             allocation and its constructor call are one java expression"
+        );
+        assert_eq!(merged(&plan), vec![(12, "Foo".to_owned())]);
+    }
+
+    #[test]
+    fn an_allocation_whose_constructor_never_runs_keeps_its_own_statement() {
+        let code: Vec<u8> = vec![0xBB, 0x00, 0x01, 0x4C, 0xB1];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert!(
+            plan.is_empty(),
+            "holding back a store whose constructor call never arrives would drop the allocation \
+             out of the recovered source entirely, which is a silent semantic change"
+        );
+    }
+
+    #[test]
+    fn two_pending_allocations_pair_with_their_own_constructors() {
+        let code: Vec<u8> = vec![
+            0xBB, 0x00, 0x01, 0x4C, 0xBB, 0x00, 0x03, 0x4D, 0x2C, 0xB7, 0x00, 0x04, 0x2B, 0xB7,
+            0x00, 0x02, 0xB1,
+        ];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert_eq!(
+            plan.elided_stores.iter().copied().collect::<Vec<u32>>(),
+            vec![3, 7]
+        );
+        assert_eq!(
+            merged(&plan),
+            vec![(9, "Bar".to_owned()), (13, "Foo".to_owned())],
+            "each constructor call must name the class its own allocation site allocated"
+        );
+    }
+
+    #[test]
+    fn an_allocation_still_live_on_the_stack_after_the_store_is_left_alone() {
+        let code: Vec<u8> = vec![0xBB, 0x00, 0x01, 0x59, 0x4C, 0xB7, 0x00, 0x02, 0xB1];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert!(
+            plan.is_empty(),
+            "the duplicated copy is what the constructor call consumes, so the stored copy still \
+             needs its own assignment"
+        );
+    }
+
+    #[test]
+    fn an_allocation_copied_into_a_second_local_is_left_alone() {
+        let code: Vec<u8> = vec![
+            0xBB, 0x00, 0x01, 0x4C, 0x2B, 0x4D, 0x2C, 0xB7, 0x00, 0x02, 0xB1,
+        ];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert!(
+            plan.is_empty(),
+            "two locals hold the same allocation, so merging the constructor call into one of them \
+             would leave the other unassigned"
+        );
+    }
+
+    #[test]
+    fn an_allocation_inside_a_loop_pairs_once() {
+        let code: Vec<u8> = vec![
+            0xBB, 0x00, 0x01, 0x4C, 0x2B, 0xB7, 0x00, 0x02, 0xA7, 0xFF, 0xF8, 0xB1,
+        ];
+        let plan: DeferredAllocationPlan = allocation_plan(code, false);
+        assert_eq!(
+            plan.elided_stores.iter().copied().collect::<Vec<u32>>(),
+            vec![3]
+        );
+        assert_eq!(merged(&plan), vec![(5, "Foo".to_owned())]);
+    }
+
+    #[test]
+    fn a_receiver_slot_that_holds_this_is_never_treated_as_an_allocation() {
+        let code: Vec<u8> = vec![0xBB, 0x00, 0x01, 0x4B, 0x2A, 0xB7, 0x00, 0x02, 0xB1];
+        let plan: DeferredAllocationPlan = allocation_plan(code, true);
+        assert!(
+            plan.is_empty(),
+            "slot zero of an instance method renders as `this`, so a merged assignment there would \
+             turn a constructor call into an assignment to `this`"
+        );
+    }
+
+    #[test]
+    fn a_super_constructor_call_is_not_an_allocation() {
+        let code: Vec<u8> = vec![0x2A, 0xB7, 0x00, 0x02, 0xB1];
+        let plan: DeferredAllocationPlan = allocation_plan(code, true);
+        assert!(
+            plan.is_empty(),
+            "delegation to a superclass constructor has no allocation site to merge into"
+        );
     }
 
     #[test]

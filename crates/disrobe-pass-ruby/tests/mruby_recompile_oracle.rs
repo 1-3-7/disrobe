@@ -23,8 +23,10 @@ use ruby_toolchain::{
 const GRADED: &str = "the mrbc recompile and mruby output comparison over the breadth corpus";
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
-const EQUIVALENT_SET: &[&str] = &["strings", "coll", "klass", "control", "blocks", "advanced"];
-const WITHHELD_SET: &[&str] = &["arith", "exceptions"];
+const EQUIVALENT_SET: &[&str] = &[
+    "arith", "strings", "coll", "klass", "control", "blocks", "advanced", "jumps",
+];
+const WITHHELD_SET: &[&str] = &["exceptions", "loopbreak", "kwargs", "ensurecase"];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -34,6 +36,61 @@ const BREADTH_SET: &[&str] = &[
     "blocks",
     "exceptions",
     "advanced",
+    "jumps",
+    "loopbreak",
+    "kwargs",
+    "ensurecase",
+];
+
+const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
+    ("arith", 22, 22),
+    ("strings", 19, 19),
+    ("coll", 35, 35),
+    ("klass", 39, 39),
+    ("control", 37, 37),
+    ("blocks", 30, 30),
+    ("exceptions", 22, 27),
+    ("advanced", 138, 138),
+    ("jumps", 63, 63),
+    ("loopbreak", 31, 35),
+    ("kwargs", 30, 31),
+    ("ensurecase", 29, 33),
+];
+
+const UNMODELED_REASONS: &[(&str, &str)] = &[
+    (
+        "JMP",
+        "an unconditional jump inside an irep whose catch_count is nonzero (rescue/else/ensure), \
+         or inside a while loop that also contains a JMPUW-based break; structurable() withholds \
+         structuring for both shapes",
+    ),
+    (
+        "JMPIF",
+        "a conditional jump inside an irep whose catch_count is nonzero; rescue, else, and ensure \
+         control flow is not structurally recovered",
+    ),
+    (
+        "JMPNOT",
+        "a conditional jump that guards a JMPUW-based break inside a native while or until loop; \
+         the guarded break never reaches the dedicated BREAK opcode",
+    ),
+    (
+        "JMPUW",
+        "break with a value inside a native while or until loop compiles through JMPUW, not the \
+         dedicated BREAK opcode; JMPUW also marks a rescue/ensure unwind edge, so a JMPUW is never \
+         assumed to be a loop break",
+    ),
+    (
+        "RAISEIF",
+        "RaiseIf only lowers when its condition register is a proven reference to $!, the \
+         reraise-if-unhandled path inside a rescue clause; any other operand shape is unproven",
+    ),
+    (
+        "KEY_P",
+        "tests whether an optional keyword argument was supplied so its default value can be \
+         computed; the result has no Ruby-source expression outside parameter-list syntax, so \
+         rendering it as a body-level branch would fabricate syntax the source never had",
+    ),
 ];
 
 fn corpus_path(name: &str, ext: &str) -> PathBuf {
@@ -101,6 +158,11 @@ fn stdout_matches(want: Option<&[u8]>, have: Option<&[u8]>) -> bool {
 
 #[test]
 fn breadth_corpus_opcode_coverage_is_measured_not_dropped() {
+    assert_eq!(
+        EXPECTED_OPCODE_COUNTS.len(),
+        BREADTH_SET.len(),
+        "every breadth fixture must carry an expected opcode count"
+    );
     for name in BREADTH_SET {
         let dec: MrubyDecompiled = recover(name);
         assert!(
@@ -112,10 +174,58 @@ fn breadth_corpus_opcode_coverage_is_measured_not_dropped() {
             dec.lifted_opcodes,
             "{name}: modeled + unmodeled must account for every lifted opcode"
         );
+        let (_, expected_modeled, expected_total): (&str, u32, u32) = *EXPECTED_OPCODE_COUNTS
+            .iter()
+            .find(|(fixture, _, _)| fixture == name)
+            .unwrap_or_else(|| panic!("{name}: no expected opcode count recorded"));
+        assert_eq!(
+            dec.lifted_opcodes, expected_total,
+            "{name}: lifted opcode count moved from the measured baseline; re-derive the figure \
+             rather than editing the expectation to match a regression"
+        );
+        assert_eq!(
+            dec.modeled_opcodes, expected_modeled,
+            "{name}: modeled opcode count moved from the measured baseline, got {:?} unmodeled",
+            dec.unmodeled_mnemonics
+        );
         let pct: u32 = dec.modeled_opcodes.saturating_mul(100) / dec.lifted_opcodes;
         println!(
             "[{name}] opcode fidelity {}/{} ({pct}%) unmodeled={:?}",
             dec.modeled_opcodes, dec.lifted_opcodes, dec.unmodeled_mnemonics
+        );
+    }
+    let total_modeled: u32 = EXPECTED_OPCODE_COUNTS
+        .iter()
+        .map(|(_, modeled, _)| modeled)
+        .sum();
+    let total_lifted: u32 = EXPECTED_OPCODE_COUNTS
+        .iter()
+        .map(|(_, _, total)| total)
+        .sum();
+    println!(
+        "breadth corpus aggregate: {total_modeled}/{total_lifted} modeled across {} fixtures",
+        BREADTH_SET.len()
+    );
+}
+
+#[test]
+fn every_unmodeled_mnemonic_carries_a_reason_that_still_applies() {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for name in BREADTH_SET {
+        let dec: MrubyDecompiled = recover(name);
+        for mnemonic in &dec.unmodeled_mnemonics {
+            seen.insert(mnemonic.clone());
+            assert!(
+                UNMODELED_REASONS.iter().any(|(m, _)| m == mnemonic),
+                "{name}: {mnemonic} is unmodeled but carries no recorded reason"
+            );
+        }
+    }
+    for (mnemonic, _) in UNMODELED_REASONS {
+        assert!(
+            seen.contains(*mnemonic),
+            "{mnemonic} has a recorded reason but no breadth fixture leaves it unmodeled any \
+             more; the reason entry is stale and must be removed"
         );
     }
 }

@@ -19,9 +19,9 @@ use crate::error::{Error, Result};
 use crate::packers::mew_unpack::aplib_decode_bytetagged;
 use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
 use crate::packers::section_recovery::{
-    SectionRecoveryReport, build_loaded_image, section_recovery_report,
+    SectionRecoveryReport, build_loaded_image, emulated_image_capacity, last_section_end_va,
+    section_recovery_report,
 };
-use crate::stub_emu::mem::MAX_MAP_BYTES;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 pub const YODAS_STUB_SECTION: &[u8] = b".yC0";
@@ -124,9 +124,7 @@ pub fn unpack_yodas_emulated(
     })?;
     let stub_rva: u32 = stub.virtual_address;
     let image_base: u64 = img.image_base;
-    let capacity: u64 = u64::from(img.size_of_image)
-        .max(last_section_end_va(&img))
-        .min(MAX_MAP_BYTES);
+    let capacity: u64 = emulated_image_capacity(&img, packed.len());
 
     let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
     cpu.mem.map(image_base, capacity, Perm::RWX)?;
@@ -369,16 +367,6 @@ fn read_u32_at(b: &[u8], off: usize) -> Result<u32> {
         b[off + 2],
         b[off + 3],
     ]))
-}
-
-fn last_section_end_va(img: &PeImage) -> u64 {
-    img.sections
-        .iter()
-        .map(|s: &PeSection| {
-            u64::from(s.virtual_address) + u64::from(s.virtual_size.max(s.raw_size))
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 fn map_image(cpu: &mut Cpu, packed: &[u8], img: &PeImage, base: u64) {

@@ -158,28 +158,7 @@ fn key_material_candidates(raw: &str) -> Vec<Vec<u8>> {
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() < 2 || !s.len().is_multiple_of(2) || !s.bytes().all(|b: u8| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(s.len() / 2);
-    let mut i: usize = 0;
-    while i < bytes.len() {
-        let hi: u8 = hex_val(bytes[i])?;
-        let lo: u8 = hex_val(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Some(out)
-}
-
-const fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    disrobe_core::codec::hex::decode_str_with(s, disrobe_core::codec::hex::TOKEN).ok()
 }
 
 fn printable(bytes: &[u8]) -> Option<String> {
@@ -220,6 +199,18 @@ mod tests {
             .iter()
             .map(|(k, v): &(&str, &str)| (k.to_ascii_uppercase(), (*v).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn decode_hex_pins_the_shipped_length_and_symbol_policy() {
+        assert_eq!(decode_hex(""), None);
+        assert_eq!(decode_hex(" "), None);
+        assert_eq!(decode_hex("a"), None);
+        assert_eq!(decode_hex("abc"), None);
+        assert_eq!(decode_hex("a b"), None);
+        assert_eq!(decode_hex("gg"), None);
+        assert_eq!(decode_hex("ab"), Some(vec![0xab]));
+        assert_eq!(decode_hex("DEADbeef"), Some(vec![0xde, 0xad, 0xbe, 0xef]));
     }
 
     #[test]

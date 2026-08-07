@@ -1,22 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use crate::apk_recon::{
-    ApkReconReport, MAX_PROTECTOR_CARVE_SCAN, analyze as analyze_apk_recon,
-    find_embedded_dex_carves, materialize_embedded_dex,
+    ApkReconReport, MAX_PROTECTOR_CARVE_SCAN, find_embedded_dex_carves, materialize_embedded_dex,
 };
-use crate::cordova::{WebviewBundleKind, WebviewExtractionReport, extract_webview_bundle};
-use crate::debug::{dbg_hex, dbg_kv, dbg_line, dbg_section};
+use crate::cordova::WebviewExtractionReport;
 use crate::flutter::{
-    AotLiftReport, Arm64Disassembly, DartKernel, DartLibAppRecovery, DartSnapshotStructure,
-    LibAppLayout, decompile_libapp_so_recovery, decompile_libapp_so_structured,
-    disassemble_libapp_so, is_dart_kernel, lift_libapp_aot, parse_flutter_apk, parse_kernel,
-    parse_libapp_so,
+    AotLiftReport, Arm64Disassembly, DartGraphRecoveryReport, DartKernel, DartLibAppRecovery,
+    DartSnapshotStructure, LibAppLayout, is_dart_kernel,
 };
-use crate::hermes::{HermesModule, parse as parse_hermes};
-use crate::ios::{IpaExtractionReport, extract_ipa};
-use crate::nativescript::{NativeScriptReport, extract_nativescript_bundle};
-use crate::react_native::{RnExtractionReport, extract_from_apk_or_ipa};
-use crate::xamarin::{XamarinReport, extract_xamarin_bundle};
+use crate::ios::IpaExtractionReport;
+use crate::nativescript::NativeScriptReport;
+use crate::react_native::RnExtractionReport;
+use crate::xamarin::XamarinReport;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MobilePass;
@@ -31,6 +26,7 @@ pub struct MobilePassOutput {
     pub flutter_libapp_recovery: Option<DartLibAppRecovery>,
     pub flutter_arm64_disasm: Option<Arm64Disassembly>,
     pub flutter_aot_lift: Option<AotLiftReport>,
+    pub flutter_pinned_inventory: Option<DartGraphRecoveryReport>,
     pub flutter_kernel: Option<DartKernel>,
     pub xamarin: Option<XamarinReport>,
     pub cordova: Option<WebviewExtractionReport>,
@@ -105,7 +101,22 @@ pub struct HermesSummary {
     pub raw_bytecode_size: usize,
 }
 
+#[cfg(any(test, feature = "chain"))]
 pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> {
+    use crate::apk_recon::analyze as analyze_apk_recon;
+    use crate::cordova::{WebviewBundleKind, extract_webview_bundle};
+    use crate::debug::{dbg_hex, dbg_kv, dbg_line, dbg_section};
+    use crate::flutter::{
+        DartGraphRecoveryOptions, decompile_libapp_so_recovery, decompile_libapp_so_structured,
+        disassemble_libapp_so, lift_libapp_aot, parse_flutter_apk, parse_kernel, parse_libapp_so,
+        recover_dart_pinned_elf,
+    };
+    use crate::hermes::{HermesModule, parse as parse_hermes};
+    use crate::ios::extract_ipa;
+    use crate::nativescript::extract_nativescript_bundle;
+    use crate::react_native::extract_from_apk_or_ipa;
+    use crate::xamarin::extract_xamarin_bundle;
+
     dbg_section("mobile analyze");
     dbg_kv("input_len", || bytes.len().to_string());
     dbg_hex("input-magic", bytes, 8);
@@ -120,6 +131,7 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
         flutter_libapp_recovery: None,
         flutter_arm64_disasm: None,
         flutter_aot_lift: None,
+        flutter_pinned_inventory: None,
         flutter_kernel: None,
         xamarin: None,
         cordova: None,
@@ -170,6 +182,14 @@ pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> 
                     aot_lift.named_static_call_edges.to_string()
                 });
                 output.flutter_aot_lift = Some(aot_lift);
+                if let Ok(pinned) =
+                    recover_dart_pinned_elf(bytes, &DartGraphRecoveryOptions::default())
+                {
+                    dbg_kv("flutter.pinned_inventory_status", || {
+                        format!("{:?}", pinned.status)
+                    });
+                    output.flutter_pinned_inventory = Some(pinned);
+                }
             } else {
                 dbg_line(|| "flutter route = apk container (extract libapp.so)".to_owned());
                 let apk: crate::flutter::FlutterApkLayout = parse_flutter_apk(bytes)?;

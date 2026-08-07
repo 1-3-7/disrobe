@@ -158,6 +158,55 @@ fn benign_rust_binary_yields_zero_verdicts() {
 }
 
 #[test]
+fn positive_recall_real_binary_calling_two_debugger_checks() {
+    if !tool_available("rustc") {
+        eprintln!("SKIP: rustc unavailable");
+        return;
+    }
+    if !cfg!(windows) {
+        eprintln!("SKIP: IsDebuggerPresent/CheckRemoteDebuggerPresent are win32-only");
+        return;
+    }
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let src_path: PathBuf = dir.join("aa_two_debug_checks.rs");
+    std::fs::write(
+        &src_path,
+        "unsafe extern \"system\" { \
+             fn IsDebuggerPresent() -> i32; \
+             fn CheckRemoteDebuggerPresent(h_process: isize, pb_debugger_present: *mut i32) -> i32; \
+         } \
+         fn main(){ unsafe { \
+             let a: i32 = IsDebuggerPresent(); \
+             let mut b: i32 = 0; \
+             CheckRemoteDebuggerPresent(-1isize, std::ptr::addr_of_mut!(b)); \
+             println!(\"{a} {b}\"); \
+         } }\n",
+    )
+    .expect("write rust source");
+    let out_path: PathBuf = dir.join(exe_name("aa_two_debug_checks"));
+    let ok: bool = Command::new("rustc")
+        .arg("-Copt-level=0")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&out_path)
+        .status()
+        .is_ok_and(|s: std::process::ExitStatus| s.success());
+    if !ok {
+        eprintln!("SKIP: rustc build of the two-debugger-check probe failed");
+        return;
+    }
+    let bytes: Vec<u8> = std::fs::read(&out_path).expect("read compiled probe");
+    let report: AntiAnalysisReport = scan(&bytes, Some("rust/two-debugger-checks"));
+    assert!(
+        detects(&report, Technique::AntiDebug),
+        "a real binary that calls two distinct high-confidence anti-debug apis must still \
+         reach an AntiDebug verdict; got {:?}",
+        report.findings
+    );
+}
+
+#[test]
 fn disrobe_own_release_binary_yields_zero_verdicts() {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop();

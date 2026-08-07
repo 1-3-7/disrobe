@@ -602,7 +602,7 @@ pub(crate) fn measure_per_object(
         let empty: Vec<&CodeObject> = Vec::new();
         let blist: &Vec<&CodeObject> = group_b.get(qual).unwrap_or(&empty);
         if blist.len() != alist.len() {
-            if alist.len() > 1 {
+            if alist.len().max(blist.len()) > 1 {
                 tally.sibling_collisions += 1;
             }
             for (i, _) in alist.iter().enumerate() {

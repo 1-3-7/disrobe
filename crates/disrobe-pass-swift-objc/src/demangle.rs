@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 const MAX_DEPTH: usize = 1024;
 const MAX_NODES: usize = 1 << 18;
 const MAX_REPEAT_COUNT: u32 = 2048;
+const MAX_SYMBOL_LEN: usize = 1 << 16;
 
 #[must_use]
 pub fn looks_like_swift_mangled(s: &str) -> bool {
@@ -21,6 +22,13 @@ pub fn contains_symbolic_reference(mangled: &str) -> bool {
 }
 
 pub fn demangle(symbol: &str) -> Result<String> {
+    if symbol.len() > MAX_SYMBOL_LEN {
+        let truncated: String = symbol.chars().take(64).collect();
+        return Err(Error::Demangle(format!(
+            "{truncated}... ({} bytes, over the {MAX_SYMBOL_LEN}-byte bound)",
+            symbol.len()
+        )));
+    }
     let trimmed: &str = symbol.strip_prefix('_').unwrap_or(symbol);
     let body: &str = trimmed
         .strip_prefix("$s")
@@ -40,7 +48,8 @@ pub fn demangle(symbol: &str) -> Result<String> {
 
 #[must_use]
 pub fn demangle_type(mangled: &str) -> Option<String> {
-    if mangled.is_empty() || contains_symbolic_reference(mangled) {
+    if mangled.is_empty() || mangled.len() > MAX_SYMBOL_LEN || contains_symbolic_reference(mangled)
+    {
         return None;
     }
     let mut dem: Demangler<'_> = Demangler::new(mangled);
@@ -168,6 +177,30 @@ enum Kind {
     PackExpansion,
     Pack,
     DependentGenericParamPackMarker,
+    SendableAnnotation,
+    AsyncResumePartialFunction,
+    OpaqueTypeDescriptor,
+    TypeMetadataInstantiationCache,
+    TypeMetadataInstantiationFunction,
+    TypeMetadataCompletionFunction,
+    TypeMetadataSingletonInitializationCache,
+    OutlinedInitWithCopy,
+    OutlinedDestroy,
+    DefaultArgumentInitializer,
+    VariableInitializationExpression,
+    OneTimeInitializationFunction,
+    OneTimeInitializationToken,
+    MetadataInstantiationCache,
+    ProtocolConformanceContext,
+    ProtocolWitnessThunk,
+    PartialApplyForwarder,
+    KeyPathThunk,
+    LazyWitnessTableCacheVariable,
+    LazyWitnessTableAccessor,
+    DistributedThunk,
+    DistributedAccessor,
+    ObjCAttribute,
+    NonObjCAttribute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,6 +471,12 @@ impl<'a> Demangler<'a> {
                 if let Some(wtable) = self.try_demangle_protocol_conformance_record(&context) {
                     return Some(wtable);
                 }
+                if let Some(witness) = self.try_demangle_protocol_witness_context(&context) {
+                    return Some(witness);
+                }
+                if let Some(lazy) = self.try_demangle_lazy_witness_accessor(&context) {
+                    return Some(lazy);
+                }
             }
             return Some(context);
         }
@@ -451,6 +490,12 @@ impl<'a> Demangler<'a> {
         }
         if let Some(wtable) = self.try_demangle_protocol_conformance_record(&context) {
             return Some(wtable);
+        }
+        if let Some(witness) = self.try_demangle_protocol_witness_context(&context) {
+            return Some(witness);
+        }
+        if let Some(lazy) = self.try_demangle_lazy_witness_accessor(&context) {
+            return Some(lazy);
         }
         match self.peek() {
             Some(b'f') => {
@@ -502,6 +547,15 @@ impl<'a> Demangler<'a> {
         if let Some(wtable) = self.try_demangle_protocol_conformance_record(&bound) {
             return Some(wtable);
         }
+        if let Some(witness) = self.try_demangle_protocol_witness_context(&bound) {
+            return Some(witness);
+        }
+        let after_bound: Checkpoint = self.checkpoint();
+        let _: Option<NodeRef> = self.try_demangle_trailing_generic_signature();
+        if self.peek() == Some(b'W') && self.peek_at(1) == Some(b'O') {
+            return Some(bound);
+        }
+        self.restore(after_bound);
         self.restore(cp);
         None
     }
@@ -609,6 +663,7 @@ impl<'a> Demangler<'a> {
                     }
                     Some(b'b') => {
                         self.pos += 2;
+                        annotations.push(Node::branch(Kind::SendableAnnotation, Vec::new()));
                         continue;
                     }
                     Some(b'A') => {
@@ -685,6 +740,7 @@ impl<'a> Demangler<'a> {
         if let Some(node) = self.try_demangle_macro_expansion(&context, &name) {
             return node;
         }
+        let name: NodeRef = self.consume_private_discriminator(name);
         if let Some(c) = self.peek()
             && matches!(c, b'C' | b'V' | b'O' | b'a')
         {
@@ -702,6 +758,22 @@ impl<'a> Demangler<'a> {
             let node: NodeRef = Node::unary(Kind::Protocol, parent_with_name);
             self.add_substitution(&node);
             return node;
+        }
+        if self.peek() == Some(b'_') && self.peek_at(1) == Some(b'p') {
+            self.pos += 2;
+            let parent_with_name: NodeRef =
+                Node::branch(Kind::OtherNominalType, vec![context, name]);
+            let node: NodeRef = Node::unary(Kind::Protocol, parent_with_name);
+            self.add_substitution(&node);
+            return node;
+        }
+        if self.peek() == Some(b'_') {
+            let underscore_cp: Checkpoint = self.checkpoint();
+            self.pos += 1;
+            if let Some(node) = self.demangle_one_time_init(name.clone()) {
+                return node;
+            }
+            self.restore(underscore_cp);
         }
         let cp: Checkpoint = self.checkpoint();
         if let Some(node) = self.try_demangle_storage_entity(&context, &name) {
@@ -750,7 +822,7 @@ impl<'a> Demangler<'a> {
                 return None;
             }
         };
-        let discriminator: u32 = self.demangle_natural();
+        let discriminator: u32 = self.demangle_index()?;
         Some(Node::branch_with_text(
             Kind::MacroExpansion,
             role.to_owned(),
@@ -843,7 +915,17 @@ impl<'a> Demangler<'a> {
                     self.pos += 1;
                     self.demangle_value_witness(node.clone())
                 }
-                _ => self.try_demangle_specialization(&node),
+                b'Q' => {
+                    self.pos += 1;
+                    self.demangle_opaque_type_marker(node.clone())
+                }
+                b'f' => {
+                    self.pos += 1;
+                    self.demangle_related_entity(node.clone())
+                }
+                _ => self
+                    .try_demangle_specialization(&node)
+                    .or_else(|| self.try_demangle_keypath_thunk(&node)),
             };
             match consumed {
                 Some(next) => node = next,
@@ -887,6 +969,32 @@ impl<'a> Demangler<'a> {
         ))
     }
 
+    fn try_demangle_keypath_thunk(&mut self, base: &NodeRef) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let Some(containing): Option<NodeRef> = self.try_demangle_type() else {
+            self.restore(cp);
+            return None;
+        };
+        if self.pos == cp.pos || self.peek() != Some(b'T') {
+            self.restore(cp);
+            return None;
+        }
+        let role: &'static str = match self.peek_at(1) {
+            Some(b'K') => "getter",
+            Some(b'k') => "setter",
+            _ => {
+                self.restore(cp);
+                return None;
+            }
+        };
+        self.pos += 2;
+        Some(Node::branch_with_text(
+            Kind::KeyPathThunk,
+            role.to_owned(),
+            vec![base.clone(), containing],
+        ))
+    }
+
     fn demangle_specialization_kind(&mut self) -> Option<&'static str> {
         match self.next()? {
             b'g' | b'B' => Some("generic specialization"),
@@ -910,8 +1018,15 @@ impl<'a> Demangler<'a> {
             b'o' => Node::unary(Kind::ClassMetadataBaseOffset, base),
             b'P' => Node::unary(Kind::GenericTypeMetadataPattern, base),
             b'V' => Node::unary(Kind::PropertyDescriptor, base),
-            b'L' | b'K' | b'I' | b'i' | b'r' | b'u' | b'U' | b'C' | b'B' | b'l' | b'z' | b'J'
-            | b'N' | b'q' => Node::unary(Kind::TypeMetadata, base),
+            b'I' => Node::unary(Kind::TypeMetadataInstantiationCache, base),
+            b'i' => Node::unary(Kind::TypeMetadataInstantiationFunction, base),
+            b'r' => Node::unary(Kind::TypeMetadataCompletionFunction, base),
+            b'l' => Node::unary(Kind::TypeMetadataSingletonInitializationCache, base),
+            b'Q' => Node::unary(Kind::OpaqueTypeDescriptor, base),
+            b'K' => Node::unary(Kind::MetadataInstantiationCache, base),
+            b'L' | b'u' | b'U' | b'C' | b'B' | b'z' | b'J' | b'N' | b'q' => {
+                Node::unary(Kind::TypeMetadata, base)
+            }
             b'X' => {
                 let x: u8 = self.next()?;
                 match x {
@@ -924,19 +1039,49 @@ impl<'a> Demangler<'a> {
         Some(node)
     }
 
+    fn demangle_opaque_type_marker(&mut self, base: NodeRef) -> Option<NodeRef> {
+        match self.next()? {
+            b'O' => Some(base),
+            _ => None,
+        }
+    }
+
+    fn demangle_related_entity(&mut self, base: NodeRef) -> Option<NodeRef> {
+        match self.next()? {
+            b'i' => Some(Node::unary(Kind::VariableInitializationExpression, base)),
+            b'A' => {
+                let idx: u32 = self.demangle_index()?;
+                Some(Node::branch_with_text(
+                    Kind::DefaultArgumentInitializer,
+                    idx.to_string(),
+                    vec![base],
+                ))
+            }
+            _ => None,
+        }
+    }
+
     fn demangle_witness(&mut self, base: NodeRef) -> Option<NodeRef> {
         let c: u8 = self.next()?;
         let node: NodeRef = match c {
             b'P' => Node::unary(Kind::ProtocolWitnessTable, base),
             b'p' => Node::unary(Kind::ProtocolWitnessTablePattern, base),
             b'V' => Node::unary(Kind::ValueWitnessTable, base),
+            b'O' => {
+                let outlined: u8 = self.next()?;
+                match outlined {
+                    b'c' => Node::unary(Kind::OutlinedInitWithCopy, base),
+                    b'h' => Node::unary(Kind::OutlinedDestroy, base),
+                    _ => return None,
+                }
+            }
             b'v' => {
                 let directness: &'static str = self.consume_directness();
                 Node::branch_with_text(Kind::FieldOffset, directness.to_owned(), vec![base])
             }
             b'C' => Node::unary(Kind::EnumCase, base),
             b'S' => Node::unary(Kind::ProtocolSelfConformanceWitnessTable, base),
-            b'a' | b'G' | b'I' | b'l' | b'L' | b'b' | b'T' | b't' | b'r' | b'O' => {
+            b'a' | b'G' | b'I' | b'l' | b'L' | b'b' | b'T' | b't' | b'r' => {
                 Node::unary(Kind::ProtocolWitnessTable, base)
             }
             _ => return None,
@@ -966,7 +1111,31 @@ impl<'a> Demangler<'a> {
             b'L' => Some(Node::unary(Kind::ProtocolRequirementsBaseDescriptor, base)),
             b'u' => Some(Node::unary(Kind::AsyncFunctionPointer, base)),
             b'm' => Some(Node::unary(Kind::MergedFunction, base)),
-            b'D' | b'd' | b'O' | b'o' | b'V' | b'I' | b'X' | b'E' | b'F' | b'c' => Some(base),
+            b'Q' => {
+                let idx: u32 = self.demangle_index()?;
+                Some(Node::branch_with_text(
+                    Kind::AsyncResumePartialFunction,
+                    "await".to_owned(),
+                    vec![base, Node::leaf(Kind::Identifier, idx.to_string())],
+                ))
+            }
+            b'Y' => {
+                let idx: u32 = self.demangle_index()?;
+                Some(Node::branch_with_text(
+                    Kind::AsyncResumePartialFunction,
+                    "suspend".to_owned(),
+                    vec![base, Node::leaf(Kind::Identifier, idx.to_string())],
+                ))
+            }
+            b'W' => Some(Node::unary(Kind::ProtocolWitnessThunk, base)),
+            b'A' => Some(Node::unary(Kind::PartialApplyForwarder, base)),
+            b'E' => Some(Node::unary(Kind::DistributedThunk, base)),
+            b'F' if base.kind == Kind::DistributedThunk => {
+                Some(Node::unary(Kind::DistributedAccessor, base))
+            }
+            b'o' => Some(Node::unary(Kind::ObjCAttribute, base)),
+            b'O' => Some(Node::unary(Kind::NonObjCAttribute, base)),
+            b'D' | b'd' | b'V' | b'I' | b'X' | b'F' | b'c' => Some(base),
             _ => {
                 self.skip_to_end();
                 Some(base)
@@ -1156,6 +1325,27 @@ impl<'a> Demangler<'a> {
         Node::leaf(Kind::Identifier, format!("{decoded}{suffix}"))
     }
 
+    fn consume_private_discriminator(&mut self, name: NodeRef) -> NodeRef {
+        let Some(text): Option<&String> = name.text.as_ref() else {
+            return name;
+        };
+        if !self.peek().is_some_and(|c: u8| c.is_ascii_digit()) {
+            return name;
+        }
+        let cp: Checkpoint = self.checkpoint();
+        let Some(discriminator): Option<NodeRef> = self.demangle_identifier(Kind::Identifier)
+        else {
+            self.restore(cp);
+            return name;
+        };
+        if !(self.next_if(b'L') && self.next_if(b'L')) {
+            self.restore(cp);
+            return name;
+        }
+        let disc_text: &str = discriminator.text.as_deref().unwrap_or_default();
+        Node::leaf(Kind::Identifier, format!("({text} in {disc_text})"))
+    }
+
     fn demangle_protocol_member_or_self(&mut self, protocol: NodeRef) -> Option<NodeRef> {
         if let Some(base_conf) = self.try_demangle_base_conformance(&protocol) {
             return Some(base_conf);
@@ -1184,7 +1374,7 @@ impl<'a> Demangler<'a> {
         if let Some(proto) = self.demangle_protocol_type() {
             let module: Option<NodeRef> = self.try_demangle_conformance_module();
             let generic_sig: Option<NodeRef> = self.try_demangle_conformance_generic_sig();
-            if self.next_if(b'M') && self.next_if(b'c') && self.pos == self.src.len() {
+            if self.next_if(b'M') && self.next_if(b'c') {
                 let mut children: Vec<NodeRef> = vec![ty.clone(), proto];
                 if let Some(m) = module {
                     children.push(m);
@@ -1221,7 +1411,6 @@ impl<'a> Demangler<'a> {
             let module: Option<NodeRef> = self.try_demangle_conformance_module();
             if self.next_if(b'W')
                 && let Some(record_kind) = self.conformance_record_kind()
-                && self.pos == self.src.len()
             {
                 let mut children: Vec<NodeRef> = vec![ty.clone(), proto];
                 if let Some(m) = module {
@@ -1240,6 +1429,130 @@ impl<'a> Demangler<'a> {
             b'p' => Some(Kind::ProtocolWitnessTablePatternConformance),
             _ => None,
         }
+    }
+
+    fn try_demangle_protocol_witness_context(&mut self, ty: &NodeRef) -> Option<NodeRef> {
+        if !is_conformance_subject_kind(ty.kind) {
+            return None;
+        }
+        let cp: Checkpoint = self.checkpoint();
+        let Some(proto): Option<NodeRef> = self.demangle_protocol_type() else {
+            self.restore(cp);
+            return None;
+        };
+        let module: Option<NodeRef> = self.witness_conformance_module();
+        let mut children: Vec<NodeRef> = vec![ty.clone(), proto];
+        if let Some(m) = module {
+            children.push(m);
+        }
+        let conformance_ctx: NodeRef = Node::branch(Kind::ProtocolConformanceContext, children);
+        let Some((is_static, requirement)): Option<(bool, NodeRef)> =
+            self.demangle_witness_requirement(conformance_ctx)
+        else {
+            self.restore(cp);
+            return None;
+        };
+        if self.peek() != Some(b'T') || self.peek_at(1) != Some(b'W') {
+            self.restore(cp);
+            return None;
+        }
+        Some(if is_static {
+            Node::unary(Kind::Static, requirement)
+        } else {
+            requirement
+        })
+    }
+
+    fn try_demangle_lazy_witness_accessor(&mut self, ty: &NodeRef) -> Option<NodeRef> {
+        if !is_conformance_subject_kind(ty.kind) {
+            return None;
+        }
+        let cp: Checkpoint = self.checkpoint();
+        let explicit: Option<NodeRef> = if self.peek() == Some(b'A') {
+            self.demangle_substitution()
+        } else {
+            None
+        };
+        if let Some(explicit_self) = explicit
+            && let Some(node) = self.finish_lazy_witness_accessor(ty, explicit_self)
+        {
+            return Some(node);
+        }
+        self.restore(cp.clone());
+        if let Some(node) = self.finish_lazy_witness_accessor(ty, ty.clone()) {
+            return Some(node);
+        }
+        self.restore(cp);
+        None
+    }
+
+    fn finish_lazy_witness_accessor(&mut self, ty: &NodeRef, self_ty: NodeRef) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let Some(proto): Option<NodeRef> = self.demangle_protocol_type() else {
+            self.restore(cp);
+            return None;
+        };
+        let module: Option<NodeRef> = self.witness_conformance_module();
+        if !self.next_if(b'W') {
+            self.restore(cp);
+            return None;
+        }
+        let kind: Kind = match self.next() {
+            Some(b'L') => Kind::LazyWitnessTableCacheVariable,
+            Some(b'l') => Kind::LazyWitnessTableAccessor,
+            _ => {
+                self.restore(cp);
+                return None;
+            }
+        };
+        let mut conf_children: Vec<NodeRef> = vec![ty.clone(), proto];
+        if let Some(m) = module {
+            conf_children.push(m);
+        }
+        let conformance: NodeRef = Node::branch(Kind::ProtocolConformanceContext, conf_children);
+        Some(Node::branch(kind, vec![self_ty, conformance]))
+    }
+
+    fn witness_conformance_module(&mut self) -> Option<NodeRef> {
+        match self.peek()? {
+            b'A' => {
+                let chain: Vec<NodeRef> = self.demangle_substitution_chain()?;
+                chain.into_iter().next()
+            }
+            b's' => {
+                self.pos += 1;
+                Some(Node::leaf(Kind::Module, "Swift".to_owned()))
+            }
+            c if c.is_ascii_digit() => self.demangle_identifier(Kind::Module),
+            _ => None,
+        }
+    }
+
+    fn demangle_witness_requirement(&mut self, context: NodeRef) -> Option<(bool, NodeRef)> {
+        const MAX_DISCARDED_TOKENS: usize = 4;
+        for _ in 0..MAX_DISCARDED_TOKENS {
+            if self.next_if(b'P') {
+                continue;
+            }
+            let is_static: bool = self.peek() == Some(b's')
+                && self.peek_at(1).is_some_and(|c: u8| c.is_ascii_digit());
+            if is_static {
+                self.pos += 1;
+            }
+            if self.peek().is_some_and(|c: u8| c.is_ascii_digit()) {
+                let name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
+                return Some((is_static, self.demangle_named_entity_spec(context, name)));
+            }
+            if is_static {
+                return None;
+            }
+            let cp: Checkpoint = self.checkpoint();
+            if self.try_demangle_type().is_none() {
+                self.restore(cp);
+                return None;
+            }
+        }
+        None
     }
 
     fn try_demangle_conformance_module(&mut self) -> Option<NodeRef> {
@@ -1330,6 +1643,7 @@ impl<'a> Demangler<'a> {
         let raw_name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
         self.add_substitution(&raw_name);
         let name: NodeRef = self.maybe_operator_name(raw_name);
+        let name: NodeRef = self.consume_private_discriminator(name);
         let c: u8 = self.peek()?;
         match c {
             b'C' | b'V' | b'O' | b'a' => {
@@ -1356,7 +1670,23 @@ impl<'a> Demangler<'a> {
             b'M' | b'N' | b'W' | b'H' | b'T' | b'w' => {
                 Some(Node::branch(Kind::OtherNominalType, vec![context, name]))
             }
+            b'_' if self.peek_at(1) == Some(b'p') => {
+                self.pos += 2;
+                let parent_with_name: NodeRef =
+                    Node::branch(Kind::OtherNominalType, vec![context, name]);
+                let protocol: NodeRef = Node::unary(Kind::Protocol, parent_with_name);
+                self.add_substitution(&protocol);
+                Some(protocol)
+            }
             _ => {
+                if c == b'_' {
+                    let underscore_cp: Checkpoint = self.checkpoint();
+                    self.pos += 1;
+                    if let Some(node) = self.demangle_one_time_init(name.clone()) {
+                        return Some(node);
+                    }
+                    self.restore(underscore_cp);
+                }
                 let cp: Checkpoint = self.checkpoint();
                 if let Some(node) = self.try_demangle_storage_entity(&context, &name) {
                     return Some(node);
@@ -1364,6 +1694,17 @@ impl<'a> Demangler<'a> {
                 self.restore(cp);
                 Some(self.demangle_function(context, name))
             }
+        }
+    }
+
+    fn demangle_one_time_init(&mut self, name: NodeRef) -> Option<NodeRef> {
+        if !self.next_if(b'W') {
+            return None;
+        }
+        match self.next()? {
+            b'Z' => Some(Node::unary(Kind::OneTimeInitializationFunction, name)),
+            b'z' => Some(Node::unary(Kind::OneTimeInitializationToken, name)),
+            _ => None,
         }
     }
 
@@ -2685,43 +3026,16 @@ impl<'a> Demangler<'a> {
             return Some(nominal);
         }
         self.restore(cp);
-        self.demangle_protocol_in_context_once(context)
+        self.demangle_protocol_in_context(context)
     }
 
-    fn demangle_protocol_in_context_once(&mut self, context: NodeRef) -> Option<NodeRef> {
+    fn demangle_protocol_in_context(&mut self, context: NodeRef) -> Option<NodeRef> {
         let name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
         let path: NodeRef = Node::branch(Kind::OtherNominalType, vec![context, name]);
-        if self.peek() == Some(b'P') {
-            self.pos += 1;
-        }
+        self.next_if(b'P');
         let node: NodeRef = Node::unary(Kind::Protocol, path);
         self.add_substitution(&node);
         Some(node)
-    }
-
-    fn demangle_protocol_in_context(&mut self, mut context: NodeRef) -> Option<NodeRef> {
-        loop {
-            self.depth = self.depth.checked_add(1)?;
-            if self.depth > MAX_DEPTH {
-                return None;
-            }
-            let name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
-            context = Node::branch(Kind::OtherNominalType, vec![context, name]);
-            match self.peek() {
-                Some(b'P') => {
-                    self.pos += 1;
-                    let node: NodeRef = Node::unary(Kind::Protocol, context);
-                    self.add_substitution(&node);
-                    return Some(node);
-                }
-                Some(c) if c.is_ascii_digit() => {}
-                _ => {
-                    let node: NodeRef = Node::unary(Kind::Protocol, context);
-                    self.add_substitution(&node);
-                    return Some(node);
-                }
-            }
-        }
     }
 
     fn demangle_generic_requirement(
@@ -3419,6 +3733,10 @@ fn print_context_path(node: &Node) -> String {
                 .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Type));
             format!("(extension in {module}):{base}{generic}")
         }
+        Kind::ProtocolConformanceContext => node
+            .children
+            .get(1)
+            .map_or_else(String::new, |c: &NodeRef| print_context_path(c)),
         _ => print_node(node, Mode::Type),
     }
 }
@@ -3597,6 +3915,75 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::NominalTypeDescriptor => {
             format!("nominal type descriptor for {}", print_child(node, 0))
         }
+        Kind::TypeMetadataInstantiationCache => {
+            format!(
+                "type metadata instantiation cache for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::TypeMetadataInstantiationFunction => {
+            format!(
+                "type metadata instantiation function for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::TypeMetadataCompletionFunction => {
+            format!(
+                "type metadata completion function for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::TypeMetadataSingletonInitializationCache => {
+            format!(
+                "type metadata singleton initialization cache for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::OutlinedInitWithCopy => {
+            format!("outlined init with copy of {}", print_child(node, 0))
+        }
+        Kind::OutlinedDestroy => format!("outlined destroy of {}", print_child(node, 0)),
+        Kind::DefaultArgumentInitializer => format!(
+            "default argument {} of {}",
+            node.text.as_deref().unwrap_or_default(),
+            print_child(node, 0)
+        ),
+        Kind::VariableInitializationExpression => {
+            format!(
+                "variable initialization expression of {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::OneTimeInitializationFunction => {
+            format!(
+                "one-time initialization function for {}",
+                print_child(node, 0)
+            )
+        }
+        Kind::OneTimeInitializationToken => {
+            format!("one-time initialization token for {}", print_child(node, 0))
+        }
+        Kind::MetadataInstantiationCache => {
+            format!("metadata instantiation cache for {}", print_child(node, 0))
+        }
+        Kind::ProtocolConformanceContext => print_conformance_context_bare(node),
+        Kind::ProtocolWitnessThunk => print_protocol_witness_thunk(node),
+        Kind::PartialApplyForwarder => {
+            format!("partial apply forwarder for {}", print_child(node, 0))
+        }
+        Kind::KeyPathThunk => print_keypath_thunk(node),
+        Kind::LazyWitnessTableCacheVariable => {
+            print_lazy_witness_accessor(node, "lazy protocol witness table cache variable")
+        }
+        Kind::LazyWitnessTableAccessor => {
+            print_lazy_witness_accessor(node, "lazy protocol witness table accessor")
+        }
+        Kind::DistributedThunk => format!("distributed thunk {}", print_child(node, 0)),
+        Kind::DistributedAccessor => {
+            format!("distributed accessor for {}", print_child(node, 0))
+        }
+        Kind::ObjCAttribute => format!("@objc {}", print_child(node, 0)),
+        Kind::NonObjCAttribute => format!("@nonobjc {}", print_child(node, 0)),
         Kind::Metaclass => format!("metaclass for {}", print_child(node, 0)),
         Kind::ClassMetadataBaseOffset => {
             format!("class metadata base offset for {}", print_child(node, 0))
@@ -3667,6 +4054,12 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::AsyncFunctionPointer => {
             format!("async function pointer to {}", print_child(node, 0))
         }
+        Kind::SendableAnnotation => "@Sendable ".to_owned(),
+        Kind::AsyncResumePartialFunction => print_async_resume_partial(node),
+        Kind::OpaqueTypeDescriptor => format!(
+            "opaque type descriptor for <<opaque return type of {}>>",
+            print_child(node, 0)
+        ),
     }
 }
 
@@ -3688,6 +4081,110 @@ fn print_generic_specialization(node: &Node) -> String {
     )
 }
 
+fn print_conformance_context_bare(node: &Node) -> String {
+    print_context_path(node)
+}
+
+fn print_lazy_witness_accessor(node: &Node, prefix: &str) -> String {
+    let self_ty: String = node
+        .children
+        .first()
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let Some(conformance): Option<&NodeRef> = node.children.get(1) else {
+        return String::new();
+    };
+    let ty: String = conformance
+        .children
+        .first()
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let proto: String = conformance
+        .children
+        .get(1)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let module: String = conformance
+        .children
+        .get(2)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let conformance_text: String = if module.is_empty() {
+        format!("{ty} : {proto}")
+    } else {
+        format!("{ty} : {proto} in {module}")
+    };
+    format!("{prefix} for type {self_ty} and conformance {conformance_text}")
+}
+
+fn print_keypath_thunk(node: &Node) -> String {
+    let role: &str = node.text.as_deref().unwrap_or("getter");
+    let entity: String = print_child(node, 0);
+    let containing: String = print_child(node, 1);
+    format!("key path {role} for {entity} : {containing}")
+}
+
+fn innermost_witness_entity(node: &Node) -> &Node {
+    match node.kind {
+        Kind::Static
+        | Kind::Getter
+        | Kind::Setter
+        | Kind::ModifyAccessor
+        | Kind::ReadAccessor
+        | Kind::MaterializeForSet
+        | Kind::UnsafeAddressor
+        | Kind::UnsafeMutableAddressor => node
+            .children
+            .first()
+            .map_or(node, |c: &NodeRef| innermost_witness_entity(c)),
+        _ => node,
+    }
+}
+
+fn print_protocol_witness_thunk(node: &Node) -> String {
+    let Some(requirement): Option<&NodeRef> = node.children.first() else {
+        return String::new();
+    };
+    let inner: &Node = innermost_witness_entity(requirement);
+    let Some(conformance_ctx): Option<&NodeRef> = inner
+        .children
+        .first()
+        .filter(|c: &&NodeRef| c.kind == Kind::ProtocolConformanceContext)
+    else {
+        return print_node(requirement, Mode::Symbol);
+    };
+    let ty: String = conformance_ctx
+        .children
+        .first()
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let proto: String = conformance_ctx
+        .children
+        .get(1)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let module: String = conformance_ctx
+        .children
+        .get(2)
+        .map_or_else(String::new, |c: &NodeRef| print_context_path(c));
+    let requirement_text: String = print_node(requirement, Mode::Symbol);
+    let conformance_text: String = if module.is_empty() {
+        format!("{ty} : {proto}")
+    } else {
+        format!("{ty} : {proto} in {module}")
+    };
+    format!("protocol witness for {requirement_text} in conformance {conformance_text}")
+}
+
+fn print_async_resume_partial(node: &Node) -> String {
+    let role: &str = node.text.as_deref().unwrap_or("await");
+    let index: String = node
+        .children
+        .get(1)
+        .and_then(|c: &NodeRef| c.text.as_deref())
+        .unwrap_or("1")
+        .to_owned();
+    let base: String = node
+        .children
+        .first()
+        .map_or_else(String::new, |c: &NodeRef| print_node(c, Mode::Symbol));
+    format!("({index}) {role} resume partial function for {base}")
+}
+
 fn print_macro_expansion(node: &Node) -> String {
     let role: &str = node.text.as_deref().unwrap_or("macro");
     let context: String = node
@@ -3707,12 +4204,7 @@ fn print_macro_expansion(node: &Node) -> String {
         .get(3)
         .and_then(|c: &NodeRef| c.text.as_deref())
         .unwrap_or("1");
-    let entity: String = if context.is_empty() {
-        attached_name
-    } else {
-        format!("{context}.{attached_name}")
-    };
-    format!("{entity} {role} macro @{macro_name} expansion #{discriminator}")
+    format!("{role} macro @{macro_name} expansion #{discriminator} of {attached_name} in {context}")
 }
 
 fn entity_path(node: &Node) -> String {
@@ -3956,6 +4448,13 @@ fn function_type_trailing(node: &Node) -> String {
 
 fn function_type_isolation_prefix(node: &Node) -> String {
     let mut prefix: String = String::new();
+    if node
+        .children
+        .iter()
+        .any(|c: &NodeRef| c.kind == Kind::SendableAnnotation)
+    {
+        prefix.push_str("@Sendable ");
+    }
     if node
         .children
         .iter()

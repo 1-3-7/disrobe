@@ -2,13 +2,14 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_mobile::{
-    Arm64Disassembly, DartAotDecompile, DartKernelDecompile, DartSnapshotHeader,
-    FlutterObfuscationMap, LibAppLayout, decompile_dart_aot, decompile_dart_kernel,
-    disassemble_libapp_so, is_dart_kernel, parse_dart_snapshot, parse_flutter_obfuscation_map,
-    parse_libapp_so,
+    Arm64Disassembly, DartAotDecompile, DartGraphObfuscationHint, DartGraphRecoveryOptions,
+    DartGraphRecoveryReport, DartKernelDecompile, DartSnapshotHeader, FlutterObfuscationMap,
+    LibAppLayout, decompile_dart_aot, decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel,
+    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_pinned_elf,
+    recover_dart_pinned_standalone,
 };
 
 #[derive(Subcommand, Debug)]
@@ -91,6 +92,59 @@ pub(crate) enum FlutterCmd {
         )]
         out: Option<PathBuf>,
     },
+    #[command(
+        about = "recover the full library/class/method/field declaration graph from a libapp.so on a pinned Dart snapshot version"
+    )]
+    Inventory {
+        #[arg(help = "input Flutter libapp.so (pinned Dart AOT snapshot version)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the inventory JSON (default: ./out/<stem>-dart-inventory.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = ObfuscationNames::Auto)]
+        names: ObfuscationNames,
+    },
+    #[command(
+        about = "recover the full declaration graph from four standalone Dart snapshot blobs, on a pinned snapshot version"
+    )]
+    InventoryStandalone {
+        #[arg(value_name = "VM_DATA")]
+        vm_data: PathBuf,
+        #[arg(value_name = "VM_INSTRUCTIONS")]
+        vm_instructions: PathBuf,
+        #[arg(value_name = "ISOLATE_DATA")]
+        isolate_data: PathBuf,
+        #[arg(value_name = "ISOLATE_INSTRUCTIONS")]
+        isolate_instructions: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output path for the inventory JSON (default: ./out/<stem>-dart-inventory.json)"
+        )]
+        out: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = ObfuscationNames::Auto)]
+        names: ObfuscationNames,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum ObfuscationNames {
+    Auto,
+    Source,
+    Opaque,
+}
+
+impl ObfuscationNames {
+    const fn hint(self) -> DartGraphObfuscationHint {
+        match self {
+            Self::Auto => DartGraphObfuscationHint::Auto,
+            Self::Source => DartGraphObfuscationHint::SourceNames,
+            Self::Opaque => DartGraphObfuscationHint::OpaqueNames,
+        }
+    }
 }
 
 pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
@@ -108,6 +162,22 @@ pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
             emit_listing,
         } => disasm(input, out, emit_listing),
         FlutterCmd::Map { input, out } => map(input, out),
+        FlutterCmd::Inventory { input, out, names } => inventory(input, out, names),
+        FlutterCmd::InventoryStandalone {
+            vm_data,
+            vm_instructions,
+            isolate_data,
+            isolate_instructions,
+            out,
+            names,
+        } => inventory_standalone(
+            vm_data,
+            vm_instructions,
+            isolate_data,
+            isolate_instructions,
+            out,
+            names,
+        ),
     }
 }
 
@@ -365,6 +435,108 @@ fn map(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("flutter map: OK");
     println!("  input:        {}", input.display());
     println!("  entries:      {}", parsed.entries);
+    println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn inventory(input: PathBuf, out: Option<PathBuf>, names: ObfuscationNames) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0861: cannot read input: {e}"))?;
+    let options: DartGraphRecoveryOptions = DartGraphRecoveryOptions {
+        obfuscation_hint: names.hint(),
+        ..DartGraphRecoveryOptions::default()
+    };
+    let report: DartGraphRecoveryReport = recover_dart_pinned_elf(&bytes, &options)
+        .map_err(|e| miette::miette!("DR-CLI-0862: dart pinned graph recovery: {e}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dart-inventory")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dart-inventory.json")));
+    write_inventory_report(&input, &out_path, &report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inventory_standalone(
+    vm_data: PathBuf,
+    vm_instructions: PathBuf,
+    isolate_data: PathBuf,
+    isolate_instructions: PathBuf,
+    out: Option<PathBuf>,
+    names: ObfuscationNames,
+) -> miette::Result<()> {
+    let vm_data_bytes: Vec<u8> = std::fs::read(&vm_data)
+        .map_err(|e| miette::miette!("DR-CLI-0863: cannot read vm data blob: {e}"))?;
+    let vm_instructions_bytes: Vec<u8> = std::fs::read(&vm_instructions)
+        .map_err(|e| miette::miette!("DR-CLI-0864: cannot read vm instructions blob: {e}"))?;
+    let isolate_data_bytes: Vec<u8> = std::fs::read(&isolate_data)
+        .map_err(|e| miette::miette!("DR-CLI-0865: cannot read isolate data blob: {e}"))?;
+    let isolate_instructions_bytes: Vec<u8> = std::fs::read(&isolate_instructions)
+        .map_err(|e| miette::miette!("DR-CLI-0866: cannot read isolate instructions blob: {e}"))?;
+    let options: DartGraphRecoveryOptions = DartGraphRecoveryOptions {
+        obfuscation_hint: names.hint(),
+        ..DartGraphRecoveryOptions::default()
+    };
+    let report: DartGraphRecoveryReport = recover_dart_pinned_standalone(
+        &vm_data_bytes,
+        &vm_instructions_bytes,
+        &isolate_data_bytes,
+        &isolate_instructions_bytes,
+        &options,
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0867: dart pinned graph recovery: {e}"))?;
+    let stem: String = isolate_data
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("dart-inventory")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dart-inventory.json")));
+    write_inventory_report(&isolate_data, &out_path, &report)
+}
+
+fn write_inventory_report(
+    input: &std::path::Path,
+    out_path: &std::path::Path,
+    report: &DartGraphRecoveryReport,
+) -> miette::Result<()> {
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| miette::miette!("DR-CLI-0868: cannot create dir: {e}"))?;
+    }
+    let bytes_out: Vec<u8> = serde_json::to_vec_pretty(report)
+        .map_err(|e| miette::miette!("DR-CLI-0869: serialize: {e}"))?;
+    std::fs::write(out_path, bytes_out)
+        .map_err(|e| miette::miette!("DR-CLI-0870: cannot write output: {e}"))?;
+    println!("flutter inventory: OK");
+    println!("  input:        {}", input.display());
+    println!("  status:       {:?}", report.status);
+    println!(
+        "  name mode:    {:?} ({})",
+        report.name_mode, report.name_mode_reason
+    );
+    println!("  hash:         {}", report.snapshot_compatibility_hash);
+    println!(
+        "  libraries:    {} ({} named)",
+        report.inventory.counts.libraries, report.inventory.counts.named_classes
+    );
+    println!(
+        "  classes:      {} ({} named)",
+        report.inventory.counts.classes, report.inventory.counts.named_classes
+    );
+    println!(
+        "  methods:      {} ({} named)",
+        report.inventory.counts.methods, report.inventory.counts.named_methods
+    );
+    println!(
+        "  fields:       {} ({} named)",
+        report.inventory.counts.fields, report.inventory.counts.named_fields
+    );
+    for warning in &report.warnings {
+        println!("  warning:      {warning}");
+    }
     println!("  wrote:        {}", out_path.display());
     Ok(())
 }

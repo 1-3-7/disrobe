@@ -586,9 +586,112 @@ pub fn file_data(image: &[u8], bpb: FatBpb, file: &FatFile, cap: u64) -> Result<
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let lfn_reassembly_truncates_at_the_first_embedded_nul: bool = name.contains('\u{0}');
+    let dropped_by_the_walker_as_a_self_or_parent_link: bool = name == "." || name == "..";
+    if lfn_reassembly_truncates_at_the_first_embedded_nul
+        || dropped_by_the_walker_as_a_self_or_parent_link
+    {
+        return None;
+    }
+    Some(tests::build_single_file_fat_with_lfn(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    const LFN_UNIT_POSITIONS: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+
+    fn put_lfn_entry(
+        image: &mut [u8],
+        entry_off: usize,
+        order: u8,
+        is_last: bool,
+        checksum: u8,
+        units: &[u16],
+    ) {
+        let seq: u8 = if is_last {
+            order | LFN_LAST_MASK
+        } else {
+            order
+        };
+        image[entry_off] = seq;
+        image[entry_off + 11] = ATTR_LONG_NAME;
+        image[entry_off + 12] = 0;
+        image[entry_off + 13] = checksum;
+        for (i, pos) in LFN_UNIT_POSITIONS.iter().enumerate() {
+            let unit: u16 = units.get(i).copied().unwrap_or(0);
+            image[entry_off + pos..entry_off + pos + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+    }
+
+    pub(super) fn build_single_file_fat_with_lfn(name: &str, body: &[u8]) -> Vec<u8> {
+        let bytes_per_sector: usize = 512;
+        let sectors_per_cluster: usize = 1;
+        let reserved: usize = 1;
+        let num_fats: usize = 1;
+        let root_entries: usize = 16;
+        let fat_size: usize = 8;
+        let total_sectors: usize = 4096;
+
+        let mut image: Vec<u8> = vec![0u8; total_sectors * bytes_per_sector];
+        image[11..13].copy_from_slice(&(bytes_per_sector as u16).to_le_bytes());
+        image[13] = sectors_per_cluster as u8;
+        image[14..16].copy_from_slice(&(reserved as u16).to_le_bytes());
+        image[16] = num_fats as u8;
+        image[17..19].copy_from_slice(&(root_entries as u16).to_le_bytes());
+        image[19..21].copy_from_slice(&(total_sectors as u16).to_le_bytes());
+        image[22..24].copy_from_slice(&(fat_size as u16).to_le_bytes());
+        image[510] = 0x55;
+        image[511] = 0xaa;
+
+        let cluster_bytes: usize = bytes_per_sector * sectors_per_cluster;
+        let needed_clusters: usize = body.len().div_ceil(cluster_bytes).max(1);
+        let fat_off: usize = reserved * bytes_per_sector;
+        let first_cluster: u32 = 2;
+        for i in 0..needed_clusters {
+            let cluster: u32 = first_cluster + i as u32;
+            let entry_off: usize = fat_off + (cluster as usize) * 2;
+            let value: u16 = if i + 1 == needed_clusters {
+                0xffff
+            } else {
+                (cluster + 1) as u16
+            };
+            image[entry_off..entry_off + 2].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let first_data_sector: usize = reserved
+            + num_fats * fat_size
+            + (root_entries * DIR_ENTRY_LEN).div_ceil(bytes_per_sector);
+        let data_off: usize = first_data_sector * bytes_per_sector;
+        image[data_off..data_off + body.len()].copy_from_slice(body);
+
+        let root_off: usize = (reserved + num_fats * fat_size) * bytes_per_sector;
+
+        let short_name: [u8; 11] = *b"HOSTILE1BIN";
+        let checksum: u8 = lfn_checksum(&short_name);
+        let name_units: Vec<u16> = name.encode_utf16().collect();
+        let chunks: Vec<&[u16]> = name_units.chunks(13).collect();
+        let chunk_count: usize = chunks.len().max(1);
+
+        let mut entry_off: usize = root_off;
+        for (rev_index, chunk) in chunks.iter().enumerate().rev() {
+            let order: u8 = (rev_index + 1) as u8;
+            let is_last: bool = rev_index + 1 == chunk_count;
+            put_lfn_entry(&mut image, entry_off, order, is_last, checksum, chunk);
+            entry_off += DIR_ENTRY_LEN;
+        }
+
+        image[entry_off..entry_off + 11].copy_from_slice(&short_name);
+        image[entry_off + 11] = 0x20;
+        image[entry_off + 26..entry_off + 28]
+            .copy_from_slice(&(first_cluster as u16).to_le_bytes());
+        image[entry_off + 28..entry_off + 32].copy_from_slice(&(body.len() as u32).to_le_bytes());
+
+        image
+    }
 
     fn build_fat16_image() -> (Vec<u8>, Vec<u8>) {
         let bytes_per_sector: usize = 512;

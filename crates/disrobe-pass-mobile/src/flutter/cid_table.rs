@@ -206,7 +206,7 @@ pub fn predefined_classes() -> Vec<PredefinedClass> {
 }
 
 #[must_use]
-pub fn predefined_count() -> u16 {
+pub const fn predefined_count() -> u16 {
     (LEADING_CIDS.len()
         + INTERNAL_ONLY_CIDS.len()
         + INSTANCE_SINGLETON_CIDS.len()

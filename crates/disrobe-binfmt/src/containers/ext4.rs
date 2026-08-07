@@ -423,6 +423,90 @@ pub fn detect_ext4(bytes: &[u8]) -> Option<Ext4SuperblockSummary> {
 }
 
 #[cfg(test)]
+const BS: usize = 1024;
+#[cfg(test)]
+const INODE_SIZE: usize = 128;
+#[cfg(test)]
+const INODES_PER_GROUP: u32 = 16;
+
+#[cfg(test)]
+fn extent_inode(mode: u16, size: u32, phys_block: u32, block_count: u16) -> [u8; INODE_SIZE] {
+    let mut raw: [u8; INODE_SIZE] = [0u8; INODE_SIZE];
+    raw[0x0..0x2].copy_from_slice(&mode.to_le_bytes());
+    raw[0x4..0x8].copy_from_slice(&size.to_le_bytes());
+    raw[0x20..0x24].copy_from_slice(&EXT4_EXTENTS_FL.to_le_bytes());
+    let ib: &mut [u8] = &mut raw[0x28..0x28 + 60];
+    ib[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+    ib[2..4].copy_from_slice(&1u16.to_le_bytes());
+    ib[4..6].copy_from_slice(&4u16.to_le_bytes());
+    ib[6..8].copy_from_slice(&0u16.to_le_bytes());
+    ib[12..16].copy_from_slice(&0u32.to_le_bytes());
+    ib[16..18].copy_from_slice(&block_count.to_le_bytes());
+    ib[18..20].copy_from_slice(&0u16.to_le_bytes());
+    ib[20..24].copy_from_slice(&phys_block.to_le_bytes());
+    raw
+}
+
+#[cfg(test)]
+fn dir_entry(out: &mut Vec<u8>, ino: u32, name: &str, file_type: u8, rec_len: u16) {
+    let start: usize = out.len();
+    out.extend_from_slice(&ino.to_le_bytes());
+    out.extend_from_slice(&rec_len.to_le_bytes());
+    out.push(name.len() as u8);
+    out.push(file_type);
+    out.extend_from_slice(name.as_bytes());
+    out.resize(start + rec_len as usize, 0);
+}
+
+#[cfg(test)]
+pub(crate) fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    let total_blocks: usize = 16;
+    let mut image: Vec<u8> = vec![0u8; total_blocks * BS];
+
+    let sb_off: usize = EXT4_SUPERBLOCK_OFFSET;
+    image[sb_off..sb_off + 4].copy_from_slice(&64u32.to_le_bytes());
+    image[sb_off + 4..sb_off + 8].copy_from_slice(&(total_blocks as u32).to_le_bytes());
+    image[sb_off + 0x14..sb_off + 0x18].copy_from_slice(&1u32.to_le_bytes());
+    image[sb_off + 0x18..sb_off + 0x1C].copy_from_slice(&0u32.to_le_bytes());
+    image[sb_off + 0x28..sb_off + 0x2C].copy_from_slice(&INODES_PER_GROUP.to_le_bytes());
+    image[sb_off + 0x38..sb_off + 0x3A].copy_from_slice(&EXT4_MAGIC.to_le_bytes());
+    image[sb_off + 0x58..sb_off + 0x5A].copy_from_slice(&(INODE_SIZE as u16).to_le_bytes());
+
+    let gdt_off: usize = 2 * BS;
+    let inode_table_block: u32 = 3;
+    image[gdt_off + 0x8..gdt_off + 0xC].copy_from_slice(&inode_table_block.to_le_bytes());
+
+    let inode_table_off: usize = inode_table_block as usize * BS;
+    let root_data_block: u32 = 5;
+    let file_data_block: u32 = 6;
+    let file_ino: u32 = 11;
+
+    let root_inode: [u8; INODE_SIZE] = extent_inode(S_IFDIR | 0o755, BS as u32, root_data_block, 1);
+    let root_off: usize = inode_table_off + (EXT4_ROOT_INODE as usize - 1) * INODE_SIZE;
+    image[root_off..root_off + INODE_SIZE].copy_from_slice(&root_inode);
+
+    let file_inode: [u8; INODE_SIZE] =
+        extent_inode(S_IFREG | 0o755, file_body.len() as u32, file_data_block, 1);
+    let file_inode_off: usize = inode_table_off + (file_ino as usize - 1) * INODE_SIZE;
+    image[file_inode_off..file_inode_off + INODE_SIZE].copy_from_slice(&file_inode);
+
+    let mut dir: Vec<u8> = Vec::new();
+    dir_entry(&mut dir, EXT4_ROOT_INODE, ".", 2, 12);
+    dir_entry(&mut dir, EXT4_ROOT_INODE, "..", 2, 12);
+    let used: u16 = (12 + 12 + 8 + file_name.len()).next_multiple_of(4) as u16 - 24;
+    let remaining: u16 = BS as u16 - 24;
+    dir_entry(&mut dir, file_ino, file_name, 1, remaining.max(used));
+    let root_data_off: usize = root_data_block as usize * BS;
+    image[root_data_off..root_data_off + dir.len().min(BS)]
+        .copy_from_slice(&dir[..dir.len().min(BS)]);
+
+    let file_data_off: usize = file_data_block as usize * BS;
+    image[file_data_off..file_data_off + file_body.len()].copy_from_slice(file_body);
+
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -467,85 +551,6 @@ mod tests {
         bytes[EXT4_SUPERBLOCK_OFFSET + 0x38..EXT4_SUPERBLOCK_OFFSET + 0x3A]
             .copy_from_slice(&0xDEAD_u16.to_le_bytes());
         assert!(detect_ext4(&bytes).is_none());
-    }
-
-    const BS: usize = 1024;
-    const INODE_SIZE: usize = 128;
-    const INODES_PER_GROUP: u32 = 16;
-
-    fn extent_inode(mode: u16, size: u32, phys_block: u32, block_count: u16) -> [u8; INODE_SIZE] {
-        let mut raw: [u8; INODE_SIZE] = [0u8; INODE_SIZE];
-        raw[0x0..0x2].copy_from_slice(&mode.to_le_bytes());
-        raw[0x4..0x8].copy_from_slice(&size.to_le_bytes());
-        raw[0x20..0x24].copy_from_slice(&EXT4_EXTENTS_FL.to_le_bytes());
-        let ib: &mut [u8] = &mut raw[0x28..0x28 + 60];
-        ib[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
-        ib[2..4].copy_from_slice(&1u16.to_le_bytes());
-        ib[4..6].copy_from_slice(&4u16.to_le_bytes());
-        ib[6..8].copy_from_slice(&0u16.to_le_bytes());
-        ib[12..16].copy_from_slice(&0u32.to_le_bytes());
-        ib[16..18].copy_from_slice(&block_count.to_le_bytes());
-        ib[18..20].copy_from_slice(&0u16.to_le_bytes());
-        ib[20..24].copy_from_slice(&phys_block.to_le_bytes());
-        raw
-    }
-
-    fn dir_entry(out: &mut Vec<u8>, ino: u32, name: &str, file_type: u8, rec_len: u16) {
-        let start: usize = out.len();
-        out.extend_from_slice(&ino.to_le_bytes());
-        out.extend_from_slice(&rec_len.to_le_bytes());
-        out.push(name.len() as u8);
-        out.push(file_type);
-        out.extend_from_slice(name.as_bytes());
-        out.resize(start + rec_len as usize, 0);
-    }
-
-    fn build_real_ext4(file_name: &str, file_body: &[u8]) -> Vec<u8> {
-        let total_blocks: usize = 16;
-        let mut image: Vec<u8> = vec![0u8; total_blocks * BS];
-
-        let sb_off: usize = EXT4_SUPERBLOCK_OFFSET;
-        image[sb_off..sb_off + 4].copy_from_slice(&64u32.to_le_bytes());
-        image[sb_off + 4..sb_off + 8].copy_from_slice(&(total_blocks as u32).to_le_bytes());
-        image[sb_off + 0x14..sb_off + 0x18].copy_from_slice(&1u32.to_le_bytes());
-        image[sb_off + 0x18..sb_off + 0x1C].copy_from_slice(&0u32.to_le_bytes());
-        image[sb_off + 0x28..sb_off + 0x2C].copy_from_slice(&INODES_PER_GROUP.to_le_bytes());
-        image[sb_off + 0x38..sb_off + 0x3A].copy_from_slice(&EXT4_MAGIC.to_le_bytes());
-        image[sb_off + 0x58..sb_off + 0x5A].copy_from_slice(&(INODE_SIZE as u16).to_le_bytes());
-
-        let gdt_off: usize = 2 * BS;
-        let inode_table_block: u32 = 3;
-        image[gdt_off + 0x8..gdt_off + 0xC].copy_from_slice(&inode_table_block.to_le_bytes());
-
-        let inode_table_off: usize = inode_table_block as usize * BS;
-        let root_data_block: u32 = 5;
-        let file_data_block: u32 = 6;
-        let file_ino: u32 = 11;
-
-        let root_inode: [u8; INODE_SIZE] =
-            extent_inode(S_IFDIR | 0o755, BS as u32, root_data_block, 1);
-        let root_off: usize = inode_table_off + (EXT4_ROOT_INODE as usize - 1) * INODE_SIZE;
-        image[root_off..root_off + INODE_SIZE].copy_from_slice(&root_inode);
-
-        let file_inode: [u8; INODE_SIZE] =
-            extent_inode(S_IFREG | 0o755, file_body.len() as u32, file_data_block, 1);
-        let file_inode_off: usize = inode_table_off + (file_ino as usize - 1) * INODE_SIZE;
-        image[file_inode_off..file_inode_off + INODE_SIZE].copy_from_slice(&file_inode);
-
-        let mut dir: Vec<u8> = Vec::new();
-        dir_entry(&mut dir, EXT4_ROOT_INODE, ".", 2, 12);
-        dir_entry(&mut dir, EXT4_ROOT_INODE, "..", 2, 12);
-        let used: u16 = (12 + 12 + 8 + file_name.len()).next_multiple_of(4) as u16 - 24;
-        let remaining: u16 = BS as u16 - 24;
-        dir_entry(&mut dir, file_ino, file_name, 1, remaining.max(used));
-        let root_data_off: usize = root_data_block as usize * BS;
-        image[root_data_off..root_data_off + dir.len().min(BS)]
-            .copy_from_slice(&dir[..dir.len().min(BS)]);
-
-        let file_data_off: usize = file_data_block as usize * BS;
-        image[file_data_off..file_data_off + file_body.len()].copy_from_slice(file_body);
-
-        image
     }
 
     #[test]

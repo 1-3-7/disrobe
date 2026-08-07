@@ -160,6 +160,37 @@ pub fn decode_formula(rgce: &[u8], rgcb: &[u8], ctx: &PtgContext<'_>) -> Decoded
     finalize(stack, aborted, degraded)
 }
 
+pub fn token_base_codes(rgce: &[u8], rgcb: &[u8], ctx: &PtgContext<'_>) -> Vec<(usize, u8)> {
+    let mut stack: Vec<Operand> = Vec::new();
+    let mut extra: Extra<'_> = Extra { data: rgcb, pos: 0 };
+    let mut pos: usize = 0;
+    let mut tokens: usize = 0;
+    let mut degraded: bool = false;
+    let mut codes: Vec<(usize, u8)> = Vec::new();
+    while pos < rgce.len() {
+        if tokens >= MAX_TOKENS || stack.len() > MAX_STACK_DEPTH {
+            break;
+        }
+        tokens += 1;
+        let byte: u8 = rgce[pos];
+        let code: u8 = if byte >= 0x20 {
+            0x20 | (byte & 0x1F)
+        } else {
+            byte
+        };
+        let step: Option<usize> =
+            apply_token(byte, rgce, pos, ctx, &mut extra, &mut stack, &mut degraded);
+        match step {
+            Some(consumed) if consumed > 0 => {
+                codes.push((pos, code));
+                pos += consumed;
+            }
+            _ => break,
+        }
+    }
+    codes
+}
+
 fn finalize(mut stack: Vec<Operand>, aborted: bool, degraded: bool) -> DecodedFormula {
     if !aborted && stack.len() == 1 {
         return DecodedFormula {
@@ -392,8 +423,8 @@ fn classed_token(
         0x19 => name_x_token(rgce, pos, ctx, stack, degraded),
         0x1A => ref3d_token(rgce, pos, ctx, stack, false),
         0x1B => area3d_token(rgce, pos, ctx, stack, false),
-        0x1C => ref3d_token(rgce, pos, ctx, stack, true),
-        0x1D => area3d_token(rgce, pos, ctx, stack, true),
+        0x1C => ref_err3d(rgce, pos, ctx, stack),
+        0x1D => area_err3d(rgce, pos, ctx, stack),
         _ => None,
     }
 }
@@ -659,6 +690,30 @@ fn ref3d_token(
     let (text, size): (String, usize) = read_loc(rgce, pos + 3, ctx, relative)?;
     push(stack, qualify(ctx, ixti, &text), PREC_ATOM);
     Some(3 + size)
+}
+
+fn ref_err3d(
+    rgce: &[u8],
+    pos: usize,
+    ctx: &PtgContext<'_>,
+    stack: &mut Vec<Operand>,
+) -> Option<usize> {
+    let size: usize = 2usize.checked_add(ctx.version.loc_size())?;
+    rgce.get(pos + 1..pos + 1 + size)?;
+    push(stack, "#REF!".to_owned(), PREC_ATOM);
+    Some(1 + size)
+}
+
+fn area_err3d(
+    rgce: &[u8],
+    pos: usize,
+    ctx: &PtgContext<'_>,
+    stack: &mut Vec<Operand>,
+) -> Option<usize> {
+    let size: usize = 2usize.checked_add(ctx.version.area_size())?;
+    rgce.get(pos + 1..pos + 1 + size)?;
+    push(stack, "#REF!".to_owned(), PREC_ATOM);
+    Some(1 + size)
 }
 
 fn qualify(ctx: &PtgContext<'_>, ixti: u16, text: &str) -> String {

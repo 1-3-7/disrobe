@@ -130,7 +130,8 @@ impl Pass for WebviewPassAdapter {
                 Error::NotDetected
                 | Error::FamilyNotExtractable { .. }
                 | Error::NoEmbeddedTable(_)
-                | Error::NativeParse(_),
+                | Error::NativeParse(_)
+                | Error::PackagedContainer { .. },
             ) => Ok(Vec::new()),
             Err(other) => Err(CoreError::PassFailure(format!(
                 "DR-WEBVIEW-0062: {PASS_ID}: carve: {other}"

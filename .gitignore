@@ -113,6 +113,7 @@ corpus/**/*.class
 corpus/**/*.dex
 corpus/**/*.jar
 corpus/**/*.aar
+!corpus/jvm/aar/fixture-native-module.aar
 corpus/**/*.apk
 !corpus/recon/apk/planted-secrets.apk
 corpus/**/*.apkm
@@ -184,7 +185,9 @@ corpus/mobile/apk/inbox/
 corpus/mobile/ipa/
 corpus/mobile/hermes/discord/
 corpus/mobile/flutter/*
+!corpus/mobile/flutter/MANIFEST.toml
 !corpus/mobile/flutter/disrobe_sample/
+!corpus/mobile/flutter/pinned_graph_fixture/
 corpus/mobile/nativescript/
 corpus/mobile/capacitor/
 corpus/mobile/xamarin/
@@ -395,4 +398,12 @@ scripts/*
 !corpus/mobile/flutter/disrobe_sample/libapp_arm64.so
 !corpus/mobile/flutter/disrobe_sample/BUILD.txt
 !corpus/mobile/flutter/disrobe_sample/SHA256SUMS
+!corpus/mobile/flutter/pinned_graph_fixture/oracle.json
+!corpus/mobile/flutter/pinned_graph_fixture/pubspec.yaml
+!corpus/mobile/flutter/pinned_graph_fixture/rebuild.ps1
+!corpus/mobile/flutter/pinned_graph_fixture/receipt_validator.dart
+!corpus/mobile/flutter/pinned_graph_fixture/receipt_validator_arm64.so
+!corpus/mobile/flutter/pinned_graph_fixture/receipt_validator_obfuscated_arm64.so
+!corpus/mobile/flutter/pinned_graph_fixture/voucher_validator.dart
+!corpus/mobile/flutter/pinned_graph_fixture/voucher_validator_arm64.so
 erl_crash.dump

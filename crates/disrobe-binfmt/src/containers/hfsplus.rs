@@ -364,99 +364,104 @@ pub fn file_data(image: &[u8], volume: &HfsVolume, file: &HfsFile, cap: u64) -> 
 }
 
 #[cfg(test)]
+fn hfsplus_put_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+#[cfg(test)]
+fn hfsplus_put_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+#[cfg(test)]
+fn hfsplus_put_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_be_bytes());
+}
+#[cfg(test)]
+fn hfsplus_put_u32_at(buf: &mut [u8], at: usize, v: u32) {
+    buf[at..at + 4].copy_from_slice(&v.to_be_bytes());
+}
+#[cfg(test)]
+fn hfsplus_put_u64_at(buf: &mut [u8], at: usize, v: u64) {
+    buf[at..at + 8].copy_from_slice(&v.to_be_bytes());
+}
+
+#[cfg(test)]
+pub(crate) fn build_hfsplus_image(file_name: &str, body: &[u8]) -> Vec<u8> {
+    let block_size: u32 = 4096;
+    let node_size: u16 = 4096;
+    let total_blocks: u32 = 16;
+    let catalog_start_block: u32 = 2;
+    let file_data_block: u32 = 4;
+
+    let mut image: Vec<u8> = vec![0u8; total_blocks as usize * block_size as usize];
+
+    let mut header: Vec<u8> = Vec::new();
+    hfsplus_put_u16(&mut header, SIGNATURE_HFSPLUS);
+    hfsplus_put_u16(&mut header, 4);
+    header.extend(std::iter::repeat_n(0u8, 36));
+    hfsplus_put_u32(&mut header, block_size);
+    hfsplus_put_u32(&mut header, total_blocks);
+    header.extend(std::iter::repeat_n(0u8, 512 - header.len()));
+    let catalog_fork_off: usize = 272;
+    hfsplus_put_u64_at(&mut header, catalog_fork_off, u64::from(node_size) * 2);
+    hfsplus_put_u32_at(&mut header, catalog_fork_off + 16, catalog_start_block);
+    hfsplus_put_u32_at(&mut header, catalog_fork_off + 20, 2);
+    image[VOLUME_HEADER_OFFSET..VOLUME_HEADER_OFFSET + 512].copy_from_slice(&header);
+
+    let mut record: Vec<u8> = Vec::new();
+    let name_units: Vec<u16> = file_name.encode_utf16().collect();
+    let key_length: u16 = (4 + 2 + name_units.len() * 2) as u16;
+    hfsplus_put_u16(&mut record, key_length);
+    hfsplus_put_u32(&mut record, 2);
+    hfsplus_put_u16(&mut record, name_units.len() as u16);
+    for u in &name_units {
+        hfsplus_put_u16(&mut record, *u);
+    }
+    if !record.len().is_multiple_of(2) {
+        record.push(0);
+    }
+    let data_start: usize = record.len();
+    hfsplus_put_u16(&mut record, RECORD_FILE);
+    record.extend(std::iter::repeat_n(0u8, 6));
+    hfsplus_put_u32(&mut record, 16);
+    record.extend(std::iter::repeat_n(0u8, data_start + 88 - record.len()));
+    hfsplus_put_u64(&mut record, body.len() as u64);
+    record.extend(std::iter::repeat_n(0u8, 8));
+    hfsplus_put_u32(&mut record, file_data_block);
+    hfsplus_put_u32(&mut record, 1);
+    record.extend(std::iter::repeat_n(0u8, 48));
+
+    let mut node: Vec<u8> = vec![0u8; node_size as usize];
+    node[8] = BTREE_NODE_LEAF as u8;
+    node[10] = 0;
+    node[11] = 1;
+    let record_pos: usize = 14;
+    node[record_pos..record_pos + record.len()].copy_from_slice(&record);
+    let first_record_offset: u16 = record_pos as u16;
+    let off_slot: usize = node_size as usize - 2;
+    node[off_slot..off_slot + 2].copy_from_slice(&first_record_offset.to_be_bytes());
+
+    let mut btree_header_node: Vec<u8> = vec![0u8; node_size as usize];
+    btree_header_node[32..34].copy_from_slice(&node_size.to_be_bytes());
+
+    let catalog_off: usize = catalog_start_block as usize * block_size as usize;
+    image[catalog_off..catalog_off + node_size as usize].copy_from_slice(&btree_header_node);
+    image[catalog_off + node_size as usize..catalog_off + 2 * node_size as usize]
+        .copy_from_slice(&node);
+
+    let file_off: usize = file_data_block as usize * block_size as usize;
+    image[file_off..file_off + body.len()].copy_from_slice(body);
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
-    fn put_u16(buf: &mut Vec<u8>, v: u16) {
-        buf.extend_from_slice(&v.to_be_bytes());
-    }
-    fn put_u32(buf: &mut Vec<u8>, v: u32) {
-        buf.extend_from_slice(&v.to_be_bytes());
-    }
-    fn put_u64(buf: &mut Vec<u8>, v: u64) {
-        buf.extend_from_slice(&v.to_be_bytes());
-    }
-
-    fn build_hfsplus(file_name: &str, body: &[u8]) -> Vec<u8> {
-        let block_size: u32 = 4096;
-        let node_size: u16 = 4096;
-        let total_blocks: u32 = 16;
-        let catalog_start_block: u32 = 2;
-        let file_data_block: u32 = 4;
-
-        let mut image: Vec<u8> = vec![0u8; total_blocks as usize * block_size as usize];
-
-        let mut header: Vec<u8> = Vec::new();
-        put_u16(&mut header, SIGNATURE_HFSPLUS);
-        put_u16(&mut header, 4);
-        header.extend(std::iter::repeat_n(0u8, 36));
-        put_u32(&mut header, block_size);
-        put_u32(&mut header, total_blocks);
-        header.extend(std::iter::repeat_n(0u8, 512 - header.len()));
-        let catalog_fork_off: usize = 272;
-        put_u64_at(&mut header, catalog_fork_off, u64::from(node_size) * 2);
-        put_u32_at(&mut header, catalog_fork_off + 16, catalog_start_block);
-        put_u32_at(&mut header, catalog_fork_off + 20, 2);
-        image[VOLUME_HEADER_OFFSET..VOLUME_HEADER_OFFSET + 512].copy_from_slice(&header);
-
-        let mut record: Vec<u8> = Vec::new();
-        let name_units: Vec<u16> = file_name.encode_utf16().collect();
-        let key_length: u16 = (4 + 2 + name_units.len() * 2) as u16;
-        put_u16(&mut record, key_length);
-        put_u32(&mut record, 2);
-        put_u16(&mut record, name_units.len() as u16);
-        for u in &name_units {
-            put_u16(&mut record, *u);
-        }
-        if !record.len().is_multiple_of(2) {
-            record.push(0);
-        }
-        let data_start: usize = record.len();
-        put_u16(&mut record, RECORD_FILE);
-        record.extend(std::iter::repeat_n(0u8, 6));
-        put_u32(&mut record, 16);
-        record.extend(std::iter::repeat_n(0u8, data_start + 88 - record.len()));
-        put_u64(&mut record, body.len() as u64);
-        record.extend(std::iter::repeat_n(0u8, 8));
-        put_u32(&mut record, file_data_block);
-        put_u32(&mut record, 1);
-        record.extend(std::iter::repeat_n(0u8, 48));
-
-        let mut node: Vec<u8> = vec![0u8; node_size as usize];
-        node[8] = BTREE_NODE_LEAF as u8;
-        node[10] = 0;
-        node[11] = 1;
-        let record_pos: usize = 14;
-        node[record_pos..record_pos + record.len()].copy_from_slice(&record);
-        let first_record_offset: u16 = record_pos as u16;
-        let off_slot: usize = node_size as usize - 2;
-        node[off_slot..off_slot + 2].copy_from_slice(&first_record_offset.to_be_bytes());
-
-        let mut btree_header_node: Vec<u8> = vec![0u8; node_size as usize];
-        btree_header_node[32..34].copy_from_slice(&node_size.to_be_bytes());
-
-        let catalog_off: usize = catalog_start_block as usize * block_size as usize;
-        image[catalog_off..catalog_off + node_size as usize].copy_from_slice(&btree_header_node);
-        image[catalog_off + node_size as usize..catalog_off + 2 * node_size as usize]
-            .copy_from_slice(&node);
-
-        let file_off: usize = file_data_block as usize * block_size as usize;
-        image[file_off..file_off + body.len()].copy_from_slice(body);
-        image
-    }
-
-    fn put_u32_at(buf: &mut [u8], at: usize, v: u32) {
-        buf[at..at + 4].copy_from_slice(&v.to_be_bytes());
-    }
-    fn put_u64_at(buf: &mut [u8], at: usize, v: u64) {
-        buf[at..at + 8].copy_from_slice(&v.to_be_bytes());
-    }
-
     #[test]
     fn detects_and_extracts_hfsplus_file() {
         let body: &[u8] = b"hfs+ catalog recovered file body";
-        let image: Vec<u8> = build_hfsplus("readme.txt", body);
+        let image: Vec<u8> = build_hfsplus_image("readme.txt", body);
         assert!(detect_hfsplus(&image));
         let vol: HfsVolume = parse_hfsplus(&image).expect("parse hfs+");
         assert_eq!(vol.block_size, 4096);

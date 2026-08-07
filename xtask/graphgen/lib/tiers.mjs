@@ -128,6 +128,14 @@ const UNBOUND_BAR_TIERS = [
     ci: false,
     quoted: "local-only, fixture is gitignored",
   },
+  {
+    group:
+      "Flutter Dart AOT RAW static recovery on a real RustDesk 1.4.9 libapp.so (local fetched-by-hash sample, not CI-gated)",
+    bar: "function boundaries recovered",
+    strength: SELF_REPORTED,
+    ci: false,
+    quoted: "local-only, the APK is fetched by pinned url and sha256",
+  },
 ];
 
 const SECTION = /^\[([A-Za-z_][A-Za-z0-9_]*)\]$/;

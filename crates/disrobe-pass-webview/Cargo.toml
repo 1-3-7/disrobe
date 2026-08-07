@@ -19,6 +19,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dependencies]
+brotli = { workspace = true }
 disrobe-bytes = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-core = { workspace = true }

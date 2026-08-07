@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::{ByteReadError, ByteReader};
 use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_kv, dbg_line, dbg_section};
@@ -31,6 +32,9 @@ pub const HERMES_LIFT_VERSION: u32 = 96;
 
 const SMALL_STRING_INVALID_LENGTH: u32 = 0xff;
 const HERMES_HEADER_TOTAL_SIZE: usize = 128;
+const HERMES_LARGE_FUNCTION_HEADER_SIZE: usize = 30;
+const HERMES_EXCEPTION_ENTRY_SIZE: usize = 12;
+const HERMES_MAX_EXCEPTION_ENTRIES: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -121,6 +125,13 @@ pub struct BigIntTableEntry {
     pub length: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HermesExceptionEntry {
+    pub start: u32,
+    pub end: u32,
+    pub target: u32,
+}
+
 impl HermesModule {
     #[must_use]
     pub fn string_by_global_id(&self, global_id: u32) -> Option<&str> {
@@ -148,6 +159,59 @@ impl HermesModule {
             return &[];
         };
         self.raw_image.get(start..end).unwrap_or(&[])
+    }
+
+    pub fn exception_table(&self, index: usize) -> Result<Vec<HermesExceptionEntry>> {
+        let Some(header): Option<&SmallFunctionHeader> = self.functions.get(index) else {
+            return Ok(Vec::new());
+        };
+        if !header.has_exception_handler {
+            return Ok(Vec::new());
+        }
+        let base: usize =
+            exception_table_base(header).ok_or(Error::HermesExceptionTableMalformed { index })?;
+        let mut reader: ByteReader<'_> = ByteReader::new(&self.raw_image);
+        reader
+            .seek(base)
+            .map_err(|_: ByteReadError| Error::HermesExceptionTableMalformed { index })?;
+        let declared_count: u32 = reader
+            .read_u32_le()
+            .map_err(|_: ByteReadError| Error::HermesExceptionTableMalformed { index })?;
+        let declared_count: usize = usize::try_from(declared_count).unwrap_or(usize::MAX);
+        let fits_in_remaining: usize = reader.remaining() / HERMES_EXCEPTION_ENTRY_SIZE;
+        if declared_count > fits_in_remaining || declared_count > HERMES_MAX_EXCEPTION_ENTRIES {
+            return Err(Error::HermesExceptionTableMalformed { index });
+        }
+        let bytecode_len: u32 = header.bytecode_size_bytes;
+        let mut out: Vec<HermesExceptionEntry> = Vec::with_capacity(declared_count);
+        for _ in 0..declared_count {
+            let start: u32 = reader
+                .read_u32_le()
+                .map_err(|_: ByteReadError| Error::HermesExceptionTableMalformed { index })?;
+            let end: u32 = reader
+                .read_u32_le()
+                .map_err(|_: ByteReadError| Error::HermesExceptionTableMalformed { index })?;
+            let target: u32 = reader
+                .read_u32_le()
+                .map_err(|_: ByteReadError| Error::HermesExceptionTableMalformed { index })?;
+            if start >= end || end > bytecode_len || target >= bytecode_len {
+                return Err(Error::HermesExceptionTableMalformed { index });
+            }
+            out.push(HermesExceptionEntry { start, end, target });
+        }
+        Ok(out)
+    }
+}
+
+fn exception_table_base(header: &SmallFunctionHeader) -> Option<usize> {
+    if header.overflowed {
+        let raw: u64 = (u64::from(header.info_offset) << 16) | u64::from(header.offset);
+        let large_offset: usize = usize::try_from(raw).ok()?;
+        let after_header: usize = large_offset.checked_add(HERMES_LARGE_FUNCTION_HEADER_SIZE)?;
+        Some(align_up(after_header, 4))
+    } else {
+        let info_offset: usize = usize::try_from(header.info_offset).ok()?;
+        Some(align_up(info_offset, 4))
     }
 }
 
@@ -646,8 +710,7 @@ struct ResolvedFunctionFields {
 }
 
 fn resolve_large_function_header(bytes: &[u8], base: usize) -> Option<ResolvedFunctionFields> {
-    const LARGE_HEADER_SIZE: usize = 30;
-    let end: usize = base.checked_add(LARGE_HEADER_SIZE)?;
+    let end: usize = base.checked_add(HERMES_LARGE_FUNCTION_HEADER_SIZE)?;
     if end > bytes.len() {
         return None;
     }

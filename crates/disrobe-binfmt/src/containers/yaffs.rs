@@ -314,11 +314,44 @@ fn assemble_file(
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let object_header_name_is_a_c_string: bool = name.contains('\u{0}');
+    if name.is_empty() || name.len() > YAFFS_MAX_NAME_LENGTH || object_header_name_is_a_c_string {
+        return None;
+    }
+    Some(tests::build_single_file_yaffs2(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
     const CHUNK: usize = 2048;
+
+    pub(super) fn build_single_file_yaffs2(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut builder: Yaffs2Builder = Yaffs2Builder::new(Yaffs2Endian::Little);
+        builder.object_header(
+            YAFFS_OBJECTID_ROOT,
+            YAFFS_OBJECT_TYPE_DIRECTORY,
+            1,
+            "",
+            0,
+            0o755,
+            "",
+        );
+        builder.object_header(
+            2,
+            YAFFS_OBJECT_TYPE_FILE,
+            YAFFS_OBJECTID_ROOT,
+            name,
+            body.len() as u64,
+            0o755,
+            "",
+        );
+        builder.file_data(2, body);
+        builder.finish()
+    }
 
     struct Yaffs2Builder {
         endian: Yaffs2Endian,

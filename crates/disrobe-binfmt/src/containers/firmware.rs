@@ -1555,6 +1555,8 @@ const HP_IPKG_TOC_OFFSET_FIELD: usize = 8;
 const HP_IPKG_TOC_ENTRIES_FIELD: usize = 16;
 const HP_IPKG_ENTRY_LEN: usize = 276;
 const HP_IPKG_NAME_LEN: usize = 256;
+#[cfg(test)]
+const HP_IPKG_TOC_OFFSET_VALUE: usize = 32;
 
 fn carve_hp_ipkg(bytes: &[u8]) -> Result<FirmwareExtraction> {
     let toc_offset: u32 = u32_le(bytes, HP_IPKG_TOC_OFFSET_FIELD)
@@ -1995,11 +1997,10 @@ fn sanitize_member_name(raw: &str) -> String {
         .collect();
     cleaned
         .split('/')
+        .map(|s: &str| s.trim_matches(['_', '.']))
         .filter(|s: &&str| !s.is_empty() && *s != "." && *s != "..")
         .collect::<Vec<&str>>()
         .join("/")
-        .trim_matches(['_', '.'])
-        .to_owned()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -2014,6 +2015,33 @@ fn gunzip(data: &[u8]) -> Result<Vec<u8>> {
         .read_to_end(&mut out)
         .map_err(|e| Error::Firmware(format!("gzip decode: {e}")))?;
     Ok(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    if name.contains('\u{0}') || name.len() > HP_IPKG_NAME_LEN - 1 {
+        return None;
+    }
+    if sanitize_member_name(name) != name {
+        return None;
+    }
+    let name_bytes: &[u8] = name.as_bytes();
+    let data_start: usize = HP_IPKG_TOC_OFFSET_VALUE + HP_IPKG_ENTRY_LEN;
+    let mut image: Vec<u8> = vec![0u8; data_start + body.len()];
+    image[0..8].copy_from_slice(HP_IPKG_MAGIC);
+    image[HP_IPKG_TOC_OFFSET_FIELD..HP_IPKG_TOC_OFFSET_FIELD + 4]
+        .copy_from_slice(&(HP_IPKG_TOC_OFFSET_VALUE as u32).to_le_bytes());
+    image[HP_IPKG_TOC_ENTRIES_FIELD..HP_IPKG_TOC_ENTRIES_FIELD + 4]
+        .copy_from_slice(&1u32.to_le_bytes());
+    let entry_off: usize = HP_IPKG_TOC_OFFSET_VALUE;
+    image[entry_off..entry_off + name_bytes.len()].copy_from_slice(name_bytes);
+    image[entry_off + HP_IPKG_NAME_LEN..entry_off + HP_IPKG_NAME_LEN + 8]
+        .copy_from_slice(&(data_start as u64).to_le_bytes());
+    image[entry_off + HP_IPKG_NAME_LEN + 8..entry_off + HP_IPKG_NAME_LEN + 16]
+        .copy_from_slice(&(body.len() as u64).to_le_bytes());
+    image[data_start..data_start + body.len()].copy_from_slice(body);
+    Some(image)
 }
 
 pub fn extract_firmware(kind: FirmwareKind, bytes: &[u8]) -> Result<FirmwareExtraction> {
@@ -2039,5 +2067,67 @@ pub fn extract_firmware(kind: FirmwareKind, bytes: &[u8]) -> Result<FirmwareExtr
         FirmwareKind::InstarBneg => carve_instar_bneg(bytes),
         FirmwareKind::InstarHd => carve_instar_hd(bytes),
         FirmwareKind::Airoha => carve_airoha(bytes),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_leading_run_of_confusable_dots_does_not_manufacture_a_root_anchored_path() {
+        let raw: String = "\u{ff0e}\u{ff0e}/escape.txt".to_owned();
+        let cleaned: String = sanitize_member_name(&raw);
+        assert!(
+            !cleaned.starts_with('/'),
+            "cleaned name {cleaned:?} gained a leading separator the input never had"
+        );
+        assert_eq!(cleaned, "escape.txt");
+    }
+
+    #[test]
+    fn a_trailing_run_of_confusable_dots_does_not_manufacture_a_trailing_separator() {
+        let raw: String = "dir/escape\u{ff0e}\u{ff0e}".to_owned();
+        let cleaned: String = sanitize_member_name(&raw);
+        assert!(
+            !cleaned.ends_with('/'),
+            "cleaned name {cleaned:?} gained a trailing separator the input never had"
+        );
+        assert_eq!(cleaned, "dir/escape");
+    }
+
+    #[test]
+    fn a_segment_that_is_entirely_trimmable_characters_vanishes_without_leaving_a_bare_separator() {
+        let raw: String = "dir/\u{ff0e}\u{ff0e}".to_owned();
+        let cleaned: String = sanitize_member_name(&raw);
+        assert_eq!(
+            cleaned, "dir",
+            "an eaten trailing segment must not leave a directory-shaped trailing slash behind"
+        );
+    }
+
+    #[test]
+    fn a_name_with_the_pattern_at_both_ends_trims_neither_into_a_separator() {
+        let raw: String = "\u{ff0e}mid\u{ff0e}".to_owned();
+        let cleaned: String = sanitize_member_name(&raw);
+        assert_eq!(cleaned, "mid");
+        assert!(!cleaned.starts_with('/') && !cleaned.ends_with('/'));
+    }
+
+    #[test]
+    fn a_real_leading_slash_in_the_raw_input_is_still_normalized_away_same_as_before() {
+        assert_eq!(sanitize_member_name("/foo"), "foo");
+    }
+
+    #[test]
+    fn a_name_that_becomes_entirely_empty_after_cleaning_sanitizes_to_an_empty_string() {
+        let raw: String = "\u{ff0e}\u{ff0e}".to_owned();
+        assert_eq!(sanitize_member_name(&raw), "");
+    }
+
+    #[test]
+    fn the_manufactured_path_escape_input_still_refuses_downstream_after_the_fix() {
+        let raw: &str = "\u{ff0e}\u{ff0e}/escape.txt";
+        assert!(hostile_named_image(raw, b"payload").is_none());
     }
 }

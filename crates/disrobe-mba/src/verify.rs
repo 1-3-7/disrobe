@@ -726,7 +726,13 @@ fn compose_bits(low: &[NodeId], high: &[NodeId], low_bits: usize, bits: usize) -
 
 fn const_bits(value: u64, bits: usize) -> Vec<NodeId> {
     (0..bits)
-        .map(|bit: usize| if (value >> bit) & 1 == 1 { ONE } else { ZERO })
+        .map(|bit: usize| {
+            if bit < u64::BITS as usize && (value >> bit) & 1 == 1 {
+                ONE
+            } else {
+                ZERO
+            }
+        })
         .collect()
 }
 
@@ -938,6 +944,62 @@ fn static_shift(value: &[NodeId], distance: usize, dir: ShiftDir, fill: NodeId) 
 }
 
 #[cfg(feature = "smt-solver")]
+fn divide_unsigned(
+    bdd: &mut Bdd,
+    dividend: &[NodeId],
+    divisor: &[NodeId],
+) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
+    let bits: usize = dividend.len();
+    if bits == 0 || divisor.len() != bits {
+        return None;
+    }
+    let mut divisor_extended: Vec<NodeId> = divisor.to_vec();
+    divisor_extended.push(ZERO);
+    let mut quotient: Vec<NodeId> = vec![ZERO; bits];
+    let mut remainder: Vec<NodeId> = vec![ZERO; bits];
+    for index in (0..bits).rev() {
+        let mut shifted: Vec<NodeId> = Vec::with_capacity(bits + 1);
+        shifted.push(dividend[index]);
+        shifted.extend(remainder.iter().copied());
+        let below_divisor: NodeId = unsigned_lt(bdd, &shifted, &divisor_extended)?;
+        let subtract: NodeId = bdd.not(below_divisor)?;
+        let difference: Vec<NodeId> = ripple_sub(bdd, &shifted, &divisor_extended)?;
+        let selected: Vec<NodeId> = select_word(bdd, subtract, &difference, &shifted)?;
+        remainder = selected.get(..bits)?.to_vec();
+        quotient[index] = subtract;
+    }
+    Some((quotient, remainder))
+}
+
+#[cfg(feature = "smt-solver")]
+fn divide_signed(
+    bdd: &mut Bdd,
+    dividend: &[NodeId],
+    divisor: &[NodeId],
+) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
+    let dividend_sign: NodeId = *dividend.last()?;
+    let divisor_sign: NodeId = *divisor.last()?;
+    let dividend_negated: Vec<NodeId> = negate(bdd, dividend)?;
+    let dividend_abs: Vec<NodeId> = select_word(bdd, dividend_sign, &dividend_negated, dividend)?;
+    let divisor_negated: Vec<NodeId> = negate(bdd, divisor)?;
+    let divisor_abs: Vec<NodeId> = select_word(bdd, divisor_sign, &divisor_negated, divisor)?;
+    let (unsigned_quotient, unsigned_remainder): (Vec<NodeId>, Vec<NodeId>) =
+        divide_unsigned(bdd, &dividend_abs, &divisor_abs)?;
+    let quotient_negative: NodeId = bdd.xor(dividend_sign, divisor_sign)?;
+    let quotient_negated: Vec<NodeId> = negate(bdd, &unsigned_quotient)?;
+    let quotient: Vec<NodeId> = select_word(
+        bdd,
+        quotient_negative,
+        &quotient_negated,
+        &unsigned_quotient,
+    )?;
+    let remainder_negated: Vec<NodeId> = negate(bdd, &unsigned_remainder)?;
+    let remainder: Vec<NodeId> =
+        select_word(bdd, dividend_sign, &remainder_negated, &unsigned_remainder)?;
+    Some((quotient, remainder))
+}
+
+#[cfg(feature = "smt-solver")]
 #[derive(Debug)]
 struct TermBlaster<'a> {
     manager: &'a TermManager,
@@ -1028,6 +1090,34 @@ impl TermBlaster<'_> {
                 let y: Vec<NodeId> = self.bv(b)?;
                 let bits: usize = x.len();
                 shift_right_arithmetic(&mut self.bdd, &x, &y, bits)?
+            }
+            TermKind::BvUdiv(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let (quotient, _remainder): (Vec<NodeId>, Vec<NodeId>) =
+                    divide_unsigned(&mut self.bdd, &x, &y)?;
+                quotient
+            }
+            TermKind::BvUrem(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let (_quotient, remainder): (Vec<NodeId>, Vec<NodeId>) =
+                    divide_unsigned(&mut self.bdd, &x, &y)?;
+                remainder
+            }
+            TermKind::BvSdiv(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let (quotient, _remainder): (Vec<NodeId>, Vec<NodeId>) =
+                    divide_signed(&mut self.bdd, &x, &y)?;
+                quotient
+            }
+            TermKind::BvSrem(a, b) => {
+                let x: Vec<NodeId> = self.bv(a)?;
+                let y: Vec<NodeId> = self.bv(b)?;
+                let (_quotient, remainder): (Vec<NodeId>, Vec<NodeId>) =
+                    divide_signed(&mut self.bdd, &x, &y)?;
+                remainder
             }
             TermKind::Ite(c, t, e) => {
                 let selector: NodeId = self.bool(c)?;

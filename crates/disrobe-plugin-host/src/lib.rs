@@ -5,10 +5,11 @@ use std::thread::{Builder, JoinHandle};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+use wasmtime::component::types::{ComponentItem, Type as ComponentValType};
 use wasmtime::component::{Component, Instance as ComponentInstance, Linker as ComponentLinker};
 use wasmtime::{
-    Config, Engine, EngineWeak, Instance, Linker, Memory, Module, ResourceLimiter, Store, Trap,
-    TypedFunc,
+    Config, Engine, EngineWeak, ExternType, Instance, Linker, Memory, Module, ResourceLimiter,
+    Store, Trap, TypedFunc, ValType,
 };
 
 pub use disrobe_plugin_loader::{LoaderError, Manifest, ManifestError, PublicKey};
@@ -72,6 +73,12 @@ pub enum SandboxError {
 
     #[error("plugin requested a denied host import: {0}")]
     DeniedImport(String),
+
+    #[error("plugin does not export a `{GUEST_ENTRY}` function")]
+    MissingEntry,
+
+    #[error("plugin's `{GUEST_ENTRY}` export has the wrong signature: {0}")]
+    EntrySignature(String),
 
     #[error("plugin trapped: {0}")]
     Trap(String),
@@ -201,6 +208,7 @@ impl PluginHost {
         input: &[u8],
         limits: Limits,
     ) -> Result<Vec<u8>, SandboxError> {
+        check_component_entry(component, &self.engine)?;
         let limits: Limits = limits.effective();
         if input.len() > limits.memory_cap_bytes {
             return Err(SandboxError::Memory);
@@ -259,6 +267,7 @@ impl PluginHost {
         if let Some(denied) = first_import(&module) {
             return Err(SandboxError::DeniedImport(denied));
         }
+        check_module_entry(&module)?;
 
         let mut store: Store<MemoryGate> = metered_store(&engine, limits)?;
 
@@ -386,6 +395,59 @@ fn first_import(module: &Module) -> Option<String> {
         .imports()
         .next()
         .map(|imp| format!("{}::{}", imp.module(), imp.name()))
+}
+
+fn is_byte_list(ty: &ComponentValType) -> bool {
+    matches!(ty, ComponentValType::List(list) if list.ty() == ComponentValType::U8)
+}
+
+fn check_component_entry(component: &Component, engine: &Engine) -> Result<(), SandboxError> {
+    let component_type: wasmtime::component::types::Component = component.component_type();
+    let Some(item) = component_type.get_export(engine, GUEST_ENTRY) else {
+        return Err(SandboxError::MissingEntry);
+    };
+    let ComponentItem::ComponentFunc(func) = item else {
+        return Err(SandboxError::EntrySignature(format!(
+            "`{GUEST_ENTRY}` is exported but is not a function"
+        )));
+    };
+    let params: Vec<ComponentValType> = func.params().map(|(_name, ty)| ty).collect();
+    let results: Vec<ComponentValType> = func.results().collect();
+    let shape_ok: bool = params.len() == 1
+        && is_byte_list(&params[0])
+        && results.len() == 1
+        && is_byte_list(&results[0]);
+    if shape_ok {
+        Ok(())
+    } else {
+        Err(SandboxError::EntrySignature(format!(
+            "expected `func(input: list<u8>) -> list<u8>`, found {} param(s) and {} result(s)",
+            params.len(),
+            results.len()
+        )))
+    }
+}
+
+fn check_module_entry(module: &Module) -> Result<(), SandboxError> {
+    let Some(export) = module.exports().find(|export| export.name() == GUEST_ENTRY) else {
+        return Err(SandboxError::MissingEntry);
+    };
+    let ExternType::Func(func_ty) = export.ty() else {
+        return Err(SandboxError::EntrySignature(format!(
+            "`{GUEST_ENTRY}` is exported but is not a function"
+        )));
+    };
+    let params: Vec<ValType> = func_ty.params().collect();
+    let results: Vec<ValType> = func_ty.results().collect();
+    if matches!(params.as_slice(), [ValType::I32]) && matches!(results.as_slice(), [ValType::I32]) {
+        Ok(())
+    } else {
+        Err(SandboxError::EntrySignature(format!(
+            "expected `func(i32) -> i32`, found {} param(s) and {} result(s)",
+            params.len(),
+            results.len()
+        )))
+    }
 }
 
 fn classify(store: &Store<MemoryGate>, err: wasmtime::Error) -> SandboxError {

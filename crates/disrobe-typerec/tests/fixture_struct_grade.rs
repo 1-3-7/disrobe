@@ -1,5 +1,11 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr
+)]
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -14,6 +20,16 @@ use disrobe_typerec::memssa;
 use disrobe_typerec::recover::TypedFunction;
 use disrobe_typerec::structrec::{AccessFlags, FieldNameTier, RecoveredField, RecoveredStruct};
 use iced_x86::{Decoder, DecoderOptions, Instruction, OpKind, Register};
+
+#[path = "support/cc_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod cc_toolchain;
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -34,6 +50,7 @@ fn stripped_input() -> DebugImage {
         text_base: base,
         text,
         functions: unstripped.functions,
+        locations: unstripped.locations,
     }
 }
 
@@ -373,6 +390,7 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
     else {
         panic!("freshly stripped indexed fixture must expose .text");
     };
+    let locations: disrobe_typerec::dwarf_location::LocationSurvey = ground_truth.locations.clone();
     let functions: Vec<dwarf_gt::GroundTruthFunction> = ground_truth
         .functions
         .into_iter()
@@ -382,6 +400,7 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         text_base: base,
         text,
         functions,
+        locations,
     };
     let Some(function): Option<dwarf_gt::GroundTruthFunction> = image
         .functions
@@ -436,70 +455,72 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
 
 #[test]
 fn recompiled_struct_corpus_reproduces_perfect_layout() {
-    if !tool_available("gcc") || !tool_available("objcopy") {
-        eprintln!("skipping: gcc and objcopy are required for the recompile path");
-        return;
-    }
-    let scratch: ScratchDir = if let Ok(scratch) = ScratchDir::create("disrobe_typerec_struct") {
-        scratch
-    } else {
-        eprintln!("skipping: could not create a working directory");
+    let graded: &str = "the fresh-build DWARF aggregate reference";
+    let Some(toolchain): Option<cc_toolchain::CcToolchain> = cc_toolchain::require(graded) else {
         return;
     };
+    let scratch: ScratchDir = ScratchDir::create("disrobe_typerec_struct")
+        .unwrap_or_else(|error| panic!("{graded} needs a working directory: {error}"));
     let work: PathBuf = scratch.path().to_path_buf();
-    let unstripped: PathBuf = work.join("struct.unstripped.exe");
-    let stripped: PathBuf = work.join("struct.stripped.exe");
+    let source: OsString = cc_toolchain::stage_source(&work, &source_path())
+        .unwrap_or_else(|defect| panic!("stage the struct corpus: {defect}"));
+    let unstripped: OsString = OsString::from("struct.unstripped.bin");
+    let stripped: OsString = OsString::from("struct.stripped.bin");
+    let protection: &str = if cc_toolchain::accepts_flag(&toolchain, &work, "-fcf-protection=full")
+    {
+        "-fcf-protection=full"
+    } else {
+        "-fno-common"
+    };
 
-    let built: bool = run(Command::new("gcc")
-        .args([
+    if let Err(defect) = cc_toolchain::compile(
+        &toolchain,
+        &work,
+        &source,
+        &unstripped,
+        &[
             "-g",
             "-O0",
             "-gdwarf-4",
+            protection,
             "-fno-asynchronous-unwind-tables",
             "-nostdlib",
             "-Wl,-e,_start",
-            "-o",
-        ])
-        .arg(&unstripped)
-        .arg(source_path()));
-    if !built {
-        eprintln!("skipping: gcc could not build the struct corpus on this host");
-        return;
+        ],
+    ) {
+        panic!("{graded} cannot be measured because the compiler refused the corpus: {defect}");
     }
-    if !run(Command::new("objcopy")
-        .arg("--strip-debug")
-        .arg(&unstripped)
-        .arg(&stripped))
-    {
-        eprintln!("skipping: objcopy could not strip on this host");
-        return;
+    if let Err(defect) = cc_toolchain::strip_debug(&toolchain, &work, &unstripped, &stripped) {
+        panic!("{graded} cannot be measured because the strip failed: {defect}");
     }
 
-    let Some(ground_truth): Option<DebugImage> = std::fs::read(&unstripped)
-        .ok()
-        .and_then(|bytes: Vec<u8>| dwarf_gt::load(&bytes).ok())
-    else {
-        panic!("freshly built unstripped binary must carry DWARF");
-    };
-    let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
-        .ok()
-        .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
-    else {
-        panic!("freshly stripped binary must expose .text");
-    };
+    let unstripped_bytes: Vec<u8> = std::fs::read(work.join("struct.unstripped.bin"))
+        .unwrap_or_else(|error| panic!("read the fresh unstripped struct build: {error}"));
+    let stripped_bytes: Vec<u8> = std::fs::read(work.join("struct.stripped.bin"))
+        .unwrap_or_else(|error| panic!("read the fresh stripped struct build: {error}"));
+    let ground_truth: DebugImage = dwarf_gt::load(&unstripped_bytes)
+        .unwrap_or_else(|error| panic!("read the DWARF of the fresh struct build: {error}"));
+    let (base, text): (u64, Vec<u8>) = dwarf_gt::load_text(&stripped_bytes)
+        .unwrap_or_else(|error| panic!("read the .text of the stripped struct build: {error}"));
 
     let image: DebugImage = DebugImage {
         text_base: base,
         text,
         functions: ground_truth.functions,
+        locations: ground_truth.locations,
     };
+    eprintln!("fresh struct reference: {}", image.locations);
+    assert!(
+        image.locations.balances(),
+        "the fresh struct survey lost declared variables without naming a reason: {}",
+        image.locations,
+    );
     let report: StructGradeReport = grade::grade_struct_image(&image);
-    if report.aggregates_total == 0 {
-        eprintln!(
-            "skipping: the freshly built struct corpus exposed no gradeable dwarf aggregates on this host toolchain (dwarf_gt read no aggregate members from this gcc's debug info); the committed-fixture struct grade tests carry the layout floors"
-        );
-        return;
-    }
+    assert!(
+        report.aggregates_total > 0,
+        "the fresh struct build exposed no gradeable aggregate, so this case measured nothing: {}",
+        image.locations,
+    );
     assert!(report.aggregates_total >= 6, "corpus exposes aggregates");
     assert!(report.missing_leaves.is_empty(), "no field may be missing");
     assert!(report.spurious_leaves.is_empty(), "no invented field");

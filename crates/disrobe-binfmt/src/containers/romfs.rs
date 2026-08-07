@@ -208,6 +208,19 @@ fn read_file_data(bytes: &[u8], node: &RomfsNode, max_total: u64) -> Result<Vec<
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let node_name_ends_at_the_first_nul_byte: bool = name.contains('\u{0}');
+    let dropped_by_the_walker_as_a_self_or_parent_link: bool = name == "." || name == "..";
+    if name.is_empty()
+        || node_name_ends_at_the_first_nul_byte
+        || dropped_by_the_walker_as_a_self_or_parent_link
+    {
+        return None;
+    }
+    Some(tests::build_real_romfs_one_file(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -231,6 +244,32 @@ mod tests {
             sum = sum.wrapping_add(w);
         }
         sum.wrapping_neg()
+    }
+
+    pub(super) fn build_real_romfs_one_file(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut image: Vec<u8> = Vec::new();
+        image.extend_from_slice(ROMFS_MAGIC);
+        image.extend_from_slice(&0u32.to_be_bytes());
+        image.extend_from_slice(&0u32.to_be_bytes());
+        image.extend_from_slice(b"rom");
+        image.push(0);
+        pad16(&mut image);
+        encode_node(
+            &mut image,
+            &EncodedNode {
+                file_type: TYPE_REGULAR_FILE,
+                executable: true,
+                spec_info: 0,
+                name: name.to_owned(),
+                data: body.to_vec(),
+            },
+            0,
+        );
+        let full_size: u32 = image.len() as u32;
+        image[8..12].copy_from_slice(&full_size.to_be_bytes());
+        let csum: u32 = checksum_be(&image[..512.min(image.len())]);
+        image[12..16].copy_from_slice(&csum.to_be_bytes());
+        image
     }
 
     struct EncodedNode {

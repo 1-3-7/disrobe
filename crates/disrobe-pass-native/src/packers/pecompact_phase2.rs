@@ -17,12 +17,11 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
-use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+use crate::packers::pe_sections::{PeImage, parse_pe_image};
 use crate::packers::section_recovery::{
-    IatReconstructionReport, SectionRecoveryReport, build_loaded_image,
+    IatReconstructionReport, SectionRecoveryReport, build_loaded_image, emulated_image_capacity,
     reconstruct_import_address_table, section_recovery_report,
 };
-use crate::stub_emu::mem::MAX_MAP_BYTES;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 const EMU_HEAP_BASE: u64 = 0x2000_0000;
@@ -210,9 +209,7 @@ pub fn unpack_pecompact_phase2_emulated(
 ) -> Result<PecompactPhaseTwoOutput> {
     let img: PeImage = parse_pe_image(packed)?;
     let image_base: u64 = img.image_base;
-    let capacity: u64 = u64::from(img.size_of_image)
-        .max(last_section_end_va(&img))
-        .min(MAX_MAP_BYTES);
+    let capacity: u64 = emulated_image_capacity(&img, packed.len());
 
     let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
     cpu.enable_seh_dispatch();
@@ -284,16 +281,6 @@ pub fn unpack_pecompact_phase2_emulated(
         whole_image_recovery_pct: whole_pct,
         section_report: report,
     })
-}
-
-fn last_section_end_va(img: &PeImage) -> u64 {
-    img.sections
-        .iter()
-        .map(|s: &PeSection| {
-            u64::from(s.virtual_address) + u64::from(s.virtual_size.max(s.raw_size))
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 fn map_image(cpu: &mut Cpu, packed: &[u8], img: &PeImage, base: u64) -> Result<()> {

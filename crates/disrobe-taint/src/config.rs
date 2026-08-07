@@ -7,9 +7,56 @@ use crate::summary::{FeatureSet, KindSet};
 const DEFAULT_MAX_STATES_PER_FUNCTION: usize = 65_536;
 const HARD_MAX_STATES_PER_FUNCTION: usize = 1_048_576;
 const MAX_INTERNED: u16 = 63;
+const MAX_OUT_ARGUMENTS_PER_SOURCE: usize = 32;
 
 const fn default_max_states_per_function() -> usize {
     DEFAULT_MAX_STATES_PER_FUNCTION
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) enum OutArgument {
+    Fixed(u16),
+    FromIndexOnward(u16),
+}
+
+impl OutArgument {
+    pub(crate) fn indices(self, register_count: usize) -> Vec<usize> {
+        match self {
+            Self::Fixed(index) => vec![index as usize],
+            Self::FromIndexOnward(start) => {
+                let start: usize = start as usize;
+                if start >= register_count {
+                    Vec::new()
+                } else {
+                    (start..register_count).collect()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct SourceEntry {
+    kind: u16,
+    #[serde(default)]
+    out_arguments: Vec<OutArgument>,
+}
+
+impl SourceEntry {
+    fn insert_out_argument(&mut self, argument: OutArgument) {
+        if self.out_arguments.len() < MAX_OUT_ARGUMENTS_PER_SOURCE
+            && !self.out_arguments.contains(&argument)
+        {
+            self.out_arguments.push(argument);
+        }
+    }
+}
+
+fn builtin_out_arguments(symbol: &str) -> Vec<OutArgument> {
+    match symbol {
+        "fgets" => vec![OutArgument::Fixed(0)],
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +76,7 @@ impl Default for SinkPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaintConfig {
-    sources: BTreeMap<String, u16>,
+    sources: BTreeMap<String, SourceEntry>,
     sinks: BTreeMap<String, SinkPolicy>,
     sanitizers: BTreeMap<String, u16>,
     global_suppress: u64,
@@ -67,11 +114,49 @@ impl TaintConfig {
     #[must_use]
     pub fn with_source(mut self, symbol: impl AsRef<str>) -> Self {
         if let Some(symbol) = normalize_symbol(symbol.as_ref()) {
-            let next: u16 = self.next_kind.min(MAX_INTERNED);
-            self.sources.entry(symbol).or_insert(next);
-            self.next_kind = self.next_kind.saturating_add(1);
+            let _: &mut SourceEntry = self.upsert_source_entry(symbol);
         }
         self
+    }
+
+    #[must_use]
+    pub fn with_source_out_argument(
+        mut self,
+        symbol: impl AsRef<str>,
+        argument_index: u16,
+    ) -> Self {
+        if let Some(symbol) = normalize_symbol(symbol.as_ref()) {
+            self.upsert_source_entry(symbol)
+                .insert_out_argument(OutArgument::Fixed(argument_index));
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn with_source_variadic_out_arguments(
+        mut self,
+        symbol: impl AsRef<str>,
+        from_index: u16,
+    ) -> Self {
+        if let Some(symbol) = normalize_symbol(symbol.as_ref()) {
+            self.upsert_source_entry(symbol)
+                .insert_out_argument(OutArgument::FromIndexOnward(from_index));
+        }
+        self
+    }
+
+    fn upsert_source_entry(&mut self, symbol: String) -> &mut SourceEntry {
+        let already_present: bool = self.sources.contains_key(&symbol);
+        let next_kind: u16 = self.next_kind.min(MAX_INTERNED);
+        let out_arguments: Vec<OutArgument> = builtin_out_arguments(&symbol);
+        let entry: &mut SourceEntry = self.sources.entry(symbol).or_insert_with(|| SourceEntry {
+            kind: next_kind,
+            out_arguments,
+        });
+        if !already_present {
+            self.next_kind = self.next_kind.saturating_add(1);
+        }
+        entry
     }
 
     #[must_use]
@@ -150,7 +235,13 @@ impl TaintConfig {
         let symbol: String = normalize_symbol(symbol)?;
         self.sources
             .get(&symbol)
-            .map(|index: &u16| KindSet::from_index(*index))
+            .map(|entry: &SourceEntry| KindSet::from_index(entry.kind))
+    }
+
+    pub(crate) fn source_out_arguments(&self, symbol: &str) -> &[OutArgument] {
+        normalize_symbol(symbol)
+            .and_then(|symbol: String| self.sources.get(&symbol))
+            .map_or(&[], |entry: &SourceEntry| entry.out_arguments.as_slice())
     }
 
     pub(crate) fn sink_policy(&self, symbol: &str) -> Option<ResolvedSinkPolicy> {
@@ -252,5 +343,73 @@ mod tests {
         assert_eq!(zero.max_states_per_function(), 1);
         let huge: TaintConfig = TaintConfig::new().with_max_states_per_function(usize::MAX);
         assert_eq!(huge.max_states_per_function(), HARD_MAX_STATES_PER_FUNCTION);
+    }
+
+    #[test]
+    fn fgets_carries_a_builtin_out_argument_declaration() {
+        let config: TaintConfig = TaintConfig::new().with_source("fgets");
+        assert_eq!(
+            config.source_out_arguments("fgets"),
+            &[OutArgument::Fixed(0)]
+        );
+    }
+
+    #[test]
+    fn a_source_with_no_builtin_declaration_has_no_out_arguments() {
+        let config: TaintConfig = TaintConfig::new().with_source("recv");
+        assert!(config.source_out_arguments("recv").is_empty());
+        assert!(config.source_out_arguments("not_a_source").is_empty());
+    }
+
+    #[test]
+    fn a_custom_source_can_declare_its_own_out_argument_index() {
+        let config: TaintConfig = TaintConfig::new().with_source_out_argument("read", 1);
+        assert!(config.is_source("read"));
+        assert_eq!(
+            config.source_out_arguments("read"),
+            &[OutArgument::Fixed(1)]
+        );
+    }
+
+    #[test]
+    fn declaring_an_out_argument_after_with_source_extends_the_same_entry_not_a_duplicate() {
+        let config: TaintConfig = TaintConfig::new()
+            .with_source("recv")
+            .with_source_out_argument("recv", 1);
+        assert_eq!(
+            config.source_out_arguments("recv"),
+            &[OutArgument::Fixed(1)]
+        );
+        let getenv: KindSet = config.source_kind("getenv").unwrap_or(KindSet::EMPTY);
+        assert!(
+            getenv.bits() == 0,
+            "getenv was never configured as a source"
+        );
+    }
+
+    #[test]
+    fn a_variadic_source_declares_every_argument_from_an_index_onward() {
+        let config: TaintConfig = TaintConfig::new().with_source_variadic_out_arguments("scanf", 1);
+        assert_eq!(
+            config.source_out_arguments("scanf"),
+            &[OutArgument::FromIndexOnward(1)]
+        );
+        assert_eq!(
+            OutArgument::FromIndexOnward(1).indices(6),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert!(OutArgument::FromIndexOnward(8).indices(6).is_empty());
+    }
+
+    #[test]
+    fn repeated_out_argument_declarations_do_not_duplicate_or_grow_unbounded() {
+        let mut config: TaintConfig = TaintConfig::new();
+        for _ in 0..64 {
+            config = config.with_source_out_argument("fread", 0);
+        }
+        assert_eq!(
+            config.source_out_arguments("fread"),
+            &[OutArgument::Fixed(0)]
+        );
     }
 }

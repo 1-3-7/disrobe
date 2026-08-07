@@ -4,6 +4,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 const MAX_MANIFEST_NAME_BYTES: usize = 128;
+const MAX_MANIFEST_VERSION_BYTES: usize = 64;
 const MAX_MANIFEST_TOML_BYTES: usize = 64 * 1024;
 const MAX_CAPABILITIES: usize = 128;
 const MAX_CAPABILITY_BYTES: usize = 256;
@@ -12,6 +13,9 @@ const MAX_CAPABILITY_BYTES: usize = 256;
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: String,
+
+    #[serde(default)]
+    pub version: Option<String>,
 
     #[serde(default)]
     capabilities: BTreeSet<String>,
@@ -30,6 +34,14 @@ pub enum ManifestError {
     NameTooLarge { len: usize, limit: usize },
     #[error("plugin manifest name contains a control character: {name}")]
     NameControl { name: String },
+    #[error("plugin manifest version is empty")]
+    EmptyVersion,
+    #[error("plugin manifest version has leading or trailing whitespace")]
+    VersionWhitespace,
+    #[error("plugin manifest version is too large: {len} bytes exceeds {limit}")]
+    VersionTooLarge { len: usize, limit: usize },
+    #[error("plugin manifest version contains a control character: {version}")]
+    VersionControl { version: String },
     #[error("plugin manifest is too large: {len} bytes exceeds {limit}")]
     ManifestTooLarge { len: usize, limit: usize },
     #[error("plugin manifest grants too many capabilities: {len} exceeds {limit}")]
@@ -47,10 +59,12 @@ pub enum ManifestError {
 impl Manifest {
     pub fn new(
         name: impl Into<String>,
+        version: Option<String>,
         capabilities: BTreeSet<String>,
     ) -> Result<Self, ManifestError> {
         let manifest: Self = Self {
             name: name.into(),
+            version,
             capabilities,
         };
         manifest.validate()?;
@@ -86,6 +100,25 @@ impl Manifest {
             return Err(ManifestError::NameControl {
                 name: self.name.clone(),
             });
+        }
+        if let Some(version) = &self.version {
+            if version.is_empty() {
+                return Err(ManifestError::EmptyVersion);
+            }
+            if version.trim() != version {
+                return Err(ManifestError::VersionWhitespace);
+            }
+            if version.len() > MAX_MANIFEST_VERSION_BYTES {
+                return Err(ManifestError::VersionTooLarge {
+                    len: version.len(),
+                    limit: MAX_MANIFEST_VERSION_BYTES,
+                });
+            }
+            if version.chars().any(char::is_control) {
+                return Err(ManifestError::VersionControl {
+                    version: version.clone(),
+                });
+            }
         }
         if self.capabilities.len() > MAX_CAPABILITIES {
             return Err(ManifestError::TooManyCapabilities {

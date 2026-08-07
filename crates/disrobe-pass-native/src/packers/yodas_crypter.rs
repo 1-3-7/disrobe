@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{PeImage, PeSection, find_subsequence, parse_pe_image};
-use crate::stub_emu::mem::MAX_MAP_BYTES;
+use crate::packers::section_recovery::emulated_image_capacity;
 use crate::stub_emu::{Cpu, CpuMode, ExitReason, HostCall, Memory, Perm, Reg, Regs};
 
 const YODAS_CRYPTER_SECTION: &[u8] = b"yC";
@@ -270,9 +270,7 @@ fn emulate_yc_stub(packed: &[u8], img: &PeImage) -> Result<Vec<u8>> {
     })?;
     let stub_rva: u32 = stub.virtual_address;
     let image_base: u64 = img.image_base;
-    let capacity: u64 = u64::from(img.size_of_image)
-        .max(last_section_end_va(img))
-        .min(MAX_MAP_BYTES);
+    let capacity: u64 = emulated_image_capacity(img, packed.len());
 
     let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
     cpu.mem.map(image_base, capacity, Perm::RWX)?;
@@ -434,16 +432,6 @@ fn section_from_image(image: &[u8], packed_sec: &PeSection, want_len: usize) -> 
     let avail: usize = image.len() - va;
     let take: usize = want_len.min(avail);
     image[va..va + take].to_vec()
-}
-
-fn last_section_end_va(img: &PeImage) -> u64 {
-    img.sections
-        .iter()
-        .map(|s: &PeSection| {
-            u64::from(s.virtual_address) + u64::from(s.virtual_size.max(s.raw_size))
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 fn map_image(cpu: &mut Cpu, packed: &[u8], img: &PeImage, base: u64) {

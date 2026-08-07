@@ -9,6 +9,9 @@ use crate::structurize::{
     lift_filter_condition, merge_arm_stack, rendered_expression,
 };
 
+pub const UNSTRUCTURED_CONTROL_FLOW_MARKER: &str =
+    "disrobe: unstructured control flow has no legal target scope";
+
 #[derive(Debug, Clone)]
 pub(crate) enum Structured {
     Seq(Vec<Self>),
@@ -1036,8 +1039,8 @@ fn structure_method_core<N: TokenNamer>(
         first
     };
     prune_orphan_labels(&mut tree);
-    let residual_gotos: u32 = u32::try_from(st.goto_targets.len()).unwrap_or(u32::MAX);
     let locals_used: BTreeSet<u32> = st.locals_used.clone();
+    let residual_gotos: u32 = u32::try_from(st.goto_targets.len()).unwrap_or(u32::MAX);
     let mut text: String = String::with_capacity(256);
     render(&mut text, &tree, 1, lang);
     StructuredOutput {
@@ -1159,6 +1162,161 @@ fn is_empty(s: &Structured) -> bool {
         Structured::Block(b) => b.is_empty(),
         _ => false,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextFrame {
+    id: u32,
+    finally: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TextScopePosition {
+    path: Vec<TextFrame>,
+    nearest_finally: Option<usize>,
+}
+
+impl TextScopePosition {
+    fn capture(path: &[TextFrame]) -> Self {
+        Self {
+            path: path.to_vec(),
+            nearest_finally: path.iter().position(|f: &TextFrame| f.finally),
+        }
+    }
+
+    fn reaches(&self, label: &Self) -> bool {
+        if label.path.len() > self.path.len() {
+            return false;
+        }
+        if label.path.as_slice() != &self.path[..label.path.len()] {
+            return false;
+        }
+        self.nearest_finally
+            .is_none_or(|barrier: usize| label.path.len() > barrier)
+    }
+}
+
+fn parse_goto_offset(trimmed: &str) -> Option<u32> {
+    let rest: &str = trimmed.strip_prefix("goto IL_")?;
+    let hex: &str = rest.strip_suffix(';')?;
+    u32::from_str_radix(hex, 16).ok()
+}
+
+fn parse_label_offset(trimmed: &str) -> Option<u32> {
+    let rest: &str = trimmed.strip_prefix("IL_")?;
+    let hex: &str = rest.strip_suffix(":;")?;
+    (!hex.is_empty() && hex.bytes().all(|b: u8| b.is_ascii_hexdigit()))
+        .then(|| u32::from_str_radix(hex, 16).ok())
+        .flatten()
+}
+
+fn is_scope_opening_head(trimmed: &str) -> Option<bool> {
+    if trimmed == "else" || trimmed == "try" {
+        return Some(false);
+    }
+    if trimmed == "finally" {
+        return Some(true);
+    }
+    if trimmed.starts_with("if (")
+        || trimmed.starts_with("while (")
+        || trimmed.starts_with("switch (")
+        || trimmed == "catch"
+        || trimmed.starts_with("catch (")
+        || trimmed.starts_with("catch when")
+    {
+        return Some(false);
+    }
+    None
+}
+
+fn first_illegal_live_goto(lines: &[&str]) -> Option<u32> {
+    let mut stack: Vec<TextFrame> = Vec::new();
+    let mut next_id: u32 = 0;
+    let mut pending_finally: Option<bool> = None;
+    let mut labels: BTreeMap<u32, TextScopePosition> = BTreeMap::new();
+    let mut gotos: Vec<(u32, TextScopePosition)> = Vec::new();
+    for line in lines {
+        let trimmed: &str = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("// ") {
+            continue;
+        }
+        if trimmed == "{" {
+            let finally: bool = pending_finally.take().unwrap_or(false);
+            stack.push(TextFrame {
+                id: next_id,
+                finally,
+            });
+            next_id = next_id.saturating_add(1);
+            continue;
+        }
+        if trimmed == "}" {
+            stack.pop();
+            pending_finally = None;
+            continue;
+        }
+        if let Some(off) = parse_goto_offset(trimmed) {
+            gotos.push((off, TextScopePosition::capture(&stack)));
+            pending_finally = None;
+            continue;
+        }
+        if let Some(off) = parse_label_offset(trimmed) {
+            labels
+                .entry(off)
+                .or_insert_with(|| TextScopePosition::capture(&stack));
+            pending_finally = None;
+            continue;
+        }
+        pending_finally = is_scope_opening_head(trimmed);
+    }
+    gotos
+        .iter()
+        .find(|(off, site): &&(u32, TextScopePosition)| {
+            labels
+                .get(off)
+                .is_none_or(|label: &TextScopePosition| !site.reaches(label))
+        })
+        .map(|(off, _): &(u32, TextScopePosition)| *off)
+}
+
+#[must_use]
+pub fn abstain_illegal_goto(full_body: &str) -> Option<String> {
+    if !full_body.contains("goto IL_") {
+        return None;
+    }
+    let trailing_newline: bool = full_body.ends_with('\n');
+    let lines: Vec<&str> = full_body.lines().collect();
+    let open: usize = lines.iter().position(|l: &&str| l.trim() == "{")?;
+    let close: usize = lines.iter().rposition(|l: &&str| l.trim() == "}")?;
+    if close <= open {
+        return None;
+    }
+    let inner: &[&str] = &lines[open.saturating_add(1)..close];
+    let off: u32 = first_illegal_live_goto(inner)?;
+    let mut out: String = String::with_capacity(full_body.len().saturating_mul(2));
+    for line in &lines[..=open] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    let _ = writeln!(
+        out,
+        "    // {UNSTRUCTURED_CONTROL_FLOW_MARKER}: goto IL_{off:04X} has no legal target scope; the compiler-emitted plumbing below is kept verbatim as the only static evidence"
+    );
+    for line in inner {
+        let trimmed: &str = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "    // {trimmed}");
+    }
+    let _ = writeln!(
+        out,
+        "    throw new System.NotSupportedException(\"{UNSTRUCTURED_CONTROL_FLOW_MARKER}\");"
+    );
+    out.push_str(lines[close]);
+    if trailing_newline {
+        out.push('\n');
+    }
+    Some(out)
 }
 
 fn with_trailing_break(region: Structured) -> Structured {
@@ -1787,14 +1945,20 @@ mod tests {
             instructions: disassemble(&code).expect("disasm"),
             exception_clauses: Vec::new(),
         };
-        crate::structurize::decompile_method_named(
-            "void M()",
-            &body,
-            &HexNamer,
-            &NameTable::default(),
-            TargetLang::CSharp,
-        )
-        .body
+        let decompiled: crate::structurize::StructuredMethod =
+            crate::structurize::decompile_method_named(
+                "void M()",
+                &body,
+                &HexNamer,
+                &NameTable::default(),
+                TargetLang::CSharp,
+            );
+        abstain_illegal_goto(&decompiled.body).unwrap_or(decompiled.body)
+    }
+
+    fn has_live_goto(body: &str) -> bool {
+        body.lines()
+            .any(|l: &str| l.trim_start().starts_with("goto "))
     }
 
     #[test]
@@ -1805,23 +1969,139 @@ mod tests {
             8,
             "a chain shorter than the depth budget structures fully; got:\n{shallow}"
         );
-        assert_eq!(shallow.matches("goto ").count(), 0);
+        assert!(!has_live_goto(&shallow));
 
         let cap: u32 = MAX_STRUCTURE_DEPTH as u32;
         let deep: String = decompile_chain(cap * 2);
-        assert_eq!(
-            deep.matches("if (").count(),
-            MAX_STRUCTURE_DEPTH,
-            "the recovered nesting is capped at the depth budget rather than the chain length"
+        assert!(
+            deep.contains(UNSTRUCTURED_CONTROL_FLOW_MARKER),
+            "a linear chain past the depth budget has no block that ever revisits the capped \
+             target, so the fallback goto is dangling and the whole body must abstain rather \
+             than recurse; got:\n{deep}"
         );
         assert!(
-            deep.matches("goto ").count() > 0,
-            "the depth cap degrades to a goto instead of recursing"
+            !has_live_goto(&deep),
+            "an abstained body must never leave a live goto behind; got:\n{deep}"
         );
-        assert_eq!(
-            decompile_chain(cap * 3).matches("if (").count(),
-            MAX_STRUCTURE_DEPTH,
-            "a longer chain still caps at the depth budget, so nesting is bounded regardless of chain length"
+        assert!(
+            decompile_chain(cap * 3).contains(UNSTRUCTURED_CONTROL_FLOW_MARKER),
+            "a longer chain still degrades to the same honest abstention, not a hang"
         );
+    }
+
+    fn wrap_method(inner: &str) -> String {
+        format!("void M()\n{{\n{inner}}}\n")
+    }
+
+    fn assert_illegal(inner: &str, off: u32) {
+        let full: String = wrap_method(inner);
+        let result: Option<String> = abstain_illegal_goto(&full);
+        assert!(
+            result.is_some(),
+            "expected an abstention for a goto IL_{off:04X} with no legal target scope; got:\n{full}"
+        );
+        let abstained: String = result.expect("checked above");
+        assert!(abstained.contains(UNSTRUCTURED_CONTROL_FLOW_MARKER));
+        assert!(!has_live_goto(&abstained), "got:\n{abstained}");
+    }
+
+    fn assert_legal(inner: &str) {
+        let full: String = wrap_method(inner);
+        assert!(
+            abstain_illegal_goto(&full).is_none(),
+            "expected no abstention; got:\n{full}"
+        );
+    }
+
+    #[test]
+    fn goto_into_switch_section_from_outside_is_illegal() {
+        assert_illegal(
+            "    goto IL_0010;\n    switch (n)\n    {\n        case 0:\nIL_0010:;\n            return;\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_between_switch_cases_of_the_same_switch_is_legal() {
+        assert_legal(
+            "    switch (n)\n    {\n        case 0:\n            goto IL_0010;\n        case 1:\nIL_0010:;\n            return;\n    }\n",
+        );
+    }
+
+    #[test]
+    fn goto_out_of_switch_to_an_enclosing_label_is_legal() {
+        assert_legal(
+            "    switch (n)\n    {\n        case 0:\n            goto IL_0020;\n    }\nIL_0020:;\n    return;\n",
+        );
+    }
+
+    #[test]
+    fn goto_into_try_body_from_outside_is_illegal() {
+        assert_illegal(
+            "    goto IL_0010;\n    try\n    {\nIL_0010:;\n        return;\n    }\n    catch\n    {\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_into_catch_body_from_outside_is_illegal() {
+        assert_illegal(
+            "    goto IL_0010;\n    try\n    {\n        return;\n    }\n    catch\n    {\nIL_0010:;\n        return;\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_into_finally_body_from_outside_is_illegal() {
+        assert_illegal(
+            "    goto IL_0010;\n    try\n    {\n        return;\n    }\n    finally\n    {\nIL_0010:;\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_out_of_a_finally_body_is_illegal_even_though_the_target_is_an_ancestor_scope() {
+        assert_illegal(
+            "    try\n    {\n        return;\n    }\n    finally\n    {\n        goto IL_0030;\n    }\nIL_0030:;\n    return;\n",
+            0x30,
+        );
+    }
+
+    #[test]
+    fn goto_out_of_try_or_catch_to_an_enclosing_label_is_legal() {
+        assert_legal(
+            "    try\n    {\n        goto IL_0030;\n    }\n    catch\n    {\n    }\nIL_0030:;\n    return;\n",
+        );
+    }
+
+    #[test]
+    fn goto_into_a_loop_body_from_outside_is_illegal() {
+        assert_illegal(
+            "    goto IL_0010;\n    while (n > 0)\n    {\nIL_0010:;\n        return;\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_between_sibling_if_branches_is_illegal() {
+        assert_illegal(
+            "    if (a)\n    {\n        goto IL_0010;\n    }\n    if (b)\n    {\nIL_0010:;\n        return;\n    }\n",
+            0x10,
+        );
+    }
+
+    #[test]
+    fn goto_out_of_an_if_branch_to_an_enclosing_label_is_legal() {
+        assert_legal("    if (a)\n    {\n        goto IL_0010;\n    }\nIL_0010:;\n    return;\n");
+    }
+
+    #[test]
+    fn goto_with_no_matching_label_anywhere_is_illegal() {
+        assert_illegal("    goto IL_0099;\n    return;\n", 0x99);
+    }
+
+    #[test]
+    fn a_body_with_no_goto_is_left_untouched() {
+        assert_legal("    return;\n");
     }
 }

@@ -696,7 +696,7 @@ fn int_const(ins: &Instruction, name: &str) -> i32 {
 fn decoded_slot(ins: &Instruction) -> Result<u32, EmulationError> {
     match decode_slot(ins) {
         Ok(access) => Ok(u32::from(access.index)),
-        Err(SlotDecodeError::NotSlotAccess | SlotDecodeError::UndecodableOperand) => {
+        Err(SlotDecodeError::NotSlotAccess | SlotDecodeError::UndecodableOperand(_)) => {
             Err(EmulationError::UndecodableSlot(ins.name.clone()))
         }
     }

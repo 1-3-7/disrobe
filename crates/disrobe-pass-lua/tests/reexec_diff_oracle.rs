@@ -28,16 +28,22 @@ fn first_existing(candidates: &[String]) -> Option<String> {
 }
 
 fn toolchain_51() -> Option<Toolchain> {
-    let luac: String = first_existing(&[
+    let mut luac_cands: Vec<String> = vec![
         "C:/Program Files (x86)/Lua/5.1/luac.exe".to_owned(),
         "C:/Program Files/Lua/5.1/luac.exe".to_owned(),
         "luac5.1".to_owned(),
-    ])?;
-    let lua: String = first_existing(&[
+    ];
+    let mut lua_cands: Vec<String> = vec![
         "C:/Program Files (x86)/Lua/5.1/lua.exe".to_owned(),
         "C:/Program Files/Lua/5.1/lua.exe".to_owned(),
         "lua5.1".to_owned(),
-    ])?;
+    ];
+    if let Ok(home) = std::env::var("LOCALAPPDATA") {
+        luac_cands.insert(0, format!("{home}/Programs/Lua51/luac5.1.exe"));
+        lua_cands.insert(0, format!("{home}/Programs/Lua51/lua5.1.exe"));
+    }
+    let luac: String = first_existing(&luac_cands)?;
+    let lua: String = first_existing(&lua_cands)?;
     Some(Toolchain { luac, lua })
 }
 
@@ -338,6 +344,166 @@ fn goto_edges_preserved_not_dropped_lua_5_4() {
     );
 }
 
+const LOOP_HEAD_PROGRAMS_54: &[(&str, &str)] = &[
+    (
+        "goto_head_runs_a_statement_before_the_test",
+        "local i = 0\nlocal acc = 0\n::top::\nacc = acc + 1\nif i < 5 then\n  i = i + 1\n  goto top\nend\nprint(i, acc)\n",
+    ),
+    (
+        "goto_head_before_a_compound_test",
+        "local i = 0\nlocal seen = 0\n::top::\nseen = seen + i\nif i < 4 and seen < 100 then\n  i = i + 1\n  goto top\nend\nprint(i, seen)\n",
+    ),
+    (
+        "goto_head_inside_a_nested_closure",
+        "local function tally()\n  local i = 0\n  local acc = 0\n  ::top::\n  acc = acc + 1\n  if i < 5 then\n    i = i + 1\n    goto top\n  end\n  return i, acc\nend\nprint(tally())\n",
+    ),
+    (
+        "goto_head_before_a_repeat_style_test",
+        "local n = 0\nlocal hits = 0\n::again::\nhits = hits + 1\nn = n + 2\nif n < 9 then goto again end\nprint(n, hits)\n",
+    ),
+];
+
+const LOOP_HEAD_PROGRAMS_51: &[(&str, &str)] = &[
+    (
+        "while_test_after_a_call_in_the_condition",
+        "local i = 0\nlocal calls = 0\nlocal function still_going()\n  calls = calls + 1\n  return i < 5\nend\nwhile still_going() do\n  i = i + 1\nend\nprint(i, calls)\n",
+    ),
+    (
+        "repeat_until_with_a_compound_test",
+        "local i = 0\nlocal s = 0\nrepeat\n  i = i + 1\n  s = s + i\nuntil i >= 4 or s > 100\nprint(i, s)\n",
+    ),
+    (
+        "while_over_a_table_lookup_condition",
+        "local t = {true, true, true}\nlocal i = 1\nlocal steps = 0\nwhile t[i] do\n  steps = steps + 1\n  i = i + 1\nend\nprint(i, steps)\n",
+    ),
+];
+
+fn require_toolchain(tag: &str) -> Toolchain {
+    let found: Option<Toolchain> = match tag {
+        "5.1" => toolchain_51(),
+        "5.4" => toolchain_54(),
+        _ => None,
+    };
+    let Some(tc): Option<Toolchain> = found else {
+        panic!(
+            "no lua {tag} toolchain (luac + lua) is usable here, so the structuring claim would be \
+             compared against nothing and this run would go green having graded nothing. Install \
+             lua{tag} and luac{tag} and put them on PATH."
+        )
+    };
+    tc
+}
+
+struct LaneClaims {
+    graded: usize,
+    claimed_structure: usize,
+    unclaimed_with_labelled_jump: usize,
+}
+
+fn assert_structure_claim_matches_reexecution(
+    compile_tag: &str,
+    programs: &[(&str, &str)],
+) -> LaneClaims {
+    let tc: Toolchain = require_toolchain(compile_tag);
+    let runtime: Toolchain = require_toolchain("5.4");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let mut lies: Vec<String> = Vec::new();
+    let mut diverged: Vec<String> = Vec::new();
+    let mut claims: LaneClaims = LaneClaims {
+        graded: 0,
+        claimed_structure: 0,
+        unclaimed_with_labelled_jump: 0,
+    };
+
+    for (name, source) in programs {
+        let src: PathBuf = dir.join(format!("{name}.lua"));
+        std::fs::write(&src, source).expect("stage the source");
+        let bc: PathBuf = dir.join(format!("{name}.luac"));
+        assert!(
+            compile(&tc.luac, &src, &bc),
+            "luac {compile_tag} must compile {name}, otherwise nothing downstream is measured"
+        );
+        let bytes: Vec<u8> = std::fs::read(&bc).expect("read the bytecode");
+        let decompiled: DecompiledChunk = decompile_auto(&bytes).expect("decompile the bytecode");
+        let body: String = strip_main_wrapper(&decompiled.source);
+        let expected: String = run_source(&runtime.lua, &dir, &format!("{name}.orig"), source)
+            .expect("the original program must run under the reference interpreter");
+        let actual: Option<String> = run_source(&runtime.lua, &dir, &format!("{name}.dec"), &body);
+        claims.graded += 1;
+        let equivalent: bool = actual.as_deref() == Some(expected.as_str());
+        let claims_structure: bool = !matches!(decompiled.fidelity, Fidelity::BestEffort);
+        if claims_structure {
+            claims.claimed_structure += 1;
+        } else if body.contains("goto lbl_") && body.contains("::lbl_") {
+            claims.unclaimed_with_labelled_jump += 1;
+        }
+        if claims_structure && !equivalent {
+            lies.push(format!(
+                "{name}: fidelity={:?} warnings={:?}\n--- expected ---\n{expected}\n--- actual \
+                 ---\n{}\n--- recovered ---\n{body}",
+                decompiled.fidelity,
+                decompiled.warnings,
+                actual
+                    .as_deref()
+                    .unwrap_or("<recovered source did not run>")
+            ));
+        }
+        if !equivalent {
+            diverged.push(format!(
+                "{name}: expected={expected:?} actual={:?}\n--- recovered ---\n{body}",
+                actual.as_deref()
+            ));
+        }
+    }
+
+    assert_eq!(
+        claims.graded,
+        programs.len(),
+        "every program in this lane has to reach the interpreter"
+    );
+    assert!(
+        lies.is_empty(),
+        "lua {compile_tag}: {} program(s) claimed a recovered structure while re-execution \
+         diverged. A dropped edge must lower the claim, never sit behind a clean one.\n{}",
+        lies.len(),
+        lies.join("\n----\n")
+    );
+    assert!(
+        diverged.is_empty(),
+        "lua {compile_tag}: {} program(s) re-executed differently from the original. An edge the \
+         structure cannot carry has to survive as a labelled jump, not be deleted.\n{}",
+        diverged.len(),
+        diverged.join("\n----\n")
+    );
+    claims
+}
+
+#[test]
+fn a_loop_head_before_the_test_keeps_its_edge_lua_5_4() {
+    let claims: LaneClaims =
+        assert_structure_claim_matches_reexecution("5.4", LOOP_HEAD_PROGRAMS_54);
+
+    assert!(
+        claims.claimed_structure < claims.graded,
+        "every program here runs a statement at a loop head that the recovered while cannot \
+         re-enter, so at least one must report less than a complete structure; a lane where all \
+         {} claim one is measuring nothing",
+        claims.graded
+    );
+    assert_eq!(
+        claims.unclaimed_with_labelled_jump,
+        claims.graded - claims.claimed_structure,
+        "a program that reports an incomplete structure must show the edge it could not place, as \
+         a label and a jump to it; without them the edge was deleted rather than reported"
+    );
+}
+
+#[test]
+fn a_loop_head_before_the_test_keeps_its_edge_lua_5_1() {
+    assert_structure_claim_matches_reexecution("5.1", LOOP_HEAD_PROGRAMS_51);
+}
+
 const CORPUS: &[(&str, &str)] = &[
     (
         "arith",
@@ -457,3 +623,174 @@ const CORPUS: &[(&str, &str)] = &[
         "local function sign(x)\n  if x > 0 then return 1\n  elseif x < 0 then return -1 end\n  return 0\nend\nprint(sign(5), sign(-5), sign(0))\n",
     ),
 ];
+
+const PROMETHEUS_VMIFY_CLEAN: &str = include_str!("../../../corpus/lua/prometheus/vmify/clean.lua");
+const PROMETHEUS_VMIFY_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify/obfuscated.lua");
+
+#[test]
+fn prometheus_vmify_recovers_and_reexecutes_identically_to_the_original() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let opts: DeobfOptions = DeobfOptions::default();
+    let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_OBFUSCATED.as_bytes(), &opts)
+        .expect("prometheus peel must run");
+
+    assert!(
+        peeled
+            .passes_run
+            .iter()
+            .any(|p: &String| p == "prometheus-vmify-container-devirt"),
+        "the Vmify container-devirt pass must have actually run; passes_run={:?}",
+        peeled.passes_run
+    );
+    assert!(
+        peeled
+            .residual_markers
+            .iter()
+            .any(|m: &String| m.contains("handlers")),
+        "the devirt pass must report real handler coverage, not a vacuous pass; residual_markers={:?}",
+        peeled.residual_markers
+    );
+
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let orig_path: PathBuf = dir.join("prometheus_vmify_orig.lua");
+    let recovered_path: PathBuf = dir.join("prometheus_vmify_recovered.lua");
+    std::fs::write(&orig_path, PROMETHEUS_VMIFY_CLEAN).expect("write original fixture");
+    std::fs::write(&recovered_path, &recovered_src).expect("write recovered source");
+
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_vmify_orig_run",
+        PROMETHEUS_VMIFY_CLEAN,
+    )
+    .expect("the original Vmify-obfuscated sample's clean source must run under real Lua 5.1");
+    let actual: String = run_source(&tc.lua, &dir, "prometheus_vmify_recovered_run", &recovered_src).expect(
+        "the recovered source must run under real Lua 5.1; a parse/runtime error means the devirtualizer emitted broken Lua",
+    );
+
+    assert_eq!(
+        expected, actual,
+        "recovered Vmify source must re-execute identically to the real original under real Lua 5.1\n--- recovered ---\n{recovered_src}"
+    );
+}
+
+const PROMETHEUS_VMIFY_SIMPLE_CLEAN: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_simple/clean.lua");
+const PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_simple/obfuscated.lua");
+
+#[test]
+fn prometheus_vmify_loop_free_sample_recovers_fully_structured() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let opts: DeobfOptions = DeobfOptions::default();
+    let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED.as_bytes(), &opts)
+        .expect("prometheus peel must run");
+
+    assert!(
+        peeled.fully_recovered,
+        "a loop-free Vmify sample with only if/elseif/else control flow must reach full clean structuring; residual_markers={:?}",
+        peeled.residual_markers
+    );
+
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_simple_orig",
+        PROMETHEUS_VMIFY_SIMPLE_CLEAN,
+    )
+    .expect("original must run");
+    let actual: String = run_source(&tc.lua, &dir, "vmify_simple_recovered", &recovered_src)
+        .expect("recovered source must run");
+    assert_eq!(
+        expected, actual,
+        "fully structured recovered source must re-execute identically to the original\n--- recovered ---\n{recovered_src}"
+    );
+}
+
+const PROMETHEUS_VMIFY_NESTED_CLEAN: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_nested/clean.lua");
+const PROMETHEUS_VMIFY_NESTED_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_nested/obfuscated.lua");
+
+#[test]
+fn prometheus_vmify_nested_double_layer_fixtures_already_agree() {
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_fixture_clean",
+        PROMETHEUS_VMIFY_NESTED_CLEAN,
+    )
+    .expect("clean fixture must run under real Lua 5.1");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_fixture_obfuscated",
+        PROMETHEUS_VMIFY_NESTED_OBFUSCATED,
+    )
+    .expect("real Prometheus Vmify-applied-twice output must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "the committed nested obfuscated fixture must be a faithful Vmify-applied-twice transform of the committed clean fixture"
+    );
+}
+
+#[test]
+fn prometheus_vmify_nested_double_layer_sample_never_claims_a_false_success() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let opts: DeobfOptions = DeobfOptions::default();
+    let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_NESTED_OBFUSCATED.as_bytes(), &opts)
+        .expect("prometheus peel must run on a real Vmify-applied-twice sample without panicking");
+
+    assert!(
+        !peeled.fully_recovered,
+        "a Vmify-applied-twice sample shares one dispatch tree between both layers, a shape this \
+         pass refuses rather than mis-lifts; it must never report fully_recovered on this input. \
+         residual_markers={:?}",
+        peeled.residual_markers
+    );
+    assert!(
+        peeled.residual_markers.iter().any(|m: &String| m
+            .contains("refused rather than emitted partly wrong")
+            && m.contains("never reached from any discovered function entry")),
+        "the refusal reason must reach a consumer-visible surface, naming the real cause rather \
+         than silently discarding it; residual_markers={:?}",
+        peeled.residual_markers
+    );
+}
+
+#[test]
+fn prometheus_vmify_obfuscated_and_clean_fixtures_already_agree() {
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(&tc.lua, &dir, "vmify_fixture_clean", PROMETHEUS_VMIFY_CLEAN)
+        .expect("clean fixture must run under real Lua 5.1");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_fixture_obfuscated",
+        PROMETHEUS_VMIFY_OBFUSCATED,
+    )
+    .expect("real Prometheus Vmify output must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "the committed obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
+    );
+}

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use crate::cil::{Instruction, MethodBody, OperandValue};
+use crate::cil::{Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 use crate::names::NameTable;
 use crate::structurize::{StructuredMethod, TargetLang, TokenNamer, csharp_string_literal};
 
@@ -180,34 +180,11 @@ fn load_source(ins: &Instruction) -> Option<Source> {
 }
 
 fn ldarg_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldarg.0" => Some(0),
-        "ldarg.1" => Some(1),
-        "ldarg.2" => Some(2),
-        "ldarg.3" => Some(3),
-        "ldarg" | "ldarg.s" => operand_index(ins),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadArgument).map(u32::from)
 }
 
 fn ldloc_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldloc.0" => Some(0),
-        "ldloc.1" => Some(1),
-        "ldloc.2" => Some(2),
-        "ldloc.3" => Some(3),
-        "ldloc" | "ldloc.s" => operand_index(ins),
-        _ => None,
-    }
-}
-
-fn operand_index(ins: &Instruction) -> Option<u32> {
-    match ins.operand {
-        OperandValue::U8(v) => Some(u32::from(v)),
-        OperandValue::U16(v) => Some(u32::from(v)),
-        OperandValue::I32(v) => u32::try_from(v).ok(),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadLocal).map(u32::from)
 }
 
 fn int_const(ins: &Instruction, name: &str) -> i64 {
@@ -240,14 +217,29 @@ struct StructCopyMatch {
     body_indent: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordKind {
+    Struct,
+    Class,
+}
+
+const CLONE_CALL_SUFFIX: &str = ".<Clone>$()";
+
+fn strip_clone_call_suffix(source: &str) -> Option<&str> {
+    source.strip_suffix(CLONE_CALL_SUFFIX)
+}
+
 #[must_use]
-pub(crate) fn reconstruct_struct_with_expressions(
+pub(crate) fn reconstruct_record_with_expressions(
     methods: &mut [StructuredMethod],
     record_struct_types: &BTreeSet<String>,
+    record_class_types: &BTreeSet<String>,
 ) -> u32 {
     let mut rewritten: u32 = 0;
     for m in methods.iter_mut() {
-        if let Some(updated) = rewrite_struct_copy_body(&m.body, record_struct_types) {
+        if let Some(updated) =
+            rewrite_struct_copy_body(&m.body, record_struct_types, record_class_types)
+        {
             m.body = updated;
             rewritten = rewritten.saturating_add(1);
         }
@@ -255,9 +247,13 @@ pub(crate) fn reconstruct_struct_with_expressions(
     rewritten
 }
 
-fn rewrite_struct_copy_body(body: &str, record_struct_types: &BTreeSet<String>) -> Option<String> {
+fn rewrite_struct_copy_body(
+    body: &str,
+    record_struct_types: &BTreeSet<String>,
+    record_class_types: &BTreeSet<String>,
+) -> Option<String> {
     let lines: Vec<&str> = body.lines().collect();
-    let m: StructCopyMatch = detect_struct_copy(&lines, record_struct_types)?;
+    let m: StructCopyMatch = detect_struct_copy(&lines, record_struct_types, record_class_types)?;
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
         if i == m.decl_index {
@@ -285,12 +281,15 @@ fn rewrite_struct_copy_body(body: &str, record_struct_types: &BTreeSet<String>) 
 fn detect_struct_copy(
     lines: &[&str],
     record_struct_types: &BTreeSet<String>,
+    record_class_types: &BTreeSet<String>,
 ) -> Option<StructCopyMatch> {
     for (decl_index, line) in lines.iter().enumerate() {
-        let Some((_ty, local_name)) = struct_local_decl(line, record_struct_types) else {
+        let Some((_ty, local_name, kind)) =
+            record_local_decl(line, record_struct_types, record_class_types)
+        else {
             continue;
         };
-        if let Some(m) = try_match_struct_copy(lines, decl_index, &local_name) {
+        if let Some(m) = try_match_struct_copy(lines, decl_index, &local_name, kind) {
             return Some(m);
         }
     }
@@ -301,16 +300,29 @@ fn try_match_struct_copy(
     lines: &[&str],
     decl_index: usize,
     local_name: &str,
+    kind: RecordKind,
 ) -> Option<StructCopyMatch> {
     let body_indent: usize = indent_of(lines[decl_index]);
     let assign_index: usize = next_nonblank(lines, decl_index + 1)?;
     if indent_of(lines[assign_index]) != body_indent {
         return None;
     }
-    let source: String = assignment_value(lines[assign_index], local_name)?;
-    if !is_simple_source_expr(&source) || contains_word(&source, local_name) {
-        return None;
-    }
+    let raw_source: String = assignment_value(lines[assign_index], local_name)?;
+    let source: String = match kind {
+        RecordKind::Struct => {
+            if !is_simple_source_expr(&raw_source) || contains_word(&raw_source, local_name) {
+                return None;
+            }
+            raw_source
+        }
+        RecordKind::Class => {
+            let base: &str = strip_clone_call_suffix(&raw_source)?;
+            if !is_simple_source_expr(base) || contains_word(base, local_name) {
+                return None;
+            }
+            base.to_owned()
+        }
+    };
 
     let mut cursor: usize = assign_index + 1;
     let mut assignments: Vec<Assignment> = Vec::new();
@@ -346,10 +358,11 @@ fn try_match_struct_copy(
     }
 }
 
-fn struct_local_decl(
+fn record_local_decl(
     line: &str,
     record_struct_types: &BTreeSet<String>,
-) -> Option<(String, String)> {
+    record_class_types: &BTreeSet<String>,
+) -> Option<(String, String, RecordKind)> {
     let t: &str = line.trim();
     let inner: &str = t.strip_suffix(';')?;
     if inner.contains('=') || inner.contains('(') || inner.contains('{') {
@@ -357,9 +370,13 @@ fn struct_local_decl(
     }
     let (ty, name): (&str, &str) = inner.rsplit_once(' ')?;
     let ty: &str = ty.trim();
-    if !record_struct_types.contains(ty) {
+    let kind: RecordKind = if record_struct_types.contains(ty) {
+        RecordKind::Struct
+    } else if record_class_types.contains(ty) {
+        RecordKind::Class
+    } else {
         return None;
-    }
+    };
     let valid_name: bool = !name.is_empty()
         && name
             .bytes()
@@ -368,7 +385,7 @@ fn struct_local_decl(
         && name
             .bytes()
             .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_');
-    valid_name.then(|| (ty.to_owned(), name.to_owned()))
+    valid_name.then(|| (ty.to_owned(), name.to_owned(), kind))
 }
 
 fn struct_property_assignment(line: &str, local_name: &str) -> Option<(String, String)> {
@@ -603,12 +620,21 @@ mod tests {
         BTreeSet::from(["EdgeCases.Coordinate".to_owned()])
     }
 
+    fn no_types() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    fn user_class_types() -> BTreeSet<String> {
+        BTreeSet::from(["EdgeCases.User".to_owned()])
+    }
+
     #[test]
     fn rewrites_struct_local_copy_to_with_expression() {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Coordinate local0;\n\n    local0 = c;\n    local0.Latitude = c.Latitude + dx;\n    local0.Longitude = c.Longitude + dy;\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(rewritten, 1);
         assert_eq!(
             methods[0].body,
@@ -617,11 +643,40 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_record_class_clone_call_to_with_expression() {
+        let mut methods: Vec<StructuredMethod> = vec![structured(
+            "{\n    EdgeCases.User local0;\n\n    local0 = u.<Clone>$();\n    local0.Roles = new System.String[3] { \"admin\", \"moderator\", \"viewer\" };\n    local0.ModifiedAt = new Nullable<System.DateTime>(UtcNow);\n    return local0;\n}\n",
+        )];
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &no_types(), &user_class_types());
+        assert_eq!(rewritten, 1);
+        assert_eq!(
+            methods[0].body,
+            "{\n    return u with { Roles = new System.String[3] { \"admin\", \"moderator\", \"viewer\" }, ModifiedAt = new Nullable<System.DateTime>(UtcNow) };\n}\n"
+        );
+    }
+
+    #[test]
+    fn ignores_a_record_class_local_copy_with_no_clone_call() {
+        let mut methods: Vec<StructuredMethod> = vec![structured(
+            "{\n    EdgeCases.User local0;\n\n    local0 = u;\n    local0.Roles = r;\n    return local0;\n}\n",
+        )];
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &no_types(), &user_class_types());
+        assert_eq!(
+            rewritten, 0,
+            "a bare reference assignment aliases the original object rather than cloning it, \
+             so it must never be rewritten as a with expression"
+        );
+    }
+
+    #[test]
     fn ignores_local_of_an_unknown_type() {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Rgb local0;\n\n    local0 = c;\n    local0.Latitude = c.Latitude + dx;\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(rewritten, 0);
     }
 
@@ -630,7 +685,8 @@ mod tests {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Coordinate local0;\n\n    local0 = Make();\n    local0.Latitude = dx;\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(rewritten, 0);
     }
 
@@ -639,7 +695,8 @@ mod tests {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Coordinate local0;\n\n    local0 = c;\n    local0.Latitude = local0.Longitude + dx;\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(
             rewritten, 0,
             "a with-expression evaluates every initializer against the original value, \
@@ -652,7 +709,8 @@ mod tests {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Coordinate local0;\n\n    local0 = c;\n    local0.Latitude = dx;\n    if (local0.Latitude > 0)\n    {\n        return local0;\n    }\n\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(rewritten, 0);
     }
 
@@ -661,7 +719,8 @@ mod tests {
         let mut methods: Vec<StructuredMethod> = vec![structured(
             "{\n    EdgeCases.Coordinate local0;\n\n    local0 = c;\n    return local0;\n}\n",
         )];
-        let rewritten: u32 = reconstruct_struct_with_expressions(&mut methods, &coordinate_types());
+        let rewritten: u32 =
+            reconstruct_record_with_expressions(&mut methods, &coordinate_types(), &no_types());
         assert_eq!(rewritten, 0);
     }
 }

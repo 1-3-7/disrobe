@@ -11,8 +11,10 @@ use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 use super::install::{self, InstallSpec, Platform};
 use super::output::{OutputFormat, emit};
 use catalog::tool_catalog;
+use exceptions::{SkipReason, skip_reason_for};
 
 mod catalog;
+mod exceptions;
 
 const CAPTURE_CAP_BYTES: usize = 1024 * 1024;
 
@@ -52,7 +54,51 @@ pub(crate) struct DoctorReport {
     pub(crate) disk: DiskStatus,
     pub(crate) network: NetworkStatus,
     pub(crate) install_attempts: Vec<install::InstallReport>,
+    pub(crate) skipped: Vec<SkipRecord>,
     pub(crate) exit_code: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct SkipRecord {
+    pub(crate) tool: String,
+    pub(crate) reason: SkipReason,
+    pub(crate) ships_with: Option<&'static str>,
+}
+
+pub(crate) struct AttemptTarget<'a> {
+    pub(crate) canonical: &'a str,
+    pub(crate) spec: &'a InstallSpec,
+}
+
+pub(crate) struct ClassifiedMissing<'a> {
+    pub(crate) attempts: Vec<AttemptTarget<'a>>,
+    pub(crate) skips: Vec<SkipRecord>,
+}
+
+pub(crate) fn classify_missing_tools<'a>(
+    tools: &'a [ToolStatus],
+    install_map: &'a BTreeMap<&'static str, InstallSpec>,
+) -> ClassifiedMissing<'a> {
+    let mut attempts: Vec<AttemptTarget<'a>> = Vec::new();
+    let mut skips: Vec<SkipRecord> = Vec::new();
+    for status in tools.iter().filter(|t: &&ToolStatus| !t.available) {
+        let canonical: &'a str = install::canonicalize_alias(&status.name);
+        if let Some(spec) = install_map.get(canonical) {
+            attempts.push(AttemptTarget { canonical, spec });
+            continue;
+        }
+        let reason: SkipReason = skip_reason_for(canonical);
+        let ships_with: Option<&'static str> = exceptions::DOCTOR_ONLY_EXCEPTIONS
+            .iter()
+            .find(|entry: &&exceptions::DoctorOnlyException| entry.key == canonical)
+            .and_then(|entry: &exceptions::DoctorOnlyException| entry.ships_with);
+        skips.push(SkipRecord {
+            tool: canonical.to_owned(),
+            reason,
+            ships_with,
+        });
+    }
+    ClassifiedMissing { attempts, skips }
 }
 
 #[derive(Debug, Serialize)]
@@ -121,24 +167,23 @@ pub(crate) fn run_with_options(
         note: "doctor does not hit the network; use `disrobe self-update --check-only` to probe",
     };
 
-    let mut install_attempts: Vec<install::InstallReport> = Vec::new();
-    if auto_install {
-        let platform: Platform = Platform::detect();
-        let install_map: BTreeMap<&'static str, InstallSpec> = install::install_action_map();
-        for t in &tools {
-            if t.available {
-                continue;
+    let (install_attempts, skipped): (Vec<install::InstallReport>, Vec<SkipRecord>) =
+        if auto_install {
+            let platform: Platform = Platform::detect();
+            let install_map: BTreeMap<&'static str, InstallSpec> = install::install_action_map();
+            let classified: ClassifiedMissing<'_> = classify_missing_tools(&tools, &install_map);
+            let mut attempts: Vec<install::InstallReport> =
+                Vec::with_capacity(classified.attempts.len());
+            for target in classified.attempts {
+                let r: install::InstallReport =
+                    install::perform_install(target.canonical, target.spec, platform, false, yes);
+                let _: Result<(), std::io::Error> = install::log_install_attempt(&r);
+                attempts.push(r);
             }
-            let canonical: &str = install::canonicalize_alias(&t.name);
-            let Some(spec): Option<&InstallSpec> = install_map.get(canonical) else {
-                continue;
-            };
-            let r: install::InstallReport =
-                install::perform_install(canonical, spec, platform, false, yes);
-            let _: Result<(), std::io::Error> = install::log_install_attempt(&r);
-            install_attempts.push(r);
-        }
-    }
+            (attempts, classified.skips)
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
     let exit_code: i32 = i32::from(missing_required);
 
@@ -150,6 +195,7 @@ pub(crate) fn run_with_options(
         disk: disk_status,
         network: net_status,
         install_attempts,
+        skipped,
         exit_code,
     };
 
@@ -210,11 +256,25 @@ fn render_text(report: &DoctorReport) {
             println!("    {:<18} -> {} ({} ms)", a.tool, a.status, a.duration_ms);
         }
     }
+    if !report.skipped.is_empty() {
+        println!("  auto-install skips:");
+        for s in &report.skipped {
+            println!("{}", format_skip_line(s));
+        }
+    }
     println!(
         "  exit code: {} ({})",
         report.exit_code,
         exit_code_label(report.exit_code)
     );
+}
+
+fn format_skip_line(record: &SkipRecord) -> String {
+    let detail: String = record.ships_with.map_or_else(
+        || record.reason.as_str().to_owned(),
+        |parent: &str| format!("{}: try `disrobe install {parent}`", record.reason.as_str()),
+    );
+    format!("    {:<18} -> skipped ({detail})", record.tool)
 }
 
 const fn exit_code_label(c: i32) -> &'static str {
@@ -457,5 +517,42 @@ mod tests {
         let s: ToolStatus = probe_entry(&entry);
         assert!(!s.available);
         assert!(s.install_hint.is_some());
+    }
+
+    #[test]
+    fn a_skip_line_names_the_tool_and_the_plain_reason() {
+        let record: SkipRecord = SkipRecord {
+            tool: "ida".to_owned(),
+            reason: SkipReason::CommercialOrLicenseGated,
+            ships_with: None,
+        };
+        let line: String = format_skip_line(&record);
+        assert!(line.contains("ida"), "skip line must name the tool: {line}");
+        assert!(
+            line.contains("commercial or license gated"),
+            "skip line must state the reason: {line}"
+        );
+        assert!(
+            line.contains("skipped"),
+            "skip line must read as a skip, not an attempt: {line}"
+        );
+    }
+
+    #[test]
+    fn a_skip_line_with_a_parent_tool_points_at_the_real_install_command() {
+        let record: SkipRecord = SkipRecord {
+            tool: "javac".to_owned(),
+            reason: SkipReason::ShipsWithAnotherTool,
+            ships_with: Some("java"),
+        };
+        let line: String = format_skip_line(&record);
+        assert!(
+            line.contains("javac"),
+            "skip line must name the tool: {line}"
+        );
+        assert!(
+            line.contains("disrobe install java"),
+            "a ships-with-another-tool skip must point at the real remedy: {line}"
+        );
     }
 }

@@ -149,11 +149,18 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
     let mut methods: Vec<StructuredMethod> = Vec::new();
     let mut bodyless: u32 = 0;
     let mut failed: u32 = 0;
+    let mut move_next_tokens: BTreeSet<u32> = BTreeSet::new();
     for ty in &model.types {
         let state_machine: Option<crate::state_machine::StateMachine> =
             crate::state_machine::classify(ty);
         let is_record: bool = crate::records::is_record_type(ty);
         for m in &ty.methods {
+            if lang == TargetLang::CSharp
+                && state_machine.is_some()
+                && crate::state_machine::is_move_next(m)
+            {
+                move_next_tokens.insert(m.token);
+            }
             decompile_one(
                 &pe,
                 image,
@@ -185,11 +192,28 @@ pub fn decompile_assembly_in(image: &[u8], lang: TargetLang) -> Result<Decompile
             .filter(|t: &&TypeModel| crate::records::is_record_struct(t))
             .map(|t: &TypeModel| t.full_name.clone())
             .collect();
-        let _ = crate::with_reverse::reconstruct_struct_with_expressions(
+        let record_class_types: BTreeSet<String> = model
+            .types
+            .iter()
+            .filter(|t: &&TypeModel| {
+                crate::records::is_record_type(t) && !crate::records::is_record_struct(t)
+            })
+            .map(|t: &TypeModel| t.full_name.clone())
+            .collect();
+        let _ = crate::with_reverse::reconstruct_record_with_expressions(
             &mut methods,
             &record_struct_types,
+            &record_class_types,
         );
         let _ = crate::iterator_reverse::refuse_unlowered_compiler_constructs(&mut methods);
+        for m in &mut methods {
+            if let Some(abstained) = crate::structure_emit::abstain_illegal_goto(&m.body) {
+                m.body = abstained;
+            }
+            if move_next_tokens.contains(&m.token) {
+                m.body = crate::state_machine_reverse::sanitize_generated_residue(&m.body);
+            }
+        }
     }
     let decompiled: u32 = u32::try_from(methods.len()).unwrap_or(u32::MAX);
     Ok(DecompiledAssembly {
@@ -386,10 +410,6 @@ fn decompile_one(
                 {
                     structured.body = rewrapped;
                 }
-            }
-            if is_sm_move_next && lang == TargetLang::CSharp {
-                structured.body =
-                    crate::state_machine_reverse::sanitize_generated_residue(&structured.body);
             }
             let type_param_names: Vec<String> =
                 resolver.type_generic_param_names(ty.token & 0x00FF_FFFF);

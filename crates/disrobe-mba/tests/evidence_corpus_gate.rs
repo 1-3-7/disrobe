@@ -4,20 +4,31 @@
 #[allow(clippy::redundant_pub_crate)]
 mod evidence_corpus;
 
+#[path = "support/external_solver.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod external_solver;
+
+#[path = "support/solver_requirement.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod solver_requirement;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use disrobe_mba::{BinOp, Expr, Simplification, Width, simplify};
+use disrobe_mba::{BinOp, Expr, Simplification, Width, equivalence_query, simplify};
 use evidence_corpus::{
     CASE_KEYS, Case, Truth, corpus_dir, load_cases, load_truths, parse_prefix, read_lines,
     width_from_bits,
 };
+use external_solver::{Answer, Solver, detect, run_bounded};
+use solver_requirement::{enforce_solver_requirement, solver_is_required};
 
 const PER_ENTRY_BUDGET: Duration = Duration::from_secs(2);
 const GRADED_FLOOR: usize = 180;
+const SOLVER_SECONDS: u32 = 5;
 
 #[derive(Debug, Clone)]
 struct Recovered {
@@ -231,6 +242,60 @@ fn grade(label: &str, mutate: fn(&Recovered) -> Recovered) -> Report {
         report.proven
     );
     report
+}
+
+#[test]
+fn an_external_solver_confirms_every_recovery_equals_its_held_out_original() {
+    let solver: Option<Solver> = detect();
+    enforce_solver_requirement(solver.as_ref(), solver_is_required());
+    let Some(active) = solver else {
+        eprintln!(
+            "no external bitvector solver on PATH, so the solver leg did not run; set DISROBE_REQUIRE_SOLVER to make its absence fatal"
+        );
+        return;
+    };
+    eprintln!(
+        "solver leg grading with {} ({})",
+        active.program, active.version
+    );
+
+    let control: String = equivalence_query(
+        &Expr::add(Expr::var(0), Expr::var(1)),
+        &Expr::sub(Expr::var(0), Expr::var(1)),
+        Width::W8,
+    );
+    assert_eq!(
+        run_bounded(&active, &control, Some(SOLVER_SECONDS)),
+        Answer::Sat,
+        "the solver must refute a pair that is not equivalent, otherwise this leg proves nothing"
+    );
+
+    let mut proven: usize = 0;
+    let mut inconclusive: usize = 0;
+    let mut refuted: Vec<String> = Vec::new();
+    for entry in landings() {
+        let Attempt::Produced(produced) = &entry.attempt else {
+            continue;
+        };
+        let query: String = equivalence_query(&entry.original, &produced.expression, entry.width);
+        match run_bounded(&active, &query, Some(SOLVER_SECONDS)) {
+            Answer::Unsat => proven += 1,
+            Answer::Unknown => inconclusive += 1,
+            Answer::Sat => refuted.push(entry.id.clone()),
+        }
+    }
+    eprintln!(
+        "solver leg: {proven} recoveries proven equal to their held-out original, {inconclusive} inconclusive inside {SOLVER_SECONDS}s, {} refuted",
+        refuted.len()
+    );
+    assert!(
+        refuted.is_empty(),
+        "the solver found a recovery that differs from its held-out original: {refuted:?}"
+    );
+    assert!(
+        proven > 0,
+        "the solver proved nothing; the leg ran but graded no entry"
+    );
 }
 
 #[test]

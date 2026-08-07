@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::cil::{
+    FlowControl, Instruction, MethodBody, OperandValue, SlotAccess, SlotDecodeError, SlotOp,
+    decode_slot,
+};
 use crate::debug::dbg_kv;
 use crate::model::{IsInstTargetKind, Resolver};
 use crate::names::NameTable;
@@ -44,6 +47,8 @@ pub struct CallInfo {
     pub returns_value: bool,
 
     pub has_this: bool,
+
+    pub explicit_this: bool,
 
     pub byref_param_mask: u64,
 }
@@ -174,6 +179,7 @@ impl TokenNamer for Resolver {
                 arg_count: params + usize::from(has_this),
                 returns_value: !matches!(sig.return_type, crate::signature::TypeSigOrVoid::Void),
                 has_this,
+                explicit_this: sig.explicit_this,
                 byref_param_mask,
             }
         })
@@ -380,17 +386,41 @@ pub(crate) enum Expr {
     MethodHandle(u32),
     OpaqueHandle(u32),
     TypeOf(String),
-    StackUnderflow {
-        block_offset: u32,
-        opcode: String,
-    },
+    Abstain(AbstentionKind),
     Raw(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbstentionKind {
+    StackUnderflow,
+    UndecodableSlot,
+}
+
+impl AbstentionKind {
+    const fn marker(self) -> &'static str {
+        match self {
+            Self::StackUnderflow => STACK_UNDERFLOW,
+            Self::UndecodableSlot => UNDECODABLE_SLOT,
+        }
+    }
+
+    fn reason(self, block_offset: u32, opcode: &str) -> String {
+        match self {
+            Self::StackUnderflow => {
+                format!("block IL_{block_offset:04x} reached {opcode} with an empty operand stack")
+            }
+            Self::UndecodableSlot => format!(
+                "block IL_{block_offset:04x} reached {opcode} with an operand no slot index can be read from"
+            ),
+        }
+    }
 }
 
 const MAX_EXPR_DEPTH: usize = 256;
 const ATOM_EXPRESSION_DEPTH: usize = 1;
 const UNRECOVERED_EXPRESSION: &str = "__unrecovered_expression";
 const STACK_UNDERFLOW: &str = "__stack_underflow";
+const UNDECODABLE_SLOT: &str = "__undecodable_slot";
 const UNRECONSTRUCTED_RUNTIME_HANDLE: &str = "__unreconstructed_runtime_handle";
 const UNRESOLVED_ISINST_TARGET: &str = "__unresolved_isinst_target";
 const UNRESOLVED_UNBOX_ANY_TARGET: &str = "__unresolved_unbox_any_target";
@@ -474,7 +504,7 @@ impl Expr {
             | Self::MethodHandle(_)
             | Self::OpaqueHandle(_)
             | Self::TypeOf(_)
-            | Self::StackUnderflow { .. }
+            | Self::Abstain(_)
             | Self::Raw(_) => {}
         }
     }
@@ -497,20 +527,8 @@ impl Expr {
                 | Self::LoadLen(_)
                 | Self::MethodPtr { .. }
                 | Self::TypeOf(_)
-                | Self::StackUnderflow { .. }
+                | Self::Abstain(_)
         )
-    }
-
-    fn abstention_reason(&self) -> Option<String> {
-        match self {
-            Self::StackUnderflow {
-                block_offset,
-                opcode,
-            } => Some(format!(
-                "block IL_{block_offset:04x} reached {opcode} with an empty operand stack"
-            )),
-            _ => None,
-        }
     }
 
     fn is_known_boolean(&self, names: &NameTable) -> bool {
@@ -558,7 +576,7 @@ impl Expr {
             | Self::MethodHandle(_)
             | Self::OpaqueHandle(_)
             | Self::TypeOf(_)
-            | Self::StackUnderflow { .. }
+            | Self::Abstain(_)
             | Self::Raw(_) => false,
         }
     }
@@ -638,7 +656,7 @@ fn expression_depth(expression: &Expr) -> usize {
             | Expr::MethodHandle(_)
             | Expr::OpaqueHandle(_)
             | Expr::TypeOf(_)
-            | Expr::StackUnderflow { .. }
+            | Expr::Abstain(_)
             | Expr::Raw(_) => {}
         }
     }
@@ -710,7 +728,7 @@ fn render_expr(initial: RenderAction<'_>, lang: TargetLang, names: &NameTable) -
                 Expr::Const(text) | Expr::Raw(text) => {
                     output.push_str(text);
                 }
-                Expr::StackUnderflow { .. } => output.push_str(STACK_UNDERFLOW),
+                Expr::Abstain(kind) => output.push_str(kind.marker()),
                 Expr::Field { text, .. } => output.push_str(text),
                 Expr::TypeHandle(_) => {
                     output.push_str(&runtime_handle_refusal(
@@ -1544,17 +1562,15 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         }
     }
 
+    fn abstain(&mut self, kind: AbstentionKind) -> Expr {
+        let (block_offset, opcode): &(u32, String) = &self.at;
+        self.abstentions.push(kind.reason(*block_offset, opcode));
+        Expr::Abstain(kind)
+    }
+
     fn abstain_on_underflow(&mut self) -> Expr {
         self.entry_deficit = self.entry_deficit.saturating_add(1);
-        let (block_offset, opcode): (u32, String) = self.at.clone();
-        let abstention: Expr = Expr::StackUnderflow {
-            block_offset,
-            opcode,
-        };
-        if let Some(reason) = abstention.abstention_reason() {
-            self.abstentions.push(reason);
-        }
-        abstention
+        self.abstain(AbstentionKind::StackUnderflow)
     }
 
     fn clear_stack(&mut self) {
@@ -1846,8 +1862,7 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         0
     }
 
-    fn store_loc(&mut self, ins: &Instruction, name: &str) {
-        let n: u32 = local_index(ins, name);
+    fn store_loc(&mut self, n: u32) {
         self.locals_used.insert(n);
         let val: Expr = self.pop();
         let val: Expr = coerce_constant(val, self.names.local_type(n), self.lang);
@@ -2160,8 +2175,70 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
         })
     }
 
+    fn lift_slot_access(&mut self, access: SlotAccess) {
+        let index: u32 = u32::from(access.index);
+        match access.op {
+            SlotOp::LoadLocal => {
+                self.locals_used.insert(index);
+                self.push(Expr::Local(index));
+            }
+            SlotOp::LocalAddress => {
+                self.locals_used.insert(index);
+                self.push(Expr::AddressOf(Box::new(Expr::Local(index))));
+            }
+            SlotOp::StoreLocal => self.store_loc(index),
+            SlotOp::LoadArgument => {
+                if index == 0 && self.namer.outer_has_this() {
+                    self.push(Expr::This);
+                } else {
+                    self.push(Expr::Arg(self.arg_slot(index)));
+                }
+            }
+            SlotOp::ArgumentAddress => {
+                if index == 0 && self.namer.outer_has_this() {
+                    self.push(Expr::AddressOf(Box::new(Expr::This)));
+                } else {
+                    self.push(Expr::AddressOf(Box::new(Expr::Arg(self.arg_slot(index)))));
+                }
+            }
+            SlotOp::StoreArgument => {
+                let slot: u32 = self.arg_slot(index);
+                let value: Expr = self.pop();
+                let value: Expr = coerce_constant(value, self.names.arg_type(slot), self.lang);
+                self.stmts.push(Stmt::Assign {
+                    target: self.names.arg_name(slot),
+                    value: value.render(self.lang, self.names),
+                });
+            }
+        }
+    }
+
+    fn abstain_on_undecodable_slot(&mut self, op: SlotOp) {
+        let abstention: Expr = self.abstain(AbstentionKind::UndecodableSlot);
+        match op {
+            SlotOp::StoreLocal | SlotOp::StoreArgument => {
+                let value: Expr = self.pop();
+                self.stmts.push(Stmt::Assign {
+                    target: abstention.render(self.lang, self.names),
+                    value: value.render(self.lang, self.names),
+                });
+            }
+            SlotOp::LoadLocal
+            | SlotOp::LocalAddress
+            | SlotOp::LoadArgument
+            | SlotOp::ArgumentAddress => self.push(abstention),
+        }
+    }
+
     #[allow(clippy::too_many_lines, clippy::match_same_arms)]
     fn lift_one(&mut self, ins: &Instruction) {
+        match decode_slot(ins) {
+            Ok(access) => return self.lift_slot_access(access),
+            Err(SlotDecodeError::UndecodableOperand(op)) => {
+                return self.abstain_on_undecodable_slot(op);
+            }
+            Err(SlotDecodeError::NotSlotAccess) => {}
+        }
         match ins.name.as_str() {
             "nop" | "break" => {}
             "ldnull" => self.push(Expr::Null),
@@ -2525,43 +2602,6 @@ impl<'a, N: TokenNamer> Lifter<'a, N> {
                 }
             }
             "ldc.r4" | "ldc.r8" => self.push(Expr::Const(Self::float_const(ins))),
-            n if n.starts_with("ldarga") => {
-                let idx: u32 = local_index(ins, n);
-                if idx == 0 && self.namer.outer_has_this() {
-                    self.push(Expr::AddressOf(Box::new(Expr::This)));
-                } else {
-                    self.push(Expr::AddressOf(Box::new(Expr::Arg(self.arg_slot(idx)))));
-                }
-            }
-            n if n.starts_with("ldarg") => {
-                let idx: u32 = local_index(ins, n);
-                if idx == 0 && self.namer.outer_has_this() {
-                    self.push(Expr::This);
-                } else {
-                    self.push(Expr::Arg(self.arg_slot(idx)));
-                }
-            }
-            n if n.starts_with("ldloca") => {
-                let idx: u32 = local_index(ins, n);
-                self.locals_used.insert(idx);
-                self.push(Expr::AddressOf(Box::new(Expr::Local(idx))));
-            }
-            n if n.starts_with("ldloc") => {
-                let idx: u32 = local_index(ins, n);
-                self.locals_used.insert(idx);
-                self.push(Expr::Local(idx));
-            }
-            n if n.starts_with("starg") => {
-                let idx: u32 = local_index(ins, n);
-                let slot: u32 = self.arg_slot(idx);
-                let val: Expr = self.pop();
-                let val: Expr = coerce_constant(val, self.names.arg_type(slot), self.lang);
-                self.stmts.push(Stmt::Assign {
-                    target: self.names.arg_name(slot),
-                    value: val.render(self.lang, self.names),
-                });
-            }
-            n if n.starts_with("stloc") => self.store_loc(ins, n),
             n if n.starts_with("conv.") => self.emit_conv(n),
             n if n.starts_with("ldind.") => {
                 let addr: Expr = self.pop();
@@ -3224,6 +3264,15 @@ pub fn decompile_method_in<N: TokenNamer>(
     decompile_method_named(signature, body, namer, &NameTable::default(), lang)
 }
 
+fn call_receiver_proof<N: TokenNamer>(namer: &N, token: u32) -> crate::cil::CallReceiverProof {
+    match namer.call_info(token) {
+        None => crate::cil::CallReceiverProof::Unresolved,
+        Some(info) if info.explicit_this => crate::cil::CallReceiverProof::ExplicitThis,
+        Some(info) if info.has_this => crate::cil::CallReceiverProof::Instance,
+        Some(_) => crate::cil::CallReceiverProof::Static,
+    }
+}
+
 #[must_use]
 pub fn decompile_method_named<N: TokenNamer>(
     signature: &str,
@@ -3234,7 +3283,10 @@ pub fn decompile_method_named<N: TokenNamer>(
 ) -> StructuredMethod {
     let normalized: MethodBody = normalize_branches(body);
     let prepared: MethodBody = if lang == TargetLang::CSharp {
-        crate::cil::fold_null_coalesce(&crate::cil::fold_null_conditional_call(&normalized))
+        crate::cil::fold_null_coalesce(&crate::cil::fold_null_conditional_call(
+            &normalized,
+            &|token: u32| call_receiver_proof(namer, token),
+        ))
     } else {
         normalized
     };
@@ -3253,7 +3305,9 @@ pub fn decompile_move_next_named<N: TokenNamer>(
     is_async: bool,
 ) -> StructuredMethod {
     let prepared: MethodBody = crate::cil::fold_null_coalesce(
-        &crate::cil::fold_null_conditional_call(&normalize_branches(body)),
+        &crate::cil::fold_null_conditional_call(&normalize_branches(body), &|token: u32| {
+            call_receiver_proof(namer, token)
+        }),
     );
     let recovered: crate::structure_emit::StructuredOutput =
         crate::structure_emit::structure_move_next(&prepared, namer, names, lang, is_async);
@@ -3519,20 +3573,6 @@ fn render_operand(op: &OperandValue) -> String {
     }
 }
 
-fn local_index(ins: &Instruction, name: &str) -> u32 {
-    if let Some(rest) = name.rsplit('.').next()
-        && let Ok(n) = rest.parse::<u32>()
-    {
-        return n;
-    }
-    match ins.operand {
-        OperandValue::U8(b) => u32::from(b),
-        OperandValue::U16(v) => u32::from(v),
-        OperandValue::I32(v) => v.cast_unsigned(),
-        _ => 0,
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -3569,6 +3609,7 @@ mod tests {
                 arg_count: 3,
                 returns_value: false,
                 has_this: true,
+                explicit_this: false,
                 byref_param_mask: 0,
             })
         }
@@ -3598,9 +3639,103 @@ mod tests {
                 arg_count: 1,
                 returns_value: true,
                 has_this: false,
+                explicit_this: false,
                 byref_param_mask: 0,
             })
         }
+    }
+
+    fn lowered_instruction(
+        offset: u32,
+        name: &str,
+        operand: OperandValue,
+        flow: FlowControl,
+    ) -> Instruction {
+        Instruction {
+            offset,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow,
+        }
+    }
+
+    fn body_of(instructions: Vec<Instruction>) -> MethodBody {
+        let code_size: u32 = u32::try_from(instructions.len()).expect("length");
+        MethodBody {
+            max_stack: 8,
+            code_size,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions,
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_local_load_whose_operand_carries_no_slot_index_abstains_instead_of_naming_a_local() {
+        for operand in [
+            OperandValue::I32(-1),
+            OperandValue::I32(0),
+            OperandValue::I64(2),
+            OperandValue::None,
+        ] {
+            let body: MethodBody = body_of(vec![
+                lowered_instruction(0, "ldloc", operand.clone(), FlowControl::Next),
+                lowered_instruction(5, "ret", OperandValue::None, FlowControl::Return),
+            ]);
+            let out: StructuredMethod = decompile_method("int M()", &body, &DelegateNamer);
+            assert!(
+                out.body.contains(UNDECODABLE_SLOT),
+                "{operand:?} must abstain by name; got:\n{}",
+                out.body
+            );
+            assert!(
+                !out.body.contains("local"),
+                "{operand:?} must never name a local; got:\n{}",
+                out.body
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_store_whose_operand_carries_no_slot_index_keeps_the_stored_value() {
+        let body: MethodBody = body_of(vec![
+            lowered_instruction(0, "ldc.i4.7", OperandValue::None, FlowControl::Next),
+            lowered_instruction(1, "stloc", OperandValue::I32(-1), FlowControl::Next),
+            lowered_instruction(6, "ret", OperandValue::None, FlowControl::Return),
+        ]);
+        let out: StructuredMethod = decompile_method("void M()", &body, &DelegateNamer);
+        assert!(
+            out.body.contains(&format!("{UNDECODABLE_SLOT} = 7")),
+            "an unreadable store operand must keep the stored value under a named abstention; got:\n{}",
+            out.body
+        );
+        assert!(
+            !out.body.contains("local"),
+            "an unreadable store operand must never write a local; got:\n{}",
+            out.body
+        );
+    }
+
+    #[test]
+    fn an_argument_store_whose_operand_carries_no_slot_index_names_no_argument() {
+        let body: MethodBody = body_of(vec![
+            lowered_instruction(0, "ldc.i4.5", OperandValue::None, FlowControl::Next),
+            lowered_instruction(1, "starg", OperandValue::I32(-1), FlowControl::Next),
+            lowered_instruction(6, "ret", OperandValue::None, FlowControl::Return),
+        ]);
+        let out: StructuredMethod = decompile_method("void M(int a)", &body, &DelegateNamer);
+        assert!(
+            out.body.contains(&format!("{UNDECODABLE_SLOT} = 5")),
+            "an unreadable argument index must abstain by name; got:\n{}",
+            out.body
+        );
+        assert!(
+            !out.body.contains("arg0") && !out.body.contains(" a ="),
+            "an unreadable argument index must never write an argument; got:\n{}",
+            out.body
+        );
     }
 
     #[test]
@@ -3687,6 +3822,7 @@ mod tests {
                 arg_count: 0,
                 returns_value: true,
                 has_this: false,
+                explicit_this: false,
                 byref_param_mask: 0,
             })
         }
@@ -3959,6 +4095,7 @@ mod tests {
                 arg_count: 2,
                 returns_value: false,
                 has_this: false,
+                explicit_this: false,
                 byref_param_mask: 0,
             })
         }
@@ -4615,6 +4752,7 @@ mod tests {
             arg_count: 3,
             returns_value: true,
             has_this: true,
+            explicit_this: false,
             byref_param_mask: 0b10,
         };
         assert!(!info.arg_is_byref(0));
@@ -4644,6 +4782,7 @@ mod tests {
                 arg_count: 0,
                 returns_value: true,
                 has_this: false,
+                explicit_this: false,
                 byref_param_mask: 0,
             })
         }

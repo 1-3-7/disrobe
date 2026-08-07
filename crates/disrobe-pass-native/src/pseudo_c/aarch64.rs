@@ -5,9 +5,9 @@ use super::{
     FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery,
     MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
     SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
-    VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_block_xmm,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
-    infer_fp_params, infer_params, plan_frame, stmt_writes_rax_int, structure_items,
+    VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_call_targets,
+    condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_fp_params,
+    infer_params, plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,7 +45,7 @@ const CALL_ARG_ORDER: [Reg; 16] = [
     Reg::A64Outgoing7,
 ];
 
-const AARCH64_FP_REGISTERS: [Xmm; 16] = [
+const AARCH64_FP_REGISTERS: [Xmm; 32] = [
     Xmm::Xmm0,
     Xmm::Xmm1,
     Xmm::Xmm2,
@@ -62,6 +62,22 @@ const AARCH64_FP_REGISTERS: [Xmm; 16] = [
     Xmm::Xmm13,
     Xmm::Xmm14,
     Xmm::Xmm15,
+    Xmm::Xmm16,
+    Xmm::Xmm17,
+    Xmm::Xmm18,
+    Xmm::Xmm19,
+    Xmm::Xmm20,
+    Xmm::Xmm21,
+    Xmm::Xmm22,
+    Xmm::Xmm23,
+    Xmm::Xmm24,
+    Xmm::Xmm25,
+    Xmm::Xmm26,
+    Xmm::Xmm27,
+    Xmm::Xmm28,
+    Xmm::Xmm29,
+    Xmm::Xmm30,
+    Xmm::Xmm31,
 ];
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2476,13 +2492,6 @@ fn block_contains_switch(body: &[Node]) -> bool {
 }
 
 fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
-    let mut touched: Vec<Xmm> = Vec::new();
-    collect_block_xmm(body, &mut touched);
-    if touched.iter().any(|register: &Xmm| register.index() >= 8) {
-        return Err(reject(
-            "scalar floating-point access uses v8..v15, which is outside increment 1",
-        ));
-    }
     let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body, Abi::Aapcs64)?;
     let Some(highest): Option<usize> = inferred
         .iter()
@@ -2560,6 +2569,7 @@ fn finish(
         vec: context.vec_abi.params.clone(),
         ret,
         exact_integer_types: false,
+        abi: Abi::Aapcs64,
     };
     let fp_params: Vec<ScalarType> = if has_scalar_fp {
         signature.ordered_param_types()
@@ -2672,7 +2682,7 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         dest.width
     };
     let encoded_extend: Option<(bool, Width, i64)> = if dest.width == Width::W64 {
-        encoded_extended_register(insn, operands[2])
+        encoded_extended_register(insn)
     } else {
         None
     };
@@ -2685,19 +2695,26 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     });
     let mut rhs: Source = if let Some((signed, src_width, shift)) = extend {
         let src_reg: RegRef = parse_reg(operands[2])?;
-        if src_reg.width != src_width {
-            return Err(reject_at(
-                insn,
-                "extended register operand has an unexpected width",
-            ));
+        let expected_class: Width = extend_register_class(src_width);
+        if src_reg.width != expected_class {
+            let reason: &str = if expected_class == Width::W64 {
+                "extended register operand requires a 64-bit source register"
+            } else {
+                "extended register operand requires a 32-bit source register"
+            };
+            return Err(reject_at(insn, reason));
         }
+        let extend_source: RegRef = RegRef {
+            reg: src_reg.reg,
+            width: src_width,
+        };
         let extended: RegRef = RegRef {
             reg: Reg::A64Tmp2,
             width: dest.width,
         };
         prefix.push(Stmt::Extend {
             dest: extended,
-            src: ExtSource::Reg(src_reg),
+            src: ExtSource::Reg(extend_source),
             signed,
         });
         if shift > 0 {
@@ -3043,7 +3060,7 @@ fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
             .map_err(|_| reject("malformed scalar floating-point register"))?;
         let register: Xmm = *AARCH64_FP_REGISTERS
             .get(usize::from(index))
-            .ok_or_else(|| reject("scalar floating-point register is outside v0..v15"))?;
+            .ok_or_else(|| reject("scalar floating-point register is outside v0..v31"))?;
         return Ok(Some((register, width)));
     }
     let half_precision: bool = name
@@ -3311,9 +3328,11 @@ fn lower_fp_minmax(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             "malformed three-operand scalar floating-point minimum or maximum",
         ));
     }
-    let is_max: bool = match insn.mnemonic.as_str() {
-        "fmaxnm" => true,
-        "fminnm" => false,
+    let (is_max, propagate): (bool, bool) = match insn.mnemonic.as_str() {
+        "fmaxnm" => (true, false),
+        "fminnm" => (false, false),
+        "fmax" => (true, true),
+        "fmin" => (false, true),
         _ => {
             return Err(reject_at(
                 insn,
@@ -3337,10 +3356,11 @@ fn lower_fp_minmax(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             "scalar floating-point minimum or maximum uses mixed precision",
         ));
     }
-    let kind: FpMinMaxKind = if is_max {
-        FpMinMaxKind::IeeeMax
-    } else {
-        FpMinMaxKind::IeeeMin
+    let kind: FpMinMaxKind = match (is_max, propagate) {
+        (true, false) => FpMinMaxKind::IeeeMax,
+        (false, false) => FpMinMaxKind::IeeeMin,
+        (true, true) => FpMinMaxKind::PropagateMax,
+        (false, true) => FpMinMaxKind::PropagateMin,
     };
     Ok(vec![Stmt::FpMinMax {
         dest: dest.0,
@@ -3643,19 +3663,59 @@ fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], mode: RoundMode) -> Resu
     }])
 }
 
-fn reject_incoming_fp_stack_load(mem: MemRef, frame: FrameInfo, insn: &DisasmInsn) -> Result<()> {
+fn fp_incoming_stack_source(
+    mem: MemRef,
+    frame: FrameInfo,
+    width: FpWidth,
+    insn: &DisasmInsn,
+) -> Result<Option<RegRef>> {
     let threshold: Option<i64> = match mem.base {
         Some(Reg::Rsp) => Some(frame.sp_to_entry),
         Some(Reg::Rbp) => frame.fp_to_entry,
         _ => None,
     };
-    if threshold.is_some_and(|boundary: i64| mem.disp >= boundary) {
+    let Some(threshold) = threshold else {
+        return Ok(None);
+    };
+    if mem.disp < threshold {
+        return Ok(None);
+    }
+    let relative: i64 = mem
+        .disp
+        .checked_sub(threshold)
+        .ok_or_else(|| reject_at(insn, "incoming floating-point stack offset underflow"))?;
+    if relative % 8 != 0 {
         return Err(reject_at(
             insn,
-            "floating-point load reads an incoming stack argument",
+            "incoming floating-point stack argument is not eight-byte aligned",
         ));
     }
-    Ok(())
+    let index: usize = usize::try_from(relative / 8).map_err(|_| {
+        reject_at(
+            insn,
+            "incoming floating-point stack argument index overflow",
+        )
+    })?;
+    let reg: Reg = match index {
+        0 => Reg::A64Stack0,
+        1 => Reg::A64Stack1,
+        2 => Reg::A64Stack2,
+        3 => Reg::A64Stack3,
+        4 => Reg::A64Stack4,
+        5 => Reg::A64Stack5,
+        6 => Reg::A64Stack6,
+        7 => Reg::A64Stack7,
+        _ => {
+            return Err(reject_at(
+                insn,
+                "incoming floating-point stack argument exceeds the bounded eight-slot lift",
+            ));
+        }
+    };
+    Ok(Some(RegRef {
+        reg,
+        width: fp_storage_width(width),
+    }))
 }
 
 fn lower_fp_memory(
@@ -3684,16 +3744,24 @@ fn lower_fp_memory(
             "scalar floating-point address cannot use two writeback modes",
         ));
     }
-    if is_load {
-        reject_incoming_fp_stack_load(mem, frame, insn)?;
-    }
+    let incoming_stack_source: Option<RegRef> = if is_load {
+        fp_incoming_stack_source(mem, frame, width, insn)?
+    } else {
+        None
+    };
     let mut stmts: Vec<Stmt> = Vec::new();
     if pre_index {
         let delta: i64 = mem.disp;
         mem.disp = 0;
         stmts.extend(frame_writeback(frame, mem.base, delta)?);
     }
-    if is_load {
+    if let Some(src) = incoming_stack_source {
+        stmts.push(Stmt::GprToXmm {
+            dest: register,
+            src,
+            width,
+        });
+    } else if is_load {
         stmts.push(Stmt::FpMov {
             dest: register,
             src: FpOperand::Mem(mem),
@@ -3759,10 +3827,24 @@ fn lower_fp_pair_memory(
         disp: second_disp,
         ..first_mem
     };
-    if is_load {
-        reject_incoming_fp_stack_load(first_mem, frame, insn)?;
-        reject_incoming_fp_stack_load(second_mem, frame, insn)?;
-    }
+    let incoming_pair: Option<(RegRef, RegRef)> = if is_load {
+        let first_source: Option<RegRef> =
+            fp_incoming_stack_source(first_mem, frame, first.1, insn)?;
+        let second_source: Option<RegRef> =
+            fp_incoming_stack_source(second_mem, frame, second.1, insn)?;
+        match (first_source, second_source) {
+            (Some(first_reg), Some(second_reg)) => Some((first_reg, second_reg)),
+            (None, None) => None,
+            _ => {
+                return Err(reject_at(
+                    insn,
+                    "scalar floating-point pair spans the incoming stack argument boundary",
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let mut stmts: Vec<Stmt> = Vec::new();
     if pre_index {
         let delta: i64 = first_mem.disp;
@@ -3770,7 +3852,18 @@ fn lower_fp_pair_memory(
         second_mem.disp = width_bytes;
         stmts.extend(frame_writeback(frame, first_mem.base, delta)?);
     }
-    if is_load {
+    if let Some((first_src, second_src)) = incoming_pair {
+        stmts.push(Stmt::GprToXmm {
+            dest: first.0,
+            src: first_src,
+            width: first.1,
+        });
+        stmts.push(Stmt::GprToXmm {
+            dest: second.0,
+            src: second_src,
+            width: second.1,
+        });
+    } else if is_load {
         stmts.push(Stmt::FpMov {
             dest: first.0,
             src: FpOperand::Mem(first_mem),
@@ -3833,7 +3926,7 @@ fn try_lower_scalar_fp(
         "fadd" | "fsub" | "fmul" | "fdiv" if has_scalar_fp_destination(&operands) => {
             lower_fp_binary(insn, &operands).map(Some)
         }
-        "fmaxnm" | "fminnm" if has_scalar_fp_destination(&operands) => {
+        "fmaxnm" | "fminnm" | "fmax" | "fmin" if has_scalar_fp_destination(&operands) => {
             lower_fp_minmax(insn, &operands).map(Some)
         }
         "fmadd" | "fmsub" | "fnmadd" | "fnmsub" if has_scalar_fp_destination(&operands) => {
@@ -3875,10 +3968,11 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, mode).map(Some)
         }
-        "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmadd" | "fmsub" | "fnmadd"
-        | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf" | "ucvtf" | "fcvtzs"
-        | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt"
-        | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti" => Ok(None),
+        "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmax" | "fmin" | "fmadd"
+        | "fmsub" | "fnmadd" | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf"
+        | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas"
+        | "fcvtau" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx"
+        | "frinti" => Ok(None),
         "movi" if !vector_context => lower_movi_scalar_zero(&operands),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
@@ -4514,6 +4608,18 @@ fn parse_index_modifier(token: &str, index_width: Width) -> Result<(u8, IndexExt
             }
             IndexExtend::ZeroExtendWord
         }
+        "sxtx" => {
+            if index_width != Width::W64 {
+                return Err(reject("sxtx index requires a 64-bit register"));
+            }
+            IndexExtend::Full
+        }
+        "uxtx" => {
+            if index_width != Width::W64 {
+                return Err(reject("uxtx index requires a 64-bit register"));
+            }
+            IndexExtend::Full
+        }
         _ => return Err(reject("memory index uses an unsupported extend or shift")),
     };
     Ok((scale, extend))
@@ -4658,17 +4764,33 @@ fn parse_shift_modifier(token: &str, width: Width) -> Result<(BinOp, i64)> {
     Ok((op, amount))
 }
 
+const AARCH64_EXTEND_FORMS: [(&str, bool, Width); 8] = [
+    ("uxtb", false, Width::W8),
+    ("uxth", false, Width::W16),
+    ("uxtw", false, Width::W32),
+    ("uxtx", false, Width::W64),
+    ("sxtb", true, Width::W8),
+    ("sxth", true, Width::W16),
+    ("sxtw", true, Width::W32),
+    ("sxtx", true, Width::W64),
+];
+
+const fn extend_register_class(src_width: Width) -> Width {
+    match src_width {
+        Width::W64 => Width::W64,
+        Width::W8 | Width::W16 | Width::W32 => Width::W32,
+    }
+}
+
 fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
     let trimmed: &str = token.trim();
     let (kind, rest): (&str, Option<&str>) = match trimmed.split_once(char::is_whitespace) {
         Some((name, tail)) => (name, Some(tail)),
         None => (trimmed, None),
     };
-    let (signed, src_width): (bool, Width) = match kind {
-        "sxtw" => (true, Width::W32),
-        "uxtw" => (false, Width::W32),
-        _ => return None,
-    };
+    let &(_, signed, src_width): &(&str, bool, Width) = AARCH64_EXTEND_FORMS
+        .iter()
+        .find(|(name, _, _): &&(&str, bool, Width)| *name == kind)?;
     let shift: i64 = match rest {
         None => 0,
         Some(tail) => {
@@ -4682,28 +4804,20 @@ fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
     Some((signed, src_width, shift))
 }
 
-fn encoded_extended_register(insn: &DisasmInsn, rhs_token: &str) -> Option<(bool, Width, i64)> {
+fn encoded_extended_register(insn: &DisasmInsn) -> Option<(bool, Width, i64)> {
     if !matches!(insn.mnemonic.as_str(), "add" | "adds" | "sub" | "subs") {
-        return None;
-    }
-    let rhs: RegRef = parse_reg(rhs_token).ok()?;
-    if rhs.width != Width::W32 {
         return None;
     }
     let word: u32 = aarch64_instruction_word(insn)?;
     if (word >> 24) & 0b1_1111 != 0b0_1011 || (word >> 21) & 1 != 1 {
         return None;
     }
-    let option: u32 = (word >> 13) & 0b111;
+    let option: usize = ((word >> 13) & 0b111) as usize;
     let imm3: u32 = (word >> 10) & 0b111;
     if imm3 > 4 {
         return None;
     }
-    let (signed, src_width): (bool, Width) = match option {
-        0b010 => (false, Width::W32),
-        0b110 => (true, Width::W32),
-        _ => return None,
-    };
+    let &(_, signed, src_width): &(&str, bool, Width) = AARCH64_EXTEND_FORMS.get(option)?;
     Some((signed, src_width, i64::from(imm3)))
 }
 
@@ -6404,10 +6518,22 @@ fn reject_at(insn: &DisasmInsn, message: &str) -> Error {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        Aarch64DirectTransfer, DisasmInsn, Stmt, aarch64_direct_transfer, lower_fp_to_int,
-        lower_int_to_fp, split_operands,
+        Aarch64DirectTransfer, DisasmInsn, ExtSource, IndexExtend, MemRef, Reg, RegRef, Stmt,
+        Width, aarch64_direct_transfer, encoded_extended_register, lower_alu, lower_fp_to_int,
+        lower_int_to_fp, parse_extend_modifier, parse_index_modifier, parse_memory, parse_reg,
+        split_operands,
     };
     use crate::error::Result;
+
+    fn lower_alu_case(mnemonic: &str, operands: &str, word: u32) -> Result<(RegRef, Vec<Stmt>)> {
+        let insn: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: word.to_le_bytes().to_vec(),
+            mnemonic: mnemonic.to_owned(),
+            operands: operands.to_owned(),
+        };
+        lower_alu(&insn)
+    }
 
     fn lower(mnemonic: &str, operands: &str) -> Result<Vec<Stmt>> {
         let insn: DisasmInsn = DisasmInsn {
@@ -6603,5 +6729,307 @@ mod tests {
         assert!(vector.contains("vector registers"), "{vector}");
         let scalar_simd: String = rejection("ucvtf", "s0, s0, #0x10");
         assert!(scalar_simd.contains("not w or x"), "{scalar_simd}");
+    }
+
+    #[test]
+    fn sxtx_and_uxtx_index_modifiers_reject_a_32_bit_register() {
+        for (modifier, reason) in [
+            ("sxtx #3", "sxtx index requires a 64-bit register"),
+            ("uxtx #3", "uxtx index requires a 64-bit register"),
+        ] {
+            let message: String = format!(
+                "{:?}",
+                parse_index_modifier(modifier, Width::W32).expect_err(modifier)
+            );
+            assert!(message.contains(reason), "{modifier}: {message}");
+        }
+    }
+
+    #[test]
+    fn sxtw_and_uxtw_index_modifiers_still_reject_a_64_bit_register() {
+        for (modifier, reason) in [
+            ("sxtw #0", "sxtw index requires a 32-bit register"),
+            ("uxtw #0", "uxtw index requires a 32-bit register"),
+        ] {
+            let message: String = format!(
+                "{:?}",
+                parse_index_modifier(modifier, Width::W64).expect_err(modifier)
+            );
+            assert!(message.contains(reason), "{modifier}: {message}");
+        }
+    }
+
+    #[test]
+    fn sxtx_and_uxtx_index_modifiers_accept_a_64_bit_register_as_the_full_extend() {
+        for (modifier, expected_scale) in [
+            ("sxtx #3", 8u8),
+            ("uxtx #0", 1u8),
+            ("sxtx", 1u8),
+            ("uxtx", 1u8),
+        ] {
+            let (scale, extend): (u8, IndexExtend) =
+                parse_index_modifier(modifier, Width::W64).expect(modifier);
+            assert_eq!(extend, IndexExtend::Full, "{modifier}");
+            assert_eq!(scale, expected_scale, "{modifier}");
+        }
+    }
+
+    #[test]
+    fn memory_index_shift_amount_of_four_accepts_and_five_rejects_for_every_extend_modifier() {
+        let cases: [(&str, Width); 5] = [
+            ("lsl", Width::W64),
+            ("sxtw", Width::W32),
+            ("uxtw", Width::W32),
+            ("sxtx", Width::W64),
+            ("uxtx", Width::W64),
+        ];
+        for (modifier, width) in cases {
+            assert!(
+                parse_index_modifier(&format!("{modifier} #4"), width).is_ok(),
+                "{modifier} #4"
+            );
+            let message: String = format!(
+                "{:?}",
+                parse_index_modifier(&format!("{modifier} #5"), width)
+                    .expect_err(&format!("{modifier} #5"))
+            );
+            assert!(message.contains("out of range"), "{modifier} #5: {message}");
+        }
+    }
+
+    #[test]
+    fn memory_index_modifier_without_a_whitespace_separator_is_rejected_as_unsupported() {
+        for modifier in ["uxtx#3", "sxtx#3", "uxtw#0", "sxtw#0", "lsl#3"] {
+            let message: String = format!(
+                "{:?}",
+                parse_index_modifier(modifier, Width::W64).expect_err(modifier)
+            );
+            assert!(
+                message.contains("unsupported extend or shift"),
+                "{modifier}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_case_memory_index_modifier_tokens_reject_the_same_way_old_and_new() {
+        for modifier in ["UXTX #3", "SXTX #3", "UXTW #0", "LSL #0"] {
+            let message: String = format!(
+                "{:?}",
+                parse_index_modifier(modifier, Width::W64).expect_err(modifier)
+            );
+            assert!(
+                message.contains("unsupported extend or shift"),
+                "{modifier}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_operand_trailing_comma_after_sxtx_rejects_the_extra_term() {
+        let message: String = format!(
+            "{:?}",
+            parse_memory("[x1, x2, sxtx #3,]", Width::W64).expect_err("trailing comma")
+        );
+        assert!(message.contains("unsupported addressing"), "{message}");
+    }
+
+    #[test]
+    fn memory_operand_with_extra_whitespace_around_sxtx_parses_like_a_tight_token() {
+        let (mem_ref, pre_index): (MemRef, bool) =
+            parse_memory("[ x1 ,  x2 ,  sxtx  #3 ]", Width::W64).expect("extra whitespace");
+        assert!(!pre_index);
+        let scale: u8 = mem_ref.index.expect("index operand present").scale;
+        assert_eq!(scale, 8);
+    }
+
+    #[test]
+    fn memory_operand_mixed_case_sxtx_rejects_the_same_way_as_mixed_case_uxtw() {
+        for operand in ["[x1, x2, SXTX #3]", "[x1, x2, UXTW #0]"] {
+            let message: String = format!(
+                "{:?}",
+                parse_memory(operand, Width::W64).expect_err(operand)
+            );
+            assert!(
+                message.contains("unsupported extend or shift"),
+                "{operand}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_memory_index_modifier_tokens_never_panic() {
+        let adversarial: [&str; 13] = [
+            "",
+            "   ",
+            "#",
+            "uxtx #",
+            "uxtx #-1",
+            "uxtx #99999999999999999999",
+            "uxtx #0x3",
+            "\u{0}\u{0}\u{0}",
+            "sxtx\t#3",
+            "\u{fc}xtx #3",
+            "\u{1f980} #3",
+            ",,,",
+            "sxtx #4294967296",
+        ];
+        for token in adversarial {
+            let _: Result<(u8, IndexExtend)> = parse_index_modifier(token, Width::W64);
+            let _: Result<(u8, IndexExtend)> = parse_index_modifier(token, Width::W32);
+        }
+    }
+
+    #[test]
+    fn byte_extend_with_a_w_register_operand_lifts_instead_of_rejecting_on_the_width_conflation() {
+        let (dest, stmts): (RegRef, Vec<Stmt>) =
+            lower_alu_case("add", "x0, x0, w1, uxtb", 0x8b21_0000).expect("real uxtb encoding");
+        assert_eq!(dest.width, Width::W64);
+        let extend_source_width: Width = stmts
+            .iter()
+            .find_map(|stmt: &Stmt| match stmt {
+                Stmt::Extend {
+                    src: ExtSource::Reg(r),
+                    ..
+                } => Some(r.width),
+                _ => None,
+            })
+            .expect("an extend statement over a register source");
+        assert_eq!(extend_source_width, Width::W8);
+    }
+
+    #[test]
+    fn every_extend_option_word_decodes_to_its_architectural_source_width_and_sign() {
+        let cases: [(u32, bool, Width); 8] = [
+            (0b000, false, Width::W8),
+            (0b001, false, Width::W16),
+            (0b010, false, Width::W32),
+            (0b011, false, Width::W64),
+            (0b100, true, Width::W8),
+            (0b101, true, Width::W16),
+            (0b110, true, Width::W32),
+            (0b111, true, Width::W64),
+        ];
+        for (option, signed, src_width) in cases {
+            let word: u32 = 0x8b21_0000 | (option << 13);
+            let insn: DisasmInsn = DisasmInsn {
+                address: 0,
+                bytes: word.to_le_bytes().to_vec(),
+                mnemonic: "add".to_owned(),
+                operands: "x0, x0, w1, uxtb".to_owned(),
+            };
+            let decoded: (bool, Width, i64) =
+                encoded_extended_register(&insn).unwrap_or_else(|| panic!("option {option:03b}"));
+            assert_eq!(decoded, (signed, src_width, 0), "option {option:03b}");
+        }
+    }
+
+    #[test]
+    fn extended_register_class_mismatch_rejects_with_a_reason_named_by_the_expected_class() {
+        let byte_word: u32 = 0x8b21_0000;
+        let message_for_w_class: String = format!(
+            "{:?}",
+            lower_alu_case("add", "x0, x0, x1, uxtb", byte_word)
+                .expect_err("x1 cannot satisfy a byte extend")
+        );
+        assert!(
+            message_for_w_class.contains("requires a 32-bit source register"),
+            "{message_for_w_class}"
+        );
+
+        let x_word: u32 = 0x8b21_6000;
+        let message_for_x_class: String = format!(
+            "{:?}",
+            lower_alu_case("add", "x0, x0, w1, uxtb", x_word)
+                .expect_err("w1 cannot satisfy a full 64-bit extend")
+        );
+        assert!(
+            message_for_x_class.contains("requires a 64-bit source register"),
+            "{message_for_x_class}"
+        );
+    }
+
+    #[test]
+    fn imm3_of_five_is_unallocated_and_the_word_path_declines_it() {
+        let word: u32 = 0x8b21_1400;
+        let insn: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: word.to_le_bytes().to_vec(),
+            mnemonic: "add".to_owned(),
+            operands: "x0, x0, w1, uxtb #5".to_owned(),
+        };
+        assert_eq!(encoded_extended_register(&insn), None);
+    }
+
+    #[test]
+    fn adds_with_an_extended_register_now_computes_its_arithmetic_result_even_though_the_flag_snapshot_stays_unsupported()
+     {
+        let (_, stmts): (RegRef, Vec<Stmt>) =
+            lower_alu_case("adds", "x0, x0, w1, uxtb", 0xab21_0000).expect("adds byte extend");
+        assert!(
+            stmts
+                .iter()
+                .any(|stmt: &Stmt| matches!(stmt, Stmt::Extend { .. })),
+            "{stmts:?}"
+        );
+    }
+
+    #[test]
+    fn stack_pointer_operand_parses_to_the_stack_pointer_register_at_64_bit_width() {
+        let reg: RegRef = parse_reg("sp").expect("sp is a supported operand");
+        assert_eq!(reg.reg, Reg::Rsp);
+        assert_eq!(reg.width, Width::W64);
+    }
+
+    #[test]
+    fn malformed_extend_modifier_tokens_never_panic() {
+        let adversarial: [&str; 13] = [
+            "",
+            "   ",
+            "#",
+            "uxtb #",
+            "uxtb #-1",
+            "uxtb #99999999999999999999",
+            "uxtb #0x3",
+            "\u{0}\u{0}\u{0}",
+            "sxtb\t#3",
+            "\u{fc}xtb #3",
+            "\u{1f980} #3",
+            ",,,",
+            "sxtb #4294967296",
+        ];
+        for token in adversarial {
+            let _: Option<(bool, Width, i64)> = parse_extend_modifier(token);
+        }
+    }
+
+    #[test]
+    fn malformed_extended_register_words_never_panic() {
+        let mnemonics: [&str; 4] = ["add", "adds", "sub", "subs"];
+        for mnemonic in mnemonics {
+            for option in 0u32..8 {
+                for imm3 in 0u32..8 {
+                    let word: u32 = 0x8b21_0000 | (option << 13) | (imm3 << 10);
+                    let insn: DisasmInsn = DisasmInsn {
+                        address: 0,
+                        bytes: word.to_le_bytes().to_vec(),
+                        mnemonic: mnemonic.to_owned(),
+                        operands: "x0, x0, w1, uxtb".to_owned(),
+                    };
+                    let _: Option<(bool, Width, i64)> = encoded_extended_register(&insn);
+                    let _: Result<(RegRef, Vec<Stmt>)> = lower_alu(&insn);
+                }
+            }
+        }
+        for len in 0usize..4 {
+            let insn: DisasmInsn = DisasmInsn {
+                address: 0,
+                bytes: vec![0xffu8; len],
+                mnemonic: "add".to_owned(),
+                operands: "x0, x0, w1, uxtb".to_owned(),
+            };
+            let _: Option<(bool, Width, i64)> = encoded_extended_register(&insn);
+            let _: Result<(RegRef, Vec<Stmt>)> = lower_alu(&insn);
+        }
     }
 }

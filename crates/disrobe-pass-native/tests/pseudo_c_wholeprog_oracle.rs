@@ -7,21 +7,20 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
     RecoveredProgram as LibRecoveredProgram, disassemble, recover_program as lib_recover_program,
 };
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
-const HOST_ABI: PseudoAbi = if cfg!(windows) {
-    PseudoAbi::MsX64
-} else {
-    PseudoAbi::SysV
+use common::{
+    HOST_ABI, cc, clang, compile_object, compile_object_opt, function_code, gcc, link_and_run,
+    scratch_dir, strip_includes,
 };
 
 const WIDE_INPUTS: &str = "{0,0,0},{1,1,1},{-1,-1,-1},{7,3,5},{-7,3,-5},\
@@ -284,147 +283,6 @@ const TEETH_SUB: WholeProgram = WholeProgram {
                long long teeth_sub_entry(long long a, long long b){ return teeth_sub_h(a, b) + 100; }",
 };
 
-fn cc() -> Option<String> {
-    ["gcc", "clang", "cc"]
-        .into_iter()
-        .find(|c: &&str| {
-            Command::new(c)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
-        })
-        .map(str::to_owned)
-}
-
-fn gcc() -> Option<String> {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "gcc".to_owned())
-}
-
-fn clang() -> Option<String> {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "clang".to_owned())
-}
-
-fn scratch_dir() -> ScratchDir {
-    ScratchDir::create("disrobe-pseudo-wp").expect("create scratch directory")
-}
-
-fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
-    let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
-    let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
-    let sym: object::Symbol<'_, '_> = file.symbols().find(|s: &object::Symbol<'_, '_>| {
-        s.name()
-            .is_ok_and(|n: &str| candidates.iter().any(|c: &String| c == n))
-    })?;
-    let section_index: object::SectionIndex = match sym.section() {
-        object::SymbolSection::Section(idx) => idx,
-        _ => return None,
-    };
-    let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
-    let data: &[u8] = section.data().ok()?;
-    let sym_addr: u64 = sym.address();
-    let start: usize = usize::try_from(sym_addr.saturating_sub(section.address())).ok()?;
-    let size: usize = usize::try_from(sym.size()).ok()?;
-    let end: usize = if size == 0 {
-        let next_off: usize = file
-            .symbols()
-            .filter(|s: &object::Symbol<'_, '_>| {
-                matches!(s.section(), object::SymbolSection::Section(idx) if idx == section_index)
-                    && s.address() > sym_addr
-                    && s.kind() == object::SymbolKind::Text
-                    && s.name().is_ok_and(|n: &str| !n.is_empty())
-            })
-            .filter_map(|s: object::Symbol<'_, '_>| {
-                usize::try_from(s.address().saturating_sub(section.address())).ok()
-            })
-            .min()
-            .unwrap_or(data.len());
-        next_off.min(data.len())
-    } else {
-        start.saturating_add(size).min(data.len())
-    };
-    let slice: &[u8] = data.get(start..end)?;
-    Some((slice.to_vec(), sym_addr))
-}
-
-fn strip_includes(source: &str) -> String {
-    source
-        .lines()
-        .filter(|l: &&str| !l.starts_with("#include"))
-        .collect::<Vec<&str>>()
-        .join("\n")
-}
-
-enum BoundedRun {
-    Exited(std::process::Output),
-    TimedOut,
-}
-
-fn run_bounded(exe: &Path, secs: u64) -> BoundedRun {
-    use std::process::Stdio;
-    use wait_timeout::ChildExt as _;
-
-    let mut child: std::process::Child = Command::new(exe)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bounded harness");
-    let finished: bool = child
-        .wait_timeout(std::time::Duration::from_secs(secs))
-        .expect("wait_timeout")
-        .is_some();
-    if finished {
-        BoundedRun::Exited(child.wait_with_output().expect("collect harness output"))
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        BoundedRun::TimedOut
-    }
-}
-
-fn compile_object(compiler: &str, extra: &[&str], source: &str, out: &Path) -> Option<Vec<u8>> {
-    compile_object_opt(compiler, "-O1", extra, source, out)
-}
-
-fn compile_object_opt(
-    compiler: &str,
-    opt: &str,
-    extra: &[&str],
-    source: &str,
-    out: &Path,
-) -> Option<Vec<u8>> {
-    let scratch: ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let src: PathBuf = dir.join(format!(
-        "{}.c",
-        out.file_stem().and_then(|s| s.to_str()).unwrap_or("unit")
-    ));
-    std::fs::write(&src, source.as_bytes()).expect("write source");
-    let compiled: std::process::Output = Command::new(compiler)
-        .arg(opt)
-        .args(extra)
-        .arg("-o")
-        .arg(out)
-        .arg(&src)
-        .output()
-        .expect("invoke compiler");
-    if !compiled.status.success() {
-        eprintln!(
-            "compile with {compiler} failed: {}",
-            String::from_utf8_lossy(&compiled.stderr)
-        );
-        return None;
-    }
-    std::fs::read(out).ok()
-}
-
 struct RecoveredProgram {
     tu: String,
     entry_params: usize,
@@ -531,46 +389,6 @@ fn build_program_driver(program: &WholeProgram, recovered: &RecoveredProgram) ->
     )
 }
 
-fn link_and_run(
-    compiler: &str,
-    driver: &str,
-    link_object: &[u8],
-    tag: &str,
-    secs: u64,
-) -> Option<String> {
-    let scratch: ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let obj: PathBuf = dir.join(format!("{tag}_link.o"));
-    std::fs::write(&obj, link_object).ok()?;
-    let driver_c: PathBuf = dir.join(format!("{tag}_driver.c"));
-    std::fs::write(&driver_c, driver.as_bytes()).expect("write driver");
-    let exe: PathBuf = dir.join(if cfg!(windows) {
-        format!("{tag}.exe")
-    } else {
-        tag.to_owned()
-    });
-    let link: std::process::Output = Command::new(compiler)
-        .args(["-O1", "-o"])
-        .arg(&exe)
-        .arg(&driver_c)
-        .arg(&obj)
-        .output()
-        .expect("invoke linker");
-    assert!(
-        link.status.success(),
-        "{tag} link failed: {}\n--- {tag} driver ---\n{driver}",
-        String::from_utf8_lossy(&link.stderr)
-    );
-    match run_bounded(&exe, secs) {
-        BoundedRun::Exited(out) => Some(String::from_utf8_lossy(&out.stdout).into_owned()),
-        BoundedRun::TimedOut => {
-            panic!(
-                "{tag} harness did not terminate within the watchdog; a recovered loop is non-terminating"
-            )
-        }
-    }
-}
-
 #[test]
 fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
     if !cfg!(windows) {
@@ -585,7 +403,7 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
         );
         return;
     };
-    let scratch: ScratchDir = scratch_dir();
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let mut recovered_count: usize = 0;
     let mut rejected_count: usize = 0;
@@ -606,8 +424,7 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
         };
         let driver: String = build_program_driver(program, &recovered);
         let watchdog: u64 = if program.loopy { 20 } else { 10 };
-        let stdout: String = link_and_run(&builder, &driver, &object, program.name, watchdog)
-            .expect("link and run host whole-program harness");
+        let stdout: String = link_and_run(&builder, &driver, &object, program.name, watchdog);
         assert!(
             stdout.contains("OK") && !stdout.contains("MISMATCH"),
             "whole-program differential FAILED for {}: {stdout}",
@@ -636,7 +453,7 @@ fn whole_programs_recompile_to_behavioral_equivalence_hostabi() {
 fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
     let host_cc: String = cc()?;
     let clang_cc: String = clang()?;
-    let scratch: ScratchDir = scratch_dir();
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let host_path: PathBuf = dir.join(format!("{}_gt.o", program.name));
     let host_obj: Vec<u8> = compile_object(&host_cc, &CC_FLAGS, program.c_source, &host_path)?;
@@ -695,8 +512,7 @@ fn whole_programs_recompile_to_behavioral_equivalence_sysv() {
         let driver: String = build_program_driver(program, &recovered);
         let watchdog: u64 = if program.loopy { 20 } else { 10 };
         let tag: String = format!("{}_sysv", program.name);
-        let stdout: String = link_and_run(&host_cc, &driver, &host_obj, &tag, watchdog)
-            .expect("link and run sysv whole-program harness");
+        let stdout: String = link_and_run(&host_cc, &driver, &host_obj, &tag, watchdog);
         assert!(
             stdout.contains("OK") && !stdout.contains("MISMATCH"),
             "sysv whole-program differential FAILED for {}: {stdout}",
@@ -773,8 +589,7 @@ fn teeth_baseline(program: &WholeProgram) -> Option<(String, Vec<u8>, RecoveredP
         &host_obj,
         &format!("{}_baseline", program.name),
         10,
-    )
-    .expect("run teeth baseline");
+    );
     assert!(
         stdout.contains("OK") && !stdout.contains("MISMATCH"),
         "teeth baseline must first agree before mutation: {stdout}"
@@ -812,8 +627,7 @@ fn teeth_dropping_a_helper_call_diverges() {
         entry_return_width: recovered.entry_return_width,
     };
     let driver: String = build_program_driver(&TEETH_SQ, &mutated_program);
-    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "teeth_sq_drop", 10)
-        .expect("run neutralized teeth harness");
+    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "teeth_sq_drop", 10);
     assert!(
         stdout.contains("MISMATCH") && !stdout.contains("OK"),
         "teeth FAILED: dropping the squared helper call must diverge from the original: {stdout}"
@@ -851,8 +665,7 @@ fn teeth_swapping_a_call_argument_diverges() {
         entry_return_width: recovered.entry_return_width,
     };
     let driver: String = build_program_driver(&TEETH_SUB, &mutated_program);
-    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "teeth_sub_swap", 10)
-        .expect("run arg-swapped teeth harness");
+    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "teeth_sub_swap", 10);
     assert!(
         stdout.contains("MISMATCH") && !stdout.contains("OK"),
         "teeth FAILED: swapping the subtraction operands must diverge from the original: {stdout}"
@@ -860,7 +673,7 @@ fn teeth_swapping_a_call_argument_diverges() {
     println!("teeth confirmed: swapping a call argument diverges (MISMATCH observed)");
 }
 
-const OPT_LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
+const OPT_LEVELS: [&str; 6] = ["-O0", "-O1", "-O2", "-O3", "-Os", "-Og"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeOutcome {
@@ -878,6 +691,7 @@ fn opt_tag(opt: &str) -> &str {
 fn optimization_matrix_includes_aggressive_and_size_modes() {
     assert!(OPT_LEVELS.contains(&"-O3"));
     assert!(OPT_LEVELS.contains(&"-Os"));
+    assert!(OPT_LEVELS.contains(&"-Og"));
 }
 
 #[test]
@@ -912,8 +726,7 @@ fn near_conditional_branch_recompiles_to_behavioral_equivalence() {
     let recovered: RecoveredProgram =
         recover_program(&sysv_obj, program, PseudoAbi::SysV).expect("recover near-branch program");
     let driver: String = build_program_driver(program, &recovered);
-    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "wp_near_branch_sysv", 10)
-        .expect("run near-branch comparison");
+    let stdout: String = link_and_run(&host_cc, &driver, &host_obj, "wp_near_branch_sysv", 10);
     assert!(
         stdout.contains("OK") && !stdout.contains("MISMATCH"),
         "near-branch comparison failed: {stdout}"
@@ -943,8 +756,7 @@ fn measure_host_program(
     let driver: String = build_program_driver(program, &recovered);
     let watchdog: u64 = if program.loopy { 20 } else { 10 };
     let tag: String = format!("{}_{}_host", program.name, opt_tag(opt));
-    let stdout: String = link_and_run(builder, &driver, &object, &tag, watchdog)
-        .expect("link and run host shape harness");
+    let stdout: String = link_and_run(builder, &driver, &object, &tag, watchdog);
     if stdout.contains("OK") && !stdout.contains("MISMATCH") {
         ShapeOutcome::Equivalent
     } else {
@@ -987,8 +799,7 @@ fn measure_sysv_program(
     let driver: String = build_program_driver(program, &recovered);
     let watchdog: u64 = if program.loopy { 20 } else { 10 };
     let tag: String = format!("{}_{}_sysv", program.name, opt_tag(opt));
-    let stdout: String = link_and_run(host_cc, &driver, &host_obj, &tag, watchdog)
-        .expect("link and run sysv shape harness");
+    let stdout: String = link_and_run(host_cc, &driver, &host_obj, &tag, watchdog);
     if stdout.contains("OK") && !stdout.contains("MISMATCH") {
         ShapeOutcome::Equivalent
     } else {
@@ -1009,7 +820,7 @@ fn shape_battery_recompile_to_behavioral_equivalence_hostabi() {
         eprintln!("skipping host shape oracle: gcc not on PATH");
         return;
     };
-    let scratch: ScratchDir = scratch_dir();
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let mut total_equivalent: usize = 0;
@@ -1074,7 +885,7 @@ fn shape_battery_recompile_to_behavioral_equivalence_sysv() {
         eprintln!("skipping sysv shape oracle: clang (needed for the SysV object) not on PATH");
         return;
     };
-    let scratch: ScratchDir = scratch_dir();
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
     let dir: PathBuf = scratch.path().to_path_buf();
     let battery: Vec<&WholeProgram> = full_battery();
     let mut total_equivalent: usize = 0;

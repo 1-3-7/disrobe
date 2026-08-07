@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use disrobe_binfmt::containers::bare_stream::{
     GzipMember, decompress_gzip_members, decompress_zstd, detect_gzip, detect_zstd,
     try_decompress_brotli_oracle,
@@ -8,6 +10,7 @@ use crate::model::Compression;
 const PRINTABLE_GATE_PERCENT: usize = 85;
 const COMPRESSED_SAMPLE_CAP: usize = 4096;
 const MIN_TRIAL_LEN: usize = 4;
+const BROTLI_READER_BUFFER: usize = 32 * 1024;
 
 pub(crate) const CODEC_TRIAL_ORDER: [Compression; 3] =
     [Compression::Gzip, Compression::Zstd, Compression::Brotli];
@@ -38,6 +41,65 @@ pub(crate) fn decode_blob(raw: &[u8], cap: u64) -> Decoded {
         data: raw.to_vec(),
         compression: Compression::None,
     }
+}
+
+pub(crate) fn claims_blob(codec: Compression, raw: &[u8], cap: u64) -> bool {
+    matches!(try_codec(codec, raw, cap), Some(Decoded::Bytes { .. }))
+}
+
+pub(crate) fn decode_blob_anchored(raw: &[u8], cap: u64, anchor: Option<Compression>) -> Decoded {
+    let Some(Compression::Brotli) = anchor else {
+        return decode_blob(raw, cap);
+    };
+    if detect_gzip(raw) || detect_zstd(raw) {
+        return decode_blob(raw, cap);
+    }
+    match inflate_brotli(raw, cap) {
+        Ok(data) => Decoded::Bytes {
+            data,
+            compression: Compression::Brotli,
+        },
+        Err(BrotliFailure::Quota) => Decoded::QuotaRefused {
+            compression: Compression::Brotli,
+            reason: format!("decompressed stream exceeds bomb cap {cap}"),
+        },
+        Err(BrotliFailure::Corrupt(detail)) => {
+            let fallback: Decoded = decode_blob(raw, cap);
+            if matches!(
+                fallback,
+                Decoded::Bytes {
+                    compression: Compression::None,
+                    ..
+                }
+            ) {
+                Decoded::Corrupt {
+                    compression: Compression::Brotli,
+                    detail,
+                }
+            } else {
+                fallback
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum BrotliFailure {
+    Quota,
+    Corrupt(String),
+}
+
+fn inflate_brotli(raw: &[u8], cap: u64) -> Result<Vec<u8>, BrotliFailure> {
+    let limit: u64 = cap.saturating_add(1);
+    let mut out: Vec<u8> = Vec::new();
+    let mut decoder: brotli::Decompressor<&[u8]> =
+        brotli::Decompressor::new(raw, BROTLI_READER_BUFFER);
+    let read: u64 = std::io::copy(&mut Read::take(&mut decoder, limit), &mut out)
+        .map_err(|e: std::io::Error| BrotliFailure::Corrupt(format!("brotli: {e}")))?;
+    if read > cap {
+        return Err(BrotliFailure::Quota);
+    }
+    Ok(out)
 }
 
 fn try_codec(codec: Compression, raw: &[u8], cap: u64) -> Option<Decoded> {

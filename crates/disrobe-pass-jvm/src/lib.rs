@@ -187,14 +187,15 @@ pub use error::{Error, Result};
 pub use format_wire::{format_java, format_kotlin, format_scala};
 pub use frame_infer::{FrameInferOutcome, FrameInferReport, FrameState, infer_frames};
 pub use jar::{
-    AabExtract, AabModule, ApkExtract, JIMAGE_MAGIC, JMOD_MAGIC, JarEntry, JarExtract, Jimage,
-    JimageHeader, JimageResource, JmodExtract, extract as extract_jar, extract_aab, extract_apk,
-    extract_jmod, parse_jimage, parse_jimage_header,
+    AabExtract, AabModule, AarExtract, ApkExtract, ApksExtract, JIMAGE_MAGIC, JMOD_MAGIC, JarEntry,
+    JarExtract, Jimage, JimageHeader, JimageResource, JmodExtract, extract as extract_jar,
+    extract_aab, extract_aar, extract_apk, extract_apks, extract_jmod, parse_jimage,
+    parse_jimage_header,
 };
 pub use jni::{
     JniPrototype, JniSurfaceReport, NativeLibrary, RegisteredNative, ResolvedNative,
-    analyze as analyze_jni_surface, emit_prototypes as emit_jni_prototypes,
-    native_methods_from_class, recover_register_natives,
+    analyze as analyze_jni_surface, analyze_native_methods as analyze_jni_native_methods,
+    emit_prototypes as emit_jni_prototypes, native_methods_from_class, recover_register_natives,
 };
 pub use jsr_inline::{JsrInlineReport, contains_jsr, inline_jsr_subroutines};
 pub use kotlin::{KotlinKind, KotlinMetadata, recover_metadata as recover_kotlin_metadata};
@@ -206,8 +207,9 @@ pub use name_disambig::{
     with_self_rename_scope,
 };
 pub use oat::{
-    DexOptHeader, InstructionSet, OAT_MAGIC, ODEX_MAGIC, OatFile, OatHeader, OatVersion, OdexFile,
-    parse_oat, parse_oat_header, parse_odex, parse_odex_header,
+    DexOptHeader, InstructionSet, OAT_MAGIC, ODEX_MAGIC, OatEmbeddedDex, OatFile, OatHeader,
+    OatVersion, OdexFile, extract_oat_dex, parse_oat, parse_oat_header, parse_odex,
+    parse_odex_header,
 };
 pub use obfuscators::{
     CffUndoStats, Detection, Protector, StringStrip, UpstreamStatus, WatermarkFinding, detect_all,

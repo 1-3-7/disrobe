@@ -204,3 +204,13 @@ name = "groovy-decompile"
 status = "DEFER-PENDING-BACKEND"
 fixtures = []
 notes = "needs cfr / vineflower backend; deferred to a follow-up sprint that integrates backend detection."
+
+[[megafile]]
+path = "aar/fixture-native-module.aar"
+language = "java"
+target = "Java 25"
+toolchain = "Eclipse Temurin JDK 25.0.4 (javac, jar)"
+fixtures = [
+    "aar/NativeAarProbe.java (source; the recovery oracle for the classes.jar-nested classfile)",
+]
+notes = "minimal Android library module AAR: AndroidManifest.xml, classes.jar (real javac-compiled NativeAarProbe.class declaring native int add(int,int)), jni/arm64-v8a/libnativesurface.so (synthetic ELF exporting the matching Java_ symbol, built with the object crate write API, same technique as jni_native_surface.rs), jni/x86_64/libjnireg_x64.so (the committed real jni_register fixture, unmodified, for RegisterNatives recovery). Exercises jvm jni on a raw .aar: nested classes.jar unzip plus jni/<abi>/ (not lib/<abi>/) native library scanning."

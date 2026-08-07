@@ -22,7 +22,7 @@ Packs are cumulative presets over the 18 categories:
 | Pack-1 | `--metadata-pack-1` | ast + disasm + symbols + strings |
 | Pack-2 | `--metadata-pack-2` | Pack-1 + cfg + types + imports + provenance |
 | Pack-3 | `--metadata-pack-3` | Pack-2 + dfg + signatures + constants + roundtrip + sourcemap + manifest |
-| Pack-4 | `--metadata-pack-4` / `--llm` | Pack-3 + confidence + opcode-coverage + pii-map + decryption-keys (auth-gated) |
+| Pack-4 | `--metadata-pack-4` / `--llm` | Pack-3 + confidence + opcode-coverage + pii-map + decryption-keys. Only `decryption-keys` is auth-gated. |
 
 ## The 18 categories
 
@@ -52,6 +52,8 @@ The metadata flags are declared on the root parser, so every subcommand accepts 
 | `disrobe py disasm` | disasm, symbols, strings, constants, opcode-coverage, provenance, and cfg + dfg when the input reaches Mir |
 | `disrobe taint` | cfg + dfg |
 
+Every command in this table also contributes pii-map when requested. A dedicated pass (`disrobe-llm-metadata-pii`) scans the raw input bytes for PII-bearing indicators and secret findings, independent of which language command ran, so pii-map behaves like cfg/dfg rather than like the per-language categories above: one shared scan wired into the bundle writer, not a per-command implementation. It reports `applicable: false` with a reason when it finds nothing, distinct from an unimplemented category.
+
 ## Control flow and data flow
 
 The `cfg` and `dfg` categories are summaries of the normalized IR, so a command produces them only for an input that reaches the Mir rung. These input families reach it:
@@ -66,7 +68,7 @@ An input that never reaches Mir still gets an entry, reported as `applicable: fa
 
 ## Auth-gated categories
 
-The `decryption-keys` category exposes recovered keys and IVs and is gated: passing `--decryption-keys` without `--i-have-authorization` fails with `DR-CLI-0420`. Other legally sensitive recovery paths document their own authorization gate where the CLI exposes one.
+The `decryption-keys` category exposes recovered keys and IVs and is gated: passing `--decryption-keys` without `--i-have-authorization` fails with `DR-CLI-0420`. Other legally sensitive recovery paths document their own authorization gate where the CLI exposes one. The `pii-map` category itself carries no such gate: it emits only a placeholder and a location for each finding, never the matched value, so it adds no secret material of its own. Other categories such as `strings` and `ast` still report full recovered text by design, so a pack-4 bundle as a whole is not a scrubbed artifact.
 
 ## Provenance sidecars
 

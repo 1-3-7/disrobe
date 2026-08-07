@@ -202,22 +202,30 @@ fn eval_term(
             }
         })?,
         TermKind::BvUdiv(a, b) => bv_binary(manager, a, b, env, cache, budget, |w, x, y| {
-            x.checked_div(y)
-                .map(|quotient: u64| quotient & mask_bits(w))
+            Some(x.checked_div(y).unwrap_or_else(|| mask_bits(w)) & mask_bits(w))
         })?,
         TermKind::BvUrem(a, b) => bv_binary(manager, a, b, env, cache, budget, |w, x, y| {
-            x.checked_rem(y)
-                .map(|remainder: u64| remainder & mask_bits(w))
+            Some(x.checked_rem(y).unwrap_or(x) & mask_bits(w))
         })?,
         TermKind::BvSdiv(a, b) => bv_binary(manager, a, b, env, cache, budget, |w, x, y| {
-            sign_extend(x, w)
-                .checked_div(sign_extend(y, w))
-                .map(|quotient: i64| quotient as u64 & mask_bits(w))
+            let signed_x: i64 = sign_extend(x, w);
+            let signed_y: i64 = sign_extend(y, w);
+            let quotient: i64 = if signed_y == 0 {
+                if signed_x < 0 { 1 } else { -1 }
+            } else {
+                signed_x.wrapping_div(signed_y)
+            };
+            Some(quotient as u64 & mask_bits(w))
         })?,
         TermKind::BvSrem(a, b) => bv_binary(manager, a, b, env, cache, budget, |w, x, y| {
-            sign_extend(x, w)
-                .checked_rem(sign_extend(y, w))
-                .map(|remainder: i64| remainder as u64 & mask_bits(w))
+            let signed_x: i64 = sign_extend(x, w);
+            let signed_y: i64 = sign_extend(y, w);
+            let remainder: i64 = if signed_y == 0 {
+                signed_x
+            } else {
+                signed_x.wrapping_rem(signed_y)
+            };
+            Some(remainder as u64 & mask_bits(w))
         })?,
         TermKind::BvConcat(high, low) => {
             let (high_width, high_value): (u32, u64) = eval_bv(manager, high, env, cache, budget)?;
@@ -866,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn enumeration_declines_when_a_point_cannot_be_evaluated() {
+    fn a_divisor_zero_grid_point_evaluates_under_smt_lib_and_enumeration_agrees_with_bit_blast() {
         let mut manager: TermManager = TermManager::new();
         let bv_sort: oxiz::SortId = sort(&mut manager, 4);
         let x: TermId = manager.mk_var("x", bv_sort);
@@ -877,10 +885,18 @@ mod tests {
         let is_zero: TermId = manager.mk_eq(quotient, zero);
         let is_one: TermId = manager.mk_eq(quotient, one);
         let assumptions: [TermId; 2] = [is_zero, is_one];
-        assert_eq!(enumerated(&manager, &assumptions), Enumerated::Undecided);
+        assert_eq!(
+            enumerated(&manager, &assumptions),
+            Enumerated::NoModel,
+            "the reference evaluator grounds a udiv by zero to the SMT-LIB value, so every grid point including y=0 decides cleanly"
+        );
+        assert!(
+            term_conjunction_unsat(&manager, &assumptions, CONFIRM_NODE_BUDGET),
+            "one quotient term cannot equal both zero and one, and the bit-blaster covers udiv"
+        );
         assert_eq!(
             certify_raw(&manager, &assumptions, RawOutcome::Unsat),
-            Certified::Abstain
+            Certified::Unsat
         );
     }
 
@@ -906,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn no_procedure_covers_a_wide_variable_divisor_so_the_accept_is_refused() {
+    fn a_two_free_variable_divisor_at_thirty_two_bits_exceeds_the_practical_node_budget() {
         let mut manager: TermManager = TermManager::new();
         let bv_sort: oxiz::SortId = sort(&mut manager, 32);
         let x: TermId = manager.mk_var("x", bv_sort);
@@ -917,12 +933,15 @@ mod tests {
         let is_zero: TermId = manager.mk_eq(quotient, zero);
         let is_one: TermId = manager.mk_eq(quotient, one);
         let assumptions: [TermId; 2] = [is_zero, is_one];
-        assert_eq!(enumerated(&manager, &assumptions), Enumerated::Undecided);
-        assert!(!term_conjunction_unsat(
-            &manager,
-            &assumptions,
-            CONFIRM_NODE_BUDGET
-        ));
+        assert_eq!(
+            enumerated(&manager, &assumptions),
+            Enumerated::Undecided,
+            "32 bits is above the enumeration width cap regardless of the divisor"
+        );
+        assert!(
+            !term_conjunction_unsat(&manager, &assumptions, CONFIRM_NODE_BUDGET),
+            "a divider over two free 32-bit variables does not fit inside the production node budget, so the blast must decline rather than answer"
+        );
         assert!(!term_conjunction_unsat_via_polynomial(
             &manager,
             &assumptions
@@ -930,6 +949,46 @@ mod tests {
         assert_eq!(
             certify_raw(&manager, &assumptions, RawOutcome::Unsat),
             Certified::Abstain
+        );
+    }
+
+    #[test]
+    fn a_sixty_four_bit_two_variable_division_abstains_while_a_constant_divisor_still_confirms() {
+        let mut two_variable_manager: TermManager = TermManager::new();
+        let bv_sort: oxiz::SortId = sort(&mut two_variable_manager, 64);
+        let x: TermId = two_variable_manager.mk_var("x", bv_sort);
+        let y: TermId = two_variable_manager.mk_var("y", bv_sort);
+        let quotient: TermId = two_variable_manager.mk_bv_udiv(x, y);
+        let zero: TermId = two_variable_manager.mk_bitvec(0u64, 64);
+        let one: TermId = two_variable_manager.mk_bitvec(1u64, 64);
+        let is_zero: TermId = two_variable_manager.mk_eq(quotient, zero);
+        let is_one: TermId = two_variable_manager.mk_eq(quotient, one);
+        let two_variable_assumptions: [TermId; 2] = [is_zero, is_one];
+        assert!(
+            !term_conjunction_unsat(
+                &two_variable_manager,
+                &two_variable_assumptions,
+                CONFIRM_NODE_BUDGET
+            ),
+            "a 64-bit divider over two free variables does not fit inside the production node budget"
+        );
+
+        let mut constant_divisor_manager: TermManager = TermManager::new();
+        let x: TermId = constant_divisor_manager.mk_var("x", bv_sort);
+        let divisor: TermId = constant_divisor_manager.mk_bitvec(3u64, 64);
+        let quotient: TermId = constant_divisor_manager.mk_bv_udiv(x, divisor);
+        let zero: TermId = constant_divisor_manager.mk_bitvec(0u64, 64);
+        let seven: TermId = constant_divisor_manager.mk_bitvec(7u64, 64);
+        let is_zero: TermId = constant_divisor_manager.mk_eq(quotient, zero);
+        let is_seven: TermId = constant_divisor_manager.mk_eq(quotient, seven);
+        let constant_divisor_assumptions: [TermId; 2] = [is_zero, is_seven];
+        assert!(
+            term_conjunction_unsat(
+                &constant_divisor_manager,
+                &constant_divisor_assumptions,
+                CONFIRM_NODE_BUDGET
+            ),
+            "a constant divisor is the simplest operand and must still confirm at 64 bits"
         );
     }
 
@@ -1003,6 +1062,193 @@ mod tests {
                         CONFIRM_NODE_BUDGET
                     ),
                     "blasted shift of {value} by {shift} must reject a neighbouring value"
+                );
+            }
+        }
+    }
+
+    fn reference_udiv_four_bits(dividend: u64, divisor: u64) -> u64 {
+        dividend.checked_div(divisor).unwrap_or(0b1111)
+    }
+
+    fn reference_urem_four_bits(dividend: u64, divisor: u64) -> u64 {
+        dividend.checked_rem(divisor).unwrap_or(dividend)
+    }
+
+    fn sign_extend_four_bits(value: u64) -> i64 {
+        if value & 0b1000 == 0 {
+            value as i64
+        } else {
+            value as i64 - 16
+        }
+    }
+
+    fn reference_sdiv_four_bits(dividend: u64, divisor: u64) -> u64 {
+        if divisor == 0 {
+            if sign_extend_four_bits(dividend) < 0 {
+                0b0001
+            } else {
+                0b1111
+            }
+        } else {
+            let quotient: i64 = sign_extend_four_bits(dividend) / sign_extend_four_bits(divisor);
+            (quotient as u64) & 0b1111
+        }
+    }
+
+    fn reference_srem_four_bits(dividend: u64, divisor: u64) -> u64 {
+        if divisor == 0 {
+            dividend
+        } else {
+            let remainder: i64 = sign_extend_four_bits(dividend) % sign_extend_four_bits(divisor);
+            (remainder as u64) & 0b1111
+        }
+    }
+
+    type DivisionReference = fn(u64, u64) -> u64;
+
+    #[test]
+    fn the_blaster_matches_hand_written_division_and_remainder_at_four_bits() {
+        let operators: [(&'static str, BinaryBuilder, DivisionReference); 4] = [
+            ("udiv", TermManager::mk_bv_udiv, reference_udiv_four_bits),
+            ("urem", TermManager::mk_bv_urem, reference_urem_four_bits),
+            ("sdiv", TermManager::mk_bv_sdiv, reference_sdiv_four_bits),
+            ("srem", TermManager::mk_bv_srem, reference_srem_four_bits),
+        ];
+        for (label, build, reference) in operators {
+            for dividend in 0..16u64 {
+                for divisor in 0..16u64 {
+                    let mut manager: TermManager = TermManager::new();
+                    let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+                    let x: TermId = manager.mk_var("x", bv_sort);
+                    let y: TermId = manager.mk_var("y", bv_sort);
+                    let result: TermId = build(&mut manager, x, y);
+                    let dividend_term: TermId = manager.mk_bitvec(dividend, 4);
+                    let divisor_term: TermId = manager.mk_bitvec(divisor, 4);
+                    let pin_dividend: TermId = manager.mk_eq(x, dividend_term);
+                    let pin_divisor: TermId = manager.mk_eq(y, divisor_term);
+                    let expected: u64 = reference(dividend, divisor);
+                    let expected_term: TermId = manager.mk_bitvec(expected, 4);
+                    let agrees: TermId = manager.mk_eq(result, expected_term);
+                    let differs: TermId = manager.mk_not(agrees);
+                    assert!(
+                        term_conjunction_unsat(
+                            &manager,
+                            &[pin_dividend, pin_divisor, differs],
+                            CONFIRM_NODE_BUDGET
+                        ),
+                        "{label}({dividend}, {divisor}) must blast to {expected}"
+                    );
+                    let wrong_term: TermId = manager.mk_bitvec((expected + 1) & 0b1111, 4);
+                    let wrong: TermId = manager.mk_eq(result, wrong_term);
+                    assert!(
+                        term_conjunction_unsat(
+                            &manager,
+                            &[pin_dividend, pin_divisor, wrong],
+                            CONFIRM_NODE_BUDGET
+                        ),
+                        "{label}({dividend}, {divisor}) must reject a neighbouring value"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_reference_evaluator_matches_hand_written_division_and_remainder_at_four_bits() {
+        let operators: [(&'static str, BinaryBuilder, DivisionReference); 4] = [
+            ("udiv", TermManager::mk_bv_udiv, reference_udiv_four_bits),
+            ("urem", TermManager::mk_bv_urem, reference_urem_four_bits),
+            ("sdiv", TermManager::mk_bv_sdiv, reference_sdiv_four_bits),
+            ("srem", TermManager::mk_bv_srem, reference_srem_four_bits),
+        ];
+        for (label, build, reference) in operators {
+            for dividend in 0..16u64 {
+                for divisor in 0..16u64 {
+                    let mut manager: TermManager = TermManager::new();
+                    let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+                    let x: TermId = manager.mk_var("x", bv_sort);
+                    let y: TermId = manager.mk_var("y", bv_sort);
+                    let result: TermId = build(&mut manager, x, y);
+                    let expected: u64 = reference(dividend, divisor);
+                    let expected_term: TermId = manager.mk_bitvec(expected, 4);
+                    let agrees: TermId = manager.mk_eq(result, expected_term);
+                    let mut env: BTreeMap<TermId, u64> = BTreeMap::new();
+                    env.insert(x, dividend);
+                    env.insert(y, divisor);
+                    assert!(
+                        model_satisfies(&manager, &[agrees], &env),
+                        "{label}({dividend}, {divisor}) must evaluate to {expected} under the reference evaluator"
+                    );
+                    let wrong_term: TermId = manager.mk_bitvec((expected + 1) & 0b1111, 4);
+                    let disagrees: TermId = manager.mk_eq(result, wrong_term);
+                    assert!(
+                        !model_satisfies(&manager, &[disagrees], &env),
+                        "{label}({dividend}, {divisor}) must not evaluate to a neighbouring value"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_reference_evaluator_matches_the_smt_lib_overflow_boundary_at_sixty_four_bits() {
+        let most_negative: u64 = 1u64 << 63;
+        let minus_one: u64 = u64::MAX;
+        let cases: [(&'static str, BinaryBuilder, u64); 2] = [
+            ("sdiv", TermManager::mk_bv_sdiv, most_negative),
+            ("srem", TermManager::mk_bv_srem, 0u64),
+        ];
+        for (label, build, expected) in cases {
+            let mut manager: TermManager = TermManager::new();
+            let bv_sort: oxiz::SortId = sort(&mut manager, 64);
+            let x: TermId = manager.mk_var("x", bv_sort);
+            let y: TermId = manager.mk_var("y", bv_sort);
+            let result: TermId = build(&mut manager, x, y);
+            let expected_term: TermId = manager.mk_bitvec(expected, 64);
+            let agrees: TermId = manager.mk_eq(result, expected_term);
+            let mut env: BTreeMap<TermId, u64> = BTreeMap::new();
+            env.insert(x, most_negative);
+            env.insert(y, minus_one);
+            assert!(
+                model_satisfies(&manager, &[agrees], &env),
+                "{label}(i64::MIN, -1) at 64 bits must wrap to {expected} instead of overflowing"
+            );
+            let wrong_term: TermId = manager.mk_bitvec(expected ^ 1, 64);
+            let disagrees: TermId = manager.mk_eq(result, wrong_term);
+            assert!(
+                !model_satisfies(&manager, &[disagrees], &env),
+                "{label}(i64::MIN, -1) at 64 bits must not evaluate to a neighbouring value"
+            );
+        }
+    }
+
+    #[test]
+    fn a_quotient_composes_into_a_further_arithmetic_term() {
+        for dividend in [0u64, 1, 5, 15] {
+            for divisor in [0u64, 1, 3, 15] {
+                let mut manager: TermManager = TermManager::new();
+                let bv_sort: oxiz::SortId = sort(&mut manager, 4);
+                let x: TermId = manager.mk_var("x", bv_sort);
+                let y: TermId = manager.mk_var("y", bv_sort);
+                let quotient: TermId = manager.mk_bv_udiv(x, y);
+                let one: TermId = manager.mk_bitvec(1u64, 4);
+                let composed: TermId = manager.mk_bv_add(quotient, one);
+                let dividend_term: TermId = manager.mk_bitvec(dividend, 4);
+                let divisor_term: TermId = manager.mk_bitvec(divisor, 4);
+                let pin_dividend: TermId = manager.mk_eq(x, dividend_term);
+                let pin_divisor: TermId = manager.mk_eq(y, divisor_term);
+                let expected: u64 = (reference_udiv_four_bits(dividend, divisor) + 1) & 0b1111;
+                let expected_term: TermId = manager.mk_bitvec(expected, 4);
+                let agrees: TermId = manager.mk_eq(composed, expected_term);
+                let differs: TermId = manager.mk_not(agrees);
+                assert!(
+                    term_conjunction_unsat(
+                        &manager,
+                        &[pin_dividend, pin_divisor, differs],
+                        CONFIRM_NODE_BUDGET
+                    ),
+                    "udiv({dividend}, {divisor}) + 1 must blast to {expected} through composition"
                 );
             }
         }
@@ -1173,22 +1419,22 @@ mod tests {
             },
             Coverage {
                 operation: "udiv",
-                blasted: false,
+                blasted: true,
                 enumerated: true,
             },
             Coverage {
                 operation: "sdiv",
-                blasted: false,
+                blasted: true,
                 enumerated: true,
             },
             Coverage {
                 operation: "urem",
-                blasted: false,
+                blasted: true,
                 enumerated: true,
             },
             Coverage {
                 operation: "srem",
-                blasted: false,
+                blasted: true,
                 enumerated: true,
             },
             Coverage {

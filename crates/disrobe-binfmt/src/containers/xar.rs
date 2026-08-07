@@ -317,60 +317,63 @@ fn decode_lzma(raw: &[u8], declared: u64) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
+fn zlib(data: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut e: flate2::write::ZlibEncoder<Vec<u8>> =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(data).expect("zlib write");
+    e.finish().expect("zlib finish")
+}
+
+#[cfg(test)]
+pub(crate) fn build_xar(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut heap: Vec<u8> = Vec::new();
+    let mut file_xml: String = String::new();
+    for (name, body) in files {
+        let compressed: Vec<u8> = zlib(body);
+        let offset: usize = heap.len();
+        heap.extend_from_slice(&compressed);
+        push_xar_file_xml(&mut file_xml, name, compressed.len(), offset, body.len());
+    }
+    let toc: String = format!("<?xml version=\"1.0\"?><xar><toc>{file_xml}</toc></xar>");
+    let toc_compressed: Vec<u8> = zlib(toc.as_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(XAR_MAGIC);
+    out.extend_from_slice(&(HEADER_LEN as u16).to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&(toc_compressed.len() as u64).to_be_bytes());
+    out.extend_from_slice(&(toc.len() as u64).to_be_bytes());
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&toc_compressed);
+    out.extend_from_slice(&heap);
+    out
+}
+
+#[cfg(test)]
+fn push_xar_file_xml(
+    out: &mut String,
+    name: &str,
+    compressed_len: usize,
+    offset: usize,
+    body_len: usize,
+) {
+    out.push_str("<file id=\"1\"><name>");
+    out.push_str(name);
+    out.push_str("</name><type>file</type><data><length>");
+    out.push_str(&compressed_len.to_string());
+    out.push_str("</length><offset>");
+    out.push_str(&offset.to_string());
+    out.push_str("</offset><size>");
+    out.push_str(&body_len.to_string());
+    out.push_str("</size><encoding style=\"application/x-gzip\"/></data></file>");
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::io::Write as _;
-
     use super::*;
-
-    fn zlib(data: &[u8]) -> Vec<u8> {
-        let mut e: flate2::write::ZlibEncoder<Vec<u8>> =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        e.write_all(data).expect("zlib write");
-        e.finish().expect("zlib finish")
-    }
-
-    fn build_xar(files: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut heap: Vec<u8> = Vec::new();
-        let mut file_xml: String = String::new();
-        for (name, body) in files {
-            let compressed: Vec<u8> = zlib(body);
-            let offset: usize = heap.len();
-            heap.extend_from_slice(&compressed);
-            push_xar_file_xml(&mut file_xml, name, compressed.len(), offset, body.len());
-        }
-        let toc: String = format!("<?xml version=\"1.0\"?><xar><toc>{file_xml}</toc></xar>");
-        let toc_compressed: Vec<u8> = zlib(toc.as_bytes());
-
-        let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(XAR_MAGIC);
-        out.extend_from_slice(&(HEADER_LEN as u16).to_be_bytes());
-        out.extend_from_slice(&1u16.to_be_bytes());
-        out.extend_from_slice(&(toc_compressed.len() as u64).to_be_bytes());
-        out.extend_from_slice(&(toc.len() as u64).to_be_bytes());
-        out.extend_from_slice(&1u32.to_be_bytes());
-        out.extend_from_slice(&toc_compressed);
-        out.extend_from_slice(&heap);
-        out
-    }
-
-    fn push_xar_file_xml(
-        out: &mut String,
-        name: &str,
-        compressed_len: usize,
-        offset: usize,
-        body_len: usize,
-    ) {
-        out.push_str("<file id=\"1\"><name>");
-        out.push_str(name);
-        out.push_str("</name><type>file</type><data><length>");
-        out.push_str(&compressed_len.to_string());
-        out.push_str("</length><offset>");
-        out.push_str(&offset.to_string());
-        out.push_str("</offset><size>");
-        out.push_str(&body_len.to_string());
-        out.push_str("</size><encoding style=\"application/x-gzip\"/></data></file>");
-    }
 
     #[test]
     fn detects_and_extracts_xar_files() {

@@ -1,4 +1,5 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -6,13 +7,17 @@ use std::time::Duration;
 use clap::{Subcommand, ValueEnum};
 
 use disrobe_pass_jvm::{
-    AndroidBackend, AppliedNames, BackendCapability, BackendInvocation, CLASS_MAGIC, ClassFile,
-    DEX_MAGIC_PREFIX, DecompiledClass, DecompiledDex, DexFile, DexStringRecovery,
-    FingerprintReport, Instruction, JarExtract, JvmBackend, LibrarySignatureSet, Operands,
-    PeelStatus, PeeledClass, ProguardMapping, ProtectorPeelReport, RetracedFrame,
+    AabExtract, AarExtract, AndroidBackend, ApkExtract, ApksExtract, AppliedNames,
+    BackendCapability, BackendInvocation, CLASS_MAGIC, ClassFile, DEX_MAGIC_PREFIX,
+    DecompiledClass, DecompiledDex, DexFile, DexStringRecovery, FingerprintReport, Instruction,
+    JarEntry, JarExtract, JniPrototype, JniSurfaceReport, JvmBackend, LibrarySignatureSet,
+    NativeMethod, OatEmbeddedDex, Operands, PeelStatus, PeeledClass, ProguardMapping,
+    ProtectorPeelReport, ResolvedNative, RetracedFrame, analyze_jni_native_methods,
     apply_proguard_mapping, decompile_class, decompile_dex, detect_available,
-    detect_protector_family, disassemble, extract_jar, fingerprint_library_symbols, invoke_android,
-    invoke_jvm, parse_classfile, parse_code_attribute, parse_dex, parse_proguard_mapping,
+    detect_protector_family, disassemble, emit_jni_prototypes, extract_aab, extract_aar,
+    extract_apk, extract_apks, extract_jar, extract_native_methods, extract_oat_dex,
+    fingerprint_library_symbols, invoke_android, invoke_jvm, native_methods_from_class,
+    parse_classfile, parse_code_attribute, parse_dex, parse_proguard_mapping,
     peel_and_decompile_classfile, recover_dex_reflection_strings,
 };
 use std::fmt::Write as _;
@@ -99,6 +104,21 @@ pub(crate) enum JvmCmd {
         )]
         json: bool,
     },
+    #[command(
+        about = "link declared `native` methods across the DEX/classfile <-> .so/.dll/.dylib JNI boundary and emit C prototypes"
+    )]
+    Jni {
+        #[arg(help = "input .class / .jar / .dex / .apk / .aab / .aar / .apks / .oat file")]
+        input: PathBuf,
+        #[arg(
+            long = "native",
+            value_name = "LIB",
+            help = "native library (.so / .dll / .dylib) or a split .apk/.apks, repeatable; required for a bare .class/.jar/.dex input, additive on top of the native libraries and dex a self-contained .apk/.aab/.aar/.apks already carries"
+        )]
+        native: Vec<PathBuf>,
+        #[arg(long, help = "emit the JNI link table as machine-clean JSON to stdout")]
+        json: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +163,11 @@ pub(crate) fn run(action: JvmCmd) -> miette::Result<()> {
             line,
             json,
         } => retrace(mapping, class, method, line, json),
+        JvmCmd::Jni {
+            input,
+            native,
+            json,
+        } => jni_link(input, native, json),
     }
 }
 
@@ -195,6 +220,536 @@ fn load_mapping(mapping_path: &std::path::Path) -> miette::Result<ProguardMappin
         .map_err(|e| miette::miette!("DR-CLI-0420: cannot read mapping file: {e}"))?;
     parse_proguard_mapping(&text)
         .map_err(|e| miette::miette!("DR-CLI-0421: proguard mapping parse: {e}"))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JniInputKind {
+    Class,
+    Dex,
+    Jar,
+    Apk,
+    Aab,
+    Aar,
+    Apks,
+    Oat,
+    Unknown,
+}
+
+fn classify_jni_input(bytes: &[u8], path: &std::path::Path) -> JniInputKind {
+    if bytes.len() >= 4
+        && u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == CLASS_MAGIC
+    {
+        return JniInputKind::Class;
+    }
+    if bytes.len() >= 8 && &bytes[..4] == DEX_MAGIC_PREFIX.as_slice() && bytes[7] == 0 {
+        return JniInputKind::Dex;
+    }
+    let ext: Option<String> = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    if bytes.len() >= 4 && &bytes[..4] == b"PK\x03\x04" {
+        return match ext.as_deref() {
+            Some("apk") => JniInputKind::Apk,
+            Some("aab") => JniInputKind::Aab,
+            Some("aar") => JniInputKind::Aar,
+            Some("apks") => JniInputKind::Apks,
+            _ => JniInputKind::Jar,
+        };
+    }
+    if bytes.len() >= 4 && bytes[..4] == [0x7F, b'E', b'L', b'F'] && ext.as_deref() == Some("oat") {
+        return JniInputKind::Oat;
+    }
+    JniInputKind::Unknown
+}
+
+struct JniInputSet {
+    native_methods: Vec<NativeMethod>,
+    native_libs: Vec<(String, Vec<u8>)>,
+    code_scan_complete: bool,
+    decode_error_count: usize,
+}
+
+struct NativeArgSet {
+    native_libs: Vec<(String, Vec<u8>)>,
+    dex_files: BTreeMap<String, Vec<u8>>,
+}
+
+fn merge_apk_splits(splits: &BTreeMap<String, ApkExtract>) -> NativeArgSet {
+    let mut dex_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut native_libs: Vec<(String, Vec<u8>)> = Vec::new();
+    for (split_name, split) in splits {
+        for (entry_path, bytes) in &split.dex_files {
+            dex_files.insert(format!("{split_name}/{entry_path}"), bytes.clone());
+        }
+        for (entry_path, bytes) in &split.native_libs {
+            native_libs.push((format!("{split_name}/{entry_path}"), bytes.clone()));
+        }
+    }
+    NativeArgSet {
+        native_libs,
+        dex_files,
+    }
+}
+
+fn read_native_args(paths: &[PathBuf]) -> miette::Result<NativeArgSet> {
+    let mut native_libs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut dex_files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for path in paths {
+        let bytes: Vec<u8> = std::fs::read(path).map_err(|e| {
+            miette::miette!(
+                "DR-CLI-0459: cannot read native library {}: {e}",
+                path.display()
+            )
+        })?;
+        let label: String = path.display().to_string();
+        let ext: Option<String> = path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(str::to_ascii_lowercase);
+        let is_zip: bool = bytes.len() >= 4 && &bytes[..4] == b"PK\x03\x04";
+        match (is_zip, ext.as_deref()) {
+            (true, Some("apk")) => {
+                let extract: ApkExtract = extract_apk(&bytes).map_err(|e| {
+                    miette::miette!("DR-CLI-0472: --native apk extract for {label}: {e}")
+                })?;
+                for (entry_path, lib_bytes) in extract.native_libs {
+                    native_libs.push((format!("{label}/{entry_path}"), lib_bytes));
+                }
+                for (entry_path, dex_bytes) in extract.dex_files {
+                    dex_files.insert(format!("{label}/{entry_path}"), dex_bytes);
+                }
+            }
+            (true, Some("apks")) => {
+                let extract: ApksExtract = extract_apks(&bytes).map_err(|e| {
+                    miette::miette!("DR-CLI-0473: --native apks extract for {label}: {e}")
+                })?;
+                let merged: NativeArgSet = merge_apk_splits(&extract.splits);
+                for (entry_path, dex_bytes) in merged.dex_files {
+                    dex_files.insert(format!("{label}/{entry_path}"), dex_bytes);
+                }
+                for (entry_path, lib_bytes) in merged.native_libs {
+                    native_libs.push((format!("{label}/{entry_path}"), lib_bytes));
+                }
+            }
+            _ => native_libs.push((label, bytes)),
+        }
+    }
+    Ok(NativeArgSet {
+        native_libs,
+        dex_files,
+    })
+}
+
+fn native_methods_from_dex_entries(
+    dex_files: &BTreeMap<String, Vec<u8>>,
+) -> (Vec<NativeMethod>, bool, usize) {
+    let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
+    for (name, bytes) in dex_files {
+        let leaf: &str = name.rsplit('/').next().unwrap_or(name.as_str());
+        if !(leaf.starts_with("classes") && leaf.to_ascii_lowercase().ends_with(".dex")) {
+            continue;
+        }
+        let Ok(dex): Result<DexFile, _> = parse_dex(bytes) else {
+            code_scan_complete = false;
+            decode_error_count += 1;
+            continue;
+        };
+        if let Ok(methods) = extract_native_methods(&dex, bytes) {
+            native_methods.extend(methods);
+        } else {
+            code_scan_complete = false;
+            decode_error_count += 1;
+        }
+    }
+    (native_methods, code_scan_complete, decode_error_count)
+}
+
+fn is_native_library_path(path: &str) -> bool {
+    if !path.contains("/lib/") {
+        return false;
+    }
+    std::path::Path::new(path)
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext: &str| {
+            ext.eq_ignore_ascii_case("so")
+                || ext.eq_ignore_ascii_case("dll")
+                || ext.eq_ignore_ascii_case("dylib")
+        })
+}
+
+fn aab_native_libs(extract: &AabExtract) -> Vec<(String, Vec<u8>)> {
+    extract
+        .jar
+        .entries
+        .iter()
+        .filter(|entry: &&JarEntry| is_native_library_path(entry.path.as_str()))
+        .map(|entry: &JarEntry| (entry.path.clone(), entry.bytes.clone()))
+        .collect()
+}
+
+fn aab_dex_files(extract: &AabExtract) -> BTreeMap<String, Vec<u8>> {
+    let mut out: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for module in extract.modules.values() {
+        for (name, data) in &module.dex_files {
+            out.insert(format!("{}/{name}", module.name), data.clone());
+        }
+    }
+    out
+}
+
+fn native_methods_from_classes_jar(extract: &JarExtract) -> (Vec<NativeMethod>, bool, usize) {
+    let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
+    for class_bytes in extract.classes.values() {
+        let Ok(cf): Result<ClassFile, _> = parse_classfile(class_bytes) else {
+            code_scan_complete = false;
+            decode_error_count += 1;
+            continue;
+        };
+        native_methods.extend(native_methods_from_class(&cf));
+    }
+    (native_methods, code_scan_complete, decode_error_count)
+}
+
+fn native_methods_from_oat_dex(embedded: &[OatEmbeddedDex]) -> (Vec<NativeMethod>, bool, usize) {
+    let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
+    for dex in embedded {
+        let Ok(dex_file): Result<DexFile, _> = parse_dex(&dex.bytes) else {
+            code_scan_complete = false;
+            decode_error_count += 1;
+            continue;
+        };
+        if let Ok(methods) = extract_native_methods(&dex_file, &dex.bytes) {
+            native_methods.extend(methods);
+        } else {
+            code_scan_complete = false;
+            decode_error_count += 1;
+        }
+    }
+    (native_methods, code_scan_complete, decode_error_count)
+}
+
+fn collect_primary_jni_input(path: &std::path::Path, bytes: &[u8]) -> miette::Result<JniInputSet> {
+    match classify_jni_input(bytes, path) {
+        JniInputKind::Dex => {
+            let dex: DexFile =
+                parse_dex(bytes).map_err(|e| miette::miette!("DR-CLI-0460: dex parse: {e}"))?;
+            let native_methods: Vec<NativeMethod> = extract_native_methods(&dex, bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0461: native method scan: {e}"))?;
+            Ok(JniInputSet {
+                native_methods,
+                native_libs: Vec::new(),
+                code_scan_complete: true,
+                decode_error_count: 0,
+            })
+        }
+        JniInputKind::Class => {
+            let cf: ClassFile = parse_classfile(bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0462: classfile parse: {e}"))?;
+            Ok(JniInputSet {
+                native_methods: native_methods_from_class(&cf),
+                native_libs: Vec::new(),
+                code_scan_complete: true,
+                decode_error_count: 0,
+            })
+        }
+        JniInputKind::Jar => {
+            let extract: JarExtract =
+                extract_jar(bytes).map_err(|e| miette::miette!("DR-CLI-0463: jar extract: {e}"))?;
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_classes_jar(&extract);
+            Ok(JniInputSet {
+                native_methods,
+                native_libs: Vec::new(),
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Apk => {
+            let extract: ApkExtract =
+                extract_apk(bytes).map_err(|e| miette::miette!("DR-CLI-0464: apk extract: {e}"))?;
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_dex_entries(&extract.dex_files);
+            let native_libs: Vec<(String, Vec<u8>)> = extract.native_libs.into_iter().collect();
+            Ok(JniInputSet {
+                native_methods,
+                native_libs,
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Aab => {
+            let extract: AabExtract =
+                extract_aab(bytes).map_err(|e| miette::miette!("DR-CLI-0465: aab extract: {e}"))?;
+            let dex_files: BTreeMap<String, Vec<u8>> = aab_dex_files(&extract);
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_dex_entries(&dex_files);
+            let native_libs: Vec<(String, Vec<u8>)> = aab_native_libs(&extract);
+            Ok(JniInputSet {
+                native_methods,
+                native_libs,
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Aar => {
+            let extract: AarExtract =
+                extract_aar(bytes).map_err(|e| miette::miette!("DR-CLI-0469: aar extract: {e}"))?;
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_classes_jar(&extract.classes_jar);
+            let native_libs: Vec<(String, Vec<u8>)> = extract.native_libs.into_iter().collect();
+            Ok(JniInputSet {
+                native_methods,
+                native_libs,
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Apks => {
+            let extract: ApksExtract = extract_apks(bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0470: apks extract: {e}"))?;
+            let merged: NativeArgSet = merge_apk_splits(&extract.splits);
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_dex_entries(&merged.dex_files);
+            Ok(JniInputSet {
+                native_methods,
+                native_libs: merged.native_libs,
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Oat => {
+            let embedded: Vec<OatEmbeddedDex> = extract_oat_dex(bytes)
+                .map_err(|e| miette::miette!("DR-CLI-0471: oat dex extract: {e}"))?;
+            let (native_methods, code_scan_complete, decode_error_count): (
+                Vec<NativeMethod>,
+                bool,
+                usize,
+            ) = native_methods_from_oat_dex(&embedded);
+            Ok(JniInputSet {
+                native_methods,
+                native_libs: Vec::new(),
+                code_scan_complete,
+                decode_error_count,
+            })
+        }
+        JniInputKind::Unknown => Err(miette::miette!(
+            "DR-CLI-0466: input does not look like a .class/.jar/.dex/.apk/.aab/.aar/.apks/.oat \
+             file"
+        )),
+    }
+}
+
+fn collect_jni_input(
+    path: &std::path::Path,
+    bytes: &[u8],
+    extra: NativeArgSet,
+) -> miette::Result<JniInputSet> {
+    let mut input_set: JniInputSet = collect_primary_jni_input(path, bytes)?;
+    input_set.native_libs.extend(extra.native_libs);
+    if !extra.dex_files.is_empty() {
+        let (extra_methods, extra_complete, extra_errors): (Vec<NativeMethod>, bool, usize) =
+            native_methods_from_dex_entries(&extra.dex_files);
+        input_set.native_methods.extend(extra_methods);
+        input_set.code_scan_complete &= extra_complete;
+        input_set.decode_error_count += extra_errors;
+    }
+    Ok(input_set)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct JniUnresolvedEntry {
+    class: String,
+    method: String,
+    descriptor: String,
+    jni_short_symbol: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct JniAmbiguousEntry {
+    symbol: String,
+    libraries: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct JniLinkReport {
+    schema: &'static str,
+    input: String,
+    native_libraries: Vec<String>,
+    surface: JniSurfaceReport,
+    prototypes: Vec<JniPrototype>,
+    unresolved: Vec<JniUnresolvedEntry>,
+    ambiguous: Vec<JniAmbiguousEntry>,
+}
+
+fn derive_unresolved(surface: &JniSurfaceReport) -> Vec<JniUnresolvedEntry> {
+    let mut out: Vec<JniUnresolvedEntry> = surface
+        .native_methods
+        .iter()
+        .filter(|m: &&ResolvedNative| m.resolved_in.is_none())
+        .map(|m: &ResolvedNative| JniUnresolvedEntry {
+            class: m.class.clone(),
+            method: m.method.clone(),
+            descriptor: m.descriptor.clone(),
+            jni_short_symbol: m.jni_short_symbol.clone(),
+        })
+        .collect();
+    out.sort_by(|a: &JniUnresolvedEntry, b: &JniUnresolvedEntry| {
+        (a.class.as_str(), a.method.as_str(), a.descriptor.as_str()).cmp(&(
+            b.class.as_str(),
+            b.method.as_str(),
+            b.descriptor.as_str(),
+        ))
+    });
+    out
+}
+
+fn derive_ambiguous(surface: &JniSurfaceReport) -> Vec<JniAmbiguousEntry> {
+    let mut symbol_to_libs: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for lib in &surface.libraries {
+        for sym in &lib.jni_exports {
+            symbol_to_libs
+                .entry(sym.as_str())
+                .or_default()
+                .push(lib.path.as_str());
+        }
+    }
+    let mut out: Vec<JniAmbiguousEntry> = symbol_to_libs
+        .into_iter()
+        .filter(|(_, libs): &(&str, Vec<&str>)| libs.len() > 1)
+        .map(|(symbol, libs): (&str, Vec<&str>)| JniAmbiguousEntry {
+            symbol: symbol.to_owned(),
+            libraries: libs.into_iter().map(str::to_owned).collect(),
+        })
+        .collect();
+    out.sort_by(|a: &JniAmbiguousEntry, b: &JniAmbiguousEntry| a.symbol.cmp(&b.symbol));
+    out
+}
+
+fn jni_link(input: PathBuf, native: Vec<PathBuf>, json: bool) -> miette::Result<()> {
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-CLI-0467: cannot read input: {e}"))?;
+    let extra: NativeArgSet = read_native_args(&native)?;
+    let input_set: JniInputSet = collect_jni_input(&input, &bytes, extra)?;
+    let native_lib_refs: Vec<(&str, &[u8])> = input_set
+        .native_libs
+        .iter()
+        .map(|(p, b): &(String, Vec<u8>)| (p.as_str(), b.as_slice()))
+        .collect();
+    let mut surface: JniSurfaceReport =
+        analyze_jni_native_methods(&input_set.native_methods, &native_lib_refs);
+    surface.code_scan_complete = input_set.code_scan_complete;
+    surface.decode_error_count = input_set.decode_error_count;
+    let prototypes: Vec<JniPrototype> = emit_jni_prototypes(&input_set.native_methods);
+    let unresolved: Vec<JniUnresolvedEntry> = derive_unresolved(&surface);
+    let ambiguous: Vec<JniAmbiguousEntry> = derive_ambiguous(&surface);
+    let native_libraries: Vec<String> = surface.libraries.iter().map(|l| l.path.clone()).collect();
+    let report: JniLinkReport = JniLinkReport {
+        schema: "disrobe.jvm.jni-link/v1",
+        input: input.display().to_string(),
+        native_libraries,
+        surface,
+        prototypes,
+        unresolved,
+        ambiguous,
+    };
+    if json {
+        let text: String = serde_json::to_string_pretty(&report)
+            .map_err(|e| miette::miette!("DR-CLI-0468: jni link serialize: {e}"))?;
+        println!("{text}");
+        return Ok(());
+    }
+    print_jni_link_text(&report);
+    Ok(())
+}
+
+fn print_jni_link_text(report: &JniLinkReport) {
+    println!("jvm jni: OK");
+    println!("  input:              {}", report.input);
+    println!("  native libraries:   {}", report.surface.libraries.len());
+    for lib in &report.surface.libraries {
+        println!(
+            "    - {} (abi={} format={} arch={} exports={})",
+            lib.path,
+            lib.abi.as_deref().unwrap_or("?"),
+            lib.format,
+            lib.arch,
+            lib.jni_exports.len()
+        );
+    }
+    println!(
+        "  native methods:     {}",
+        report.surface.native_method_count
+    );
+    println!(
+        "  resolved static:    {}",
+        report.surface.resolved_statically
+    );
+    println!("  dynamic only:       {}", report.surface.dynamic_only);
+    println!(
+        "  registered natives: {}",
+        report.surface.registered_natives.len()
+    );
+    for reg in &report.surface.registered_natives {
+        println!(
+            "    - {} {} @ 0x{:x} in {} (fn={})",
+            reg.name,
+            reg.signature,
+            reg.fn_addr,
+            reg.library,
+            reg.fn_symbol.as_deref().unwrap_or("?")
+        );
+    }
+    println!(
+        "  code scan:          {}",
+        if report.surface.code_scan_complete {
+            "complete".to_owned()
+        } else {
+            format!(
+                "INCOMPLETE ({} decode error(s))",
+                report.surface.decode_error_count
+            )
+        }
+    );
+    println!("  unresolved:         {}", report.unresolved.len());
+    for u in &report.unresolved {
+        println!(
+            "    - {}.{}{} ({})",
+            u.class, u.method, u.descriptor, u.jni_short_symbol
+        );
+    }
+    if !report.ambiguous.is_empty() {
+        println!("  ambiguous:          {}", report.ambiguous.len());
+        for a in &report.ambiguous {
+            println!("    - {} exported by {}", a.symbol, a.libraries.join(", "));
+        }
+    }
+    println!("  prototypes:         {}", report.prototypes.len());
+    for p in &report.prototypes {
+        println!("    {}", p.declaration);
+    }
 }
 
 fn applied_to_json(applied: &AppliedNames) -> serde_json::Value {

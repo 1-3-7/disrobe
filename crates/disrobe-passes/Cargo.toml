@@ -43,6 +43,7 @@ full = [
     "as3",
     "scriptlang",
     "nativelang",
+    "webview",
 ]
 
 pyarmor = ["dep:disrobe-pass-pyarmor", "disrobe-pass-pyarmor/chain"]
@@ -64,13 +65,14 @@ shell = ["dep:disrobe-pass-shell", "disrobe-pass-shell/chain"]
 mobile = ["dep:disrobe-pass-mobile", "disrobe-pass-mobile/chain"]
 lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain"]
 swift = ["dep:disrobe-pass-swift-objc", "disrobe-pass-swift-objc/chain"]
-jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-jvm/chain"]
+jvm = ["dep:disrobe-pass-jvm", "disrobe-pass-jvm/chain", "disrobe-pass-mobile?/jni"]
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain"]
 go = ["dep:disrobe-pass-go", "disrobe-pass-go/chain"]
 beam = ["dep:disrobe-pass-beam", "disrobe-pass-beam/chain"]
 as3 = ["dep:disrobe-pass-as3", "disrobe-pass-as3/chain"]
 scriptlang = ["dep:disrobe-pass-scriptlang", "disrobe-pass-scriptlang/chain"]
 nativelang = ["dep:disrobe-pass-nativelang", "disrobe-pass-nativelang/chain"]
+webview = ["dep:disrobe-pass-webview", "disrobe-pass-webview/chain"]
 
 [dependencies]
 disrobe-core = { workspace = true, features = ["chain"] }
@@ -100,3 +102,4 @@ disrobe-pass-beam = { workspace = true, optional = true }
 disrobe-pass-as3 = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
+disrobe-pass-webview = { workspace = true, optional = true }

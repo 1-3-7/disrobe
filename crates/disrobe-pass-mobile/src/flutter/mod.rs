@@ -12,6 +12,10 @@ pub mod aot_lift;
 pub mod arm64_traversal;
 pub mod cid_table;
 pub mod cluster;
+pub mod dart_graph;
+pub mod dart_graph_inventory;
+pub mod dart_graph_layout;
+pub mod dart_graph_recovery;
 pub mod demangler;
 pub mod disasm;
 pub mod kernel;
@@ -35,6 +39,25 @@ pub use cid_table::{
 pub use cluster::{
     ClusterFramingStatus, DartClusterRole, DartClusterSchemaReport, DartObservedCluster,
     DartReadStream, DartSnapshotFraming, attach_cluster_schema, parse_snapshot_framing,
+};
+pub use dart_graph::{DartGraphClusterSummary, DartGraphLimits, DartGraphSnapshotSummary};
+pub use dart_graph_inventory::{
+    DartGraphAttributionResidue, DartGraphDeclaredObjects, DartGraphInventoryCounts,
+    DartPinnedClassInventory, DartPinnedFieldInventory, DartPinnedInventory,
+    DartPinnedLibraryInventory, DartPinnedMethodInventory,
+};
+pub use dart_graph_layout::{
+    DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_FEATURES,
+    DART_3_12_2_ANDROID_ARM64_PRODUCT_DWARF_LAYOUT, DART_3_12_2_ANDROID_ARM64_PRODUCT_FEATURES,
+    DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT, DartClassBodyLayout, DartClusterBodyEntry,
+    DartClusterBodyKind, DartDeclarationBodyLayouts, DartFieldBodyLayout, DartFunctionBodyLayout,
+    DartLibraryBodyLayout, DartPatchClassBodyLayout, DartPinnedLayout, PINNED_DART_GRAPH_LAYOUTS,
+    has_pinned_dart_graph_layout, pinned_dart_graph_layout,
+};
+pub use dart_graph_recovery::{
+    DartGraphBlobSizes, DartGraphNameMode, DartGraphObfuscationHint, DartGraphRecoveryOptions,
+    DartGraphRecoveryReport, DartGraphRecoveryStatus, recover_dart_pinned_elf,
+    recover_dart_pinned_standalone,
 };
 pub use demangler::{DartNameKind, DemangledName, demangle, demangle_qualified};
 pub use disasm::{
@@ -513,18 +536,32 @@ pub fn decompile_libapp_so_recovery(bytes: &[u8]) -> Result<libapp_parser::DartL
     ))
 }
 
-pub(crate) fn isolate_instruction_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+pub fn isolate_instruction_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     let file: ObjFile<'_> =
         ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
     let layout: LibAppLayout = parse_libapp_so(bytes)?;
     section_bytes(&file, layout.isolate_snapshot_instructions.as_ref())
 }
 
-pub(crate) fn isolate_data_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+pub fn isolate_data_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     let file: ObjFile<'_> =
         ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
     let layout: LibAppLayout = parse_libapp_so(bytes)?;
     section_bytes(&file, layout.isolate_snapshot_data.as_ref())
+}
+
+pub fn vm_data_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let file: ObjFile<'_> =
+        ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
+    let layout: LibAppLayout = parse_libapp_so(bytes)?;
+    section_bytes(&file, layout.vm_snapshot_data.as_ref())
+}
+
+pub fn vm_instruction_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
+    let file: ObjFile<'_> =
+        ObjFile::parse(bytes).map_err(|e: object::Error| Error::ElfParse(e.to_string()))?;
+    let layout: LibAppLayout = parse_libapp_so(bytes)?;
+    section_bytes(&file, layout.vm_snapshot_instructions.as_ref())
 }
 
 pub fn disassemble_libapp_so(bytes: &[u8]) -> Result<disasm::Arm64Disassembly> {

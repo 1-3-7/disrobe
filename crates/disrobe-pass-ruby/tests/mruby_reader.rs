@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-use disrobe_pass_ruby::{Flavor, RubyAnalysis, RubyError, analyze_bytes};
+use std::path::PathBuf;
+
+use disrobe_pass_ruby::{Flavor, RubyAnalysis, analyze_bytes};
 
 mod common;
 
@@ -72,9 +74,66 @@ fn reader_flags_debug_and_lvar_sections_independently() {
 }
 
 #[test]
-fn rejects_unknown_section_id() {
-    let sections: Vec<Vec<u8>> = vec![common::synth_section(*b"WUT?", &[0u8; 4])];
+fn unknown_section_id_is_skipped_not_rejected() {
+    let sections: Vec<Vec<u8>> = vec![
+        common::synth_section(*b"WUT?", &[0u8; 4]),
+        common::synth_section(*b"IREP", &[0u8; 16]),
+        common::synth_section(*b"END\0", &[]),
+    ];
     let bytes: Vec<u8> = common::synth_rite(*b"0300", &sections);
-    let err: RubyError = analyze_bytes(&bytes, "x.mrb").expect_err("unknown");
-    assert!(matches!(err, RubyError::MrubyUnknownSection { .. }));
+    let mrb = analyze_bytes(&bytes, "x.mrb")
+        .expect("an unknown section must be skipped, not fail the whole binary")
+        .mruby
+        .expect("mruby");
+    assert_eq!(
+        mrb.binary.irep_count, 1,
+        "the IREP section after the unknown one must still be counted"
+    );
+    assert_eq!(
+        mrb.binary.sections.len(),
+        2,
+        "the unknown section is skipped and not recorded"
+    );
+}
+
+#[test]
+fn real_rite0004_binary_parses_its_header_and_sections_through_the_crc_and_no_catch_field_branch() {
+    let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop();
+    path.pop();
+    path.push("corpus");
+    path.push("ruby");
+    path.push("mruby");
+    path.push("legacy");
+    path.push("greet_rite0004.mrb");
+    let bytes: Vec<u8> =
+        std::fs::read(&path).expect("committed real mruby 1.4.1 RITE0004 fixture present");
+    assert_eq!(
+        &bytes[4..8],
+        b"0004",
+        "fixture must carry format version 0004"
+    );
+    let analysis: RubyAnalysis = analyze_bytes(&bytes, "greet_rite0004.mrb").expect("analyze");
+    assert_eq!(analysis.flavor, Flavor::MrubyBinary);
+    let mrb = analysis.mruby.expect("mruby");
+    assert!(
+        mrb.binary.header.crc_present,
+        "a real pre-mruby-2.0 header carries the two-byte CRC field this binary was built with"
+    );
+    assert_eq!(
+        mrb.binary.irep_count, 1,
+        "the section scan must land correctly on the real IREP and END sections after the \
+         22-byte CRC-bearing header, not the 20-byte modern one"
+    );
+    assert!(
+        mrb.binary.has_lvar,
+        "the real mrbc 1.4.1 output carries a LVAR section this binary was built with"
+    );
+    assert!(
+        mrb.irep.is_none(),
+        "mruby switched its irep record body from a 32-bit packed mrb_code word to a byte-packed \
+         encoding at mruby 2.0; a RITE0004 body predates that switch and this disassembler is \
+         calibrated to the byte-packed encoding, so the irep body is honestly unparsed rather \
+         than guessed at, even though the header and section framing now succeed"
+    );
 }

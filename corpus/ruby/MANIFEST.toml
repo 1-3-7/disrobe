@@ -10,6 +10,19 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 "hello.rb" = { kind = "source", description = "minimal hello-world Ruby source" }
 "greeter.rb" = { kind = "source", description = "module/class/method/string-interp Ruby source" }
 "mruby/greet.rb" = { kind = "source", description = "greet(name) method with interpolated puts and a greet(\"world\") call, compiled to mruby bytecode" }
+"mruby/breadth/arith.rb" = { kind = "source", description = "integer arithmetic breadth: add/sub/mul/div/compare opcodes" }
+"mruby/breadth/strings.rb" = { kind = "source", description = "string interpolation and concatenation breadth" }
+"mruby/breadth/coll.rb" = { kind = "source", description = "array and hash literal, index, and iteration breadth" }
+"mruby/breadth/klass.rb" = { kind = "source", description = "class/method definition and instance-variable breadth" }
+"mruby/breadth/control.rb" = { kind = "source", description = "if/else and while structured control-flow breadth" }
+"mruby/breadth/blocks.rb" = { kind = "source", description = "each-block and lambda breadth" }
+"mruby/breadth/exceptions.rb" = { kind = "source", description = "begin/rescue breadth; exercises the catch-table gap" }
+"mruby/breadth/advanced.rb" = { kind = "source", description = "class inheritance, super, yield, required keyword args, and splat/multiple-assignment breadth" }
+"mruby/breadth/jumps.rb" = { kind = "source", description = "value-carrying next inside a map block and an explicit return inside an each block, plus an operator method call (%) reached only through a generic SEND" }
+"mruby/breadth/loopbreak.rb" = { kind = "source", description = "value-carrying break inside a while loop, compiled through JMPUW rather than the dedicated BREAK opcode" }
+"mruby/breadth/kwargs.rb" = { kind = "source", description = "an optional keyword argument with a literal default, compiled through KEY_P" }
+"mruby/breadth/ensurecase.rb" = { kind = "source", description = "begin/rescue/else/ensure breadth" }
+"mruby/legacy/greet_rite0004.rb" = { kind = "source", description = "greet(name) source recompiled unmodified through a real mruby 1.4.1 toolchain to produce a RITE0004 binary, the catch-field-absent branch of version_layout" }
 "megafile/edge_cases.rb" = { kind = "source", description = "1677-LOC Ruby 1.9-3.4 feature megafile: blocks/procs/lambdas, &-operator, Symbol#to_proc, splat/double-splat, keyword args, pattern matching (all kinds), endless methods, hash short syntax, safe-nav, rescue modifier, retry, ensure, BEGIN/END, refinements, Struct/Data class, Comparable/Enumerable mixins, lazy enumerators, fibers, ractors, ObjectSpace, GC.stat, method_missing, define_method, class_eval, instance_eval, singleton class, include vs prepend, ancestors, frozen string literal, magic comments, Threading mutex/queue, beginless/endless ranges, heredocs, percent literals, forward-all (...), heredocs with interp" }
 "mri/yarv/literals.rb" = { kind = "source", description = "focused literal-pool coverage: frozen array/string constants, shareable_constant_value magic comment, true/false/nil immediates, symbol-keyed hash, inclusive/exclusive/beginless/endless ranges, opt_newarray_send (.max), endless methods" }
 
@@ -70,6 +83,162 @@ magic = "RITE"
 format_version = "0300"
 size_bytes = 245
 notes = "real mruby 3.3.0 RITE binary compiled by mrbc; carries IREP, DBG, and LVAR sections; the top-level iseq is TCLASS/METHOD/DEF/STRING/SSEND/RETURN/STOP and the greet body is ENTER/STRING/MOVE/STRCAT/STRING/STRCAT/SSEND/RETURN"
+
+[[fixtures]]
+path = "mruby/breadth/arith.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o arith.mrb arith.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 176
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/strings.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o strings.mrb strings.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 228
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/coll.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o coll.mrb coll.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 231
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/klass.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o klass.mrb klass.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 378
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/control.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o control.mrb control.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 259
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/blocks.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o blocks.mrb blocks.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 262
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/exceptions.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o exceptions.mrb exceptions.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 231
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section; catch_count > 0 withholds the whole file"
+
+[[fixtures]]
+path = "mruby/breadth/advanced.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o advanced.mrb advanced.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 1017
+notes = "real mruby 3.3.0 RITE binary compiled by mrbc without -g; no DBG or LVAR section"
+
+[[fixtures]]
+path = "mruby/breadth/jumps.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o jumps.mrb jumps.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 431
+notes = "real mruby 3.3.0 RITE binary; a mid-block RETURN is next inside a map block and an interior RETURN_BLK is an explicit return inside an each block; % reaches an operator method through a generic SEND"
+
+[[fixtures]]
+path = "mruby/breadth/loopbreak.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o loopbreak.mrb loopbreak.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 252
+notes = "real mruby 3.3.0 RITE binary; break inside a native while loop compiles through JMPUW, not the dedicated BREAK opcode, so structurable() withholds the whole file"
+
+[[fixtures]]
+path = "mruby/breadth/kwargs.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o kwargs.mrb kwargs.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 292
+notes = "real mruby 3.3.0 RITE binary; an optional keyword argument with a default compiles through KEY_P, which has no Ruby-source equivalent outside parameter-default reconstruction"
+
+[[fixtures]]
+path = "mruby/breadth/ensurecase.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o ensurecase.mrb ensurecase.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 271
+notes = "real mruby 3.3.0 RITE binary; begin/rescue/else/ensure, catch_count > 0 withholds the whole file"
+
+[[fixtures]]
+path = "mruby/legacy/greet_rite0004.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "1.4.1"
+generator = "mrbc -o greet_rite0004.mrb greet_rite0004.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0004"
+size_bytes = 205
+notes = "real mruby 1.4.1 RITE binary, built from real mruby 1.4.1 source with a real mrbc; header carries the pre-mruby-2.0 two-byte CRC field and exercises version_layout's catch-field-absent branch (format versions 0001 through 0006); the irep body predates mruby 2.0's switch to a byte-packed mrb_code and is honestly left unparsed rather than decoded against the wrong opcode table"
 
 [blocked]
 jruby = { reason = "JRuby not available - no winget package; manual JDK+JRuby install out of scope", workaround = "download from jruby.org and run jrubyc on a Linux/macOS host", fixture_status = "SYNTHESIZED-RETAIN" }

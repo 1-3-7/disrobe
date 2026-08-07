@@ -150,26 +150,38 @@ fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {
 }
 
 #[cfg(test)]
+pub(crate) fn build_entry(method: u8, name: &str, data: &[u8], orig: u32) -> Vec<u8> {
+    let mut out: Vec<u8> = vec![ARC_MARKER, method];
+    let mut name_field: [u8; FNLEN] = [0u8; FNLEN];
+    let nb: &[u8] = name.as_bytes();
+    name_field[..nb.len()].copy_from_slice(nb);
+    out.extend_from_slice(&name_field);
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    if method != 1 {
+        out.extend_from_slice(&orig.to_le_bytes());
+    }
+    out.extend_from_slice(data);
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn synth_stored_arc(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    if name.len() >= FNLEN {
+        return None;
+    }
+    let mut blob: Vec<u8> = build_entry(2, name, body, u32::try_from(body.len()).ok()?);
+    blob.push(ARC_MARKER);
+    blob.push(0);
+    Some(blob)
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn build_entry(method: u8, name: &str, data: &[u8], orig: u32) -> Vec<u8> {
-        let mut out: Vec<u8> = vec![ARC_MARKER, method];
-        let mut name_field: [u8; FNLEN] = [0u8; FNLEN];
-        let nb: &[u8] = name.as_bytes();
-        name_field[..nb.len()].copy_from_slice(nb);
-        out.extend_from_slice(&name_field);
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        if method != 1 {
-            out.extend_from_slice(&orig.to_le_bytes());
-        }
-        out.extend_from_slice(data);
-        out
-    }
 
     #[test]
     fn detect_recognizes_stored_arc() {

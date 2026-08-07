@@ -88,13 +88,52 @@ pub(crate) fn structure_blocks(stmts: &[LiftedStmt], code_len: usize) -> Structu
         active: Vec::new(),
         depth: 0,
         refused_regions: 0,
+        edges: EdgeLedger::build(&nodes),
     };
     let mut blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, code_len + 1, None);
-    let unresolved_jumps: usize = finalize_unresolved_jumps(&mut blocks);
+    let surviving_jumps: usize = finalize_unresolved_jumps(&mut blocks);
     StructureResult {
         blocks,
-        unresolved_jumps,
+        unresolved_jumps: surviving_jumps.saturating_add(ctx.edges.dropped()),
         refused_regions: ctx.refused_regions,
+    }
+}
+
+#[derive(Debug)]
+struct EdgeLedger {
+    required: Vec<Option<usize>>,
+    carried: Vec<bool>,
+}
+
+impl EdgeLedger {
+    #[must_use]
+    fn build(nodes: &[PcNode]) -> Self {
+        let required: Vec<Option<usize>> = nodes
+            .iter()
+            .map(|n: &PcNode| match n.node {
+                Node::Jump { target } if target == usize::MAX => None,
+                Node::Jump { target } | Node::Cond { target, .. } => Some(target),
+                Node::ForNum { exit, .. } | Node::ForGen { exit, .. } => Some(exit),
+                Node::Raw(_) | Node::BlockEnd => None,
+            })
+            .collect();
+        let carried: Vec<bool> = vec![false; required.len()];
+        Self { required, carried }
+    }
+
+    fn carry(&mut self, index: usize) {
+        if let Some(slot) = self.carried.get_mut(index) {
+            *slot = true;
+        }
+    }
+
+    #[must_use]
+    fn dropped(&self) -> usize {
+        self.required
+            .iter()
+            .zip(self.carried.iter())
+            .filter(|(edge, carried): &(&Option<usize>, &bool)| edge.is_some() && !**carried)
+            .count()
     }
 }
 
@@ -110,6 +149,7 @@ struct SeqCtx<'a> {
     active: Vec<usize>,
     depth: usize,
     refused_regions: usize,
+    edges: EdgeLedger,
 }
 
 #[must_use]
@@ -241,6 +281,7 @@ fn structure_seq(
     ctx.depth += 1;
     while *pos < ctx.nodes.len() {
         let cur: PcNode = ctx.nodes[*pos].clone();
+        let cur_index: usize = *pos;
         if cur.pc >= stop_pc {
             break;
         }
@@ -267,6 +308,9 @@ fn structure_seq(
                 exit,
             } => {
                 *pos += 1;
+                if exit <= stop_pc {
+                    ctx.edges.carry(cur_index);
+                }
                 let inner: LoopRef = LoopRef {
                     exit,
                     is_while: false,
@@ -283,6 +327,9 @@ fn structure_seq(
             }
             Node::ForGen { vars, iter, exit } => {
                 *pos += 1;
+                if exit <= stop_pc {
+                    ctx.edges.carry(cur_index);
+                }
                 let inner: LoopRef = LoopRef {
                     exit,
                     is_while: false,
@@ -293,6 +340,7 @@ fn structure_seq(
             }
             Node::Jump { target } => {
                 *pos += 1;
+                ctx.edges.carry(cur_index);
                 if cur_loop.is_some_and(|l: LoopRef| l.exit == target) {
                     out.push(StructuredBlock::Break);
                 } else {
@@ -306,6 +354,7 @@ fn structure_seq(
                 }
                 let is_loop_exit: bool = cur_loop.is_some_and(|l: LoopRef| l.exit == target);
                 if is_loop_exit && cur_loop.is_some_and(|l: LoopRef| l.is_while) {
+                    ctx.edges.carry(cur_index);
                     out.push(StructuredBlock::If {
                         cond: negate_cond(&cond),
                         then_body: vec![StructuredBlock::Break],
@@ -314,6 +363,7 @@ fn structure_seq(
                     continue;
                 }
                 if is_loop_exit {
+                    ctx.edges.carry(cur_index);
                     let then_body: Vec<StructuredBlock> =
                         structure_seq(ctx, pos, stop_pc, cur_loop);
                     out.push(StructuredBlock::If {
@@ -322,6 +372,9 @@ fn structure_seq(
                         else_body: Vec::new(),
                     });
                     continue;
+                }
+                if target <= stop_pc {
+                    ctx.edges.carry(cur_index);
                 }
                 let effective_target: usize = target.min(stop_pc);
                 let then_body: Vec<StructuredBlock> =
@@ -399,7 +452,7 @@ fn structure_loop(ctx: &mut SeqCtx<'_>, pos: &mut usize, edge: BackEdge) -> Stru
     };
     let body: Vec<StructuredBlock> = structure_seq(ctx, pos, body_stop, Some(inner));
     ctx.active.pop();
-    consume_back_edge(ctx.nodes, pos, edge.head);
+    consume_back_edge(ctx, pos, edge.head);
     simplify_loop(body)
 }
 
@@ -451,11 +504,12 @@ pub(crate) fn negate_cond(cond: &str) -> String {
     format!("not ({cond})")
 }
 
-fn consume_back_edge(nodes: &[PcNode], pos: &mut usize, head: usize) {
-    if *pos < nodes.len()
-        && let Node::Jump { target } = nodes[*pos].node
+fn consume_back_edge(ctx: &mut SeqCtx<'_>, pos: &mut usize, head: usize) {
+    if *pos < ctx.nodes.len()
+        && let Node::Jump { target } = ctx.nodes[*pos].node
         && target == head
     {
+        ctx.edges.carry(*pos);
         *pos += 1;
     }
 }
@@ -672,6 +726,178 @@ mod tests {
     }
 
     #[test]
+    fn a_back_edge_jump_that_closes_a_loop_carries_its_edge() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("acc = acc + i".to_owned())),
+            lifted(1, LStmt::Raw("i = i + 1".to_owned())),
+            lifted(2, LStmt::Jump { target: 0 }),
+            lifted(3, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 4);
+
+        assert!(
+            matches!(result.blocks.first(), Some(StructuredBlock::While { .. })),
+            "blocks: {:?}",
+            result.blocks
+        );
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "the loop re-enters at the head the jump names, so the edge is carried; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_backward_condition_that_closes_no_loop_is_reported_rather_than_discarded() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("i = i + 1".to_owned())),
+            lifted(1, LStmt::Raw("s = s + i".to_owned())),
+            lifted(
+                2,
+                LStmt::Cond {
+                    cond: "i < 5".to_owned(),
+                    target: 0,
+                },
+            ),
+            lifted(3, LStmt::Raw("print(s)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 4);
+
+        assert!(
+            result.unresolved_jumps > 0,
+            "loop detection here reads jumps only, so a backward condition closes nothing and its \
+             edge reaches no structure; dropping it in silence would report a repeat loop that was \
+             never recovered; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_numeric_for_reports_its_exit_edge_as_carried() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::ForNum {
+                    var: "i".to_owned(),
+                    init: "1".to_owned(),
+                    limit: "10".to_owned(),
+                    step: "1".to_owned(),
+                    end: 3,
+                },
+            ),
+            lifted(1, LStmt::Raw("acc = acc + i".to_owned())),
+            lifted(2, LStmt::BlockEnd),
+            lifted(3, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 4);
+
+        assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
+    }
+
+    #[test]
+    fn a_generic_for_reports_its_exit_edge_as_carried() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::ForGen {
+                    iter: "ipairs(t)".to_owned(),
+                    end: 3,
+                },
+            ),
+            lifted(1, LStmt::Raw("acc = acc + v".to_owned())),
+            lifted(2, LStmt::BlockEnd),
+            lifted(3, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 4);
+
+        assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
+    }
+
+    #[test]
+    fn a_loop_exit_test_that_becomes_the_while_condition_carries_its_edge() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "i >= 5".to_owned(),
+                    target: 4,
+                },
+            ),
+            lifted(1, LStmt::Raw("acc = acc + i".to_owned())),
+            lifted(2, LStmt::Raw("i = i + 1".to_owned())),
+            lifted(3, LStmt::Jump { target: 0 }),
+            lifted(4, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 5);
+
+        assert!(
+            matches!(result.blocks.first(), Some(StructuredBlock::While { .. })),
+            "blocks: {:?}",
+            result.blocks
+        );
+        assert_eq!(result.unresolved_jumps, 0, "blocks: {:?}", result.blocks);
+    }
+
+    #[test]
+    fn a_test_on_a_numeric_for_exit_carries_its_edge() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::ForNum {
+                    var: "i".to_owned(),
+                    init: "1".to_owned(),
+                    limit: "10".to_owned(),
+                    step: "1".to_owned(),
+                    end: 5,
+                },
+            ),
+            lifted(
+                1,
+                LStmt::Cond {
+                    cond: "i % 2 == 0".to_owned(),
+                    target: 5,
+                },
+            ),
+            lifted(2, LStmt::Raw("acc = acc + i".to_owned())),
+            lifted(3, LStmt::BlockEnd),
+            lifted(5, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 6);
+
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "a counted loop ends at its own exit, so a test that jumps there reaches the statement \
+             after the loop and its edge is carried; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
+    fn a_break_to_the_loop_exit_carries_its_edge() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(0, LStmt::Raw("acc = acc + i".to_owned())),
+            lifted(1, LStmt::Jump { target: 4 }),
+            lifted(2, LStmt::Raw("i = i + 1".to_owned())),
+            lifted(3, LStmt::Jump { target: 0 }),
+            lifted(4, LStmt::Raw("print(acc)".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 5);
+
+        assert_eq!(
+            result.unresolved_jumps, 0,
+            "the jump at pc 1 lands on the loop exit, so break carries it; blocks: {:?}",
+            result.blocks
+        );
+    }
+
+    #[test]
     fn surviving_jump_hard_stops_and_counts_unresolved() {
         let stmts: Vec<LiftedStmt> = vec![
             lifted(0, LStmt::Raw("r0 = 1".to_owned())),
@@ -692,5 +918,43 @@ mod tests {
                 && marker == "error(\"disrobe: unresolved luau jump to pc 4\")"
                 && last == "r0 = 2"
         ));
+    }
+
+    #[test]
+    fn a_conditional_branch_past_the_region_is_dropped_without_a_surviving_goto() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "x > 0".to_owned(),
+                    target: 100,
+                },
+            ),
+            lifted(1, LStmt::Raw("y = 1".to_owned())),
+        ];
+
+        let result: StructureResult = structure_blocks(&stmts, 3);
+
+        assert!(
+            matches!(
+                result.blocks.as_slice(),
+                [StructuredBlock::If { then_body, else_body, .. }]
+                    if else_body.is_empty()
+                        && matches!(
+                            then_body.as_slice(),
+                            [StructuredBlock::Raw(s)] if s == "y = 1"
+                        )
+            ),
+            "the tree never places a goto to the out-of-region target, so nothing in it names \
+             pc 100; blocks: {:?}",
+            result.blocks
+        );
+        assert!(
+            result.unresolved_jumps > 0,
+            "a conditional branch to a target the walk never places is a dropped edge even when \
+             it never survives as a goto in the tree; the edge ledger, not a walk over the \
+             finished tree, is what has to catch it; blocks: {:?}",
+            result.blocks
+        );
     }
 }

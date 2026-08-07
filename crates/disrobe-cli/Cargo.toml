@@ -23,6 +23,11 @@ name = "self_refresh_check_only"
 path = "tests/self_update_check_only.rs"
 
 [[test]]
+name = "plugin_e2e"
+path = "tests/plugin_e2e.rs"
+required-features = ["plugin"]
+
+[[test]]
 name = "cli_wasm_target_wat"
 path = "tests/cli_wasm_target_wat.rs"
 required-features = ["wasm"]
@@ -59,19 +64,20 @@ required-features = ["full"]
 
 [features]
 default = ["full"]
-full = ["server", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary"]
+full = ["server", "chain", "py", "native", "binfmt", "js", "wasm", "jvm", "dotnet", "mobile", "lua", "php", "ruby", "beam", "swift", "as3", "flutter", "go", "shell", "pickle", "scriptlang", "nativelang", "nir-lift", "devirt", "irsummary", "plugin"]
 server = ["dep:axum", "dep:tower-http", "dep:utoipa", "dep:lsp-server", "dep:lsp-types", "dep:tokio-util", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:prost", "dep:tonic-build", "dep:protoc-bin-vendored"]
 
 py = []
 native = []
 binfmt = []
+plugin = ["dep:disrobe-plugin-host", "dep:wasmtime", "dep:thiserror"]
 
 nir-lift = ["dep:disrobe-nir-lift"]
 irsummary = ["dep:disrobe-irsummary", "nir-lift"]
 devirt = ["dep:disrobe-mba", "disrobe-mba/smt-solver", "nir-lift"]
 js = ["dep:disrobe-pass-js-deob", "disrobe-pass-js-deob/chain", "disrobe-passes?/js", "disrobe-mcp/js"]
 wasm = ["dep:disrobe-pass-wasm-deob", "nir-lift", "disrobe-nir-lift/wasm", "disrobe-passes?/wasm", "disrobe-mcp/wasm"]
-jvm = ["dep:disrobe-pass-jvm", "nir-lift", "disrobe-passes?/jvm", "disrobe-mcp/jvm"]
+jvm = ["dep:disrobe-pass-jvm", "nir-lift", "disrobe-passes?/jvm", "disrobe-mcp/jvm", "disrobe-pass-mobile?/jni"]
 dotnet = ["dep:disrobe-pass-dotnet", "disrobe-pass-dotnet/chain", "nir-lift", "disrobe-passes?/dotnet", "disrobe-mcp/dotnet"]
 mobile = ["dep:disrobe-pass-mobile", "disrobe-passes?/mobile", "disrobe-mcp/mobile"]
 lua = ["dep:disrobe-pass-lua", "disrobe-pass-lua/chain", "nir-lift", "disrobe-passes?/lua", "disrobe-mcp/lua"]
@@ -160,6 +166,9 @@ disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
 disrobe-passes = { workspace = true, optional = true }
 disrobe-pass-webview = { path = "../disrobe-pass-webview", version = "0.10.3" }
+disrobe-plugin-host = { workspace = true, optional = true }
+wasmtime = { workspace = true, features = ["component-model", "cranelift", "runtime", "std"], optional = true }
+thiserror = { workspace = true, optional = true }
 disrobe-prowl = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-nir = { workspace = true }
@@ -231,9 +240,11 @@ protoc-bin-vendored = { workspace = true, optional = true }
 base64 = { workspace = true }
 disrobe-playground = { workspace = true, features = ["chain"] }
 iced-x86 = { workspace = true }
+object = { workspace = true, features = ["write"] }
 indicatif = { workspace = true, features = ["in_memory"] }
 serde_json = { workspace = true }
 jsonschema = "0.28"
+minisign = "0.9.1"
 serde_yaml_ng = "0.10"
 tempfile = "3"
 tokio-stream = { version = "0.1", features = ["net"] }

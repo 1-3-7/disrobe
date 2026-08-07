@@ -98,9 +98,14 @@ disrobe <pass> --help      # drill into any pass, e.g. `disrobe py --help`
 Probe what is installed and what is missing:
 
 ```sh
-disrobe doctor                 # probe ~50 optional external tools
-disrobe doctor --auto-install  # install every missing tool with a known action
+disrobe doctor                 # probe 46 to 51 external tools depending on the platform
+disrobe doctor --auto-install  # install every missing tool that has a known install action
 ```
+
+A missing tool with no install action (a commercial tool, a tool that ships bundled with another
+tool, a platform-exclusive tool, or a tool preinstalled by the operating system) is not silently
+dropped. `--auto-install` records it as a skip with a typed reason, in both text and `--json`
+output.
 
 Install a single tool through your platform's native package manager (`winget` / `brew` / `apt` / `dnf` / `pacman` / `apk`). `disrobe` never installs itself this way; it only fetches the optional backends:
 

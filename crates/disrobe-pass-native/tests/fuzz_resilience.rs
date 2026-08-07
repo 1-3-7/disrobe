@@ -7,13 +7,17 @@
 )]
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_native::error::Error;
+use disrobe_pass_native::stub_emu::cpu::NoopHost;
+use disrobe_pass_native::stub_emu::mem::MAX_MAP_BYTES;
+use disrobe_pass_native::stub_emu::{Cpu, CpuMode, ExitReason, Memory, Perm, Reg};
 
 #[path = "support/hostile_inputs.rs"]
 #[allow(clippy::redundant_pub_crate, dead_code)]
@@ -26,29 +30,35 @@ mod native_entry_points;
 use hostile_inputs::{
     COMPILED_VM_PROBE, HostileInput, SAMPLING_RULE, committed_image, compiled_vm_probe,
     crafted_elf, crafted_flat_image, crafted_macho_fat, crafted_macho_thin, crafted_pe32,
-    crafted_pe32_plus, variants_of,
+    crafted_pe32_plus, structural_variants_of, variants_of,
 };
 use native_entry_points::{Ctx, ENTRY_POINTS, Entry, PRECONDITION_GATED, Verdict};
 
 struct PeakTrackingAlloc;
 
-static PEAK_SINGLE_ALLOC: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static PEAK_SINGLE_ALLOC: Cell<usize> = const { Cell::new(0) };
+}
+
+fn record_allocation(size: usize) {
+    let _ = PEAK_SINGLE_ALLOC.try_with(|peak: &Cell<usize>| {
+        if size > peak.get() {
+            peak.set(size);
+        }
+    });
+}
+
+fn reset_peak_allocation() {
+    let _ = PEAK_SINGLE_ALLOC.try_with(|peak: &Cell<usize>| peak.set(0));
+}
+
+fn peak_allocation() -> usize {
+    PEAK_SINGLE_ALLOC.try_with(Cell::get).unwrap_or_default()
+}
 
 unsafe impl GlobalAlloc for PeakTrackingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size: usize = layout.size();
-        let mut observed: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
-        while size > observed {
-            match PEAK_SINGLE_ALLOC.compare_exchange_weak(
-                observed,
-                size,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(current) => observed = current,
-            }
-        }
+        record_allocation(layout.size());
         unsafe { System.alloc(layout) }
     }
 
@@ -199,6 +209,7 @@ fn core_inputs(bases: &[BaseImage]) -> Vec<HostileInput> {
                 out.push(variant);
             }
         }
+        out.extend(structural_variants_of(base.name, &base.bytes));
     }
     out
 }
@@ -207,9 +218,35 @@ fn deep_inputs(bases: &[BaseImage]) -> Vec<HostileInput> {
     let mut out: Vec<HostileInput> = Vec::new();
     for base in bases {
         out.extend(variants_of(base.name, &base.bytes));
+        out.extend(structural_variants_of(base.name, &base.bytes));
     }
     out
 }
+
+const REQUIRED_STRUCTURAL_SHAPES: &[&str] = &[
+    "blank-sections",
+    "zero-length-sections",
+    "overlapping-sections",
+    "unaligned-sections",
+    "inflated-section-sizes",
+    "inflated-section-count",
+    "raw-pointer-past-eof",
+    "headers-past-eof",
+    "pe-offset-points-at-itself",
+    "descending-section-order",
+    "elf-phnum-max",
+    "elf-shnum-max",
+    "elf-phentsize-zero",
+    "elf-program-headers-overlap-the-elf-header",
+    "elf-segments-overlap",
+    "elf-segments-zero-length",
+    "macho-ncmds-max",
+    "macho-first-cmdsize-zero",
+    "macho-first-cmdsize-max",
+    "macho-fat-nfat-max",
+    "macho-fat-slice-offset-zero",
+    "macho-fat-slice-offset-max",
+];
 
 fn report_slowest(findings: &Findings) {
     let mut slowest: Vec<(Duration, String)> = findings.slowest.clone();
@@ -253,7 +290,7 @@ fn drive(inputs: &[HostileInput], scratch_dir: &Path, only_cheap: bool) -> Findi
                 scratch: scratch_dir,
                 label: &label,
             };
-            PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
+            reset_peak_allocation();
             enter(&label);
             let started: Instant = Instant::now();
             let verdict: Verdict = (entry.drive)(&ctx);
@@ -262,7 +299,7 @@ fn drive(inputs: &[HostileInput], scratch_dir: &Path, only_cheap: bool) -> Findi
             if elapsed > SLOW_CASE_REPORT {
                 findings.slowest.push((elapsed, label.clone()));
             }
-            let peak: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
+            let peak: usize = peak_allocation();
             assert!(
                 peak < CASE_ALLOC_CEILING,
                 "{label} forced a {peak}-byte single allocation; a size field inside hostile input \
@@ -435,6 +472,19 @@ fn every_entry_point_survives_the_hostile_core() {
         bases.len()
     );
     let inputs: Vec<HostileInput> = core_inputs(&bases);
+    let missing_shapes: Vec<&&str> = REQUIRED_STRUCTURAL_SHAPES
+        .iter()
+        .filter(|shape: &&&str| {
+            !inputs
+                .iter()
+                .any(|input: &HostileInput| input.label.ends_with(**shape))
+        })
+        .collect();
+    assert!(
+        missing_shapes.is_empty(),
+        "the structural rewriter produced no input for these declared section-table shapes, so the \
+         suite would sweep past them: {missing_shapes:#?}"
+    );
     let scratch_dir: ScratchDir = scratch();
     let findings: Findings = drive(&inputs, scratch_dir.path(), false);
 
@@ -551,11 +601,11 @@ fn a_precondition_gated_entry_point_is_reached_on_the_fixture_that_satisfies_it(
                 scratch: scratch_dir.path(),
                 label: &label,
             };
-            PEAK_SINGLE_ALLOC.store(0, Ordering::Relaxed);
+            reset_peak_allocation();
             enter(&label);
             let verdict: Verdict = (entry.drive)(&ctx);
             leave();
-            let peak: usize = PEAK_SINGLE_ALLOC.load(Ordering::Relaxed);
+            let peak: usize = peak_allocation();
             assert!(
                 peak < CASE_ALLOC_CEILING,
                 "{label} forced a {peak}-byte single allocation"
@@ -579,4 +629,171 @@ fn a_precondition_gated_entry_point_is_reached_on_the_fixture_that_satisfies_it(
         );
         println!("{path} reached {reached} times on {fixture}");
     }
+}
+
+const STUB_STEP_CAP: u64 = 200_000;
+const STUB_CODE_BASE: u64 = 0x0040_0000;
+const STUB_STACK_BASE: u64 = 0x0080_0000;
+const STUB_PAGE_BYTES: u64 = 0x1000;
+
+const EXIT_STEP_CAP: &str = "StepCap";
+const EXIT_REP_LIMIT: &str = "RepLimit";
+const EXIT_JUMPED_OUT_OF_RANGE: &str = "JumpedOutOfRange";
+const EXIT_GUEST_FAULT: &str = "GuestFault";
+const EXIT_UNSUPPORTED_INSTR: &str = "UnsupportedInstr";
+
+struct HostileStub {
+    label: &'static str,
+    code: &'static [u8],
+    bounded_by: &'static [&'static str],
+}
+
+const HOSTILE_STUBS: &[HostileStub] = &[
+    HostileStub {
+        label: "never-terminates",
+        code: &[0xEB, 0xFE],
+        bounded_by: &[EXIT_STEP_CAP],
+    },
+    HostileStub {
+        label: "reads-outside-its-mapping",
+        code: &[0xA1, 0xEF, 0xBE, 0xAD, 0xDE],
+        bounded_by: &[EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "writes-to-an-unmapped-page",
+        code: &[0xA3, 0xEF, 0xBE, 0xAD, 0xDE],
+        bounded_by: &[EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "writes-to-a-read-only-page",
+        code: &[0xA3, 0x00, 0x00, 0x90, 0x00],
+        bounded_by: &[EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "executes-into-unmapped-memory",
+        code: &[0xE9, 0x00, 0x00, 0x00, 0x40],
+        bounded_by: &[EXIT_JUMPED_OUT_OF_RANGE, EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "returns-through-an-uninitialised-stack",
+        code: &[0xC3],
+        bounded_by: &[EXIT_JUMPED_OUT_OF_RANGE, EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "divides-by-zero",
+        code: &[0x31, 0xC0, 0x31, 0xD2, 0xF7, 0xF0],
+        bounded_by: &[EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "repeats-a-string-move-across-the-address-space",
+        code: &[0xB9, 0xFF, 0xFF, 0xFF, 0xFF, 0xF3, 0xA4],
+        bounded_by: &[EXIT_REP_LIMIT, EXIT_GUEST_FAULT],
+    },
+    HostileStub {
+        label: "runs-off-the-end-of-its-page-into-junk",
+        code: &[0xFF, 0xFF, 0xFF, 0xFF],
+        bounded_by: &[EXIT_UNSUPPORTED_INSTR, EXIT_GUEST_FAULT],
+    },
+];
+
+const fn exit_kind(exit: &ExitReason) -> &'static str {
+    match *exit {
+        ExitReason::StepCap(_) => EXIT_STEP_CAP,
+        ExitReason::RepLimit(_) => EXIT_REP_LIMIT,
+        ExitReason::JumpedOutOfRange { .. } => EXIT_JUMPED_OUT_OF_RANGE,
+        ExitReason::HostHalt(_) => "HostHalt",
+        ExitReason::UnsupportedInstr { .. } => EXIT_UNSUPPORTED_INSTR,
+        ExitReason::GuestFault(_) => EXIT_GUEST_FAULT,
+    }
+}
+
+fn run_hostile_stub(code: &[u8]) -> core::result::Result<ExitReason, String> {
+    let mut cpu: Cpu = Cpu::new(CpuMode::Bits32);
+    cpu.mem
+        .map(STUB_CODE_BASE, STUB_PAGE_BYTES, Perm::RWX)
+        .map_err(|error: Error| error.to_string())?;
+    cpu.mem
+        .map(STUB_STACK_BASE, STUB_PAGE_BYTES, Perm::RW)
+        .map_err(|error: Error| error.to_string())?;
+    cpu.mem
+        .map(0x0090_0000, STUB_PAGE_BYTES, Perm::R)
+        .map_err(|error: Error| error.to_string())?;
+    cpu.mem
+        .write(STUB_CODE_BASE, code)
+        .map_err(|error: Error| error.to_string())?;
+    cpu.regs.rip = STUB_CODE_BASE;
+    cpu.regs
+        .set(Reg::Rsp, STUB_STACK_BASE + STUB_PAGE_BYTES / 2);
+    cpu.run(&mut NoopHost, STUB_STEP_CAP)
+        .map_err(|error: Error| error.to_string())
+}
+
+#[test]
+fn the_stub_emulator_bounds_a_hostile_stub_rather_than_hanging_or_faulting_the_host() {
+    start_watchdog();
+    for stub in HOSTILE_STUBS {
+        let label: String = format!("stub_emu on a stub that {}", stub.label);
+        reset_peak_allocation();
+        enter(&label);
+        let started: Instant = Instant::now();
+        let outcome: core::result::Result<ExitReason, String> = run_hostile_stub(stub.code);
+        leave();
+        let elapsed: Duration = started.elapsed();
+        let peak: usize = peak_allocation();
+        assert!(
+            peak < CASE_ALLOC_CEILING,
+            "{label} forced a {peak}-byte single allocation"
+        );
+        assert!(
+            elapsed < CASE_WALL_CLOCK_BUDGET,
+            "{label} took {elapsed:?}, past the {CASE_WALL_CLOCK_BUDGET:?} budget"
+        );
+        let observed: String = match outcome {
+            Ok(exit) => {
+                let kind: &str = exit_kind(&exit);
+                assert!(
+                    stub.bounded_by.contains(&kind),
+                    "{label} exited as {kind}, and the only bounded stops for this stub are {:?}",
+                    stub.bounded_by
+                );
+                format!("{kind} ({exit:?})")
+            }
+            Err(message) => {
+                assert!(
+                    message.starts_with("DR-NATIVE-"),
+                    "{label} failed without a DR-NATIVE error code: {message}"
+                );
+                message
+            }
+        };
+        println!("{label} stopped as {observed} in {elapsed:?}, peak allocation {peak} bytes");
+    }
+}
+
+#[test]
+fn the_emulator_memory_refuses_a_hostile_size_rather_than_reserving_it() {
+    let mut mem: Memory = Memory::new();
+    reset_peak_allocation();
+    assert!(mem.map(STUB_CODE_BASE, u64::MAX, Perm::RW).is_err());
+    assert!(
+        mem.map(STUB_CODE_BASE, MAX_MAP_BYTES + 1, Perm::RW)
+            .is_err()
+    );
+    assert!(mem.map(u64::MAX - 0x10, STUB_PAGE_BYTES, Perm::RW).is_err());
+    assert!(mem.map(STUB_CODE_BASE, 0, Perm::RW).is_ok());
+    assert!(mem.read(STUB_CODE_BASE, usize::MAX).is_err());
+    assert!(mem.read(STUB_CODE_BASE, 1).is_err());
+
+    mem.map(STUB_CODE_BASE, STUB_PAGE_BYTES, Perm::R)
+        .expect("a page-sized read-only map is legal");
+    assert!(mem.read(STUB_CODE_BASE, 1).is_ok());
+    assert!(mem.write(STUB_CODE_BASE, &[0u8]).is_err());
+    assert!(mem.read(STUB_CODE_BASE, usize::MAX).is_err());
+    assert!(mem.read(u64::MAX, 1).is_err());
+
+    let peak: usize = peak_allocation();
+    assert!(
+        peak < CASE_ALLOC_CEILING,
+        "a hostile map or read reserved {peak} bytes"
+    );
 }

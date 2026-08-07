@@ -39,7 +39,8 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe jvm extract <jar\|apk>` | Extract container + dump classfile inventory. |
 | `disrobe jvm backends` | Report JVM/Android backends on PATH. |
 | `disrobe jvm retrace` | Retrace an obfuscated stack frame back to class/method/line through a ProGuard/R8 `mapping.txt` (`--mapping`, `--class`, `--method`, `--line`). |
-| `disrobe apk <apk>` | Decode the binary AndroidManifest.xml, map resource ids to names, and dump each signer certificate's SHA-256. `--out <DIR>` writes the decoded manifest and resource table to disk. |
+| `disrobe jvm jni <class\|jar\|dex\|apk\|aab\|aar\|apks\|oat>` | Link declared `native` methods across the DEX/classfile <-> `.so`/`.dll`/`.dylib` JNI boundary: static `Java_` symbol matching, `RegisterNatives` triple recovery, and C prototype emission. `--native <LIB>` supplies a native library, or a split `.apk`/`.apks`, for a bare class/jar/dex/oat (repeatable); a self-contained apk/aab/aar/apks carries its own. An `.aar` scans `jni/<abi>/*.so` and its nested `classes.jar`. A raw `.oat` file locates its single embedded dex through the OAT header; a multi-dex `.oat` is refused rather than guessed. `--json` for machine output. |
+| `disrobe apk <apk>` | Decode the binary AndroidManifest.xml, map resource ids to names, dump each signer certificate's SHA-256, and link the embedded DEX against its embedded native libraries (the same JNI surface `jvm jni` prints). `--out <DIR>` writes the decoded manifest and resource table to disk. |
 | `disrobe dotnet decompile <dll\|exe>` | Decompile via `--backend ilspy\|dnspy\|dnspyex\|de4dot`. |
 | `disrobe dotnet deobfuscate\|peel <dll\|exe>` | Detect the .NET protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks. `--protector <name>` forces one. |
 | `disrobe dotnet analyze <dll>` | PE/CLR metadata, protector detection, R2R + NativeAOT probe. |
@@ -84,7 +85,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe macho dump\|classdump\|fat <input>` | Mach-O dump including `.ipa`; raw thin/fat Mach-O class-dump and slice inspection. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |
-| `disrobe flutter dump\|decompile\|kernel\|disasm\|map <input>` | Flutter Dart AOT + kernel inspection. |
+| `disrobe flutter dump\|decompile\|kernel\|disasm\|map\|inventory\|inventory-standalone <input>` | Flutter Dart AOT + kernel inspection. `inventory` and `inventory-standalone` recover the full library/class/method/field declaration graph on a pinned Dart snapshot version. |
 | `disrobe mobile detect\|extract\|hermes\|flutter\|recon <input>` | Mobile runtime pipeline. |
 
 ## Chain, envelope, and forensics
@@ -125,8 +126,11 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe annot refresh\|regenerate` | Rebuild a symbol annotation file. |
 | `disrobe rename <old> <new> [--note]` | Record an append-only rename. |
 | `disrobe passes` | List every registered pass with a one-line capability summary. |
+| `disrobe plugin run <component> --trusted-key <pubkey> --out <file> [--input <file>] [--fuel N] [--wall-deadline-ms MS] [--memory-cap-bytes N] [--format text\|json]` | Verify and run a signed WebAssembly component plugin under the `disrobe-plugin-host` sandbox (fuel, wall-clock, and memory caps; deny-all imports). Reads input from stdin when `--input` is omitted. CLI-only: a plugin names an explicit local path an operator supplies, not a chain pass reachable from `disrobe auto`. |
+| `disrobe plugin verify <component> --trusted-key <pubkey> [--format text\|json]` | Verify a signed WebAssembly component plugin's signature and capability manifest without running it. |
+| `disrobe plugin list <dir> [--trusted-key <pubkey>] [--format text\|json]` | List plugin bundles (a `<name>.wasm` component beside its `<name>.wasm.minisig` signature and `<name>.toml` manifest) in a directory; verifies each bundle when `--trusted-key` is given. |
 | `disrobe explain <code>` | Look up a `DR-*` error code and print its description and common fixes. |
-| `disrobe doctor [--auto-install] [-y]` | Probe ~50 optional external tools; report installed, missing, or stale. |
+| `disrobe doctor [--auto-install] [-y]` | Probe 46 to 51 optional external tools depending on the platform; report installed, missing, or stale. `--auto-install` installs every missing tool with a known install action and records every other missing tool as a skip with a typed reason (`commercial-or-license-gated`, `ships-with-another-tool`, `platform-exclusive`, `preinstalled-by-the-operating-system`, `no-manager-models-its-install-path`, or `no-package-on-any-manager`), in both text and `--json` output. |
 | `disrobe install <tool> [--list] [-y] [--dry-run]` | Install one optional tool via the native package manager. |
 | `disrobe install-deps [<dep>] [--all] [--dry-run]` | Install heavyweight deps (Ghidra) from upstream releases. |
 | `disrobe serve [--bind <ADDR>] [--stdio\|--mcp\|--grpc]` | Run the daemon. See [the daemon](./serve.md). |

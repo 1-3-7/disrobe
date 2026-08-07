@@ -17,11 +17,12 @@ use disrobe_pass_mobile::DART_SNAPSHOT_MAGIC;
 use disrobe_pass_mobile::{
     AotLiftReport, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL, DART_VM_DATA_SYMBOL,
     DartAotDecompile, DartLiftedFunction, DartProgramSkeleton, DartRecoveryCounts,
-    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, Error, FlutterObfuscationMap,
-    LibAppLayout, build_dart_program_skeleton, dart_recovery_counts, decompile_dart_aot,
-    decompile_libapp_so_structured, lift_libapp_aot, parse_dart_snapshot,
-    parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
+    DartSnapshotHeader, DartSnapshotKind, DartStaticRecovery, FlutterObfuscationMap, LibAppLayout,
+    build_dart_program_skeleton, dart_recovery_counts, decompile_dart_aot, lift_libapp_aot,
+    parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_static,
 };
+#[cfg(feature = "chain")]
+use disrobe_pass_mobile::{Error, decompile_libapp_so_structured};
 
 fn write_u16(buf: &mut Vec<u8>, v: u16) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -33,24 +34,28 @@ fn write_u64(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
+#[cfg(feature = "chain")]
 fn read_u16_at(bytes: &[u8], offset: usize) -> u16 {
     let end: usize = offset + 2;
     let raw: [u8; 2] = bytes[offset..end].try_into().expect("u16 bytes");
     u16::from_le_bytes(raw)
 }
 
+#[cfg(feature = "chain")]
 fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
     let end: usize = offset + 4;
     let raw: [u8; 4] = bytes[offset..end].try_into().expect("u32 bytes");
     u32::from_le_bytes(raw)
 }
 
+#[cfg(feature = "chain")]
 fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
     let end: usize = offset + 8;
     let raw: [u8; 8] = bytes[offset..end].try_into().expect("u64 bytes");
     u64::from_le_bytes(raw)
 }
 
+#[cfg(feature = "chain")]
 fn forge_isolate_symbol_size(bytes: &mut [u8], size: u64) {
     let shoff: usize = usize::try_from(read_u64_at(bytes, 40)).expect("section header offset");
     let shentsize: usize = usize::from(read_u16_at(bytes, 58));

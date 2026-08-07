@@ -679,6 +679,18 @@ const KEYS: &[KeySpec] = &[
             .count()
         },
     },
+    KeySpec {
+        name: "flutter_rustdesk_function_boundaries",
+        formatter: Formatter::Thousands,
+        nouns: &[],
+        extract: |r: &Recovery| {
+            r.bar(
+                "Flutter Dart AOT RAW static recovery on a real RustDesk",
+                "function boundaries recovered",
+            )?
+            .count()
+        },
+    },
 ];
 
 const CATALOG_KEYS: &[CatalogKeySpec] = &[

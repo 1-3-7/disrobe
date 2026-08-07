@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::cil::{Instruction, MethodBody, OperandValue};
+use crate::cil::{Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 
 use super::blocks::{BlockGraph, BlockId};
 use super::interp::{
@@ -329,28 +329,11 @@ fn is_key_machinery(ins: &Instruction, state_local: u32) -> bool {
 }
 
 fn is_state_local_load(ins: &Instruction, state_local: u32) -> bool {
-    local_index(ins, "ldloc").is_some_and(|i: u32| i == state_local)
+    slot_index_of(ins, SlotOp::LoadLocal).is_some_and(|index: u16| u32::from(index) == state_local)
 }
 
 fn is_state_local_store(ins: &Instruction, state_local: u32) -> bool {
-    local_index(ins, "stloc").is_some_and(|i: u32| i == state_local)
-}
-
-fn local_index(ins: &Instruction, prefix: &str) -> Option<u32> {
-    let name: &str = ins.name.as_str();
-    if !name.starts_with(prefix) {
-        return None;
-    }
-    if let Some(rest) = name.rsplit('.').next()
-        && let Ok(n) = rest.parse::<u32>()
-    {
-        return Some(n);
-    }
-    match ins.operand {
-        crate::cil::OperandValue::U8(b) => Some(u32::from(b)),
-        crate::cil::OperandValue::U16(v) => Some(u32::from(v)),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::StoreLocal).is_some_and(|index: u16| u32::from(index) == state_local)
 }
 
 #[must_use]
@@ -370,6 +353,45 @@ mod tests {
     use super::super::blocks::{Block, Dispatcher};
     use super::*;
     use crate::cil::disassemble;
+
+    fn slot_instruction(name: &str, operand: OperandValue) -> Instruction {
+        Instruction {
+            offset: 0,
+            opcode: 0,
+            name: name.to_owned(),
+            operand,
+            flow: crate::cil::FlowControl::Next,
+        }
+    }
+
+    #[test]
+    fn taking_the_address_of_the_state_local_is_not_a_load_of_it() {
+        let address: Instruction = slot_instruction("ldloca.s", OperandValue::U8(3));
+        assert!(!is_state_local_load(&address, 3));
+        assert!(!is_state_local_store(&address, 3));
+        let load: Instruction = slot_instruction("ldloc.3", OperandValue::None);
+        assert!(is_state_local_load(&load, 3));
+        let store: Instruction = slot_instruction("stloc.s", OperandValue::U8(3));
+        assert!(is_state_local_store(&store, 3));
+    }
+
+    #[test]
+    fn a_state_local_access_with_an_unreadable_operand_matches_nothing() {
+        for operand in [
+            OperandValue::None,
+            OperandValue::I32(-1),
+            OperandValue::I32(0),
+            OperandValue::I64(0),
+            OperandValue::Token(0x0A00_0001),
+        ] {
+            let load: Instruction = slot_instruction("ldloc", operand.clone());
+            let store: Instruction = slot_instruction("stloc", operand.clone());
+            for state_local in [0_u32, 3, u32::MAX] {
+                assert!(!is_state_local_load(&load, state_local), "{operand:?}");
+                assert!(!is_state_local_store(&store, state_local), "{operand:?}");
+            }
+        }
+    }
 
     #[test]
     fn strips_xor_key_tail_to_payload() {

@@ -233,69 +233,71 @@ pub fn file_data<'a>(bytes: &'a [u8], entry: &IsoEntry) -> Option<&'a [u8]> {
 }
 
 #[cfg(test)]
+fn put_record(buf: &mut Vec<u8>, name: &[u8], lba: u32, len: u32, is_dir: bool) {
+    let record_len: usize = 33 + name.len() + usize::from(name.len().is_multiple_of(2));
+    let start: usize = buf.len();
+    buf.push(record_len as u8);
+    buf.push(0);
+    buf.extend_from_slice(&lba.to_le_bytes());
+    buf.extend_from_slice(&lba.to_be_bytes());
+    buf.extend_from_slice(&len.to_le_bytes());
+    buf.extend_from_slice(&len.to_be_bytes());
+    buf.extend_from_slice(&[0u8; 7]);
+    buf.push(if is_dir { DIR_FLAG_DIRECTORY } else { 0 });
+    buf.push(0);
+    buf.push(0);
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_be_bytes());
+    buf.push(name.len() as u8);
+    buf.extend_from_slice(name);
+    while buf.len() - start < record_len {
+        buf.push(0);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn build_iso(file_name: &[u8], file_body: &[u8]) -> Vec<u8> {
+    let total_sectors: usize = 24;
+    let mut image: Vec<u8> = vec![0u8; total_sectors * SECTOR_SIZE];
+
+    let root_lba: u32 = 20;
+    let file_lba: u32 = 21;
+
+    let pvd_off: usize = VOLUME_DESCRIPTOR_LBA * SECTOR_SIZE;
+    image[pvd_off] = VD_PRIMARY;
+    image[pvd_off + 1..pvd_off + 6].copy_from_slice(STANDARD_ID);
+    let vol_id: &[u8] = b"DISROBE_TEST                    ";
+    image[pvd_off + 40..pvd_off + 40 + vol_id.len()].copy_from_slice(vol_id);
+    let mut root_record: Vec<u8> = Vec::new();
+    put_record(
+        &mut root_record,
+        &[0x00],
+        root_lba,
+        SECTOR_SIZE as u32,
+        true,
+    );
+    image[pvd_off + 156..pvd_off + 156 + root_record.len()].copy_from_slice(&root_record);
+
+    let term_off: usize = (VOLUME_DESCRIPTOR_LBA + 1) * SECTOR_SIZE;
+    image[term_off] = VD_TERMINATOR;
+    image[term_off + 1..term_off + 6].copy_from_slice(STANDARD_ID);
+
+    let mut dir: Vec<u8> = Vec::new();
+    put_record(&mut dir, &[0x00], root_lba, SECTOR_SIZE as u32, true);
+    put_record(&mut dir, &[0x01], root_lba, SECTOR_SIZE as u32, true);
+    put_record(&mut dir, file_name, file_lba, file_body.len() as u32, false);
+    let root_off: usize = root_lba as usize * SECTOR_SIZE;
+    image[root_off..root_off + dir.len()].copy_from_slice(&dir);
+
+    let file_off: usize = file_lba as usize * SECTOR_SIZE;
+    image[file_off..file_off + file_body.len()].copy_from_slice(file_body);
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn put_record(buf: &mut Vec<u8>, name: &[u8], lba: u32, len: u32, is_dir: bool) {
-        let record_len: usize = 33 + name.len() + usize::from(name.len().is_multiple_of(2));
-        let start: usize = buf.len();
-        buf.push(record_len as u8);
-        buf.push(0);
-        buf.extend_from_slice(&lba.to_le_bytes());
-        buf.extend_from_slice(&lba.to_be_bytes());
-        buf.extend_from_slice(&len.to_le_bytes());
-        buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend_from_slice(&[0u8; 7]);
-        buf.push(if is_dir { DIR_FLAG_DIRECTORY } else { 0 });
-        buf.push(0);
-        buf.push(0);
-        buf.extend_from_slice(&1u16.to_le_bytes());
-        buf.extend_from_slice(&1u16.to_be_bytes());
-        buf.push(name.len() as u8);
-        buf.extend_from_slice(name);
-        while buf.len() - start < record_len {
-            buf.push(0);
-        }
-    }
-
-    fn build_iso(file_name: &[u8], file_body: &[u8]) -> Vec<u8> {
-        let total_sectors: usize = 24;
-        let mut image: Vec<u8> = vec![0u8; total_sectors * SECTOR_SIZE];
-
-        let root_lba: u32 = 20;
-        let file_lba: u32 = 21;
-
-        let pvd_off: usize = VOLUME_DESCRIPTOR_LBA * SECTOR_SIZE;
-        image[pvd_off] = VD_PRIMARY;
-        image[pvd_off + 1..pvd_off + 6].copy_from_slice(STANDARD_ID);
-        let vol_id: &[u8] = b"DISROBE_TEST                    ";
-        image[pvd_off + 40..pvd_off + 40 + vol_id.len()].copy_from_slice(vol_id);
-        let mut root_record: Vec<u8> = Vec::new();
-        put_record(
-            &mut root_record,
-            &[0x00],
-            root_lba,
-            SECTOR_SIZE as u32,
-            true,
-        );
-        image[pvd_off + 156..pvd_off + 156 + root_record.len()].copy_from_slice(&root_record);
-
-        let term_off: usize = (VOLUME_DESCRIPTOR_LBA + 1) * SECTOR_SIZE;
-        image[term_off] = VD_TERMINATOR;
-        image[term_off + 1..term_off + 6].copy_from_slice(STANDARD_ID);
-
-        let mut dir: Vec<u8> = Vec::new();
-        put_record(&mut dir, &[0x00], root_lba, SECTOR_SIZE as u32, true);
-        put_record(&mut dir, &[0x01], root_lba, SECTOR_SIZE as u32, true);
-        put_record(&mut dir, file_name, file_lba, file_body.len() as u32, false);
-        let root_off: usize = root_lba as usize * SECTOR_SIZE;
-        image[root_off..root_off + dir.len()].copy_from_slice(&dir);
-
-        let file_off: usize = file_lba as usize * SECTOR_SIZE;
-        image[file_off..file_off + file_body.len()].copy_from_slice(file_body);
-        image
-    }
 
     #[test]
     fn detects_and_extracts_iso_file() {

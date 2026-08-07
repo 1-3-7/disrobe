@@ -4,16 +4,22 @@ use disrobe_pass_jvm::{
     parse_oat, parse_oat_header, parse_odex, parse_odex_header,
 };
 
+const OAT_HEADER_FIXED_SIZE: u32 = 56;
+
 fn build_oat_header_bytes(dex_count: u32, iset: i32) -> Vec<u8> {
+    let kv: &[u8] = b"compiler-filter\0speed\0";
+    let oat_dex_files_offset: u32 = OAT_HEADER_FIXED_SIZE + kv.len() as u32;
     let mut b: Vec<u8> = Vec::new();
     b.extend_from_slice(b"oat\n");
-    b.extend_from_slice(b"183\0");
+    b.extend_from_slice(b"170\0");
     b.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
     b.extend_from_slice(&iset.to_le_bytes());
     b.extend_from_slice(&0u32.to_le_bytes());
     b.extend_from_slice(&dex_count.to_le_bytes());
-    b.extend_from_slice(&0u32.to_le_bytes());
-    let kv: &[u8] = b"compiler-filter\0speed\0";
+    b.extend_from_slice(&oat_dex_files_offset.to_le_bytes());
+    for _ in 0..6 {
+        b.extend_from_slice(&0u32.to_le_bytes());
+    }
     b.extend_from_slice(&(kv.len() as u32).to_le_bytes());
     b.extend_from_slice(kv);
     b
@@ -148,7 +154,7 @@ fn oat_header_decodes_real_fields() {
     let h: OatHeader = parse_oat_header(&rod).expect("oat header");
     assert_eq!(h.dex_file_count, 3);
     assert_eq!(h.instruction_set, InstructionSet::Arm64);
-    assert_eq!(h.version.digits(), 183);
+    assert_eq!(h.version.digits(), 170);
     assert!(
         h.key_value_store
             .iter()
@@ -190,7 +196,7 @@ fn arsc_decodes_table_pool_and_package() {
 
 #[test]
 fn oat_rejects_bad_magic() {
-    let err: Error = parse_oat_header(&[0u8; 32]).expect_err("bad oat magic");
+    let err: Error = parse_oat_header(&[0u8; 64]).expect_err("bad oat magic");
     assert!(matches!(err, Error::BadOatMagic(_)));
 }
 

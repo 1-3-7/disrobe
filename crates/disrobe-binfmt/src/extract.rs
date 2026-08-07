@@ -420,7 +420,7 @@ fn squashfs_walk_to_disk(
             is_executable: file.is_executable,
         });
     }
-    if entries_out.is_empty() && !walk.files.is_empty() {
+    if entries_out.is_empty() && !walk.files.is_empty() && violations.is_empty() {
         return Err(Error::Squashfs(format!(
             "squashfs walked {} inodes but no regular file was written (compressor={:?}); lzo/lz4 squashfs need an external decoder",
             walk.files.len(),
@@ -2125,23 +2125,25 @@ const fn nsis_entry_compression(method: crate::containers::NsisCompression) -> E
 
 fn nsis_relative_path(name: &str) -> String {
     let normalized: String = name.replace('\\', "/");
-    let segments: Vec<&str> = normalized
-        .split('/')
-        .filter(|s: &&str| !s.is_empty())
-        .collect();
-    let mut kept: Vec<&str> = Vec::with_capacity(segments.len());
-    let mut leading: bool = true;
-    for seg in segments {
-        if leading && is_nsis_var_segment(seg) {
-            continue;
+    let mut rest: &str = normalized.as_str();
+    let mut stripped_a_variable_segment: bool = false;
+    loop {
+        let candidate: &str = rest.trim_start_matches('/');
+        let head: &str = candidate.split('/').next().unwrap_or_default();
+        if head.is_empty() || !is_nsis_var_segment(head) {
+            break;
         }
-        leading = false;
-        kept.push(seg);
+        stripped_a_variable_segment = true;
+        rest = &candidate[head.len()..];
     }
-    if kept.is_empty() {
+    if !stripped_a_variable_segment {
+        return normalized;
+    }
+    let tail: &str = rest.trim_start_matches('/');
+    if tail.is_empty() {
         return normalized.trim_matches('/').to_owned();
     }
-    kept.join("/")
+    tail.to_owned()
 }
 
 fn is_nsis_var_segment(seg: &str) -> bool {
@@ -2220,7 +2222,7 @@ fn extract_nsis(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
         recovered += 1;
     }
 
-    if recovered == 0 && !archive.files.is_empty() {
+    if recovered == 0 && !archive.files.is_empty() && violations.is_empty() {
         return Err(Error::Nsis(format!(
             "nsis archive parsed ({} extract-file instructions) but every member failed to decode; compression={:?} solid={}",
             archive.files.len(),
@@ -3239,7 +3241,18 @@ fn extract_lzop(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<
     } else {
         file.name.clone()
     };
-    let safe_name: String = sanitize_entry_path(&raw_name)?;
+    let safe_name: String = match sanitize_entry_path(&raw_name) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(ExtractionResult {
+                kind: ContainerKind::Lzo,
+                entries: Vec::new(),
+                encoding,
+                integrity_violations: vec![format!("lzop-slip: {e}")],
+                quota: QuotaSummary::from(guard.report()),
+            });
+        }
+    };
     let size: u64 = file.data.len() as u64;
     guard.admit_entry(&safe_name, size, bytes.len() as u64)?;
     let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
@@ -5294,136 +5307,533 @@ mod tests {
         }
     }
 
-    fn drive_hostile_names<F: Fn(&str, &[u8]) -> Option<Vec<u8>>>(
-        kind: ContainerKind,
-        slip_tag: &str,
-        label: &str,
-        minimum_exercised: usize,
-        build: F,
-    ) {
-        let mut exercised: usize = 0;
-        for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
-            if name.is_empty() {
-                continue;
-            }
-            let scratch: disrobe_core::scratch::ScratchDir = temp_dir(label);
-            let out: PathBuf = scratch.path().to_path_buf();
-            std::fs::create_dir_all(&out).expect("out dir");
-            let Some(bytes): Option<Vec<u8>> = build(name, b"payload") else {
-                continue;
-            };
-            exercised += 1;
-            let result: ExtractionResult = match extract_to(kind, &bytes, &out) {
-                Ok(result) => result,
-                Err(e) => {
-                    assert_eq!(
-                        *verdict,
-                        crate::quota::HostileNameVerdict::Refused,
-                        "{name:?} must stay extractable by {label}: {e}"
-                    );
-                    assert_no_escape_around(&out);
-                    continue;
-                }
-            };
-            assert_result_stays_inside(&result, &out);
-            assert_no_escape_around(&out);
-            match verdict {
-                crate::quota::HostileNameVerdict::Refused => {
-                    assert!(
-                        result
-                            .entries
-                            .iter()
-                            .all(|e: &ExtractedEntry| e.name != *name),
-                        "{name:?} must never be written verbatim by {label}: {:?}",
-                        result.entries
-                    );
-                    if result.entries.is_empty() {
-                        assert!(
-                            result
-                                .integrity_violations
-                                .iter()
-                                .any(|v: &String| v.contains(slip_tag)),
-                            "{name:?} must be surfaced as {slip_tag}: {:?}",
-                            result.integrity_violations
-                        );
-                    }
-                }
-                crate::quota::HostileNameVerdict::ContainedWrite => {
-                    assert!(
-                        result
-                            .integrity_violations
-                            .iter()
-                            .all(|v: &String| !v.contains(slip_tag)),
-                        "{name:?} must not be refused by {label}: {:?}",
-                        result.integrity_violations
-                    );
-                }
-            }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum NameOrigin {
+        ArchiveSupplied,
+        ToolGenerated,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HostileCoverage {
+        DrivenEndToEnd,
+        GuardOnly(&'static str),
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct WritePathRow {
+        function: &'static str,
+        origin: NameOrigin,
+        coverage: HostileCoverage,
+    }
+
+    const WRITE_PATH_ROSTER: &[WritePathRow] = &[
+        row("extract_ar", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_arc", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_arj", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_asar", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_bare_gzip", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_bare_single_stream",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "writes bare_stream_output_name(kind), a constant per container kind",
+            ),
+        ),
+        row(
+            "extract_bare_xz",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly("writes the constant name stream.bin"),
+        ),
+        row("extract_btrfs_send", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_bun", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_cab", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_cab_lzms_folders",
+            NameOrigin::ArchiveSupplied,
+            DRIVEN,
+        ),
+        row(
+            "carve_only_payload",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "all three callers pass a literal: partclone.img, archive.sit, qnx-image.bin",
+            ),
+        ),
+        row(
+            "carve_partition_to_disk",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "writes partitionNN.TT.img built from the partition index and type byte",
+            ),
+        ),
+        row("extract_cpio", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_cramfs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "decompress_wim_header_resources",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "writes one of two fixed names, .disrobe-wim-offset-table.dec.bin or \
+                 .disrobe-wim-boot-metadata.dec.bin, picked by which header resource is \
+                 compressed; it decompresses header bytes and never reads an \
+                 archive-supplied name",
+            ),
+        ),
+        row("extract_dmg", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_erofs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_ext4", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_fat", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_fat_into", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_firmware", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_flatpak",
+            NameOrigin::ArchiveSupplied,
+            HostileCoverage::GuardOnly(
+                "the wired ContainerKind::Flatpak arm calls only extract_flatpak_bundle, \
+                 which returns files: Vec::new() by design (BUG-072); its sibling \
+                 extract_flatpak_repo does recover real file content but has no caller \
+                 anywhere in the tree, so no in-crate builder can currently place a \
+                 hostile name into recovered file content until BUG-072 wires a real \
+                 consumer",
+            ),
+        ),
+        row("extract_installshield", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_iso", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_jffs2", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_lzh", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_lzop", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_minidump",
+            NameOrigin::ArchiveSupplied,
+            HostileCoverage::GuardOnly(
+                "a real hostile-named module is driven through every HOSTILE_ENTRY_NAMES case in \
+                 every_hostile_module_name_stays_contained_by_the_minidump_write_path, but the \
+                 write path always succeeds through a synthesised module_N.bin fallback name \
+                 rather than a binary refuse/contain verdict, so it does not fit the generic \
+                 drive_write_path driver",
+            ),
+        ),
+        row("extract_minixfs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_msi_cab", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_nsis", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_ntfs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_rar", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "recurse_into_filesystem",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "appends .d to the tool-generated partition name from carve_partition_to_disk",
+            ),
+        ),
+        row("extract_romfs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_rpm", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_sevenz", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("squashfs_walk_to_disk", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_stuffit", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_ubifs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_uefi_firmware_volume",
+            NameOrigin::ArchiveSupplied,
+            DRIVEN,
+        ),
+        row("extract_unityfs", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("walk_tar", NameOrigin::ArchiveSupplied, DRIVEN),
+        row(
+            "extract_wim",
+            NameOrigin::ToolGenerated,
+            HostileCoverage::GuardOnly(
+                "the wim dispatcher's own write site places one of four fixed names from \
+                 carve_wim_resources (containers/wim.rs): .disrobe-wim-offset-table.bin, \
+                 .disrobe-wim-xml.bin, .disrobe-wim-boot-metadata.bin, \
+                 .disrobe-wim-integrity.bin; the archive-supplied image file names flow \
+                 through the delegated extract_wim_image_files, which already carries its \
+                 own driven row",
+            ),
+        ),
+        row(
+            "extract_wim_image_files",
+            NameOrigin::ArchiveSupplied,
+            DRIVEN,
+        ),
+        row("extract_xar", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_yaffs2", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_zip", NameOrigin::ArchiveSupplied, DRIVEN),
+    ];
+
+    const DRIVEN: HostileCoverage = HostileCoverage::DrivenEndToEnd;
+
+    const fn row(
+        function: &'static str,
+        origin: NameOrigin,
+        coverage: HostileCoverage,
+    ) -> WritePathRow {
+        WritePathRow {
+            function,
+            origin,
+            coverage,
         }
-        assert!(
-            exercised >= minimum_exercised,
-            "{label} exercised only {exercised} hostile names, expected at least {minimum_exercised}"
-        );
     }
 
-    #[test]
-    fn every_hostile_name_is_refused_or_contained_by_the_zip_write_path() {
-        drive_hostile_names(
-            ContainerKind::Zip,
-            "zip-slip",
-            "zip-hostile",
-            HOSTILE_NAMES_MINUS_EMPTY,
-            |name: &str, body: &[u8]| Some(synth_zip_raw_name(name, body)),
-        );
-    }
-
-    #[test]
-    fn every_hostile_name_is_refused_or_contained_by_the_tar_write_path() {
-        drive_hostile_names(
-            ContainerKind::Tar,
-            "tar-slip",
-            "tar-hostile",
-            HOSTILE_NAMES_MINUS_EMPTY,
-            |name: &str, body: &[u8]| Some(synth_tar_with_raw_name(name.as_bytes(), body)),
-        );
+    #[derive(Debug, Clone, Copy)]
+    struct DrivenWritePath {
+        function: &'static str,
+        kind: ContainerKind,
+        slip_tag: &'static str,
+        minimum_exercised: usize,
+        minimum_refused_as_a_slip: usize,
+        build: fn(&str, &[u8]) -> Option<Vec<u8>>,
     }
 
     const HOSTILE_NAMES_MINUS_EMPTY: usize = crate::quota::HOSTILE_ENTRY_NAMES.len() - 1;
 
-    #[test]
-    fn every_hostile_name_is_refused_or_contained_by_the_cpio_write_path() {
-        drive_hostile_names(
-            ContainerKind::Cpio,
-            "cpio-slip",
-            "cpio-hostile",
-            HOSTILE_NAMES_MINUS_EMPTY,
-            |name: &str, body: &[u8]| Some(newc_entry(name.as_bytes(), 0o100_644, body)),
-        );
+    const DRIVEN_WRITE_PATHS: &[DrivenWritePath] = &[
+        DrivenWritePath {
+            function: "extract_zip",
+            kind: ContainerKind::Zip,
+            slip_tag: "zip-slip",
+            minimum_exercised: HOSTILE_NAMES_MINUS_EMPTY,
+            minimum_refused_as_a_slip: 35,
+            build: build_hostile_zip,
+        },
+        DrivenWritePath {
+            function: "walk_tar",
+            kind: ContainerKind::Tar,
+            slip_tag: "tar-slip",
+            minimum_exercised: HOSTILE_NAMES_MINUS_EMPTY,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_tar,
+        },
+        DrivenWritePath {
+            function: "extract_cpio",
+            kind: ContainerKind::Cpio,
+            slip_tag: "cpio-slip",
+            minimum_exercised: HOSTILE_NAMES_MINUS_EMPTY,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_cpio,
+        },
+        DrivenWritePath {
+            function: "extract_asar",
+            kind: ContainerKind::Asar,
+            slip_tag: "asar-slip",
+            minimum_exercised: HOSTILE_NAMES_MINUS_EMPTY,
+            minimum_refused_as_a_slip: 35,
+            build: build_hostile_asar,
+        },
+        DrivenWritePath {
+            function: "extract_sevenz",
+            kind: ContainerKind::SevenZ,
+            slip_tag: "sevenz-slip",
+            minimum_exercised: HOSTILE_NAMES_MINUS_EMPTY - 1,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_sevenz,
+        },
+        DrivenWritePath {
+            function: "extract_ar",
+            kind: ContainerKind::Ar,
+            slip_tag: "ar-slip",
+            minimum_exercised: 20,
+            minimum_refused_as_a_slip: 22,
+            build: build_hostile_ar,
+        },
+        DrivenWritePath {
+            function: "extract_arj",
+            kind: ContainerKind::Arj,
+            slip_tag: "arj-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_arj,
+        },
+        DrivenWritePath {
+            function: "extract_arc",
+            kind: ContainerKind::Arc,
+            slip_tag: "arc-slip",
+            minimum_exercised: 29,
+            minimum_refused_as_a_slip: 21,
+            build: build_hostile_arc,
+        },
+        DrivenWritePath {
+            function: "extract_lzop",
+            kind: ContainerKind::Lzo,
+            slip_tag: "lzop-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_lzop,
+        },
+        DrivenWritePath {
+            function: "extract_xar",
+            kind: ContainerKind::Pkg,
+            slip_tag: "xar-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 32,
+            build: build_hostile_xar,
+        },
+        DrivenWritePath {
+            function: "extract_iso",
+            kind: ContainerKind::Iso,
+            slip_tag: "iso-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_iso,
+        },
+        DrivenWritePath {
+            function: "extract_cramfs",
+            kind: ContainerKind::Cramfs,
+            slip_tag: "cramfs-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 33,
+            build: build_hostile_cramfs,
+        },
+        DrivenWritePath {
+            function: "extract_ext4",
+            kind: ContainerKind::Ext4,
+            slip_tag: "ext4-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 33,
+            build: build_hostile_ext4,
+        },
+        DrivenWritePath {
+            function: "squashfs_walk_to_disk",
+            kind: ContainerKind::Squashfs,
+            slip_tag: "squashfs-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_squashfs,
+        },
+        DrivenWritePath {
+            function: "extract_stuffit",
+            kind: ContainerKind::StuffIt,
+            slip_tag: "stuffit-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_stuffit,
+        },
+        DrivenWritePath {
+            function: "extract_rar",
+            kind: ContainerKind::Rar,
+            slip_tag: "rar-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_rar,
+        },
+        DrivenWritePath {
+            function: "extract_nsis",
+            kind: ContainerKind::Nsis,
+            slip_tag: "nsis-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_nsis,
+        },
+        DrivenWritePath {
+            function: "extract_installshield",
+            kind: ContainerKind::InstallShield,
+            slip_tag: "installshield-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_installshield,
+        },
+        DrivenWritePath {
+            function: "extract_cab",
+            kind: ContainerKind::Cab,
+            slip_tag: "cab-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 33,
+            build: build_hostile_cab,
+        },
+        DrivenWritePath {
+            function: "extract_cab_lzms_folders",
+            kind: ContainerKind::Cab,
+            slip_tag: "cab-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 33,
+            build: build_hostile_lzms_cab,
+        },
+        DrivenWritePath {
+            function: "extract_msi_cab",
+            kind: ContainerKind::Msi,
+            slip_tag: "msi-slip",
+            minimum_exercised: 30,
+            minimum_refused_as_a_slip: 33,
+            build: build_hostile_msi,
+        },
+        DrivenWritePath {
+            function: "extract_unityfs",
+            kind: ContainerKind::UnityFs,
+            slip_tag: "unityfs-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_unityfs,
+        },
+        DrivenWritePath {
+            function: "extract_bun",
+            kind: ContainerKind::BunStandalone,
+            slip_tag: "bun-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_bun,
+        },
+        DrivenWritePath {
+            function: "extract_bare_gzip",
+            kind: ContainerKind::Gzip,
+            slip_tag: "gzip-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_gzip,
+        },
+        DrivenWritePath {
+            function: "extract_lzh",
+            kind: ContainerKind::Lzh,
+            slip_tag: "lzh-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 35,
+            build: build_hostile_lzh,
+        },
+        DrivenWritePath {
+            function: "extract_btrfs_send",
+            kind: ContainerKind::BtrfsSend,
+            slip_tag: "btrfs-send-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: crate::containers::btrfs_send::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_erofs",
+            kind: ContainerKind::Erofs,
+            slip_tag: "erofs-slip",
+            minimum_exercised: 48,
+            minimum_refused_as_a_slip: 34,
+            build: crate::containers::erofs::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_jffs2",
+            kind: ContainerKind::Jffs2,
+            slip_tag: "jffs2-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: crate::containers::jffs2::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_minixfs",
+            kind: ContainerKind::MinixFs,
+            slip_tag: "minixfs-slip",
+            minimum_exercised: 47,
+            minimum_refused_as_a_slip: 33,
+            build: crate::containers::minixfs::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_romfs",
+            kind: ContainerKind::Romfs,
+            slip_tag: "romfs-slip",
+            minimum_exercised: 47,
+            minimum_refused_as_a_slip: 33,
+            build: crate::containers::romfs::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_ubifs",
+            kind: ContainerKind::Ubifs,
+            slip_tag: "ubifs-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: crate::containers::ubifs::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_yaffs2",
+            kind: ContainerKind::Yaffs2,
+            slip_tag: "yaffs2-slip",
+            minimum_exercised: 48,
+            minimum_refused_as_a_slip: 34,
+            build: crate::containers::yaffs::hostile_named_image,
+        },
+        #[cfg(feature = "rpm")]
+        DrivenWritePath {
+            function: "extract_rpm",
+            kind: ContainerKind::Rpm,
+            slip_tag: "rpm-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: hostile_named_rpm,
+        },
+        DrivenWritePath {
+            function: "extract_wim_image_files",
+            kind: ContainerKind::Wim,
+            slip_tag: "wim-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: crate::containers::wim_image::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_fat",
+            kind: ContainerKind::Fat,
+            slip_tag: "fat-slip",
+            minimum_exercised: 47,
+            minimum_refused_as_a_slip: 33,
+            build: crate::containers::fat::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_fat_into",
+            kind: ContainerKind::Mbr,
+            slip_tag: "fat-slip",
+            minimum_exercised: 47,
+            minimum_refused_as_a_slip: 33,
+            build: hostile_named_mbr_fat_partition,
+        },
+        DrivenWritePath {
+            function: "extract_dmg",
+            kind: ContainerKind::Dmg,
+            slip_tag: "dmg-hfs-slip",
+            minimum_exercised: 48,
+            minimum_refused_as_a_slip: 34,
+            build: crate::containers::dmg::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_uefi_firmware_volume",
+            kind: ContainerKind::UefiFv,
+            slip_tag: "uefi-fv-slip",
+            minimum_exercised: 48,
+            minimum_refused_as_a_slip: 0,
+            build: crate::containers::uefi_fv::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_ntfs",
+            kind: ContainerKind::Ntfs,
+            slip_tag: "ntfs-slip",
+            minimum_exercised: 49,
+            minimum_refused_as_a_slip: 35,
+            build: crate::containers::ntfs::hostile_named_image,
+        },
+        DrivenWritePath {
+            function: "extract_firmware",
+            kind: ContainerKind::FwHpIpkg,
+            slip_tag: "firmware-slip",
+            minimum_exercised: 13,
+            minimum_refused_as_a_slip: 11,
+            build: crate::containers::firmware::hostile_named_image,
+        },
+    ];
+
+    fn representable_without_control_bytes(name: &str) -> bool {
+        !name.chars().any(char::is_control)
     }
 
-    #[test]
-    fn every_hostile_name_is_refused_or_contained_by_the_asar_write_path() {
-        drive_hostile_names(
-            ContainerKind::Asar,
-            "asar-slip",
-            "asar-hostile",
-            HOSTILE_NAMES_MINUS_EMPTY,
-            |name: &str, body: &[u8]| Some(synth_asar_raw_name(name, body)),
-        );
+    #[expect(clippy::unnecessary_wraps)]
+    fn build_hostile_zip(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        Some(synth_zip_raw_name(name, body))
     }
 
-    #[test]
-    fn every_hostile_name_is_refused_or_contained_by_the_sevenz_write_path() {
-        drive_hostile_names(
-            ContainerKind::SevenZ,
-            "sevenz-slip",
-            "7z-hostile",
-            HOSTILE_NAMES_MINUS_EMPTY - 1,
-            synth_sevenz_raw_name,
-        );
+    #[expect(clippy::unnecessary_wraps)]
+    fn build_hostile_tar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        Some(synth_tar_with_raw_name(name.as_bytes(), body))
     }
 
-    fn synth_sevenz_raw_name(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    #[expect(clippy::unnecessary_wraps)]
+    fn build_hostile_cpio(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        Some(newc_entry(name.as_bytes(), 0o100_644, body))
+    }
+
+    #[expect(clippy::unnecessary_wraps)]
+    fn build_hostile_asar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        Some(synth_asar_raw_name(name, body))
+    }
+
+    fn build_hostile_sevenz(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         let name_terminates_early_inside_the_sevenz_reader: bool = name.contains('\u{0}');
         if name_terminates_early_inside_the_sevenz_reader {
             return None;
@@ -5431,15 +5841,539 @@ mod tests {
         Some(synth_sevenz(&[(name, body)]))
     }
 
-    #[test]
-    fn every_representable_hostile_name_is_refused_or_contained_by_the_ar_write_path() {
-        drive_hostile_names(
-            ContainerKind::Ar,
-            "ar-slip",
-            "ar-hostile",
-            20,
-            |name: &str, body: &[u8]| synth_ar_raw_name(name, body),
+    fn build_hostile_ar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        synth_ar_raw_name(name, body)
+    }
+
+    fn build_hostile_arj(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::arj::synth_stored_arj(name, body))
+    }
+
+    fn build_hostile_arc(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        crate::containers::arc::synth_stored_arc(name, body)
+    }
+
+    fn build_hostile_lzop(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        crate::containers::lzop::build_stored_lzop(name, body)
+    }
+
+    fn build_hostile_xar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if !representable_without_control_bytes(name) || name.contains(['<', '>', '&']) {
+            return None;
+        }
+        Some(crate::containers::xar::build_xar(&[(name, body)]))
+    }
+
+    fn build_hostile_iso(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 200 || name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::iso::build_iso(name.as_bytes(), body))
+    }
+
+    fn build_hostile_cramfs(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        let mut padded: String = name.to_owned();
+        while !padded.len().is_multiple_of(4) {
+            padded.push('\u{0}');
+        }
+        if padded.len() > 252 {
+            return None;
+        }
+        Some(crate::containers::cramfs::build_real_cramfs(&padded, body))
+    }
+
+    fn build_hostile_ext4(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 200 || name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::ext4::build_real_ext4(name, body))
+    }
+
+    fn build_hostile_squashfs(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 200 || name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::squashfs::build_real_squashfs(name, body))
+    }
+
+    fn build_hostile_stuffit(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 63 || name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::stuffit::build_archive(&[(name, body)]))
+    }
+
+    fn build_hostile_rar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::rar::build_test_rar5_store(name, body))
+    }
+
+    fn build_hostile_nsis(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::nsis::build_test_nsis(name, body))
+    }
+
+    fn build_hostile_installshield(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 200 || name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::installshield::build_test_installshield(
+            name, body,
+        ))
+    }
+
+    fn build_hostile_cab(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if !representable_without_control_bytes(name) || name.len() > 200 {
+            return None;
+        }
+        Some(synth_cab(&[(name, body)]))
+    }
+
+    fn build_hostile_lzms_cab(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if !representable_without_control_bytes(name) || name.len() > 200 {
+            return None;
+        }
+        Some(crate::containers::cab_lzms::build_lzms_cab(&[(name, body)]))
+    }
+
+    fn build_hostile_msi(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if !representable_without_control_bytes(name) || name.len() > 200 || name.contains('|') {
+            return None;
+        }
+        let cab_bytes: Vec<u8> = synth_cab(&[("payload.bin", body)]);
+        Some(synth_msi_with_embedded_cab(&cab_bytes, "payload.bin", name))
+    }
+
+    fn build_hostile_unityfs(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::unityfs_build_bundle_uncompressed(
+            name, body,
+        ))
+    }
+
+    fn build_hostile_bun(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        Some(crate::containers::bun::build_bun(&[(name, body)]))
+    }
+
+    fn build_hostile_gzip(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.contains('\u{0}') {
+            return None;
+        }
+        let mut encoder: flate2::write::DeflateEncoder<Vec<u8>> =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(body).expect("deflate write");
+        let compressed: Vec<u8> = encoder.finish().expect("deflate finish");
+        let mut out: Vec<u8> = vec![0x1f, 0x8b, 0x08, 0x08, 0, 0, 0, 0, 0x00, 0xff];
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+        out.extend_from_slice(&compressed);
+        out.extend_from_slice(&crc32fast::hash(body).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(body.len()).ok()?.to_le_bytes());
+        Some(out)
+    }
+
+    fn build_hostile_lzh(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        crate::containers::lzh::build_stored_lzh(name, body)
+    }
+
+    fn driven_write_path(function: &str) -> &'static DrivenWritePath {
+        DRIVEN_WRITE_PATHS
+            .iter()
+            .find(|row: &&DrivenWritePath| row.function == function)
+            .unwrap_or_else(|| panic!("{function} is not listed in DRIVEN_WRITE_PATHS"))
+    }
+
+    fn drive_write_path(function: &str) {
+        let path: &DrivenWritePath = driven_write_path(function);
+        let mut exercised: usize = 0;
+        let mut refused_through_the_tag: usize = 0;
+        let mut contained_writes: usize = 0;
+        for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
+            if name.is_empty() {
+                continue;
+            }
+            let Some(bytes): Option<Vec<u8>> = (path.build)(name, b"payload") else {
+                continue;
+            };
+            let scratch: disrobe_core::scratch::ScratchDir = temp_dir(function);
+            let out: PathBuf = scratch.path().to_path_buf();
+            std::fs::create_dir_all(&out).expect("out dir");
+            exercised += 1;
+            let result: ExtractionResult = match extract_to(path.kind, &bytes, &out) {
+                Ok(result) => result,
+                Err(e) => {
+                    assert_eq!(
+                        *verdict,
+                        crate::quota::HostileNameVerdict::Refused,
+                        "{name:?} must stay extractable by {function}: {e}"
+                    );
+                    assert_no_escape_around(&out);
+                    continue;
+                }
+            };
+            assert_result_stays_inside(&result, &out);
+            assert_no_escape_around(&out);
+            let tagged: bool = result
+                .integrity_violations
+                .iter()
+                .any(|v: &String| v.contains(path.slip_tag));
+            match verdict {
+                crate::quota::HostileNameVerdict::Refused => {
+                    assert!(
+                        result
+                            .entries
+                            .iter()
+                            .all(|e: &ExtractedEntry| e.name != *name),
+                        "{name:?} must never be written verbatim by {function}: {:?}",
+                        result.entries
+                    );
+                    refused_through_the_tag += usize::from(tagged);
+                }
+                crate::quota::HostileNameVerdict::ContainedWrite => {
+                    assert!(
+                        !tagged,
+                        "{name:?} must not be refused by {function}: {:?}",
+                        result.integrity_violations
+                    );
+                    contained_writes += 1;
+                }
+            }
+        }
+        assert!(
+            exercised >= path.minimum_exercised,
+            "{function} exercised only {exercised} hostile names, expected at least {}",
+            path.minimum_exercised
         );
+        assert!(
+            refused_through_the_tag >= path.minimum_refused_as_a_slip,
+            "{function} refused only {refused_through_the_tag} hostile names as {}, expected at least {}",
+            path.slip_tag,
+            path.minimum_refused_as_a_slip
+        );
+        assert!(
+            contained_writes > 0,
+            "{function} wrote nothing at all, so the container builder never produced a real archive"
+        );
+    }
+
+    #[test]
+    fn hostile_names_reach_the_zip_write_path_guard() {
+        drive_write_path("extract_zip");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_tar_write_path_guard() {
+        drive_write_path("walk_tar");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_cpio_write_path_guard() {
+        drive_write_path("extract_cpio");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_asar_write_path_guard() {
+        drive_write_path("extract_asar");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_sevenz_write_path_guard() {
+        drive_write_path("extract_sevenz");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_ar_write_path_guard() {
+        drive_write_path("extract_ar");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_arj_write_path_guard() {
+        drive_write_path("extract_arj");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_arc_write_path_guard() {
+        drive_write_path("extract_arc");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_lzop_write_path_guard() {
+        drive_write_path("extract_lzop");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_xar_write_path_guard() {
+        drive_write_path("extract_xar");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_iso_write_path_guard() {
+        drive_write_path("extract_iso");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_cramfs_write_path_guard() {
+        drive_write_path("extract_cramfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_ext4_write_path_guard() {
+        drive_write_path("extract_ext4");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_squashfs_write_path_guard() {
+        drive_write_path("squashfs_walk_to_disk");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_stuffit_write_path_guard() {
+        drive_write_path("extract_stuffit");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_rar_write_path_guard() {
+        drive_write_path("extract_rar");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_nsis_write_path_guard() {
+        drive_write_path("extract_nsis");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_installshield_write_path_guard() {
+        drive_write_path("extract_installshield");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_cab_write_path_guard() {
+        drive_write_path("extract_cab");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_lzms_cab_write_path_guard() {
+        drive_write_path("extract_cab_lzms_folders");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_msi_write_path_guard() {
+        drive_write_path("extract_msi_cab");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_unityfs_write_path_guard() {
+        drive_write_path("extract_unityfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_bun_write_path_guard() {
+        drive_write_path("extract_bun");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_gzip_write_path_guard() {
+        drive_write_path("extract_bare_gzip");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_lzh_write_path_guard() {
+        drive_write_path("extract_lzh");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_btrfs_send_write_path_guard() {
+        drive_write_path("extract_btrfs_send");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_erofs_write_path_guard() {
+        drive_write_path("extract_erofs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_jffs2_write_path_guard() {
+        drive_write_path("extract_jffs2");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_minixfs_write_path_guard() {
+        drive_write_path("extract_minixfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_romfs_write_path_guard() {
+        drive_write_path("extract_romfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_ubifs_write_path_guard() {
+        drive_write_path("extract_ubifs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_yaffs2_write_path_guard() {
+        drive_write_path("extract_yaffs2");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_ntfs_write_path_guard() {
+        drive_write_path("extract_ntfs");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_firmware_write_path_guard() {
+        drive_write_path("extract_firmware");
+    }
+
+    fn guarded_write_path_functions(source: &str) -> Vec<String> {
+        let mut enclosing: String = String::new();
+        let mut found: Vec<String> = Vec::new();
+        for line in source.lines() {
+            if line.starts_with("#[cfg(test)]") {
+                break;
+            }
+            if let Some(rest) = line
+                .strip_prefix("fn ")
+                .or_else(|| line.strip_prefix("pub fn "))
+                .or_else(|| line.strip_prefix("pub(crate) fn "))
+            {
+                enclosing = rest
+                    .split(['(', '<'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+            }
+            if (line.contains("prepare_entry_path(") || line.contains("prepare_entry_dir("))
+                && !found.contains(&enclosing)
+            {
+                found.push(enclosing.clone());
+            }
+        }
+        found.sort_unstable();
+        found
+    }
+
+    #[test]
+    fn the_write_path_roster_names_every_guarded_site_in_the_source() {
+        let source: &str = include_str!("extract.rs");
+        let found: Vec<String> = guarded_write_path_functions(source);
+        let mut rostered: Vec<String> = WRITE_PATH_ROSTER
+            .iter()
+            .map(|r: &WritePathRow| r.function.to_owned())
+            .collect();
+        rostered.sort_unstable();
+        assert_eq!(
+            found, rostered,
+            "the write-path roster drifted from the guarded sites in extract.rs"
+        );
+        assert!(
+            found.len() >= 45,
+            "only {} guarded write paths were found, the scan is not seeing the source",
+            found.len()
+        );
+    }
+
+    #[test]
+    fn every_driven_roster_row_owns_a_driver_and_a_test() {
+        let source: &str = include_str!("extract.rs");
+        let mut driven: Vec<&str> = WRITE_PATH_ROSTER
+            .iter()
+            .filter(|r: &&WritePathRow| r.coverage == HostileCoverage::DrivenEndToEnd)
+            .map(|r: &WritePathRow| r.function)
+            .collect();
+        driven.sort_unstable();
+        let mut tabled: Vec<&str> = DRIVEN_WRITE_PATHS
+            .iter()
+            .map(|r: &DrivenWritePath| r.function)
+            .collect();
+        tabled.sort_unstable();
+        assert_eq!(
+            driven, tabled,
+            "every roster row marked driven must appear in DRIVEN_WRITE_PATHS and no other"
+        );
+        for function in &driven {
+            let call: String = format!("drive_write_path(\"{function}\")");
+            assert!(
+                source.contains(&call),
+                "{function} is marked driven but no test calls {call}"
+            );
+        }
+        assert!(
+            driven.len() >= 25,
+            "end-to-end coverage dropped to {} write paths",
+            driven.len()
+        );
+    }
+
+    #[test]
+    fn no_write_path_ever_materialises_a_link_entry() {
+        let source: &str = include_str!("extract.rs");
+        let lines: Vec<&str> = source.lines().collect();
+        let mut guards: usize = 0;
+        for (index, line) in lines.iter().enumerate() {
+            if line.starts_with("#[cfg(test)]") {
+                break;
+            }
+            let trimmed: &str = line.trim();
+            if trimmed != "if file.is_symlink {" && trimmed != "if file.symlink_target.is_some() {"
+            {
+                continue;
+            }
+            guards += 1;
+            let body: &str = lines.get(index + 1).map_or("", |l: &&str| l.trim());
+            assert_eq!(
+                body,
+                "continue;",
+                "the link branch at line {} writes instead of skipping",
+                index + 1
+            );
+        }
+        assert!(
+            guards >= 11,
+            "only {guards} link guards were found, the scan is not seeing the source"
+        );
+    }
+
+    #[test]
+    fn every_tool_generated_write_path_records_why_it_is_not_a_slip_path() {
+        for entry in WRITE_PATH_ROSTER {
+            if entry.origin == NameOrigin::ToolGenerated {
+                let HostileCoverage::GuardOnly(reason) = entry.coverage else {
+                    panic!(
+                        "{} writes a tool-generated name, so it cannot be driven with archive-supplied names",
+                        entry.function
+                    );
+                };
+                assert!(
+                    reason.len() > 20,
+                    "{} needs a real reason, not `{reason}`",
+                    entry.function
+                );
+            }
+        }
     }
 
     fn synth_ar_raw_name(name: &str, body: &[u8]) -> Option<Vec<u8>> {
@@ -6032,6 +6966,147 @@ mod tests {
             out.push(0);
         }
         out
+    }
+
+    #[cfg(feature = "rpm")]
+    fn hostile_named_rpm(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        let mut builder: rpm::PackageBuilder = rpm::PackageBuilder::new(
+            "disrobe-hostile-fixture",
+            "1.0.0",
+            "MIT",
+            "x86_64",
+            "hostile entry-name fixture",
+        );
+        builder.using_config(rpm::BuildConfig::v4().compression(rpm::CompressionType::None));
+        builder
+            .with_file_contents(
+                b"placeholder".to_vec(),
+                rpm::FileOptions::new("/placeholder.txt"),
+            )
+            .ok()?;
+        let mut package: rpm::Package = builder.build().ok()?;
+        let mut cpio: Vec<u8> = newc_entry(name.as_bytes(), 0o100_644, body);
+        cpio.extend_from_slice(&newc_entry(CPIO_TRAILER_NAME.as_bytes(), 0, &[]));
+        package.payload = cpio;
+        let mut out: Vec<u8> = Vec::new();
+        package.write(&mut out).ok()?;
+        Some(out)
+    }
+
+    #[cfg(feature = "rpm")]
+    #[test]
+    fn hostile_names_reach_the_rpm_write_path_guard() {
+        drive_write_path("extract_rpm");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_wim_image_files_write_path_guard() {
+        drive_write_path("extract_wim_image_files");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_fat_write_path_guard() {
+        drive_write_path("extract_fat");
+    }
+
+    fn hostile_named_mbr_fat_partition(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        let fat_image: Vec<u8> = crate::containers::fat::hostile_named_image(name, body)?;
+        let mut disk: Vec<u8> =
+            vec![0u8; crate::containers::partition::SECTOR_SIZE + fat_image.len()];
+        disk[crate::containers::partition::MBR_SIGNATURE_OFFSET
+            ..crate::containers::partition::MBR_SIGNATURE_OFFSET + 2]
+            .copy_from_slice(crate::containers::partition::MBR_SIGNATURE);
+        let entry_off: usize = crate::containers::partition::MBR_PARTITION_TABLE_OFFSET;
+        disk[entry_off] = 0x00;
+        disk[entry_off + 4] = 0x83;
+        disk[entry_off + 8..entry_off + 12].copy_from_slice(&1u32.to_le_bytes());
+        let sector_count: u32 =
+            (fat_image.len() / crate::containers::partition::SECTOR_SIZE) as u32;
+        disk[entry_off + 12..entry_off + 16].copy_from_slice(&sector_count.to_le_bytes());
+        disk[crate::containers::partition::SECTOR_SIZE..].copy_from_slice(&fat_image);
+        Some(disk)
+    }
+
+    #[test]
+    fn hostile_names_reach_the_fat_into_write_path_guard() {
+        drive_write_path("extract_fat_into");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_dmg_write_path_guard() {
+        drive_write_path("extract_dmg");
+    }
+
+    const MINIDUMP_FALLBACK_NAMES: [&str; 15] = [
+        "..",
+        "evil\u{0}.txt",
+        "evil\u{1b}.txt",
+        "...",
+        "evil.",
+        "CON",
+        "con",
+        "con.txt",
+        "PRN.log",
+        "AUX",
+        "NUL.dat",
+        "COM1",
+        "com9.txt",
+        "LPT1",
+        "lpt9.dat",
+    ];
+
+    #[test]
+    fn every_hostile_module_name_stays_contained_by_the_minidump_write_path() {
+        for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
+            if name.is_empty() {
+                continue;
+            }
+            let scratch: disrobe_core::scratch::ScratchDir = temp_dir("minidump-hostile");
+            let out: PathBuf = scratch.path().to_path_buf();
+            std::fs::create_dir_all(&out).expect("out dir");
+            let bytes: Vec<u8> = crate::containers::minidump::hostile_named_dump(name);
+            let result: ExtractionResult = extract_to(ContainerKind::Minidump, &bytes, &out)
+                .unwrap_or_else(|e: Error| {
+                    panic!("{name:?} must always extract through the fallback name: {e}")
+                });
+            assert_result_stays_inside(&result, &out);
+            assert_no_escape_around(&out);
+            if *verdict == crate::quota::HostileNameVerdict::Refused {
+                assert!(
+                    result
+                        .entries
+                        .iter()
+                        .all(|e: &ExtractedEntry| e.name != *name),
+                    "{name:?} must never be written verbatim by the minidump write path: {:?}",
+                    result.entries
+                );
+            }
+            if MINIDUMP_FALLBACK_NAMES.contains(name) {
+                let module_entry: &ExtractedEntry = result
+                    .entries
+                    .iter()
+                    .find(|e: &&ExtractedEntry| e.name != ".disrobe-minidump.json")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{name:?} must still carve the one module: {:?}",
+                            result.entries
+                        )
+                    });
+                assert!(
+                    module_entry.name.starts_with("module_")
+                        && Path::new(&module_entry.name)
+                            .extension()
+                            .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("bin")),
+                    "{name:?} must fall back to the synthesised module name, got {}",
+                    module_entry.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hostile_names_reach_the_uefi_fv_write_path_guard() {
+        drive_write_path("extract_uefi_firmware_volume");
     }
 
     #[cfg(feature = "rpm")]

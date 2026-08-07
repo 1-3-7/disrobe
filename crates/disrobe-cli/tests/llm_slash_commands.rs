@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -15,6 +16,24 @@ fn cli_binary() -> PathBuf {
     });
     assert!(p.is_file(), "disrobe binary missing at {}", p.display());
     p
+}
+
+fn live_subcommand_paths() -> BTreeSet<String> {
+    let bin: PathBuf = cli_binary();
+    let out: Output = Command::new(&bin)
+        .arg("subcommand-tree")
+        .output()
+        .expect("spawn disrobe subcommand-tree");
+    assert_eq!(
+        out.status.code().unwrap_or(-1),
+        0,
+        "subcommand-tree stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -69,6 +88,7 @@ fn init_claude_emits_typed_slash_commands_with_real_subcommands() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let live_paths: BTreeSet<String> = live_subcommand_paths();
     let commands_dir: PathBuf = work.join(".claude").join("commands");
     for ec in EXPECTED {
         let path: PathBuf = commands_dir.join(ec.file);
@@ -97,6 +117,17 @@ fn init_claude_emits_typed_slash_commands_with_real_subcommands() {
             ec.file,
             ec.subcommand,
             content
+        );
+        let path_only: &str = ec
+            .subcommand
+            .strip_prefix("disrobe ")
+            .unwrap_or(ec.subcommand);
+        assert!(
+            live_paths.contains(path_only),
+            "{} names `{}`, which is not a subcommand path the live clap tree reports; \
+             live paths: {live_paths:?}",
+            ec.file,
+            ec.subcommand
         );
     }
 }

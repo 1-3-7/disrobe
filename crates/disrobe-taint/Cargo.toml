@@ -21,4 +21,11 @@ serde = { workspace = true }
 
 [dev-dependencies]
 disrobe-nir-lift = { workspace = true, features = ["wasm"] }
+disrobe-ir = { workspace = true }
+disrobe-pass-native = { workspace = true }
+disrobe-query = { workspace = true }
+rayon = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 wat = "1"
+zip = { workspace = true }

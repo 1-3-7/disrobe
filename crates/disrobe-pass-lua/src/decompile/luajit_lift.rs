@@ -1165,9 +1165,11 @@ fn handle_inst(
         OP_UCLO => {
             let target: i32 = sj16(inst.d);
             let t: i64 = pc as i64 + 1 + i64::from(target);
-            if target != 0 && t >= 0 && t as usize != pc + 1 {
-                state.push(&format!("goto lj_{t}"));
+            if target != 0 {
                 *ctx.fully_structured = false;
+                if t >= 0 && t as usize != pc + 1 {
+                    state.push(&format!("goto lj_{t}"));
+                }
             }
             1
         }
@@ -1953,6 +1955,56 @@ mod tests {
         assert_eq!(sj16(0x8000), 0);
         assert_eq!(sj16(0x8001), 1);
         assert_eq!(sj16(0x7FFF), -1);
+    }
+
+    fn minimal_lj_proto(code: Vec<u32>) -> LjProto {
+        LjProto {
+            index: 0,
+            flags: 0,
+            num_params: 0,
+            framesize: 2,
+            code,
+            kgc: Vec::new(),
+            kgc_rev: Vec::new(),
+            kn: Vec::new(),
+            uv_slots: Vec::new(),
+            var_names: Vec::new(),
+            child_indices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_uclo_with_no_displacement_leaves_the_report_clean() {
+        let proto: LjProto = minimal_lj_proto(vec![
+            u32::from(OP_UCLO) | (0x8000_u32 << 16),
+            u32::from(OP_RET0),
+        ]);
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+
+        let _: String = lift_proto(&proto, &[], 0, &[], &mut warnings, &mut fully_structured);
+
+        assert!(
+            fully_structured,
+            "d=0x8000 decodes to sj16 zero, meaning uclo carries no jump at all, so nothing \
+             here may clear the flag"
+        );
+    }
+
+    #[test]
+    fn an_uclo_whose_displacement_computes_a_negative_target_still_lowers_the_flag() {
+        let jumping: LjProto = minimal_lj_proto(vec![u32::from(OP_UCLO), u32::from(OP_RET0)]);
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+
+        let _: String = lift_proto(&jumping, &[], 0, &[], &mut warnings, &mut fully_structured);
+
+        assert!(
+            !fully_structured,
+            "d=0 decodes to sj16 -32768, a displacement so negative the computed target falls \
+             before pc 0; that is a real jump request this lifter cannot place as a goto, so it \
+             must not claim a complete structure"
+        );
     }
 
     #[test]

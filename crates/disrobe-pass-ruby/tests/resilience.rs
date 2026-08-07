@@ -106,6 +106,85 @@ fn mruby_oversized_pool_count_is_bounded() {
 }
 
 #[test]
+fn mruby_pool_string_length_near_the_wire_ceiling_is_bounded() {
+    let mut rec: Vec<u8> = Vec::new();
+    rec.extend_from_slice(&0u32.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&0u16.to_be_bytes());
+    rec.extend_from_slice(&0u32.to_be_bytes());
+    rec.extend_from_slice(&1u16.to_be_bytes());
+    rec.push(0x00);
+    rec.extend_from_slice(&u16::MAX.to_be_bytes());
+    rec.extend_from_slice(b"only four bytes follow");
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(&0u32.to_be_bytes());
+    body.extend_from_slice(&rec);
+    let sections: Vec<Vec<u8>> = vec![
+        common::synth_section(*b"IREP", &body),
+        common::synth_section(*b"END\0", &[]),
+    ];
+    let bytes: Vec<u8> = common::synth_rite(*b"0300", &sections);
+    let start: std::time::Instant = std::time::Instant::now();
+    let analysis = analyze_bytes(&bytes, "evil.mrb").expect("must not OOM or panic");
+    let elapsed: std::time::Duration = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "a pool string claiming the u16 wire-format ceiling must not stall parsing, took {elapsed:?}"
+    );
+    let mrb = analysis.mruby.expect("mruby");
+    assert!(
+        mrb.irep.is_none(),
+        "a pool string length past the actual file must fail IREP parse cleanly, not allocate it"
+    );
+}
+
+#[test]
+fn mruby_truncated_header_is_rejected_cleanly() {
+    let bytes: Vec<u8> = b"RITE0300\x00\x00\x00\x14MATZ".to_vec();
+    assert!(
+        bytes.len() < 20,
+        "the fixture itself must be under the 20-byte header size"
+    );
+    let result = std::panic::catch_unwind(|| analyze_bytes(&bytes, "short.mrb"));
+    let outcome = result.expect("a header shorter than RITE_HEADER_SIZE must not panic");
+    assert!(
+        matches!(outcome, Err(RubyError::Truncated { .. })),
+        "a header shorter than RITE_HEADER_SIZE must be a clean truncation error, got {outcome:?}"
+    );
+}
+
+#[test]
+fn mruby_section_length_past_the_file_is_rejected_cleanly() {
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(b"IREP");
+    body.extend_from_slice(&255u32.to_be_bytes());
+    let bytes: Vec<u8> = common::synth_rite(*b"0300", &[body]);
+    let result = std::panic::catch_unwind(|| analyze_bytes(&bytes, "oversized-section.mrb"));
+    let outcome = result.expect("a section length past the file must not panic");
+    assert!(
+        matches!(outcome, Err(RubyError::MrubySectionTruncated { .. })),
+        "a section whose declared length runs past the file must be a clean truncation error, \
+         got {outcome:?}"
+    );
+}
+
+#[test]
+fn mruby_zero_length_section_is_rejected_cleanly() {
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(b"IREP");
+    body.extend_from_slice(&0u32.to_be_bytes());
+    let bytes: Vec<u8> = common::synth_rite(*b"0300", &[body]);
+    let result = std::panic::catch_unwind(|| analyze_bytes(&bytes, "zero-section.mrb"));
+    let outcome = result.expect("a zero-length section must not panic or loop");
+    assert!(
+        matches!(outcome, Err(RubyError::MrubySectionTruncated { .. })),
+        "a zero-length section must be a clean truncation error, got {outcome:?}"
+    );
+}
+
+#[test]
 fn mruby_recursion_bomb_is_depth_bounded() {
     let mut rec: Vec<u8> = Vec::new();
     rec.extend_from_slice(&0u32.to_be_bytes());

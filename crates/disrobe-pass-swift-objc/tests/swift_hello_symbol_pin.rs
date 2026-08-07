@@ -53,7 +53,7 @@ const PINNED: [PinnedSymbol; 37] = [
     PinnedSymbol {
         mangled: "_$s10SwiftHello0B9Greetable_pMF",
         reference: "reflection metadata field descriptor SwiftHello.HelloGreetable",
-        ours: "SwiftHello.HelloGreetable()",
+        ours: "reflection metadata field descriptor SwiftHello.HelloGreetable",
     },
     PinnedSymbol {
         mangled: "_$s10SwiftHello19LoginViewControllerC15greetWithBannerSSyFTq",
@@ -222,9 +222,8 @@ const PINNED: [PinnedSymbol; 37] = [
     },
 ];
 
-const REFERENCE_DIVERGENCES: [&str; 5] = [
+const REFERENCE_DIVERGENCES: [&str; 4] = [
     "_$s10SwiftHello0B11RunnerEntryV4mainyyFZTf4d_n",
-    "_$s10SwiftHello0B9Greetable_pMF",
     "_$ss23_ContiguousArrayStorageCyypGMR",
     "_$ss23_ContiguousArrayStorageCyypGMd",
     "_$ss5print_9separator10terminatoryypd_S2StF",

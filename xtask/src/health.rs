@@ -13,14 +13,39 @@ const NON_MEMBER_CRATE_ALLOWLIST: &[(&str, &str)] = &[(
     "cargo-fuzz requires its own workspace, so it is built by `cargo fuzz`, never by the root workspace",
 )];
 
-const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[
+const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[(
+    "disrobe-semdiff",
+    "semantic diff over NIR; no consumer has been written yet, tracked as a wiring item",
+)];
+
+const KNOWN_STANDALONE_BINARIES: &[(&str, &str)] = &[
     (
-        "disrobe-plugin-host",
-        "the wasmtime plugin sandbox is complete and tested but the CLI cannot dispatch a plugin pass yet, tracked as a wiring item",
+        "disrobe-cli",
+        "the product's own top-level CLI binary; users invoke it directly and no workspace member depends on it as a library",
     ),
     (
-        "disrobe-semdiff",
-        "semantic diff over NIR; no consumer has been written yet, tracked as a wiring item",
+        "disrobe-transcode",
+        "a standalone tool that rewrites a .dr envelope's hot segment in place; invoked directly, not linked by another crate",
+    ),
+    (
+        "disrobe-validator",
+        "the corpus-wide end-to-end validation and benchmark harness; run directly against the sample corpus, not linked by another crate",
+    ),
+    (
+        "xtask",
+        "the workspace's own dev-tooling binary (health, regen, release helpers); cargo invokes it directly via `cargo run -p xtask`",
+    ),
+    (
+        "disrobe-bench-head-to-head",
+        "a reproducible benchmark binary that runs disrobe against a competing tool and emits committed measured results; run directly, not linked by another crate",
+    ),
+    (
+        "disrobe-bench-native-unpack",
+        "a reproducible benchmark binary over the native packer corpus; run directly, not linked by another crate",
+    ),
+    (
+        "disrobe-evidence-mba",
+        "a ground-truth corpus generator for mixed-boolean-arithmetic recovery, deliberately linking no recovery crate so it cannot grade its own output; run directly, not linked by another crate",
     ),
 ];
 
@@ -160,7 +185,7 @@ fn check_generator_disjointness(root: &Path, report: &mut Report) {
     report.fact("corpus_generators", json!(audited));
 }
 
-fn workspace_members(root_doc: &toml::Value) -> BTreeSet<String> {
+pub(crate) fn workspace_members(root_doc: &toml::Value) -> BTreeSet<String> {
     root_doc
         .get("workspace")
         .and_then(|w: &toml::Value| w.get("members"))
@@ -441,6 +466,7 @@ fn check_unwired_members(
     }
 
     let mut known_unwired: usize = 0;
+    let mut known_standalone_binaries: usize = 0;
     let mut depended_on: BTreeSet<String> = BTreeSet::new();
     for (dir, doc) in member_manifests {
         let self_name: Option<String> = crate_name(doc);
@@ -459,7 +485,23 @@ fn check_unwired_members(
         let Some(doc) = member_manifests.get(dir) else {
             continue;
         };
-        if has_bin_target(root, dir, doc) || is_consumed_outside_rust(doc) {
+        if is_consumed_outside_rust(doc) {
+            continue;
+        }
+        if has_bin_target(root, dir, doc) {
+            if KNOWN_STANDALONE_BINARIES
+                .iter()
+                .any(|(known, _)| known == name)
+            {
+                known_standalone_binaries += 1;
+                continue;
+            }
+            report.fail(
+                "unwired-crate",
+                format!(
+                    "{name} ({dir}) has a binary target but no other workspace crate depends on it and it is not in KNOWN_STANDALONE_BINARIES in xtask/src/health.rs, so a bin-only crate can rot unnoticed. Add it there with the reason it stands alone, or wire it to a consumer"
+                ),
+            );
             continue;
         }
         if KNOWN_UNWIRED_CRATES.iter().any(|(known, _)| known == name) {
@@ -492,7 +534,40 @@ fn check_unwired_members(
         }
     }
 
+    for (known, _) in KNOWN_STANDALONE_BINARIES {
+        let Some(dir) = names.get(*known) else {
+            report.fail(
+                "stale-unwired-allowlist",
+                format!(
+                    "KNOWN_STANDALONE_BINARIES names {known}, which is no longer a workspace crate; drop the entry"
+                ),
+            );
+            continue;
+        };
+        if depended_on.contains(*known) {
+            report.fail(
+                "stale-unwired-allowlist",
+                format!(
+                    "KNOWN_STANDALONE_BINARIES still lists {known} but something now depends on it; drop the entry so the gate keeps ratcheting"
+                ),
+            );
+        } else if let Some(doc) = member_manifests.get(dir)
+            && !has_bin_target(root, dir, doc)
+        {
+            report.fail(
+                "stale-unwired-allowlist",
+                format!(
+                    "KNOWN_STANDALONE_BINARIES still lists {known} but it no longer has a binary target; drop the entry"
+                ),
+            );
+        }
+    }
+
     report.fact("known_unwired_crates", json!(known_unwired));
+    report.fact(
+        "known_standalone_binaries",
+        json!(known_standalone_binaries),
+    );
 }
 
 fn collect_workspace_refs(section: Option<&toml::Value>, out: &mut BTreeSet<String>) {

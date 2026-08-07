@@ -100,4 +100,7 @@ pub enum Error {
 
     #[error("DR-LUA-0028: Luau main prototype id {index} is outside proto count {count}")]
     LuauMainProtoOutOfRange { index: u64, count: usize },
+
+    #[error("DR-LUA-0029: Prometheus Vmify recovery refused: {0}")]
+    PrometheusVmifyRefused(String),
 }

@@ -4,11 +4,13 @@ use crate::detect::RITE_MAGIC;
 use crate::error::{Result, RubyError};
 
 pub(crate) const RITE_HEADER_SIZE: usize = 20;
+const RITE_HEADER_SIZE_WITH_CRC: usize = 22;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RiteHeader {
     pub magic: [u8; 4],
     pub format_version: [u8; 4],
+    pub crc_present: bool,
     pub binary_size: u32,
     pub compiler_name: [u8; 4],
     pub compiler_version: [u8; 4],
@@ -54,20 +56,34 @@ pub(crate) fn read_rite(bytes: &[u8]) -> Result<RiteBinary> {
             version: format_version,
         });
     }
+    let crc_present: bool = header_has_crc_field(bytes);
+    let header_size: usize = if crc_present {
+        RITE_HEADER_SIZE_WITH_CRC
+    } else {
+        RITE_HEADER_SIZE
+    };
+    if bytes.len() < header_size {
+        return Err(RubyError::Truncated {
+            got: bytes.len(),
+            need: header_size,
+        });
+    }
+    let field_base: usize = if crc_present { 10 } else { 8 };
     let binary_size: u32 = u32::from_be_bytes(
-        bytes[8..12]
+        bytes[field_base..field_base + 4]
             .try_into()
-            .map_err(|_| RubyError::MrubySectionTruncated { offset: 8 })?,
+            .map_err(|_| RubyError::MrubySectionTruncated { offset: field_base })?,
     );
-    let compiler_name: [u8; 4] = bytes[12..16]
+    let compiler_name: [u8; 4] = bytes[field_base + 4..field_base + 8]
         .try_into()
         .map_err(|_| RubyError::Truncated { got: 0, need: 4 })?;
-    let compiler_version: [u8; 4] = bytes[16..20]
+    let compiler_version: [u8; 4] = bytes[field_base + 8..field_base + 12]
         .try_into()
         .map_err(|_| RubyError::Truncated { got: 0, need: 4 })?;
     let header: RiteHeader = RiteHeader {
         magic,
         format_version,
+        crc_present,
         binary_size,
         compiler_name,
         compiler_version,
@@ -76,7 +92,7 @@ pub(crate) fn read_rite(bytes: &[u8]) -> Result<RiteBinary> {
     let mut irep_count: u32 = 0u32;
     let mut has_debug: bool = false;
     let mut has_lvar: bool = false;
-    let mut cursor: usize = RITE_HEADER_SIZE;
+    let mut cursor: usize = header_size;
     while cursor <= bytes.len().saturating_sub(8) {
         let id: [u8; 4] = bytes[cursor..cursor + 4]
             .try_into()
@@ -87,9 +103,6 @@ pub(crate) fn read_rite(bytes: &[u8]) -> Result<RiteBinary> {
                 .map_err(|_| RubyError::MrubySectionTruncated { offset: cursor + 4 })?,
         );
         let known: bool = KNOWN_SECTIONS.contains(&&id);
-        if !known {
-            return Err(RubyError::MrubyUnknownSection { section: id });
-        }
         if size < 8 {
             return Err(RubyError::MrubySectionTruncated { offset: cursor });
         }
@@ -101,18 +114,20 @@ pub(crate) fn read_rite(bytes: &[u8]) -> Result<RiteBinary> {
             return Err(RubyError::MrubySectionTruncated { offset: cursor });
         }
         let body_len: u32 = size - 8;
-        sections.push(RiteSection {
-            identifier: id,
-            size,
-            offset: u32::try_from(cursor).unwrap_or(u32::MAX),
-            body_len,
-        });
-        match &id {
-            b"IREP" => irep_count += 1,
-            b"DBG\0" => has_debug = true,
-            b"LVAR" => has_lvar = true,
-            b"END\0" => break,
-            _ => {}
+        if known {
+            sections.push(RiteSection {
+                identifier: id,
+                size,
+                offset: u32::try_from(cursor).unwrap_or(u32::MAX),
+                body_len,
+            });
+            match &id {
+                b"IREP" => irep_count += 1,
+                b"DBG\0" => has_debug = true,
+                b"LVAR" => has_lvar = true,
+                b"END\0" => break,
+                _ => {}
+            }
         }
         cursor = section_end;
     }
@@ -123,6 +138,17 @@ pub(crate) fn read_rite(bytes: &[u8]) -> Result<RiteBinary> {
         has_debug,
         has_lvar,
     })
+}
+
+fn header_has_crc_field(bytes: &[u8]) -> bool {
+    let looks_like_section = |id: Option<&[u8]>| -> bool {
+        id.and_then(|id: &[u8]| <[u8; 4]>::try_from(id).ok())
+            .is_some_and(|id: [u8; 4]| KNOWN_SECTIONS.contains(&&id))
+    };
+    let without_crc: bool = looks_like_section(bytes.get(RITE_HEADER_SIZE..RITE_HEADER_SIZE + 4));
+    let with_crc: bool =
+        looks_like_section(bytes.get(RITE_HEADER_SIZE_WITH_CRC..RITE_HEADER_SIZE_WITH_CRC + 4));
+    with_crc && !without_crc
 }
 
 #[inline]
@@ -199,12 +225,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_section() {
+    fn skips_unknown_section_without_recording_it() {
         let mut body: Vec<u8> = Vec::new();
         body.extend_from_slice(&synth_section(*b"XXXX", &[0u8; 4]));
         let bytes: Vec<u8> = synth_rite(*b"0300", &body);
-        let err: RubyError = read_rite(&bytes).expect_err("unknown sec");
-        assert!(matches!(err, RubyError::MrubyUnknownSection { .. }));
+        let r: RiteBinary = read_rite(&bytes).expect("unknown section must not fail parsing");
+        assert!(
+            r.sections.is_empty(),
+            "a skipped section must not be recorded as a structural section"
+        );
+        assert_eq!(r.irep_count, 0);
+    }
+
+    #[test]
+    fn skips_unknown_section_and_still_finds_the_irep_and_end_after_it() {
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(&synth_section(*b"XXXX", &[0u8; 12]));
+        body.extend_from_slice(&synth_section(*b"IREP", &[0u8; 16]));
+        body.extend_from_slice(&synth_section(*b"END\0", &[]));
+        let bytes: Vec<u8> = synth_rite(*b"0300", &body);
+        let r: RiteBinary = read_rite(&bytes).expect("unknown section must not fail parsing");
+        assert_eq!(
+            r.irep_count, 1,
+            "the IREP section after the skip must count"
+        );
+        assert_eq!(
+            r.sections.len(),
+            2,
+            "only the two known sections are recorded, the unknown one is skipped"
+        );
     }
 
     #[test]

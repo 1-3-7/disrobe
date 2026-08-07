@@ -75,6 +75,10 @@ fn read_chain_json(out_dir: &Path) -> String {
 }
 
 fn pack_apk(dex_bytes: &[u8]) -> Vec<u8> {
+    pack_apk_with_entries(dex_bytes, &[])
+}
+
+fn pack_apk_with_entries(dex_bytes: &[u8], extra_entries: &[(&str, &[u8])]) -> Vec<u8> {
     let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(dex_bytes.len() + 256));
     let mut writer: ZipWriter<Cursor<Vec<u8>>> = ZipWriter::new(cursor);
     let options: FileOptions<'_, ()> =
@@ -91,6 +95,14 @@ fn pack_apk(dex_bytes: &[u8]) -> Vec<u8> {
     writer
         .write_all(b"<manifest package=\"com.disrobe.hello\"/>")
         .expect("write manifest bytes");
+    for (path, bytes) in extra_entries {
+        writer
+            .start_file(*path, options)
+            .unwrap_or_else(|e| panic!("start {path} entry: {e}"));
+        writer
+            .write_all(bytes)
+            .unwrap_or_else(|e| panic!("write {path} bytes: {e}"));
+    }
     writer.finish().expect("finish apk zip").into_inner()
 }
 
@@ -218,5 +230,88 @@ fn auto_chain_apk_dex_recovers_decompiled_class_tokens() {
          jvm.classify(android-dex) -> java ({} bytes child); Hello={has_hello_class} \
          Greeter={has_greeter_class} main={has_main}",
         stage.len(),
+    );
+}
+
+const JNI_REGISTER_X64_SO: &[u8] =
+    include_bytes!("../../disrobe-pass-jvm/tests/fixtures/jni_register/libjnireg_x64.so");
+
+#[test]
+fn auto_chain_apk_links_registered_natives_against_the_embedded_native_library() {
+    let dex_fixture: PathBuf = corpus_path("jvm/dex/Hello.dex");
+    assert!(
+        dex_fixture.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dex_fixture.display()
+    );
+    let bin: PathBuf = cargo_bin();
+    assert!(
+        bin.exists(),
+        "cargo builds the disrobe binary before this test binary runs, so a missing \
+         {} would leave this case driving nothing",
+        bin.display()
+    );
+
+    let dex_bytes: Vec<u8> = std::fs::read(&dex_fixture)
+        .unwrap_or_else(|e: std::io::Error| panic!("cannot read {dex_fixture:?}: {e}"));
+
+    let apk_bytes: Vec<u8> = pack_apk_with_entries(
+        &dex_bytes,
+        &[("lib/x86_64/libjnireg_x64.so", JNI_REGISTER_X64_SO)],
+    );
+    let (_apk_path_scratch, apk_base): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        tmp_path("jni-app");
+    let apk_path: PathBuf = apk_base.with_extension("apk");
+    std::fs::write(&apk_path, &apk_bytes)
+        .unwrap_or_else(|e: std::io::Error| panic!("cannot write synth apk {apk_path:?}: {e}"));
+
+    let (_out_dir_scratch, out_dir): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        tmp_path("jni-out");
+    let proc_out: std::process::Output = run_chain_capture(&apk_path, &out_dir);
+    assert!(
+        proc_out.status.success(),
+        "chain failed: {}",
+        String::from_utf8_lossy(&proc_out.stderr)
+    );
+
+    let sidecar_path: PathBuf = out_dir.join("extracted").join("jni-link.json");
+    assert!(
+        sidecar_path.exists(),
+        "auto must link the apk's embedded classes.dex against its embedded native library \
+         without the user naming either side; expected {sidecar_path:?} to exist"
+    );
+    let sidecar_text: String = std::fs::read_to_string(&sidecar_path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {sidecar_path:?}: {e}"));
+    let sidecar: serde_json::Value = serde_json::from_str(&sidecar_text)
+        .unwrap_or_else(|e: serde_json::Error| panic!("jni-link.json is not valid json: {e}"));
+
+    let registered: &Vec<serde_json::Value> = sidecar["surface"]["registered_natives"]
+        .as_array()
+        .expect("surface.registered_natives array");
+    assert_eq!(
+        registered.len(),
+        4,
+        "the four JNINativeMethod entries recovered from the committed fixture must reach the \
+         auto chain sidecar; got: {sidecar_text}"
+    );
+    let names: Vec<&str> = registered
+        .iter()
+        .filter_map(|entry: &serde_json::Value| entry["name"].as_str())
+        .collect();
+    for want in ["nativeAdd", "nativeLen", "nativeNoop", "hiddenMul"] {
+        assert!(
+            names.contains(&want),
+            "recovered RegisterNatives entries must include {want}; got {names:?}"
+        );
+    }
+
+    let _ = std::fs::remove_file(&apk_path);
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    eprintln!(
+        "auto_apk_dex jni: apk(classes.dex + lib/x86_64/libjnireg_x64.so) -> \
+         mobile.classify(android-apk-dex) -> jni-link.json with {} registered natives",
+        registered.len(),
     );
 }

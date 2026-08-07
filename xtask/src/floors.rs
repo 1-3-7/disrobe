@@ -53,15 +53,23 @@ const PACKER_BYTE_GATE: &str = "crates/disrobe-pass-native/tests/committed_packe
 const EAZVM_GATE: &str = "crates/disrobe-pass-dotnet/tests/real_eazvm.rs";
 const PY_ARBITRARY_GATE: &str =
     "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate.rs";
+const PY_ROUNDTRIP_METRIC_GATE: &str = "crates/disrobe-pass-py-decompile/tests/roundtrip_metric.rs";
+const VBA_SOURCE_ORACLE_GATE: &str =
+    "crates/disrobe-pass-shell/tests/vba_semantic_source_oracle.rs";
+const YARV_RECOMPILE_GATE: &str = "crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs";
+const UPX_UNPACK_GATE: &str = "crates/disrobe-pass-native/tests/upx_unpack_all.rs";
 const README_DOC: &str = "README.md";
 const CATALOG_DOC: &str = "docs/src/catalog.md";
 const NATIVE_DOC: &str = "docs/src/languages/native.md";
+const DOTNET_DOC: &str = "docs/src/languages/dotnet.md";
+const SHELL_DOC: &str = "docs/src/languages/shell.md";
+const RUBY_DOC: &str = "docs/src/languages/ruby.md";
 const WHITEPAPER_DOC: &str = "docs/src/architecture/whitepaper.md";
 
 const CONTENT_SPAN: &str = "the content span that counts `.rsrc`, not the older whole-image span \
                             measured over `.text`, `.rdata` and `.data` only";
 
-const CLAIMS: [FloorClaim; 12] = [
+const CLAIMS: [FloorClaim; 18] = [
     FloorClaim {
         constant: "CLEAN_BASELINE_INSTRUCTIONS",
         source: EAZVM_GATE,
@@ -69,6 +77,8 @@ const CLAIMS: [FloorClaim; 12] = [
             (WHITEPAPER_DOC, "The result is 57 of {} instructions"),
             (WHITEPAPER_DOC, "The EazVM ordered-CIL grade, 57 of {}"),
             (WHITEPAPER_DOC, "at 57 of {} instructions in order"),
+            (DOTNET_DOC, "57 of {} instructions match in sequence"),
+            (README_DOC, "57 / {} instructions lifted, ordered-CIL match"),
         ],
     },
     FloorClaim {
@@ -118,18 +128,24 @@ const CLAIMS: [FloorClaim; 12] = [
     FloorClaim {
         constant: "PINNED_REEXECUTED",
         source: PICKLE_ROUNDTRIP_GATE,
-        sites: &[(
-            README_DOC,
-            "{} / 470 reconstructed fixtures re-execute equal",
-        )],
+        sites: &[
+            (
+                README_DOC,
+                "{} / 470 reconstructed fixtures re-execute equal",
+            ),
+            (README_DOC, "{} / 470 re-execute equal, floor 100%"),
+        ],
     },
     FloorClaim {
         constant: "PINNED_FIXTURES",
         source: PICKLE_ROUNDTRIP_GATE,
-        sites: &[(
-            README_DOC,
-            "470 / {} reconstructed fixtures re-execute equal",
-        )],
+        sites: &[
+            (
+                README_DOC,
+                "470 / {} reconstructed fixtures re-execute equal",
+            ),
+            (README_DOC, "470 / {} re-execute equal, floor 100%"),
+        ],
     },
     FloorClaim {
         constant: "OBJECT_PCT_FLOOR",
@@ -184,6 +200,49 @@ const CLAIMS: [FloorClaim; 12] = [
             (
                 "docs/src/languages/jvm-android.md",
                 "{} re-hosted bodies verify clean",
+            ),
+        ],
+    },
+    FloorClaim {
+        constant: "SOURCEPROBE_AUTHORED_LINES",
+        source: VBA_SOURCE_ORACLE_GATE,
+        sites: &[(SHELL_DOC, "71 of {} on SourceProbe")],
+    },
+    FloorClaim {
+        constant: "EDGECASES_AUTHORED_LINES",
+        source: VBA_SOURCE_ORACLE_GATE,
+        sites: &[(SHELL_DOC, "552 of {} on the wider EdgeCases")],
+    },
+    FloorClaim {
+        constant: "MEGAFILE_EXPECTED_PCT",
+        source: YARV_RECOMPILE_GATE,
+        sites: &[(RUBY_DOC, "at least {}% on the megafile fixture")],
+    },
+    FloorClaim {
+        constant: "WHOLE_MODULE_FLOOR_PCT",
+        source: PY_ROUNDTRIP_METRIC_GATE,
+        sites: &[(
+            WHITEPAPER_DOC,
+            "whole module on a different corpus: {}% of 42 graded fixtures",
+        )],
+    },
+    FloorClaim {
+        constant: "GRADED_FIXTURE_COUNT",
+        source: PY_ROUNDTRIP_METRIC_GATE,
+        sites: &[(WHITEPAPER_DOC, "57.1% of {} graded fixtures")],
+    },
+    FloorClaim {
+        constant: "FLOOR_PCT",
+        source: UPX_UNPACK_GATE,
+        sites: &[
+            (
+                WHITEPAPER_DOC,
+                "The nrv2b whole-image content floor is {}% `[CI]` (`FLOOR_PCT` in \
+                 `crates/disrobe-pass-native/tests/upx_unpack_all.rs`)",
+            ),
+            (
+                README_DOC,
+                "`.text` and `.pdata` byte-identical, floor {}% `[CI]`",
             ),
         ],
     },

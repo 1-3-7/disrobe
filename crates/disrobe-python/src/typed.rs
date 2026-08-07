@@ -74,6 +74,11 @@ fn nested_array_len(data: &Json, outer: &str, inner: &str) -> usize {
 }
 
 #[inline]
+fn nested_u64(data: &Json, outer: &str, inner: &str) -> Option<u64> {
+    field(data, outer).and_then(|v: &Json| field_u64(v, inner))
+}
+
+#[inline]
 fn top_array_len(data: &Json) -> usize {
     data.as_array().map_or(0, Vec::len)
 }
@@ -764,6 +769,25 @@ typed_report!(
         resource_entry_count -> usize : |d| field_u64(d, "resource_entry_count").map_or(0, u64_to_usize),
         certificate_count -> usize : |d| array_len(d, "certificates"),
         dex_count -> usize : |d| field_u64(d, "dex_count").map_or(0, u64_to_usize),
+        native_lib_count -> usize : |d| field_u64(d, "native_lib_count").map_or(0, u64_to_usize),
+        jni_native_method_count -> usize : |d| nested_u64(d, "jni", "native_method_count").map_or(0, u64_to_usize),
+        jni_resolved_statically -> usize : |d| nested_u64(d, "jni", "resolved_statically").map_or(0, u64_to_usize),
+        jni_dynamic_only -> usize : |d| nested_u64(d, "jni", "dynamic_only").map_or(0, u64_to_usize),
+        jni_registered_natives_count -> usize : |d| nested_array_len(d, "jni", "registered_natives"),
+    }
+);
+
+typed_report!(
+    JniLink,
+    "JniLink",
+    "JNI cross-boundary link table: declared native methods matched against library exports and RegisterNatives triples.",
+    accessors {
+        native_method_count -> usize : |d| field_u64(d, "native_method_count").map_or(0, u64_to_usize),
+        resolved_statically -> usize : |d| field_u64(d, "resolved_statically").map_or(0, u64_to_usize),
+        dynamic_only -> usize : |d| field_u64(d, "dynamic_only").map_or(0, u64_to_usize),
+        registered_natives_count -> usize : |d| array_len(d, "registered_natives"),
+        code_scan_complete -> bool : |d| field_bool(d, "code_scan_complete"),
+        decode_error_count -> usize : |d| field_u64(d, "decode_error_count").map_or(0, u64_to_usize),
     }
 );
 
@@ -1252,6 +1276,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<JvmBackends>()?;
     m.add_class::<BackendList>()?;
     m.add_class::<ApkResources>()?;
+    m.add_class::<JniLink>()?;
     m.add_class::<DotnetPe>()?;
     m.add_class::<DotnetMetadata>()?;
     m.add_class::<DotnetDetection>()?;

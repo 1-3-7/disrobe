@@ -726,6 +726,24 @@ fn constructor_policy_for(bytes: &[u8], target: Target) -> ConstructorPolicy {
     })
 }
 
+fn csharp_fixed_buffer_element_keyword(clr_name: &str) -> Option<&'static str> {
+    Some(match clr_name {
+        "System.Boolean" => "bool",
+        "System.Byte" => "byte",
+        "System.SByte" => "sbyte",
+        "System.Char" => "char",
+        "System.Int16" => "short",
+        "System.UInt16" => "ushort",
+        "System.Int32" => "int",
+        "System.UInt32" => "uint",
+        "System.Int64" => "long",
+        "System.UInt64" => "ulong",
+        "System.Single" => "float",
+        "System.Double" => "double",
+        _ => return None,
+    })
+}
+
 fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
     let accessibility: &str = match field.flags & FIELD_ACCESS_MASK {
         0x0002 => "private protected ",
@@ -736,12 +754,21 @@ fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
         _ => "private ",
     };
     let is_literal: bool = field.flags & FIELD_LITERAL != 0;
+    let fixed_buffer: Option<(&'static str, u32)> = resolver
+        .field_fixed_buffer_info(field.token)
+        .and_then(|(clr_name, length): (String, u32)| {
+            let simple_name: &str = clr_name.split(',').next().unwrap_or(&clr_name).trim();
+            csharp_fixed_buffer_element_keyword(simple_name).map(|kw: &'static str| (kw, length))
+        });
     let mut modifiers: Vec<&str> = Vec::new();
     if is_literal {
         modifiers.push("const");
     } else {
         if field.flags & FIELD_STATIC != 0 {
             modifiers.push("static");
+        }
+        if fixed_buffer.is_some() {
+            modifiers.push("unsafe");
         }
         if field.flags & FIELD_INIT_ONLY != 0 {
             modifiers.push("readonly");
@@ -755,9 +782,12 @@ fn csharp_field_declaration(resolver: &Resolver, field: &FieldModel) -> String {
     } else {
         format!("{} ", modifiers.join(" "))
     };
-    let field_type: String = resolver.resolve_type_tokens(&field.field_type.render());
     let recovered_name: String = field_name(&field.name);
     let name: String = csharp_escape_identifier(&recovered_name);
+    if let Some((element_keyword, length)) = fixed_buffer {
+        return format!("    {accessibility}{modifiers}fixed {element_keyword} {name}[{length}];");
+    }
+    let field_type: String = resolver.resolve_type_tokens(&field.field_type.render());
     let initializer: String = if is_literal {
         let constant: &FieldConstant = field
             .constant
@@ -1778,7 +1808,10 @@ const EDGECASES_RECOMPILE_MEMBERS: &[&str] = &[
     "DeconstructPlayground",
     "DisposableScope",
     "Dog",
+    "EventSource",
+    "FixedBufferHolder",
     "JsonLite",
+    "Money",
     "PackedHeader",
     "Pipeline",
     "StaticFinalizationKit",
@@ -1886,6 +1919,136 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
     );
 }
 
+fn published_recovery_bar(heading_needle: &str, label: &str) -> serde_json::Value {
+    let path: PathBuf = repository_root().join("xtask/data/recovery.json");
+    let raw: String = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", path.display()));
+    let doc: serde_json::Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse {}: {e}", path.display()));
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    for group in doc["groups"].as_array().expect("groups array") {
+        let heading_matches: bool = group["heading"]
+            .as_str()
+            .is_some_and(|h: &str| h.contains(heading_needle));
+        if !heading_matches {
+            continue;
+        }
+        for bar in group["bars"].as_array().unwrap_or(&Vec::new()) {
+            if bar["label"].as_str() == Some(label) {
+                found.push(bar.clone());
+            }
+        }
+    }
+    assert_eq!(
+        found.len(),
+        1,
+        "xtask/data/recovery.json must carry exactly one bar labelled `{label}` under a heading \
+         containing `{heading_needle}`, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
+#[test]
+fn published_edgecases_whole_type_recompile_bar_matches_the_floor_this_gate_enforces() {
+    let bar: serde_json::Value =
+        published_recovery_bar("Dotnet whole-type recompile", "whole-type recompile");
+    let num: u64 = bar["num"]
+        .as_u64()
+        .expect("the whole-type recompile bar must carry a numerator");
+    let den: u64 = bar["den"]
+        .as_u64()
+        .expect("the whole-type recompile bar must carry a denominator");
+    let value: f64 = bar["value"]
+        .as_f64()
+        .expect("the whole-type recompile bar must carry a numeric value");
+    assert_eq!(
+        num,
+        u64::try_from(EDGECASES_RECOMPILE_MEMBERS.len()).expect("count fits u64"),
+        "xtask/data/recovery.json publishes {num} EdgeCases types recompiling clean, but this \
+         gate enforces the {}-name floor in EDGECASES_RECOMPILE_MEMBERS",
+        EDGECASES_RECOMPILE_MEMBERS.len()
+    );
+    assert_eq!(
+        den,
+        u64::try_from(EDGECASES_TYPES.len()).expect("count fits u64"),
+        "recovery.json publishes a denominator of {den} EdgeCases types; this gate pins {}, \
+         and edgecases_whole_type_recompile_fraction_is_published_as_measured fails if the \
+         corpus drifts from it",
+        EDGECASES_TYPES.len()
+    );
+    let derived: f64 = 100.0 * num as f64 / den as f64;
+    assert!(
+        (derived - value).abs() < 0.001,
+        "the published value {value} disagrees with its own {num}/{den} = {derived}"
+    );
+}
+
+fn declared_own_lines(body: &str, needle: &str) -> bool {
+    body.lines()
+        .any(|l: &str| l.trim_start().starts_with(needle))
+}
+
+#[test]
+fn patternkit_classify_carries_a_goto_between_sibling_if_branches_and_is_abstained() {
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
+    let classify: &StructuredMethod = asm
+        .methods
+        .iter()
+        .find(|m: &&StructuredMethod| {
+            declaring_type_of(&m.body).as_deref() == Some("EdgeCases.PatternKit")
+                && m.body.contains("Classify(object value)")
+        })
+        .expect("EdgeCases.PatternKit.Classify is present in the baseline fixture");
+    assert!(
+        classify
+            .body
+            .contains(disrobe_pass_dotnet::structure_emit::UNSTRUCTURED_CONTROL_FLOW_MARKER),
+        "Classify's recovered body used to leave a goto IL_01EB whose label sits inside a \
+         sibling if-branch, which real csc rejects with CS0159; it must abstain instead of \
+         emitting that goto. got:\n{}",
+        classify.body
+    );
+    assert!(
+        !declared_own_lines(&classify.body, "goto IL_"),
+        "an abstained body must never leave a live goto behind; got:\n{}",
+        classify.body
+    );
+}
+
+#[test]
+fn with_expression_playground_promote_recovers_a_with_expression_not_a_raw_clone_call() {
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile");
+    let promote: &StructuredMethod = asm
+        .methods
+        .iter()
+        .find(|m: &&StructuredMethod| {
+            declaring_type_of(&m.body).as_deref() == Some("EdgeCases.WithExpressionPlayground")
+                && m.body.contains("Promote(EdgeCases.User u)")
+        })
+        .expect("EdgeCases.WithExpressionPlayground.Promote is present in the baseline fixture");
+    assert!(
+        !promote.body.contains("<Clone>$"),
+        "Promote used to call the compiler's mangled record clone method directly, which csc \
+         rejects as an invalid expression term; it must recover a with expression instead. \
+         got:\n{}",
+        promote.body
+    );
+    assert!(
+        promote.body.contains(" with { "),
+        "expected a with expression recovering the record clone; got:\n{}",
+        promote.body
+    );
+}
+
 #[test]
 fn whole_type_recompile_check_rejects_deliberately_broken_source() {
     require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
@@ -1936,6 +2099,47 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
     assert!(
         broken_dll.is_none() && !broken_errors.is_empty(),
         "csc accepted recovered source carrying raw state-machine plumbing, so this check cannot separate recovered C# from builder plumbing"
+    );
+}
+
+#[test]
+fn fixed_buffer_field_recompiles_as_a_real_fixed_size_buffer() {
+    require_dotnet().unwrap_or_else(|error: String| panic!("{error}"));
+    let target: Target = Target {
+        dll: EDGECASES_DLL,
+        origin_namespace: "EdgeCases",
+        type_name: "FixedBufferHolder",
+        is_static: false,
+    };
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let fields: Vec<String> = field_declarations(&bytes, target);
+    let data_field: &String = fields
+        .iter()
+        .find(|f: &&String| f.contains(" Data;") || f.contains(" Data["))
+        .expect("FixedBufferHolder declares a Data field");
+    assert!(
+        !data_field.contains("e__FixedBuffer"),
+        "the compiler's mangled fixed-buffer backing type must never reach a field declaration; got: {data_field}"
+    );
+    assert!(
+        data_field.contains("fixed byte Data["),
+        "expected a real fixed-size buffer declaration; got: {data_field}"
+    );
+
+    let src: String = whole_type_source(&bytes, &fields, &[], target);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_wt_fixed_buffer").expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    write_project(&tmp, target.type_name);
+    let (errors, produced): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&tmp, &src, target.type_name);
+    assert!(
+        produced.is_some(),
+        "recovered FixedBufferHolder source must recompile standalone; csc errors:\n{}\nsource:\n{src}",
+        errors.join("\n")
     );
 }
 

@@ -97,6 +97,17 @@ pub const WRAPPED_STREAM_NONEMPTY: HexDecodeOptions = HexDecodeOptions {
     max_input_bytes: None,
 };
 
+#[inline]
+#[must_use]
+pub const fn nibble(symbol: u8) -> Option<u8> {
+    let value: u8 = NIBBLES[symbol as usize];
+    if value == INVALID_NIBBLE {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 #[must_use]
 pub fn encode(bytes: &[u8]) -> String {
     let mut out: String = String::with_capacity(bytes.len().saturating_mul(2));
@@ -215,6 +226,21 @@ mod tests {
         assert!(decode("abc").is_err());
         assert!(decode("zz").is_err());
         assert_eq!(decode("DEADbeef").unwrap(), [0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn nibble_decodes_every_case_and_rejects_non_hex_bytes() {
+        assert_eq!(super::nibble(b'0'), Some(0));
+        assert_eq!(super::nibble(b'9'), Some(9));
+        assert_eq!(super::nibble(b'a'), Some(10));
+        assert_eq!(super::nibble(b'f'), Some(15));
+        assert_eq!(super::nibble(b'A'), Some(10));
+        assert_eq!(super::nibble(b'F'), Some(15));
+        assert_eq!(super::nibble(b'g'), None);
+        assert_eq!(super::nibble(b'G'), None);
+        assert_eq!(super::nibble(b' '), None);
+        assert_eq!(super::nibble(0x00), None);
+        assert_eq!(super::nibble(0xff), None);
     }
 
     #[test]

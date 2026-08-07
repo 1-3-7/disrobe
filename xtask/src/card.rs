@@ -97,10 +97,10 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="70" y="222.6" font-size="11.5" xml:space="preserve" fill="#ededed">▒▒████████ █████ ██████  █████    ▒▒██████  ████████ ▒▒██████ </text>
   <text x="70" y="234.2" font-size="11.5" xml:space="preserve" fill="#ededed"> ▒▒▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒      ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒  </text>
   <rect x="70" y="262" width="417" height="3" fill="#8fb3d9"/>
-  <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1">strip the obfuscation,</text>
-  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1">read the source.</text>
-  <text x="70" y="388" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">deobfuscate, decompile, and unpack</text>
-  <text x="70" y="409" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">compiled software, deterministically.</text>
+  <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">deobfuscate, decompile, and unpack</text>
+  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">compiled software, deterministically.</text>
+  <text x="70" y="392" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">never executes the sample, calls no model,</text>
+  <text x="70" y="413" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">graded against real compilers and verifiers.</text>
   <g font-family="Inter, ui-sans-serif, sans-serif">
     <text x="70" y="456" font-size="13" fill="#828282" letter-spacing="0.3">RAW</text>
     <text x="113" y="456" font-size="13" fill="#828282">&#8594;</text>

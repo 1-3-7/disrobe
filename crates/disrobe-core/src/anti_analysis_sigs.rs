@@ -38,6 +38,12 @@ pub enum SigClass {
     AntiAttach,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalCorroboration {
+    Standalone,
+    Corroborated,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct StringSig {
     pub needle: &'static str,
@@ -45,6 +51,7 @@ pub struct StringSig {
     pub confidence: Confidence,
     pub word_bounded: bool,
     pub note: &'static str,
+    pub corroboration: SignalCorroboration,
 }
 
 pub static STRING_SIGS: &[StringSig] = &[
@@ -54,6 +61,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "win32 debugger-presence query",
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "checkremotedebuggerpresent",
@@ -61,6 +69,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "win32 remote-debugger query",
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "ntqueryinformationprocess",
@@ -68,6 +77,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "process-debug-port query primitive",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ntsetinformationthread",
@@ -75,6 +85,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "thread-hide-from-debugger primitive",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "outputdebugstring",
@@ -82,6 +93,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "debug-channel write, also benign logging",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dbghelp.dll",
@@ -89,6 +101,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "debug-help library reference",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ptrace",
@@ -96,6 +109,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "posix ptrace self-attach guard",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "/proc/self/status",
@@ -103,6 +117,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "linux tracerpid status probe path",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "tracerpid",
@@ -110,6 +125,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "linux tracerpid field name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmware",
@@ -117,6 +133,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "vmware vendor string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "virtualbox",
@@ -124,6 +141,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "virtualbox vendor string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxguest",
@@ -131,6 +149,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest driver name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxmouse",
@@ -138,6 +157,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox mouse driver name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxsf",
@@ -145,6 +165,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "virtualbox shared-folder driver name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxvideo",
@@ -152,6 +173,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox video driver name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmtoolsd",
@@ -159,6 +181,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware tools daemon process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmwareuser",
@@ -166,6 +189,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware user process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmwaretray",
@@ -173,6 +197,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware tray process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmmouse.sys",
@@ -180,6 +205,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware mouse driver file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmhgfs.sys",
@@ -187,6 +213,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware host-guest filesystem driver",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmmemctl",
@@ -194,6 +221,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware balloon memory-control driver",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "prl_cc.exe",
@@ -201,6 +229,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "parallels control-center process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "prl_tools",
@@ -208,6 +237,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "parallels tools process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmci.sys",
@@ -215,6 +245,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware virtual-machine communication driver",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "qemu",
@@ -222,6 +253,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "qemu vendor string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "qemu-ga",
@@ -229,6 +261,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "qemu guest agent process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "bochs",
@@ -236,6 +269,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "bochs emulator vendor string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "virtualpc",
@@ -243,6 +277,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "microsoft virtual pc string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "kvmkvmkvm",
@@ -250,6 +285,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "kvm cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmwarevmware",
@@ -257,6 +293,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxvboxvbox",
@@ -264,6 +301,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "microsoft hv",
@@ -271,6 +309,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "hyper-v cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "xenvmmxenvmm",
@@ -278,6 +317,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "xen cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "prl hyperv",
@@ -285,6 +325,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "parallels cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "tcgtcgtcgtcg",
@@ -292,6 +333,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "qemu tcg cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "sbiedll.dll",
@@ -299,6 +341,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "sandboxie injection dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "sbiesvc",
@@ -306,6 +349,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "sandboxie service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "cuckoomon",
@@ -313,6 +357,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "cuckoo monitor dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "cuckoo",
@@ -320,6 +365,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: true,
         note: "cuckoo sandbox reference",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dbghelp",
@@ -327,6 +373,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Info,
         word_bounded: true,
         note: "debug-help reference, weak signal",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wine_get_unix_file_name",
@@ -334,6 +381,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine emulation-layer export probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "sandboxie",
@@ -341,6 +389,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "sandboxie vendor string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dbgview",
@@ -348,6 +397,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "debug viewer process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "procmon",
@@ -355,6 +405,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "process monitor analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wireshark",
@@ -362,6 +413,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "packet capture analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "x32dbg",
@@ -369,6 +421,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "x64dbg 32-bit debugger process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "x64dbg",
@@ -376,6 +429,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "x64dbg debugger process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ollydbg",
@@ -383,6 +437,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "ollydbg debugger process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "joeboxserver",
@@ -390,6 +445,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "joe sandbox server process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "joeboxcontrol",
@@ -397,6 +453,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "joe sandbox control process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:05:69",
@@ -404,6 +461,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "vmware mac oui 00:05:69",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:0c:29",
@@ -411,6 +469,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "vmware mac oui 00:0c:29",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:1c:14",
@@ -418,6 +477,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "vmware mac oui 00:1c:14",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:50:56",
@@ -425,6 +485,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "vmware mac oui 00:50:56",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "08:00:27",
@@ -432,6 +493,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "virtualbox mac oui 08:00:27",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:16:3e",
@@ -439,6 +501,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "xen mac oui 00:16:3e",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:1c:42",
@@ -446,6 +509,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: true,
         note: "parallels mac oui 00:1c:42",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "00:15:5d",
@@ -453,6 +517,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "hyper-v mac oui 00:15:5d",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "52:54:00",
@@ -460,6 +525,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "qemu/kvm mac oui 52:54:00",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "queryperformancecounter",
@@ -467,6 +533,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "high-resolution timer query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "gettickcount",
@@ -474,6 +541,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "tick-count timer query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "rdtsc",
@@ -481,6 +549,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: true,
         note: "timestamp-counter mnemonic reference",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wudfisanydebuggerpresent",
@@ -488,6 +557,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "umdf any-debugger-present query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wudfiskerneldebuggerpresent",
@@ -495,6 +565,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "umdf kernel-debugger-present query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ntqueryobject",
@@ -502,6 +573,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "debug-object type-information count primitive",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dbgbreakpoint",
@@ -509,6 +581,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "ntdll breakpoint entry, anti-attach patch target",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dbguiremotebreakin",
@@ -516,6 +589,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "ntdll remote-break-in entry, anti-attach patch target",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "blockinput",
@@ -523,6 +597,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "input-blocking guard during sensitive work",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "processdebugport",
@@ -530,6 +605,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-port information class name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "processdebugobject",
@@ -537,6 +613,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-object information class name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "processdebugflags",
@@ -544,6 +621,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-flags information class name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "threadhidefromdebugger",
@@ -551,6 +629,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "thread-hide-from-debugger information class name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getthreadcontext",
@@ -558,6 +637,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "thread context read, hardware-breakpoint inspection primitive",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ntgetcontextthread",
@@ -565,6 +645,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "native thread context read, debug-register inspection primitive",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "windbgframeclass",
@@ -572,6 +653,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "windbg window class probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "immunitydebugger",
@@ -579,6 +661,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "immunity debugger probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "idaq",
@@ -586,6 +669,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "ida 32-bit process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ida64",
@@ -593,6 +677,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "ida 64-bit process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "x96dbg",
@@ -600,6 +685,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "x64dbg launcher process probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "scyllahide",
@@ -607,6 +693,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "scyllahide anti-anti-debug plugin probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "processhacker",
@@ -614,6 +701,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "process hacker analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "procexp",
@@ -621,6 +709,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "process explorer analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "tcpview",
@@ -628,6 +717,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "tcpview network analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "autoruns",
@@ -635,6 +725,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "autoruns persistence analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "fiddler",
@@ -642,6 +733,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "fiddler http proxy analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dumpcap",
@@ -649,6 +741,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "wireshark dumpcap capture tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "sysanalyzer",
@@ -656,6 +749,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "sysanalyzer dynamic analysis tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "importrec",
@@ -663,6 +757,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "import reconstructor unpacking tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "lordpe",
@@ -670,6 +765,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "lordpe pe editor unpacking tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "pchunter",
@@ -677,6 +773,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "pc hunter kernel inspection tool probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxservice.exe",
@@ -684,6 +781,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxtray.exe",
@@ -691,6 +789,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest tray process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxcontrol.exe",
@@ -698,6 +797,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest control process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxdisp.dll",
@@ -705,6 +805,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox display guest dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxhook.dll",
@@ -712,6 +813,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox hook guest dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxmrxnp.dll",
@@ -719,6 +821,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox network-provider guest dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxtrayipc",
@@ -726,6 +829,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox tray ipc named pipe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxminirdrdn",
@@ -733,6 +837,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox mini redirector device",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxtraytoolwndclass",
@@ -740,6 +845,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox tray tool window class",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vboxguestadditions",
@@ -747,6 +853,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest additions install marker",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vbox guest additions",
@@ -754,6 +861,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtualbox guest additions registry string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vm3dmp.sys",
@@ -761,6 +869,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware svga 3d driver file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmrawdsk.sys",
@@ -768,6 +877,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware raw-disk driver file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmusbmouse.sys",
@@ -775,6 +885,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware usb mouse driver file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vgauthservice.exe",
@@ -782,6 +893,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware guest authentication service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmacthlp.exe",
@@ -789,6 +901,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "vmware activation helper process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmware tools",
@@ -796,6 +909,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "vmware tools registry/install string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmware, inc.",
@@ -803,6 +917,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "vmware smbios manufacturer string",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "bhyve bhyve",
@@ -810,6 +925,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "bhyve cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "acrnacrnacrn",
@@ -817,6 +933,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "acrn cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: " lrpepyh vr",
@@ -824,6 +941,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "parallels byte-swapped cpuid hypervisor vendor leaf",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "kernel-vmdetection-private",
@@ -831,6 +949,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "ntquerylicensevalue vm-detection probe name",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "qemu-ga.exe",
@@ -838,6 +957,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "qemu guest agent process file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "xenservice.exe",
@@ -845,6 +965,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "xen guest service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmsrvc.exe",
@@ -852,6 +973,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtual pc additions service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmusrvc.exe",
@@ -859,6 +981,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtual pc user service process",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "vmcheck.dll",
@@ -866,6 +989,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "virtual pc detection dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "prl_tools.exe",
@@ -873,6 +997,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "parallels tools process file",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "06/23/99",
@@ -880,6 +1005,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "qemu default smbios bios date",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "virtual machine\\guest\\parameters",
@@ -887,6 +1013,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "hyper-v guest parameters registry path",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "pstorec.dll",
@@ -894,6 +1021,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "sunbelt sandbox protected storage hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "api_log.dll",
@@ -901,6 +1029,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "idefense sandbox api log hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "dir_watch.dll",
@@ -908,6 +1037,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "idefense sandbox directory watch hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wpespy.dll",
@@ -915,6 +1045,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wpe pro packet editor hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "cmdvrt32.dll",
@@ -922,6 +1053,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "comodo sandbox virtualization hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "cmdvrt64.dll",
@@ -929,6 +1061,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "comodo sandbox virtualization hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "snxhk.dll",
@@ -936,6 +1069,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "avast sandbox hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "avghookx.dll",
@@ -943,6 +1077,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "avg behavior-shield hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "avghooka.dll",
@@ -950,6 +1085,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "avg behavior-shield hook dll",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "frida-agent",
@@ -957,6 +1093,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "frida instrumentation agent probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "frida-gadget",
@@ -964,6 +1101,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "frida embedded gadget probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "gum-js-loop",
@@ -971,6 +1109,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "frida gum javascript loop thread probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "\\\\.\\ntice",
@@ -978,6 +1117,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "softice kernel-debugger device probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "\\\\.\\sice",
@@ -985,6 +1125,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "softice device probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "\\\\.\\syser",
@@ -992,6 +1133,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "syser kernel-debugger device probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "\\\\.\\trw",
@@ -999,6 +1141,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "trw kernel-debugger device probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "software\\wine",
@@ -1006,6 +1149,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine emulation-layer registry probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "\\\\.\\winex11",
@@ -1013,6 +1157,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine x11 driver device probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "wine_get_version",
@@ -1020,6 +1165,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine ntdll version export probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "globalmemorystatusex",
@@ -1027,6 +1173,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "physical-memory floor query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getdiskfreespaceex",
@@ -1034,6 +1181,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "disk-size floor query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getsystempowerstatus",
@@ -1041,6 +1189,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "battery-presence sandbox query",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "ioctl_disk_get_length_info",
@@ -1048,6 +1197,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "raw disk-length floor probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getcursorpos",
@@ -1055,6 +1205,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "mouse-position interaction probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getlastinputinfo",
@@ -1062,6 +1213,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "idle-time interaction probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getforegroundwindow",
@@ -1069,6 +1221,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "foreground-window interaction probe",
+        corroboration: SignalCorroboration::Standalone,
     },
     StringSig {
         needle: "getasynckeystate",
@@ -1076,6 +1229,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "keystroke interaction probe",
+        corroboration: SignalCorroboration::Standalone,
     },
 ];
 
@@ -1144,18 +1298,12 @@ pub static ANALYSIS_USERNAME_SIGS: &[UsernameSig] = &[
     },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumberCorroboration {
-    Standalone,
-    Corroborated,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct NumberSig {
     pub value: u32,
     pub class: SigClass,
     pub confidence: Confidence,
-    pub corroboration: NumberCorroboration,
+    pub corroboration: SignalCorroboration,
     pub note: &'static str,
 }
 
@@ -1164,56 +1312,56 @@ pub static NUMBER_SIGS: &[NumberSig] = &[
         value: 0x564d_5868,
         class: SigClass::AntiVm,
         confidence: Confidence::High,
-        corroboration: NumberCorroboration::Standalone,
+        corroboration: SignalCorroboration::Standalone,
         note: "vmware vmxh backdoor magic in eax",
     },
     NumberSig {
         value: 0x0000_5658,
         class: SigClass::AntiVm,
         confidence: Confidence::Low,
-        corroboration: NumberCorroboration::Corroborated,
+        corroboration: SignalCorroboration::Corroborated,
         note: "vmware backdoor io port vx",
     },
     NumberSig {
         value: 0xc000_0008,
         class: SigClass::AntiDebug,
         confidence: Confidence::Medium,
-        corroboration: NumberCorroboration::Corroborated,
+        corroboration: SignalCorroboration::Corroborated,
         note: "exception-invalid-handle close-trick code",
     },
     NumberSig {
         value: 0x4001_0006,
         class: SigClass::AntiDebug,
         confidence: Confidence::Low,
-        corroboration: NumberCorroboration::Standalone,
+        corroboration: SignalCorroboration::Standalone,
         note: "dbg-printexception-c output-debug-string trap code",
     },
     NumberSig {
         value: 0x4001_000a,
         class: SigClass::AntiDebug,
         confidence: Confidence::Low,
-        corroboration: NumberCorroboration::Standalone,
+        corroboration: SignalCorroboration::Standalone,
         note: "dbg-printexception-wide-c output-debug-string trap code",
     },
     NumberSig {
         value: 0x8000_0001,
         class: SigClass::AntiDebug,
         confidence: Confidence::Medium,
-        corroboration: NumberCorroboration::Corroborated,
+        corroboration: SignalCorroboration::Corroborated,
         note: "status-guard-page-violation page-guard trap code",
     },
     NumberSig {
         value: 0x000a_fe74,
         class: SigClass::ResourceFloor,
         confidence: Confidence::Low,
-        corroboration: NumberCorroboration::Standalone,
+        corroboration: SignalCorroboration::Standalone,
         note: "pafish 12-minute uptime floor in milliseconds",
     },
     NumberSig {
         value: 0x4000_0000,
         class: SigClass::Hypervisor,
         confidence: Confidence::Low,
-        corroboration: NumberCorroboration::Corroborated,
+        corroboration: SignalCorroboration::Corroborated,
         note: "cpuid hypervisor-vendor leaf selector",
     },
 ];
@@ -1272,7 +1420,7 @@ mod tests {
         {
             assert_eq!(
                 sig.corroboration,
-                NumberCorroboration::Corroborated,
+                SignalCorroboration::Corroborated,
                 "cpuid-leaf selector is ubiquitous and must be corroboration gated"
             );
         }

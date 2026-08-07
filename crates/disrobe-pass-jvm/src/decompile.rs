@@ -15,6 +15,7 @@ use crate::decompile_struct::{
 };
 use crate::descriptor::{self, JavaType, MethodDescriptor};
 use crate::error::{Error, Result};
+use crate::frame_infer::{DeferredAllocationPlan, plan_deferred_allocations};
 
 pub const ACC_PUBLIC: u16 = 0x0001;
 pub const ACC_PRIVATE: u16 = 0x0002;
@@ -1924,28 +1925,54 @@ fn lift_method_body(
     }
     let array_casts: BTreeMap<String, String> =
         object_local_array_casts(cf, &insns, params, &object_locals);
+    let allocations: DeferredAllocationPlan = deferred_allocation_plan(cf, code, &insns, has_this);
     let body: MethodBody = with_object_locals(object_locals, boolean_locals, array_casts, || {
-        if let Some(body) = lift_structured(
-            cf,
-            code,
-            &insns,
-            params,
-            param_types,
-            &bootstraps,
-            has_this,
-            bool_return,
-        ) {
+        with_deferred_allocations(allocations, || {
+            if let Some(body) = lift_structured(
+                cf,
+                code,
+                &insns,
+                params,
+                param_types,
+                &bootstraps,
+                has_this,
+                bool_return,
+            ) {
+                crate::debug::dbg_line(|| {
+                    "method body lifted via structured (CFG) reconstruction".to_owned()
+                });
+                return body;
+            }
             crate::debug::dbg_line(|| {
-                "method body lifted via structured (CFG) reconstruction".to_owned()
+                "structured lift declined; falling back to flat linear lift".to_owned()
             });
-            return body;
-        }
-        crate::debug::dbg_line(|| {
-            "structured lift declined; falling back to flat linear lift".to_owned()
-        });
-        lift_method_body_flat(cf, &insns, params, &bootstraps, has_this, bool_return)
+            lift_method_body_flat(cf, &insns, params, &bootstraps, has_this, bool_return)
+        })
     });
     Ok(body)
+}
+
+fn deferred_allocation_plan(
+    cf: &ClassFile,
+    code: &CodeAttribute,
+    insns: &[Instruction],
+    has_this: bool,
+) -> DeferredAllocationPlan {
+    let Ok(cfg): std::result::Result<Cfg, crate::decompile_struct::StructureError> =
+        build_cfg(insns, code, |idx: u16| {
+            crate::bytecode::class_internal_name_at(cf, idx)
+        })
+    else {
+        return DeferredAllocationPlan::default();
+    };
+    plan_deferred_allocations(
+        &cfg,
+        insns,
+        has_this,
+        &|idx: u16| crate::bytecode::field_descriptor_at(cf, idx),
+        &|idx: u16| crate::bytecode::method_name_descriptor_at(cf, idx),
+        &|idx: u16| crate::bytecode::class_internal_name_at(cf, idx),
+    )
 }
 
 fn lift_method_body_flat(
@@ -1985,7 +2012,7 @@ fn lift_method_body_flat(
                 let _ = writeln!(out, "{indent}{s}");
                 fully_lifted = false;
             }
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 fully_lifted = false;
@@ -2563,7 +2590,7 @@ fn classify_bool_block(
     let mut prelude: String = String::new();
     for ins in &body[..body.len() - 1] {
         match lift_one(cf, ins, &mut stack, params, bootstraps, has_this, true) {
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Statement(s) if allow_prelude && stack.is_empty() => {
                 if s.contains(HOLE_RENDER) {
                     return None;
@@ -4172,7 +4199,10 @@ fn value_stored_to_slot(ctx: &RenderCtx<'_>, bid: BlockId, slot: u16) -> Option<
             ctx.has_this,
             ctx.bool_return,
         ) {
-            LiftResult::Pushed | LiftResult::Statement(_) | LiftResult::ControlFlow(_) => {}
+            LiftResult::Pushed
+            | LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_) => {}
             LiftResult::Unhandled => return None,
         }
     }
@@ -4433,7 +4463,7 @@ fn render_latch_inline(ctx: &RenderCtx<'_>, bid: BlockId, out: &mut String, leve
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
             }
-            LiftResult::Pushed | LiftResult::Unhandled => {}
+            LiftResult::Pushed | LiftResult::Elided | LiftResult::Unhandled => {}
         }
     }
 }
@@ -4544,7 +4574,7 @@ fn render_block_seeded(
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
             }
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 ctx.fully_lifted = false;
@@ -4603,7 +4633,7 @@ fn render_finally_body(
                     let _ = writeln!(out, "{pad}{s}");
                     ctx.fully_lifted = false;
                 }
-                LiftResult::Pushed => {}
+                LiftResult::Pushed | LiftResult::Elided => {}
                 LiftResult::Unhandled => {
                     stack.clear();
                     ctx.fully_lifted = false;
@@ -4638,7 +4668,10 @@ fn lift_lock_expr(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Statement(_) | LiftResult::ControlFlow(_) | LiftResult::Unhandled => {
+            LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_)
+            | LiftResult::Unhandled => {
                 return None;
             }
         }
@@ -4667,7 +4700,10 @@ fn lift_block_to_value(ctx: &RenderCtx<'_>, bid: BlockId, seed_count: usize) -> 
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Statement(_) | LiftResult::ControlFlow(_) | LiftResult::Unhandled => {
+            LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_)
+            | LiftResult::Unhandled => {
                 return None;
             }
         }
@@ -4703,7 +4739,10 @@ fn simulate_block(ctx: &RenderCtx<'_>, bid: BlockId, entry: &[Expr]) -> (Vec<Exp
             ctx.has_this,
             ctx.bool_return,
         ) {
-            LiftResult::Pushed | LiftResult::Statement(_) | LiftResult::ControlFlow(_) => {}
+            LiftResult::Pushed
+            | LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_) => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 clean = false;
@@ -4938,7 +4977,10 @@ fn arm_is_pure_value(ctx: &RenderCtx<'_>, bid: BlockId, prefix_len: usize) -> bo
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Statement(_) | LiftResult::ControlFlow(_) | LiftResult::Unhandled => {
+            LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_)
+            | LiftResult::Unhandled => {
                 return false;
             }
         }
@@ -5005,7 +5047,10 @@ fn head_condition_to(ctx: &RenderCtx<'_>, head: BlockId, want: BlockId) -> Optio
             ctx.has_this,
             ctx.bool_return,
         ) {
-            LiftResult::Pushed | LiftResult::Statement(_) | LiftResult::ControlFlow(_) => {}
+            LiftResult::Pushed
+            | LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_) => {}
             LiftResult::Unhandled => return None,
         }
     }
@@ -5261,7 +5306,7 @@ fn render_head_prefix_and_condition(
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
             }
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 ctx.fully_lifted = false;
@@ -5311,7 +5356,10 @@ fn join_seed_use_count(ctx: &RenderCtx<'_>, bid: BlockId) -> usize {
             ctx.has_this,
             ctx.bool_return,
         ) {
-            LiftResult::Pushed | LiftResult::Statement(_) | LiftResult::ControlFlow(_) => {}
+            LiftResult::Pushed
+            | LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_) => {}
             LiftResult::Unhandled => break,
         }
         let after: usize = stack
@@ -5378,7 +5426,7 @@ fn render_if_condition(
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
             }
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 ctx.fully_lifted = false;
@@ -5486,7 +5534,7 @@ fn render_switch_subject(
                 let _ = writeln!(out, "{pad}{s}");
                 ctx.fully_lifted = false;
             }
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Unhandled => {
                 stack.clear();
                 ctx.fully_lifted = false;
@@ -5821,7 +5869,7 @@ fn lift_switch_arm_body(
             ctx.has_this,
             ctx.bool_return,
         ) {
-            LiftResult::Pushed => {}
+            LiftResult::Pushed | LiftResult::Elided => {}
             LiftResult::Statement(s) => {
                 let _ = writeln!(stmts, "{pad}{s};");
             }
@@ -6111,7 +6159,7 @@ fn render_string_switch(
             LiftResult::ControlFlow(s) => {
                 let _ = writeln!(out, "{pad}{s}");
             }
-            LiftResult::Pushed | LiftResult::Unhandled => {}
+            LiftResult::Pushed | LiftResult::Elided | LiftResult::Unhandled => {}
         }
     }
     let subject: String = local_name(table.subject_source_slot, ctx.params);
@@ -6488,7 +6536,10 @@ fn lift_value_slice(ctx: &RenderCtx<'_>, slice: &[Instruction]) -> Option<Expr> 
             ctx.bool_return,
         ) {
             LiftResult::Pushed => {}
-            LiftResult::Statement(_) | LiftResult::ControlFlow(_) | LiftResult::Unhandled => {
+            LiftResult::Elided
+            | LiftResult::Statement(_)
+            | LiftResult::ControlFlow(_)
+            | LiftResult::Unhandled => {
                 return None;
             }
         }
@@ -7648,6 +7699,7 @@ fn branch_targets(insns: &[Instruction]) -> BTreeSet<u32> {
 
 enum LiftResult {
     Pushed,
+    Elided,
     Statement(String),
     ControlFlow(String),
     Unhandled,
@@ -7749,6 +7801,30 @@ thread_local! {
 thread_local! {
     static RECORD_ARITIES: RefCell<BTreeMap<String, usize>> =
         const { RefCell::new(BTreeMap::new()) };
+}
+
+thread_local! {
+    static DEFERRED_ALLOCATIONS: RefCell<DeferredAllocationPlan> =
+        RefCell::new(DeferredAllocationPlan::default());
+}
+
+fn with_deferred_allocations<T>(plan: DeferredAllocationPlan, body: impl FnOnce() -> T) -> T {
+    let previous: DeferredAllocationPlan =
+        DEFERRED_ALLOCATIONS.with(|slot: &RefCell<DeferredAllocationPlan>| slot.replace(plan));
+    let result: T = body();
+    DEFERRED_ALLOCATIONS.with(|slot: &RefCell<DeferredAllocationPlan>| slot.replace(previous));
+    result
+}
+
+fn allocation_store_is_deferred(pc: u32) -> bool {
+    DEFERRED_ALLOCATIONS
+        .with(|slot: &RefCell<DeferredAllocationPlan>| slot.borrow().elides_store_at(pc))
+}
+
+fn deferred_allocation_class(pc: u32) -> Option<String> {
+    DEFERRED_ALLOCATIONS.with(|slot: &RefCell<DeferredAllocationPlan>| {
+        slot.borrow().merged_construction_at(pc).map(str::to_owned)
+    })
 }
 
 thread_local! {
@@ -7949,6 +8025,11 @@ fn inline_anonymous_class(type_name: &str, ctor_args: &[String]) -> Option<Strin
     rendered
 }
 
+fn allocation_expression(type_name: &str, ctor_args: &[String]) -> String {
+    inline_anonymous_class(type_name, ctor_args)
+        .unwrap_or_else(|| format!("new {type_name}({})", ctor_args.join(", ")))
+}
+
 fn with_object_locals<T>(
     names: BTreeSet<String>,
     boolean_names: BTreeSet<String>,
@@ -8142,11 +8223,11 @@ fn lift_one_inner(
         }
         0x2E..=0x35 => binary_array_load(stack),
         0x36..=0x3A => store_local(insn, stack, params),
-        0x3B..=0x3E => store_indexed(stack, u16::from(op - 0x3B), params),
-        0x3F..=0x42 => store_indexed(stack, u16::from(op - 0x3F), params),
-        0x43..=0x46 => store_indexed(stack, u16::from(op - 0x43), params),
-        0x47..=0x4A => store_indexed(stack, u16::from(op - 0x47), params),
-        0x4B..=0x4E => store_indexed(stack, u16::from(op - 0x4B), params),
+        0x3B..=0x3E => store_indexed(stack, u16::from(op - 0x3B), params, insn.pc),
+        0x3F..=0x42 => store_indexed(stack, u16::from(op - 0x3F), params, insn.pc),
+        0x43..=0x46 => store_indexed(stack, u16::from(op - 0x43), params, insn.pc),
+        0x47..=0x4A => store_indexed(stack, u16::from(op - 0x47), params, insn.pc),
+        0x4B..=0x4E => store_indexed(stack, u16::from(op - 0x4B), params, insn.pc),
         0x4F..=0x56 => array_store(stack),
         0x57 => match stack.pop().as_ref().and_then(Expr::discarded_side_effect) {
             Some(call) => LiftResult::Statement(call),
@@ -8645,13 +8726,16 @@ fn signature_polymorphic_return(owner: &str, name: &str, returns: &JavaType) -> 
 
 fn store_local(insn: &Instruction, stack: &mut Vec<Expr>, params: &[(u16, String)]) -> LiftResult {
     match &insn.operands {
-        Operands::Local(idx) => store_indexed(stack, *idx, params),
+        Operands::Local(idx) => store_indexed(stack, *idx, params, insn.pc),
         _ => LiftResult::Unhandled,
     }
 }
 
-fn store_indexed(stack: &mut Vec<Expr>, idx: u16, params: &[(u16, String)]) -> LiftResult {
+fn store_indexed(stack: &mut Vec<Expr>, idx: u16, params: &[(u16, String)], pc: u32) -> LiftResult {
     let value: Expr = pop_expr(stack);
+    if allocation_store_is_deferred(pc) {
+        return LiftResult::Elided;
+    }
     LiftResult::Statement(format!("{} = {}", local_name(idx, params), value.render()))
 }
 
@@ -8836,11 +8920,18 @@ fn invoke(cf: &ClassFile, insn: &Instruction, stack: &mut Vec<Expr>, op: u8) -> 
     if name == "<init>" {
         let ctor_args: Vec<String> = args.iter().map(Expr::render).collect();
         let joined: String = ctor_args.join(", ");
+        if let Some(internal) = deferred_allocation_class(insn.pc)
+            && let Some(Expr::Local(target)) = receiver.as_ref()
+        {
+            let allocated: String = descriptor::binary_to_source(&internal);
+            return LiftResult::Statement(format!(
+                "{target} = {}",
+                allocation_expression(&allocated, &ctor_args)
+            ));
+        }
         match receiver {
             Some(Expr::New(ty)) => {
-                let rendered: String = inline_anonymous_class(&ty, &ctor_args)
-                    .unwrap_or_else(|| format!("new {ty}({joined})"));
-                let folded: Expr = Expr::Opaque(rendered);
+                let folded: Expr = Expr::Opaque(allocation_expression(&ty, &ctor_args));
                 if matches!(stack.last(), Some(Expr::New(under)) if *under == ty) {
                     stack.pop();
                     stack.push(folded);

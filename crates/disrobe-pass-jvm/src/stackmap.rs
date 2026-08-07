@@ -16,6 +16,7 @@ pub enum VerificationType {
     Double,
     Null,
     UninitializedThis,
+    Uninitialized { offset: u32, class: String },
     Object(String),
 }
 

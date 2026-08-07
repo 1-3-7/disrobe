@@ -1,11 +1,11 @@
-use disrobe_core::debug::DebugLog;
+use disrobe_core::debug::{DebugLog, guard_secret_shaped};
 
 pub(crate) fn debug_log() -> DebugLog {
     DebugLog::for_scope("nuitka")
 }
 
 pub(crate) fn dbg_enabled() -> bool {
-    debug_log().on() || std::env::var_os("DISROBE_NUITKA_DEBUG").is_some()
+    debug_log().on()
 }
 
 pub(crate) fn pe_overlay_offset(image: &[u8]) -> Option<usize> {
@@ -73,55 +73,27 @@ pub(crate) fn pe_data_section_ranges(image: &[u8]) -> Option<Vec<(usize, usize)>
     (!ranges.is_empty()).then_some(ranges)
 }
 
-pub(crate) fn dbg_line(msg: &str) {
-    let log: DebugLog = debug_log();
-    if log.on() {
-        log.line(|| msg.to_owned());
-    } else if std::env::var_os("DISROBE_NUITKA_DEBUG").is_some() {
-        eprintln!("[nuitka-dbg] {msg}");
-    }
+pub(crate) fn dbg_line(msg: impl FnOnce() -> String) {
+    debug_log().line(msg);
 }
 
 pub(crate) fn dbg_guarded(label: &str, value: &str) {
-    let log: DebugLog = debug_log();
-    let guarded: String = disrobe_core::debug::guard_secret_shaped(value);
-    if log.on() {
-        log.kv_guarded(label, || value.to_owned());
-    } else if std::env::var_os("DISROBE_NUITKA_DEBUG").is_some() {
-        eprintln!("[nuitka-dbg] {label} = {guarded}");
-    }
+    debug_log().kv_guarded(label, || value.to_owned());
 }
 
 pub(crate) fn dbg_hex(label: &str, bytes: &[u8], max: usize) {
-    const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-
     let log: DebugLog = debug_log();
-    if log.on() {
-        log.hex(label, bytes, max);
+    if !log.on() {
         return;
     }
-    if std::env::var_os("DISROBE_NUITKA_DEBUG").is_none() {
-        return;
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let guarded: String = guard_secret_shaped(text);
+        if guarded != text {
+            log.secret(label, bytes.len());
+            return;
+        }
     }
-    let take: usize = bytes.len().min(max);
-    let mut hex: String = String::with_capacity(take * 3);
-    let mut asc: String = String::with_capacity(take);
-    for &byte in &bytes[..take] {
-        hex.push(char::from(HEX_LOWER[usize::from(byte >> 4)]));
-        hex.push(char::from(HEX_LOWER[usize::from(byte & 0x0f)]));
-        hex.push(' ');
-        asc.push(if (0x20..=0x7e).contains(&byte) {
-            byte as char
-        } else {
-            '.'
-        });
-    }
-    eprintln!(
-        "[nuitka-dbg] {label}: total_len={} showing={take}",
-        bytes.len()
-    );
-    eprintln!("[nuitka-dbg]   hex: {hex}");
-    eprintln!("[nuitka-dbg]   asc: {asc}");
+    log.hex(label, bytes, max);
 }
 
 #[inline]

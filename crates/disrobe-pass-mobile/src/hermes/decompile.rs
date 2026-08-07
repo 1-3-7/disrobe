@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::literals::{BufferKind, LiteralValue, decode_literals, render_key, render_value};
 use super::structure::{StructureDecline, structure_function};
-use super::{HERMES_LIFT_VERSION, HermesModule, SmallFunctionHeader};
+use super::{HERMES_LIFT_VERSION, HermesExceptionEntry, HermesModule, SmallFunctionHeader};
 
 const MAX_RENDERED_CALL_ARGS: u64 = 256;
 
@@ -566,7 +566,11 @@ pub(crate) struct Cfg {
 }
 
 #[must_use]
-pub(crate) fn build_cfg(instructions: &[Instruction], code: &[u8]) -> Cfg {
+pub(crate) fn build_cfg(
+    instructions: &[Instruction],
+    code: &[u8],
+    exception_entries: &[HermesExceptionEntry],
+) -> Cfg {
     if instructions.is_empty() {
         return Cfg {
             blocks: Vec::new(),
@@ -575,6 +579,17 @@ pub(crate) fn build_cfg(instructions: &[Instruction], code: &[u8]) -> Cfg {
     }
     let mut leaders: BTreeSet<usize> = BTreeSet::new();
     leaders.insert(instructions[0].offset);
+    for entry in exception_entries {
+        if let Ok(start) = usize::try_from(entry.start) {
+            leaders.insert(start);
+        }
+        if let Ok(end) = usize::try_from(entry.end) {
+            leaders.insert(end);
+        }
+        if let Ok(target) = usize::try_from(entry.target) {
+            leaders.insert(target);
+        }
+    }
     for (i, inst) in instructions.iter().enumerate() {
         if is_terminator(&inst.name) {
             for t in block_edges(inst, code) {
@@ -1777,7 +1792,6 @@ fn lift_instruction_inner(
         "Catch" => {
             let d: u32 = reg_of(ops.first());
             ctx.set_reg(d, "$exc".to_owned());
-            stmts.push(BlockStmt::Line("/* catch ($exc) */".to_owned()));
             ctx.reconstructed += 1;
         }
         "Jmp" | "JmpLong" => {
@@ -2147,10 +2161,11 @@ fn decompile_function_tallied(
         .unwrap_or_else(|| format!("$func{index}"));
     let code: &[u8] = module.function_code(index);
     let instructions: Vec<Instruction> = decode_instructions(code);
-    let cfg: Cfg = build_cfg(&instructions, code);
+    let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
+    let cfg: Cfg = build_cfg(&instructions, code, &exceptions);
 
     let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions);
-    let materialized: BTreeSet<u32> = compute_materialized(&instructions);
+    let materialized: BTreeSet<u32> = compute_materialized(&instructions, &exceptions);
     let mut ctx: LiftCtx<'_> =
         LiftCtx::new(module, code, materialized, window_consumed, inline_bodies);
     let lifted: Vec<LiftedBlock> = cfg
@@ -2160,7 +2175,7 @@ fn decompile_function_tallied(
         .collect();
 
     let (body, structure_decline): (String, Option<StructureDecline>) =
-        match structure_function(&lifted, &cfg) {
+        match structure_function(&lifted, &cfg, &exceptions) {
             Ok(structured) if !structured.contains("goto ") => (structured, None),
             Ok(_) => {
                 let reason: StructureDecline = StructureDecline::IncompleteCover;
@@ -2362,8 +2377,42 @@ fn mutated_then_read_again(instructions: &[Instruction], from: usize, reg: u32) 
 }
 
 #[must_use]
-fn compute_materialized(instructions: &[Instruction]) -> BTreeSet<u32> {
+fn compute_materialized(
+    instructions: &[Instruction],
+    exception_entries: &[HermesExceptionEntry],
+) -> BTreeSet<u32> {
     let mut materialized: BTreeSet<u32> = BTreeSet::new();
+
+    let mut protected_by_target: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+    for entry in exception_entries {
+        protected_by_target
+            .entry(entry.target)
+            .or_default()
+            .push((entry.start, entry.end));
+    }
+    for (target, ranges) in &protected_by_target {
+        let mut protected_writes: BTreeSet<u32> = BTreeSet::new();
+        let mut handler_writes: BTreeSet<u32> = BTreeSet::new();
+        for inst in instructions {
+            let Some(offset): Option<u32> = u32::try_from(inst.offset).ok() else {
+                continue;
+            };
+            let Some(d): Option<u32> = inst_dest(inst) else {
+                continue;
+            };
+            if ranges
+                .iter()
+                .any(|(start, end): &(u32, u32)| *start <= offset && offset < *end)
+            {
+                protected_writes.insert(d);
+            } else if offset >= *target {
+                handler_writes.insert(d);
+            }
+        }
+        for reg in protected_writes.intersection(&handler_writes) {
+            materialized.insert(*reg);
+        }
+    }
 
     for (i, inst) in instructions.iter().enumerate() {
         if !allocates_fresh_identity(&inst.name) {
@@ -3082,7 +3131,7 @@ mod tests {
         code.push(opcode_byte("Ret"));
         code.push(0u8);
         let instructions: Vec<Instruction> = decode_instructions(&code);
-        let cfg: Cfg = build_cfg(&instructions, &code);
+        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
         assert!(cfg.blocks.len() >= 2, "blocks: {}", cfg.blocks.len());
     }
 
@@ -3166,7 +3215,7 @@ mod tests {
             other => panic!("expected target operand, got {other:?}"),
         };
         assert_eq!(target, 0);
-        let cfg: Cfg = build_cfg(&instructions, &code);
+        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
         assert!(!cfg.blocks.is_empty());
     }
 
@@ -4260,7 +4309,7 @@ mod tests {
     fn switch_imm_case_targets_become_block_leaders() {
         let code: Vec<u8> = switch_imm_fixture();
         let instructions: Vec<Instruction> = decode_instructions(&code);
-        let cfg: Cfg = build_cfg(&instructions, &code);
+        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
         for leader in [21usize, 26, 31] {
             assert!(
                 cfg.offset_to_block.contains_key(&leader),

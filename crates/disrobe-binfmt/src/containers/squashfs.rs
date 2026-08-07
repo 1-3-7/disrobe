@@ -865,6 +865,127 @@ fn decompress_lzo_block(input: &[u8], cap: usize) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+fn put_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+fn uncompressed_metadata(payload: &[u8]) -> Vec<u8> {
+    let mut block: Vec<u8> = Vec::with_capacity(payload.len() + 2);
+    let header: u16 = METADATA_UNCOMPRESSED_FLAG | (payload.len() as u16 & METADATA_SIZE_MASK);
+    put_u16(&mut block, header);
+    block.extend_from_slice(payload);
+    block
+}
+
+#[cfg(test)]
+pub(crate) fn build_real_squashfs(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    let block_size: u32 = 131_072;
+    let mut image: Vec<u8> = vec![0u8; SUPERBLOCK_MIN_BYTES];
+
+    let data_offset: u64 = image.len() as u64;
+    image.extend_from_slice(file_body);
+
+    let inode_table_start: u64 = image.len() as u64;
+    let mut dir_inode: Vec<u8> = Vec::new();
+    put_u16(&mut dir_inode, INODE_TYPE_DIR);
+    put_u16(&mut dir_inode, 0o755);
+    put_u16(&mut dir_inode, 0);
+    put_u16(&mut dir_inode, 0);
+    put_u32(&mut dir_inode, 0);
+    put_u32(&mut dir_inode, 1);
+    put_u32(&mut dir_inode, 0);
+    put_u32(&mut dir_inode, 1);
+    put_u16(&mut dir_inode, 0);
+    put_u16(&mut dir_inode, 0);
+    put_u32(&mut dir_inode, 0);
+
+    let file_inode_offset: u16 = dir_inode.len() as u16;
+    let mut file_inode: Vec<u8> = Vec::new();
+    put_u16(&mut file_inode, INODE_TYPE_FILE);
+    put_u16(&mut file_inode, 0o755);
+    put_u16(&mut file_inode, 0);
+    put_u16(&mut file_inode, 0);
+    put_u32(&mut file_inode, 0);
+    put_u32(&mut file_inode, 2);
+    put_u32(&mut file_inode, data_offset as u32);
+    put_u32(&mut file_inode, 0xFFFF_FFFF);
+    put_u32(&mut file_inode, 0);
+    put_u32(&mut file_inode, file_body.len() as u32);
+    put_u32(
+        &mut file_inode,
+        FRAGMENT_UNCOMPRESSED_FLAG | file_body.len() as u32,
+    );
+
+    let mut inode_payload: Vec<u8> = Vec::new();
+    inode_payload.extend_from_slice(&dir_inode);
+    inode_payload.extend_from_slice(&file_inode);
+    image.extend_from_slice(&uncompressed_metadata(&inode_payload));
+
+    let directory_table_start: u64 = image.len() as u64;
+    let mut dir_payload: Vec<u8> = Vec::new();
+    put_u32(&mut dir_payload, 0);
+    put_u32(&mut dir_payload, 0);
+    put_u32(&mut dir_payload, 1);
+    put_u16(&mut dir_payload, file_inode_offset);
+    put_u16(&mut dir_payload, 1);
+    put_u16(&mut dir_payload, INODE_TYPE_FILE);
+    put_u16(&mut dir_payload, file_name.len() as u16 - 1);
+    dir_payload.extend_from_slice(file_name.as_bytes());
+    image.extend_from_slice(&uncompressed_metadata(&dir_payload));
+    let dir_file_size: u32 = dir_payload.len() as u32 + 3;
+
+    let _ = dir_file_size;
+    let mut dir_inode_fixed: Vec<u8> = Vec::new();
+    put_u16(&mut dir_inode_fixed, INODE_TYPE_DIR);
+    put_u16(&mut dir_inode_fixed, 0o755);
+    put_u16(&mut dir_inode_fixed, 0);
+    put_u16(&mut dir_inode_fixed, 0);
+    put_u32(&mut dir_inode_fixed, 0);
+    put_u32(&mut dir_inode_fixed, 1);
+    put_u32(&mut dir_inode_fixed, 0);
+    put_u32(&mut dir_inode_fixed, 1);
+    put_u16(&mut dir_inode_fixed, dir_file_size as u16);
+    put_u16(&mut dir_inode_fixed, 0);
+    put_u32(&mut dir_inode_fixed, 0);
+    let mut inode_payload2: Vec<u8> = Vec::new();
+    inode_payload2.extend_from_slice(&dir_inode_fixed);
+    inode_payload2.extend_from_slice(&file_inode);
+    let meta2: Vec<u8> = uncompressed_metadata(&inode_payload2);
+    image[inode_table_start as usize..inode_table_start as usize + meta2.len()]
+        .copy_from_slice(&meta2);
+
+    let fragment_table_start: u64 = 0;
+    let id_table_start: u64 = image.len() as u64;
+    image.extend_from_slice(&uncompressed_metadata(&[0u8, 0, 0, 0]));
+
+    let bytes_used: u64 = image.len() as u64;
+    let sb: &mut [u8] = &mut image[..SUPERBLOCK_MIN_BYTES];
+    sb[0x00..0x04].copy_from_slice(&SQUASHFS_MAGIC_LE.to_le_bytes());
+    sb[0x04..0x08].copy_from_slice(&2u32.to_le_bytes());
+    sb[0x0C..0x10].copy_from_slice(&block_size.to_le_bytes());
+    sb[0x10..0x14].copy_from_slice(&0u32.to_le_bytes());
+    sb[0x14..0x16].copy_from_slice(&1u16.to_le_bytes());
+    sb[0x16..0x18].copy_from_slice(&17u16.to_le_bytes());
+    sb[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
+    sb[0x1C..0x1E].copy_from_slice(&4u16.to_le_bytes());
+    sb[0x1E..0x20].copy_from_slice(&0u16.to_le_bytes());
+    sb[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
+    sb[0x28..0x30].copy_from_slice(&bytes_used.to_le_bytes());
+    sb[0x30..0x38].copy_from_slice(&id_table_start.to_le_bytes());
+    sb[0x38..0x40].copy_from_slice(&u64::MAX.to_le_bytes());
+    sb[0x40..0x48].copy_from_slice(&inode_table_start.to_le_bytes());
+    sb[0x48..0x50].copy_from_slice(&directory_table_start.to_le_bytes());
+    sb[0x50..0x58].copy_from_slice(&fragment_table_start.to_le_bytes());
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -1008,122 +1129,6 @@ mod tests {
         let parsed: SquashfsSuperblock =
             parse_squashfs_superblock(&bytes, 64).expect("offset parse");
         assert_eq!(parsed.inode_count, 123);
-    }
-
-    fn put_u16(out: &mut Vec<u8>, v: u16) {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    fn put_u32(out: &mut Vec<u8>, v: u32) {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn uncompressed_metadata(payload: &[u8]) -> Vec<u8> {
-        let mut block: Vec<u8> = Vec::with_capacity(payload.len() + 2);
-        let header: u16 = METADATA_UNCOMPRESSED_FLAG | (payload.len() as u16 & METADATA_SIZE_MASK);
-        put_u16(&mut block, header);
-        block.extend_from_slice(payload);
-        block
-    }
-
-    fn build_real_squashfs(file_name: &str, file_body: &[u8]) -> Vec<u8> {
-        let block_size: u32 = 131_072;
-        let mut image: Vec<u8> = vec![0u8; SUPERBLOCK_MIN_BYTES];
-
-        let data_offset: u64 = image.len() as u64;
-        image.extend_from_slice(file_body);
-
-        let inode_table_start: u64 = image.len() as u64;
-        let mut dir_inode: Vec<u8> = Vec::new();
-        put_u16(&mut dir_inode, INODE_TYPE_DIR);
-        put_u16(&mut dir_inode, 0o755);
-        put_u16(&mut dir_inode, 0);
-        put_u16(&mut dir_inode, 0);
-        put_u32(&mut dir_inode, 0);
-        put_u32(&mut dir_inode, 1);
-        put_u32(&mut dir_inode, 0);
-        put_u32(&mut dir_inode, 1);
-        put_u16(&mut dir_inode, 0);
-        put_u16(&mut dir_inode, 0);
-        put_u32(&mut dir_inode, 0);
-
-        let file_inode_offset: u16 = dir_inode.len() as u16;
-        let mut file_inode: Vec<u8> = Vec::new();
-        put_u16(&mut file_inode, INODE_TYPE_FILE);
-        put_u16(&mut file_inode, 0o755);
-        put_u16(&mut file_inode, 0);
-        put_u16(&mut file_inode, 0);
-        put_u32(&mut file_inode, 0);
-        put_u32(&mut file_inode, 2);
-        put_u32(&mut file_inode, data_offset as u32);
-        put_u32(&mut file_inode, 0xFFFF_FFFF);
-        put_u32(&mut file_inode, 0);
-        put_u32(&mut file_inode, file_body.len() as u32);
-        put_u32(
-            &mut file_inode,
-            FRAGMENT_UNCOMPRESSED_FLAG | file_body.len() as u32,
-        );
-
-        let mut inode_payload: Vec<u8> = Vec::new();
-        inode_payload.extend_from_slice(&dir_inode);
-        inode_payload.extend_from_slice(&file_inode);
-        image.extend_from_slice(&uncompressed_metadata(&inode_payload));
-
-        let directory_table_start: u64 = image.len() as u64;
-        let mut dir_payload: Vec<u8> = Vec::new();
-        put_u32(&mut dir_payload, 0);
-        put_u32(&mut dir_payload, 0);
-        put_u32(&mut dir_payload, 1);
-        put_u16(&mut dir_payload, file_inode_offset);
-        put_u16(&mut dir_payload, 1);
-        put_u16(&mut dir_payload, INODE_TYPE_FILE);
-        put_u16(&mut dir_payload, file_name.len() as u16 - 1);
-        dir_payload.extend_from_slice(file_name.as_bytes());
-        image.extend_from_slice(&uncompressed_metadata(&dir_payload));
-        let dir_file_size: u32 = dir_payload.len() as u32 + 3;
-
-        let _ = dir_file_size;
-        let mut dir_inode_fixed: Vec<u8> = Vec::new();
-        put_u16(&mut dir_inode_fixed, INODE_TYPE_DIR);
-        put_u16(&mut dir_inode_fixed, 0o755);
-        put_u16(&mut dir_inode_fixed, 0);
-        put_u16(&mut dir_inode_fixed, 0);
-        put_u32(&mut dir_inode_fixed, 0);
-        put_u32(&mut dir_inode_fixed, 1);
-        put_u32(&mut dir_inode_fixed, 0);
-        put_u32(&mut dir_inode_fixed, 1);
-        put_u16(&mut dir_inode_fixed, dir_file_size as u16);
-        put_u16(&mut dir_inode_fixed, 0);
-        put_u32(&mut dir_inode_fixed, 0);
-        let mut inode_payload2: Vec<u8> = Vec::new();
-        inode_payload2.extend_from_slice(&dir_inode_fixed);
-        inode_payload2.extend_from_slice(&file_inode);
-        let meta2: Vec<u8> = uncompressed_metadata(&inode_payload2);
-        image[inode_table_start as usize..inode_table_start as usize + meta2.len()]
-            .copy_from_slice(&meta2);
-
-        let fragment_table_start: u64 = 0;
-        let id_table_start: u64 = image.len() as u64;
-        image.extend_from_slice(&uncompressed_metadata(&[0u8, 0, 0, 0]));
-
-        let bytes_used: u64 = image.len() as u64;
-        let sb: &mut [u8] = &mut image[..SUPERBLOCK_MIN_BYTES];
-        sb[0x00..0x04].copy_from_slice(&SQUASHFS_MAGIC_LE.to_le_bytes());
-        sb[0x04..0x08].copy_from_slice(&2u32.to_le_bytes());
-        sb[0x0C..0x10].copy_from_slice(&block_size.to_le_bytes());
-        sb[0x10..0x14].copy_from_slice(&0u32.to_le_bytes());
-        sb[0x14..0x16].copy_from_slice(&1u16.to_le_bytes());
-        sb[0x16..0x18].copy_from_slice(&17u16.to_le_bytes());
-        sb[0x1A..0x1C].copy_from_slice(&1u16.to_le_bytes());
-        sb[0x1C..0x1E].copy_from_slice(&4u16.to_le_bytes());
-        sb[0x1E..0x20].copy_from_slice(&0u16.to_le_bytes());
-        sb[0x20..0x28].copy_from_slice(&0u64.to_le_bytes());
-        sb[0x28..0x30].copy_from_slice(&bytes_used.to_le_bytes());
-        sb[0x30..0x38].copy_from_slice(&id_table_start.to_le_bytes());
-        sb[0x38..0x40].copy_from_slice(&u64::MAX.to_le_bytes());
-        sb[0x40..0x48].copy_from_slice(&inode_table_start.to_le_bytes());
-        sb[0x48..0x50].copy_from_slice(&directory_table_start.to_le_bytes());
-        sb[0x50..0x58].copy_from_slice(&fragment_table_start.to_le_bytes());
-        image
     }
 
     #[test]

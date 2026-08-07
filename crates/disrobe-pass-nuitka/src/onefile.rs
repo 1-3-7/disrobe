@@ -77,17 +77,19 @@ pub fn extract_onefile(image: &[u8], payload_offset: usize) -> Result<OnefilePay
     };
 
     let body: &[u8] = &image[header_end..];
-    crate::util::dbg_line(&format!(
-        "extract_onefile: offset={payload_offset} magic={magic:?} compressed={compressed} body_len={}",
-        body.len()
-    ));
+    crate::util::dbg_line(|| {
+        format!(
+            "extract_onefile: offset={payload_offset} magic={magic:?} compressed={compressed} body_len={}",
+            body.len()
+        )
+    });
     let decompressed: Option<Vec<u8>> = if compressed {
         Some(decompress_payload(body)?)
     } else {
         None
     };
     let stream: &[u8] = decompressed.as_deref().map_or(body, |stream: &[u8]| stream);
-    crate::util::dbg_line(&format!("extract_onefile: stream_len={}", stream.len()));
+    crate::util::dbg_line(|| format!("extract_onefile: stream_len={}", stream.len()));
     crate::util::dbg_hex("extract_onefile: stream head", stream, 256);
 
     let walk: WalkOutcome = walk_payload(stream)?;
@@ -804,11 +806,13 @@ fn walk_payload(stream: &[u8]) -> Result<WalkOutcome> {
                 let data_total: usize = entries.iter().map(|e: &OnefileEntry| e.data.len()).sum();
                 let exact: bool = consumed == stream.len();
                 let trailer_ok: bool = terminated && !entries.is_empty() && data_total > 0;
-                crate::util::dbg_line(&format!(
-                    "walk candidate encoding={encoding:?} crc={has_checksums}: entries={} consumed={consumed}/{} terminated={terminated} data_total={data_total} exact={exact} trailer_ok={trailer_ok}",
-                    entries.len(),
-                    stream.len()
-                ));
+                crate::util::dbg_line(|| {
+                    format!(
+                        "walk candidate encoding={encoding:?} crc={has_checksums}: entries={} consumed={consumed}/{} terminated={terminated} data_total={data_total} exact={exact} trailer_ok={trailer_ok}",
+                        entries.len(),
+                        stream.len()
+                    )
+                });
                 if exact || trailer_ok {
                     return Ok(WalkOutcome {
                         entries,
@@ -831,9 +835,9 @@ fn walk_payload(stream: &[u8]) -> Result<WalkOutcome> {
                 });
             }
             Err(e) => {
-                crate::util::dbg_line(&format!(
-                    "walk candidate encoding={encoding:?} crc={has_checksums}: ERR {e:?}"
-                ));
+                crate::util::dbg_line(|| {
+                    format!("walk candidate encoding={encoding:?} crc={has_checksums}: ERR {e:?}")
+                });
                 last_err = e;
             }
         }
@@ -863,9 +867,9 @@ fn try_walk(
             break;
         }
         if entries.is_empty() {
-            crate::util::dbg_line(&format!(
-                "try_walk[{encoding:?},crc={has_checksums}]: name_end={cursor}"
-            ));
+            crate::util::dbg_line(|| {
+                format!("try_walk[{encoding:?},crc={has_checksums}]: name_end={cursor}")
+            });
             crate::util::dbg_guarded("try_walk: first name", &filename);
             crate::util::dbg_hex(
                 "try_walk: 40 bytes at first name_end (size-field region)",

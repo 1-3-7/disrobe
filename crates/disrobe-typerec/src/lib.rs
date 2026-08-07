@@ -5,6 +5,7 @@ pub mod cfg;
 pub mod constraint;
 pub mod decode;
 pub mod dwarf_gt;
+pub mod dwarf_location;
 pub mod error;
 pub mod facts;
 pub mod grade;
@@ -26,6 +27,9 @@ pub use constraint::{Constraint, solve};
 pub use dwarf_gt::{
     AbiClass, DebugImage, GroundTruthAggregate, GroundTruthField, GroundTruthFunction,
     GroundTruthSignature, GroundTruthVar, GtReturn, load, load_text,
+};
+pub use dwarf_location::{
+    ExpressionForm, FrameBase, FrameSlot, FrameWindow, LocationSurvey, PcRange, UnlocatedReason,
 };
 pub use error::{Result, TypeRecError};
 pub use facts::{FactSet, SlotMode, extract, extract_split};

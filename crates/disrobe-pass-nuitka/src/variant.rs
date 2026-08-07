@@ -96,10 +96,12 @@ pub fn classify(bytes: &[u8]) -> Result<VariantClassification> {
         is_wheel,
     );
 
-    crate::util::dbg_line(&format!(
-        "classify: variant={variant:?} format={binary_format:?} offset={onefile_offset:?} compressed={onefile_compressed} core_hits={core_marker_hits} standalone_hits={standalone_hits} module_inits={module_init_count} wheel={is_wheel} signed={}",
-        authenticode.is_some()
-    ));
+    crate::util::dbg_line(|| {
+        format!(
+            "classify: variant={variant:?} format={binary_format:?} offset={onefile_offset:?} compressed={onefile_compressed} core_hits={core_marker_hits} standalone_hits={standalone_hits} module_inits={module_init_count} wheel={is_wheel} signed={}",
+            authenticode.is_some()
+        )
+    });
     if let Some(off) = onefile_offset {
         crate::util::dbg_hex("classify: 32 bytes at located offset", &bytes[off..], 32);
     }

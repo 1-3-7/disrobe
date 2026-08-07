@@ -229,7 +229,7 @@ const RINT_CORE: &str = r"static inline uint64_t fpx_rint_core(uint64_t b, unsig
     return sign | ((uint64_t)(unsigned)(msb + bias) << mbits) | man;
 }";
 
-const MINMAX_CORE: &str = r"static inline uint64_t fpx_minmax_core(uint64_t a, uint64_t b, unsigned prec, unsigned ebits, int is_max) {
+const MINMAX_CORE: &str = r"static inline uint64_t fpx_minmax_core(uint64_t a, uint64_t b, unsigned prec, unsigned ebits, int is_max, int propagate) {
     unsigned mbits = prec - 1u;
     unsigned emax = (1u << ebits) - 1u;
     uint64_t sign_mask = (uint64_t)1 << (mbits + ebits);
@@ -242,9 +242,14 @@ const MINMAX_CORE: &str = r"static inline uint64_t fpx_minmax_core(uint64_t a, u
     uint64_t ka, kb;
     if (nan_a && (a & quiet) == 0ull) return a | quiet;
     if (nan_b && (b & quiet) == 0ull) return b | quiet;
-    if (nan_a && nan_b) return a;
-    if (nan_a) return b;
-    if (nan_b) return a;
+    if (propagate) {
+        if (nan_a) return a;
+        if (nan_b) return b;
+    } else {
+        if (nan_a && nan_b) return a;
+        if (nan_a) return b;
+        if (nan_b) return a;
+    }
     if (abs_a == 0ull && abs_b == 0ull) return is_max ? ((a & b) & sign_mask) : ((a | b) & sign_mask);
     ka = (a & sign_mask) != 0ull ? (~a & full) : (a | sign_mask);
     kb = (b & sign_mask) != 0ull ? (~b & full) : (b | sign_mask);
@@ -368,19 +373,35 @@ const RINT_WRAPPERS: &[(&str, &str)] = &[
 const MINMAX_WRAPPERS: &[(&str, &str)] = &[
     (
         "fpx_maxnum_f32",
-        "static inline float fpx_maxnum_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 1)); }",
+        "static inline float fpx_maxnum_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 1, 0)); }",
     ),
     (
         "fpx_minnum_f32",
-        "static inline float fpx_minnum_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 0)); }",
+        "static inline float fpx_minnum_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 0, 0)); }",
     ),
     (
         "fpx_maxnum_f64",
-        "static inline double fpx_maxnum_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 1)); }",
+        "static inline double fpx_maxnum_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 1, 0)); }",
     ),
     (
         "fpx_minnum_f64",
-        "static inline double fpx_minnum_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 0)); }",
+        "static inline double fpx_minnum_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 0, 0)); }",
+    ),
+    (
+        "fpx_max_f32",
+        "static inline float fpx_max_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 1, 1)); }",
+    ),
+    (
+        "fpx_min_f32",
+        "static inline float fpx_min_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 0, 1)); }",
+    ),
+    (
+        "fpx_max_f64",
+        "static inline double fpx_max_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 1, 1)); }",
+    ),
+    (
+        "fpx_min_f64",
+        "static inline double fpx_min_f64(double a, double b) { return fp_d_from_bits(fpx_minmax_core(fp_d_to_bits(a), fp_d_to_bits(b), 53u, 11u, 0, 1)); }",
     ),
 ];
 
@@ -552,7 +573,7 @@ fn fpx_rint_f64(x: f64, mode: u32) -> f64 {
 }";
 
 const RS_MINMAX_F32: &str = r"#[allow(dead_code)]
-fn fpx_minmax_f32(a: f32, b: f32, is_max: bool) -> f32 {
+fn fpx_minmax_f32(a: f32, b: f32, is_max: bool, propagate: bool) -> f32 {
     let quiet: u32 = 0x0040_0000;
     let left: u32 = a.to_bits();
     let right: u32 = b.to_bits();
@@ -562,14 +583,23 @@ fn fpx_minmax_f32(a: f32, b: f32, is_max: bool) -> f32 {
     if b.is_nan() && (right & quiet) == 0 {
         return f32::from_bits(right | quiet);
     }
-    if a.is_nan() && b.is_nan() {
-        return a;
-    }
-    if a.is_nan() {
-        return b;
-    }
-    if b.is_nan() {
-        return a;
+    if propagate {
+        if a.is_nan() {
+            return a;
+        }
+        if b.is_nan() {
+            return b;
+        }
+    } else {
+        if a.is_nan() && b.is_nan() {
+            return a;
+        }
+        if a.is_nan() {
+            return b;
+        }
+        if b.is_nan() {
+            return a;
+        }
     }
     if a == 0.0 && b == 0.0 {
         let merged: u32 = if is_max { left & right } else { left | right };
@@ -579,7 +609,7 @@ fn fpx_minmax_f32(a: f32, b: f32, is_max: bool) -> f32 {
 }";
 
 const RS_MINMAX_F64: &str = r"#[allow(dead_code)]
-fn fpx_minmax_f64(a: f64, b: f64, is_max: bool) -> f64 {
+fn fpx_minmax_f64(a: f64, b: f64, is_max: bool, propagate: bool) -> f64 {
     let quiet: u64 = 0x0008_0000_0000_0000;
     let left: u64 = a.to_bits();
     let right: u64 = b.to_bits();
@@ -589,14 +619,23 @@ fn fpx_minmax_f64(a: f64, b: f64, is_max: bool) -> f64 {
     if b.is_nan() && (right & quiet) == 0 {
         return f64::from_bits(right | quiet);
     }
-    if a.is_nan() && b.is_nan() {
-        return a;
-    }
-    if a.is_nan() {
-        return b;
-    }
-    if b.is_nan() {
-        return a;
+    if propagate {
+        if a.is_nan() {
+            return a;
+        }
+        if b.is_nan() {
+            return b;
+        }
+    } else {
+        if a.is_nan() && b.is_nan() {
+            return a;
+        }
+        if a.is_nan() {
+            return b;
+        }
+        if b.is_nan() {
+            return a;
+        }
     }
     if a == 0.0 && b == 0.0 {
         let merged: u64 = if is_max { left & right } else { left | right };
@@ -793,22 +832,42 @@ const RS_WRAPPERS: &[(&str, &str, &str)] = &[
     (
         "fpx_maxnum_f32",
         "fpx_minmax_f32",
-        "#[allow(dead_code)]\nfn fpx_maxnum_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, true) }",
+        "#[allow(dead_code)]\nfn fpx_maxnum_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, true, false) }",
     ),
     (
         "fpx_minnum_f32",
         "fpx_minmax_f32",
-        "#[allow(dead_code)]\nfn fpx_minnum_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, false) }",
+        "#[allow(dead_code)]\nfn fpx_minnum_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, false, false) }",
     ),
     (
         "fpx_maxnum_f64",
         "fpx_minmax_f64",
-        "#[allow(dead_code)]\nfn fpx_maxnum_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, true) }",
+        "#[allow(dead_code)]\nfn fpx_maxnum_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, true, false) }",
     ),
     (
         "fpx_minnum_f64",
         "fpx_minmax_f64",
-        "#[allow(dead_code)]\nfn fpx_minnum_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, false) }",
+        "#[allow(dead_code)]\nfn fpx_minnum_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, false, false) }",
+    ),
+    (
+        "fpx_max_f32",
+        "fpx_minmax_f32",
+        "#[allow(dead_code)]\nfn fpx_max_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, true, true) }",
+    ),
+    (
+        "fpx_min_f32",
+        "fpx_minmax_f32",
+        "#[allow(dead_code)]\nfn fpx_min_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, false, true) }",
+    ),
+    (
+        "fpx_max_f64",
+        "fpx_minmax_f64",
+        "#[allow(dead_code)]\nfn fpx_max_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, true, true) }",
+    ),
+    (
+        "fpx_min_f64",
+        "fpx_minmax_f64",
+        "#[allow(dead_code)]\nfn fpx_min_f64(a: f64, b: f64) -> f64 { fpx_minmax_f64(a, b, false, true) }",
     ),
 ];
 
@@ -943,12 +1002,16 @@ pub(super) const fn rint_helper(mode: RoundMode, width: FpWidth) -> &'static str
     }
 }
 
-pub(super) const fn minmax_helper(is_max: bool, width: FpWidth) -> &'static str {
-    match (is_max, width) {
-        (true, FpWidth::F32) => "fpx_maxnum_f32",
-        (false, FpWidth::F32) => "fpx_minnum_f32",
-        (true, FpWidth::F64) => "fpx_maxnum_f64",
-        (false, FpWidth::F64) => "fpx_minnum_f64",
+pub(super) const fn minmax_helper(is_max: bool, propagating: bool, width: FpWidth) -> &'static str {
+    match (is_max, propagating, width) {
+        (true, false, FpWidth::F32) => "fpx_maxnum_f32",
+        (false, false, FpWidth::F32) => "fpx_minnum_f32",
+        (true, false, FpWidth::F64) => "fpx_maxnum_f64",
+        (false, false, FpWidth::F64) => "fpx_minnum_f64",
+        (true, true, FpWidth::F32) => "fpx_max_f32",
+        (false, true, FpWidth::F32) => "fpx_min_f32",
+        (true, true, FpWidth::F64) => "fpx_max_f64",
+        (false, true, FpWidth::F64) => "fpx_min_f64",
     }
 }
 

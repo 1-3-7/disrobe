@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::cfg::{BlockId, Cfg, Terminator};
-use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue};
+use crate::cil::{FlowControl, Instruction, MethodBody, OperandValue, SlotOp, slot_index_of};
 use crate::names::NameTable;
 use crate::structurize::{TargetLang, TokenNamer, csharp_string_literal};
 
@@ -478,51 +478,19 @@ fn is_noise(name: &str) -> bool {
 }
 
 fn ldarg_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldarg.0" => Some(0),
-        "ldarg.1" => Some(1),
-        "ldarg.2" => Some(2),
-        "ldarg.3" => Some(3),
-        "ldarg" | "ldarg.s" => operand_index(ins),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadArgument).map(u32::from)
 }
 
 fn ldloc_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "ldloc.0" => Some(0),
-        "ldloc.1" => Some(1),
-        "ldloc.2" => Some(2),
-        "ldloc.3" => Some(3),
-        "ldloc" | "ldloc.s" => operand_index(ins),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::LoadLocal).map(u32::from)
 }
 
 fn ldloca_slot(ins: &Instruction) -> Option<u32> {
-    matches!(ins.name.as_str(), "ldloca" | "ldloca.s")
-        .then(|| operand_index(ins))
-        .flatten()
+    slot_index_of(ins, SlotOp::LocalAddress).map(u32::from)
 }
 
 fn stloc_slot(ins: &Instruction) -> Option<u32> {
-    match ins.name.as_str() {
-        "stloc.0" => Some(0),
-        "stloc.1" => Some(1),
-        "stloc.2" => Some(2),
-        "stloc.3" => Some(3),
-        "stloc" | "stloc.s" => operand_index(ins),
-        _ => None,
-    }
-}
-
-fn operand_index(ins: &Instruction) -> Option<u32> {
-    match ins.operand {
-        OperandValue::U8(v) => Some(u32::from(v)),
-        OperandValue::U16(v) => Some(u32::from(v)),
-        OperandValue::I32(v) => u32::try_from(v).ok(),
-        _ => None,
-    }
+    slot_index_of(ins, SlotOp::StoreLocal).map(u32::from)
 }
 
 fn int_constant(ins: &Instruction) -> Option<i64> {

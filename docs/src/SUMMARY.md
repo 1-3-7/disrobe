@@ -58,6 +58,7 @@
 - [Analysis-depth commands](./cli/analysis-depth.md)
 - [Diff and guard tooling](./cli/diff-guard.md)
 - [The daemon: HTTP, gRPC, LSP, MCP](./cli/serve.md)
+- [Signed WebAssembly plugins](./cli/plugin.md)
 - [Use it as a library](./library.md)
 - [Python bindings](./python-bindings.md)
 - [The browser playground](./playground.md)

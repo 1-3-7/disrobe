@@ -524,6 +524,233 @@ fn biff8_ptg_refn_negative_column_offset_resolves_absolute() {
 }
 
 #[test]
+fn a_zero_length_formula_and_an_all_padding_formula_both_refuse_rather_than_invent() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let empty: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&[], &ctx);
+    assert!(
+        empty.unknown,
+        "a zero-length formula must be refused, not decoded as an empty result"
+    );
+    let padded: [u8; 6] = [0x00; 6];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&padded, &ctx);
+    assert!(
+        decoded.unknown,
+        "an all-padding formula body must be refused, not treated as a token stream"
+    );
+}
+
+#[test]
+fn a_formula_of_only_ptg_attr_refuses_rather_than_inventing_a_value() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let goto_only: [u8; 4] = [0x19, 0x08, 0x00, 0x00];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&goto_only, &ctx);
+    assert!(
+        decoded.unknown,
+        "a formula that is only a control-flow ptgAttr leaves nothing on the stack and must refuse"
+    );
+}
+
+#[test]
+fn ptg_func_var_declaring_more_arguments_than_the_stack_holds_refuses_without_panicking() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: Vec<u8> = concat(&[&p_int(1), &p_funcvar(5, 0x0004, false)]);
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert!(
+        decoded.unknown,
+        "a ptgFuncVar claiming more arguments than the stack holds must be refused, not underflow"
+    );
+}
+
+#[test]
+fn ptg_tbl_alone_refuses_rather_than_inventing_a_data_table_formula() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 5] = [0x02, 0x00, 0x00, 0x00, 0x00];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert!(
+        decoded.unknown,
+        "a tTbl host token alone must be refused rather than treated as a resolvable formula"
+    );
+}
+
+#[test]
+fn ptg_ref_err_and_area_err_always_render_as_ref_error() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let ref_err: [u8; 5] = [0x2A, 0xFF, 0xFF, 0xFF, 0xFF];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&ref_err, &ctx);
+    assert_eq!(decoded.text, "#REF!");
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+
+    let area_err: [u8; 9] = [0x2B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&area_err, &ctx);
+    assert_eq!(decoded.text, "#REF!");
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+}
+
+#[test]
+fn ptg_attr_choose_skips_its_jump_table_without_corrupting_the_stack() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let mut rgce: Vec<u8> = vec![0x19, 0x04, 0x02, 0x00];
+    rgce.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    rgce.extend_from_slice(&p_int(7));
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(decoded.text, "7");
+    assert!(
+        !decoded.unknown,
+        "the choose jump table must not leak into the decoded value"
+    );
+}
+
+#[test]
+fn ptg_attr_space_is_skipped_as_a_formatting_marker_not_pushed_onto_the_stack() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let mut rgce: Vec<u8> = vec![0x19, 0x40, 0x02, 0x00];
+    rgce.extend_from_slice(&p_int(9));
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(decoded.text, "9");
+    assert!(
+        !decoded.unknown,
+        "a formatting-only space marker must not turn a value unknown"
+    );
+}
+
+#[test]
+fn ptg_ref_err3d_never_resolves_its_reserved_bytes_as_a_location() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 6,
+        base_col: 3,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 7] = [0x3C, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(
+        decoded.text, "#REF!",
+        "a RefErr3d token carries no live location, so it must never resolve one"
+    );
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+}
+
+#[test]
+fn ptg_area_err3d_never_resolves_its_reserved_bytes_as_a_range() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff12,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 15] = [
+        0x3D, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(
+        decoded.text, "#REF!",
+        "an AreaErr3d token carries no live range, so it must never resolve one"
+    );
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+}
+
+#[test]
+fn ptg_ref_err3d_biff12_never_resolves_its_reserved_bytes_as_a_location() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff12,
+        base_row: 6,
+        base_col: 3,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 9] = [0x3C, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(
+        decoded.text, "#REF!",
+        "a BIFF12 RefErr3d token carries no live location, so it must never resolve one"
+    );
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+}
+
+#[test]
+fn ptg_area_err3d_biff8_never_resolves_its_reserved_bytes_as_a_range() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 0,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 11] = [
+        0x3D, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert_eq!(
+        decoded.text, "#REF!",
+        "a BIFF8 AreaErr3d token carries no live range, so it must never resolve one"
+    );
+    assert!(!decoded.unknown, "#REF! is a correct decode, not a refusal");
+}
+
+#[test]
+fn biff8_ptg_arean_relative_offset_resolves_absolute_range() {
+    let ctx: PtgContext<'_> = PtgContext {
+        version: BiffVersion::Biff8,
+        base_row: 6,
+        base_col: 0,
+        names: &[],
+        scope: &XtiScope::default(),
+    };
+    let rgce: [u8; 9] = [0x2D, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xC0, 0x00, 0xC0];
+    let decoded: disrobe_pass_shell::xlm::ptg::DecodedFormula = decode_rgce(&rgce, &ctx);
+    assert!(
+        !decoded.unknown,
+        "a relative area reference must resolve, not fall back: {}",
+        decoded.text
+    );
+    assert_eq!(decoded.text, "A6:A7");
+}
+
+#[test]
 fn xls_shared_formula_relative_recovers_absolute_refs() {
     let xls: Vec<u8> = build_xls_shared();
     let report: XlmRecovery = recover_xlm(&xls).expect("recover xlm");

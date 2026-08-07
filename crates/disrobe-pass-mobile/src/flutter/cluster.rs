@@ -13,6 +13,10 @@ const DART_VARINT_END_MARKER: u64 = 0x80;
 
 const DART_VARINT_MAX_BYTES: usize = 10;
 
+const DART_COMPACT_TERMINAL_BIAS: i16 = 192;
+
+const DART_REF_MAX_BYTES: u8 = 4;
+
 const CLUSTER_PREAMBLE_SANITY_MAX: u64 = 1 << 28;
 
 const CLUSTER_TAG_SCAN_LIMIT: usize = 1 << 16;
@@ -95,6 +99,61 @@ impl<'data> DartReadStream<'data> {
         }
         self.pos = end;
         Some(())
+    }
+
+    pub fn read_compact(&mut self, bit_width: u32) -> Option<u64> {
+        let maximum_bytes: u32 = bit_width.div_ceil(DART_VARINT_DATA_BITS);
+        let mask: u64 = if bit_width == 64 {
+            u64::MAX
+        } else {
+            (1_u64 << bit_width) - 1
+        };
+        let mut value: u64 = 0;
+        let mut shift: u32 = 0;
+        for index in 0..maximum_bytes {
+            let byte: u8 = self.read_byte()?;
+            if byte > DART_VARINT_MAX_CONTINUATION {
+                let terminal: i16 = i16::from(byte) - DART_COMPACT_TERMINAL_BIAS;
+                let terminal_bits: u64 = if terminal < 0 {
+                    (i64::from(terminal) as u64) & mask
+                } else {
+                    u64::try_from(terminal).ok()? & mask
+                };
+                value |= terminal_bits.wrapping_shl(shift);
+                return Some(value & mask);
+            }
+            value |= u64::from(byte).wrapping_shl(shift);
+            if index.checked_add(1)? == maximum_bytes {
+                return None;
+            }
+            shift = shift.checked_add(DART_VARINT_DATA_BITS)?;
+        }
+        None
+    }
+
+    pub fn read_ref(&mut self, object_count: usize) -> Option<u32> {
+        let mut value: i64 = 0;
+        for _ in 0..DART_REF_MAX_BYTES {
+            let byte: i8 = self.read_byte()? as i8;
+            value = value.checked_mul(128)?.checked_add(i64::from(byte))?;
+            if byte < 0 {
+                let corrected: i64 = value.checked_add(128)?;
+                let reference: u32 = u32::try_from(corrected).ok()?;
+                let reference_usize: usize = usize::try_from(reference).ok()?;
+                if reference == 0 || reference_usize > object_count {
+                    return None;
+                }
+                return Some(reference);
+            }
+        }
+        None
+    }
+
+    pub fn read_bytes(&mut self, length: usize) -> Option<&'data [u8]> {
+        let end: usize = self.pos.checked_add(length)?;
+        let slice: &'data [u8] = self.bytes.get(self.pos..end)?;
+        self.pos = end;
+        Some(slice)
     }
 }
 
@@ -578,6 +637,67 @@ mod tests {
         bytes.push(0x82);
         let mut s: DartReadStream<'_> = DartReadStream::new(&bytes);
         assert_eq!(s.read_unsigned(), None);
+    }
+
+    #[test]
+    fn read_compact_reads_dart_snapshot_compact_scalars() {
+        let bytes: [u8; 4] = [2, 33, 215, 191];
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        assert_eq!(stream.read_compact(32), Some(0x0005_d082));
+        assert_eq!(
+            stream.read_compact(32).map(|v: u64| v as u32 as i32),
+            Some(-1)
+        );
+    }
+
+    #[test]
+    fn read_compact_disagrees_with_read_signed_on_the_terminal_byte() {
+        let mut narrow: DartReadStream<'_> = DartReadStream::new(&[0xc1]);
+        assert_eq!(narrow.read_compact(16), Some(1));
+        let mut wide: DartReadStream<'_> = DartReadStream::new(&[0xc1]);
+        assert_eq!(
+            wide.read_signed(),
+            Some(-63),
+            "read_signed is a different encoding (standard leb128 sign-extension), not an alias \
+             for read_compact"
+        );
+    }
+
+    #[test]
+    fn read_ref_reads_dart_reference_ids() {
+        let bytes: [u8; 5] = [129, 1, 128, 127, 255];
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        assert_eq!(stream.read_ref(20_000), Some(1));
+        assert_eq!(stream.read_ref(20_000), Some(128));
+        assert_eq!(stream.read_ref(20_000), Some(16_383));
+    }
+
+    #[test]
+    fn read_ref_rejects_zero_reference_id() {
+        let bytes: [u8; 1] = [128];
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        assert_eq!(stream.read_ref(10), None);
+    }
+
+    #[test]
+    fn read_ref_rejects_reference_past_object_count() {
+        let bytes: [u8; 1] = [129];
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        assert_eq!(stream.read_ref(0), None);
+    }
+
+    #[test]
+    fn read_bytes_returns_a_slice_and_advances_position() {
+        let bytes: [u8; 4] = [10, 20, 30, 40];
+        let mut stream: DartReadStream<'_> = DartReadStream::new(&bytes);
+        assert_eq!(stream.read_bytes(2), Some(&bytes[0..2]));
+        assert_eq!(stream.position(), 2);
+        assert_eq!(
+            stream.read_bytes(3),
+            None,
+            "a truncated read must not advance"
+        );
+        assert_eq!(stream.position(), 2);
     }
 
     #[test]

@@ -119,11 +119,17 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::dotnet_string_evidence::run(root, region_mode(check)),
         &mut stale,
     )?;
+    run_one(
+        "capability-reachability",
+        check,
+        || crate::capability_reachability::run(root),
+        &mut stale,
+    )?;
 
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, no published markdown document carries a long dash or an emoji, no rust source opens a comment, and the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, no published markdown document carries a long dash or an emoji, no rust source opens a comment, the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold, and every pass crate's count of uncalled graded capabilities matches its declared ceiling in xtask/src/capability_reachability.rs"
             );
             Ok(())
         } else {
@@ -135,7 +141,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         }
     } else {
         println!(
-            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, evidence, and the documentation counts inside marker spans regenerated; README stat, attack-surface, fuzz-scope, tiered-results, published-markdown typography, and source-comment cross-checks ok"
+            "xtask regen: schemas, bindings, error docs, graphs, demo, card, plugins, evidence, and the documentation counts inside marker spans regenerated; README stat, attack-surface, fuzz-scope, tiered-results, published-markdown typography, source-comment and capability-reachability cross-checks ok"
         );
         Ok(())
     }

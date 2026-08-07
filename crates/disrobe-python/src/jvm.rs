@@ -1,7 +1,7 @@
 use disrobe_pass_jvm::{
-    ApkResourceReport, BackendCapability, ClassFile, DecompiledClass, DexFile,
-    analyze_apk_resources, decompile_class, detect_all, detect_available, parse_classfile,
-    parse_dex,
+    ApkResourceReport, BackendCapability, ClassFile, DecompiledClass, DexFile, JniSurfaceReport,
+    analyze_apk_resources, analyze_jni_surface, decompile_class, detect_all, detect_available,
+    parse_classfile, parse_dex,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -10,7 +10,7 @@ use crate::convert::to_value;
 use crate::err::map;
 use crate::llm::null_bundled_value;
 use crate::typed::{
-    ApkResources, DetectionList, DexFileReport, JvmBackends, JvmClass, JvmDecompiledClass,
+    ApkResources, DetectionList, DexFileReport, JniLink, JvmBackends, JvmClass, JvmDecompiledClass,
 };
 
 #[pyfunction]
@@ -58,6 +58,23 @@ fn apk_resources(apk_bytes: &[u8]) -> PyResult<ApkResources> {
     Ok(ApkResources::from_value(null_bundled_value(&report)?))
 }
 
+#[pyfunction]
+#[pyo3(text_signature = "(dex_bytes, native_libs)")]
+fn jvm_jni_link(dex_bytes: &[u8], native_libs: Vec<Vec<u8>>) -> PyResult<JniLink> {
+    let dex: DexFile = parse_dex(dex_bytes).map_err(map("jvm parse dex"))?;
+    let names: Vec<String> = (0..native_libs.len())
+        .map(|i: usize| format!("lib{i}"))
+        .collect();
+    let native_refs: Vec<(&str, &[u8])> = names
+        .iter()
+        .zip(native_libs.iter())
+        .map(|(name, bytes): (&String, &Vec<u8>)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let report: JniSurfaceReport =
+        analyze_jni_surface(&[("classes.dex", &dex, dex_bytes)], &native_refs);
+    Ok(JniLink::from_value(null_bundled_value(&report)?))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jvm_parse_class, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_parse_dex, m)?)?;
@@ -65,5 +82,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jvm_detect, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_backends, m)?)?;
     m.add_function(wrap_pyfunction!(apk_resources, m)?)?;
+    m.add_function(wrap_pyfunction!(jvm_jni_link, m)?)?;
     Ok(())
 }

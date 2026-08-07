@@ -30,6 +30,8 @@ pub fn build_registry() -> PassRegistry {
     r.register(&disrobe_pass_js_deob::chain_detector::JS_OBF_PASS);
     #[cfg(feature = "wasm")]
     r.register(&disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS);
+    #[cfg(feature = "webview")]
+    r.register(&disrobe_pass_webview::chain_detector::WEBVIEW_PASS);
     #[cfg(feature = "php")]
     r.register(&disrobe_pass_php::chain_detector::PHP_PASS);
     #[cfg(feature = "ruby")]
@@ -92,6 +94,8 @@ pub fn expected_pass_ids() -> Vec<PassId> {
     ids.push(disrobe_pass_js_deob::chain_detector::PASS_ID);
     #[cfg(feature = "wasm")]
     ids.push(disrobe_pass_wasm_deob::chain_detector::PASS_ID);
+    #[cfg(feature = "webview")]
+    ids.push(disrobe_pass_webview::chain_detector::PASS_ID);
     #[cfg(feature = "php")]
     ids.push(disrobe_pass_php::chain_detector::PASS_ID);
     #[cfg(feature = "ruby")]
