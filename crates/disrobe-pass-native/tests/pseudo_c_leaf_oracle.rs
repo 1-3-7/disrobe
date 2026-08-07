@@ -22,6 +22,9 @@ use disrobe_pass_native::{
     recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
     recover_leaf_function_with_calls,
 };
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
 #[path = "support/object_symbol.rs"]
 #[allow(clippy::redundant_pub_crate)]
 mod object_symbol;
@@ -155,16 +158,7 @@ const BATTERY: &[Case] = &[
 ];
 
 fn cc() -> Option<String> {
-    for c in ["gcc", "clang", "cc"] {
-        if Command::new(c)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o: std::process::Output| o.status.success())
-        {
-            return Some(c.to_owned());
-        }
-    }
-    None
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
 fn sysv_host_can_run() -> bool {
@@ -358,15 +352,7 @@ fn leaf_functions_recompile_to_behavioral_equivalence() {
 }
 
 fn clang() -> Option<String> {
-    if Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-    {
-        Some("clang".to_owned())
-    } else {
-        None
-    }
+    compiler_toolchain::probe_one("clang")
 }
 
 struct SysvCrossObjects {
@@ -1555,15 +1541,7 @@ fn clang_frame_spill_recovers_one_struct_across_reload_registers() {
 }
 
 fn gcc() -> Option<String> {
-    if Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-    {
-        Some("gcc".to_owned())
-    } else {
-        None
-    }
+    compiler_toolchain::probe_one("gcc")
 }
 
 const CF_BATTERY: &[Case] = &[
@@ -10683,11 +10661,15 @@ fn fp_switch_lift(
     Some((recovery, renamed))
 }
 
-fn fp_switch_driver_snippet(case: &FpSwitchCase) -> String {
+fn fp_switch_driver_snippet(case: &FpSwitchCase, abi: PseudoAbi) -> String {
     let recovered_name: String = format!("rec_{}", case.name);
     let (arg_ty, bits_fn): (&str, &str) = match case.width {
         FpSwitchWidth::Double => ("double", "d_bits"),
         FpSwitchWidth::Float => ("float", "f_bits"),
+    };
+    let recovered_call: String = match abi {
+        PseudoAbi::MsX64 => format!("{recovered_name}((uint64_t)disc, a, b)"),
+        _ => format!("{recovered_name}(a, b, (uint64_t)disc)"),
     };
     let mut snippet: String = String::new();
     let _ = write!(
@@ -10697,7 +10679,7 @@ fn fp_switch_driver_snippet(case: &FpSwitchCase) -> String {
          \x20       {arg_ty} a = ({arg_ty})pairs[k][0];\n\
          \x20       {arg_ty} b = ({arg_ty})pairs[k][1];\n\
          \x20       uint64_t want = {bits_fn}({}(disc, a, b));\n\
-         \x20       uint64_t got = {bits_fn}({recovered_name}(a, b, (uint64_t)disc));\n\
+         \x20       uint64_t got = {bits_fn}({recovered_call});\n\
          \x20       if (want != got) {{ printf(\"MISMATCH {} disc=%lld in=%g,%g want=%llu got=%llu\\n\", disc, (double)a, (double)b, (unsigned long long)want, (unsigned long long)got); return 1; }}\n\
          \x20   }}\n\
          \x20   }}\n",
@@ -10796,7 +10778,7 @@ fn fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equivalence
         recovered_decls.push('\n');
         recovered_decls.push_str(&fp_switch_extern_decl(case));
         recovered_decls.push('\n');
-        driver_body.push_str(&fp_switch_driver_snippet(case));
+        driver_body.push_str(&fp_switch_driver_snippet(case, HOST_ABI));
         lifted_count += 1;
     }
 
@@ -10891,7 +10873,7 @@ fn fp_switch_oracle_has_teeth_relabeling_a_case_diverges() {
     decls.push('\n');
     decls.push_str(&fp_switch_extern_decl(probe));
     decls.push('\n');
-    let driver: String = build_fp_switch_driver(&decls, &fp_switch_driver_snippet(probe));
+    let driver: String = build_fp_switch_driver(&decls, &fp_switch_driver_snippet(probe, HOST_ABI));
     let driver_c: PathBuf = dir.join("fp_switch_teeth_driver.c");
     std::fs::write(&driver_c, driver.as_bytes()).expect("write fp switch teeth driver");
     let harness_exe: PathBuf = dir.join(if cfg!(windows) {
@@ -10948,7 +10930,7 @@ fn sysv_fp_switch_dense_jump_table_leaf_functions_recompile_to_behavioral_equiva
         recovered_decls.push('\n');
         recovered_decls.push_str(&fp_switch_extern_decl(case));
         recovered_decls.push('\n');
-        driver_body.push_str(&fp_switch_driver_snippet(case));
+        driver_body.push_str(&fp_switch_driver_snippet(case, PseudoAbi::SysV));
         lifted_count += 1;
     }
 

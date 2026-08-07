@@ -13,6 +13,9 @@ use disrobe_pass_native::{
     LeafRecovery, PseudoAbi, PseudoScalarType as ScalarType, recover_leaf_function_abi,
 };
 
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
 #[path = "support/object_symbol.rs"]
 #[allow(clippy::redundant_pub_crate)]
 mod object_symbol;
@@ -221,15 +224,7 @@ const HOST_ABI: PseudoAbi = if cfg!(windows) {
 };
 
 fn cc() -> Option<String> {
-    ["gcc", "clang", "cc"]
-        .into_iter()
-        .find(|candidate: &&str| {
-            Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok_and(|out: std::process::Output| out.status.success())
-        })
-        .map(str::to_owned)
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
 fn battery_source() -> String {
@@ -306,11 +301,7 @@ fn targets() -> Vec<Target> {
         extra: Vec::new(),
         abi: HOST_ABI,
     });
-    if Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|out: std::process::Output| out.status.success())
-    {
+    if compiler_toolchain::probe_one("clang").is_some() {
         out.push(Target {
             tag: "sysv",
             compiler: "clang".to_owned(),

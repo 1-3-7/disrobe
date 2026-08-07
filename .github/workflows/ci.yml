@@ -192,6 +192,22 @@ jobs:
           fi
           go version
           echo "DISROBE_REQUIRE_GO=1" >> "$GITHUB_ENV"
+      - name: require gcc and clang for the native recompile-equivalence oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          demand() {
+            probe="$1"
+            var="$2"
+            if ! command -v "$probe" >/dev/null 2>&1; then
+              echo "$probe is expected on $RUNNER_OS but is not callable, so the tests behind $var would grade nothing"
+              exit 1
+            fi
+            ("$probe" --version 2>&1 || true) | head -1
+            echo "$var=1" >> "$GITHUB_ENV"
+          }
+          demand gcc DISROBE_REQUIRE_NATIVE_TOOLCHAIN
+          demand clang DISROBE_REQUIRE_NATIVE_TOOLCHAIN
       - name: provision UPX and require the Linux auto-UPX differential tools
         if: runner.os == 'Linux'
         shell: bash

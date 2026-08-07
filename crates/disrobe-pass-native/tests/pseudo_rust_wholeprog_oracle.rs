@@ -19,6 +19,10 @@ use disrobe_pass_native::{
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
+#[path = "support/compiler_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod compiler_toolchain;
+
 const HOST_ABI: PseudoAbi = if cfg!(windows) {
     PseudoAbi::MsX64
 } else {
@@ -286,39 +290,19 @@ fn full_battery() -> Vec<&'static WholeProgram> {
 }
 
 fn cc() -> Option<String> {
-    ["gcc", "clang", "cc"]
-        .into_iter()
-        .find(|c: &&str| {
-            Command::new(c)
-                .arg("--version")
-                .output()
-                .is_ok_and(|o: std::process::Output| o.status.success())
-        })
-        .map(str::to_owned)
+    compiler_toolchain::probe_any(&["gcc", "clang", "cc"])
 }
 
 fn gcc() -> Option<String> {
-    Command::new("gcc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "gcc".to_owned())
+    compiler_toolchain::probe_one("gcc")
 }
 
 fn clang() -> Option<String> {
-    Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "clang".to_owned())
+    compiler_toolchain::probe_one("clang")
 }
 
 fn rustc() -> Option<String> {
-    Command::new("rustc")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
-        .then(|| "rustc".to_owned())
+    compiler_toolchain::probe_one("rustc")
 }
 
 fn scratch_dir() -> ScratchDir {
