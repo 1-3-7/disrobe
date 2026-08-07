@@ -532,7 +532,22 @@ fn collect_function_scopes(
                     collect_function_scopes(&case.body, prefix, scopes, depth + 1);
                 }
             }
-            _ => {}
+            Stmt::Return(_)
+            | Stmt::Delete(_)
+            | Stmt::Assign { .. }
+            | Stmt::AugAssign { .. }
+            | Stmt::AnnAssign { .. }
+            | Stmt::TypeAlias { .. }
+            | Stmt::Raise { .. }
+            | Stmt::Assert { .. }
+            | Stmt::Import(_)
+            | Stmt::ImportFrom { .. }
+            | Stmt::Global(_)
+            | Stmt::Nonlocal(_)
+            | Stmt::Expr(_)
+            | Stmt::Pass
+            | Stmt::Break
+            | Stmt::Continue => {}
         }
     }
 }
@@ -950,12 +965,27 @@ fn emit_expr_inner(expr: &Expr, emitter: &mut Emitter<'_>) {
                 emitter,
             );
         }
+        Expr::TStr { items, .. } => emit_tstr_items(items, emitter),
         Expr::Yield(None)
         | Expr::Constant { .. }
         | Expr::Name { .. }
-        | Expr::TStr { .. }
         | Expr::EmptyDictUnpack
         | Expr::EmptyDictKeyUnpack => {}
+    }
+}
+
+fn emit_tstr_items(items: &[TStrItem], emitter: &mut Emitter<'_>) {
+    for item in items {
+        let TStrItem::Interp {
+            value, format_spec, ..
+        } = item
+        else {
+            continue;
+        };
+        emit_expr(value, emitter);
+        if let Some(spec) = format_spec {
+            emit_expr(spec, emitter);
+        }
     }
 }
 

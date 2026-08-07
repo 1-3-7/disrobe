@@ -1400,6 +1400,45 @@ mod tests {
         assert!(out.source.contains("function(p0)"), "got: {}", out.source);
     }
 
+    const SBX_BIAS_51: u32 = 0x1FFFF;
+
+    fn closure_over_child(child_code: Vec<u32>) -> LuaProto {
+        let mut p: LuaProto = proto(vec![enc_abx(36, 0, 0), enc_abc(30, 0, 2, 0)], Vec::new(), 2);
+        let child: LuaProto = proto(child_code, Vec::new(), 2);
+        p.protos.push(child);
+        p
+    }
+
+    #[test]
+    fn a_closure_whose_own_body_has_no_jump_keeps_the_parent_fully_structured() {
+        let p: LuaProto = closure_over_child(vec![enc_abc(30, 0, 1, 0)]);
+
+        let out: LiftedProto = lift_proto(&p, 0);
+
+        assert!(
+            out.fully_structured,
+            "the parent body itself never branches and the child never jumps, so nothing here \
+             may clear the flag; got:\n{}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn a_jump_dropped_inside_a_nested_closure_lowers_the_parent_flag() {
+        let p: LuaProto =
+            closure_over_child(vec![enc_abx(22, 0, SBX_BIAS_51), enc_abc(30, 0, 1, 0)]);
+
+        let out: LiftedProto = lift_proto(&p, 0);
+
+        assert!(
+            !out.fully_structured,
+            "the parent's own opcodes hold no jump; only the child's does, so the parent can \
+             only be honest here if emit_closure carries the child's lost structure outward; \
+             got:\n{}",
+            out.source
+        );
+    }
+
     #[test]
     fn lift_string_escaping() {
         let s: String = quote_lua_string("a\"b\nc");

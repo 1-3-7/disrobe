@@ -1,5 +1,7 @@
 use std::io::Read;
 
+use disrobe_core::codec::DecodeError;
+use disrobe_core::codec::hex::{HexDecodeOptions, WRAPPED_STREAM};
 use flate2::read::ZlibDecoder;
 
 use crate::debug::dbg_kv;
@@ -267,40 +269,34 @@ pub fn decode_armored_line(input: &[u8]) -> Result<Vec<u8>> {
     zlib_inflate(&stage)
 }
 
+const HEX_DECODE_PROFILE: HexDecodeOptions =
+    WRAPPED_STREAM.with_max_input_bytes(MAX_HEX_INPUT_BYTES);
+
 #[inline]
 pub fn hex_decode(input: &[u8]) -> Result<Vec<u8>> {
-    check_input_limit(input.len(), MAX_HEX_INPUT_BYTES, "hex input")?;
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() / 2);
-    let mut high_nibble: Option<u8> = None;
-    for &b in input {
-        if b.is_ascii_whitespace() {
-            continue;
-        }
-        let v: u8 = match b {
-            b'0'..=b'9' => b - b'0',
-            b'a'..=b'f' => b - b'a' + 10,
-            b'A'..=b'F' => b - b'A' + 10,
-            other => {
-                return Err(Error::Base85 {
+    disrobe_core::codec::hex::decode_with(input, HEX_DECODE_PROFILE).map_err(|err: DecodeError| {
+        match err {
+            DecodeError::TooLarge { len } => Error::InputLimit {
+                surface: "hex input",
+                observed: len,
+                limit: MAX_HEX_INPUT_BYTES,
+            },
+            DecodeError::InvalidSymbol { symbol } => Error::Base85 {
+                field: "hex".to_owned(),
+                message: format!("invalid hex char 0x{symbol:02x}"),
+            },
+            DecodeError::BadLength { .. } => Error::Base85 {
+                field: "hex".to_owned(),
+                message: "odd number of hex digits".to_owned(),
+            },
+            DecodeError::MissingFrame | DecodeError::Overflow | DecodeError::BadPadding => {
+                Error::Base85 {
                     field: "hex".to_owned(),
-                    message: format!("invalid hex char 0x{other:02x}"),
-                });
+                    message: "hex decode failed".to_owned(),
+                }
             }
-        };
-        let pending: Option<u8> = high_nibble.take();
-        if let Some(high) = pending {
-            out.push((high << 4) | v);
-        } else {
-            high_nibble = Some(v);
         }
-    }
-    if high_nibble.is_some() {
-        return Err(Error::Base85 {
-            field: "hex".to_owned(),
-            message: "odd number of hex digits".to_owned(),
-        });
-    }
-    Ok(out)
+    })
 }
 
 #[inline]
@@ -338,6 +334,83 @@ mod tests {
     #[test]
     fn hex_encode_roundtrip_zero() {
         assert_eq!(hex_encode(&[0u8; 4]), "00000000");
+    }
+
+    #[test]
+    fn hex_decode_accepts_empty_and_all_whitespace_input() {
+        let Ok(empty): Result<Vec<u8>> = hex_decode(b"") else {
+            unreachable!("empty input must decode")
+        };
+        assert_eq!(empty, Vec::<u8>::new());
+        let Ok(whitespace): Result<Vec<u8>> = hex_decode(b"  \t\r\n") else {
+            unreachable!("all-whitespace input must decode")
+        };
+        assert_eq!(whitespace, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn hex_decode_accepts_whitespace_split_across_a_pair() {
+        let Ok(wrapped): Result<Vec<u8>> = hex_decode(b"de ad\tbe\r\nef") else {
+            unreachable!("wrapped stream must decode")
+        };
+        assert_eq!(wrapped, [0xde, 0xad, 0xbe, 0xef]);
+        let Ok(split): Result<Vec<u8>> = hex_decode(b"a b") else {
+            unreachable!("a whitespace-split pair must decode")
+        };
+        assert_eq!(split, [0xab]);
+    }
+
+    #[test]
+    fn hex_decode_rejects_a_lone_odd_digit() {
+        let Err(err): Result<Vec<u8>> = hex_decode(b"a") else {
+            unreachable!("one byte is odd")
+        };
+        assert!(matches!(&err, Error::Base85 { field, message }
+            if field == "hex" && message == "odd number of hex digits"));
+    }
+
+    #[test]
+    fn hex_decode_rejects_an_odd_tail_above_two_digits() {
+        let Err(err): Result<Vec<u8>> = hex_decode(b"abc") else {
+            unreachable!("odd length must be refused")
+        };
+        assert!(matches!(&err, Error::Base85 { field, message }
+            if field == "hex" && message == "odd number of hex digits"));
+    }
+
+    #[test]
+    fn hex_decode_rejects_an_invalid_symbol_at_even_length() {
+        let Err(err): Result<Vec<u8>> = hex_decode(b"gg") else {
+            unreachable!("invalid symbol must be refused")
+        };
+        assert!(matches!(&err, Error::Base85 { field, message }
+            if field == "hex" && message == "invalid hex char 0x67"));
+    }
+
+    #[test]
+    fn hex_decode_reports_the_odd_length_when_the_tail_also_holds_an_invalid_symbol() {
+        let Err(err): Result<Vec<u8>> = hex_decode(b"abz") else {
+            unreachable!("odd and invalid input must be refused")
+        };
+        assert!(matches!(&err, Error::Base85 { field, message }
+            if field == "hex" && message == "odd number of hex digits"));
+    }
+
+    #[test]
+    fn hex_decode_accepts_a_normal_mixed_case_run() {
+        let Ok(decoded): Result<Vec<u8>> = hex_decode(b"DEADbeef01") else {
+            unreachable!("mixed-case input must decode")
+        };
+        assert_eq!(decoded, [0xde, 0xad, 0xbe, 0xef, 0x01]);
+    }
+
+    #[test]
+    fn hex_decode_wires_the_ninety_six_mebibyte_cap_into_the_shared_decoder() {
+        assert_eq!(
+            HEX_DECODE_PROFILE.max_input_bytes,
+            Some(MAX_HEX_INPUT_BYTES)
+        );
+        assert_eq!(MAX_HEX_INPUT_BYTES, 96 * 1024 * 1024);
     }
 
     #[test]

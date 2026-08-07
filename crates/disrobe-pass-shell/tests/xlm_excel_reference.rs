@@ -5,80 +5,18 @@
     clippy::missing_panics_doc
 )]
 
-use std::collections::BTreeMap;
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
+#[path = "support/xlm_reference.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod xlm_reference;
 
-use base64::Engine as _;
-use flate2::read::GzDecoder;
-use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::io::{Cursor, Read as _};
 
 use disrobe_pass_shell::{XlmRecovery, XlmSheet, recover_xlm};
+use xlm_reference::{ExpectedCell, Fixture, Manifest, fixture_bytes, manifest, sha256_hex};
 
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    producer: String,
-    fixtures: Vec<Fixture>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Fixture {
-    file: String,
-    sha256: String,
-    bytes: usize,
-    expected_from: String,
-    cells: Vec<ExpectedCell>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExpectedCell {
-    sheet: String,
-    cell: String,
-    formula: String,
-}
-
-fn golden_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("golden")
-        .join("xlm")
-}
-
-fn manifest() -> Manifest {
-    let path: PathBuf = golden_dir().join("excel_authored.json");
-    let text: String = std::fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("missing reference manifest {}: {err}", path.display()));
-    serde_json::from_str(&text)
-        .unwrap_or_else(|err| panic!("malformed reference manifest {}: {err}", path.display()))
-}
-
-fn fixture_bytes(name: &str) -> Vec<u8> {
-    let path: PathBuf = golden_dir().join(format!("{name}.gz.b64"));
-    let armored: String = std::fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("missing reference fixture {}: {err}", path.display()));
-    let packed: Vec<u8> = base64::engine::general_purpose::STANDARD
-        .decode(armored.replace(['\r', '\n'], ""))
-        .unwrap_or_else(|err| panic!("undecodable reference fixture {name}: {err}"));
-    let mut raw: Vec<u8> = Vec::new();
-    GzDecoder::new(packed.as_slice())
-        .read_to_end(&mut raw)
-        .unwrap_or_else(|err| panic!("uninflatable reference fixture {name}: {err}"));
-    raw
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest as _;
-    use std::fmt::Write as _;
-    let mut hasher: sha2::Sha256 = sha2::Sha256::new();
-    hasher.update(data);
-    hasher
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(64), |mut out: String, b: &u8| {
-            let _ = write!(out, "{b:02x}");
-            out
-        })
-}
+const PRODUCER: &str = "Microsoft Excel";
+const APP_PART: &str = "docProps/app.xml";
 
 fn decoded_cells(report: &XlmRecovery) -> BTreeMap<(String, String), String> {
     let mut out: BTreeMap<(String, String), String> = BTreeMap::new();
@@ -128,11 +66,39 @@ fn grade(fixture: &Fixture, data: &[u8]) -> Vec<String> {
     faults
 }
 
+fn recorded_application(data: &[u8]) -> String {
+    if !data.starts_with(b"PK") {
+        let marker: &[u8] = PRODUCER.as_bytes();
+        assert!(
+            data.windows(marker.len())
+                .any(|window: &[u8]| window == marker),
+            "the workbook stream does not name {PRODUCER}, so the recorded producer is unbacked"
+        );
+        return PRODUCER.to_owned();
+    }
+    let mut archive: zip::ZipArchive<Cursor<&[u8]>> =
+        zip::ZipArchive::new(Cursor::new(data)).expect("the package opens as a zip");
+    let mut part: zip::read::ZipFile<'_> = archive
+        .by_name(APP_PART)
+        .unwrap_or_else(|err| panic!("the package carries no {APP_PART}: {err}"));
+    let mut text: String = String::new();
+    part.read_to_string(&mut text)
+        .unwrap_or_else(|err| panic!("unreadable {APP_PART}: {err}"));
+    let opened: usize = text
+        .find("<Application>")
+        .unwrap_or_else(|| panic!("{APP_PART} declares no application"));
+    let rest: &str = &text[opened + "<Application>".len()..];
+    let closed: usize = rest
+        .find("</Application>")
+        .unwrap_or_else(|| panic!("{APP_PART} leaves the application unterminated"));
+    rest[..closed].to_owned()
+}
+
 #[test]
 fn excel_authored_workbooks_decode_to_the_authored_formulas() {
     let manifest: Manifest = manifest();
     assert!(
-        manifest.producer.contains("Microsoft Excel"),
+        manifest.producer.contains(PRODUCER),
         "the reference producer must be Excel itself, got {}",
         manifest.producer
     );
@@ -172,6 +138,29 @@ fn excel_authored_workbooks_decode_to_the_authored_formulas() {
         faults.join("\n")
     );
     assert_eq!(graded, 99, "reference cell count changed");
+}
+
+#[test]
+fn every_fixture_names_the_producer_its_own_bytes_carry() {
+    let manifest: Manifest = manifest();
+    for fixture in &manifest.fixtures {
+        let data: Vec<u8> = fixture_bytes(&fixture.file);
+        assert_eq!(
+            recorded_application(&data),
+            fixture.producer,
+            "{} records a producer its own bytes do not carry",
+            fixture.file
+        );
+        assert!(
+            manifest.producer.contains(&fixture.producer)
+                && manifest.producer.contains(&fixture.producer_version),
+            "{} records {} {} and the corpus records {}, so one of the two is stale",
+            fixture.file,
+            fixture.producer,
+            fixture.producer_version,
+            manifest.producer
+        );
+    }
 }
 
 const SUM_OF_1_AND_2: [u8; 10] = [0x1E, 0x01, 0x00, 0x1E, 0x02, 0x00, 0x42, 0x02, 0x04, 0x00];

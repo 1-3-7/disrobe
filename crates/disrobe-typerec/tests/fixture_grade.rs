@@ -29,6 +29,7 @@ fn stripped_input() -> DebugImage {
         text_base: stripped_base,
         text: stripped_text,
         functions: unstripped.functions,
+        locations: unstripped.locations,
     }
 }
 

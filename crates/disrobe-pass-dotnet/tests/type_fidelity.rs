@@ -10,7 +10,10 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
-use disrobe_pass_dotnet::iterator_reverse::is_mangled_metadata_identifier;
+use disrobe_pass_dotnet::iterator_reverse::{
+    UNLOWERED_COMPILER_CONSTRUCT_MARKER, UNRECONSTRUCTED_STATE_MACHINE_MARKER,
+    is_mangled_metadata_identifier,
+};
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, ParamModel, Resolver, TypeModel};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
@@ -935,6 +938,52 @@ fn no_recovered_body_emits_a_mangled_metadata_identifier_as_live_code() {
             .collect::<Vec<String>>()
             .join("\n")
     );
+}
+
+#[test]
+fn disposalplayground_count_with_async_states_a_refusal_instead_of_a_stripped_cache_field() {
+    let asm: DecompiledAssembly = baseline();
+    let method: &StructuredMethod = method_by_signature(&asm, "CountWithAsync(")
+        .expect("EdgeCases.DisposalPlayground.CountWithAsync must be in the baseline corpus");
+    assert!(
+        !method.body.contains("__9__1_0"),
+        "the cached-lambda field `<>9__1_0` reached the emitter with its angle brackets \
+         stripped into a bare identifier no compiler can resolve:\n{}",
+        method.body
+    );
+    let states_a_refusal: bool = method.body.contains(UNRECONSTRUCTED_STATE_MACHINE_MARKER)
+        || method.body.contains(UNLOWERED_COMPILER_CONSTRUCT_MARKER);
+    assert!(
+        states_a_refusal,
+        "the cached lambda could not be lowered, so the body must state a refusal instead of \
+         emitting live code that references it:\n{}",
+        method.body
+    );
+}
+
+#[test]
+fn a_partially_stripped_metadata_name_does_not_fool_the_detector_either_way() {
+    for stripped in [
+        "__9__1_0",
+        "__c__DisplayClass1_0",
+        "_ParallelForAsync_b__0",
+        "__1__state",
+        "__t__builder",
+    ] {
+        assert!(
+            !is_mangled_metadata_identifier(stripped),
+            "`{stripped}` has already lost the angle brackets that mark it as compiler metadata, \
+             so a rule that flags it would collide with ordinary double-underscore user code; the \
+             cure is to stop the strip from running before the detector sees the name, not to \
+             widen the detector onto an ambiguous shape"
+        );
+    }
+    for legitimate in ["__count", "__init", "__9", "_1_state", "__version_2"] {
+        assert!(
+            !is_mangled_metadata_identifier(legitimate),
+            "`{legitimate}` is legal, double-underscore-prefixed C# and must never be refused"
+        );
+    }
 }
 
 #[test]

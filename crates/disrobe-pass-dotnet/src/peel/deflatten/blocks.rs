@@ -132,6 +132,10 @@ fn store_local(ins: &Instruction) -> Option<u32> {
     slot_index_of(ins, SlotOp::StoreLocal).map(u32::from)
 }
 
+fn load_local(ins: &Instruction) -> Option<u32> {
+    slot_index_of(ins, SlotOp::LoadLocal).map(u32::from)
+}
+
 #[must_use]
 pub fn int_literal(ins: &Instruction) -> Option<i64> {
     match ins.name.as_str() {
@@ -165,23 +169,6 @@ fn instr_index(instrs: &[Instruction], offset: u32) -> Option<usize> {
         .ok()
 }
 
-fn local_of(ins: &Instruction, prefix: &str) -> Option<u32> {
-    let rest: &str = ins.name.as_str().strip_prefix(prefix)?;
-    if !(rest.is_empty() || rest.starts_with('.')) {
-        return None;
-    }
-    if let Some(tail) = rest.rsplit('.').next()
-        && let Ok(n) = tail.parse::<u32>()
-    {
-        return Some(n);
-    }
-    match ins.operand {
-        OperandValue::U8(b) => Some(u32::from(b)),
-        OperandValue::U16(v) => Some(u32::from(v)),
-        _ => None,
-    }
-}
-
 fn is_pure_key_step(ins: &Instruction, state_local: u32) -> bool {
     let name: &str = ins.name.as_str();
     if name.starts_with("ldc.i4") || name.starts_with("conv.") {
@@ -191,10 +178,7 @@ fn is_pure_key_step(ins: &Instruction, state_local: u32) -> bool {
         "nop" | "break" | "dup" | "pop" | "add" | "add.ovf" | "add.ovf.un" | "sub" | "sub.ovf"
         | "sub.ovf.un" | "mul" | "mul.ovf" | "mul.ovf.un" | "div" | "div.un" | "rem" | "rem.un"
         | "and" | "or" | "xor" | "shl" | "shr" | "shr.un" | "neg" | "not" => true,
-        _ => {
-            local_of(ins, "ldloc") == Some(state_local)
-                || local_of(ins, "stloc") == Some(state_local)
-        }
+        _ => load_local(ins) == Some(state_local) || store_local(ins) == Some(state_local),
     }
 }
 

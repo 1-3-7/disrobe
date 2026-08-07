@@ -8,99 +8,14 @@ mod mba_corpus;
 #[allow(clippy::redundant_pub_crate)]
 mod solver_requirement;
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "support/external_solver.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod external_solver;
 
 use disrobe_mba::{Expr, Simplification, Width, equivalence_query, simplify};
+use external_solver::{Answer, Solver, detect as detect_solver, run as run_solver};
 use mba_corpus::{CorpusEntry, corpus};
 use solver_requirement::{enforce_solver_requirement, solver_is_required};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Answer {
-    Sat,
-    Unsat,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SolverKind {
-    Z3,
-    Bitwuzla,
-}
-
-#[derive(Debug, Clone)]
-struct Solver {
-    program: &'static str,
-    kind: SolverKind,
-    version: String,
-}
-
-fn probe_version(program: &str) -> Option<String> {
-    let output: std::process::Output = Command::new(program).arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
-    let first: String = text.lines().next().unwrap_or("").trim().to_owned();
-    if first.is_empty() {
-        Some(program.to_owned())
-    } else {
-        Some(first)
-    }
-}
-
-fn detect_solver() -> Option<Solver> {
-    const CANDIDATES: [(&str, SolverKind); 2] =
-        [("z3", SolverKind::Z3), ("bitwuzla", SolverKind::Bitwuzla)];
-    CANDIDATES
-        .into_iter()
-        .find_map(|(program, kind): (&'static str, SolverKind)| {
-            probe_version(program).map(|version: String| Solver {
-                program,
-                kind,
-                version,
-            })
-        })
-}
-
-static QUERY_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn parse_answer(text: &str) -> Answer {
-    for line in text.lines() {
-        match line.trim() {
-            "unsat" => return Answer::Unsat,
-            "sat" => return Answer::Sat,
-            "unknown" => return Answer::Unknown,
-            _ => {}
-        }
-    }
-    panic!("solver produced no sat/unsat/unknown verdict: {text:?}");
-}
-
-fn run_solver(solver: &Solver, script: &str) -> Answer {
-    let unique: usize = QUERY_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let purpose: String = format!("disrobe_mba_corpus_{}_{}", std::process::id(), unique);
-    let (scratch, mut file): (disrobe_core::scratch::ScratchFile, std::fs::File) =
-        disrobe_core::scratch::ScratchFile::create(&purpose, "smt2")
-            .expect("write smt2 query to a temp file");
-    let path: PathBuf = scratch.path().to_path_buf();
-    std::io::Write::write_all(&mut file, script.as_bytes())
-        .expect("write smt2 query to a temp file");
-    drop(file);
-    let mut command: Command = Command::new(solver.program);
-    match solver.kind {
-        SolverKind::Z3 => {
-            command.arg("-smt2").arg(&path);
-        }
-        SolverKind::Bitwuzla => {
-            command.arg(&path);
-        }
-    }
-    let output: std::process::Output = command.output().expect("invoke the external solver");
-    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&output.stdout);
-    parse_answer(&stdout)
-}
 
 struct SplitMix64 {
     state: u64,

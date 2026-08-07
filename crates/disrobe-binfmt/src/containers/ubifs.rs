@@ -474,6 +474,15 @@ fn walk_ubi(bytes: &[u8], max_total: u64) -> Result<UbifsWalk> {
 const _: i32 = UBIFS_SB_NODE;
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let directory_entry_name_length_field_is_two_bytes: bool = name.len() > u16::MAX as usize;
+    if name.is_empty() || directory_entry_name_length_field_is_two_bytes {
+        return None;
+    }
+    Some(tests::build_single_file_bare_ubifs(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -589,6 +598,17 @@ mod tests {
             crate::extract::extract_to(crate::container::ContainerKind::Ubifs, &img, dir.path())
                 .expect("ubi extract");
         assert_eq!(result.kind, crate::container::ContainerKind::Ubifs);
+    }
+
+    pub(super) fn build_single_file_bare_ubifs(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut image: Vec<u8> = Vec::new();
+        image.extend_from_slice(&ino_node(2));
+        align8(&mut image);
+        image.extend_from_slice(&dent_node(1, 2, name));
+        align8(&mut image);
+        image.extend_from_slice(&data_node(2, 0, UBIFS_COMPR_NONE, body, body));
+        align8(&mut image);
+        image
     }
 
     fn ch(node_type: u8, body_len: usize) -> Vec<u8> {

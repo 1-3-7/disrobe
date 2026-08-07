@@ -233,70 +233,77 @@ pub fn sanitize_bun_name(name: &str) -> String {
         .trim_start_matches("$bunfs/root/")
         .trim_start_matches("/$bunfs/")
         .trim_start_matches("$bunfs/");
+    if trimmed.len() == name.len() {
+        return name.to_owned();
+    }
     trimmed.trim_start_matches(['/', '\\']).to_owned()
+}
+
+#[cfg(test)]
+fn put_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+fn put_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+
+#[cfg(test)]
+pub(crate) fn build_bun(modules: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut data: Vec<u8> = Vec::new();
+    let mut name_ptrs: Vec<(u32, u32)> = Vec::new();
+    let mut content_ptrs: Vec<(u32, u32)> = Vec::new();
+    for (name, body) in modules {
+        let name_off: u32 = data.len() as u32;
+        data.extend_from_slice(name.as_bytes());
+        name_ptrs.push((name_off, name.len() as u32));
+        let body_off: u32 = data.len() as u32;
+        data.extend_from_slice(body);
+        content_ptrs.push((body_off, body.len() as u32));
+    }
+    let byte_count: u64 = data.len() as u64;
+    let modules_offset: u32 = byte_count as u32;
+    let mut table: Vec<u8> = Vec::new();
+    for i in 0..modules.len() {
+        let (n_off, n_len): (u32, u32) = name_ptrs[i];
+        let (c_off, c_len): (u32, u32) = content_ptrs[i];
+        put_u32(&mut table, n_off);
+        put_u32(&mut table, n_len);
+        put_u32(&mut table, c_off);
+        put_u32(&mut table, c_len);
+        put_u32(&mut table, 0);
+        put_u32(&mut table, 0);
+        put_u32(&mut table, 0);
+        put_u32(&mut table, 0);
+        table.extend_from_slice(&[0u8; 16]);
+        table.push(2);
+        table.push(1);
+        table.push(1);
+        table.push(0);
+    }
+    let modules_length: u32 = table.len() as u32;
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+    out.extend(std::iter::repeat_n(0u8, 60));
+    out.extend_from_slice(&data);
+    out.extend_from_slice(&table);
+    put_u64(&mut out, byte_count);
+    put_u32(&mut out, modules_offset);
+    put_u32(&mut out, modules_length);
+    put_u32(&mut out, 0);
+    put_u32(&mut out, 0);
+    put_u32(&mut out, 0);
+    put_u32(&mut out, 0);
+    out.extend_from_slice(BUN_TRAILER);
+    out
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn put_u32(buf: &mut Vec<u8>, v: u32) {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
-    fn put_u64(buf: &mut Vec<u8>, v: u64) {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
-
-    fn build_bun(modules: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut data: Vec<u8> = Vec::new();
-        let mut name_ptrs: Vec<(u32, u32)> = Vec::new();
-        let mut content_ptrs: Vec<(u32, u32)> = Vec::new();
-        for (name, body) in modules {
-            let name_off: u32 = data.len() as u32;
-            data.extend_from_slice(name.as_bytes());
-            name_ptrs.push((name_off, name.len() as u32));
-            let body_off: u32 = data.len() as u32;
-            data.extend_from_slice(body);
-            content_ptrs.push((body_off, body.len() as u32));
-        }
-        let byte_count: u64 = data.len() as u64;
-        let modules_offset: u32 = byte_count as u32;
-        let mut table: Vec<u8> = Vec::new();
-        for i in 0..modules.len() {
-            let (n_off, n_len): (u32, u32) = name_ptrs[i];
-            let (c_off, c_len): (u32, u32) = content_ptrs[i];
-            put_u32(&mut table, n_off);
-            put_u32(&mut table, n_len);
-            put_u32(&mut table, c_off);
-            put_u32(&mut table, c_len);
-            put_u32(&mut table, 0);
-            put_u32(&mut table, 0);
-            put_u32(&mut table, 0);
-            put_u32(&mut table, 0);
-            table.extend_from_slice(&[0u8; 16]);
-            table.push(2);
-            table.push(1);
-            table.push(1);
-            table.push(0);
-        }
-        let modules_length: u32 = table.len() as u32;
-
-        let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
-        out.extend(std::iter::repeat_n(0u8, 60));
-        out.extend_from_slice(&data);
-        out.extend_from_slice(&table);
-        put_u64(&mut out, byte_count);
-        put_u32(&mut out, modules_offset);
-        put_u32(&mut out, modules_length);
-        put_u32(&mut out, 0);
-        put_u32(&mut out, 0);
-        put_u32(&mut out, 0);
-        put_u32(&mut out, 0);
-        out.extend_from_slice(BUN_TRAILER);
-        out
-    }
 
     #[test]
     fn detects_and_carves_bun_modules() {

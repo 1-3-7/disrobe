@@ -227,6 +227,15 @@ fn class_file_max_stack(observed: i32) -> Option<u16> {
     u16::try_from(observed.max(2)).ok()
 }
 
+fn parameter_local_slots(parsed: &MethodDescriptor, is_static: bool) -> Option<u16> {
+    let mut slots: u16 = u16::from(!is_static);
+    for param in &parsed.params {
+        let width: u16 = if param.category_two() { 2 } else { 1 };
+        slots = slots.checked_add(width)?;
+    }
+    Some(slots)
+}
+
 const fn frame_delta(previous: Option<usize>, offset: usize) -> Option<usize> {
     match previous {
         None => Some(offset),
@@ -270,12 +279,11 @@ pub(crate) fn emit_method_code(
         return None;
     }
     let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
-    let param_local_slots: u16 = u16::from(!is_static)
-        + parsed
-            .params
-            .iter()
-            .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
-            .sum::<u16>();
+    let Some(param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("param-slot-limit");
+        return None;
+    };
     let Some(max_locals): Option<u16> =
         class_file_max_locals(first_param_reg, param_local_slots, LINEAR_LOCAL_HEADROOM, 1)
     else {
@@ -453,12 +461,12 @@ pub(crate) fn emit_branch_method_code(
         .collect();
 
     let base_first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
-    let base_param_local_slots: u16 = u16::from(!is_static)
-        + parsed
-            .params
-            .iter()
-            .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
-            .sum::<u16>();
+    let Some(base_param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static)
+    else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("param-slot-limit");
+        return None;
+    };
     let Some(base_max_locals): Option<u16> = class_file_max_locals(
         base_first_param_reg,
         base_param_local_slots,
@@ -605,12 +613,11 @@ pub(crate) fn emit_branch_method_code(
     );
 
     let first_param_reg: u16 = item.registers_size.saturating_sub(item.ins_size);
-    let param_local_slots: u16 = u16::from(!is_static)
-        + parsed
-            .params
-            .iter()
-            .map(|p: &JavaType| if p.category_two() { 2u16 } else { 1u16 })
-            .sum::<u16>();
+    let Some(param_local_slots): Option<u16> = parameter_local_slots(&parsed, is_static) else {
+        #[cfg(any(test, feature = "lifter-diag"))]
+        record_bail_kind("param-slot-limit");
+        return None;
+    };
     let Some(max_locals): Option<u16> = class_file_max_locals(
         first_param_reg,
         param_local_slots,
@@ -4983,6 +4990,51 @@ mod tests {
         assert_eq!(
             class_file_max_locals(65_000, 600, BRANCH_LOCAL_HEADROOM, 1),
             None
+        );
+    }
+
+    fn descriptor_of_width(narrow: usize, wide: usize) -> MethodDescriptor {
+        let mut params: Vec<JavaType> = Vec::with_capacity(narrow + wide);
+        params.extend(std::iter::repeat_n(JavaType::Int, narrow));
+        params.extend(std::iter::repeat_n(JavaType::Long, wide));
+        MethodDescriptor {
+            params,
+            returns: JavaType::Void,
+        }
+    }
+
+    #[test]
+    fn a_parameter_list_past_the_class_file_local_limit_is_rejected_not_wrapped() {
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(3, 1), true),
+            Some(5)
+        );
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(3, 1), false),
+            Some(6),
+            "the receiver of an instance method occupies slot zero before any parameter does"
+        );
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(65_535, 0), true),
+            Some(65_535)
+        );
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(65_536, 0), true),
+            None,
+            "summing parameter widths in u16 wraps a parameter list this long down to a slot count \
+             that is far too small, and every later slot index is then computed against it"
+        );
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(65_535, 0), false),
+            None,
+            "the receiver is what carries this list past the limit, so the receiver has to be \
+             counted inside the same checked sum"
+        );
+        assert_eq!(
+            parameter_local_slots(&descriptor_of_width(65_534, 1), true),
+            None,
+            "one wide parameter occupies two slots, so a list under the limit by count can still \
+             cross it by width"
         );
     }
 

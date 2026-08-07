@@ -16,8 +16,9 @@ use std::time::SystemTime;
 
 use clap::Args;
 use disrobe_llm_metadata::{
-    BundleBuilder, Category, InputDescriptor, MetadataFormat, MetadataSelection, Pack,
-    PipelineStep, SelectionBuilder, ToolDescriptor, serialize, write_bundle_to_path,
+    BundleBuilder, Category, InputDescriptor, MetadataFormat, MetadataSelection, PII_CAPABILITY,
+    Pack, PerPassEnvelope, PipelineStep, SelectionBuilder, ToolDescriptor, envelope_map, pii,
+    serialize, write_bundle_to_path,
 };
 use serde_json::Value as Json;
 
@@ -50,7 +51,7 @@ pub(crate) struct LlmFlags {
     #[arg(
         long = "metadata-pack-4",
         global = true,
-        help = "pack-4: pack-3 + confidence + opcode-coverage + pii-map + decryption-keys (auth-gated)"
+        help = "pack-4: pack-3 + confidence + opcode-coverage + pii-map + decryption-keys (only decryption-keys needs --i-have-authorization)"
     )]
     pub(crate) pack_4: bool,
 
@@ -397,6 +398,9 @@ pub(crate) fn write_llm_bundle(
     for (step, envelope_map) in per_pass_envelope_maps {
         builder.record_pass(step, envelope_map);
     }
+    if let Some((step, envelope_map)) = pii_pass_for_bytes(selection, input_bytes) {
+        builder.record_pass(step, envelope_map);
+    }
     let bundle: Json = builder
         .finalize(iso8601_now(), tool, selection, input)
         .map_err(|e: disrobe_llm_metadata::LlmMetadataError| {
@@ -463,6 +467,81 @@ pub(crate) fn make_step(
         capabilities_produced: Vec::new(),
         config: None,
     }
+}
+
+fn pii_truncation_note(outcome: &disrobe_llm_metadata::PiiScanOutcome) -> Option<String> {
+    if !outcome.input_truncated() {
+        return None;
+    }
+    Some(format!(
+        "the scan covered only the first {} of {} input byte(s); a size cap bounds pii_map cost \
+         on large inputs",
+        outcome.scanned_bytes, outcome.total_bytes
+    ))
+}
+
+fn pii_not_applicable_reason(outcome: &disrobe_llm_metadata::PiiScanOutcome) -> String {
+    let base: String = format!(
+        "pass `{}` supports `{}` but produced no data for this input",
+        PII_CAPABILITY.pass,
+        Category::PiiMap.label()
+    );
+    pii_truncation_note(outcome)
+        .map_or_else(|| base.clone(), |note: String| format!("{base}; {note}"))
+}
+
+fn pii_applicable_reason(outcome: &disrobe_llm_metadata::PiiScanOutcome) -> Option<String> {
+    let cap_note: Option<String> = (outcome.omitted > 0).then(|| {
+        format!(
+            "pii_map entry cap reached; {} occurrence(s) were found but not emitted",
+            outcome.omitted
+        )
+    });
+    let truncation_note: Option<String> = pii_truncation_note(outcome);
+    match (cap_note, truncation_note) {
+        (Some(cap), Some(trunc)) => Some(format!("{cap}; {trunc}")),
+        (Some(cap), None) => Some(cap),
+        (None, Some(trunc)) => Some(trunc),
+        (None, None) => None,
+    }
+}
+
+fn pii_pass_for_bytes(selection: &MetadataSelection, bytes: &[u8]) -> Option<(PipelineStep, Json)> {
+    if !selection.contains(Category::PiiMap) {
+        return None;
+    }
+    let started: std::time::Instant = std::time::Instant::now();
+    let outcome: disrobe_llm_metadata::PiiScanOutcome = pii::scan(bytes);
+    let duration_ms: f64 = started.elapsed().as_secs_f64() * 1000.0_f64;
+    let envelope: PerPassEnvelope = if outcome.entries.is_empty() {
+        PerPassEnvelope::not_applicable(
+            PII_CAPABILITY.pass,
+            PII_CAPABILITY.pass_version,
+            pii_not_applicable_reason(&outcome),
+        )
+    } else {
+        let reason: Option<String> = pii_applicable_reason(&outcome);
+        let mut envelope: PerPassEnvelope = PerPassEnvelope::applicable(
+            PII_CAPABILITY.pass,
+            PII_CAPABILITY.pass_version,
+            Json::Array(outcome.entries),
+        );
+        envelope.reason = reason;
+        envelope
+    };
+    let mut entries: std::collections::BTreeMap<&'static str, PerPassEnvelope> =
+        std::collections::BTreeMap::new();
+    entries.insert(Category::PiiMap.label(), envelope);
+    Some((
+        make_step(
+            PII_CAPABILITY.pass,
+            PII_CAPABILITY.pass_version,
+            "raw",
+            "raw",
+            duration_ms,
+        ),
+        envelope_map(entries),
+    ))
 }
 
 #[cfg(test)]
@@ -568,5 +647,87 @@ mod tests {
             Some("disrobe-pass-py-disasm")
         );
         assert_eq!(v.get("rung_in").and_then(Json::as_str), Some("raw"));
+    }
+
+    fn pii_selection() -> MetadataSelection {
+        SelectionBuilder::new().category(Category::PiiMap).build()
+    }
+
+    #[test]
+    fn pii_pass_is_skipped_when_not_selected() {
+        let selection: MetadataSelection = SelectionBuilder::new().category(Category::Ast).build();
+        assert!(pii_pass_for_bytes(&selection, b"alice@example.com").is_none());
+    }
+
+    #[test]
+    fn pii_pass_reports_not_applicable_when_nothing_found() {
+        let selection: MetadataSelection = pii_selection();
+        let (step, map): (PipelineStep, Json) =
+            pii_pass_for_bytes(&selection, b"nothing sensitive here").expect("pii pass runs");
+        assert_eq!(step.pass, PII_CAPABILITY.pass);
+        assert_eq!(step.rung_in, "raw");
+        assert_eq!(step.rung_out, "raw");
+        let envelope: &Json = map.get("pii_map").expect("pii_map key");
+        assert_eq!(
+            envelope.get("applicable").and_then(Json::as_bool),
+            Some(false)
+        );
+        assert!(envelope.get("value").is_none_or(Json::is_null));
+        let reason: &str = envelope
+            .get("reason")
+            .and_then(Json::as_str)
+            .expect("reason present");
+        assert!(reason.contains("produced no data"), "{reason}");
+    }
+
+    #[test]
+    fn pii_pass_reports_applicable_with_entries_when_found() {
+        let selection: MetadataSelection = pii_selection();
+        let (_step, map): (PipelineStep, Json) =
+            pii_pass_for_bytes(&selection, b"contact alice@example.com now").expect("pii runs");
+        let envelope: &Json = map.get("pii_map").expect("pii_map key");
+        assert_eq!(
+            envelope.get("applicable").and_then(Json::as_bool),
+            Some(true)
+        );
+        let value: &Json = envelope.get("value").expect("value present");
+        assert!(value.as_array().is_some_and(|a: &Vec<Json>| !a.is_empty()));
+        assert!(envelope.get("reason").is_some_and(Json::is_null));
+    }
+
+    #[test]
+    fn pii_pass_reason_reports_the_cap_when_reached() {
+        use std::fmt::Write as _;
+        let selection: MetadataSelection = pii_selection();
+        let mut text: String = String::new();
+        for i in 0..4300 {
+            let _: std::fmt::Result = write!(text, "user{i}@example{i}.com ");
+        }
+        let (_step, map): (PipelineStep, Json) =
+            pii_pass_for_bytes(&selection, text.as_bytes()).expect("pii runs");
+        let envelope: &Json = map.get("pii_map").expect("pii_map key");
+        let reason: &str = envelope
+            .get("reason")
+            .and_then(Json::as_str)
+            .expect("cap reason present");
+        assert!(reason.contains("cap"), "{reason}");
+    }
+
+    #[test]
+    fn pii_pass_reason_reports_input_truncation_on_a_large_input() {
+        let selection: MetadataSelection = pii_selection();
+        let mut buf: Vec<u8> = b"contact alice@example.com ".to_vec();
+        buf.extend(std::iter::repeat_n(b'.', 2 * 1024 * 1024));
+        let (_step, map): (PipelineStep, Json) =
+            pii_pass_for_bytes(&selection, &buf).expect("pii runs");
+        let envelope: &Json = map.get("pii_map").expect("pii_map key");
+        let reason: &str = envelope
+            .get("reason")
+            .and_then(Json::as_str)
+            .expect("truncation reason present");
+        assert!(
+            reason.contains("size cap") && reason.contains("input byte"),
+            "{reason}"
+        );
     }
 }

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_jvm::bytecode::{
@@ -115,6 +115,44 @@ fn per_method_publication_rejects_a_failed_javac_even_when_all_methods_are_clean
         false,
         PER_METHOD_JAVAC_TOTAL,
         PER_METHOD_JAVAC_OK_FLOOR,
+    ));
+}
+
+#[test]
+fn per_method_publication_permits_only_a_zero_count_when_attribution_never_ran() {
+    assert!(per_method_measurement_is_publishable(
+        false,
+        PER_METHOD_JAVAC_TOTAL,
+        0
+    ));
+    assert!(!per_method_measurement_is_publishable(
+        false,
+        PER_METHOD_JAVAC_TOTAL,
+        1
+    ));
+    assert!(!per_method_measurement_is_publishable(
+        false,
+        PER_METHOD_JAVAC_TOTAL,
+        PER_METHOD_JAVAC_TOTAL - 1
+    ));
+}
+
+#[test]
+fn per_method_publication_permits_a_partial_count_once_attribution_ran() {
+    assert!(per_method_measurement_is_publishable(
+        true,
+        PER_METHOD_JAVAC_TOTAL,
+        0
+    ));
+    assert!(per_method_measurement_is_publishable(
+        true,
+        PER_METHOD_JAVAC_TOTAL,
+        1
+    ));
+    assert!(per_method_measurement_is_publishable(
+        true,
+        PER_METHOD_JAVAC_TOTAL,
+        PER_METHOD_JAVAC_TOTAL
     ));
 }
 
@@ -487,23 +525,135 @@ fn report_multi_class_javac_recompile() {
     );
 }
 
-const fn per_method_measurement_is_publishable(javac_ok: bool, total: usize, ok: usize) -> bool {
-    total > 0 && ok <= total && (javac_ok || ok < total)
+const fn per_method_measurement_is_publishable(
+    type_checked: bool,
+    total: usize,
+    ok: usize,
+) -> bool {
+    total > 0 && ok <= total && (type_checked || ok == 0)
+}
+
+const ATTRIBUTION_PROBE_FILE: &str = "TypeCheckReached.java";
+const ATTRIBUTION_PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object \
+                                        VALUE = typeCheckReachedSymbolThatCannotResolve;\n}\n";
+const ATTRIBUTION_PROBE_DIAGNOSTIC: &str = "TypeCheckReached.java:";
+const DIAGNOSTIC_LIMIT: &str = "1000000";
+
+fn require_javac() -> PathBuf {
+    find_on_path("javac").unwrap_or_else(|| {
+        panic!(
+            "the per-method javac recompile gate requires javac on PATH: without it the STRONG \
+             {PER_METHOD_JAVAC_OK_FLOOR}/{PER_METHOD_JAVAC_TOTAL} figure cannot be measured, and \
+             a skip must never read as a pass. Install a JDK (actions/setup-java in CI)."
+        )
+    })
+}
+
+fn type_check_was_reached(
+    javac: &Path,
+    dir: &Path,
+    classpath: &Path,
+    source_paths: &[&Path],
+) -> bool {
+    let probe_path: PathBuf = dir.join(ATTRIBUTION_PROBE_FILE);
+    std::fs::write(&probe_path, ATTRIBUTION_PROBE_SOURCE).expect("write attribution probe");
+    let probe_out: PathBuf = dir.join("probe-out");
+    std::fs::create_dir_all(&probe_out).expect("create probe output dir");
+    let mut cmd: Command = Command::new(javac);
+    cmd.arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-Xmaxerrs")
+        .arg(DIAGNOSTIC_LIMIT)
+        .arg("-cp")
+        .arg(classpath)
+        .arg("-d")
+        .arg(&probe_out);
+    for source in source_paths {
+        cmd.arg(source);
+    }
+    cmd.arg(&probe_path);
+    let out: std::process::Output = cmd.output().expect("javac attribution probe");
+    assert!(
+        !out.status.success(),
+        "the type-check probe compiled without reporting its unresolvable symbol, so it can no \
+         longer tell a parsed file from an unparsed one"
+    );
+    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
+    stderr.contains(ATTRIBUTION_PROBE_DIAGNOSTIC) || stdout.contains(ATTRIBUTION_PROBE_DIAGNOSTIC)
+}
+
+struct PerMethodJavacMeasurement {
+    total: usize,
+    ok: usize,
+    type_checked: bool,
+    error_lines: Vec<usize>,
+    diagnostics: String,
+}
+
+fn measure_per_method_javac_recompile(
+    javac: &Path,
+    dir: &Path,
+    classpath: &Path,
+    file_name: &str,
+    source: &str,
+) -> PerMethodJavacMeasurement {
+    let path: PathBuf = dir.join(file_name);
+    std::fs::write(&path, source).expect("write java");
+
+    let out: std::process::Output = Command::new(javac)
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-Xmaxerrs")
+        .arg(DIAGNOSTIC_LIMIT)
+        .arg("-cp")
+        .arg(classpath)
+        .arg("-d")
+        .arg(dir)
+        .arg(&path)
+        .output()
+        .expect("javac");
+    let diagnostics: String = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    let needle: String = format!("{file_name}:");
+    let mut error_lines: Vec<usize> = Vec::new();
+    for line in diagnostics.lines() {
+        if let Some(rest) = line.split(needle.as_str()).nth(1)
+            && let Some(num) = rest.split(':').next()
+            && let Ok(n) = num.parse::<usize>()
+        {
+            error_lines.push(n);
+        }
+    }
+
+    let type_checked: bool =
+        out.status.success() || type_check_was_reached(javac, dir, classpath, &[path.as_path()]);
+
+    let ranges: Vec<(String, usize, usize)> = method_line_ranges(source);
+    let total: usize = ranges.len();
+    let ok: usize = if type_checked {
+        ranges
+            .iter()
+            .filter(|(_label, start, end): &&(String, usize, usize)| {
+                !error_lines.iter().any(|&l: &usize| l >= *start && l < *end)
+            })
+            .count()
+    } else {
+        0
+    };
+
+    PerMethodJavacMeasurement {
+        total,
+        ok,
+        type_checked,
+        error_lines,
+        diagnostics,
+    }
 }
 
 #[test]
 fn report_per_method_javac_recompile() {
-    let Some(javac): Option<PathBuf> = find_on_path("javac") else {
-        eprintln!(
-            "\n========================================================================\n\
-             SKIPPED: javac not on PATH. The per-method recompile floor (>= {PER_METHOD_JAVAC_OK_FLOOR} \
-             of {PER_METHOD_JAVAC_TOTAL})\n\
-             did NOT run and is NOT enforced on this machine. A green result here is a\n\
-             SKIP, not a measured pass. Install a JDK (actions/setup-java in CI).\n\
-             ========================================================================\n"
-        );
-        return;
-    };
+    let javac: PathBuf = require_javac();
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
     let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
         eprintln!("skip: baseline jar absent");
@@ -527,62 +677,198 @@ fn report_per_method_javac_recompile() {
         disrobe_core::scratch::ScratchDir::create("disrobe_per_method_recompile")
             .expect("create scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-    let path: PathBuf = dir.join("EdgeCases.java");
-    std::fs::write(&path, &d.source).expect("write");
 
-    let out: std::process::Output = Command::new(&javac)
-        .arg("-nowarn")
-        .arg("-proc:none")
-        .arg("-cp")
-        .arg(&jar)
-        .arg("-d")
-        .arg(&dir)
-        .arg(&path)
-        .output()
-        .expect("javac");
-    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
+    let measurement: PerMethodJavacMeasurement =
+        measure_per_method_javac_recompile(&javac, &dir, &jar, "EdgeCases.java", &d.source);
 
-    let mut error_lines: Vec<usize> = Vec::new();
-    for line in stderr.lines() {
-        if let Some(rest) = line.split("EdgeCases.java:").nth(1)
-            && let Some(num) = rest.split(':').next()
-            && let Ok(n) = num.parse::<usize>()
-        {
-            error_lines.push(n);
-        }
-    }
-
-    let ranges: Vec<(String, usize, usize)> = method_line_ranges(&d.source);
-    let total: usize = ranges.len();
-    let mut ok: usize = 0;
-    for (_label, start, end) in &ranges {
-        let has_error: bool = error_lines.iter().any(|&l| l >= *start && l < *end);
-        if !has_error {
-            ok += 1;
-        }
-    }
-    let pct: f64 = ok as f64 * 100.0 / total.max(1) as f64;
+    let pct: f64 = measurement.ok as f64 * 100.0 / measurement.total.max(1) as f64;
     eprintln!(
-        "PER-METHOD JAVAC RECOMPILE (EdgeCases top-level): {ok}/{total} methods error-free \
-         ({pct:.1}%); total javac errors: {}",
-        error_lines.len()
+        "PER-METHOD JAVAC RECOMPILE (EdgeCases top-level): {}/{} methods certified clean \
+         ({pct:.1}%); javac reached type-checking: {}; total javac diagnostics: {}",
+        measurement.ok,
+        measurement.total,
+        measurement.type_checked,
+        measurement.error_lines.len()
     );
+    if !measurement.type_checked {
+        eprintln!(
+            "javac never reached attribution over EdgeCases.java, so none of the {} recovered \
+             top-level methods may be certified clean",
+            measurement.total
+        );
+    }
+
     assert!(
-        per_method_measurement_is_publishable(out.status.success(), total, ok),
-        "javac exited {} yet every one of {total} top-level methods parsed clean, so the \
-         failure attributed to no method and {ok}/{total} is not a measurement anyone may \
-         publish; javac stderr:\n{stderr}",
-        out.status
+        per_method_measurement_is_publishable(
+            measurement.type_checked,
+            measurement.total,
+            measurement.ok
+        ),
+        "javac type-checked={} over {} top-level methods with {} reported clean; that \
+         combination is not a measurement anyone may publish; javac diagnostics:\n{}",
+        measurement.type_checked,
+        measurement.total,
+        measurement.ok,
+        measurement.diagnostics
     );
     assert_eq!(
-        total, PER_METHOD_JAVAC_TOTAL,
-        "EdgeCases top-level method count drifted: {total} != {PER_METHOD_JAVAC_TOTAL}; \
-         the recompile floor is denominator-pinned, recheck the corpus"
+        measurement.total, PER_METHOD_JAVAC_TOTAL,
+        "EdgeCases top-level method count drifted: {} != {PER_METHOD_JAVAC_TOTAL}; \
+         the recompile floor is denominator-pinned, recheck the corpus",
+        measurement.total
     );
     assert!(
-        ok >= PER_METHOD_JAVAC_OK_FLOOR,
-        "per-method javac recompile regressed: {ok}/{total} error-free < floor \
-         {PER_METHOD_JAVAC_OK_FLOOR}/{PER_METHOD_JAVAC_TOTAL}; {FLOOR_PROVENANCE}"
+        measurement.ok >= PER_METHOD_JAVAC_OK_FLOOR,
+        "per-method javac recompile regressed: {}/{} error-free < floor \
+         {PER_METHOD_JAVAC_OK_FLOOR}/{PER_METHOD_JAVAC_TOTAL}; {FLOOR_PROVENANCE}",
+        measurement.ok,
+        measurement.total
+    );
+}
+
+fn empty_classpath_dir(dir: &Path) -> PathBuf {
+    let cp: PathBuf = dir.join("cp");
+    std::fs::create_dir_all(&cp).expect("create empty classpath dir");
+    cp
+}
+
+const SEEDED_PARSE_DEFECT_SRC: &str = r"public class Seeded {
+    public static int one() { return 1; }
+    public static int two() {
+        try {
+        return 2;
+    }
+    public static int three() { return 3; }
+    public static int four() { return 4; }
+}
+";
+
+#[test]
+fn a_seeded_parse_defect_zeroes_the_per_method_certification_instead_of_scoring_it_partial() {
+    let javac: PathBuf = require_javac();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_seeded_parse_defect")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let classpath: PathBuf = empty_classpath_dir(&dir);
+
+    let measurement: PerMethodJavacMeasurement = measure_per_method_javac_recompile(
+        &javac,
+        &dir,
+        &classpath,
+        "Seeded.java",
+        SEEDED_PARSE_DEFECT_SRC,
+    );
+
+    assert!(
+        measurement.total > 0,
+        "the seeded fixture must still expose top-level methods to the naive line scan, or the \
+         test proves nothing about the masking bug"
+    );
+    assert!(
+        !measurement.type_checked,
+        "an unclosed try block must abort javac before attribution, but the probe reported \
+         type-checking anyway; diagnostics:\n{}",
+        measurement.diagnostics
+    );
+    assert_eq!(
+        measurement.ok, 0,
+        "javac never type-checked Seeded.java, so no method may be certified clean, yet the \
+         gate reported {} of {} as clean",
+        measurement.ok, measurement.total
+    );
+    assert!(!per_method_measurement_is_publishable(
+        measurement.type_checked,
+        measurement.total,
+        measurement.total
+    ));
+}
+
+const REAL_RESOLUTION_DEFECT_SRC: &str = r"public class Resolved {
+    public static int one() { return 1; }
+    public static int two() { return thisSymbolCannotResolveEither; }
+    public static int three() { return 3; }
+}
+";
+
+#[test]
+fn a_real_resolution_failure_costs_only_its_own_method_once_attribution_ran() {
+    let javac: PathBuf = require_javac();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_seeded_resolution_defect")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let classpath: PathBuf = empty_classpath_dir(&dir);
+
+    let measurement: PerMethodJavacMeasurement = measure_per_method_javac_recompile(
+        &javac,
+        &dir,
+        &classpath,
+        "Resolved.java",
+        REAL_RESOLUTION_DEFECT_SRC,
+    );
+
+    assert_eq!(measurement.total, 3);
+    assert!(
+        measurement.type_checked,
+        "an unresolved symbol is an attribution-phase error, so javac must have reached type \
+         checking; diagnostics:\n{}",
+        measurement.diagnostics
+    );
+    assert_eq!(
+        measurement.ok, 2,
+        "only the method referencing the unresolvable symbol may cost its certification, the \
+         other two methods parsed and type-checked clean"
+    );
+}
+
+const XMAXERRS_BROKEN_METHOD_COUNT: usize = 150;
+
+fn many_broken_methods_source() -> String {
+    use std::fmt::Write as _;
+    let mut source: String = String::from("public class Many {\n");
+    for i in 0..XMAXERRS_BROKEN_METHOD_COUNT {
+        writeln!(
+            source,
+            "    public static int m{i}() {{ return undefinedSymbol{i}; }}"
+        )
+        .expect("write to an in-memory String cannot fail");
+    }
+    source.push_str("}\n");
+    source
+}
+
+#[test]
+fn xmaxerrs_is_raised_high_enough_that_no_diagnostic_is_truncated_into_a_false_clean() {
+    let javac: PathBuf = require_javac();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_xmaxerrs_truncation")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let classpath: PathBuf = empty_classpath_dir(&dir);
+    let source: String = many_broken_methods_source();
+
+    let measurement: PerMethodJavacMeasurement =
+        measure_per_method_javac_recompile(&javac, &dir, &classpath, "Many.java", &source);
+
+    assert_eq!(measurement.total, XMAXERRS_BROKEN_METHOD_COUNT);
+    assert!(
+        measurement.type_checked,
+        "every one of these defects is an unresolved symbol, an attribution-phase error, so \
+         javac must have reached type checking; diagnostics:\n{}",
+        measurement.diagnostics
+    );
+    assert_eq!(
+        measurement.error_lines.len(),
+        XMAXERRS_BROKEN_METHOD_COUNT,
+        "javac's default -Xmaxerrs (100) truncates a run this size; the gate must raise it or \
+         the truncated tail reads as clean when every one of the {XMAXERRS_BROKEN_METHOD_COUNT} methods \
+         actually carries a real defect"
+    );
+    assert_eq!(
+        measurement.ok, 0,
+        "every method in this fixture carries a real defect; a nonzero clean count here means a \
+         truncated diagnostic was read as a clean method"
     );
 }
 

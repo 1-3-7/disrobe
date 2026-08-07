@@ -46,6 +46,7 @@ import sys
 import tempfile
 import types
 import warnings
+from typing import Literal
 
 NOOP = {
     "NOP",
@@ -275,6 +276,19 @@ def group(code):
     return g
 
 
+Verdict = Literal["MISSING", "COLLISION"]
+
+
+def sibling_group_charges(
+    alist: list[types.CodeType], blist: list[types.CodeType]
+) -> tuple[bool, list[tuple[int, Verdict]]]:
+    is_sibling_collision: bool = max(len(alist), len(blist)) > 1
+    charges: list[tuple[int, Verdict]] = [
+        (i, "MISSING" if i >= len(blist) else "COLLISION") for i in range(len(alist))
+    ]
+    return is_sibling_collision, charges
+
+
 def decompile(disrobe, pyc, outdir):
     r = subprocess.run(
         [disrobe, "py", "decompile", pyc, "--out", outdir],
@@ -390,15 +404,13 @@ def main():
                         # rest) rather than positionally matched. A mismatch in one code object can
                         # never silently pass its siblings.
                         if len(blist) != len(alist):
-                            if len(alist) > 1:
+                            is_sibling_collision, charges = sibling_group_charges(alist, blist)
+                            if is_sibling_collision:
                                 sibling_collisions += 1
-                            for i in range(len(alist)):
-                                if i >= len(blist):
-                                    reasons["MISSING"] = reasons.get("MISSING", 0) + 1
-                                    record(f, q, i, "MISSING")
-                                else:
-                                    reasons["COLLISION"] = reasons.get("COLLISION", 0) + 1
-                                    record(f, q, i, "COLLISION")
+                            for i, verdict in charges:
+                                reasons[verdict] = reasons.get(verdict, 0) + 1
+                                record(f, q, i, verdict)
+                                if verdict == "COLLISION":
                                     samples.setdefault("COLLISION", [])
                                     if len(samples["COLLISION"]) < 12:
                                         samples["COLLISION"].append(

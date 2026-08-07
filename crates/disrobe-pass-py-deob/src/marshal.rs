@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use disrobe_core::codec::hex::nibble as hex_nibble;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion as DecompileVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_disasm::{Instruction, JumpFitness, disassemble, jump_target_fitness};
@@ -453,16 +454,6 @@ fn decode_python_byte_escapes(s: &str) -> Vec<u8> {
         }
     }
     out
-}
-
-#[inline]
-const fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

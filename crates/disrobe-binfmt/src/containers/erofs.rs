@@ -488,6 +488,20 @@ pub fn walk_erofs(bytes: &[u8], max_total: u64) -> Result<ErofsWalk> {
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    const DIRECTORY_BLOCK_NAME_AREA_BYTES: usize = 4096 - 4 * 12 - "..".len() - "zz.bin".len() - 1;
+    let dropped_by_the_directory_parser_as_a_self_or_parent_link: bool =
+        name == "." || name == "..";
+    if name.is_empty()
+        || name.len() > DIRECTORY_BLOCK_NAME_AREA_BYTES
+        || dropped_by_the_directory_parser_as_a_self_or_parent_link
+    {
+        return None;
+    }
+    Some(tests::build_hostile_named_erofs(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -495,6 +509,15 @@ mod tests {
     const BLK_BITS: u8 = 12;
     const BLK: usize = 4096;
     const EROFS_FT_DIR: u8 = 2;
+
+    pub(super) fn build_hostile_named_erofs(name: &str, body: &[u8]) -> Vec<u8> {
+        let owned: Vec<u8> = body.to_vec();
+        build_single_file_erofs(name, move |b: &mut ErofsBuilder| {
+            let nid: u64 =
+                b.write_compact_inode_inline(S_IFREG | 0o755, owned.len() as u32, 0, &owned);
+            (nid, owned.len() as u32)
+        })
+    }
 
     struct ErofsBuilder {
         image: Vec<u8>,
@@ -800,7 +823,9 @@ mod tests {
         out
     }
 
-    fn build_single_file_erofs<F>(make_inode: F) -> Vec<u8>
+    const TRAILING_NAME_AREA_SENTINEL: &str = "zz.bin";
+
+    fn build_single_file_erofs<F>(name: &str, make_inode: F) -> Vec<u8>
     where
         F: FnOnce(&mut ErofsBuilder) -> (u64, u32),
     {
@@ -808,17 +833,20 @@ mod tests {
         let root_dir_blk: u32 = b.alloc_data_block(1);
         let root_nid: u64 = b.write_compact_inode_flat_plain(S_IFDIR | 0o755, 0, root_dir_blk);
         let (file_nid, _size): (u64, u32) = make_inode(&mut b);
+        let sentinel_nid: u64 = b.write_compact_inode_inline(S_IFREG | 0o644, 0, 0, &[]);
         b.put_dir_block(
             root_dir_blk,
             &[
                 (root_nid, ".", EROFS_FT_DIR),
                 (root_nid, "..", EROFS_FT_DIR),
-                (file_nid, "file.bin", 1),
+                (file_nid, name, 1),
+                (sentinel_nid, TRAILING_NAME_AREA_SENTINEL, 1),
             ],
         );
         let root_dir_size: u32 = {
-            let header: usize = 3 * 12;
-            let names: usize = ".".len() + "..".len() + "file.bin".len();
+            let header: usize = 4 * 12;
+            let names: usize =
+                ".".len() + "..".len() + name.len() + TRAILING_NAME_AREA_SENTINEL.len();
             (header + names) as u32
         };
         let root_off: usize = b.meta_base() + (root_nid as usize) * 32;
@@ -834,7 +862,7 @@ mod tests {
         let size: u32 = (BLK * 3) as u32;
         let c0: Vec<u8> = chunk0.clone();
         let c2: Vec<u8> = chunk2.clone();
-        let image: Vec<u8> = build_single_file_erofs(move |b: &mut ErofsBuilder| {
+        let image: Vec<u8> = build_single_file_erofs("file.bin", move |b: &mut ErofsBuilder| {
             let blk0: u32 = b.alloc_data_block(1);
             b.put_block(blk0, &c0);
             let blk2: u32 = b.alloc_data_block(1);
@@ -864,7 +892,7 @@ mod tests {
             b"erofs lz4 head pcluster decoded from one literal lz4 block, last cluster".to_vec();
         let size: u32 = payload.len() as u32;
         let head_blk_lit: Vec<u8> = lz4_literal_block(&payload);
-        let image: Vec<u8> = build_single_file_erofs(move |b: &mut ErofsBuilder| {
+        let image: Vec<u8> = build_single_file_erofs("file.bin", move |b: &mut ErofsBuilder| {
             let head_blk: u32 = b.alloc_data_block(1);
             b.put_block(head_blk, &head_blk_lit);
             let advise_head: u16 = 1;
@@ -892,7 +920,7 @@ mod tests {
             b"erofs plain pcluster stored uncompressed in the data area".to_vec();
         let size: u32 = payload.len() as u32;
         let stored: Vec<u8> = payload.clone();
-        let image: Vec<u8> = build_single_file_erofs(move |b: &mut ErofsBuilder| {
+        let image: Vec<u8> = build_single_file_erofs("file.bin", move |b: &mut ErofsBuilder| {
             let blk: u32 = b.alloc_data_block(1);
             b.put_block(blk, &stored);
             let nid: u64 = b.write_compressed_full_inode(
@@ -916,7 +944,7 @@ mod tests {
     #[test]
     fn compressed_compact_inode_errors_instead_of_empty_success() {
         let size: u32 = 32;
-        let image: Vec<u8> = build_single_file_erofs(move |b: &mut ErofsBuilder| {
+        let image: Vec<u8> = build_single_file_erofs("file.bin", move |b: &mut ErofsBuilder| {
             let nid: u64 = b.write_compact_inode_flat_plain(S_IFREG | 0o644, size, 0);
             let off: usize = b.meta_base() + (nid as usize) * 32;
             let format: u16 = (EROFS_INODE_COMPRESSED_COMPACT << 1) | EROFS_INODE_LAYOUT_COMPACT;

@@ -451,6 +451,8 @@ jobs:
       - name: XLM formula differential against an independent deobfuscator, printing the graded cell count
         run: cargo test -p disrobe-pass-shell --test xlm_independent_reference -- --nocapture
       - run: cargo test --workspace --all-features --no-fail-fast
+        env:
+          DISROBE_TYPEREC_CC: ${{ matrix.os != 'ubuntu-latest' && 'optional' || '' }}
       - name: stage this OS leg's cross-platform determinism hash file
         shell: bash
         run: |

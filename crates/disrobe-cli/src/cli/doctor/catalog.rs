@@ -1,6 +1,20 @@
+use super::super::install::Platform;
 use super::{ToolEntry, ToolKind};
 
 pub(crate) fn tool_catalog() -> Vec<ToolEntry> {
+    tool_catalog_for_platform(Platform::detect())
+}
+
+#[cfg(test)]
+pub(crate) fn tool_catalog_all_platforms() -> Vec<ToolEntry> {
+    let mut v: Vec<ToolEntry> = Vec::with_capacity(64);
+    v.extend(tool_catalog_for_platform(Platform::Windows));
+    v.extend(tool_catalog_for_platform(Platform::MacOs));
+    v.extend(tool_catalog_for_platform(Platform::LinuxApt));
+    v
+}
+
+pub(crate) fn tool_catalog_for_platform(platform: Platform) -> Vec<ToolEntry> {
     let mut v: Vec<ToolEntry> = Vec::with_capacity(64);
     v.push(ToolEntry {
         key: "python",
@@ -290,7 +304,7 @@ pub(crate) fn tool_catalog() -> Vec<ToolEntry> {
         used_by: "containers pass cramfs",
         version_args: &["-V"],
     });
-    if cfg!(target_os = "windows") {
+    if matches!(platform, Platform::Windows) {
         v.push(ToolEntry {
             key: "makeappx",
             probe_names: &["MakeAppx", "MakeAppx.exe", "makeappx"],
@@ -316,7 +330,7 @@ pub(crate) fn tool_catalog() -> Vec<ToolEntry> {
         used_by: "containers pass NSIS",
         version_args: &["/VERSION"],
     });
-    if cfg!(target_os = "macos") {
+    if matches!(platform, Platform::MacOs) {
         v.push(ToolEntry {
             key: "swift",
             probe_names: &["swift"],
@@ -441,6 +455,7 @@ mod published_roster_tests {
     use std::path::{Path, PathBuf};
 
     use super::tool_catalog;
+    use crate::cli::doctor::exceptions::DOCTOR_ROSTER_CANARY_KEY;
     use crate::cli::doctor::{ToolEntry, ToolKind, ToolStatus, probe_entry};
 
     const BASE_TOOLS: usize = 46;
@@ -449,6 +464,10 @@ mod published_roster_tests {
 
     const README: &str = "README.md";
     const README_PHRASE: &str = "probe 46 to 51 external tools depending on the platform";
+    const INSTALLATION_GUIDE: &str = "docs/src/installation.md";
+    const CLI_REFERENCE: &str = "docs/src/cli/reference.md";
+    const CLI_REFERENCE_PHRASE: &str =
+        "Probe 46 to 51 optional external tools depending on the platform";
 
     fn expected_tools() -> usize {
         let mut total: usize = BASE_TOOLS;
@@ -507,6 +526,33 @@ mod published_roster_tests {
              given bound to nothing",
             BASE_TOOLS + WINDOWS_ONLY_TOOLS,
             BASE_TOOLS + MACOS_ONLY_TOOLS
+        );
+    }
+
+    fn read_doc(relative_path: &str) -> String {
+        let path: PathBuf = repo_root().join(relative_path);
+        fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "{relative_path} publishes the doctor roster size: {error} at {}",
+                path.display()
+            )
+        })
+    }
+
+    #[test]
+    fn the_installation_guide_and_the_cli_reference_publish_the_same_roster_size() {
+        let installation_guide: String = read_doc(INSTALLATION_GUIDE);
+        assert!(
+            installation_guide.contains(README_PHRASE),
+            "{INSTALLATION_GUIDE} must state `{README_PHRASE}`, matching {README}, so the doctor \
+             roster size is published once and cannot drift between the two pages a reader sees"
+        );
+
+        let cli_reference: String = read_doc(CLI_REFERENCE);
+        assert!(
+            cli_reference.contains(CLI_REFERENCE_PHRASE),
+            "{CLI_REFERENCE} must state `{CLI_REFERENCE_PHRASE}` in the doctor row, matching the \
+             roster size published in {README} and {INSTALLATION_GUIDE}"
         );
     }
 
@@ -576,7 +622,7 @@ mod published_roster_tests {
     #[test]
     fn a_tool_that_cannot_be_found_is_reported_missing_rather_than_present() {
         let absent: ToolEntry = ToolEntry {
-            key: "disrobe-doctor-roster-control",
+            key: DOCTOR_ROSTER_CANARY_KEY,
             probe_names: &["disrobe-tool-that-is-not-installed-anywhere"],
             env_overrides: &[],
             kind: ToolKind::Optional,

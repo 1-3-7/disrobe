@@ -146,7 +146,7 @@ mod tests {
         }
         let left: TermId = random_bv(manager, rng, vars, width, depth - 1);
         let right: TermId = random_bv(manager, rng, vars, width, depth - 1);
-        match rng.below(14) {
+        match rng.below(18) {
             0 => manager.mk_bv_add(left, right),
             1 => manager.mk_bv_sub(left, right),
             2 => manager.mk_bv_and(left, right),
@@ -175,6 +175,10 @@ mod tests {
                 let is_zero: TermId = manager.mk_eq(right, zero);
                 manager.mk_ite(is_zero, left, right)
             }
+            13 => manager.mk_bv_udiv(left, right),
+            14 => manager.mk_bv_sdiv(left, right),
+            15 => manager.mk_bv_urem(left, right),
+            16 => manager.mk_bv_srem(left, right),
             _ => {
                 let mask: u64 = u64::from(rng.below(1u32 << width));
                 let mask_term: TermId = manager.mk_bitvec(mask, width);
@@ -414,6 +418,31 @@ mod tests {
             independent_refutation(&manager, &assumptions, &free, CROSS_BUDGET),
             Refutation::Confirmed(Procedure::BitBlast),
             "at a width the enumerator cannot cover, the bit-blast must be the procedure that confirms"
+        );
+        assert_ne!(
+            certified_check(&mut manager, &assumptions, CROSS_BUDGET),
+            Certified::Sat,
+            "a conjunction with no satisfying assignment must never certify Sat"
+        );
+    }
+
+    #[test]
+    fn a_constant_divisor_contradiction_above_the_enumeration_cap_is_confirmed_by_bit_blast() {
+        let mut manager: TermManager = TermManager::new();
+        let bv_sort: SortId = manager.sorts.bitvec(64);
+        let x: TermId = manager.mk_var("x", bv_sort);
+        let divisor: TermId = manager.mk_bitvec(3u64, 64);
+        let quotient: TermId = manager.mk_bv_udiv(x, divisor);
+        let zero: TermId = manager.mk_bitvec(0u64, 64);
+        let seven: TermId = manager.mk_bitvec(7u64, 64);
+        let is_zero: TermId = manager.mk_eq(quotient, zero);
+        let is_seven: TermId = manager.mk_eq(quotient, seven);
+        let assumptions: [TermId; 2] = [is_zero, is_seven];
+        let free: Vec<TermId> = free_vars(&manager, &assumptions);
+        assert_eq!(
+            independent_refutation(&manager, &assumptions, &free, CROSS_BUDGET),
+            Refutation::Confirmed(Procedure::BitBlast),
+            "a 64-bit domain is far above the enumeration cap, so the bit-blast must be the procedure that confirms this udiv contradiction"
         );
         assert_ne!(
             certified_check(&mut manager, &assumptions, CROSS_BUDGET),

@@ -79,6 +79,8 @@ use cli::output::OutputFormat;
 use cli::php::{self, PhpCmd};
 #[cfg(feature = "pickle")]
 use cli::pickle::{self, PickleCmd};
+#[cfg(feature = "plugin")]
+use cli::plugin::{self, PluginCmd};
 use cli::progress_ui;
 use cli::prowl::{self, ProwlArgs, ProwlFormat};
 use cli::py::{self, PyCmd};
@@ -552,7 +554,7 @@ enum Cmd {
         max_depth: u32,
     },
     #[command(
-        about = "static-carve the shipped web frontend (HTML/JS/CSS/assets) from a compiled webview-desktop binary (Electron ASAR byte-exact; Tauri/Wails detect-only)"
+        about = "static-carve the shipped web frontend (HTML/JS/CSS/assets) from a compiled webview-desktop binary (Electron ASAR byte-exact; Tauri/Wails byte-exact against a compressed embedded asset map)"
     )]
     Webview {
         #[arg(value_name = "PATH", help = "input webview-desktop binary")]
@@ -682,6 +684,14 @@ enum Cmd {
     Pickle {
         #[command(subcommand)]
         action: PickleCmd,
+    },
+    #[cfg(feature = "plugin")]
+    #[command(
+        about = "signed WebAssembly component plugin sandbox: run, verify, list (fuel/wall-deadline/memory-capped, deny-all-imports)"
+    )]
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
     },
     #[cfg(feature = "go")]
     #[command(
@@ -937,6 +947,9 @@ enum Cmd {
     },
     #[command(about = "list every registered pass with a one-line capability summary")]
     Passes,
+    #[cfg(feature = "chain")]
+    #[command(hide = true, about = "print every clap subcommand path, one per line")]
+    SubcommandTree,
     #[command(
         about = "probe ~50 optional external tools & report what is installed, missing, or stale"
     )]
@@ -1512,6 +1525,18 @@ pub(crate) fn subcommand_names() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+#[cfg(feature = "chain")]
+pub(crate) fn subcommand_paths() -> std::collections::BTreeSet<String> {
+    let mut paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for top in <Cli as clap::CommandFactory>::command().get_subcommands() {
+        paths.insert(top.get_name().to_owned());
+        for child in top.get_subcommands() {
+            paths.insert(format!("{} {}", top.get_name(), child.get_name()));
+        }
+    }
+    paths
+}
+
 fn install_crash_reporter() {
     if cfg!(debug_assertions) || std::env::var_os("RUST_BACKTRACE").is_some() {
         return;
@@ -1800,6 +1825,8 @@ fn main() -> miette::Result<()> {
         Cmd::Beam { action } => beam::run(action),
         #[cfg(feature = "pickle")]
         Cmd::Pickle { action } => pickle::run(action, fmt),
+        #[cfg(feature = "plugin")]
+        Cmd::Plugin { action } => plugin::run(action),
         #[cfg(feature = "go")]
         Cmd::Go { action } => go::run(action),
         #[cfg(feature = "swift")]
@@ -1963,6 +1990,13 @@ fn main() -> miette::Result<()> {
         ),
         Cmd::Explain { code } => explain::run(code, fmt),
         Cmd::Passes => print_passes(),
+        #[cfg(feature = "chain")]
+        Cmd::SubcommandTree => {
+            for path in subcommand_paths() {
+                println!("{path}");
+            }
+            Ok(())
+        }
         Cmd::Doctor { auto_install, yes } => doctor::run_with_options(fmt, auto_install, yes),
         Cmd::Install {
             tool,

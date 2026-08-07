@@ -8,8 +8,8 @@ use super::{
     minidump_extent, parse_minidump,
 };
 
-const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
-const SIZE_OF_IMAGE: u32 = 0x3000;
+pub(super) const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
+pub(super) const SIZE_OF_IMAGE: u32 = 0x3000;
 const TEXT_VA: u32 = 0x1000;
 const RDATA_VA: u32 = 0x2000;
 
@@ -17,7 +17,7 @@ fn align_up(value: usize, align: usize) -> usize {
     value.div_ceil(align) * align
 }
 
-fn build_mapped_pe64(text: &[u8], rdata: &[u8]) -> Vec<u8> {
+pub(super) fn build_mapped_pe64(text: &[u8], rdata: &[u8]) -> Vec<u8> {
     let mut image: Vec<u8> = vec![0u8; SIZE_OF_IMAGE as usize];
     image[0] = b'M';
     image[1] = b'Z';
@@ -107,7 +107,7 @@ fn put_dir(buf: &mut [u8], at: usize, stream_type: u32, data_size: u32, rva: u32
     buf[at + 8..at + 12].copy_from_slice(&rva.to_le_bytes());
 }
 
-fn build_dump(
+pub(super) fn build_dump(
     module_name: &str,
     arch: u16,
     size_of_image: u32,
@@ -196,13 +196,13 @@ fn build_dump(
     buf
 }
 
-fn text_fixture() -> Vec<u8> {
+pub(super) fn text_fixture() -> Vec<u8> {
     (0..0x400u32)
         .map(|i: u32| (i.wrapping_mul(31) & 0xFF) as u8)
         .collect()
 }
 
-fn rdata_fixture() -> Vec<u8> {
+pub(super) fn rdata_fixture() -> Vec<u8> {
     b"disrobe minidump carve read-only data fixture".to_vec()
 }
 

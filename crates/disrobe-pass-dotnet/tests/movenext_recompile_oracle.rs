@@ -113,6 +113,9 @@ fn rewrite_this(body: &str) -> String {
 
 fn is_local_decl(line: &str) -> Option<&str> {
     let t: &str = line.trim();
+    if t.starts_with("//") {
+        return None;
+    }
     let inner: &str = t.strip_suffix(';')?;
     if inner.contains('=') || inner.contains('(') {
         return None;

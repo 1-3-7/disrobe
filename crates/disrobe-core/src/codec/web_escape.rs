@@ -1,3 +1,4 @@
+use super::hex::nibble as hex_value;
 use super::{DecodeError, bytes_to_string};
 
 const PUNY_BASE: u32 = 36;
@@ -246,15 +247,6 @@ const fn puny_decode_digit(byte: u8) -> Option<u32> {
         b'0'..=b'9' => Some((byte - b'0') as u32 + 26),
         b'A'..=b'Z' => Some((byte - b'A') as u32),
         b'a'..=b'z' => Some((byte - b'a') as u32),
-        _ => None,
-    }
-}
-
-const fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
 }

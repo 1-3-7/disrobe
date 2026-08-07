@@ -1,4 +1,7 @@
-use disrobe_bytes::{align_up_u32, read_u16_le_at, read_u32_le_at, read_u64_le_at};
+use disrobe_bytes::{
+    AddressError, FileOffset, Rva, SectionSpan, Size, align_up_u32, read_u16_le_at, read_u32_le_at,
+    read_u64_le_at,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -47,6 +50,16 @@ impl PeSection {
             Some((start, end))
         }
     }
+
+    #[must_use]
+    pub fn mapped_span(&self) -> SectionSpan {
+        SectionSpan::new(
+            Rva::new(self.virtual_address),
+            Size::new(u64::from(self.virtual_size.max(self.raw_size))),
+            FileOffset::new(u64::from(self.raw_pointer)),
+            Size::new(u64::from(self.raw_size)),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +98,36 @@ impl PeImage {
             let span: u32 = s.virtual_size.max(s.raw_size);
             rva >= s.virtual_address && rva < s.virtual_address.saturating_add(span)
         })
+    }
+
+    #[must_use]
+    pub fn header_bytes_present(&self, image_len: usize) -> usize {
+        (self.size_of_headers as usize).min(image_len)
+    }
+
+    #[must_use]
+    pub fn rva_is_mapped(&self, rva: u32, image_len: usize) -> bool {
+        self.section_containing_rva(rva).is_some()
+            || (rva as usize) < self.header_bytes_present(image_len)
+    }
+
+    pub fn file_offset_for_rva(
+        &self,
+        rva: u32,
+        image_len: usize,
+    ) -> core::result::Result<usize, AddressError> {
+        let file_len: Size = Size::try_from(image_len)?;
+        let Some(section): Option<&PeSection> = self.section_containing_rva(rva) else {
+            let header_offset: usize = rva as usize;
+            if header_offset < self.header_bytes_present(image_len) {
+                return Ok(header_offset);
+            }
+            return Err(AddressError::RvaNotMapped { rva: Rva::new(rva) });
+        };
+        let offset: FileOffset = section.mapped_span().translate(Rva::new(rva))?;
+        offset
+            .checked_range(Size::new(1), file_len)
+            .map(|readable: core::ops::Range<usize>| readable.start)
     }
 }
 

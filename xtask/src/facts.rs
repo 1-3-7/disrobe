@@ -84,10 +84,14 @@ const SKIP_SHAPES: [(&str, &str); 5] = [
     (".exists() {", "a path-existence guard"),
 ];
 
-fn cited_function_region<'a>(text: &'a str, function: &str) -> Option<&'a str> {
+pub(crate) fn cited_function_region<'a>(text: &'a str, function: &str) -> Option<&'a str> {
     let needle: String = format!("fn {function}");
     let at: usize = text.find(&needle)?;
     let open: usize = at + text.get(at..)?.find('{')?;
+    balanced_region(text, open)
+}
+
+pub(crate) fn balanced_region(text: &str, open: usize) -> Option<&str> {
     let body: &str = text.get(open..)?;
 
     let bytes: &[u8] = body.as_bytes();
@@ -221,7 +225,7 @@ fn attribute_end(bytes: &[u8], from: usize) -> Option<usize> {
     None
 }
 
-fn attribute_spans(text: &str) -> Vec<(usize, usize)> {
+pub(crate) fn attribute_spans(text: &str) -> Vec<(usize, usize)> {
     let bytes: &[u8] = text.as_bytes();
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut index: usize = 0;
@@ -267,7 +271,7 @@ fn attribute_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-fn function_is_ignored(text: &str, spans: &[(usize, usize)], at: usize) -> bool {
+pub(crate) fn function_is_ignored(text: &str, spans: &[(usize, usize)], at: usize) -> bool {
     let mut cursor: usize = at;
     loop {
         let Some(head): Option<&str> = text.get(..cursor) else {

@@ -566,23 +566,74 @@ static GRAPHQL_RE: LazyLock<Regex> = LazyLock::new(|| {
     compile(r"(?i)\b(?:query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]{2,64})\s*[({]")
 });
 
-#[inline]
-fn line_col(bytes: &[u8], offset: usize) -> (usize, usize) {
-    let capped: usize = offset.min(bytes.len());
-    let mut line: usize = 1;
-    let mut col: usize = 1;
-    for &b in &bytes[..capped] {
-        if b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
+const LINE_BLOCK_BYTES: usize = 4096;
+const NO_NEWLINE: usize = usize::MAX;
+
+#[derive(Debug, Clone, Copy)]
+struct LineBlock {
+    newlines_before: usize,
+    last_newline_before: usize,
 }
 
-fn endpoint_paths(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
+#[derive(Debug)]
+struct LineIndex<'a> {
+    bytes: &'a [u8],
+    blocks: Vec<LineBlock>,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        let block_count: usize = bytes.len() / LINE_BLOCK_BYTES + 1;
+        let mut blocks: Vec<LineBlock> = Vec::with_capacity(block_count);
+        let mut newlines_before: usize = 0;
+        let mut last_newline_before: usize = NO_NEWLINE;
+        for index in 0..block_count {
+            blocks.push(LineBlock {
+                newlines_before,
+                last_newline_before,
+            });
+            let start: usize = index.saturating_mul(LINE_BLOCK_BYTES);
+            let end: usize = start.saturating_add(LINE_BLOCK_BYTES).min(bytes.len());
+            let Some(block): Option<&[u8]> = bytes.get(start..end) else {
+                continue;
+            };
+            for hit in memchr::memchr_iter(b'\n', block) {
+                newlines_before += 1;
+                last_newline_before = start + hit;
+            }
+        }
+        Self { bytes, blocks }
+    }
+
+    const fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    fn line_col(&self, offset: usize) -> (usize, usize) {
+        let capped: usize = offset.min(self.bytes.len());
+        let block_start: usize = capped - capped % LINE_BLOCK_BYTES;
+        let Some(block): Option<&LineBlock> = self.blocks.get(capped / LINE_BLOCK_BYTES) else {
+            return (1, capped.saturating_add(1));
+        };
+        let head: &[u8] = &self.bytes[block_start..capped];
+        let line: usize = 1 + block.newlines_before + memchr::memchr_iter(b'\n', head).count();
+        let last_newline: usize = memchr::memrchr(b'\n', head)
+            .map_or(block.last_newline_before, |hit: usize| block_start + hit);
+        let column: usize = if last_newline == NO_NEWLINE {
+            capped + 1
+        } else {
+            capped - last_newline
+        };
+        (line, column)
+    }
+}
+
+fn endpoint_paths(
+    text: &str,
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
     for caps in ENDPOINT_PATH_RE.captures_iter(text) {
         let Some(g): Option<regex::Match<'_>> = caps.get(1) else {
             continue;
@@ -592,7 +643,7 @@ fn endpoint_paths(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
             continue;
         }
         let offset: usize = g.start();
-        let (line, column): (usize, usize) = line_col(bytes, offset);
+        let (line, column): (usize, usize) = lines.line_col(offset);
         out.push(ReconFinding {
             category: ReconCategory::Endpoint,
             rule_id: "DR-RECON-URI-PATH".to_owned(),
@@ -610,7 +661,7 @@ fn push_capture(
     re: &Regex,
     rule_id: &str,
     text: &str,
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
@@ -619,7 +670,7 @@ fn push_capture(
             continue;
         };
         let offset: usize = g.start();
-        let (line, column): (usize, usize) = line_col(bytes, offset);
+        let (line, column): (usize, usize) = lines.line_col(offset);
         out.push(ReconFinding {
             category: ReconCategory::Endpoint,
             rule_id: rule_id.to_owned(),
@@ -633,16 +684,26 @@ fn push_capture(
     }
 }
 
-fn endpoint_calls(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    push_capture(&FETCH_CALL_RE, "DR-RECON-FETCH-URL", text, bytes, path, out);
-    push_capture(&GRAPHQL_RE, "DR-RECON-GRAPHQL-OP", text, bytes, path, out);
+fn endpoint_calls(
+    text: &str,
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
+    push_capture(&FETCH_CALL_RE, "DR-RECON-FETCH-URL", text, lines, path, out);
+    push_capture(&GRAPHQL_RE, "DR-RECON-GRAPHQL-OP", text, lines, path, out);
 }
 
-fn endpoint_rules(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
+fn endpoint_rules(
+    text: &str,
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
     for rule in ENDPOINT_RULES.iter() {
         for m in rule.pattern.find_iter(text) {
             let offset: usize = m.start();
-            let (line, column): (usize, usize) = line_col(bytes, offset);
+            let (line, column): (usize, usize) = lines.line_col(offset);
             out.push(ReconFinding {
                 category: rule.category,
                 rule_id: rule.rule_id.to_owned(),
@@ -659,7 +720,7 @@ fn endpoint_rules(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
 
 fn custom_rules(
     text: &str,
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
     path: Option<&str>,
     config: &ReconConfig,
     out: &mut Vec<ReconFinding>,
@@ -667,7 +728,7 @@ fn custom_rules(
     for rule in &config.custom {
         for m in rule.regex.find_iter(text) {
             let offset: usize = m.start();
-            let (line, column): (usize, usize) = line_col(bytes, offset);
+            let (line, column): (usize, usize) = lines.line_col(offset);
             out.push(ReconFinding {
                 category: ReconCategory::Custom,
                 rule_id: format!("DR-RECON-CUSTOM-{}", rule.name.to_uppercase()),
@@ -682,10 +743,15 @@ fn custom_rules(
     }
 }
 
-fn onion_findings(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
+fn onion_findings(
+    text: &str,
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
     for m in ONION_RE.find_iter(text) {
         let offset: usize = m.start();
-        let (line, column): (usize, usize) = line_col(bytes, offset);
+        let (line, column): (usize, usize) = lines.line_col(offset);
         out.push(ReconFinding {
             category: ReconCategory::Onion,
             rule_id: "DR-RECON-ONION".to_owned(),
@@ -699,9 +765,9 @@ fn onion_findings(text: &str, bytes: &[u8], path: Option<&str>, out: &mut Vec<Re
     }
 }
 
-fn secret_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    for f in secret_scan::scan_bytes(bytes, path) {
-        let (line, column): (usize, usize) = line_col(bytes, f.offset);
+fn secret_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    for f in secret_scan::scan_bytes(lines.bytes(), path) {
+        let (line, column): (usize, usize) = lines.line_col(f.offset);
         out.push(ReconFinding {
             category: ReconCategory::Secret,
             rule_id: f.code,
@@ -715,8 +781,8 @@ fn secret_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
     }
 }
 
-fn ioc_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    for ind in ioc::extract(bytes) {
+fn ioc_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    for ind in ioc::extract(lines.bytes()) {
         let category: ReconCategory = match ind.kind {
             IocKind::Url => ReconCategory::Url,
             IocKind::Domain => ReconCategory::Domain,
@@ -745,7 +811,7 @@ fn ioc_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
             }
             _ => Severity::Note,
         };
-        let (line, column): (usize, usize) = line_col(bytes, ind.offset);
+        let (line, column): (usize, usize) = lines.line_col(ind.offset);
         let encoding_suffix: &str = if ind.encoding == ioc::Encoding::Utf16Le {
             WIDE_ENCODING_SUFFIX
         } else {
@@ -792,31 +858,32 @@ fn is_persistence_indicator(value: &str) -> bool {
 const COBALT_TLV_WINDOW: usize = 4096;
 
 fn malware_config_findings(
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
+    text_lines: &LineIndex<'_>,
     text: &str,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
-    cobalt_strike_findings(bytes, path, out);
-    njrat_findings(text, path, out);
-    remcos_findings(bytes, path, out);
-    asyncrat_lineage_findings(bytes, path, out);
-    quasar_findings(bytes, path, out);
-    xworm_findings(bytes, path, out);
-    agent_tesla_findings(bytes, path, out);
-    darkcomet_findings(bytes, path, out);
+    cobalt_strike_findings(lines, path, out);
+    njrat_findings(text, text_lines, path, out);
+    remcos_findings(lines, path, out);
+    asyncrat_lineage_findings(lines, path, out);
+    quasar_findings(lines, path, out);
+    xworm_findings(lines, path, out);
+    agent_tesla_findings(lines, path, out);
+    darkcomet_findings(lines, path, out);
 }
 
 fn push_malware_field(
     family: malware_config::MalwareFamily,
     key: &str,
     value: &str,
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
     offset: usize,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
-    let (line, column): (usize, usize) = line_col(bytes, offset);
+    let (line, column): (usize, usize) = lines.line_col(offset);
     out.push(ReconFinding {
         category: ReconCategory::MalwareConfig,
         rule_id: format!("DR-RECON-MALCFG-{}-{}", family.label().to_uppercase(), key),
@@ -829,21 +896,30 @@ fn push_malware_field(
     });
 }
 
-const COBALT_SCAN_BUDGET: usize = 1 << 20;
-
-fn cobalt_strike_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let scan_end: usize = bytes.len().min(COBALT_SCAN_BUDGET);
-    for start in 0..scan_end.saturating_sub(8) {
+fn cobalt_strike_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let bytes: &[u8] = lines.bytes();
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    for start in 0..bytes.len().saturating_sub(8) {
         let end: usize = (start + COBALT_TLV_WINDOW).min(bytes.len());
         let window: &[u8] = &bytes[start..end];
-        if let Some((key, _decoded)) = malware_config::cobalt_strike_decode(window) {
+        if let Some((key, _decoded)) = malware_config::cobalt_strike_decode(window, &mut budget) {
             let summary: String = format!("xor-key=0x{key:02x} tlv-table");
             push_malware_field(
                 malware_config::MalwareFamily::CobaltStrike,
                 "BEACON",
                 &summary,
-                bytes,
+                lines,
                 start,
+                path,
+                out,
+            );
+            return;
+        }
+        if budget.exhausted() {
+            push_malware_stop(
+                malware_config::MalwareFamily::CobaltStrike,
+                0,
+                lines,
                 path,
                 out,
             );
@@ -852,10 +928,16 @@ fn cobalt_strike_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconF
     }
 }
 
-fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+fn njrat_findings(
+    text: &str,
+    text_lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
     if !text.contains("|'|'|") {
         return;
     }
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
     let mut line_start: usize = 0usize;
     for raw_line in text.split_inclusive('\n') {
         let line: &str = raw_line.trim_end_matches(['\n', '\r']);
@@ -864,9 +946,19 @@ fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
             continue;
         }
         let fields: Vec<malware_config::ConfigField> =
-            malware_config::njrat_split(line, line_start);
+            malware_config::njrat_split(line, line_start, &mut budget);
         if fields.len() < 3 {
             line_start = line_start.saturating_add(raw_line.len());
+            if budget.exhausted() {
+                push_malware_stop(
+                    malware_config::MalwareFamily::NjRat,
+                    0,
+                    text_lines,
+                    path,
+                    out,
+                );
+                return;
+            }
             continue;
         }
         for field in &fields {
@@ -874,8 +966,17 @@ fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
                 malware_config::MalwareFamily::NjRat,
                 &field.key.to_uppercase(),
                 &field.value,
-                text.as_bytes(),
+                text_lines,
                 field.offset,
+                path,
+                out,
+            );
+        }
+        if budget.exhausted() {
+            push_malware_stop(
+                malware_config::MalwareFamily::NjRat,
+                fields.len(),
+                text_lines,
                 path,
                 out,
             );
@@ -884,18 +985,21 @@ fn njrat_findings(text: &str, path: Option<&str>, out: &mut Vec<ReconFinding>) {
     }
 }
 
-fn remcos_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
+fn remcos_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let bytes: &[u8] = lines.bytes();
     let Some(at): Option<usize> = crate::byte_search::find(bytes, b"SETTINGS") else {
         return;
     };
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
     let search_start: usize = at + b"SETTINGS".len();
     let end: usize = (search_start + 8192).min(bytes.len());
     let region: &[u8] = bytes.get(search_start..end).unwrap_or(&[]);
-    let Some(blob_start): Option<usize> = first_self_describing_rc4(region) else {
+    let Some(blob_start): Option<usize> = first_self_describing_rc4(region, &mut budget) else {
         return;
     };
     let blob: &[u8] = &region[blob_start..];
-    let Some(plain): Option<Vec<u8>> = malware_config::remcos_settings_decode(blob) else {
+    let Some(plain): Option<Vec<u8>> = malware_config::remcos_settings_decode(blob, &mut budget)
+    else {
         return;
     };
     let summary: String = String::from_utf8_lossy(&plain).replace(|c: char| c.is_control(), " ");
@@ -903,7 +1007,7 @@ fn remcos_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
         malware_config::MalwareFamily::Remcos,
         "SETTINGS",
         &summary,
-        bytes,
+        lines,
         search_start + blob_start,
         path,
         out,
@@ -913,7 +1017,7 @@ fn remcos_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>
 fn push_malware_decode(
     family: malware_config::MalwareFamily,
     decode: &malware_config::ConfigDecode,
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
@@ -922,108 +1026,125 @@ fn push_malware_decode(
             family,
             &field.key.to_uppercase(),
             &field.value,
-            bytes,
+            lines,
             field.offset,
             path,
             out,
         );
     }
-    push_malware_truncation(family, decode, bytes, path, out);
+    if decode.truncated {
+        push_malware_stop(family, decode.len(), lines, path, out);
+    }
 }
 
-fn push_malware_truncation(
+fn push_malware_stop(
     family: malware_config::MalwareFamily,
-    decode: &malware_config::ConfigDecode,
-    bytes: &[u8],
+    recovered: usize,
+    lines: &LineIndex<'_>,
     path: Option<&str>,
     out: &mut Vec<ReconFinding>,
 ) {
-    if !decode.truncated {
-        return;
-    }
     let summary: String = format!(
-        "decode stopped at the {} work-unit bound with {} field(s) recovered",
-        malware_config::MALWARE_CONFIG_WORK_UNITS,
-        decode.len()
+        "decode stopped at the {} work-unit bound with {recovered} field(s) recovered",
+        malware_config::MALWARE_CONFIG_WORK_UNITS
     );
-    push_malware_field(family, "TRUNCATED", &summary, bytes, 0, path, out);
+    push_malware_field(family, "TRUNCATED", &summary, lines, 0, path, out);
 }
 
-fn asyncrat_lineage_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    match malware_config::asyncrat_lineage_decode(bytes, 0) {
+fn asyncrat_lineage_findings(
+    lines: &LineIndex<'_>,
+    path: Option<&str>,
+    out: &mut Vec<ReconFinding>,
+) {
+    let bytes: &[u8] = lines.bytes();
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    match malware_config::asyncrat_lineage_decode(bytes, 0, &mut budget) {
         Ok(decode) => {
             for field in &decode {
                 push_malware_field(
                     field.family,
                     &field.key.to_uppercase(),
                     &field.value,
-                    bytes,
+                    lines,
                     field.offset,
                     path,
                     out,
                 );
             }
-            let family: malware_config::MalwareFamily = decode
-                .iter()
-                .next()
-                .map_or(malware_config::MalwareFamily::AsyncRat, |f| f.family);
-            push_malware_truncation(family, &decode, bytes, path, out);
+            if decode.truncated {
+                let family: malware_config::MalwareFamily = decode
+                    .iter()
+                    .next()
+                    .map_or(malware_config::MalwareFamily::AsyncRat, |f| f.family);
+                push_malware_stop(family, decode.len(), lines, path, out);
+            }
         }
         Err(wall) => {
             let summary: String = format!("wall={} {}", wall.kind.label(), wall.evidence);
-            push_malware_field(wall.family, "WALL", &summary, bytes, 0, path, out);
+            push_malware_field(wall.family, "WALL", &summary, lines, 0, path, out);
         }
     }
 }
 
-fn quasar_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let decode: malware_config::ConfigDecode = malware_config::quasar_config_decode(bytes, 0);
+fn quasar_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    let decode: malware_config::ConfigDecode =
+        malware_config::quasar_config_decode(lines.bytes(), 0, &mut budget);
     push_malware_decode(
         malware_config::MalwareFamily::QuasarRat,
         &decode,
-        bytes,
+        lines,
         path,
         out,
     );
 }
 
-fn xworm_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let decode: malware_config::ConfigDecode = malware_config::xworm_config_decode(bytes, 0);
+fn xworm_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    let decode: malware_config::ConfigDecode =
+        malware_config::xworm_config_decode(lines.bytes(), 0, &mut budget);
     push_malware_decode(
         malware_config::MalwareFamily::XWorm,
         &decode,
-        bytes,
+        lines,
         path,
         out,
     );
 }
 
-fn agent_tesla_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let decode: malware_config::ConfigDecode = malware_config::agent_tesla_config_decode(bytes, 0);
+fn agent_tesla_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    let decode: malware_config::ConfigDecode =
+        malware_config::agent_tesla_config_decode(lines.bytes(), 0, &mut budget);
     push_malware_decode(
         malware_config::MalwareFamily::AgentTesla,
         &decode,
-        bytes,
+        lines,
         path,
         out,
     );
 }
 
-fn darkcomet_findings(bytes: &[u8], path: Option<&str>, out: &mut Vec<ReconFinding>) {
-    let decode: malware_config::ConfigDecode = malware_config::darkcomet_config_decode(bytes, 0);
+fn darkcomet_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFinding>) {
+    let mut budget: malware_config::WorkBudget = malware_config::WorkBudget::default();
+    let decode: malware_config::ConfigDecode =
+        malware_config::darkcomet_config_decode(lines.bytes(), 0, &mut budget);
     push_malware_decode(
         malware_config::MalwareFamily::DarkComet,
         &decode,
-        bytes,
+        lines,
         path,
         out,
     );
 }
 
-fn first_self_describing_rc4(region: &[u8]) -> Option<usize> {
+fn first_self_describing_rc4(
+    region: &[u8],
+    budget: &mut malware_config::WorkBudget,
+) -> Option<usize> {
     for offset in 0..region.len().min(64) {
         let blob: &[u8] = &region[offset..];
-        if malware_config::remcos_settings_decode(blob).is_some() {
+        if malware_config::remcos_settings_decode(blob, budget).is_some() {
             return Some(offset);
         }
     }
@@ -1059,10 +1180,10 @@ fn extract_utf16le_ascii_runs(bytes: &[u8]) -> Vec<(usize, String)> {
 fn anchor_wide_findings(
     out: &mut [ReconFinding],
     first_new: usize,
-    bytes: &[u8],
+    lines: &LineIndex<'_>,
     run_start: usize,
 ) {
-    let (line, column): (usize, usize) = line_col(bytes, run_start);
+    let (line, column): (usize, usize) = lines.line_col(run_start);
     for finding in out.iter_mut().skip(first_new) {
         finding.offset = run_start;
         finding.line = line;
@@ -1082,22 +1203,25 @@ pub fn scan_bytes(
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
     let valid_utf8: bool = matches!(text, std::borrow::Cow::Borrowed(_));
 
+    let lines: LineIndex<'_> = LineIndex::new(bytes);
+    let text_lines: LineIndex<'_> = LineIndex::new(text.as_bytes());
+
     let mut out: Vec<ReconFinding> = Vec::new();
-    secret_findings(bytes, path, &mut out);
-    ioc_findings(bytes, path, &mut out);
-    endpoint_rules(&text, bytes, path, &mut out);
-    endpoint_paths(&text, bytes, path, &mut out);
-    endpoint_calls(&text, bytes, path, &mut out);
-    onion_findings(&text, bytes, path, &mut out);
+    secret_findings(&lines, path, &mut out);
+    ioc_findings(&lines, path, &mut out);
+    endpoint_rules(&text, &lines, path, &mut out);
+    endpoint_paths(&text, &lines, path, &mut out);
+    endpoint_calls(&text, &lines, path, &mut out);
+    onion_findings(&text, &lines, path, &mut out);
     for (run_start, run) in extract_utf16le_ascii_runs(bytes) {
         let first_new: usize = out.len();
-        let run_bytes: &[u8] = run.as_bytes();
-        endpoint_rules(&run, run_bytes, path, &mut out);
-        onion_findings(&run, run_bytes, path, &mut out);
-        anchor_wide_findings(&mut out, first_new, bytes, run_start);
+        let run_lines: LineIndex<'_> = LineIndex::new(run.as_bytes());
+        endpoint_rules(&run, &run_lines, path, &mut out);
+        onion_findings(&run, &run_lines, path, &mut out);
+        anchor_wide_findings(&mut out, first_new, &lines, run_start);
     }
-    malware_config_findings(bytes, &text, path, &mut out);
-    custom_rules(&text, bytes, path, config, &mut out);
+    malware_config_findings(&lines, &text_lines, &text, path, &mut out);
+    custom_rules(&text, &lines, path, config, &mut out);
 
     if !config.include_high_entropy {
         out.retain(|f: &ReconFinding| f.rule_id != "DR-SEC-ENTROPY");
@@ -1760,6 +1884,58 @@ mod tests {
 
     fn aws_akid() -> String {
         format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB")
+    }
+
+    fn scanning_line_col(bytes: &[u8], offset: usize) -> (usize, usize) {
+        let capped: usize = offset.min(bytes.len());
+        let mut line: usize = 1;
+        let mut col: usize = 1;
+        for &b in &bytes[..capped] {
+            if b == b'\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn assert_line_index_matches_scan(bytes: &[u8], label: &str) {
+        let index: LineIndex<'_> = LineIndex::new(bytes);
+        for offset in 0..=bytes.len() + 3 {
+            assert_eq!(
+                index.line_col(offset),
+                scanning_line_col(bytes, offset),
+                "{label} disagrees with the scanning reference at offset {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn line_index_matches_the_scanning_reference() {
+        assert_line_index_matches_scan(b"", "empty");
+        assert_line_index_matches_scan(b"\n", "one newline");
+        assert_line_index_matches_scan(b"abc", "no newline");
+        assert_line_index_matches_scan(b"a\nb\r\nc\n\n\nd", "mixed line endings");
+        let one_long_line: Vec<u8> = vec![b'x'; LINE_BLOCK_BYTES * 3 + 7];
+        assert_line_index_matches_scan(&one_long_line, "single line spanning blocks");
+        let all_newlines: Vec<u8> = vec![b'\n'; LINE_BLOCK_BYTES * 2 + 5];
+        assert_line_index_matches_scan(&all_newlines, "every byte a newline");
+        let mut block_edges: Vec<u8> = vec![b'y'; LINE_BLOCK_BYTES * 2 + 32];
+        block_edges[LINE_BLOCK_BYTES - 1] = b'\n';
+        block_edges[LINE_BLOCK_BYTES] = b'\n';
+        block_edges[LINE_BLOCK_BYTES * 2 + 31] = b'\n';
+        assert_line_index_matches_scan(&block_edges, "newlines on block boundaries");
+        for blocks in 1..=3usize {
+            let mut exact: Vec<u8> = vec![b'z'; LINE_BLOCK_BYTES * blocks];
+            exact[LINE_BLOCK_BYTES * blocks - 1] = b'\n';
+            exact[LINE_BLOCK_BYTES / 2] = b'\n';
+            assert_line_index_matches_scan(&exact, "length is an exact block multiple");
+            let mut short: Vec<u8> = exact.clone();
+            short.pop();
+            assert_line_index_matches_scan(&short, "one byte below a block multiple");
+        }
     }
 
     fn values_in(report: &ReconReport, category: ReconCategory) -> Vec<String> {

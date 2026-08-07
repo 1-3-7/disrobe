@@ -23,6 +23,24 @@ fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
     disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch directory")
 }
 
+fn live_subcommand_paths() -> BTreeSet<String> {
+    let bin: PathBuf = cli_binary();
+    let out: Output = Command::new(&bin)
+        .arg("subcommand-tree")
+        .output()
+        .expect("spawn disrobe subcommand-tree");
+    assert_eq!(
+        out.status.code().unwrap_or(-1),
+        0,
+        "subcommand-tree stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 struct ExpectedSkill {
     dir_name: &'static str,
     name: &'static str,
@@ -93,6 +111,7 @@ fn init_claude_emits_seven_skill_packs_with_distinct_bodies() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let live_paths: BTreeSet<String> = live_subcommand_paths();
     let skills_dir: PathBuf = work.join(".disrobe").join("skills");
     let mut bodies: Vec<String> = Vec::with_capacity(EXPECTED.len());
     for es in EXPECTED {
@@ -135,6 +154,17 @@ fn init_claude_emits_seven_skill_packs_with_distinct_bodies() {
             es.dir_name,
             es.keyword,
             content
+        );
+        let path_only: &str = es
+            .subcommand
+            .strip_prefix("disrobe ")
+            .unwrap_or(es.subcommand);
+        assert!(
+            live_paths.contains(path_only),
+            "{} names `{}`, which is not a subcommand path the live clap tree reports; \
+             live paths: {live_paths:?}",
+            es.dir_name,
+            es.subcommand
         );
         bodies.push(content);
     }

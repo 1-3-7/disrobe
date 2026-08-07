@@ -1731,3 +1731,333 @@ fn aarch64_real_clang_conditional_compare_lifts_a_short_circuit_ternary() {
         r.source
     );
 }
+
+#[test]
+fn aarch64_real_encoded_sxtx_doubleword_index_load_recovers_as_an_array_subscript() {
+    let bytes: [u8; 8] = [0x20, 0xf8, 0x62, 0xf8, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldr x0,[x1,x2,sxtx #3]");
+    assert!(
+        r.source.contains("typedef uint64_t recovered_array_0_t;"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("r_rax = (uint64_t)recovered_array_0[r_a64_x2];"),
+        "{}",
+        r.source
+    );
+    assert!(!r.source.contains("int32_t"), "{}", r.source);
+}
+
+#[test]
+fn aarch64_real_encoded_sxtx_halfword_index_load_recovers_at_a_second_access_width() {
+    let bytes: [u8; 8] = [0x20, 0xf8, 0x62, 0x78, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrh w0,[x1,x2,sxtx #1]");
+    assert!(
+        r.source.contains("typedef uint16_t recovered_array_0_t;"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("recovered_array_0[r_a64_x2]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxtx_unscaled_byte_index_load_recovers_at_a_third_access_width() {
+    let bytes: [u8; 8] = [0x20, 0xe8, 0x62, 0x38, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("ldrb w0,[x1,x2,sxtx]");
+    assert!(
+        r.source.contains("typedef uint8_t recovered_array_0_t;"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("recovered_array_0[r_a64_x2]"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxtx_doubleword_index_store_recovers_symmetrically_with_the_load() {
+    let bytes: [u8; 8] = [0x20, 0xf8, 0x22, 0xf8, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("str x0,[x1,x2,sxtx #3]");
+    assert!(
+        r.source.contains("typedef uint64_t recovered_array_0_t;"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("recovered_array_0[r_a64_x2] = r_rax;"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtb_extended_register_add_lifts_a_byte_extend_from_a_w_register() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,uxtb");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtb_extended_register_add_with_a_shift_lifts_the_shift_too() {
+    let bytes: [u8; 8] = [0x00, 0x0c, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,uxtb #3");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("<< (((uint64_t)(int64_t)3LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxth_extended_register_add_lifts_a_halfword_extend_from_a_w_register() {
+    let bytes: [u8; 8] = [0x00, 0x20, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,uxth");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint16_t)((r_a64_x1) & 0xffffULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxtb_extended_register_add_lifts_a_signed_byte_extend() {
+    let bytes: [u8; 8] = [0x00, 0x80, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,sxtb");
+    assert!(
+        r.source
+            .contains("(uint64_t)(int64_t)(int8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxth_extended_register_add_with_a_shift_lifts_a_signed_halfword_extend() {
+    let bytes: [u8; 8] = [0x00, 0xb0, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,w1,sxth #4");
+    assert!(
+        r.source
+            .contains("(uint64_t)(int64_t)(int16_t)((r_a64_x1) & 0xffffULL)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("<< (((uint64_t)(int64_t)4LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtx_extended_register_add_lifts_through_the_word_decode_even_though_the_disassembler_omits_the_extend_keyword()
+ {
+    let bytes: [u8; 8] = [0x00, 0x60, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, 0, &bytes).expect("decodes");
+    assert_eq!(insns[0].operands, "x0, x0, x1", "{:?}", insns[0]);
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,x1,uxtx");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint64_t)((r_a64_x1) & 0xffffffffffffffffULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtx_extended_register_add_with_a_shift_lifts_through_the_word_decode_even_though_the_disassembler_spells_it_lsl()
+ {
+    let bytes: [u8; 8] = [0x00, 0x6c, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, 0, &bytes).expect("decodes");
+    assert_eq!(insns[0].operands, "x0, x0, x1, lsl #3", "{:?}", insns[0]);
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,x1,uxtx #3");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint64_t)((r_a64_x1) & 0xffffffffffffffffULL)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("<< (((uint64_t)(int64_t)3LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxtx_extended_register_add_lifts_a_64_bit_sign_extend() {
+    let bytes: [u8; 8] = [0x00, 0xe0, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,x1,sxtx");
+    assert!(
+        r.source
+            .contains("(uint64_t)(int64_t)(int64_t)((r_a64_x1) & 0xffffffffffffffffULL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxtx_extended_register_add_with_a_shift_lifts_the_shift() {
+    let bytes: [u8; 8] = [0x00, 0xe8, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,x1,sxtx #2");
+    assert!(
+        r.source.contains("<< (((uint64_t)(int64_t)2LL)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtb_extended_register_sub_lifts_with_the_subtract_operator() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0xcb, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("sub x0,x0,w1,uxtb");
+    assert!(
+        r.source
+            .contains("(uint64_t)(uint8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("r_a64_tmp - (r_a64_tmp2)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_uxtb_extended_register_add_into_a_32_bit_destination_lifts_through_the_text_fallback()
+ {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x21, 0x0b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add w0,w0,w1,uxtb");
+    assert!(
+        r.source
+            .contains("((uint32_t)(uint8_t)((r_a64_x1) & 0xffULL)) & 0xffffffffULL"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_sxth_extended_register_add_into_a_32_bit_destination_lifts_a_signed_shift_through_the_text_fallback()
+ {
+    let bytes: [u8; 8] = [0x00, 0xa4, 0x21, 0x0b, 0xc0, 0x03, 0x5f, 0xd6];
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add w0,w0,w1,sxth #1");
+    assert!(
+        r.source
+            .contains("((uint32_t)(int32_t)(int16_t)((r_a64_x1) & 0xffffULL)) & 0xffffffffULL"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source.contains("<< (((uint64_t)(int64_t)1LL) & 31)"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_extended_register_add_with_an_unallocated_imm3_of_five_rejects_without_panicking()
+ {
+    let bytes: [u8; 8] = [0x00, 0x14, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    assert!(result.is_err(), "{result:?}");
+}
+
+#[test]
+fn aarch64_real_encoded_cmn_with_a_byte_extend_never_reaches_the_extended_register_add_path() {
+    let bytes: [u8; 8] = [0x1f, 0x00, 0x21, 0xab, 0xc0, 0x03, 0x5f, 0xd6];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let error: Error = result.expect_err("cmn x0,w1,uxtb must reject");
+    match error {
+        Error::LlvmIr(message) => {
+            assert!(
+                message.contains("source width does not match destination width"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn aarch64_real_encoded_cmp_with_a_byte_extend_rejects_the_same_way_as_cmn() {
+    let bytes: [u8; 8] = [0x1f, 0x00, 0x21, 0xeb, 0xc0, 0x03, 0x5f, 0xd6];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let error: Error = result.expect_err("cmp x0,w1,uxtb must reject");
+    match error {
+        Error::LlvmIr(message) => {
+            assert!(
+                message.contains("source width does not match destination width"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn aarch64_real_encoded_cmn_with_a_zero_shift_uxtx_extend_lifts_only_because_the_disassembler_aliases_it_to_a_bare_compare()
+ {
+    let bytes: [u8; 8] = [0x1f, 0x60, 0x21, 0xab, 0xc0, 0x03, 0x5f, 0xd6];
+    let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, 0, &bytes).expect("decodes");
+    assert_eq!(insns[0].mnemonic, "cmn", "{:?}", insns[0]);
+    assert_eq!(insns[0].operands, "x0, x1", "{:?}", insns[0]);
+    let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cmn x0,x1,uxtx");
+    assert!(
+        r.source.contains("r_a64_tmp = r_a64_tmp + (r_a64_x1);"),
+        "{}",
+        r.source
+    );
+}
+
+#[test]
+fn aarch64_real_encoded_stack_pointer_destination_extended_register_add_rejects_without_panicking()
+{
+    let bytes: [u8; 8] = [0x1f, 0x00, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let error: Error = result.expect_err("add sp,x0,w1,uxtb must reject");
+    match error {
+        Error::LlvmIr(message) => {
+            assert!(
+                message.contains("stack pointer is used outside a modelled frame adjustment"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn aarch64_real_encoded_stack_pointer_source_extended_register_add_rejects_without_panicking() {
+    let bytes: [u8; 8] = [0xe0, 0x03, 0x21, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
+    let error: Error = result.expect_err("add x0,sp,w1,uxtb must reject");
+    match error {
+        Error::LlvmIr(message) => {
+            assert!(
+                message.contains("stack pointer is used outside a modelled frame adjustment"),
+                "{message}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}

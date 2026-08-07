@@ -1,0 +1,17 @@
+id = "dotnet-whole-type-recompile"
+ecosystem = "dotnet"
+title = ".NET CIL decompilation, whole-type recompile over the EdgeCases corpus"
+claim = "disrobe decompiles a .NET CIL type to C# that recompiles error-free standalone under the real csc, across the EdgeCases corpus."
+oracle_strength = "recompile-only"
+ci = true
+
+[oracle]
+kind = "recovery-import"
+external = "real csc (dotnet SDK 9.0.316): recovered C# must recompile standalone as its own single-file compilation unit"
+reproduce = "cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
+note = "Oracle strength is recompile-only: the recovered source compiling proves it is legal C#, not that it means what the original IL meant. A member that states a refusal (an unreconstructed state machine or an unlowered compiler-generated construct) does not count as recovered even when the type compiles. Measured locally; CI does not assert the percentage, only that the named members in EDGECASES_RECOMPILE_MEMBERS keep recompiling."
+
+[source]
+recovery_group = "Dotnet whole-type recompile (EdgeCases corpus, recompile-only)"
+recovery_bar = "whole-type recompile"
+floor = 51.42857142857143

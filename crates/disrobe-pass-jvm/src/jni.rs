@@ -57,10 +57,12 @@ pub struct JniSurfaceReport {
     pub decode_error_count: usize,
 }
 
+const ABI_PARENT_DIR_NAMES: [&str; 2] = ["lib", "jni"];
+
 fn abi_from_path(path: &str) -> Option<String> {
     let mut parts = path.split('/');
     while let Some(p) = parts.next() {
-        if p == "lib" {
+        if ABI_PARENT_DIR_NAMES.contains(&p) {
             return parts.next().map(str::to_owned);
         }
     }
@@ -124,6 +126,17 @@ pub fn analyze(
         }
     }
 
+    let mut report: JniSurfaceReport = analyze_native_methods(&native_methods, native_libs);
+    report.code_scan_complete = code_scan_complete;
+    report.decode_error_count = decode_error_count;
+    report
+}
+
+#[must_use]
+pub fn analyze_native_methods(
+    native_methods: &[NativeMethod],
+    native_libs: &[(&str, &[u8])],
+) -> JniSurfaceReport {
     let mut libraries: Vec<NativeLibrary> = Vec::new();
     let mut registered_natives: Vec<RegisteredNative> = Vec::new();
     for (path, bytes) in native_libs {
@@ -152,7 +165,7 @@ pub fn analyze(
 
     let mut resolved_statically: usize = 0;
     let mut resolved: Vec<ResolvedNative> = Vec::with_capacity(native_methods.len());
-    for nm in &native_methods {
+    for nm in native_methods {
         let resolved_in: Option<String> = symbol_to_lib
             .get(nm.jni_short_symbol.as_str())
             .or_else(|| symbol_to_lib.get(nm.jni_long_symbol.as_str()))
@@ -177,8 +190,8 @@ pub fn analyze(
         resolved_statically,
         dynamic_only,
         registered_natives,
-        code_scan_complete,
-        decode_error_count,
+        code_scan_complete: true,
+        decode_error_count: 0,
     }
 }
 
@@ -878,6 +891,18 @@ mod tests {
             Some("arm64-v8a")
         );
         assert_eq!(abi_from_path("classes.dex"), None);
+    }
+
+    #[test]
+    fn abi_extracted_from_aar_jni_path() {
+        assert_eq!(
+            abi_from_path("jni/arm64-v8a/libnative.so").as_deref(),
+            Some("arm64-v8a")
+        );
+        assert_eq!(
+            abi_from_path("jni/x86_64/libjnireg_x64.so").as_deref(),
+            Some("x86_64")
+        );
     }
 
     #[test]

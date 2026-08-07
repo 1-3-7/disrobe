@@ -145,7 +145,7 @@ pub fn ecosystem_for(pass_id: PassId) -> Ecosystem {
         "mobile" => Ecosystem::Mobile,
         "swift-objc" | "swift" => Ecosystem::Swift,
         "shell" | "scriptlang" => Ecosystem::Shell,
-        "binfmt" => Ecosystem::Container,
+        "binfmt" | "webview" => Ecosystem::Container,
         "pickle" => Ecosystem::Python,
         _ => Ecosystem::Other,
     }
@@ -176,6 +176,7 @@ mod tests {
         assert_eq!(ecosystem_for("dotnet.classify"), Ecosystem::Dotnet);
         assert_eq!(ecosystem_for("shell.deob"), Ecosystem::Shell);
         assert_eq!(ecosystem_for("binfmt.container"), Ecosystem::Container);
+        assert_eq!(ecosystem_for("webview.carve"), Ecosystem::Container);
         assert_eq!(ecosystem_for("mystery.pass"), Ecosystem::Other);
     }
 

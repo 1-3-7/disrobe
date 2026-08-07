@@ -388,4 +388,20 @@ pub(super) fn add_native_and_runtime_pkgs(m: &mut BTreeMap<&'static str, Install
             pip: None,
         },
     );
+    add_simple_pkg(
+        m,
+        "node",
+        "Node.js runtime; bundles npm",
+        ToolPkg {
+            winget: Some("OpenJS.NodeJS"),
+            brew: Some("node"),
+            brew_cask: false,
+            apt: Some("nodejs"),
+            dnf: Some("nodejs"),
+            pacman: Some("nodejs"),
+            apk: Some("nodejs"),
+            cargo: None,
+            pip: None,
+        },
+    );
 }

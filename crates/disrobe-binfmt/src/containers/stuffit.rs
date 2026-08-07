@@ -130,34 +130,35 @@ pub const fn fork_is_stored(fork: &SitFork) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn build_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    for (name, data) in entries {
+        let mut hdr: Vec<u8> = vec![0u8; FILE_HEADER_LEN];
+        hdr[0] = METHOD_STORED;
+        hdr[1] = METHOD_STORED;
+        let nb: &[u8] = name.as_bytes();
+        hdr[2] = nb.len() as u8;
+        hdr[3..3 + nb.len()].copy_from_slice(nb);
+        hdr[88..92].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        hdr[96..100].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        body.extend_from_slice(&hdr);
+        body.extend_from_slice(data);
+    }
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(SIT_SIGNATURE);
+    out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+    let total: u32 = (ARCHIVE_HEADER_LEN + body.len()) as u32;
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(SIT_SIGNATURE2);
+    out.extend_from_slice(&[0u8; 8]);
+    out.extend_from_slice(&body);
+    out
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn build_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut body: Vec<u8> = Vec::new();
-        for (name, data) in entries {
-            let mut hdr: Vec<u8> = vec![0u8; FILE_HEADER_LEN];
-            hdr[0] = METHOD_STORED;
-            hdr[1] = METHOD_STORED;
-            let nb: &[u8] = name.as_bytes();
-            hdr[2] = nb.len() as u8;
-            hdr[3..3 + nb.len()].copy_from_slice(nb);
-            hdr[88..92].copy_from_slice(&(data.len() as u32).to_be_bytes());
-            hdr[96..100].copy_from_slice(&(data.len() as u32).to_be_bytes());
-            body.extend_from_slice(&hdr);
-            body.extend_from_slice(data);
-        }
-        let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(SIT_SIGNATURE);
-        out.extend_from_slice(&(entries.len() as u16).to_be_bytes());
-        let total: u32 = (ARCHIVE_HEADER_LEN + body.len()) as u32;
-        out.extend_from_slice(&total.to_be_bytes());
-        out.extend_from_slice(SIT_SIGNATURE2);
-        out.extend_from_slice(&[0u8; 8]);
-        out.extend_from_slice(&body);
-        out
-    }
 
     #[test]
     fn parses_stored_forks_byte_exact() {

@@ -10,12 +10,14 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use common::stdlib_measure::{
     HarnessRun, MEASURE_HARNESS, Measurement, PINNED_POPULATION, PublishedBar, bar_disagreements,
     find_disrobe, find_python_314, interpreter_stdlib, interpreter_version, manifest_dir,
-    parse_measurement, population_line, published_bar, recovery_document, run_measure,
+    parse_measurement, population_line, published_bar, recovery_document, run_measure_with_ledger,
     workspace_target,
 };
 
@@ -128,7 +130,9 @@ fn arbitrary_recompile_equivalence_gate() {
         modules.display()
     );
 
-    let run: HarnessRun = run_measure(&python, &disrobe, &lib, &modules);
+    let ledger_path: PathBuf = workspace_target().join("py-sibling-collision-ledger.tsv");
+    let run: HarnessRun =
+        run_measure_with_ledger(&python, &disrobe, &lib, &modules, Some(&ledger_path));
     println!("=== ARBITRARY RECOMPILE-EQUIVALENCE HARNESS ===");
     println!("interpreter : {} ({maj}.{min})", python.display());
     println!("lib         : {}", lib.display());
@@ -155,6 +159,16 @@ fn arbitrary_recompile_equivalence_gate() {
         m.sibling_collisions,
         m.missing_from_lib,
         m.cpython_version
+    );
+
+    let derived_collisions: u64 = sibling_collisions_from_ledger(&ledger_path);
+    assert_eq!(
+        derived_collisions, m.sibling_collisions,
+        "the printed sibling_collisions summary ({}) disagrees with a count independently \
+         derived from the object ledger this same run wrote ({derived_collisions}): a \
+         size-mismatched qualname group is a sibling collision whenever its ledger rows outnumber \
+         one, or whenever its lone row is COLLISION rather than MISSING",
+        m.sibling_collisions
     );
 
     assert!(
@@ -221,4 +235,154 @@ fn arbitrary_recompile_equivalence_gate() {
         m.code_objects,
         m.cpython_version
     );
+}
+
+fn probe_sibling_group_charges(python: &Path, harness_dir: &Path) -> Vec<(u64, u64, bool, u64)> {
+    let script: &str = r#"
+import json
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from py_arbitrary_measure import sibling_group_charges
+
+
+def objs(n):
+    return [compile("x = 1", "<constructed>", "exec") for _ in range(n)]
+
+
+cases = [(1, 0), (1, 1), (1, 2), (1, 5), (2, 0), (2, 1), (2, 3), (5, 1), (0, 0)]
+out = []
+for a, b in cases:
+    collision, charges = sibling_group_charges(objs(a), objs(b))
+    out.append([a, b, collision, len(charges)])
+print(json.dumps(out))
+"#;
+    let output: std::process::Output = Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .arg(harness_dir)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn sibling_group_charges probe");
+    assert!(
+        output.status.success(),
+        "sibling_group_charges probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse probe output: {e}: {stdout}"));
+    rows.into_iter()
+        .map(|row: serde_json::Value| {
+            let arr: Vec<serde_json::Value> = row.as_array().cloned().unwrap_or_default();
+            let a: u64 = arr.first().and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let b: u64 = arr.get(1).and_then(serde_json::Value::as_u64).unwrap_or(0);
+            let collision: bool = arr
+                .get(2)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let charges: u64 = arr.get(3).and_then(serde_json::Value::as_u64).unwrap_or(0);
+            (a, b, collision, charges)
+        })
+        .collect()
+}
+
+#[test]
+fn sibling_group_charges_counts_a_recovered_side_collision() {
+    let Some(python): Option<PathBuf> = find_python_314() else {
+        panic!(
+            "no CPython 3.14 interpreter found (uv python find 3.14 / known install paths); the \
+             sibling-group counter is defined against 3.14 code objects. Install one with `uv \
+             python install 3.14`."
+        );
+    };
+    let harness_dir: PathBuf = manifest_dir().join("tests/harness");
+    let rows: Vec<(u64, u64, bool, u64)> = probe_sibling_group_charges(&python, &harness_dir);
+    let case = |a: u64, b: u64| -> (bool, u64) {
+        rows.iter()
+            .find(|&&(ra, rb, _, _)| ra == a && rb == b)
+            .map_or_else(
+                || panic!("probe did not report the ({a}, {b}) case"),
+                |&(_, _, collision, charges)| (collision, charges),
+            )
+    };
+
+    assert!(
+        case(1, 2).0,
+        "one original against two recovered is the exact shape BUG-055 reported uncounted; the \
+         summary counter must flag it even though the original side never held a sibling"
+    );
+    assert!(
+        case(1, 5).0,
+        "one original against five recovered must also count"
+    );
+    assert!(
+        case(2, 3).0,
+        "an original sibling group outgrown by an even larger recovered group must count"
+    );
+    assert!(
+        case(2, 0).0,
+        "an original sibling group larger than the recovered side must still count"
+    );
+    assert!(
+        case(2, 1).0,
+        "a partially-recovered original sibling group must still count"
+    );
+    assert!(
+        case(5, 1).0,
+        "a large original sibling group missing most of its recovered siblings must still count"
+    );
+    assert!(
+        !case(1, 0).0,
+        "a single object that failed to recover at all has no sibling to collide with"
+    );
+    assert!(!case(0, 0).0, "an empty group carries no sibling ambiguity");
+
+    for (a, b) in [
+        (1u64, 0u64),
+        (1, 1),
+        (1, 2),
+        (1, 5),
+        (2, 0),
+        (2, 1),
+        (2, 3),
+        (5, 1),
+        (0, 0),
+    ] {
+        assert_eq!(
+            case(a, b).1,
+            a,
+            "charges must cover every original object in the ({a}, {b}) group exactly once, so \
+             MISSING and COLLISION always sum to the group size"
+        );
+    }
+}
+
+fn sibling_collisions_from_ledger(ledger_path: &Path) -> u64 {
+    let ledger_raw: String = std::fs::read_to_string(ledger_path)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", ledger_path.display()));
+    let mut groups: BTreeMap<(String, String), Vec<&str>> = BTreeMap::new();
+    for line in ledger_raw.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let Ok([module, qualname, _position, verdict]): Result<[&str; 4], Vec<&str>> =
+            fields.try_into()
+        else {
+            panic!("malformed ledger row: {line}");
+        };
+        if verdict == "MISSING" || verdict == "COLLISION" {
+            groups
+                .entry((module.to_owned(), qualname.to_owned()))
+                .or_default()
+                .push(verdict);
+        }
+    }
+    u64::try_from(
+        groups
+            .values()
+            .filter(|verdicts: &&Vec<&str>| {
+                verdicts.len() > 1 || verdicts.first().copied() == Some("COLLISION")
+            })
+            .count(),
+    )
+    .unwrap_or(u64::MAX)
 }

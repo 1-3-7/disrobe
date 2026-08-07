@@ -3,6 +3,8 @@
   "fixtures": [
     {
       "file": "real_xlm_excel16.xls",
+      "producer": "Microsoft Excel",
+      "producer_version": "16.0.20228.20110 (Microsoft 365)",
       "sha256": "fbe4fdb7feac11a8513dbb7b2b1df3d9cb218f5c09e41fb55eddb6c271981133",
       "bytes": 27136,
       "expected_from": "excel-readback",
@@ -96,6 +98,8 @@
     },
     {
       "file": "real_xlm_ptgspread.xls",
+      "producer": "Microsoft Excel",
+      "producer_version": "16.0.20228.20110 (Microsoft 365)",
       "sha256": "6abb0f4a0d8314b76a8eda4b91d95d91ed9bf0c6ddd62c7ea8c81e3303069a1a",
       "bytes": 28672,
       "expected_from": "excel-readback",
@@ -329,6 +333,8 @@
     },
     {
       "file": "bench_biff12.xlsb",
+      "producer": "Microsoft Excel",
+      "producer_version": "16.0.20228.20110 (Microsoft 365)",
       "sha256": "3faf6e5c56a475fe2b8131ac80f50198a270d859a509b6bd82992ce970a22645",
       "bytes": 10006,
       "expected_from": "authored",
@@ -482,6 +488,8 @@
     },
     {
       "file": "ftab_probe.xls",
+      "producer": "Microsoft Excel",
+      "producer_version": "16.0.20228.20110 (Microsoft 365)",
       "sha256": "7b0cd26e296d255fb857fe1747e26d34ae87bca56fc8a01b62a46a64d9379f60",
       "bytes": 27136,
       "expected_from": "authored",

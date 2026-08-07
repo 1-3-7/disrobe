@@ -10,7 +10,7 @@
 )]
 
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use disrobe_plugin_host::{
     Limits, LoaderError, Manifest, PluginError, PluginHost, PublicKey, SandboxError,
@@ -100,6 +100,54 @@ const IMPORTING_COMPONENT: &str = r#"
       (realloc (func $g "cabi_realloc")))))
 "#;
 
+const NO_RUN_EXPORT_COMPONENT: &str = r#"
+(component
+  (core module $guest
+    (memory (export "memory") 1)
+    (func (export "cabi_realloc")
+      (param i32 i32 i32 i32) (result i32)
+      (i32.const 16))
+    (func (export "other") (param $ptr i32) (param $len i32) (result i32)
+      (i32.const 8)))
+  (core instance $g (instantiate $guest))
+  (func (export "other") (param "input" (list u8)) (result (list u8))
+    (canon lift
+      (core func $g "other")
+      (memory $g "memory")
+      (realloc (func $g "cabi_realloc")))))
+"#;
+
+const WRONG_TYPE_RUN_COMPONENT: &str = r#"
+(component
+  (core module $guest
+    (memory (export "memory") 1)
+    (func (export "cabi_realloc")
+      (param i32 i32 i32 i32) (result i32)
+      (i32.const 16))
+    (func (export "run") (param $ptr i32) (param $len i32) (result i32)
+      (i32.const 8)))
+  (core instance $g (instantiate $guest))
+  (func (export "run") (param "input" string) (result string)
+    (canon lift
+      (core func $g "run")
+      (memory $g "memory")
+      (realloc (func $g "cabi_realloc"))
+      string-encoding=utf8)))
+"#;
+
+const RUN_WITHOUT_GUEST_MEMORY_COMPONENT: &str = r#"
+(component
+  (core module $guest
+    (func (export "run") (param $ptr i32) (param $len i32) (result i32)
+      (i32.const 8)))
+  (core instance $g (instantiate $guest))
+  (func (export "run") (param "input" (list u8)) (result (list u8))
+    (canon lift
+      (core func $g "run")
+      (memory $g "memory")
+      (realloc (func $g "cabi_realloc")))))
+"#;
+
 fn component_bytes(source: &str) -> Vec<u8> {
     wat::parse_str(source).expect("component fixture assembles")
 }
@@ -117,7 +165,11 @@ fn sign(secret: &SecretKey, bytes: &[u8]) -> Vec<u8> {
 
 fn manifest_granting(names: &[&str]) -> Manifest {
     let grants: BTreeSet<String> = names.iter().map(|name: &&str| (*name).to_owned()).collect();
-    Manifest::new("end-to-end-plugin", grants).expect("manifest is valid")
+    Manifest::new("end-to-end-plugin", None, grants).expect("manifest is valid")
+}
+
+fn manifest_versioned(name: &str, version: &str) -> Manifest {
+    Manifest::new(name, Some(version.to_owned()), BTreeSet::new()).expect("manifest is valid")
 }
 
 #[test]
@@ -285,4 +337,135 @@ fn an_expired_wall_deadline_rejects_the_run() {
         matches!(outcome, Err(PluginError::Sandbox(SandboxError::Timeout))),
         "expected Timeout, got {outcome:?}"
     );
+}
+
+#[test]
+fn a_wall_deadline_interrupts_a_component_that_never_returns() {
+    let pair: KeyPair = keypair();
+    let component: Vec<u8> = component_bytes(SPINNING_COMPONENT);
+    let signature: Vec<u8> = sign(&pair.sk, &component);
+    let manifest: Manifest = manifest_granting(&[]);
+    let host: PluginHost = PluginHost::new().expect("host engine builds");
+    let limits: Limits = Limits {
+        fuel_budget: 1_000_000_000,
+        wall_deadline: Duration::from_millis(50),
+        memory_cap_bytes: 1024 * 1024,
+    };
+
+    let started: Instant = Instant::now();
+    let outcome: Result<Vec<u8>, PluginError> = host.load_and_run(
+        &component, &signature, &pair.pk, &manifest, b"input", limits,
+    );
+    let elapsed: Duration = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the wall-clock watchdog must abort the spin well before the fuel budget could, took {elapsed:?}"
+    );
+    assert!(
+        matches!(outcome, Err(PluginError::Sandbox(SandboxError::Timeout))),
+        "expected the wall deadline to stop a runaway guest that fuel alone would not yet have caught, got {outcome:?}"
+    );
+}
+
+#[test]
+fn a_component_missing_the_run_export_is_a_distinct_typed_error() {
+    let pair: KeyPair = keypair();
+    let component: Vec<u8> = component_bytes(NO_RUN_EXPORT_COMPONENT);
+    let signature: Vec<u8> = sign(&pair.sk, &component);
+    let manifest: Manifest = manifest_granting(&[]);
+    let host: PluginHost = PluginHost::new().expect("host engine builds");
+
+    let outcome: Result<Vec<u8>, PluginError> = host.load_and_run(
+        &component,
+        &signature,
+        &pair.pk,
+        &manifest,
+        b"input",
+        Limits::default(),
+    );
+    assert!(
+        matches!(
+            outcome,
+            Err(PluginError::Sandbox(SandboxError::MissingEntry))
+        ),
+        "expected MissingEntry, got {outcome:?}"
+    );
+}
+
+#[test]
+fn a_wrongly_typed_run_export_is_a_distinct_typed_error() {
+    let pair: KeyPair = keypair();
+    let component: Vec<u8> = component_bytes(WRONG_TYPE_RUN_COMPONENT);
+    let signature: Vec<u8> = sign(&pair.sk, &component);
+    let manifest: Manifest = manifest_granting(&[]);
+    let host: PluginHost = PluginHost::new().expect("host engine builds");
+
+    let outcome: Result<Vec<u8>, PluginError> = host.load_and_run(
+        &component,
+        &signature,
+        &pair.pk,
+        &manifest,
+        b"input",
+        Limits::default(),
+    );
+    match outcome {
+        Err(PluginError::Sandbox(SandboxError::EntrySignature(detail))) => {
+            assert!(
+                detail.contains("list<u8>"),
+                "the signature mismatch must name the expected shape, got {detail}"
+            );
+        }
+        other => panic!("expected EntrySignature, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_component_that_would_need_guest_memory_it_lacks_is_rejected_before_it_runs() {
+    let pair: KeyPair = keypair();
+    let component: Vec<u8> = component_bytes(RUN_WITHOUT_GUEST_MEMORY_COMPONENT);
+    let signature: Vec<u8> = sign(&pair.sk, &component);
+    let manifest: Manifest = manifest_granting(&[]);
+    let host: PluginHost = PluginHost::new().expect("host engine builds");
+
+    let outcome: Result<Vec<u8>, PluginError> = host.load_and_run(
+        &component,
+        &signature,
+        &pair.pk,
+        &manifest,
+        b"input",
+        Limits::default(),
+    );
+    assert!(
+        matches!(
+            outcome,
+            Err(PluginError::Rejected(LoaderError::Malformed(_)))
+        ),
+        "a canon-lift binding naming a memory export the core module never provides makes the \
+         component itself malformed, caught at load time before any sandboxing or execution \
+         starts; unlike the raw core-module ABI, this component ABI cannot even represent a \
+         guest that runs first and is found memoryless second, got {outcome:?}"
+    );
+}
+
+#[test]
+fn a_manifest_declared_version_does_not_change_load_or_run_outcome() {
+    let pair: KeyPair = keypair();
+    let component: Vec<u8> = component_bytes(REVERSE_COMPONENT);
+    let signature: Vec<u8> = sign(&pair.sk, &component);
+    let manifest: Manifest = manifest_versioned("versioned-plugin", "2.3.1");
+    let host: PluginHost = PluginHost::new().expect("host engine builds");
+
+    let output: Vec<u8> = host
+        .load_and_run(
+            &component,
+            &signature,
+            &pair.pk,
+            &manifest,
+            b"abc",
+            Limits::default(),
+        )
+        .expect("a manifest carrying a version must load and run identically");
+    assert_eq!(output, vec![b'c', b'b', b'a']);
+    assert_eq!(manifest.name, "versioned-plugin");
+    assert_eq!(manifest.version.as_deref(), Some("2.3.1"));
 }

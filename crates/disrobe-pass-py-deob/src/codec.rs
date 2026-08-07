@@ -2,6 +2,8 @@ use std::io::{Read, Write};
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as B64_STANDARD, URL_SAFE_NO_PAD as B64_URLSAFE};
+use disrobe_core::codec::DecodeError;
+use disrobe_core::codec::hex::nibble as hex_nibble;
 use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
 use flate2::Compression;
 use flate2::read::{GzDecoder, ZlibDecoder};
@@ -327,32 +329,9 @@ pub(crate) fn decode_python_bytes_literal(s: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-#[inline]
-const fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
 pub(crate) fn b16_decode(input: &[u8]) -> Result<Vec<u8>> {
-    let trimmed: Vec<u8> = input
-        .iter()
-        .copied()
-        .filter(|b: &u8| !b.is_ascii_whitespace())
-        .collect();
-    if !trimmed.len().is_multiple_of(2) {
-        return Err(Error::LiteralNotFound);
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(trimmed.len() / 2);
-    for pair in trimmed.chunks_exact(2) {
-        let hi: u8 = hex_nibble(pair[0]).ok_or(Error::LiteralNotFound)?;
-        let lo: u8 = hex_nibble(pair[1]).ok_or(Error::LiteralNotFound)?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
+    disrobe_core::codec::hex::decode_with(input, disrobe_core::codec::hex::WRAPPED_STREAM)
+        .map_err(|_: DecodeError| Error::LiteralNotFound)
 }
 
 pub(crate) fn b32_decode(input: &[u8]) -> Result<Vec<u8>> {
@@ -406,6 +385,31 @@ mod tests {
         );
         assert!(b16_decode(b"abc").is_err());
         assert!(b16_decode(b"zz").is_err());
+    }
+
+    #[test]
+    fn decode_python_bytes_literal_pins_the_shipped_hex_escape_policy() {
+        assert_eq!(
+            decode_python_bytes_literal(r"\x00\xff\x41").expect("hex escapes"),
+            [0x00, 0xff, 0x41]
+        );
+        assert!(decode_python_bytes_literal(r"\xzz").is_err());
+        assert!(decode_python_bytes_literal(r"\x4").is_err());
+    }
+
+    #[test]
+    fn b16_decode_pins_the_shipped_whitespace_and_empty_policy() {
+        assert_eq!(b16_decode(b"").expect("empty"), Vec::<u8>::new());
+        assert_eq!(
+            b16_decode(b"  \t\r\n").expect("all whitespace"),
+            Vec::<u8>::new()
+        );
+        assert!(b16_decode(b"a").is_err());
+        assert_eq!(
+            b16_decode(b"de ad\tbe\r\nef").expect("wrapped stream"),
+            &[0xde, 0xad, 0xbe, 0xef]
+        );
+        assert_eq!(b16_decode(b"a b").expect("split pair"), &[0xab]);
     }
 
     #[test]

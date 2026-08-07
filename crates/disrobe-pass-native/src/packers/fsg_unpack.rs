@@ -1,3 +1,4 @@
+use disrobe_bytes::{AddressError, ByteReadError, CStrOptions, read_cstr_at};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -29,6 +30,9 @@ const FSG_BLOCK_TABLE_END: u16 = 2;
 const FSG_BLOCK_DEST_PAGE_BIAS: u32 = 2;
 const FSG_BLOCK_DEST_PAGE_SHIFT: u32 = 12;
 const FSG_MAX_BLOCKS: usize = 64;
+const FSG_IMPORT_NAME_MAX_BYTES: usize = 512;
+const FSG_IMPORT_META_MAX_WALK: usize = 4096;
+const FSG_HEADER_REGION_LABEL: &str = "<pe headers>";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsgBlock {
@@ -104,10 +108,26 @@ struct DepackedImage {
 }
 
 fn depack_all_blocks(pe: &PeImage, bytes: &[u8], anchors: &StubAnchors) -> Result<DepackedImage> {
-    let mut stream_off: usize =
-        rva_to_file_offset(pe, bytes, anchors.packed_stream_va - anchors.image_base)?;
-    let mut table_off: usize =
-        rva_to_file_offset(pe, bytes, anchors.import_meta_va - anchors.image_base)?;
+    let rva_of = |va: u32, what: &'static str| -> Result<u32> {
+        va.checked_sub(anchors.image_base)
+            .ok_or(Error::PackerUnpackerNotImplemented(what))
+    };
+    let mut stream_off: usize = rva_to_file_offset(
+        pe,
+        bytes,
+        rva_of(
+            anchors.packed_stream_va,
+            "FSG: packed-stream VA below ImageBase",
+        )?,
+    )?;
+    let mut table_off: usize = rva_to_file_offset(
+        pe,
+        bytes,
+        rva_of(
+            anchors.import_meta_va,
+            "FSG: block-destination table VA below ImageBase",
+        )?,
+    )?;
     let mut dest_va: u32 = anchors.unpack_dest_va;
     let headers: usize = header_span(pe, bytes);
     let mut image: Vec<u8> = bytes[..headers].to_vec();
@@ -159,7 +179,12 @@ fn depack_all_blocks(pe: &PeImage, bytes: &[u8], anchors: &StubAnchors) -> Resul
                 table_off += 6;
             }
             page => {
-                dest_va = (u32::from(page) - FSG_BLOCK_DEST_PAGE_BIAS) << FSG_BLOCK_DEST_PAGE_SHIFT;
+                let biased: u32 = u32::from(page)
+                    .checked_sub(FSG_BLOCK_DEST_PAGE_BIAS)
+                    .ok_or(Error::PackerUnpackerNotImplemented(
+                        "FSG: block-destination page index below the table bias",
+                    ))?;
+                dest_va = biased << FSG_BLOCK_DEST_PAGE_SHIFT;
                 dest_is_stub_metadata = false;
                 table_off += 2;
             }
@@ -259,23 +284,24 @@ fn find_entry_stub_raw_offset(pe: &PeImage, bytes: &[u8]) -> Result<usize> {
     rva_to_file_offset(pe, bytes, pe.entry_point_rva)
 }
 
+fn section_label(pe: &PeImage, rva: u32) -> String {
+    pe.section_containing_rva(rva).map_or_else(
+        || FSG_HEADER_REGION_LABEL.to_owned(),
+        |sec: &PeSection| String::from_utf8_lossy(sec.name_trimmed()).into_owned(),
+    )
+}
+
 fn rva_to_file_offset(pe: &PeImage, bytes: &[u8], rva: u32) -> Result<usize> {
-    let Some(sec): Option<&PeSection> = pe.section_containing_rva(rva) else {
-        if rva < pe.size_of_headers && (rva as usize) < bytes.len() {
-            return Ok(rva as usize);
-        }
-        return Err(Error::PackerUnpackerNotImplemented(
-            "FSG: RVA outside any section",
-        ));
-    };
-    let delta: u32 = rva - sec.virtual_address;
-    if delta >= sec.raw_size && sec.raw_size > 0 {
-        return Err(Error::Truncated {
-            needed: (sec.raw_pointer + delta) as usize,
-            had: bytes.len(),
-        });
-    }
-    Ok((sec.raw_pointer + delta) as usize)
+    pe.file_offset_for_rva(rva, bytes.len())
+        .map_err(|cause: AddressError| Error::RvaNotFileBacked {
+            section: section_label(pe, rva),
+            rva,
+            cause,
+        })
+}
+
+fn rva_is_mapped(pe: &PeImage, bytes: &[u8], rva: u32) -> bool {
+    pe.rva_is_mapped(rva, bytes.len())
 }
 
 fn decode_stub_anchors(pe: &PeImage, bytes: &[u8], raw_off: usize) -> Result<StubAnchors> {
@@ -322,10 +348,8 @@ fn decode_stub_anchors(pe: &PeImage, bytes: &[u8], raw_off: usize) -> Result<Stu
     let raw_dest: u32 = read_u32_le(stub, 6)?;
     let raw_stream: u32 = read_u32_le(stub, 11)?;
     let in_image = |va: u32| -> bool {
-        if va < image_base {
-            return false;
-        }
-        rva_to_file_offset(pe, bytes, va - image_base).is_ok()
+        va.checked_sub(image_base)
+            .is_some_and(|rva: u32| rva_is_mapped(pe, bytes, rva))
     };
     let rebased = |raw: u32| -> u32 {
         raw.wrapping_sub(FSG_STUB_AUTHORED_IMAGE_BASE)
@@ -340,11 +364,12 @@ fn decode_stub_anchors(pe: &PeImage, bytes: &[u8], raw_off: usize) -> Result<Stu
             "FSG: stub VA below ImageBase after per-anchor rebase",
         ));
     }
-    if !in_image(packed_stream_va) {
+    let Some(packed_stream_rva): Option<u32> = packed_stream_va.checked_sub(image_base) else {
         return Err(Error::PackerUnpackerNotImplemented(
-            "FSG: packed-stream VA could not be mapped into any section",
+            "FSG: packed-stream VA below ImageBase after per-anchor rebase",
         ));
-    }
+    };
+    let _: usize = rva_to_file_offset(pe, bytes, packed_stream_rva)?;
     Ok(StubAnchors {
         image_base,
         unpack_dest_va,
@@ -363,24 +388,26 @@ fn parse_import_meta(bytes: &[u8], pe: &PeImage, anchors: &StubAnchors) -> Resul
     let meta_off: usize = rva_to_file_offset(pe, bytes, import_meta_rva)?;
     let mut entries: Vec<FsgImport> = Vec::new();
     let mut cursor: usize = meta_off;
-    let max_walk: usize = 4096;
-    let end: usize = (meta_off + max_walk).min(bytes.len());
-    while cursor + 8 <= end {
+    let end: usize = meta_off
+        .saturating_add(FSG_IMPORT_META_MAX_WALK)
+        .min(bytes.len());
+    while cursor.saturating_add(8) <= end {
         let name_rva: u32 = read_u32_le(bytes, cursor)?;
         if name_rva == 0 {
             break;
         }
         cursor += 4;
-        let name_off: usize = match name_rva
+        let Some(name_off): Option<usize> = name_rva
             .checked_sub(anchors.image_base)
             .and_then(|rva: u32| rva_to_file_offset(pe, bytes, rva).ok())
-        {
-            Some(o) => o,
-            None => break,
+        else {
+            break;
         };
-        let dll_name: String = read_cstr(bytes, name_off);
+        let Ok(dll_name): Result<String> = read_cstr(bytes, name_off) else {
+            break;
+        };
         loop {
-            if cursor + 4 > end {
+            if cursor.saturating_add(4) > end {
                 break;
             }
             let thunk_or_marker: u32 = read_u32_le(bytes, cursor)?;
@@ -392,7 +419,8 @@ fn parse_import_meta(bytes: &[u8], pe: &PeImage, anchors: &StubAnchors) -> Resul
             let api_name: String = thunk_or_marker
                 .checked_sub(anchors.image_base)
                 .and_then(|rva: u32| rva_to_file_offset(pe, bytes, rva).ok())
-                .map_or_else(String::new, |o: usize| read_cstr(bytes, o));
+                .and_then(|off: usize| read_cstr(bytes, off).ok())
+                .unwrap_or_default();
             entries.push(FsgImport {
                 dll_name: dll_name.clone(),
                 thunk_rva: thunk_or_marker,
@@ -403,12 +431,17 @@ fn parse_import_meta(bytes: &[u8], pe: &PeImage, anchors: &StubAnchors) -> Resul
     Ok(entries)
 }
 
-fn read_cstr(bytes: &[u8], off: usize) -> String {
-    let end: usize = bytes[off..]
-        .iter()
-        .position(|&b: &u8| b == 0)
-        .map_or(bytes.len(), |p: usize| off + p);
-    String::from_utf8_lossy(&bytes[off..end]).into_owned()
+fn read_cstr(bytes: &[u8], off: usize) -> Result<String> {
+    let name: &[u8] = read_cstr_at(
+        bytes,
+        off,
+        CStrOptions::new(FSG_IMPORT_NAME_MAX_BYTES, false),
+    )
+    .map_err(|cause: ByteReadError| Error::Truncated {
+        needed: cause.offset.saturating_add(cause.needed),
+        had: bytes.len(),
+    })?;
+    Ok(String::from_utf8_lossy(name).into_owned())
 }
 
 struct BitReader<'a> {
@@ -658,5 +691,79 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].dll_name, "kernel32.dll");
         assert_eq!(entries[0].api_name, "");
+    }
+
+    fn blank_section_pe() -> PeImage {
+        let mut pe: PeImage = test_pe();
+        pe.size_of_headers = 0x100;
+        pe.sections = vec![PeSection {
+            name: *b".bss\0\0\0\0",
+            virtual_size: 0x8000,
+            virtual_address: 0x1000,
+            raw_size: 0,
+            raw_pointer: 0x100,
+            pointer_to_relocations: 0,
+            characteristics: 0,
+        }];
+        pe
+    }
+
+    #[test]
+    fn a_zero_raw_size_section_is_named_in_the_refusal_rather_than_disabling_the_guard() {
+        let bytes: Vec<u8> = vec![0u8; 0x200];
+        let pe: PeImage = blank_section_pe();
+
+        let refused: Error = rva_to_file_offset(&pe, &bytes, 0x4000).expect_err("no file bytes");
+
+        let rendered: String = refused.to_string();
+        assert!(
+            rendered.contains("DR-NATIVE-0027"),
+            "the refusal must carry its own code, got {rendered}",
+        );
+        assert!(
+            rendered.contains(".bss"),
+            "the refusal must name the section that holds no file bytes, got {rendered}",
+        );
+        assert!(
+            rendered.contains("0x00004000"),
+            "the refusal must name the relative address, got {rendered}",
+        );
+    }
+
+    #[test]
+    fn an_rva_in_the_header_region_is_bounded_by_the_real_file_length() {
+        let mut pe: PeImage = blank_section_pe();
+        pe.size_of_headers = 0x8000;
+        let bytes: Vec<u8> = vec![0u8; 0x80];
+
+        assert_eq!(rva_to_file_offset(&pe, &bytes, 0x7F).ok(), Some(0x7F));
+        let refused: Error = rva_to_file_offset(&pe, &bytes, 0x80).expect_err("past the file");
+        assert!(refused.to_string().contains("<pe headers>"));
+    }
+
+    #[test]
+    fn an_import_name_is_read_within_its_cap_and_never_past_the_buffer() {
+        let mut bytes: Vec<u8> = vec![b'A'; 0x40];
+        bytes[0x10] = 0;
+        bytes[0x20..0x2C].copy_from_slice(b"gdi32.dll\0\0\0");
+
+        assert_eq!(read_cstr(&bytes, 0x20).expect("named"), "gdi32.dll");
+        assert_eq!(read_cstr(&bytes, 0x10).expect("empty"), "");
+        assert_eq!(read_cstr(&bytes, 0).expect("bounded remainder").len(), 0x10);
+        assert_eq!(read_cstr(&bytes, bytes.len()).expect("end of buffer"), "");
+        assert!(matches!(
+            read_cstr(&bytes, bytes.len() + 1),
+            Err(Error::Truncated { .. })
+        ));
+        assert!(matches!(
+            read_cstr(&bytes, usize::MAX),
+            Err(Error::Truncated { .. })
+        ));
+
+        let unterminated: Vec<u8> = vec![b'B'; FSG_IMPORT_NAME_MAX_BYTES * 2];
+        assert_eq!(
+            read_cstr(&unterminated, 0).expect("capped").len(),
+            FSG_IMPORT_NAME_MAX_BYTES,
+        );
     }
 }

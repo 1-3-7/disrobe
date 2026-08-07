@@ -128,15 +128,31 @@ pub(crate) fn interpreter_stdlib(python: &Path) -> Option<PathBuf> {
 
 #[must_use]
 pub(crate) fn run_measure(python: &Path, disrobe: &Path, lib: &Path, modules: &Path) -> HarnessRun {
+    run_measure_with_ledger(python, disrobe, lib, modules, None)
+}
+
+#[must_use]
+pub(crate) fn run_measure_with_ledger(
+    python: &Path,
+    disrobe: &Path,
+    lib: &Path,
+    modules: &Path,
+    ledger: Option<&Path>,
+) -> HarnessRun {
     let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
-    let output: std::process::Output = Command::new(python)
+    let mut command: Command = Command::new(python);
+    command
         .arg(&harness)
         .arg("--disrobe")
         .arg(disrobe)
         .arg("--lib")
         .arg(lib)
         .arg("--modules")
-        .arg(modules)
+        .arg(modules);
+    if let Some(ledger_path) = ledger {
+        command.arg("--object-ledger").arg(ledger_path);
+    }
+    let output: std::process::Output = command
         .stdin(Stdio::null())
         .output()
         .expect("spawn recompile-equivalence harness");

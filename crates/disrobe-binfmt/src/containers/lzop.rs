@@ -129,6 +129,30 @@ pub fn parse_lzop(bytes: &[u8], max_total: u64) -> Result<LzopFile> {
 }
 
 #[cfg(test)]
+pub(crate) fn build_stored_lzop(name: &str, payload: &[u8]) -> Option<Vec<u8>> {
+    let name_len: u8 = u8::try_from(name.len()).ok()?;
+    let payload_len: u32 = u32::try_from(payload.len()).ok()?;
+    let mut out: Vec<u8> = LZOP_MAGIC.to_vec();
+    out.extend_from_slice(&0x1030u16.to_be_bytes());
+    out.extend_from_slice(&0x2080u16.to_be_bytes());
+    out.extend_from_slice(&0x0940u16.to_be_bytes());
+    out.push(1);
+    out.push(5);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0o100_644_u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.push(name_len);
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&payload_len.to_be_bytes());
+    out.extend_from_slice(&payload_len.to_be_bytes());
+    out.extend_from_slice(payload);
+    out.extend_from_slice(&0u32.to_be_bytes());
+    Some(out)
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -141,31 +165,10 @@ mod tests {
         assert!(!detect_lzop(b"not lzop"));
     }
 
-    fn build_stored_lzop(name: &str, payload: &[u8]) -> Vec<u8> {
-        let mut out: Vec<u8> = LZOP_MAGIC.to_vec();
-        out.extend_from_slice(&0x1030u16.to_be_bytes());
-        out.extend_from_slice(&0x2080u16.to_be_bytes());
-        out.extend_from_slice(&0x0940u16.to_be_bytes());
-        out.push(1);
-        out.push(5);
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&0o100_644_u32.to_be_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.push(name.len() as u8);
-        out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        out.extend_from_slice(payload);
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out
-    }
-
     #[test]
     fn parses_stored_block_payload() {
         let payload: &[u8] = b"uncompressed lzop block payload, stored verbatim";
-        let lzo: Vec<u8> = build_stored_lzop("hello.txt", payload);
+        let lzo: Vec<u8> = build_stored_lzop("hello.txt", payload).expect("stored lzop");
         let file: LzopFile = parse_lzop(&lzo, 1 << 20).expect("parse stored lzop");
         assert_eq!(file.name, "hello.txt");
         assert_eq!(file.data, payload);

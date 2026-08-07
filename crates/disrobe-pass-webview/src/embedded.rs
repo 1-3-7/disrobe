@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use disrobe_binfmt::ExtractionQuota;
 
 use crate::CarveConfig;
-use crate::decompress::{Decoded, decode_blob};
+use crate::decompress::{CODEC_TRIAL_ORDER, Decoded, claims_blob, decode_blob_anchored};
 use crate::error::{Error, Result};
 use crate::model::{Compression, IntegrityStatus, RecoveredAsset};
 use crate::resolve::SectionMap;
@@ -17,8 +17,10 @@ const MAX_PATH_LEN: usize = 4096;
 const MAX_RECORD_BLOB: usize = 256 * 1024 * 1024;
 const HASH_LEN: usize = 16;
 const MAX_HASH_HAMMING: usize = 1;
-const COHERENT_PATH_PERCENT: usize = 80;
-const COMPRESSED_ANCHOR_PERCENT: usize = 80;
+const COHERENT_NESTED_PERCENT: usize = 50;
+const COHERENT_EXTENSION_PERCENT: usize = 50;
+const MAX_EXTENSION_LEN: usize = 16;
+const ANCHOR_MIN_MEMBERS: usize = 4;
 const HASH_VERIFIED_SCORE: u64 = 1_000_000_000;
 const COMPRESSED_ANCHOR_SCORE: u64 = 1_000_000;
 const HASH_BUDGET_MULT: u64 = 16;
@@ -78,16 +80,20 @@ pub(crate) fn scan(bytes: &[u8], cfg: &CarveConfig) -> Result<Assembled> {
     let mut hash_budget: u64 = (bytes.len() as u64)
         .saturating_mul(HASH_BUDGET_MULT)
         .max(HASH_BUDGET_FLOOR);
-    let mut best: Option<(u64, &Vec<Record<'_>>)> = None;
+    let mut best: Option<(u64, &[Record<'_>])> = None;
     for run in &candidates {
-        let value: u64 = score_run(run, &mut hash_budget);
-        if value > 0 && best.is_none_or(|(current, _): (u64, _)| value > current) {
-            best = Some((value, run));
+        let Some((value, window)): Option<(u64, &[Record<'_>])> =
+            best_window(run, &mut hash_budget)
+        else {
+            continue;
+        };
+        if best.is_none_or(|(current, _): (u64, &[Record<'_>])| value > current) {
+            best = Some((value, window));
         }
     }
-    let (_, winner): (u64, &Vec<Record<'_>>) =
-        best.ok_or(Error::NoEmbeddedTable(MIN_CONSECUTIVE))?;
-    assemble(winner, cfg)
+    let (_, winner): (u64, &[Record<'_>]) = best.ok_or(Error::NoEmbeddedTable(MIN_CONSECUTIVE))?;
+    let anchor: Option<Compression> = anchor_codec(winner, cfg);
+    assemble(winner, anchor, cfg)
 }
 
 const fn strides_for(ptr: usize) -> &'static [usize] {
@@ -236,48 +242,113 @@ fn valid_path(bytes: &[u8]) -> Option<&str> {
     Some(text)
 }
 
-fn score_run(run: &[Record<'_>], hash_budget: &mut u64) -> u64 {
-    if run.len() < MIN_CONSECUTIVE {
-        return 0;
-    }
-    if hash_verified(run, hash_budget) {
-        return HASH_VERIFIED_SCORE + run.len() as u64;
-    }
-    if !path_coherent(run) {
-        return 0;
-    }
-    if compression_anchored(run) {
-        return COMPRESSED_ANCHOR_SCORE + run.len() as u64;
-    }
-    run.len() as u64
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Evidence {
+    Neutral,
+    Holds,
+    Breaks,
 }
 
-fn compression_anchored(run: &[Record<'_>]) -> bool {
-    let mut blobs: usize = 0;
-    let mut framed: usize = 0;
-    for record in run {
-        if record.is_dir || record.data.is_empty() {
-            continue;
+fn best_window<'a>(
+    run: &'a [Record<'a>],
+    hash_budget: &mut u64,
+) -> Option<(u64, &'a [Record<'a>])> {
+    if let Some(window) = hash_window(run, hash_budget) {
+        return Some((HASH_VERIFIED_SCORE + window.len() as u64, window));
+    }
+    if let Some(window) =
+        compressed_window(run).filter(|found: &&'a [Record<'a>]| looks_like_asset_tree(found))
+    {
+        return Some((COMPRESSED_ANCHOR_SCORE + window.len() as u64, window));
+    }
+    coherent_window(run)
+        .filter(|found: &&'a [Record<'a>]| looks_like_asset_tree(found))
+        .map(|window: &'a [Record<'a>]| (window.len() as u64, window))
+}
+
+fn looks_like_asset_tree(window: &[Record<'_>]) -> bool {
+    let files: Vec<&Record<'_>> = window
+        .iter()
+        .filter(|record: &&Record<'_>| !record.is_dir)
+        .collect();
+    if files.len() < MIN_CONSECUTIVE {
+        return false;
+    }
+    let nested: usize = files
+        .iter()
+        .filter(|record: &&&Record<'_>| record.name.contains('/'))
+        .count();
+    let extended: usize = files
+        .iter()
+        .filter(|record: &&&Record<'_>| has_file_extension(record.name))
+        .count();
+    nested * 100 >= files.len() * COHERENT_NESTED_PERCENT
+        && extended * 100 >= files.len() * COHERENT_EXTENSION_PERCENT
+}
+
+fn has_file_extension(name: &str) -> bool {
+    let leaf: &str = name.rsplit_once('/').map_or(name, |(_, tail)| tail);
+    leaf.rsplit_once('.')
+        .is_some_and(|(stem, extension): (&str, &str)| {
+            !stem.is_empty() && !extension.is_empty() && extension.len() <= MAX_EXTENSION_LEN
+        })
+}
+
+fn longest_window<'a>(
+    run: &'a [Record<'a>],
+    min_holds: usize,
+    mut classify: impl FnMut(&Record<'a>) -> Evidence,
+) -> Option<&'a [Record<'a>]> {
+    let mut best: Option<(usize, usize)> = None;
+    let mut start: usize = 0;
+    let mut holds: usize = 0;
+    let take = |span: (usize, usize), holds: usize, best: &mut Option<(usize, usize)>| {
+        let len: usize = span.1 - span.0;
+        if holds < min_holds || len < MIN_CONSECUTIVE {
+            return;
         }
-        blobs += 1;
+        if best.is_none_or(|(from, to): (usize, usize)| len > to - from) {
+            *best = Some(span);
+        }
+    };
+    for (index, record) in run.iter().enumerate() {
+        match classify(record) {
+            Evidence::Neutral => {}
+            Evidence::Holds => holds += 1,
+            Evidence::Breaks => {
+                take((start, index), holds, &mut best);
+                start = index + 1;
+                holds = 0;
+            }
+        }
+    }
+    take((start, run.len()), holds, &mut best);
+    best.and_then(|(from, to): (usize, usize)| run.get(from..to))
+}
+
+fn compressed_window<'a>(run: &'a [Record<'a>]) -> Option<&'a [Record<'a>]> {
+    longest_window(run, MIN_CONSECUTIVE, |record: &Record<'a>| {
+        if record.is_dir || record.data.is_empty() {
+            return Evidence::Neutral;
+        }
         if detect_zstd(record.data) || detect_gzip(record.data) {
-            framed += 1;
+            Evidence::Holds
+        } else {
+            Evidence::Breaks
         }
-    }
-    blobs >= MIN_CONSECUTIVE && framed * 100 >= blobs * COMPRESSED_ANCHOR_PERCENT
+    })
 }
 
-fn hash_verified(run: &[Record<'_>], budget: &mut u64) -> bool {
-    let mut checked: usize = 0;
-    for record in run {
+fn hash_window<'a>(run: &'a [Record<'a>], budget: &mut u64) -> Option<&'a [Record<'a>]> {
+    longest_window(run, 1, |record: &Record<'a>| {
         if record.is_dir || record.data.is_empty() {
-            continue;
+            return Evidence::Neutral;
         }
         let Some(stored) = record.hash else {
-            return false;
+            return Evidence::Breaks;
         };
         let Some(remaining) = budget.checked_sub(record.data.len() as u64) else {
-            return false;
+            return Evidence::Breaks;
         };
         *budget = remaining;
         let digest: [u8; 32] = Sha256::digest(record.data).into();
@@ -285,27 +356,55 @@ fn hash_verified(run: &[Record<'_>], budget: &mut u64) -> bool {
             .filter(|&i: &usize| stored[i] != digest[i])
             .count();
         if differing > MAX_HASH_HAMMING {
-            return false;
+            Evidence::Breaks
+        } else {
+            Evidence::Holds
         }
-        checked += 1;
-    }
-    checked >= 1
+    })
 }
 
-fn path_coherent(run: &[Record<'_>]) -> bool {
-    let mut pathlike: usize = 0;
-    for record in run {
+fn coherent_window<'a>(run: &'a [Record<'a>]) -> Option<&'a [Record<'a>]> {
+    longest_window(run, MIN_CONSECUTIVE, |record: &Record<'a>| {
         if record.name.chars().any(char::is_whitespace) {
-            return false;
+            Evidence::Breaks
+        } else {
+            Evidence::Holds
         }
-        if record.name.contains('/') || record.name.contains('.') {
-            pathlike += 1;
-        }
-    }
-    pathlike * 100 >= run.len() * COHERENT_PATH_PERCENT
+    })
 }
 
-fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
+fn anchor_codec(window: &[Record<'_>], cfg: &CarveConfig) -> Option<Compression> {
+    let mut counts: [usize; CODEC_TRIAL_ORDER.len()] = [0; CODEC_TRIAL_ORDER.len()];
+    for record in window {
+        if record.is_dir || record.data.is_empty() {
+            continue;
+        }
+        for (slot, codec) in counts.iter_mut().zip(CODEC_TRIAL_ORDER) {
+            if claims_blob(
+                codec,
+                record.data,
+                decode_cap(record.data.len(), &cfg.quota),
+            ) {
+                *slot += 1;
+                break;
+            }
+        }
+    }
+    let claimed: usize = counts.iter().sum();
+    counts
+        .iter()
+        .zip(CODEC_TRIAL_ORDER)
+        .find(|(count, _): &(&usize, Compression)| {
+            **count >= ANCHOR_MIN_MEMBERS && **count == claimed
+        })
+        .map(|(_, codec): (&usize, Compression)| codec)
+}
+
+fn assemble(
+    run: &[Record<'_>],
+    anchor: Option<Compression>,
+    cfg: &CarveConfig,
+) -> Result<Assembled> {
     let mut guard: QuotaGuard = QuotaGuard::new(cfg.quota);
     let mut assets: Vec<RecoveredAsset> = Vec::new();
     let mut directories: BTreeSet<String> = BTreeSet::new();
@@ -327,20 +426,23 @@ fn assemble(run: &[Record<'_>], cfg: &CarveConfig) -> Result<Assembled> {
             continue;
         }
         declared += 1;
-        let (bytes, compression): (Vec<u8>, Compression) =
-            match decode_blob(record.data, decode_cap(record.data.len(), &cfg.quota)) {
-                Decoded::Bytes { data, compression } => (data, compression),
-                Decoded::QuotaRefused { reason, .. } => {
-                    return Err(Error::Quota {
-                        entry: safe,
-                        reason: format!(
-                            "{reason}, capped by the per-entry expansion ratio {}",
-                            cfg.quota.max_per_entry_ratio
-                        ),
-                    });
-                }
-                Decoded::Corrupt { .. } => continue,
-            };
+        let (bytes, compression): (Vec<u8>, Compression) = match decode_blob_anchored(
+            record.data,
+            decode_cap(record.data.len(), &cfg.quota),
+            anchor,
+        ) {
+            Decoded::Bytes { data, compression } => (data, compression),
+            Decoded::QuotaRefused { reason, .. } => {
+                return Err(Error::Quota {
+                    entry: safe,
+                    reason: format!(
+                        "{reason}, capped by the per-entry expansion ratio {}",
+                        cfg.quota.max_per_entry_ratio
+                    ),
+                });
+            }
+            Decoded::Corrupt { .. } => continue,
+        };
         guard.admit_entry(&safe, bytes.len() as u64, record.data.len() as u64)?;
         recovered += 1;
         assets.push(RecoveredAsset {
@@ -432,45 +534,75 @@ mod tests {
         assert!(valid_path(b"/assets/app.js").is_some());
     }
 
-    #[test]
-    fn compression_anchor_needs_a_full_run_of_framed_blobs() {
-        let zstd_frame: [u8; 8] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00, 0x00, 0x00];
-        let plain: [u8; 8] = [b'p'; 8];
-        let framed: Vec<Record<'_>> = (0..MIN_CONSECUTIVE)
-            .map(|_index: usize| Record {
-                name: "/assets/a.js",
-                is_dir: false,
-                data: zstd_frame.as_slice(),
-                hash: None,
-            })
-            .collect();
-        assert!(compression_anchored(&framed));
-
-        let mut mostly_plain: Vec<Record<'_>> = framed;
-        for record in mostly_plain.iter_mut().take(3) {
-            record.data = plain.as_slice();
+    fn framed_record(data: &'static [u8]) -> Record<'static> {
+        Record {
+            name: "/assets/a.js",
+            is_dir: false,
+            data,
+            hash: None,
         }
-        assert!(
-            !compression_anchored(&mostly_plain),
-            "a run with three raw blobs is not a compressed asset map"
+    }
+
+    const ZSTD_FRAME: [u8; 8] = [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00, 0x00, 0x00];
+    const PLAIN_BLOB: [u8; 8] = [b'p'; 8];
+
+    #[test]
+    fn the_compressed_anchor_takes_the_framed_stretch_and_leaves_the_raw_tail() {
+        let framed: Vec<Record<'_>> = (0..MIN_CONSECUTIVE)
+            .map(|_index: usize| framed_record(ZSTD_FRAME.as_slice()))
+            .collect();
+        assert_eq!(
+            compressed_window(&framed).map(<[Record<'_>]>::len),
+            Some(MIN_CONSECUTIVE)
         );
 
-        let short: Vec<Record<'_>> = (0..MIN_CONSECUTIVE - 1)
-            .map(|_index: usize| Record {
-                name: "/assets/a.js",
-                is_dir: false,
-                data: zstd_frame.as_slice(),
-                hash: None,
-            })
+        let mut with_tail: Vec<Record<'_>> = framed;
+        with_tail.extend((0..4).map(|_index: usize| framed_record(PLAIN_BLOB.as_slice())));
+        assert_eq!(
+            compressed_window(&with_tail).map(<[Record<'_>]>::len),
+            Some(MIN_CONSECUTIVE),
+            "a raw record past the table must end the window rather than disqualify the table"
+        );
+
+        let leading_raw: Vec<Record<'_>> = (0..3)
+            .map(|_index: usize| framed_record(PLAIN_BLOB.as_slice()))
+            .chain((0..4).map(|_index: usize| framed_record(ZSTD_FRAME.as_slice())))
             .collect();
         assert!(
-            !compression_anchored(&short),
-            "fewer than the consecutive-record floor must not anchor a table"
+            compressed_window(&leading_raw).is_none(),
+            "fewer framed blobs than the consecutive-record floor must not anchor a table"
         );
     }
 
     #[test]
-    fn hash_verified_bounds_aliased_blob_rehashing() {
+    fn the_hash_anchor_stops_at_the_first_record_whose_hash_does_not_describe_its_bytes() {
+        let blob: Vec<u8> = vec![0xA5u8; 64];
+        let prefix: [u8; HASH_LEN] = hash_prefix(&blob);
+        let mut records: Vec<Record<'_>> = (0..12usize)
+            .map(|_index: usize| Record {
+                name: "app.js",
+                is_dir: false,
+                data: blob.as_slice(),
+                hash: Some(prefix),
+            })
+            .collect();
+        let mut ample: u64 = 1 << 20;
+        assert_eq!(
+            hash_window(&records, &mut ample).map(<[Record<'_>]>::len),
+            Some(12)
+        );
+
+        records[9].hash = Some([0u8; HASH_LEN]);
+        let mut second: u64 = 1 << 20;
+        assert_eq!(
+            hash_window(&records, &mut second).map(<[Record<'_>]>::len),
+            Some(9),
+            "the window must end where the self-describing hash stops, not swallow the neighbour"
+        );
+    }
+
+    #[test]
+    fn hash_matching_stops_once_the_budget_is_spent() {
         let blob: Vec<u8> = vec![0xA5u8; 4096];
         let prefix: [u8; HASH_LEN] = hash_prefix(&blob);
         let records: Vec<Record<'_>> = (0..256usize)
@@ -484,17 +616,63 @@ mod tests {
 
         let mut tight: u64 = (blob.len() as u64) * 2;
         assert!(
-            !hash_verified(&records, &mut tight),
-            "an exhausted budget must report the run unverified"
+            hash_window(&records, &mut tight).is_none(),
+            "an exhausted budget must not lock a window it never verified"
         );
         assert_eq!(
             tight, 0,
             "hashing must stop after two aliased blobs, not re-hash all 256"
         );
+    }
 
-        let mut ample: u64 = (blob.len() as u64) * (records.len() as u64);
-        assert!(hash_verified(&records, &mut ample));
-        assert_eq!(ample, 0);
+    #[test]
+    fn a_flat_name_list_is_not_a_frontend_tree() {
+        let dlls: Vec<Record<'_>> = ["user32.dll", "gdi32.dll", "ole32.dll", "shell32.dll"]
+            .into_iter()
+            .cycle()
+            .take(24)
+            .map(|name: &'static str| Record {
+                name,
+                is_dir: false,
+                data: PLAIN_BLOB.as_slice(),
+                hash: None,
+            })
+            .collect();
+        let mut budget: u64 = 1 << 20;
+        assert!(
+            best_window(&dlls, &mut budget).is_none(),
+            "a run of flat names carries no directory structure and must not lock as an asset map"
+        );
+
+        let mime: Vec<Record<'_>> = ["application/wasm", "text/html", "image/png", "video/mp4"]
+            .into_iter()
+            .cycle()
+            .take(24)
+            .map(|name: &'static str| Record {
+                name,
+                is_dir: false,
+                data: PLAIN_BLOB.as_slice(),
+                hash: None,
+            })
+            .collect();
+        assert!(
+            best_window(&mime, &mut budget).is_none(),
+            "a media-type table is nested but carries no file extensions, so it is not a frontend \
+             tree even though it is longer than one"
+        );
+
+        let tree: Vec<Record<'_>> = (0..12usize)
+            .map(|_index: usize| Record {
+                name: "dist/assets/app.js",
+                is_dir: false,
+                data: PLAIN_BLOB.as_slice(),
+                hash: None,
+            })
+            .collect();
+        assert_eq!(
+            best_window(&tree, &mut budget).map(|(_, window): (u64, &[Record<'_>])| window.len()),
+            Some(12)
+        );
     }
 
     fn build_run_groups(groups: usize, per_group: usize) -> Vec<u8> {

@@ -7,14 +7,12 @@ use disrobe_llm_metadata::MetadataCapability;
 use crate::cli::llm::LlmFlags;
 
 #[cfg(feature = "full")]
-const UNIMPLEMENTED_CATEGORIES: &[(Category, &str)] = &[(
-    Category::PiiMap,
-    "no pass implements emit_pii_map; the category is tracked for implementation or withdrawal",
-)];
+const UNIMPLEMENTED_CATEGORIES: &[(Category, &str)] = &[];
 
 #[cfg(feature = "full")]
 fn linked_capabilities() -> Vec<MetadataCapability> {
     let mut capabilities: Vec<MetadataCapability> = vec![
+        disrobe_llm_metadata::PII_CAPABILITY,
         disrobe_pass_native::NATIVE_METADATA_CAPABILITY,
         disrobe_pass_pyarmor::PYARMOR_METADATA_CAPABILITY,
         disrobe_pass_py_deob::PY_DEOB_METADATA_CAPABILITY,

@@ -47,6 +47,14 @@ pub fn detect(src: &[u8]) -> Option<ObfuscatorDetection> {
         confidence = confidence.max(60);
     }
 
+    if matches_vmify_container_shape(src) {
+        found.push("VmifyContainerDispatch".to_owned());
+        if variant.is_none() {
+            variant = Some("Vmify(bareContainer)");
+        }
+        confidence = confidence.max(80);
+    }
+
     if found.is_empty() {
         return None;
     }
@@ -79,6 +87,8 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
     Ok(result)
 }
 
+const MAX_NESTED_VMIFY_PASSES: usize = 4;
+
 fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool) {
     use crate::obfuscator::prometheus_vmlift::{
         analyze_dispatch, count_arithmetic_operators, fold_numeric_expressions,
@@ -96,6 +106,11 @@ fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool
         result.residual_markers.push(format!(
             "prometheus: folded {folded_count} NumbersToExpressions arithmetic wrappers back to numeric literals ({before_ops} -> {after_ops} arithmetic operators), runtime-equivalent under a real Lua interpreter"
         ));
+    }
+
+    if let Some(vmify_summary) = apply_vmify_devirt(&folded, result) {
+        result.residual_markers.push(vmify_summary);
+        return;
     }
 
     let dispatch_note: Option<String> = analyze_dispatch(&folded).map(|report| {
@@ -124,6 +139,76 @@ fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool
     result.residual_markers.push(dispatch_note.unwrap_or_else(|| {
         "prometheus: the Vmify opcode/control-flow layer remains as an arithmetic-dispatch interpreter and is not lifted back to structured Lua by this pass".to_owned()
     }));
+}
+
+fn apply_vmify_devirt(folded: &str, result: &mut PeelResult) -> Option<String> {
+    use crate::obfuscator::prometheus_vm_cfg::{VmifyRecovery, recover};
+
+    let mut current: String = folded.to_owned();
+    let mut passes: usize = 0;
+    let mut last: Option<VmifyRecovery> = None;
+    let mut refusal: Option<String> = None;
+    while passes < MAX_NESTED_VMIFY_PASSES {
+        match recover(&current) {
+            Ok(Some(recovery)) => {
+                current.clone_from(&recovery.source);
+                passes += 1;
+                last = Some(recovery);
+            }
+            Ok(None) => break,
+            Err(err) => {
+                refusal = Some(err.to_string());
+                break;
+            }
+        }
+    }
+    let Some(recovery): Option<VmifyRecovery> = last else {
+        if let Some(reason) = refusal {
+            result.residual_markers.push(format!(
+                "prometheus: a Vmify container was found but recovery was refused rather than emitted partly wrong: {reason}"
+            ));
+        }
+        return None;
+    };
+    if let Some(reason) = &refusal {
+        result.residual_markers.push(format!(
+            "prometheus: recovered {passes} Vmify layer(s), then a further recovery pass was refused: {reason}"
+        ));
+    }
+    result.deobfuscated = current.into_bytes();
+    result
+        .passes_run
+        .push("prometheus-vmify-container-devirt".to_owned());
+    if passes > 1 {
+        result
+            .passes_run
+            .push(format!("prometheus-vmify-nested-devirt-{passes}-layers"));
+    }
+    result.fully_recovered = recovery.fully_recovered && refusal.is_none();
+    let mut summary: String = format!(
+        "prometheus: Vmify container devirtualized over {passes} layer(s), handlers {}/{} ({}%), functions {}/{}",
+        recovery.handlers_recovered,
+        recovery.handlers_total,
+        ratio_pct(recovery.handlers_recovered, recovery.handlers_total),
+        recovery.functions_recovered,
+        recovery.functions_total,
+    );
+    if recovery.unreached_structural_leaves > 0 {
+        summary.push_str(&format!(
+            "; {} dispatch-tree leaf(ves) with real statements were never reached from a discovered function entry (excluded from the handler count above; likely dead or decoy code)",
+            recovery.unreached_structural_leaves
+        ));
+    }
+    Some(summary)
+}
+
+#[inline]
+fn ratio_pct(num: usize, den: usize) -> u8 {
+    if den == 0 {
+        return 100;
+    }
+    let pct: usize = num.saturating_mul(100) / den;
+    u8::try_from(pct.min(100)).unwrap_or(100)
 }
 
 fn decode_string_pool(text: &str) -> Option<PeelResult> {
@@ -308,4 +393,20 @@ fn matches_minify_shape(src: &[u8]) -> bool {
     let newlines: usize = head.iter().filter(|b: &&u8| **b == b'\n').count();
     let density: usize = head_len / newlines.max(1);
     density >= 512
+}
+
+const VMIFY_DISPATCH_SCAN_LIMIT: usize = 1 << 24;
+
+fn matches_vmify_container_shape(src: &[u8]) -> bool {
+    if src.len() > VMIFY_DISPATCH_SCAN_LIMIT
+        || !disrobe_core::byte_search::contains(src, b"function")
+        || !disrobe_core::byte_search::contains(src, b"while ")
+    {
+        return false;
+    }
+    let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(src);
+    !matches!(
+        crate::obfuscator::prometheus_vm_cfg::recover(&text),
+        Ok(None)
+    )
 }

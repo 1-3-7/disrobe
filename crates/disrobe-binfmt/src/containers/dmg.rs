@@ -494,6 +494,72 @@ impl std::io::Write for DmgChunkWriter {
 }
 
 #[cfg(test)]
+fn dmg_put_chunk(buf: &mut Vec<u8>, ty: u32, sector: u64, count: u64, off: u64, len: u64) {
+    buf.extend_from_slice(&ty.to_be_bytes());
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf.extend_from_slice(&sector.to_be_bytes());
+    buf.extend_from_slice(&count.to_be_bytes());
+    buf.extend_from_slice(&off.to_be_bytes());
+    buf.extend_from_slice(&len.to_be_bytes());
+}
+
+#[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let catalog_record_name_decoding_breaks_at_the_first_embedded_nul: bool =
+        name.contains('\u{0}');
+    if catalog_record_name_decoding_breaks_at_the_first_embedded_nul {
+        return None;
+    }
+    let data_fork: Vec<u8> = super::hfsplus::build_hfsplus_image(name, body);
+    let sector_count: u64 = data_fork.len() as u64 / SECTOR;
+
+    let mut mish: Vec<u8> = Vec::new();
+    mish.extend_from_slice(&MISH_MAGIC.to_be_bytes());
+    mish.extend_from_slice(&1u32.to_be_bytes());
+    mish.extend_from_slice(&0u64.to_be_bytes());
+    mish.extend_from_slice(&sector_count.to_be_bytes());
+    mish.extend_from_slice(&0u64.to_be_bytes());
+    mish.extend_from_slice(&0u32.to_be_bytes());
+    mish.extend_from_slice(&0u32.to_be_bytes());
+    mish.extend_from_slice(&[0u8; 24]);
+    mish.extend_from_slice(&[0u8; 136]);
+    mish.extend_from_slice(&2u32.to_be_bytes());
+    dmg_put_chunk(
+        &mut mish,
+        TYPE_RAW,
+        0,
+        sector_count,
+        0,
+        data_fork.len() as u64,
+    );
+    dmg_put_chunk(&mut mish, TYPE_TERMINATOR, sector_count, 0, 0, 0);
+
+    let b64: String = base64::engine::general_purpose::STANDARD.encode(&mish);
+    let xml: String = format!(
+        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>resource-fork</key><dict><key>blkx</key><array><dict><key>Name</key><string>disk</string><key>Data</key><data>{b64}</data></dict></array></dict></dict></plist>"
+    );
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&data_fork);
+    let xml_offset: u64 = out.len() as u64;
+    out.extend_from_slice(xml.as_bytes());
+    let xml_length: u64 = xml.len() as u64;
+
+    let mut koly: Vec<u8> = vec![0u8; KOLY_LEN];
+    koly[0..4].copy_from_slice(KOLY_MAGIC);
+    koly[KOLY_VERSION_OFFSET..KOLY_VERSION_OFFSET + 4].copy_from_slice(&KOLY_VERSION.to_be_bytes());
+    koly[KOLY_HEADER_SIZE_OFFSET..KOLY_HEADER_SIZE_OFFSET + 4]
+        .copy_from_slice(&KOLY_HEADER_SIZE.to_be_bytes());
+    koly[24..32].copy_from_slice(&0u64.to_be_bytes());
+    koly[32..40].copy_from_slice(&(data_fork.len() as u64).to_be_bytes());
+    koly[216..224].copy_from_slice(&xml_offset.to_be_bytes());
+    koly[224..232].copy_from_slice(&xml_length.to_be_bytes());
+    koly[492..500].copy_from_slice(&sector_count.to_be_bytes());
+    out.extend_from_slice(&koly);
+    Some(out)
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use std::io::Write as _;

@@ -110,6 +110,112 @@ pub enum Error {
 
     #[error("DR-MOB-0032: Dart AOT snapshot section {section} is outside readable ELF data")]
     DartSectionOutOfBounds { section: String },
+
+    #[error(
+        "DR-MOB-0033: Hermes exception handler table malformed or truncated for function {index}"
+    )]
+    HermesExceptionTableMalformed { index: usize },
+
+    #[error(
+        "DR-MOB-0034: Dart pinned snapshot graph ran out of bytes at offset {offset} while reading {resource}"
+    )]
+    DartGraphTruncated {
+        offset: usize,
+        resource: &'static str,
+    },
+
+    #[error(
+        "DR-MOB-0035: Dart pinned snapshot graph {resource} at offset {offset} is {actual}, exceeding the cap of {limit}"
+    )]
+    DartGraphLimitExceeded {
+        resource: &'static str,
+        offset: usize,
+        actual: usize,
+        limit: usize,
+    },
+
+    #[error(
+        "DR-MOB-0036: Dart pinned snapshot graph cluster {index} uses unsupported class id {cid} at offset {offset}"
+    )]
+    DartGraphUnsupportedCluster {
+        index: usize,
+        cid: u32,
+        offset: usize,
+    },
+
+    #[error(
+        "DR-MOB-0037: Dart pinned snapshot graph cluster {index} has malformed {field} value {value} at offset {offset}"
+    )]
+    DartGraphInvalidClusterValue {
+        index: usize,
+        field: &'static str,
+        value: i64,
+        offset: usize,
+    },
+
+    #[error(
+        "DR-MOB-0038: Dart pinned snapshot graph object counts are inconsistent: base {base}, total {total}"
+    )]
+    DartGraphInvalidObjectCounts { base: usize, total: usize },
+
+    #[error(
+        "DR-MOB-0039: Dart pinned snapshot graph cluster {index} allocated through reference {actual}, expected {expected}"
+    )]
+    DartGraphAllocationMismatch {
+        index: usize,
+        actual: usize,
+        expected: usize,
+    },
+
+    #[error(
+        "DR-MOB-0040: Dart pinned snapshot graph base object count {actual} does not match the preceding vm snapshot count {expected}"
+    )]
+    DartGraphBaseObjectMismatch { actual: usize, expected: usize },
+
+    #[error(
+        "DR-MOB-0041: Dart pinned snapshot graph reference {reference} exceeds object count {objects} at offset {offset}"
+    )]
+    DartGraphReferenceOutOfBounds {
+        reference: u32,
+        objects: usize,
+        offset: usize,
+    },
+
+    #[error(
+        "DR-MOB-0042: Dart pinned snapshot graph cluster {index} object {object} repeats length {actual}, expected {expected}, at offset {offset}"
+    )]
+    DartGraphRepeatedLengthMismatch {
+        index: usize,
+        object: u32,
+        actual: usize,
+        expected: usize,
+        offset: usize,
+    },
+
+    #[error("DR-MOB-0043: Dart pinned snapshot vm and isolate headers disagree on {field}")]
+    DartGraphHeaderMismatch { field: &'static str },
+
+    #[error(
+        "DR-MOB-0044: Dart pinned snapshot graph recovery limit for {resource} is {actual}, exceeding the hard cap of {limit}"
+    )]
+    DartGraphConfiguredLimitExceeded {
+        resource: &'static str,
+        actual: usize,
+        limit: usize,
+    },
+
+    #[error(
+        "DR-MOB-0045: Dart pinned snapshot declares {declared} bytes but input holds {available}"
+    )]
+    DartGraphDeclaredLengthOutOfBounds { declared: usize, available: usize },
+
+    #[error(
+        "DR-MOB-0046: Dart pinned snapshot graph object pool entry at cluster {index} object {object} has unsupported bits {bits}"
+    )]
+    DartGraphInvalidObjectPoolEntry { index: usize, object: u32, bits: u8 },
+
+    #[error("DR-MOB-0047: Dart pinned snapshot header at offset {offset} is malformed: {reason}")]
+    DartGraphInvalidHeader { offset: usize, reason: &'static str },
 }
 
 impl From<zip::result::ZipError> for Error {

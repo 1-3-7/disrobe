@@ -387,7 +387,7 @@ static int a64m_greater(uint64_t a, uint64_t b, unsigned prec, unsigned ebits) {
     return abs_a > abs_b;
 }
 
-static uint64_t a64m_minmax(uint64_t a, uint64_t b, unsigned prec, unsigned ebits, int is_max) {
+static uint64_t a64m_minmax(uint64_t a, uint64_t b, unsigned prec, unsigned ebits, int is_max, int propagate) {
     unsigned mbits = prec - 1u;
     unsigned emax = (1u << ebits) - 1u;
     uint64_t sign_mask = (uint64_t)1 << (mbits + ebits);
@@ -399,9 +399,14 @@ static uint64_t a64m_minmax(uint64_t a, uint64_t b, unsigned prec, unsigned ebit
     int b_nan = abs_b > infinity;
     if (a_nan && (a & quiet) == 0ull) return a | quiet;
     if (b_nan && (b & quiet) == 0ull) return b | quiet;
-    if (a_nan && b_nan) return a;
-    if (a_nan) return b;
-    if (b_nan) return a;
+    if (propagate) {
+        if (a_nan) return a;
+        if (b_nan) return b;
+    } else {
+        if (a_nan && b_nan) return a;
+        if (a_nan) return b;
+        if (b_nan) return a;
+    }
     if (abs_a == 0ull && abs_b == 0ull) return is_max ? ((a & b) & sign_mask) : ((a | b) & sign_mask);
     if (is_max) return a64m_greater(a, b, prec, ebits) ? a : b;
     return a64m_greater(b, a, prec, ebits) ? a : b;
@@ -456,10 +461,14 @@ static float a64m_fma_f32(float a, float b, float c) { return a64m_bits_to_f32((
 static double a64m_fma_f64(double a, double b, double c) { return a64m_bits_to_f64(a64m_fma(a64m_f64_to_bits(a), a64m_f64_to_bits(b), a64m_f64_to_bits(c), 53u, 11u)); }
 static float a64m_rint_f32(float x, int mode) { return a64m_bits_to_f32((uint32_t)a64m_rint((uint64_t)a64m_f32_to_bits(x), 24u, 8u, mode)); }
 static double a64m_rint_f64(double x, int mode) { return a64m_bits_to_f64(a64m_rint(a64m_f64_to_bits(x), 53u, 11u, mode)); }
-static float a64m_maxnm_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 1)); }
-static float a64m_minnm_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 0)); }
-static double a64m_maxnm_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 1)); }
-static double a64m_minnm_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 0)); }
+static float a64m_maxnm_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 1, 0)); }
+static float a64m_minnm_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 0, 0)); }
+static double a64m_maxnm_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 1, 0)); }
+static double a64m_minnm_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 0, 0)); }
+static float a64m_max_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 1, 1)); }
+static float a64m_min_f32(float a, float b) { return a64m_bits_to_f32((uint32_t)a64m_minmax((uint64_t)a64m_f32_to_bits(a), (uint64_t)a64m_f32_to_bits(b), 24u, 8u, 0, 1)); }
+static double a64m_max_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 1, 1)); }
+static double a64m_min_f64(double a, double b) { return a64m_bits_to_f64(a64m_minmax(a64m_f64_to_bits(a), a64m_f64_to_bits(b), 53u, 11u, 0, 1)); }
 static float a64m_sqrt_f32(float x) { return a64m_bits_to_f32((uint32_t)a64m_sqrt((uint64_t)a64m_f32_to_bits(x), 24u, 8u)); }
 static double a64m_sqrt_f64(double x) { return a64m_bits_to_f64(a64m_sqrt(a64m_f64_to_bits(x), 53u, 11u)); }
 static int32_t a64m_cvt_i32_f32(float x, int mode, unsigned fbits) { return (int32_t)(uint32_t)a64m_cvt((uint64_t)a64m_f32_to_bits(x), 24u, 8u, 1, 32u, mode, fbits); }

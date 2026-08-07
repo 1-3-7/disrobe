@@ -17,8 +17,17 @@ pub(crate) const SAMPLING_RULE: &str = "per base image: truncation at every powe
      at every eighth offset of the first 256 bytes; a 0xFF flip at 16 offsets spaced evenly through \
      the remainder; and 0x00000000, 0x80000000 and 0xFFFFFFFF written over eight four-byte-aligned \
      slots spaced evenly through the first 256 bytes. Exhaustive single-byte mutation is not \
-     claimed and is not performed. The core sweep takes every sixth variant of each base; the deep \
-     sweep takes every variant. Entry points marked expensive, which are the unpackers, the stub \
+     claimed and is not performed. On top of that, every base that parses as a PE, an ELF or a \
+     Mach-O gets a structure-aware rewrite of its own section, segment or load-command table: \
+     zero-raw-size sections with a large virtual span, zero-length sections, sections forced to \
+     overlap, section addresses and file pointers pushed off alignment, sizes and counts inflated \
+     to the format's own limit, raw pointers past the end of file, a size-of-headers past the end \
+     of file, a PE offset that points at itself, the section table reversed, ELF program headers \
+     placed over the ELF header, a zero program-header entry size, and a Mach-O load command of \
+     zero size, which are the self-referential shapes each format allows. Every structural variant \
+     runs in both sweeps and none is sampled out. The core sweep takes every sixth mutation \
+     variant of each base; the deep sweep takes every variant. Entry points marked expensive, \
+     which are the unpackers, the stub \
      emulator, the decompiler and the whole-image analyses, receive only inputs of 8192 bytes or \
      fewer, because one of them needs 103 seconds on a 22 kilobyte image and would otherwise turn \
      the suite into a benchmark; every truncation of a committed fixture below that cap still \
@@ -101,6 +110,376 @@ pub(crate) fn variants_of(name: &str, base: &[u8]) -> Vec<HostileInput> {
         }
     }
 
+    out
+}
+
+const PE_SECTION_ENTRY: usize = 40;
+const PE_SECTION_VIRTUAL_SIZE: usize = 8;
+const PE_SECTION_VIRTUAL_ADDRESS: usize = 12;
+const PE_SECTION_RAW_SIZE: usize = 16;
+const PE_SECTION_RAW_POINTER: usize = 20;
+const PE_OPTIONAL_SIZE_OF_HEADERS: usize = 60;
+const HOSTILE_VIRTUAL_SPAN: u32 = 0x0100_0000;
+const HOSTILE_NEAR_MAX: u32 = 0xFFFF_FFF0;
+const ELF_PROGRAM_HEADER_REWRITE_CAP: usize = 4096;
+
+fn put_u16_le(buf: &mut [u8], at: usize, value: u16) -> bool {
+    let Some(end): Option<usize> = at.checked_add(2) else {
+        return false;
+    };
+    buf.get_mut(at..end).is_some_and(|window: &mut [u8]| {
+        window.copy_from_slice(&value.to_le_bytes());
+        true
+    })
+}
+
+fn put_u32(buf: &mut [u8], at: usize, value: u32, little_endian: bool) -> bool {
+    let Some(end): Option<usize> = at.checked_add(4) else {
+        return false;
+    };
+    let raw: [u8; 4] = if little_endian {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    buf.get_mut(at..end).is_some_and(|window: &mut [u8]| {
+        window.copy_from_slice(&raw);
+        true
+    })
+}
+
+fn put_u64(buf: &mut [u8], at: usize, value: u64, little_endian: bool) -> bool {
+    let Some(end): Option<usize> = at.checked_add(8) else {
+        return false;
+    };
+    let raw: [u8; 8] = if little_endian {
+        value.to_le_bytes()
+    } else {
+        value.to_be_bytes()
+    };
+    buf.get_mut(at..end).is_some_and(|window: &mut [u8]| {
+        window.copy_from_slice(&raw);
+        true
+    })
+}
+
+fn read_u16_at(buf: &[u8], at: usize, little_endian: bool) -> Option<u16> {
+    let end: usize = at.checked_add(2)?;
+    let raw: [u8; 2] = buf.get(at..end)?.try_into().ok()?;
+    Some(if little_endian {
+        u16::from_le_bytes(raw)
+    } else {
+        u16::from_be_bytes(raw)
+    })
+}
+
+fn read_u16_le(buf: &[u8], at: usize) -> Option<u16> {
+    read_u16_at(buf, at, true)
+}
+
+fn read_u32_at(buf: &[u8], at: usize, little_endian: bool) -> Option<u32> {
+    let end: usize = at.checked_add(4)?;
+    let raw: [u8; 4] = buf.get(at..end)?.try_into().ok()?;
+    Some(if little_endian {
+        u32::from_le_bytes(raw)
+    } else {
+        u32::from_be_bytes(raw)
+    })
+}
+
+type SectionRewrite = fn(&mut Vec<u8>, usize, u32);
+
+#[derive(Debug, Clone, Copy)]
+struct PeLayout {
+    coff: usize,
+    optional_header: usize,
+    section_table: usize,
+    section_count: usize,
+}
+
+fn pe_layout(base: &[u8]) -> Option<PeLayout> {
+    if base.get(..2)? != b"MZ" {
+        return None;
+    }
+    let e_lfanew: usize = read_u32_at(base, 0x3C, true)? as usize;
+    if base.get(e_lfanew..e_lfanew.checked_add(4)?)? != b"PE\x00\x00" {
+        return None;
+    }
+    let coff: usize = e_lfanew.checked_add(4)?;
+    let section_count: usize = usize::from(read_u16_le(base, coff.checked_add(2)?)?);
+    let optional_size: usize = usize::from(read_u16_le(base, coff.checked_add(16)?)?);
+    let optional_header: usize = coff.checked_add(20)?;
+    let section_table: usize = optional_header.checked_add(optional_size)?;
+    let span: usize = section_count.checked_mul(PE_SECTION_ENTRY)?;
+    if section_table.checked_add(span)? > base.len() || section_count == 0 {
+        return None;
+    }
+    Some(PeLayout {
+        coff,
+        optional_header,
+        section_table,
+        section_count,
+    })
+}
+
+fn pe_structural_variants(name: &str, base: &[u8], out: &mut Vec<HostileInput>) {
+    let Some(layout): Option<PeLayout> = pe_layout(base) else {
+        return;
+    };
+    let entry_at = |index: usize| -> usize { layout.section_table + index * PE_SECTION_ENTRY };
+    let first_virtual_address: u32 =
+        read_u32_at(base, entry_at(0) + PE_SECTION_VIRTUAL_ADDRESS, true).unwrap_or_default();
+
+    let per_section: [(&str, SectionRewrite); 6] = [
+        ("blank-sections", |buf: &mut Vec<u8>, at: usize, _: u32| {
+            put_u32(buf, at + PE_SECTION_RAW_SIZE, 0, true);
+            put_u32(
+                buf,
+                at + PE_SECTION_VIRTUAL_SIZE,
+                HOSTILE_VIRTUAL_SPAN,
+                true,
+            );
+        }),
+        (
+            "zero-length-sections",
+            |buf: &mut Vec<u8>, at: usize, _: u32| {
+                put_u32(buf, at + PE_SECTION_RAW_SIZE, 0, true);
+                put_u32(buf, at + PE_SECTION_VIRTUAL_SIZE, 0, true);
+            },
+        ),
+        (
+            "overlapping-sections",
+            |buf: &mut Vec<u8>, at: usize, first: u32| {
+                put_u32(buf, at + PE_SECTION_VIRTUAL_ADDRESS, first, true);
+                put_u32(
+                    buf,
+                    at + PE_SECTION_VIRTUAL_SIZE,
+                    HOSTILE_VIRTUAL_SPAN,
+                    true,
+                );
+            },
+        ),
+        (
+            "unaligned-sections",
+            |buf: &mut Vec<u8>, at: usize, _: u32| {
+                for field in [PE_SECTION_VIRTUAL_ADDRESS, PE_SECTION_RAW_POINTER] {
+                    let bumped: u32 = read_u32_at(buf, at + field, true)
+                        .unwrap_or_default()
+                        .wrapping_add(1);
+                    put_u32(buf, at + field, bumped, true);
+                }
+            },
+        ),
+        (
+            "inflated-section-sizes",
+            |buf: &mut Vec<u8>, at: usize, _: u32| {
+                put_u32(buf, at + PE_SECTION_RAW_SIZE, HOSTILE_NEAR_MAX, true);
+                put_u32(buf, at + PE_SECTION_VIRTUAL_SIZE, HOSTILE_NEAR_MAX, true);
+            },
+        ),
+        (
+            "raw-pointer-past-eof",
+            |buf: &mut Vec<u8>, at: usize, _: u32| {
+                put_u32(buf, at + PE_SECTION_RAW_POINTER, HOSTILE_NEAR_MAX, true);
+            },
+        ),
+    ];
+    for (tag, rewrite) in per_section {
+        let mut mutated: Vec<u8> = base.to_vec();
+        for index in 0..layout.section_count {
+            rewrite(&mut mutated, entry_at(index), first_virtual_address);
+        }
+        push_variant(out, format!("{name}/{tag}"), mutated);
+    }
+
+    let mut inflated_count: Vec<u8> = base.to_vec();
+    put_u16_le(&mut inflated_count, layout.coff + 2, u16::MAX);
+    push_variant(
+        out,
+        format!("{name}/inflated-section-count"),
+        inflated_count,
+    );
+
+    let mut headers_past_eof: Vec<u8> = base.to_vec();
+    put_u32(
+        &mut headers_past_eof,
+        layout.optional_header + PE_OPTIONAL_SIZE_OF_HEADERS,
+        u32::MAX,
+        true,
+    );
+    push_variant(out, format!("{name}/headers-past-eof"), headers_past_eof);
+
+    let mut self_referential: Vec<u8> = base.to_vec();
+    put_u32(&mut self_referential, 0x3C, 0x3C, true);
+    push_variant(
+        out,
+        format!("{name}/pe-offset-points-at-itself"),
+        self_referential,
+    );
+
+    let mut descending: Vec<u8> = base.to_vec();
+    for index in 0..layout.section_count {
+        let source: usize = entry_at(layout.section_count - 1 - index);
+        let Some(entry): Option<Vec<u8>> = base
+            .get(source..source + PE_SECTION_ENTRY)
+            .map(<[u8]>::to_vec)
+        else {
+            continue;
+        };
+        let target: usize = entry_at(index);
+        if let Some(window) = descending.get_mut(target..target + PE_SECTION_ENTRY) {
+            window.copy_from_slice(&entry);
+        }
+    }
+    push_variant(out, format!("{name}/descending-section-order"), descending);
+}
+
+fn elf_structural_variants(name: &str, base: &[u8], out: &mut Vec<HostileInput>) {
+    if base.get(..4) != Some(b"\x7FELF".as_slice()) {
+        return;
+    }
+    let Some(&class): Option<&u8> = base.get(4) else {
+        return;
+    };
+    let Some(&data): Option<&u8> = base.get(5) else {
+        return;
+    };
+    let bits64: bool = class == 2;
+    let little_endian: bool = data != 2;
+    let (phoff_at, phentsize_at, phnum_at, shnum_at): (usize, usize, usize, usize) = if bits64 {
+        (32, 54, 56, 60)
+    } else {
+        (28, 42, 44, 48)
+    };
+
+    for (tag, at, value) in [
+        ("elf-phnum-max", phnum_at, u16::MAX),
+        ("elf-shnum-max", shnum_at, u16::MAX),
+        ("elf-phentsize-zero", phentsize_at, 0),
+    ] {
+        let mut mutated: Vec<u8> = base.to_vec();
+        let raw: u16 = if little_endian {
+            value
+        } else {
+            value.swap_bytes()
+        };
+        if put_u16_le(&mut mutated, at, raw) {
+            push_variant(out, format!("{name}/{tag}"), mutated);
+        }
+    }
+
+    let mut phoff_self: Vec<u8> = base.to_vec();
+    let wrote: bool = if bits64 {
+        put_u64(&mut phoff_self, phoff_at, 0, little_endian)
+    } else {
+        put_u32(&mut phoff_self, phoff_at, 0, little_endian)
+    };
+    if wrote {
+        push_variant(
+            out,
+            format!("{name}/elf-program-headers-overlap-the-elf-header"),
+            phoff_self,
+        );
+    }
+
+    let phentsize: usize =
+        usize::from(read_u16_at(base, phentsize_at, little_endian).unwrap_or_default());
+    let phnum: usize = usize::from(read_u16_at(base, phnum_at, little_endian).unwrap_or_default())
+        .min(ELF_PROGRAM_HEADER_REWRITE_CAP);
+    let phoff: usize = if bits64 {
+        base.get(phoff_at..phoff_at + 8)
+            .and_then(|raw: &[u8]| <[u8; 8]>::try_from(raw).ok())
+            .map(|raw: [u8; 8]| {
+                if little_endian {
+                    u64::from_le_bytes(raw)
+                } else {
+                    u64::from_be_bytes(raw)
+                }
+            })
+            .and_then(|value: u64| usize::try_from(value).ok())
+            .unwrap_or_default()
+    } else {
+        read_u32_at(base, phoff_at, little_endian).unwrap_or_default() as usize
+    };
+    if phentsize == 0 || phnum == 0 {
+        return;
+    }
+    let (vaddr_at, filesz_at, memsz_at): (usize, usize, usize) =
+        if bits64 { (16, 32, 40) } else { (8, 16, 20) };
+    for (tag, vaddr, sizes) in [
+        ("elf-segments-overlap", 0u64, u64::from(u32::MAX)),
+        ("elf-segments-zero-length", 0u64, 0u64),
+    ] {
+        let mut mutated: Vec<u8> = base.to_vec();
+        let mut wrote_any: bool = false;
+        for index in 0..phnum {
+            let Some(entry): Option<usize> = index
+                .checked_mul(phentsize)
+                .and_then(|delta: usize| phoff.checked_add(delta))
+            else {
+                break;
+            };
+            let mut ok: bool = true;
+            for (field, value) in [(vaddr_at, vaddr), (filesz_at, sizes), (memsz_at, sizes)] {
+                let target: usize = entry + field;
+                ok &= if bits64 {
+                    put_u64(&mut mutated, target, value, little_endian)
+                } else {
+                    put_u32(
+                        &mut mutated,
+                        target,
+                        u32::try_from(value).unwrap_or(u32::MAX),
+                        little_endian,
+                    )
+                };
+            }
+            wrote_any |= ok;
+        }
+        if wrote_any {
+            push_variant(out, format!("{name}/{tag}"), mutated);
+        }
+    }
+}
+
+fn macho_structural_variants(name: &str, base: &[u8], out: &mut Vec<HostileInput>) {
+    let Some(magic): Option<u32> = read_u32_at(base, 0, true) else {
+        return;
+    };
+    if magic == 0xBEBA_FECA {
+        for (tag, at, value) in [
+            ("macho-fat-nfat-max", 4usize, u32::MAX),
+            ("macho-fat-slice-offset-zero", 16usize, 0u32),
+            ("macho-fat-slice-offset-max", 16usize, u32::MAX),
+        ] {
+            let mut mutated: Vec<u8> = base.to_vec();
+            if put_u32(&mut mutated, at, value, false) {
+                push_variant(out, format!("{name}/{tag}"), mutated);
+            }
+        }
+        return;
+    }
+    let bits64: bool = magic == 0xFEED_FACF;
+    if !bits64 && magic != 0xFEED_FACE {
+        return;
+    }
+    let first_command: usize = if bits64 { 32 } else { 28 };
+    for (tag, at, value) in [
+        ("macho-ncmds-max", 16usize, u32::MAX),
+        ("macho-first-cmdsize-zero", first_command + 4, 0u32),
+        ("macho-first-cmdsize-max", first_command + 4, u32::MAX),
+    ] {
+        let mut mutated: Vec<u8> = base.to_vec();
+        if put_u32(&mut mutated, at, value, true) {
+            push_variant(out, format!("{name}/{tag}"), mutated);
+        }
+    }
+}
+
+pub(crate) fn structural_variants_of(name: &str, base: &[u8]) -> Vec<HostileInput> {
+    let mut out: Vec<HostileInput> = Vec::new();
+    pe_structural_variants(name, base, &mut out);
+    elf_structural_variants(name, base, &mut out);
+    macho_structural_variants(name, base, &mut out);
     out
 }
 

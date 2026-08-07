@@ -141,6 +141,19 @@ pub enum Error {
 
     #[error("DR-JVM-0033: resource string index {idx} out of range (size {size})")]
     BadArscStringIndex { idx: usize, size: usize },
+
+    #[error("DR-JVM-0034: not an Android Archive (missing classes.jar entry at the .aar zip root)")]
+    NotAar,
+
+    #[error("DR-JVM-0035: not an APK Set (no .apk member entries found in the .apks zip)")]
+    NotApks,
+
+    #[error(
+        "DR-JVM-0036: OAT multi-dex extraction unsupported: {count} embedded dex file(s) \
+         declared, but the per-entry OatDexFile record stride past the first entry is \
+         version-dependent and not derivable from the header alone"
+    )]
+    OatMultiDexUnsupported { count: u32 },
 }
 
 impl From<ByteReadError> for Error {

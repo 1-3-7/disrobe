@@ -10,6 +10,8 @@ mod error;
 mod model;
 mod resolve;
 
+use disrobe_binfmt::{ContainerKind, detect_container};
+
 pub use detect::{FamilyEvidence, classify, classify_all, detect_family};
 pub use disrobe_binfmt::ExtractionQuota;
 pub use error::{Error, Result};
@@ -74,6 +76,9 @@ pub fn carve_with_config(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport>
             recovered: assembled.recovered,
         }),
         Err(reason @ (Error::NativeParse(_) | Error::NoEmbeddedTable(_))) => {
+            if let Some(container) = packaged_container(bytes) {
+                return Err(Error::PackagedContainer { container });
+            }
             match detect::embedded_family(bytes) {
                 WebviewFamily::Unknown => Err(Error::NotDetected),
                 family => Err(Error::FamilyNotExtractable {
@@ -84,4 +89,10 @@ pub fn carve_with_config(bytes: &[u8], cfg: &CarveConfig) -> Result<CarveReport>
         }
         Err(other) => Err(other),
     }
+}
+
+fn packaged_container(bytes: &[u8]) -> Option<&'static str> {
+    detect_container(bytes)
+        .filter(|kind: &ContainerKind| !matches!(*kind, ContainerKind::None))
+        .map(ContainerKind::label)
 }

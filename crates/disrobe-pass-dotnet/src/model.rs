@@ -2708,6 +2708,77 @@ impl Resolver {
     }
 
     #[must_use]
+    pub fn field_fixed_buffer_info(&self, field_token: u32) -> Option<(String, u32)> {
+        let field_rid: u32 = field_token & 0x00FF_FFFF;
+        self.tables.custom_attributes.iter().find_map(
+            |attribute: &crate::tables::CustomAttributeRow| {
+                let parent: RowRef = attribute.parent?;
+                if parent.table != TableId::Field || parent.row != field_rid {
+                    return None;
+                }
+                let constructor: RowRef = attribute.attr_type?;
+                if !self.is_fixed_buffer_attribute_constructor(constructor) {
+                    return None;
+                }
+                decode_fixed_buffer_info(self.blob(attribute.value)?)
+            },
+        )
+    }
+
+    fn is_fixed_buffer_attribute_constructor(&self, constructor: RowRef) -> bool {
+        if constructor.table != TableId::MemberRef {
+            return false;
+        }
+        let Some(member_index): Option<usize> = constructor
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(member): Option<&MemberRefRow> = self.tables.member_refs.get(member_index) else {
+            return false;
+        };
+        let Some(signature): Option<MethodSig> = self
+            .blob(member.signature)
+            .and_then(|blob: &[u8]| parse_method_sig_strict(blob).ok())
+        else {
+            return false;
+        };
+        if self.string(member.name) != ".ctor"
+            || signature.calling_convention != (SIG_HASTHIS | SIG_DEFAULT)
+            || !signature.has_this
+            || signature.explicit_this
+            || signature.generic_param_count != 0
+            || !matches!(signature.return_type, TypeSigOrVoid::Void)
+            || signature.params.len() != 2
+        {
+            return false;
+        }
+        let Some(owner): Option<RowRef> = member.parent else {
+            return false;
+        };
+        if owner.table != TableId::TypeRef {
+            return false;
+        }
+        let Some(owner_index): Option<usize> = owner
+            .row
+            .checked_sub(1)
+            .and_then(|row: u32| usize::try_from(row).ok())
+        else {
+            return false;
+        };
+        let Some(row): Option<&TypeRefRow> = self.tables.type_refs.get(owner_index) else {
+            return false;
+        };
+        self.string(row.namespace) == "System.Runtime.CompilerServices"
+            && self.string(row.name) == "FixedBufferAttribute"
+            && row
+                .resolution_scope
+                .is_some_and(|scope: RowRef| self.is_corelib_assembly_ref(scope))
+    }
+
+    #[must_use]
     pub fn metadata_token_kind(&self, token: u32) -> MetadataTokenKind {
         let table_idx: u8 = u8::try_from(token >> 24).unwrap_or(0xFF);
         let Some(table): Option<TableId> = TableId::from_index(table_idx) else {
@@ -2958,6 +3029,21 @@ impl Resolver {
     }
 }
 
+fn decode_fixed_buffer_info(blob: &[u8]) -> Option<(String, u32)> {
+    if blob.first().copied() != Some(0x01) || blob.get(1).copied() != Some(0x00) {
+        return None;
+    }
+    let rest: &[u8] = blob.get(2..)?;
+    let (name_len, consumed): (u32, usize) = crate::metadata::decompress_uint(rest)?;
+    let name_bytes: &[u8] =
+        rest.get(consumed..consumed.checked_add(usize::try_from(name_len).ok()?)?)?;
+    let element_type: String = std::str::from_utf8(name_bytes).ok()?.to_owned();
+    let after_name: usize = consumed.checked_add(usize::try_from(name_len).ok()?)?;
+    let tail: &[u8] = rest.get(after_name..)?;
+    let length_bytes: [u8; 4] = tail.get(..4)?.try_into().ok()?;
+    Some((element_type, u32::from_le_bytes(length_bytes)))
+}
+
 const ASSEMBLY_REF_PUBLIC_KEY: u32 = 0x0001;
 
 fn assembly_public_key_token(public_key_or_token: &[u8], flags: u32) -> Option<[u8; 8]> {
@@ -3202,6 +3288,60 @@ mod tests {
         let root: MetadataRoot =
             crate::metadata::parse_metadata_root(&bytes, &pe, &clr).expect("root");
         Resolver::build(&bytes, &pe, &clr, &root).expect("resolver")
+    }
+
+    #[test]
+    fn decode_fixed_buffer_info_reads_length_past_an_assembly_qualified_type_name() {
+        let mut blob: Vec<u8> = vec![0x01, 0x00];
+        let name: &str = "System.Byte, netstandard, Version=2.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51";
+        blob.push(u8::try_from(name.len()).expect("fits in one compressed byte"));
+        blob.extend_from_slice(name.as_bytes());
+        blob.extend_from_slice(&256u32.to_le_bytes());
+        blob.extend_from_slice(&[0x00, 0x00]);
+        let (decoded_name, length): (String, u32) =
+            decode_fixed_buffer_info(&blob).expect("decodes a well-formed blob");
+        assert_eq!(decoded_name, name);
+        assert_eq!(length, 256);
+    }
+
+    #[test]
+    fn decode_fixed_buffer_info_rejects_a_blob_with_the_wrong_prolog() {
+        assert!(decode_fixed_buffer_info(&[0x02, 0x00, 0x00]).is_none());
+        assert!(decode_fixed_buffer_info(&[]).is_none());
+    }
+
+    #[test]
+    fn fixed_buffer_holder_data_field_reports_the_real_element_and_length() {
+        let resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let model: AssemblyModel = resolver.model();
+        let ty: &TypeModel = model
+            .types
+            .iter()
+            .find(|t: &&TypeModel| t.full_name == "EdgeCases.FixedBufferHolder")
+            .expect("fixture declares EdgeCases.FixedBufferHolder");
+        let data: &FieldModel = ty
+            .fields
+            .iter()
+            .find(|f: &&FieldModel| f.name == "Data")
+            .expect("FixedBufferHolder declares a Data field");
+        let (element_type, length): (String, u32) = resolver
+            .field_fixed_buffer_info(data.token)
+            .expect("Data carries a real FixedBufferAttribute in the compiled fixture");
+        assert!(
+            element_type.starts_with("System.Byte"),
+            "got {element_type}"
+        );
+        assert!(length > 0);
+        let used: &FieldModel = ty
+            .fields
+            .iter()
+            .find(|f: &&FieldModel| f.name == "Used")
+            .expect("FixedBufferHolder declares a Used field");
+        assert!(
+            resolver.field_fixed_buffer_info(used.token).is_none(),
+            "an ordinary field must never be misread as a fixed buffer"
+        );
     }
 
     #[test]

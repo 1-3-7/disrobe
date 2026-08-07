@@ -5,7 +5,6 @@ members = [
     "crates/disrobe-bytes",
     "crates/disrobe-capabilities",
     "crates/disrobe-cfg",
-    "crates/disrobe-dart",
     "crates/disrobe-cli",
     "crates/disrobe-core",
     "crates/disrobe-emit",
@@ -206,6 +205,7 @@ disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.10.4" }
 disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.10.4" }
 disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.10.4" }
 disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.4" }
+disrobe-pass-webview = { path = "crates/disrobe-pass-webview", version = "0.10.4" }
 disrobe-playground = { path = "crates/disrobe-playground", version = "0.10.4" }
 disrobe-plugin-host = { path = "crates/disrobe-plugin-host", version = "0.10.4" }
 disrobe-prowl = { path = "crates/disrobe-prowl", version = "0.10.4" }
@@ -270,7 +270,7 @@ rpm = { version = "0.25.1", default-features = false, features = [
 ] }
 rustc-demangle = "0.1.27"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
 sevenz-rust2 = "0.13.2"
 sha1 = "0.10.6"
 sha2 = "0.10.9"

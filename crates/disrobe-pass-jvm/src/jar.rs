@@ -597,6 +597,84 @@ pub fn extract_aab(bytes: &[u8]) -> Result<AabExtract> {
     })
 }
 
+const AAR_CLASSES_JAR_ENTRY: &str = "classes.jar";
+const AAR_NATIVE_LIB_PREFIX: &str = "jni/";
+const APKS_MAX_SPLITS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AarExtract {
+    pub jar: JarExtract,
+    pub classes_jar: JarExtract,
+    pub native_libs: BTreeMap<String, Vec<u8>>,
+}
+
+pub fn extract_aar(bytes: &[u8]) -> Result<AarExtract> {
+    let jar: JarExtract = extract(bytes)?;
+    let mut native_libs: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut classes_jar_bytes: Option<&[u8]> = None;
+    for entry in &jar.entries {
+        let path: &str = entry.path.as_str();
+        if path == AAR_CLASSES_JAR_ENTRY {
+            classes_jar_bytes = Some(entry.bytes.as_slice());
+        } else if let Some(rest) = path.strip_prefix(AAR_NATIVE_LIB_PREFIX)
+            && !rest.is_empty()
+            && path.ends_with(".so")
+        {
+            native_libs.insert(entry.path.clone(), entry.bytes.clone());
+        }
+    }
+    let Some(classes_jar_bytes): Option<&[u8]> = classes_jar_bytes else {
+        return Err(Error::NotAar);
+    };
+    let classes_jar: JarExtract = extract(classes_jar_bytes)?;
+    Ok(AarExtract {
+        jar,
+        classes_jar,
+        native_libs,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApksExtract {
+    pub splits: BTreeMap<String, ApkExtract>,
+}
+
+fn apk_extract_decompressed_bytes(split: &ApkExtract) -> u64 {
+    split
+        .jar
+        .entries
+        .iter()
+        .map(|entry: &JarEntry| entry.bytes.len() as u64)
+        .sum()
+}
+
+pub fn extract_apks(bytes: &[u8]) -> Result<ApksExtract> {
+    let jar: JarExtract = extract(bytes)?;
+    let mut splits: BTreeMap<String, ApkExtract> = BTreeMap::new();
+    let mut aggregate_bytes: u64 = 0;
+    for entry in &jar.entries {
+        if splits.len() >= APKS_MAX_SPLITS {
+            break;
+        }
+        if !entry.path.to_ascii_lowercase().ends_with(".apk") {
+            continue;
+        }
+        let split: ApkExtract = extract_apk(&entry.bytes)?;
+        aggregate_bytes = aggregate_bytes.saturating_add(apk_extract_decompressed_bytes(&split));
+        if aggregate_bytes > ZIP_TOTAL_BYTES_CAP {
+            return Err(Error::Zip(format!(
+                "apks aggregate decompressed size {aggregate_bytes} exceeds cap \
+                 {ZIP_TOTAL_BYTES_CAP} across every split combined"
+            )));
+        }
+        splits.insert(entry.path.clone(), split);
+    }
+    if splits.is_empty() {
+        return Err(Error::NotApks);
+    }
+    Ok(ApksExtract { splits })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -677,5 +755,189 @@ mod tests {
     fn aab_rejects_non_zip_bytes() {
         let err: Error = extract_aab(&[0xFFu8, 0x00, 0x13, 0x37]).expect_err("not a zip");
         assert!(matches!(err, Error::Zip(_)));
+    }
+
+    fn write_zip_entry(
+        zip: &mut zip::ZipWriter<Cursor<Vec<u8>>>,
+        opts: zip::write::SimpleFileOptions,
+        path: &str,
+        data: &[u8],
+    ) {
+        use std::io::Write as _;
+        zip.start_file(path, opts).unwrap();
+        zip.write_all(data).unwrap();
+    }
+
+    fn build_min_classfile() -> Vec<u8> {
+        vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 69]
+    }
+
+    fn build_aar(with_classes_jar: bool, with_native_lib: bool) -> Vec<u8> {
+        let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(512));
+        let mut zip: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        write_zip_entry(
+            &mut zip,
+            opts,
+            "AndroidManifest.xml",
+            b"<manifest package=\"com.disrobe.fixture\"/>",
+        );
+        if with_classes_jar {
+            let inner: Vec<u8> = {
+                let inner_cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(128));
+                let mut inner_zip: zip::ZipWriter<Cursor<Vec<u8>>> =
+                    zip::ZipWriter::new(inner_cursor);
+                write_zip_entry(
+                    &mut inner_zip,
+                    opts,
+                    "com/disrobe/fixture/Probe.class",
+                    &build_min_classfile(),
+                );
+                inner_zip.finish().unwrap().into_inner()
+            };
+            write_zip_entry(&mut zip, opts, "classes.jar", &inner);
+        }
+        if with_native_lib {
+            write_zip_entry(
+                &mut zip,
+                opts,
+                "jni/arm64-v8a/libnative.so",
+                b"\x7fELFnotreallyanelfjustabyteblob",
+            );
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn aar_unnests_classes_jar_and_scans_jni_native_libs() {
+        let bytes: Vec<u8> = build_aar(true, true);
+        let aar: AarExtract = extract_aar(&bytes).expect("valid aar");
+        assert_eq!(aar.classes_jar.classes.len(), 1);
+        assert!(
+            aar.classes_jar
+                .classes
+                .contains_key("com/disrobe/fixture/Probe.class")
+        );
+        assert_eq!(aar.native_libs.len(), 1);
+        assert!(aar.native_libs.contains_key("jni/arm64-v8a/libnative.so"));
+    }
+
+    #[test]
+    fn aar_without_classes_jar_is_rejected() {
+        let bytes: Vec<u8> = build_aar(false, true);
+        let err: Error = extract_aar(&bytes).expect_err("missing classes.jar");
+        assert!(matches!(err, Error::NotAar));
+    }
+
+    #[test]
+    fn aar_rejects_non_zip_bytes() {
+        let err: Error = extract_aar(&[0xFFu8, 0x00, 0x13, 0x37]).expect_err("not a zip");
+        assert!(matches!(err, Error::Zip(_)));
+    }
+
+    fn build_apk_bytes(dex: Option<&[u8]>, native_lib: Option<(&str, &[u8])>) -> Vec<u8> {
+        let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(256));
+        let mut zip: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        write_zip_entry(
+            &mut zip,
+            opts,
+            "AndroidManifest.xml",
+            b"<manifest package=\"com.disrobe.fixture\"/>",
+        );
+        if let Some(dex_bytes) = dex {
+            write_zip_entry(&mut zip, opts, "classes.dex", dex_bytes);
+        }
+        if let Some((path, so_bytes)) = native_lib {
+            write_zip_entry(&mut zip, opts, path, so_bytes);
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn build_apks(splits: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::with_capacity(512));
+        let mut zip: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(cursor);
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, bytes) in splits {
+            write_zip_entry(&mut zip, opts, name, bytes);
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn apks_enumerates_every_apk_split_member() {
+        let base: Vec<u8> = build_apk_bytes(Some(b"dex\n035\0padpadpadpad"), None);
+        let split: Vec<u8> = build_apk_bytes(
+            None,
+            Some(("lib/arm64-v8a/libsplit.so", b"\x7fELFsplitpayload")),
+        );
+        let bytes: Vec<u8> = build_apks(&[
+            ("base-master.apk", base),
+            ("split_config.arm64_v8a.apk", split),
+        ]);
+        let apks: ApksExtract = extract_apks(&bytes).expect("valid apks");
+        assert_eq!(apks.splits.len(), 2);
+        let base_split: &ApkExtract = apks.splits.get("base-master.apk").expect("base split");
+        assert_eq!(base_split.dex_files.len(), 1);
+        let config_split: &ApkExtract = apks
+            .splits
+            .get("split_config.arm64_v8a.apk")
+            .expect("config split");
+        assert_eq!(config_split.native_libs.len(), 1);
+    }
+
+    #[test]
+    fn apks_without_apk_members_is_rejected() {
+        let bytes: Vec<u8> = build_apks(&[("resources.pb", b"\x12\x00".to_vec())]);
+        let err: Error = extract_apks(&bytes).expect_err("no .apk members");
+        assert!(matches!(err, Error::NotApks));
+    }
+
+    #[test]
+    fn apks_rejects_non_zip_bytes() {
+        let err: Error = extract_apks(&[0xFFu8, 0x00, 0x13, 0x37]).expect_err("not a zip");
+        assert!(matches!(err, Error::Zip(_)));
+    }
+
+    #[test]
+    fn apk_extract_decompressed_bytes_sums_every_jar_entry() {
+        let split: ApkExtract = ApkExtract {
+            jar: JarExtract {
+                entries: vec![
+                    JarEntry {
+                        path: "AndroidManifest.xml".to_owned(),
+                        bytes: vec![0u8; 42],
+                    },
+                    JarEntry {
+                        path: "lib/arm64-v8a/libsplit.so".to_owned(),
+                        bytes: vec![0u8; 1_000],
+                    },
+                ],
+                classes: BTreeMap::new(),
+                manifest: None,
+            },
+            dex_files: BTreeMap::new(),
+            manifest_bytes: None,
+            resources_arsc: None,
+            signatures: BTreeMap::new(),
+            native_libs: BTreeMap::new(),
+        };
+        assert_eq!(apk_extract_decompressed_bytes(&split), 1_042);
+    }
+
+    #[test]
+    fn apks_aggregate_cap_is_checked_across_every_split_not_per_split() {
+        let per_split_bytes: u64 = ZIP_TOTAL_BYTES_CAP / 2 + 1;
+        let mut aggregate: u64 = 0;
+        for _ in 0..2u32 {
+            aggregate = aggregate.saturating_add(per_split_bytes);
+        }
+        assert!(
+            aggregate > ZIP_TOTAL_BYTES_CAP,
+            "two under-cap splits must sum past the aggregate cap"
+        );
     }
 }

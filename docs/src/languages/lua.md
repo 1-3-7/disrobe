@@ -6,10 +6,11 @@
 
 | Layer | Coverage |
 |---|---|
-| Dialects | Lua 5.1 / 5.2 / 5.3 / 5.4, LuaJIT 2.0 / 2.1, Luau (<!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> opcodes in disrobe's declared table are lifted, with `BREAK` debugger instrumentation and `NEWCLASSMEMBER` decoded and reported rather than lifted; child-proto linking), GLua <!-- m:ignore --> |
+| Dialects | Lua 5.1 / 5.2 / 5.3 / 5.4, LuaJIT 2.0 / 2.1, Luau, GLua |
+| Luau opcode coverage | <!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> opcodes in disrobe's declared table are lifted, with `BREAK` debugger instrumentation and `NEWCLASSMEMBER` decoded and reported rather than lifted; child-proto linking |
 | Decompile output | Lua source plus a manifest recording the detected dialect, fidelity grade (`Lossless` / `Lossy` / `BestEffort`), and any warnings |
-| Obfuscators (14) | IronBrew2, Prometheus, MoonSec V1 / V2 / V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, SLua, Hercules, Luraph |
-| Chain catalog | 16 entries: the 14 obfuscator families above plus the Luau and GLua dialect detectors |
+| Obfuscators (<!-- m:lua_catalog_obfuscators -->14<!-- /m -->) | IronBrew2, Prometheus, MoonSec V1 / V2 / V3, AztupBrew, DarkSec, Boronide, PSU, WeAreDevs, luaobfuscator.com, SLua, Hercules, Luraph |
+| Chain catalog | <!-- m:lua_catalog_entries -->16<!-- /m --> entries: the <!-- m:lua_catalog_obfuscators -->14<!-- /m --> obfuscator families above plus the Luau and GLua dialect detectors |
 | Peelers (`--family`) | `prometheus`, `moonsec-v1`, `moonsec-v2`, `moonsec-v3`, `ironbrew2`, `wearedevs`, `slua`; default `auto` detects first |
 | VM devirtualization | IronBrew2 2.7.0 reversed on real committed output, graded by real-Lua execution differential (hello / arith / control / tables / edge in standard and MAX mode); MoonSec-shape recovery is pending a real sample |
 

@@ -3,22 +3,22 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. A coverage-guided target counts only when fuzz/coverage.toml declares it and the target source names the function, so a name collision cannot be read as coverage. The resilience columns count dedicated resilience-shaped test files only; ad-hoc malformed-input assertions inside functional tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1321,
-    "parse_shaped": 552,
-    "coverage_guided_targets_in_tree": 2,
+    "entry_points": 1331,
+    "parse_shaped": 553,
+    "coverage_guided_targets_in_tree": 3,
     "targets_declaring_entry_points": 0,
     "with_declared_coverage_guided_target": 0,
-    "named_by_a_resilience_suite": 608,
+    "named_by_a_resilience_suite": 610,
     "named_by_a_suite_recording_seed_reach": 123,
-    "named_by_neither": 713
+    "named_by_neither": 721
   },
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 225,
-      "parse_shaped": 159,
+      "entry_points": 224,
+      "parse_shaped": 158,
       "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 157,
+      "named_by_a_resilience_suite": 156,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -129,7 +129,7 @@
       "entry_points": 88,
       "parse_shaped": 7,
       "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 19,
+      "named_by_a_resilience_suite": 21,
       "named_by_a_suite_recording_seed_reach": 6,
       "named_by_neither": [
         "disrobe-core/src/anti_analysis.rs::classify_family",
@@ -166,7 +166,6 @@
         "disrobe-core/src/codec/framed.rs::z85_decode",
         "disrobe-core/src/codec/framed.rs::z85_encode",
         "disrobe-core/src/codec/hex.rs::decode_bytes",
-        "disrobe-core/src/codec/hex.rs::decode_with",
         "disrobe-core/src/codec/mod.rs::blind_cascade",
         "disrobe-core/src/codec/mod.rs::cascade_or_wall",
         "disrobe-core/src/codec/mod.rs::decode_with_custom_b64",
@@ -175,7 +174,6 @@
         "disrobe-core/src/codec/web_escape.rs::percent_decode",
         "disrobe-core/src/codec/web_escape.rs::percent_decode_lenient",
         "disrobe-core/src/codec/web_escape.rs::percent_encode",
-        "disrobe-core/src/debug.rs::hex",
         "disrobe-core/src/entropy.rs::shannon_entropy_bits",
         "disrobe-core/src/provenance.rs::prepend_to_bytes",
         "disrobe-core/src/recon/ioc.rs::extract_with_extra",
@@ -201,20 +199,6 @@
         "disrobe-core/src/recon/secret_scan.rs::scan_bytes",
         "disrobe-core/src/recon/secret_scan.rs::scan_report",
         "disrobe-core/src/yara_gen.rs::generate"
-      ]
-    },
-    {
-      "crate": "disrobe-dart",
-      "entry_points": 4,
-      "parse_shaped": 1,
-      "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 0,
-      "named_by_a_suite_recording_seed_reach": 0,
-      "named_by_neither": [
-        "disrobe-dart/src/header.rs::parse_snapshot_header",
-        "disrobe-dart/src/locator.rs::locate_snapshot_blobs",
-        "disrobe-dart/src/recovery.rs::recover_elf",
-        "disrobe-dart/src/recovery.rs::recover_standalone"
       ]
     },
     {
@@ -245,10 +229,10 @@
     },
     {
       "crate": "disrobe-llm-metadata",
-      "entry_points": 1,
+      "entry_points": 2,
       "parse_shaped": 0,
       "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 0,
+      "named_by_a_resilience_suite": 1,
       "named_by_a_suite_recording_seed_reach": 0,
       "named_by_neither": [
         "disrobe-llm-metadata/src/bundle.rs::write_bundle_to_path"
@@ -439,8 +423,8 @@
     },
     {
       "crate": "disrobe-pass-jvm",
-      "entry_points": 56,
-      "parse_shaped": 23,
+      "entry_points": 60,
+      "parse_shaped": 26,
       "with_declared_coverage_guided_target": 0,
       "named_by_a_resilience_suite": 18,
       "named_by_a_suite_recording_seed_reach": 5,
@@ -466,13 +450,17 @@
         "disrobe-pass-jvm/src/dex2jar.rs::translate",
         "disrobe-pass-jvm/src/dex2jar.rs::translate_dex_bytes",
         "disrobe-pass-jvm/src/jar.rs::extract_aab",
+        "disrobe-pass-jvm/src/jar.rs::extract_aar",
         "disrobe-pass-jvm/src/jar.rs::extract_apk",
+        "disrobe-pass-jvm/src/jar.rs::extract_apks",
         "disrobe-pass-jvm/src/jar.rs::extract_jmod",
         "disrobe-pass-jvm/src/jar.rs::parse_jimage",
         "disrobe-pass-jvm/src/jar.rs::parse_jimage_header",
+        "disrobe-pass-jvm/src/jni.rs::analyze_native_methods",
         "disrobe-pass-jvm/src/jni.rs::extract_static_int_keys",
         "disrobe-pass-jvm/src/jni.rs::recover_register_natives",
         "disrobe-pass-jvm/src/name_disambig.rs::remap_class_bytes",
+        "disrobe-pass-jvm/src/oat.rs::extract_oat_dex",
         "disrobe-pass-jvm/src/oat.rs::parse_oat",
         "disrobe-pass-jvm/src/oat.rs::parse_oat_header",
         "disrobe-pass-jvm/src/oat.rs::parse_odex",
@@ -505,7 +493,7 @@
     },
     {
       "crate": "disrobe-pass-mobile",
-      "entry_points": 56,
+      "entry_points": 62,
       "parse_shaped": 31,
       "with_declared_coverage_guided_target": 0,
       "named_by_a_resilience_suite": 14,
@@ -517,6 +505,8 @@
         "disrobe-pass-mobile/src/flutter/arm64_traversal.rs::traverse",
         "disrobe-pass-mobile/src/flutter/cluster.rs::parse_snapshot_framing",
         "disrobe-pass-mobile/src/flutter/cluster.rs::recover_declared_names",
+        "disrobe-pass-mobile/src/flutter/dart_graph_recovery.rs::recover_dart_pinned_elf",
+        "disrobe-pass-mobile/src/flutter/dart_graph_recovery.rs::recover_dart_pinned_standalone",
         "disrobe-pass-mobile/src/flutter/disasm.rs::disassemble_functions",
         "disrobe-pass-mobile/src/flutter/disasm.rs::disassemble_range",
         "disrobe-pass-mobile/src/flutter/kernel.rs::is_dart_kernel",
@@ -529,10 +519,14 @@
         "disrobe-pass-mobile/src/flutter/mod.rs::decompile_libapp_so_structured",
         "disrobe-pass-mobile/src/flutter/mod.rs::disassemble_libapp_so",
         "disrobe-pass-mobile/src/flutter/mod.rs::has_dart_aot_snapshot",
+        "disrobe-pass-mobile/src/flutter/mod.rs::isolate_data_bytes",
+        "disrobe-pass-mobile/src/flutter/mod.rs::isolate_instruction_bytes",
         "disrobe-pass-mobile/src/flutter/mod.rs::parse_dart_snapshot",
         "disrobe-pass-mobile/src/flutter/mod.rs::parse_flutter_apk",
         "disrobe-pass-mobile/src/flutter/mod.rs::parse_flutter_obfuscation_map",
         "disrobe-pass-mobile/src/flutter/mod.rs::parse_libapp_so",
+        "disrobe-pass-mobile/src/flutter/mod.rs::vm_data_bytes",
+        "disrobe-pass-mobile/src/flutter/mod.rs::vm_instruction_bytes",
         "disrobe-pass-mobile/src/flutter/object_pool.rs::recover_object_pool_references",
         "disrobe-pass-mobile/src/flutter/object_pool.rs::resolve_pool_literals",
         "disrobe-pass-mobile/src/flutter/snapshot.rs::parse_image_header",
@@ -908,7 +902,7 @@
     },
     {
       "crate": "disrobe-pass-shell",
-      "entry_points": 39,
+      "entry_points": 40,
       "parse_shaped": 18,
       "with_declared_coverage_guided_target": 0,
       "named_by_a_resilience_suite": 16,
@@ -936,7 +930,8 @@
         "disrobe-pass-shell/src/xlm/container.rs::open_source",
         "disrobe-pass-shell/src/xlm/ptg.rs::decode_formula",
         "disrobe-pass-shell/src/xlm/ptg.rs::decode_rgce",
-        "disrobe-pass-shell/src/xlm/ptg.rs::parse_ptg_exp"
+        "disrobe-pass-shell/src/xlm/ptg.rs::parse_ptg_exp",
+        "disrobe-pass-shell/src/xlm/ptg.rs::token_base_codes"
       ]
     },
     {
@@ -1114,7 +1109,7 @@
     },
     {
       "crate": "disrobe-typerec",
-      "entry_points": 11,
+      "entry_points": 14,
       "parse_shaped": 5,
       "with_declared_coverage_guided_target": 0,
       "named_by_a_resilience_suite": 2,
@@ -1125,6 +1120,9 @@
         "disrobe-typerec/src/decode.rs::decode_all",
         "disrobe-typerec/src/dwarf_gt.rs::function_bytes",
         "disrobe-typerec/src/dwarf_gt.rs::load_text",
+        "disrobe-typerec/src/dwarf_location.rs::frame_pointer_delta_from_prologue",
+        "disrobe-typerec/src/dwarf_location.rs::function_slice",
+        "disrobe-typerec/src/dwarf_location.rs::resolve_frame_base",
         "disrobe-typerec/src/facts.rs::extract_split",
         "disrobe-typerec/src/import_map.rs::from_image",
         "disrobe-typerec/src/recover.rs::recover_function",

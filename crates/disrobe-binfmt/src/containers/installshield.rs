@@ -230,6 +230,58 @@ fn is_err(msg: &'static str) -> Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
+fn zlib_compress(input: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc: flate2::write::ZlibEncoder<Vec<u8>> =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(input).expect("zlib write");
+    enc.finish().expect("zlib finish")
+}
+
+#[cfg(test)]
+pub(crate) fn build_test_installshield(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    let compressed: Vec<u8> = zlib_compress(file_body);
+    let cab_descriptor_offset: u32 = 0x100;
+    let file_table_offset: u32 = 0x40;
+    let file_table_base: usize = cab_descriptor_offset as usize + file_table_offset as usize;
+
+    let offset_table_len: u32 = 4;
+    let name_rel: u32 = offset_table_len;
+    let descriptor_rel: u32 = name_rel + file_name.len() as u32 + 1;
+    let descriptor_at: usize = file_table_base + descriptor_rel as usize;
+
+    let data_offset: usize = descriptor_at + FILE_DESCRIPTOR_LEN + 16;
+
+    let mut image: Vec<u8> = vec![0u8; data_offset + compressed.len()];
+    image[0..4].copy_from_slice(&ISC_SIGNATURE.to_le_bytes());
+    image[4..8].copy_from_slice(&0x0600_0000u32.to_le_bytes());
+    image[0x0C..0x10].copy_from_slice(&cab_descriptor_offset.to_le_bytes());
+    image[0x10..0x14].copy_from_slice(&64u32.to_le_bytes());
+
+    let desc_base: usize = cab_descriptor_offset as usize;
+    image[desc_base + 0x0C..desc_base + 0x10].copy_from_slice(&file_table_offset.to_le_bytes());
+    image[desc_base + 0x28..desc_base + 0x2C].copy_from_slice(&1u32.to_le_bytes());
+
+    image[file_table_base..file_table_base + 4].copy_from_slice(&descriptor_rel.to_le_bytes());
+
+    let name_at: usize = file_table_base + name_rel as usize;
+    image[name_at..name_at + file_name.len()].copy_from_slice(file_name.as_bytes());
+
+    image[descriptor_at..descriptor_at + 2].copy_from_slice(&FILE_COMPRESSED.to_le_bytes());
+    image[descriptor_at + 0x02..descriptor_at + 0x0A]
+        .copy_from_slice(&(file_body.len() as u64).to_le_bytes());
+    image[descriptor_at + 0x0A..descriptor_at + 0x12]
+        .copy_from_slice(&(compressed.len() as u64).to_le_bytes());
+    image[descriptor_at + 0x12..descriptor_at + 0x1A]
+        .copy_from_slice(&(data_offset as u64).to_le_bytes());
+    image[descriptor_at + 0x3A..descriptor_at + 0x3E].copy_from_slice(&name_rel.to_le_bytes());
+
+    image[data_offset..data_offset + compressed.len()].copy_from_slice(&compressed);
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -238,55 +290,6 @@ mod tests {
     fn hint_points_to_external_tool() {
         let hint: InstallshieldExternalHint = installshield_external_hint();
         assert!(matches!(hint.tool_binary, "i6comp"));
-    }
-
-    fn zlib_compress(input: &[u8]) -> Vec<u8> {
-        use std::io::Write as _;
-        let mut enc: flate2::write::ZlibEncoder<Vec<u8>> =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(input).expect("zlib write");
-        enc.finish().expect("zlib finish")
-    }
-
-    fn build_test_installshield(file_name: &str, file_body: &[u8]) -> Vec<u8> {
-        let compressed: Vec<u8> = zlib_compress(file_body);
-        let cab_descriptor_offset: u32 = 0x100;
-        let file_table_offset: u32 = 0x40;
-        let file_table_base: usize = cab_descriptor_offset as usize + file_table_offset as usize;
-
-        let offset_table_len: u32 = 4;
-        let name_rel: u32 = offset_table_len;
-        let descriptor_rel: u32 = name_rel + file_name.len() as u32 + 1;
-        let descriptor_at: usize = file_table_base + descriptor_rel as usize;
-
-        let data_offset: usize = descriptor_at + FILE_DESCRIPTOR_LEN + 16;
-
-        let mut image: Vec<u8> = vec![0u8; data_offset + compressed.len()];
-        image[0..4].copy_from_slice(&ISC_SIGNATURE.to_le_bytes());
-        image[4..8].copy_from_slice(&0x0600_0000u32.to_le_bytes());
-        image[0x0C..0x10].copy_from_slice(&cab_descriptor_offset.to_le_bytes());
-        image[0x10..0x14].copy_from_slice(&64u32.to_le_bytes());
-
-        let desc_base: usize = cab_descriptor_offset as usize;
-        image[desc_base + 0x0C..desc_base + 0x10].copy_from_slice(&file_table_offset.to_le_bytes());
-        image[desc_base + 0x28..desc_base + 0x2C].copy_from_slice(&1u32.to_le_bytes());
-
-        image[file_table_base..file_table_base + 4].copy_from_slice(&descriptor_rel.to_le_bytes());
-
-        let name_at: usize = file_table_base + name_rel as usize;
-        image[name_at..name_at + file_name.len()].copy_from_slice(file_name.as_bytes());
-
-        image[descriptor_at..descriptor_at + 2].copy_from_slice(&FILE_COMPRESSED.to_le_bytes());
-        image[descriptor_at + 0x02..descriptor_at + 0x0A]
-            .copy_from_slice(&(file_body.len() as u64).to_le_bytes());
-        image[descriptor_at + 0x0A..descriptor_at + 0x12]
-            .copy_from_slice(&(compressed.len() as u64).to_le_bytes());
-        image[descriptor_at + 0x12..descriptor_at + 0x1A]
-            .copy_from_slice(&(data_offset as u64).to_le_bytes());
-        image[descriptor_at + 0x3A..descriptor_at + 0x3E].copy_from_slice(&name_rel.to_le_bytes());
-
-        image[data_offset..data_offset + compressed.len()].copy_from_slice(&compressed);
-        image
     }
 
     #[test]

@@ -399,9 +399,33 @@ fn rename_node(nodes: &mut BTreeMap<String, Node>, order: &mut [String], from: &
 }
 
 #[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let path_attribute_length_field_is_two_bytes: bool = name.len() > u16::MAX as usize;
+    if name.is_empty() || path_attribute_length_field_is_two_bytes {
+        return None;
+    }
+    Some(tests::build_single_file_send_stream(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    pub(super) fn build_single_file_send_stream(name: &str, body: &[u8]) -> Vec<u8> {
+        let mut builder: StreamBuilder = StreamBuilder::new();
+        builder.command(BTRFS_SEND_C_SUBVOL, &[(BTRFS_SEND_A_PATH, b"myvol")]);
+        builder.command(BTRFS_SEND_C_MKFILE, &[(BTRFS_SEND_A_PATH, name.as_bytes())]);
+        builder.command(
+            BTRFS_SEND_C_WRITE,
+            &[
+                (BTRFS_SEND_A_PATH, name.as_bytes()),
+                (BTRFS_SEND_A_FILE_OFFSET, &0u64.to_le_bytes()),
+                (BTRFS_SEND_A_DATA, body),
+            ],
+        );
+        builder.finish()
+    }
 
     struct StreamBuilder {
         out: Vec<u8>,

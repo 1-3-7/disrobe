@@ -1,11 +1,15 @@
-use crate::entropy::shannon_entropy_bits;
+use std::ops::Range;
+
+use disrobe_bytes::{FileOffset, Size};
 use serde::{Deserialize, Serialize};
 
+use crate::entropy::shannon_entropy_bits;
+
 use crate::anti_analysis_sigs::{
-    ANALYSIS_USERNAME_SIGS, STRING_SIGS, SigClass, StringSig, UsernameSig,
+    ANALYSIS_USERNAME_SIGS, STRING_SIGS, SigClass, SignalCorroboration, StringSig, UsernameSig,
 };
 #[cfg(target_arch = "wasm32")]
-use crate::anti_analysis_sigs::{NUMBER_SIGS, NumberCorroboration, NumberSig};
+use crate::anti_analysis_sigs::{NUMBER_SIGS, NumberSig};
 use crate::byte_search;
 use crate::strings::{self, ExtractedString, Options};
 
@@ -564,6 +568,7 @@ struct EvidenceItem {
     kind: &'static str,
     window: Option<usize>,
     detail: String,
+    corroboration: SignalCorroboration,
 }
 
 #[derive(Default)]
@@ -583,6 +588,7 @@ impl TechniqueAccumulator {
         kind: &'static str,
         window: Option<usize>,
         detail: String,
+        corroboration: SignalCorroboration,
     ) {
         let entry: &mut TechniqueAccum = self.entries.entry(technique).or_default();
         entry.items.push(EvidenceItem {
@@ -591,6 +597,7 @@ impl TechniqueAccumulator {
             kind,
             window,
             detail,
+            corroboration,
         });
     }
 
@@ -649,8 +656,25 @@ fn technique_reaches_verdict(technique: Technique, items: &[EvidenceItem]) -> bo
     if technique_is_structural(technique) {
         return !items.is_empty();
     }
-    if items.iter().any(|i: &EvidenceItem| i.tier == Tier::A) {
+    if items.iter().any(|i: &EvidenceItem| {
+        i.tier == Tier::A && i.corroboration == SignalCorroboration::Standalone
+    }) {
         return true;
+    }
+    let has_tier_a_corroborated: bool = items.iter().any(|i: &EvidenceItem| {
+        i.tier == Tier::A && i.corroboration == SignalCorroboration::Corroborated
+    });
+    if has_tier_a_corroborated {
+        let mut strong_kinds: Vec<&'static str> = items
+            .iter()
+            .filter(|i: &&EvidenceItem| matches!(i.tier, Tier::A | Tier::B))
+            .map(|i: &EvidenceItem| i.kind)
+            .collect();
+        strong_kinds.sort_unstable();
+        strong_kinds.dedup();
+        if strong_kinds.len() >= 2 {
+            return true;
+        }
     }
     let mut b_windows: Vec<usize> = items
         .iter()
@@ -848,6 +872,7 @@ fn collect_protector_markers(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                 marker.detail,
                 Some(off),
                 format!("{} at offset 0x{off:x}", marker.detail),
+                SignalCorroboration::Standalone,
             );
             if marker.grey_zone_vm {
                 acc.mark_grey_zone_vm(marker.technique);
@@ -865,6 +890,7 @@ fn collect_code_markers(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                 marker.detail,
                 Some(off),
                 format!("{} at offset 0x{off:x}", marker.detail),
+                SignalCorroboration::Standalone,
             );
         }
     }
@@ -883,6 +909,7 @@ fn collect_rasp_markers(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                     String::from_utf8_lossy(marker.needle),
                     marker.detail
                 ),
+                SignalCorroboration::Standalone,
             );
         }
     }
@@ -925,6 +952,7 @@ fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                         "string '{}' ({}) at offset 0x{:x}",
                         sig.needle, sig.note, s.offset
                     ),
+                    sig.corroboration,
                 ),
             }
         }
@@ -989,6 +1017,7 @@ fn finalize_corroborated(
                 "{label} '{}' ({}) at offset 0x{offset:x}",
                 sig.needle, sig.note
             ),
+            sig.corroboration,
         );
     }
 }
@@ -1013,6 +1042,7 @@ fn finalize_tool_hits(hits: &[(StringSig, usize)], acc: &mut TechniqueAccumulato
                 "analysis-tool probe '{}' ({}) at offset 0x{offset:x}",
                 sig.needle, sig.note
             ),
+            sig.corroboration,
         );
     }
 }
@@ -1033,7 +1063,7 @@ fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut Techni
             if sig.value != dword {
                 continue;
             }
-            if matches!(sig.corroboration, NumberCorroboration::Corroborated)
+            if matches!(sig.corroboration, SignalCorroboration::Corroborated)
                 && !number_sig_corroborated(whole, base + i, sig)
             {
                 continue;
@@ -1049,6 +1079,7 @@ fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut Techni
                     sig.note,
                     base + i
                 ),
+                SignalCorroboration::Standalone,
             );
         }
         i += 1;
@@ -1103,6 +1134,7 @@ fn collect_username_sigs(lower: &str, offset: usize, acc: &mut TechniqueAccumula
                     "analysis username '{}' ({}) at offset 0x{offset:x}",
                     sig.needle, sig.note
                 ),
+                SignalCorroboration::Standalone,
             );
         }
     }
@@ -1142,9 +1174,8 @@ const MAX_MACHO_LOAD_CMDS: usize = 4096;
 const CODE_SCAN_BUDGET: usize = 16 * 1024 * 1024;
 const CODE_REGION_MAX_ENTROPY_BITS: f64 = 7.2;
 
-fn read_u16(bytes: &[u8], off: usize, le: bool) -> Option<u16> {
-    let s: &[u8] = bytes.get(off..off + 2)?;
-    let a: [u8; 2] = [s[0], s[1]];
+fn read_u16(bytes: &[u8], off: FileOffset, le: bool) -> Option<u16> {
+    let a: [u8; 2] = read_field::<2>(bytes, off)?;
     Some(if le {
         u16::from_le_bytes(a)
     } else {
@@ -1152,9 +1183,8 @@ fn read_u16(bytes: &[u8], off: usize, le: bool) -> Option<u16> {
     })
 }
 
-fn read_u32(bytes: &[u8], off: usize, le: bool) -> Option<u32> {
-    let s: &[u8] = bytes.get(off..off + 4)?;
-    let a: [u8; 4] = [s[0], s[1], s[2], s[3]];
+fn read_u32(bytes: &[u8], off: FileOffset, le: bool) -> Option<u32> {
+    let a: [u8; 4] = read_field::<4>(bytes, off)?;
     Some(if le {
         u32::from_le_bytes(a)
     } else {
@@ -1162,10 +1192,8 @@ fn read_u32(bytes: &[u8], off: usize, le: bool) -> Option<u32> {
     })
 }
 
-fn read_u64(bytes: &[u8], off: usize, le: bool) -> Option<u64> {
-    let s: &[u8] = bytes.get(off..off + 8)?;
-    let mut a: [u8; 8] = [0u8; 8];
-    a.copy_from_slice(s);
+fn read_u64(bytes: &[u8], off: FileOffset, le: bool) -> Option<u64> {
+    let a: [u8; 8] = read_field::<8>(bytes, off)?;
     Some(if le {
         u64::from_le_bytes(a)
     } else {
@@ -1173,65 +1201,111 @@ fn read_u64(bytes: &[u8], off: usize, le: bool) -> Option<u64> {
     })
 }
 
-fn push_region(regions: &mut Vec<CodeRegion>, image_len: usize, off: usize, len: usize) {
-    if len == 0 || off >= image_len {
+fn read_field<const N: usize>(bytes: &[u8], off: FileOffset) -> Option<[u8; N]> {
+    let width: Size = Size::new(N as u64);
+    let file_len: Size = Size::try_from(bytes.len()).ok()?;
+    let span: Range<usize> = off.checked_range(width, file_len).ok()?;
+    let mut field: [u8; N] = [0u8; N];
+    field.copy_from_slice(bytes.get(span)?);
+    Some(field)
+}
+
+const fn field_at(base: FileOffset, delta: u64) -> Option<FileOffset> {
+    base.checked_add(Size::new(delta))
+}
+
+fn element_at(base: FileOffset, index: usize, stride: u64) -> Option<FileOffset> {
+    let step: Size = Size::new(u64::try_from(index).ok()?).checked_mul(stride)?;
+    base.checked_add(step)
+}
+
+fn push_region(regions: &mut Vec<CodeRegion>, image_len: usize, off: FileOffset, len: Size) {
+    let Ok(start): Result<usize, _> = off.to_usize() else {
+        return;
+    };
+    if len.is_zero() || start >= image_len {
         return;
     }
-    let end: usize = off.saturating_add(len).min(image_len);
-    if end <= off {
+    let end: usize = usize::try_from(len.get())
+        .map_or(image_len, |bytes: usize| start.saturating_add(bytes))
+        .min(image_len);
+    if end <= start {
         return;
     }
     regions.push(CodeRegion {
-        file_offset: off,
-        len: end - off,
+        file_offset: start,
+        len: end - start,
     });
 }
 
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
+const PE_SECTION_HEADER_BYTES: u64 = 40;
+
 fn pe_code_layout(bytes: &[u8]) -> CodeLayout {
     let mut layout: CodeLayout = CodeLayout::default();
-    let Some(lfanew): Option<u32> = read_u32(bytes, 0x3C, true) else {
+    let Some(lfanew): Option<u32> = read_u32(bytes, FileOffset::new(0x3C), true) else {
         return layout;
     };
-    let lfanew: usize = lfanew as usize;
-    if bytes.get(lfanew..lfanew + 4) != Some(b"PE\0\0") {
+    let lfanew: FileOffset = FileOffset::new(u64::from(lfanew));
+    if read_field::<4>(bytes, lfanew).as_ref() != Some(b"PE\0\0") {
         return layout;
     }
-    let coff: usize = lfanew + 4;
-    let Some(num_sections): Option<u16> = read_u16(bytes, coff + 2, true) else {
+    let Some(coff): Option<FileOffset> = field_at(lfanew, 4) else {
         return layout;
     };
-    let Some(opt_size): Option<u16> = read_u16(bytes, coff + 16, true) else {
+    let Some(num_sections): Option<u16> =
+        field_at(coff, 2).and_then(|at: FileOffset| read_u16(bytes, at, true))
+    else {
         return layout;
     };
-    let opt_start: usize = coff + 20;
+    let Some(opt_size): Option<u16> =
+        field_at(coff, 16).and_then(|at: FileOffset| read_u16(bytes, at, true))
+    else {
+        return layout;
+    };
+    let Some(opt_start): Option<FileOffset> = field_at(coff, 20) else {
+        return layout;
+    };
     layout.bitness = match read_u16(bytes, opt_start, true) {
         Some(0x010B) => Some(CodeBitness::Bits32),
         Some(0x020B) => Some(CodeBitness::Bits64),
         _ => None,
     };
-    let sect_start: usize = opt_start + opt_size as usize;
-    let count: usize = (num_sections as usize).min(MAX_PARSED_SECTIONS);
+    let Some(sect_start): Option<FileOffset> = field_at(opt_start, u64::from(opt_size)) else {
+        return layout;
+    };
+    let count: usize = Size::new(u64::from(num_sections))
+        .bounded_element_capacity(PE_SECTION_HEADER_BYTES as usize, bytes.len())
+        .min(MAX_PARSED_SECTIONS);
     for i in 0..count {
-        let base: usize = sect_start + i * 40;
-        let Some(chars): Option<u32> = read_u32(bytes, base + 36, true) else {
+        let Some(base): Option<FileOffset> = element_at(sect_start, i, PE_SECTION_HEADER_BYTES)
+        else {
+            break;
+        };
+        let Some(chars): Option<u32> =
+            field_at(base, 36).and_then(|at: FileOffset| read_u32(bytes, at, true))
+        else {
             break;
         };
         if chars & IMAGE_SCN_MEM_EXECUTE == 0 {
             continue;
         }
-        let Some(raw_size): Option<u32> = read_u32(bytes, base + 16, true) else {
+        let Some(raw_size): Option<u32> =
+            field_at(base, 16).and_then(|at: FileOffset| read_u32(bytes, at, true))
+        else {
             continue;
         };
-        let Some(raw_ptr): Option<u32> = read_u32(bytes, base + 20, true) else {
+        let Some(raw_ptr): Option<u32> =
+            field_at(base, 20).and_then(|at: FileOffset| read_u32(bytes, at, true))
+        else {
             continue;
         };
         push_region(
             &mut layout.regions,
             bytes.len(),
-            raw_ptr as usize,
-            raw_size as usize,
+            FileOffset::new(u64::from(raw_ptr)),
+            Size::new(u64::from(raw_size)),
         );
     }
     layout
@@ -1253,60 +1327,85 @@ fn elf_code_layout(bytes: &[u8]) -> CodeLayout {
     } else {
         CodeBitness::Bits32
     });
-    let (shoff, shentsize, shnum): (usize, usize, usize) = if is64 {
-        let Some(o): Option<u64> = read_u64(bytes, 0x28, le) else {
+    let (shoff, shentsize, shnum): (FileOffset, u64, u64) = if is64 {
+        let Some(o): Option<u64> = read_u64(bytes, FileOffset::new(0x28), le) else {
             return layout;
         };
-        let Some(es): Option<u16> = read_u16(bytes, 0x3A, le) else {
+        let Some(es): Option<u16> = read_u16(bytes, FileOffset::new(0x3A), le) else {
             return layout;
         };
-        let Some(n): Option<u16> = read_u16(bytes, 0x3C, le) else {
+        let Some(n): Option<u16> = read_u16(bytes, FileOffset::new(0x3C), le) else {
             return layout;
         };
-        (o as usize, es as usize, n as usize)
+        (FileOffset::new(o), u64::from(es), u64::from(n))
     } else {
-        let Some(o): Option<u32> = read_u32(bytes, 0x20, le) else {
+        let Some(o): Option<u32> = read_u32(bytes, FileOffset::new(0x20), le) else {
             return layout;
         };
-        let Some(es): Option<u16> = read_u16(bytes, 0x2E, le) else {
+        let Some(es): Option<u16> = read_u16(bytes, FileOffset::new(0x2E), le) else {
             return layout;
         };
-        let Some(n): Option<u16> = read_u16(bytes, 0x30, le) else {
+        let Some(n): Option<u16> = read_u16(bytes, FileOffset::new(0x30), le) else {
             return layout;
         };
-        (o as usize, es as usize, n as usize)
+        (FileOffset::new(u64::from(o)), u64::from(es), u64::from(n))
     };
-    if shoff == 0 || shentsize == 0 {
+    if shoff.is_zero() || shentsize == 0 {
         return layout;
     }
-    let count: usize = shnum.min(MAX_PARSED_SECTIONS);
+    let count: usize = Size::new(shnum)
+        .bounded_element_capacity(
+            usize::try_from(shentsize).unwrap_or(usize::MAX),
+            bytes.len(),
+        )
+        .min(MAX_PARSED_SECTIONS);
     for i in 0..count {
-        let base: usize = shoff + i * shentsize;
-        let Some(sh_type): Option<u32> = read_u32(bytes, base + 4, le) else {
+        let Some(base): Option<FileOffset> = element_at(shoff, i, shentsize) else {
             break;
         };
-        let (sh_flags, sh_offset, sh_size): (u64, usize, usize) = if is64 {
-            let Some(f): Option<u64> = read_u64(bytes, base + 8, le) else {
+        let Some(sh_type): Option<u32> =
+            field_at(base, 4).and_then(|at: FileOffset| read_u32(bytes, at, le))
+        else {
+            break;
+        };
+        let (sh_flags, sh_offset, sh_size): (u64, FileOffset, Size) = if is64 {
+            let Some(f): Option<u64> =
+                field_at(base, 8).and_then(|at: FileOffset| read_u64(bytes, at, le))
+            else {
                 break;
             };
-            let Some(o): Option<u64> = read_u64(bytes, base + 24, le) else {
+            let Some(o): Option<u64> =
+                field_at(base, 24).and_then(|at: FileOffset| read_u64(bytes, at, le))
+            else {
                 break;
             };
-            let Some(s): Option<u64> = read_u64(bytes, base + 32, le) else {
+            let Some(s): Option<u64> =
+                field_at(base, 32).and_then(|at: FileOffset| read_u64(bytes, at, le))
+            else {
                 break;
             };
-            (f, o as usize, s as usize)
+            (f, FileOffset::new(o), Size::new(s))
         } else {
-            let Some(f): Option<u32> = read_u32(bytes, base + 8, le) else {
+            let Some(f): Option<u32> =
+                field_at(base, 8).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            let Some(o): Option<u32> = read_u32(bytes, base + 16, le) else {
+            let Some(o): Option<u32> =
+                field_at(base, 16).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            let Some(s): Option<u32> = read_u32(bytes, base + 20, le) else {
+            let Some(s): Option<u32> =
+                field_at(base, 20).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            (u64::from(f), o as usize, s as usize)
+            (
+                u64::from(f),
+                FileOffset::new(u64::from(o)),
+                Size::new(u64::from(s)),
+            )
         };
         if sh_type != SHT_NOBITS && sh_flags & SHF_EXECINSTR != 0 {
             push_region(&mut layout.regions, bytes.len(), sh_offset, sh_size);
@@ -1322,7 +1421,7 @@ const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
 
 fn macho_code_layout(bytes: &[u8]) -> CodeLayout {
     let mut layout: CodeLayout = CodeLayout::default();
-    let Some(magic): Option<u32> = read_u32(bytes, 0, true) else {
+    let Some(magic): Option<u32> = read_u32(bytes, FileOffset::ZERO, true) else {
         return layout;
     };
     let (le, is64): (bool, bool) = match magic {
@@ -1337,20 +1436,23 @@ fn macho_code_layout(bytes: &[u8]) -> CodeLayout {
     } else {
         CodeBitness::Bits32
     });
-    let Some(ncmds): Option<u32> = read_u32(bytes, 16, le) else {
+    let Some(ncmds): Option<u32> = read_u32(bytes, FileOffset::new(16), le) else {
         return layout;
     };
-    let mut cmd_off: usize = if is64 { 32 } else { 28 };
-    let cmds: usize = (ncmds as usize).min(MAX_MACHO_LOAD_CMDS);
+    let mut cmd_off: FileOffset = FileOffset::new(if is64 { 32 } else { 28 });
+    let cmds: usize = Size::new(u64::from(ncmds))
+        .bounded_element_capacity(MACHO_LOAD_COMMAND_MIN_BYTES, bytes.len())
+        .min(MAX_MACHO_LOAD_CMDS);
     for _ in 0..cmds {
         let Some(cmd): Option<u32> = read_u32(bytes, cmd_off, le) else {
             break;
         };
-        let Some(cmdsize): Option<u32> = read_u32(bytes, cmd_off + 4, le) else {
+        let Some(cmdsize): Option<u32> =
+            field_at(cmd_off, 4).and_then(|at: FileOffset| read_u32(bytes, at, le))
+        else {
             break;
         };
-        let cmdsize: usize = cmdsize as usize;
-        if cmdsize < 8 {
+        if (cmdsize as usize) < MACHO_LOAD_COMMAND_MIN_BYTES {
             break;
         }
         if cmd == LC_SEGMENT_64 && is64 {
@@ -1358,51 +1460,83 @@ fn macho_code_layout(bytes: &[u8]) -> CodeLayout {
         } else if cmd == LC_SEGMENT && !is64 {
             macho_segment_sections(bytes, cmd_off, le, false, &mut layout.regions);
         }
-        cmd_off = cmd_off.saturating_add(cmdsize);
-        if cmd_off + 8 > bytes.len() {
+        let Some(next): Option<FileOffset> = field_at(cmd_off, u64::from(cmdsize)) else {
+            break;
+        };
+        cmd_off = next;
+        let Some(tail): Option<FileOffset> = field_at(cmd_off, 8) else {
+            break;
+        };
+        let Ok(file_len): Result<Size, _> = Size::try_from(bytes.len()) else {
+            break;
+        };
+        if !tail.is_within(file_len) {
             break;
         }
     }
     layout
 }
 
+const MACHO_LOAD_COMMAND_MIN_BYTES: usize = 8;
+
 fn macho_segment_sections(
     bytes: &[u8],
-    cmd_off: usize,
+    cmd_off: FileOffset,
     le: bool,
     is64: bool,
     regions: &mut Vec<CodeRegion>,
 ) {
-    let (nsects_off, sect_start, sect_size): (usize, usize, usize) =
+    let (nsects_off, sect_start, sect_size): (u64, u64, u64) =
         if is64 { (64, 72, 80) } else { (48, 56, 68) };
-    let Some(nsects): Option<u32> = read_u32(bytes, cmd_off + nsects_off, le) else {
+    let Some(nsects): Option<u32> =
+        field_at(cmd_off, nsects_off).and_then(|at: FileOffset| read_u32(bytes, at, le))
+    else {
         return;
     };
-    let n: usize = (nsects as usize).min(MAX_PARSED_SECTIONS);
+    let Some(table): Option<FileOffset> = field_at(cmd_off, sect_start) else {
+        return;
+    };
+    let n: usize = Size::new(u64::from(nsects))
+        .bounded_element_capacity(sect_size as usize, bytes.len())
+        .min(MAX_PARSED_SECTIONS);
     for i in 0..n {
-        let sbase: usize = cmd_off + sect_start + i * sect_size;
-        let (size, offset, flags): (usize, usize, u32) = if is64 {
-            let Some(sz): Option<u64> = read_u64(bytes, sbase + 40, le) else {
+        let Some(sbase): Option<FileOffset> = element_at(table, i, sect_size) else {
+            break;
+        };
+        let (size, offset, flags): (Size, FileOffset, u32) = if is64 {
+            let Some(sz): Option<u64> =
+                field_at(sbase, 40).and_then(|at: FileOffset| read_u64(bytes, at, le))
+            else {
                 break;
             };
-            let Some(o): Option<u32> = read_u32(bytes, sbase + 48, le) else {
+            let Some(o): Option<u32> =
+                field_at(sbase, 48).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            let Some(f): Option<u32> = read_u32(bytes, sbase + 64, le) else {
+            let Some(f): Option<u32> =
+                field_at(sbase, 64).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            (sz as usize, o as usize, f)
+            (Size::new(sz), FileOffset::new(u64::from(o)), f)
         } else {
-            let Some(sz): Option<u32> = read_u32(bytes, sbase + 36, le) else {
+            let Some(sz): Option<u32> =
+                field_at(sbase, 36).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            let Some(o): Option<u32> = read_u32(bytes, sbase + 40, le) else {
+            let Some(o): Option<u32> =
+                field_at(sbase, 40).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            let Some(f): Option<u32> = read_u32(bytes, sbase + 56, le) else {
+            let Some(f): Option<u32> =
+                field_at(sbase, 56).and_then(|at: FileOffset| read_u32(bytes, at, le))
+            else {
                 break;
             };
-            (sz as usize, o as usize, f)
+            (Size::new(u64::from(sz)), FileOffset::new(u64::from(o)), f)
         };
         if flags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS) != 0 {
             push_region(regions, bytes.len(), offset, size);
@@ -1479,7 +1613,7 @@ mod decode {
     use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
     use super::{CodeBitness, Confidence, Technique, TechniqueAccumulator, sig_class_technique};
-    use crate::anti_analysis_sigs::{NUMBER_SIGS, NumberCorroboration};
+    use crate::anti_analysis_sigs::{NUMBER_SIGS, SignalCorroboration};
 
     const DECODE_CAP_BYTES: usize = 16 * 1024 * 1024;
     const RDTSC_SANDWICH_SPAN: u64 = 64;
@@ -1557,6 +1691,7 @@ mod decode {
                             name,
                             Some(ip as usize),
                             format!("red-pill {name} descriptor-table store at offset 0x{ip:x}"),
+                            SignalCorroboration::Standalone,
                         );
                     }
                 }
@@ -1567,6 +1702,7 @@ mod decode {
                         "int 2d",
                         Some(ip as usize),
                         format!("int 2d kernel-debugger detection at offset 0x{ip:x}"),
+                        SignalCorroboration::Standalone,
                     );
                     hard_trap_ips.push(ip);
                 }
@@ -1622,6 +1758,7 @@ mod decode {
                 "context dr7 read",
                 Some(ip as usize),
                 format!("x64 context dr7 offset 0x328 read at offset 0x{ip:x}"),
+                SignalCorroboration::Standalone,
             );
         }
     }
@@ -1695,6 +1832,7 @@ mod decode {
                 "peb anti-debug field read",
                 Some(base_ip as usize),
                 format!("{load} peb-base load then {field} read at offset 0x{base_ip:x}"),
+                SignalCorroboration::Standalone,
             );
             *pending = None;
         }
@@ -1737,6 +1875,7 @@ mod decode {
                     "rdtsc-cpuid-rdtsc sandwich",
                     Some(start as usize),
                     format!("rdtsc-cpuid-rdtsc vm-exit timing sandwich at offset 0x{start:x}"),
+                    SignalCorroboration::Standalone,
                 );
             }
         }
@@ -1760,6 +1899,7 @@ mod decode {
                     format!(
                         "icebp (int1) single-step trap (deliberate-fault cluster) at offset 0x{p:x}"
                     ),
+                    SignalCorroboration::Standalone,
                 );
             }
         }
@@ -1782,13 +1922,14 @@ mod decode {
                     format!(
                         "context-debug-registers flag 0x10010 (hardware-breakpoint inspection) at offset 0x{ip:x}"
                     ),
+                    SignalCorroboration::Standalone,
                 );
             }
             for sig in NUMBER_SIGS {
                 if u64::from(sig.value) != value {
                     continue;
                 }
-                if matches!(sig.corroboration, NumberCorroboration::Corroborated)
+                if matches!(sig.corroboration, SignalCorroboration::Corroborated)
                     && !immediate_corroborated(
                         sig.value,
                         cpuid_present,
@@ -1807,6 +1948,7 @@ mod decode {
                         "magic constant 0x{:x} ({}) at offset 0x{:x}",
                         sig.value, sig.note, ip
                     ),
+                    SignalCorroboration::Standalone,
                 );
             }
         }
@@ -1852,6 +1994,7 @@ fn collect_anti_disasm(bytes: &[u8], base: usize, acc: &mut TechniqueAccumulator
             detail,
             Some(base + off),
             format!("{detail} at offset 0x{:x}", base + off),
+            SignalCorroboration::Standalone,
         );
     }
 }
@@ -1929,6 +2072,7 @@ fn collect_red_pill_opcodes(bytes: &[u8], base: usize, acc: &mut TechniqueAccumu
                     "red-pill {mnemonic} descriptor-table store at offset 0x{:x}",
                     base + i
                 ),
+                SignalCorroboration::Standalone,
             );
         }
         i += 1;
@@ -1980,6 +2124,7 @@ fn collect_rdtsc_cpuid_sandwich(bytes: &[u8], base: usize, acc: &mut TechniqueAc
                         "rdtsc-cpuid-rdtsc vm-exit timing sandwich at offset 0x{:x}",
                         base + i
                     ),
+                    SignalCorroboration::Standalone,
                 );
             }
         }
@@ -2013,6 +2158,7 @@ fn collect_peb_anti_debug(
                         "{label} peb-base load then {field} read at offset 0x{:x}",
                         base + i
                     ),
+                    SignalCorroboration::Standalone,
                 );
             }
             i += len;
@@ -2087,6 +2233,7 @@ fn collect_hardware_breakpoint(bytes: &[u8], base: usize, acc: &mut TechniqueAcc
                     "context-debug-registers flag 0x10010 (hardware-breakpoint inspection) at offset 0x{:x}",
                     base + i
                 ),
+                SignalCorroboration::Standalone,
             );
         } else if window == dr7_offset && window_references_dr7(bytes, i) {
             acc.add(
@@ -2098,6 +2245,7 @@ fn collect_hardware_breakpoint(bytes: &[u8], base: usize, acc: &mut TechniqueAcc
                     "x64 context dr7 offset 0x328 read at offset 0x{:x}",
                     base + i
                 ),
+                SignalCorroboration::Standalone,
             );
         }
         i += 1;
@@ -2133,6 +2281,7 @@ fn collect_int_opcodes(bytes: &[u8], base: usize, acc: &mut TechniqueAccumulator
                     "int 2d kernel-debugger detection at offset 0x{:x}",
                     base + i
                 ),
+                SignalCorroboration::Standalone,
             );
             hard_traps.push(i);
         }
@@ -2156,6 +2305,7 @@ fn collect_int_opcodes(bytes: &[u8], base: usize, acc: &mut TechniqueAccumulator
                     "icebp (int1) single-step trap (deliberate-fault cluster) at offset 0x{:x}",
                     base + p
                 ),
+                SignalCorroboration::Standalone,
             );
         }
     }
@@ -2187,6 +2337,7 @@ fn collect_string_encryption(bytes: &[u8], family: TargetFamily, acc: &mut Techn
             "xor string block",
             None,
             "single-byte xor encoded ascii string block".to_string(),
+            SignalCorroboration::Standalone,
         );
     }
 }
@@ -2315,6 +2466,133 @@ const fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
+    fn assert_regions_inside(layout: &CodeLayout, image_len: usize, label: &str) {
+        for region in &layout.regions {
+            let end: usize = region
+                .file_offset
+                .checked_add(region.len)
+                .unwrap_or_else(|| panic!("{label} produced a region whose end overflows"));
+            assert!(
+                end <= image_len,
+                "{label} produced a region {}..{end} outside a {image_len}-byte image",
+                region.file_offset
+            );
+        }
+    }
+
+    fn elf64_header(shoff: u64, shentsize: u16, shnum: u16) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![0u8; 4096];
+        out[..4].copy_from_slice(b"\x7fELF");
+        out[4] = 2;
+        out[5] = 1;
+        out[0x28..0x30].copy_from_slice(&shoff.to_le_bytes());
+        out[0x3A..0x3C].copy_from_slice(&shentsize.to_le_bytes());
+        out[0x3C..0x3E].copy_from_slice(&shnum.to_le_bytes());
+        out
+    }
+
+    fn pe_header(lfanew: u32, opt_size: u16, num_sections: u16) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![0u8; 4096];
+        out[..2].copy_from_slice(b"MZ");
+        out[0x3C..0x40].copy_from_slice(&lfanew.to_le_bytes());
+        let at: usize = lfanew as usize;
+        if let Some(slot) = out.get_mut(at..at + 4) {
+            slot.copy_from_slice(b"PE\0\0");
+        }
+        if let Some(slot) = out.get_mut(at + 6..at + 8) {
+            slot.copy_from_slice(&num_sections.to_le_bytes());
+        }
+        if let Some(slot) = out.get_mut(at + 20..at + 22) {
+            slot.copy_from_slice(&opt_size.to_le_bytes());
+        }
+        if let Some(slot) = out.get_mut(at + 24..at + 26) {
+            slot.copy_from_slice(&0x020Bu16.to_le_bytes());
+        }
+        out
+    }
+
+    fn macho64_header(ncmds: u32, cmdsize: u32, nsects: u32) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![0u8; 4096];
+        out[..4].copy_from_slice(&0xFEED_FACFu32.to_le_bytes());
+        out[16..20].copy_from_slice(&ncmds.to_le_bytes());
+        out[32..36].copy_from_slice(&0x19u32.to_le_bytes());
+        out[36..40].copy_from_slice(&cmdsize.to_le_bytes());
+        out[96..100].copy_from_slice(&nsects.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn an_elf_section_table_at_the_width_ceiling_yields_no_region() {
+        for shoff in [u64::MAX, u64::MAX - 1, u64::MAX / 2, u64::from(u32::MAX)] {
+            let sample: Vec<u8> = elf64_header(shoff, u16::MAX, u16::MAX);
+            let layout: CodeLayout = elf_code_layout(&sample);
+            assert_regions_inside(&layout, sample.len(), &format!("elf shoff {shoff:#x}"));
+            assert!(
+                layout.regions.is_empty(),
+                "an elf section table at {shoff:#x} reaches no file bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pe_section_table_at_the_width_ceiling_yields_no_region() {
+        for (lfanew, opt_size) in [
+            (u32::MAX, u16::MAX),
+            (u32::MAX - 8, u16::MAX),
+            (0x0100, u16::MAX),
+        ] {
+            let sample: Vec<u8> = pe_header(lfanew, opt_size, u16::MAX);
+            let layout: CodeLayout = pe_code_layout(&sample);
+            assert_regions_inside(&layout, sample.len(), &format!("pe lfanew {lfanew:#x}"));
+        }
+    }
+
+    #[test]
+    fn a_macho_load_command_chain_at_the_width_ceiling_yields_no_region() {
+        for cmdsize in [u32::MAX, u32::MAX - 8, 8] {
+            let sample: Vec<u8> = macho64_header(u32::MAX, cmdsize, u32::MAX);
+            let layout: CodeLayout = macho_code_layout(&sample);
+            assert_regions_inside(
+                &layout,
+                sample.len(),
+                &format!("macho cmdsize {cmdsize:#x}"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_section_count_past_the_file_cannot_drive_the_element_loop() {
+        let sample: Vec<u8> = elf64_header(0x40, 64, u16::MAX);
+        let layout: CodeLayout = elf_code_layout(&sample);
+        assert_regions_inside(&layout, sample.len(), "elf oversized shnum");
+        let dense: Vec<u8> = elf64_header(0x40, 1, u16::MAX);
+        let dense_layout: CodeLayout = elf_code_layout(&dense);
+        assert_regions_inside(&dense_layout, dense.len(), "elf single-byte shentsize");
+    }
+
+    #[test]
+    fn a_truncated_but_legitimate_elf_still_reads_what_exists() {
+        let mut sample: Vec<u8> = elf64_header(0x40, 64, 4);
+        sample[0x40 + 4..0x40 + 8].copy_from_slice(&1u32.to_le_bytes());
+        sample[0x40 + 8..0x40 + 16].copy_from_slice(&SHF_EXECINSTR.to_le_bytes());
+        sample[0x40 + 24..0x40 + 32].copy_from_slice(&512u64.to_le_bytes());
+        sample[0x40 + 32..0x40 + 40].copy_from_slice(&256u64.to_le_bytes());
+        let full: CodeLayout = elf_code_layout(&sample);
+        assert_eq!(full.regions.len(), 1, "the planted section must be read");
+        assert_eq!(full.regions[0].file_offset, 512);
+        assert_eq!(full.regions[0].len, 256);
+
+        sample.truncate(600);
+        let clipped: CodeLayout = elf_code_layout(&sample);
+        assert_regions_inside(&clipped, sample.len(), "truncated elf");
+        assert_eq!(
+            clipped.regions.len(),
+            1,
+            "a truncated file must still yield the part that exists"
+        );
+        assert_eq!(clipped.regions[0].len, 600 - 512);
+    }
+
     fn finding(report: &AntiAnalysisReport, technique: Technique) -> Option<&AntiAnalysisFinding> {
         report
             .findings
@@ -2347,17 +2625,51 @@ mod tests {
     }
 
     #[test]
-    fn anti_debug_string_detected_not_defeated() {
+    fn lone_isdebuggerpresent_string_is_informational_not_verdict() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"\x00IsDebuggerPresent\x00padding here for strings\x00");
         let report: AntiAnalysisReport = scan(&buf, None);
         let f: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiDebug).expect("anti-debug surfaced for triage");
+        assert!(
+            !f.detected,
+            "a single import-table-only isdebuggerpresent reference is also how a benign \
+             runtime's own crash/backtrace machinery references the api; it must stay \
+             informational, not a high-confidence verdict: {f:?}"
+        );
+        assert_eq!(f.severity, FindingSeverity::Informational);
+    }
+
+    #[test]
+    fn two_distinct_high_confidence_anti_debug_strings_reach_verdict() {
+        let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
+        buf.extend_from_slice(b"\x00IsDebuggerPresent\x00CheckRemoteDebuggerPresent\x00");
+        let report: AntiAnalysisReport = scan(&buf, None);
+        let f: &AntiAnalysisFinding =
             finding(&report, Technique::AntiDebug).expect("anti-debug present");
-        assert!(f.detected);
+        assert!(
+            f.detected,
+            "two distinct high-confidence anti-debug api references corroborate each other \
+             and reach a verdict: {f:?}"
+        );
         assert!(
             matches!(f.defeated_by, DefeatStatus::DetectedNotDefeated { .. }),
             "anti-debug is a runtime guard, must stay detected-not-defeated: {:?}",
             f.defeated_by
+        );
+    }
+
+    #[test]
+    fn unambiguous_vendor_markers_still_verdict_standalone() {
+        let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
+        buf.extend_from_slice(b"\x00vboxguest\x00padding here for strings\x00");
+        let report: AntiAnalysisReport = scan(&buf, None);
+        let f: &AntiAnalysisFinding = finding(&report, Technique::AntiVm).expect("anti-vm present");
+        assert!(
+            f.detected,
+            "a virtualbox guest driver name has no benign explanation and must keep \
+             verdicting alone; only the two generic win32 debugger-presence apis need a \
+             second corroborating signal: {f:?}"
         );
     }
 
@@ -2957,6 +3269,7 @@ mod tests {
                 "same-kind-weak-signal",
                 Some(i * 8192),
                 format!("weak signal {i}"),
+                SignalCorroboration::Standalone,
             );
         }
         let findings: Vec<AntiAnalysisFinding> =

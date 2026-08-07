@@ -45,10 +45,10 @@
       "bars": [
         {
           "label": "CPython 3.10 (161 of the pinned modules)",
-          "value": 91.5,
-          "num": 4994,
+          "value": 91.57,
+          "num": 4998,
           "den": 5458,
-          "detail": "4994 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "4998 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.10.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_310.rs",
@@ -79,11 +79,11 @@
         },
         {
           "label": "CPython 3.15 (199 of the pinned modules)",
-          "value": 96.03,
-          "num": 6214,
-          "den": 6471,
-          "detail": "6214 / 6471 code objects over 199 modules on CPython 3.15.0b1. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
-          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.15.0b1 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "value": 96.0,
+          "num": 6221,
+          "den": 6480,
+          "detail": "6221 / 6480 code objects over 199 modules on CPython 3.15.0b4. 1 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.15.0b4 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_315.rs",
             "function": "published_315_band_bar_agrees_with_the_counts_this_gate_enforces",
@@ -395,6 +395,26 @@
       ]
     },
     {
+      "heading": "Dotnet whole-type recompile (EdgeCases corpus, recompile-only)",
+      "axis_label": "types whose recovered source recompiles standalone with real csc, %; recompile-only, not IL or execution equivalence",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "whole-type recompile",
+          "value": 51.42857142857143,
+          "num": 18,
+          "den": 35,
+          "verified_by": {
+            "path": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs",
+            "function": "published_edgecases_whole_type_recompile_bar_matches_the_floor_this_gate_enforces",
+            "measured_by": "edgecases_whole_type_recompile_fraction_is_published_as_measured"
+          },
+          "detail": "18 of the 35 EdgeCases types recompile standalone with real csc from their recovered source, each type built as its own single-file compilation unit with no reference back to the origin assembly. This is recompile-only: it proves the recovered source is legal C#, not that it means what the original IL meant. A type that parses but states a refusal for at least one member, a state machine that was not reconstructed or a compiler-generated construct left unlowered, does not count as recovered even when the file compiles.",
+          "source": "crates/disrobe-pass-dotnet/tests/whole_type_il_equivalence_oracle.rs (EDGECASES_RECOMPILE_MEMBERS pins the 18 names against EDGECASES_TYPES's 35 members; edgecases_whole_type_recompile_fraction_is_published_as_measured fails if any named member stops recompiling without a stated refusal); measured locally with dotnet SDK 9.0.316 (Roslyn csc bundled with that SDK, MSBuild 17.14.43.7001) via `cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture`; CI asserts only the named-member floor, not the percentage, so re-measure locally before quoting a moved figure"
+        }
+      ]
+    },
+    {
       "heading": "Luau opcode lifting (disrobe declared table)",
       "axis_label": "declared opcode entries lifted, %",
       "kind": "percent",
@@ -526,6 +546,23 @@
           "label": "functions parsed",
           "value": 122633,
           "source": "crates/disrobe-pass-mobile/tests/real_hermes_discord.rs:112 (assert_eq function count = 122_633); local-only, fixture is gitignored"
+        }
+      ]
+    },
+    {
+      "heading": "Flutter Dart AOT RAW static recovery on a real RustDesk 1.4.9 libapp.so (local fetched-by-hash sample, not CI-gated)",
+      "axis_label": "ARM64 frame-prologue function boundaries recovered from the binary's own isolate snapshot",
+      "kind": "scalar",
+      "bars": [
+        {
+          "label": "function boundaries recovered",
+          "value": 23471,
+          "verified_by": {
+            "path": "crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs",
+            "function": "rustdesk_static_recovery_reports_raw_counts"
+          },
+          "detail": "RustDesk 1.4.9 arm64-v8a release APK (AGPL-3.0), lib/arm64-v8a/libapp.so extracted from the zip; RAW path recovers 23471 function boundaries, 10351 class-name strings, 28952 method-name strings and 1489 library URIs, cross-checked against an independent whole-file `package:*.dart` string scan that finds 1271; the pinned declaration-graph path reports unsupported-version on this build because its Dart snapshot falls outside the pinned 3.12.2 android-arm64 product tuple",
+          "source": "crates/disrobe-pass-mobile/tests/real_flutter_rustdesk.rs pins every one of those counts by equality; local-only, the APK is fetched by pinned url and sha256 into a scratch cache and never committed, provenance in corpus/mobile/flutter/MANIFEST.toml"
         }
       ]
     },

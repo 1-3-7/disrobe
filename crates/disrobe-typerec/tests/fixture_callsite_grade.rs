@@ -30,6 +30,7 @@ fn stripped_input() -> (DebugImage, ImportMap) {
             text_base: base,
             text,
             functions: unstripped.functions,
+            locations: unstripped.locations,
         },
         imports,
     )

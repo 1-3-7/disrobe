@@ -47,6 +47,11 @@ pub enum Error {
         "DR-WEBVIEW-0011: embedded asset table could not be located (no {0}-record run locked)"
     )]
     NoEmbeddedTable(usize),
+
+    #[error(
+        "DR-WEBVIEW-0012: input is a {container} package rather than an application image; extract its members first and carve each one"
+    )]
+    PackagedContainer { container: &'static str },
 }
 
 impl From<ByteReadError> for Error {

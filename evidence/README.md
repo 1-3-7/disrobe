@@ -64,6 +64,13 @@ deliberately unsound recovery alongside the real one and asserts the unsound one
 named. It also asserts a floor on how many entries were actually graded, so a run that refuses its
 budget on nearly everything cannot pass by grading nothing.
 
+Grading runs two legs. The first is behavioural: the generator computed the expected value of the
+original on each check vector with its own evaluator, so agreement is agreement with something the
+recovery path never produced. The second is exact: when `z3` or `bitwuzla` is on PATH the gate asks
+it to prove the recovered expression equal to the held-out original over every input, and it first
+makes the solver refute a pair that is not equivalent so the leg cannot pass by answering nothing.
+Set `DISROBE_REQUIRE_SOLVER` to make a missing solver fatal rather than skipped.
+
 Present families:
 
 | Family | Entries | Sources | Gate |

@@ -1,5 +1,6 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
+use disrobe_core::codec::hex::nibble as hex_nibble;
 use flate2::read::DeflateDecoder;
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
@@ -1303,30 +1304,8 @@ const fn rot13_byte(b: u8) -> u8 {
 }
 
 fn decode_hex_stream_skip_ws(buf: &[u8]) -> Option<Vec<u8>> {
-    let clean: Vec<u8> = buf
-        .iter()
-        .copied()
-        .filter(|b: &u8| !b.is_ascii_whitespace())
-        .collect();
-    if clean.is_empty() || !clean.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(clean.len() / 2);
-    for pair in clean.chunks_exact(2) {
-        let hi: u8 = hex_nibble(pair[0])?;
-        let lo: u8 = hex_nibble(pair[1])?;
-        out.push((hi << 4) | lo);
-    }
-    Some(out)
-}
-
-const fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
+    disrobe_core::codec::hex::decode_with(buf, disrobe_core::codec::hex::WRAPPED_STREAM_NONEMPTY)
+        .ok()
 }
 
 fn uudecode(buf: &[u8]) -> Vec<u8> {
@@ -1819,6 +1798,20 @@ mod tests {
         let hex: Vec<u8> = bin2hex(raw);
         assert_eq!(hex, b"00ff2068656c6c6f");
         assert_eq!(decode_hex_stream_skip_ws(&hex).unwrap(), raw);
+    }
+
+    #[test]
+    fn decode_hex_stream_skip_ws_pins_the_shipped_whitespace_and_empty_policy() {
+        assert_eq!(decode_hex_stream_skip_ws(b""), None);
+        assert_eq!(decode_hex_stream_skip_ws(b"  \t\r\n"), None);
+        assert_eq!(decode_hex_stream_skip_ws(b"a"), None);
+        assert_eq!(decode_hex_stream_skip_ws(b"abc"), None);
+        assert_eq!(decode_hex_stream_skip_ws(b"gg"), None);
+        assert_eq!(
+            decode_hex_stream_skip_ws(b"de ad\tbe\r\nef"),
+            Some(vec![0xde, 0xad, 0xbe, 0xef])
+        );
+        assert_eq!(decode_hex_stream_skip_ws(b"a b"), Some(vec![0xab]));
     }
 
     #[test]

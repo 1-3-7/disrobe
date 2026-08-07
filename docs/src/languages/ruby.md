@@ -9,7 +9,7 @@
 | Flavors detected | MRI source, YARV binary (`YARB` magic), mruby RITE, JRuby `.class`, TruffleRuby AOT, Ruby2Exe, Ocra |
 | YARV | IBF reader (iseqs, object table, literals) plus a decompiler driven by per-version opcode tables for Ruby 2.6 through 3.4 |
 | mruby | RITE reader covering format versions 0001-0007, 0030, 0200, and 0300, with irep disassembly and decompilation |
-| Fidelity | <!-- m:ruby_greeter_pct -->100%<!-- /m --> opcode-multiset equivalence on a greeter fixture; <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> on a mixed-construct megafile (gate floor, CI-enforced) |
+| Fidelity | <!-- m:ruby_greeter_pct -->100%<!-- /m --> opcode-multiset equivalence on a greeter fixture; <!-- m:ruby_megafile_pct -->98.67%<!-- /m --> measured on a mixed-construct megafile, above the CI gate's 98% floor |
 | Output | Analysis JSON; a `.rb` source file for YARV and recovered mruby bodies, with a YARV disassembly trailer when available |
 
 ## Commands

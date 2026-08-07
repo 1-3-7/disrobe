@@ -213,15 +213,69 @@ fn closures_recursion_recompiles() {
     );
 }
 
+const SAMPLES: [&str; 5] = [
+    "arith_loops",
+    "control_flow",
+    "closures_recursion",
+    "oop_functional",
+    "luau_continue_else",
+];
+
+#[test]
+fn a_claimed_structure_survives_re_execution_on_every_committed_sample() {
+    let runtime: String = require_tool(&["luau", "luau.exe"], "runtime");
+    let mut claimed: Vec<&str> = Vec::new();
+    let mut lies: Vec<String> = Vec::new();
+    for name in SAMPLES {
+        let recovered: DecompiledChunk = recovered_chunk(name);
+        if matches!(recovered.fidelity, disrobe_pass_lua::Fidelity::BestEffort) {
+            continue;
+        }
+        claimed.push(name);
+        let source_path: PathBuf = samples_dir().join("src").join(format!("{name}.lua"));
+        let original: String =
+            fs::read_to_string(&source_path).unwrap_or_else(|error: std::io::Error| {
+                panic!("source fixture {name}.lua must be tracked: {error}")
+            });
+        let expected: Option<String> = run_luau(&runtime, &original);
+        let actual: Option<String> = run_luau(&runtime, &recovered.source);
+        let Some(expected): Option<String> = expected else {
+            panic!("original {name}.lua must run under the reference runtime")
+        };
+        if actual.as_ref().map(|s: &String| normalize(s)) != Some(normalize(&expected)) {
+            lies.push(format!(
+                "{name}: fidelity={:?} warnings={:?}\n--- expected ---\n{expected}\n--- actual \
+                 ---\n{}\n--- recovered ---\n{}",
+                recovered.fidelity,
+                recovered.warnings,
+                actual
+                    .as_deref()
+                    .unwrap_or("<recovered source did not run>"),
+                recovered.source
+            ));
+        }
+    }
+
+    assert!(
+        lies.is_empty(),
+        "{} committed sample(s) reported a recovered structure that the reference runtime \
+         contradicts. A structuring claim has to imply the recovered source behaves like the \
+         original.\n{}",
+        lies.len(),
+        lies.join("\n----\n")
+    );
+    assert!(
+        claimed.len() >= 4,
+        "only {} of {} samples claim a structure, so this check compared almost nothing; a drop \
+         here means the lifter regressed or the claim went silent: {claimed:?}",
+        claimed.len(),
+        SAMPLES.len()
+    );
+}
+
 #[test]
 fn all_samples_parse_and_emit_source() {
-    for name in [
-        "arith_loops",
-        "control_flow",
-        "closures_recursion",
-        "oop_functional",
-        "luau_continue_else",
-    ] {
+    for name in SAMPLES {
         let recovered: String = recovered_source(name);
         assert!(
             recovered.contains("local function _main"),

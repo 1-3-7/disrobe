@@ -1,6 +1,7 @@
 use disrobe_nir::{DefUse, NirInstr, NirModule, SourceLang, ValueId};
 
 const X86_ARGUMENT_REGISTERS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+const X86_MS64_ARGUMENT_REGISTERS: [&str; 4] = ["rcx", "rdx", "r8", "r9"];
 const X86_RETURN_REGISTER: &str = "rax";
 
 const AARCH64_ARGUMENT_REGISTERS: [&str; 8] = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"];
@@ -56,6 +57,29 @@ impl CallAbi {
         match self {
             Self::X86 => X86_RETURN_REGISTER,
             Self::Aarch64 => AARCH64_RETURN_REGISTER,
+        }
+    }
+
+    pub(crate) fn out_argument_candidates(self, index: u16) -> Vec<&'static str> {
+        let index: usize = index as usize;
+        match self {
+            Self::X86 => {
+                let mut candidates: Vec<&'static str> = Vec::with_capacity(2);
+                if let Some(register) = X86_ARGUMENT_REGISTERS.get(index) {
+                    candidates.push(*register);
+                }
+                if let Some(register) = X86_MS64_ARGUMENT_REGISTERS.get(index)
+                    && !candidates.contains(register)
+                {
+                    candidates.push(*register);
+                }
+                candidates
+            }
+            Self::Aarch64 => AARCH64_ARGUMENT_REGISTERS
+                .get(index)
+                .copied()
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -369,5 +393,25 @@ mod tests {
     fn a_non_native_move_is_not_treated_as_a_register_move() {
         let mov: NirInstr = instr(SourceLang::Wasm, "mov", &["x0", "x1"]);
         assert!(CallAbi::Aarch64.register_move(&mov).is_none());
+    }
+
+    #[test]
+    fn x86_out_argument_candidates_cover_the_system_v_and_microsoft_x64_conventions() {
+        let abi: CallAbi = CallAbi::X86;
+        assert_eq!(abi.out_argument_candidates(0), vec!["rdi", "rcx"]);
+        assert_eq!(abi.out_argument_candidates(1), vec!["rsi", "rdx"]);
+        assert_eq!(abi.out_argument_candidates(2), vec!["rdx", "r8"]);
+        assert_eq!(abi.out_argument_candidates(3), vec!["rcx", "r9"]);
+        assert_eq!(abi.out_argument_candidates(4), vec!["r8"]);
+        assert_eq!(abi.out_argument_candidates(5), vec!["r9"]);
+        assert!(abi.out_argument_candidates(6).is_empty());
+    }
+
+    #[test]
+    fn aarch64_out_argument_candidates_have_one_convention() {
+        let abi: CallAbi = CallAbi::Aarch64;
+        assert_eq!(abi.out_argument_candidates(0), vec!["x0"]);
+        assert_eq!(abi.out_argument_candidates(7), vec!["x7"]);
+        assert!(abi.out_argument_candidates(8).is_empty());
     }
 }

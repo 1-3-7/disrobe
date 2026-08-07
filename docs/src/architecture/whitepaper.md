@@ -943,19 +943,26 @@ genuine CPython recompile:
 The harness carries an explicit anti-masking guard against a subtle way a per-name comparison could
 lie. When several code objects share a qualified name (multiple lambdas or comprehensions under one
 parent), positional pairing could let a real miss on one sibling be hidden by a match on another. The
-harness refuses that pairing and charges the whole group as failures when the counts differ:
+harness refuses that pairing and charges the whole group as failures when the counts differ, and
+counts the group as a sibling collision whenever either side actually held more than one object under
+that name:
 
 ```python
+def sibling_group_charges(alist, blist):
+    is_sibling_collision = max(len(alist), len(blist)) > 1
+    charges = [(i, "MISSING" if i >= len(blist) else "COLLISION") for i in range(len(alist))]
+    return is_sibling_collision, charges
+
+
 if len(blist) != len(alist):
-    if len(alist) > 1:
+    is_sibling_collision, charges = sibling_group_charges(alist, blist)
+    if is_sibling_collision:
         sibling_collisions += 1
-    for i in range(len(alist)):
-        if i >= len(blist):
-            reasons["MISSING"] = reasons.get("MISSING", 0) + 1
-        else:
-            reasons["COLLISION"] = reasons.get("COLLISION", 0) + 1
+    for i, verdict in charges:
+        reasons[verdict] = reasons.get(verdict, 0) + 1
 ```
-(`tests/harness/py_arbitrary_measure.py`, the sibling-pairing guard in `main`)
+(`tests/harness/py_arbitrary_measure.py`, `sibling_group_charges` and the sibling-pairing guard in
+`main`)
 
 A code object counts as recovered only when its normalized instructions match and its argument counts
 match:

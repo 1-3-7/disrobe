@@ -62,7 +62,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | BEAM | Recover | <!-- m:beam_recompile_frac -->18 / 19<!-- /m --> stripped Core Erlang cases match `test/0` | strong `[CI]` | [beam](docs/src/languages/beam.md) |
 | AS3, Flash | Recover | ABC method-body source | pass-gated | [as3](docs/src/languages/as3.md) |
 | Hermes, React Native | Recover | <!-- m:hermes_opcoverage_count -->8 of 8<!-- /m --> functions, no fallback ops | strong `[CI]` | [mobile](docs/src/languages/mobile.md) |
-| Flutter Dart AOT | Partial | class and method attribution | pass-gated | [mobile](docs/src/languages/mobile.md) |
+| Flutter Dart AOT | Partial | class and method attribution over a self-authored Dart 3.12.2 corpus, plus a real RustDesk build graded locally | pass-gated | [mobile](docs/src/languages/mobile.md) |
 | Haxe HashLink | Recover | class names 100%, methods floor 75% | strong `[CI]` | [scriptlang](docs/src/languages/shell.md) |
 | Shell, VBA, XLM | Recover | PowerShell, bash, batch, VBA, Excel 4.0 | pass-gated | [shell](docs/src/languages/shell.md) |
 | Perl, R, Tcl | Partial | op-tree, `.rds` round-trip, starkit | pass-gated | [scriptlang](docs/src/languages/shell.md) |
@@ -110,7 +110,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
 | .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
 | WebAssembly, execution-equiv | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |
-| BEAM, stripped Core Erlang | 18 / 19 committed cases recompile, preserve exports, and match `test/0` `[CI]` | real `erlc` and `erl`, OTP 27.3.4 | `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` |
+| BEAM, stripped Core Erlang | <!-- m:beam_recompile_frac -->18 / 19<!-- /m --> committed cases recompile, preserve exports, and match `test/0` `[CI]` | real `erlc` and `erl`, OTP 27.3.4 | `crates/disrobe-pass-beam/tests/erlc_recompile_equivalence.rs` |
 | WebAssembly obfuscator helpers | <!-- m:wasm_direct_helpers -->4<!-- /m --> cataloged direct-helper families; 3 transformations run through `wasm deob`, while Tigress-via-Emscripten is detected only `[CI]` | parser and execution gates | `crates/disrobe-pass-wasm-deob/tests/obfuscators_e2e.rs` |
 | Lua IronBrew2 2.7.0 devirt | runs equal, standard and MAX mode `[CI]` | real-`lua` differential | `crates/disrobe-pass-lua/tests/ironbrew2_real_oracle.rs` |
 | Ruby YARV, greeter | <!-- m:ruby_greeter_pct -->100%<!-- /m --> `[CI]` | MRI recompile, opcode multiset | `crates/disrobe-pass-ruby/tests/yarv_recompile_oracle.rs` |
@@ -118,7 +118,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | Go type-name recovery | <!-- m:go_typename_count -->838 of 838<!-- /m --> type names, stripped `[CI]` | typelinks survive `-s -w` | `crates/disrobe-pass-go/tests/go_typemeta.rs` |
 | Go BuildInfo and garble undo | BuildInfo recovered, `-literals` rebuilt `[CI]` | real toolchain output | `crates/disrobe-pass-go/tests/go_buildinfo_oracle.rs` |
 | HashLink (Haxe `.hl`) | class names 100%, method names floor 75% `[CI]` | names vs the original `.hx` | `crates/disrobe-pass-scriptlang/tests/real_hashlink_decompile.rs` |
-| Native UPX | `.text` and `.pdata` byte-identical, floor 96% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `nrv2b_content_section_byte_recovery_meets_floor` |
+| Native UPX | `.text` and `.pdata` byte-identical, floor 96.0% `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/upx_unpack_all.rs`, `nrv2b_content_section_byte_recovery_meets_floor` |
 | Native packers, MPRESS | `.text` >= 90%, `.rdata` >= 85% `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/mpress_gauntlet.rs` |
 | Native packers, Yoda's Crypter | `.rsrc`, `.text`, `.data` byte-identical `[CI]` | byte-identity | `crates/disrobe-pass-native/tests/packer_real_samples.rs` |
 | Native packers, ASPack and PECompact | content and rebuilt IAT >= 98% byte-identical `[CI]` | RVA-aligned recovery | `crates/disrobe-pass-native/tests/aspack_pecompact_phase2.rs` |

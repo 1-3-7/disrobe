@@ -152,12 +152,16 @@ static void binary32(uint32_t u, uint32_t v) {
     float a = fp_f_from_bits(u), b = fp_f_from_bits(v);
     check("fmaxnm_f32", u, v, 0, a64m_f32_to_bits(fpx_maxnum_f32(a, b)), a64m_f32_to_bits(a64m_maxnm_f32(a, b)));
     check("fminnm_f32", u, v, 0, a64m_f32_to_bits(fpx_minnum_f32(a, b)), a64m_f32_to_bits(a64m_minnm_f32(a, b)));
+    check("fmax_f32", u, v, 0, a64m_f32_to_bits(fpx_max_f32(a, b)), a64m_f32_to_bits(a64m_max_f32(a, b)));
+    check("fmin_f32", u, v, 0, a64m_f32_to_bits(fpx_min_f32(a, b)), a64m_f32_to_bits(a64m_min_f32(a, b)));
 }
 
 static void binary64(uint64_t u, uint64_t v) {
     double a = fp_d_from_bits(u), b = fp_d_from_bits(v);
     check("fmaxnm_f64", u, v, 0, a64m_f64_to_bits(fpx_maxnum_f64(a, b)), a64m_f64_to_bits(a64m_maxnm_f64(a, b)));
     check("fminnm_f64", u, v, 0, a64m_f64_to_bits(fpx_minnum_f64(a, b)), a64m_f64_to_bits(a64m_minnm_f64(a, b)));
+    check("fmax_f64", u, v, 0, a64m_f64_to_bits(fpx_max_f64(a, b)), a64m_f64_to_bits(a64m_max_f64(a, b)));
+    check("fmin_f64", u, v, 0, a64m_f64_to_bits(fpx_min_f64(a, b)), a64m_f64_to_bits(a64m_min_f64(a, b)));
 }
 
 static void ternary32(uint32_t u, uint32_t v, uint32_t w) {
@@ -426,6 +430,142 @@ fn emitted_c_and_rust_reach_the_instruction_faithful_helpers() {
     assert!(
         seen_rust >= 4,
         "no corpus case exercised the rust helper lowering"
+    );
+}
+
+const FMAX_PROPAGATE_PROBE_NM_F32: &[u8] = &[0x00, 0x68, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FMAX_PROPAGATE_PROBE_PROP_F32: &[u8] = &[0x00, 0x48, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FMAX_PROPAGATE_PROBE_NM_F64: &[u8] = &[0x00, 0x78, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FMAX_PROPAGATE_PROBE_PROP_F64: &[u8] = &[0x00, 0x58, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+
+#[test]
+fn fmax_and_fmaxnm_decode_to_distinct_nan_semantics() {
+    let nm32: LeafRecovery =
+        recover_aarch64_function(FMAX_PROPAGATE_PROBE_NM_F32, 0).expect("fmaxnm s0, s0, s1");
+    let prop32: LeafRecovery =
+        recover_aarch64_function(FMAX_PROPAGATE_PROBE_PROP_F32, 0).expect("fmax s0, s0, s1");
+    let nm64: LeafRecovery =
+        recover_aarch64_function(FMAX_PROPAGATE_PROBE_NM_F64, 0).expect("fminnm d0, d0, d1");
+    let prop64: LeafRecovery =
+        recover_aarch64_function(FMAX_PROPAGATE_PROBE_PROP_F64, 0).expect("fmin d0, d0, d1");
+    assert!(
+        nm32.source.contains("fpx_maxnum_f32"),
+        "fmaxnm must lower through the ignore-a-single-nan helper:\n{}",
+        nm32.source
+    );
+    assert!(
+        prop32.source.contains("fpx_max_f32") && !prop32.source.contains("fpx_maxnum_f32"),
+        "fmax must lower through the nan-propagating helper, not the fmaxnm one:\n{}",
+        prop32.source
+    );
+    assert!(
+        nm64.source.contains("fpx_minnum_f64"),
+        "fminnm must lower through the ignore-a-single-nan helper:\n{}",
+        nm64.source
+    );
+    assert!(
+        prop64.source.contains("fpx_min_f64") && !prop64.source.contains("fpx_minnum_f64"),
+        "fmin must lower through the nan-propagating helper, not the fminnm one:\n{}",
+        prop64.source
+    );
+    assert_ne!(
+        nm32.source, prop32.source,
+        "fmaxnm and fmax must recover to different source, since they diverge on a nan operand"
+    );
+    let nm32_rust: &str = nm32
+        .rust_source
+        .as_deref()
+        .expect("fmaxnm recovers a pseudo-rust body too");
+    let prop32_rust: &str = prop32
+        .rust_source
+        .as_deref()
+        .expect("fmax recovers a pseudo-rust body too");
+    assert!(
+        nm32_rust.contains("fpx_maxnum_f32"),
+        "recovered rust for fmaxnm must lower through the ignore-a-single-nan helper:\n{nm32_rust}"
+    );
+    assert!(
+        prop32_rust.contains("fpx_max_f32") && !prop32_rust.contains("fpx_maxnum_f32"),
+        "recovered rust for fmax must lower through the nan-propagating helper, not the fmaxnm one:\n{prop32_rust}"
+    );
+}
+
+const VREG_PROBE_V16_V31_F32: &[u8] = &[
+    0x10, 0x40, 0x20, 0x1e, 0x31, 0x40, 0x20, 0x1e, 0x10, 0x2a, 0x31, 0x1e, 0x5f, 0x40, 0x20, 0x1e,
+    0x00, 0x2a, 0x3f, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const VREG_PROBE_V16_V31_F64: &[u8] = &[
+    0x14, 0x40, 0x60, 0x1e, 0x39, 0x40, 0x60, 0x1e, 0x94, 0x2a, 0x79, 0x1e, 0x80, 0x42, 0x60, 0x1e,
+    0xc0, 0x03, 0x5f, 0xd6,
+];
+
+#[test]
+fn scalar_fp_registers_v16_to_v31_recover_instead_of_rejecting() {
+    let f32_case: LeafRecovery = recover_aarch64_function(VREG_PROBE_V16_V31_F32, 0).expect(
+        "fmov s16,s0; fmov s17,s1; fadd s16,s16,s17; fmov s31,s2; fadd s0,s16,s31; ret must recover",
+    );
+    assert!(
+        f32_case.source.contains("x_xmm16")
+            && f32_case.source.contains("x_xmm17")
+            && f32_case.source.contains("x_xmm31"),
+        "the recovered c must name v16, v17 and v31 through the widened register file:\n{}",
+        f32_case.source
+    );
+    let f64_case: LeafRecovery = recover_aarch64_function(VREG_PROBE_V16_V31_F64, 0)
+        .expect("fmov d20,d0; fmov d25,d1; fadd d20,d20,d25; fmov d0,d20; ret must recover");
+    assert!(
+        f64_case.source.contains("x_xmm20") && f64_case.source.contains("x_xmm25"),
+        "the recovered c must name v20 and v25 through the widened register file:\n{}",
+        f64_case.source
+    );
+    let f32_rust: &str = f32_case
+        .rust_source
+        .as_deref()
+        .expect("v16..v31 recovers a pseudo-rust body too");
+    assert!(
+        f32_rust.contains("x_xmm16") && f32_rust.contains("x_xmm31"),
+        "the recovered rust must name v16 and v31 through the widened register file:\n{f32_rust}"
+    );
+}
+
+const USES_D8_ACROSS_CALL: &[u8] = &[
+    0xe8, 0x0f, 0x1f, 0xfc, 0xfe, 0x07, 0x00, 0xf9, 0x28, 0x40, 0x60, 0x1e, 0x00, 0x00, 0x00, 0x94,
+    0xfe, 0x07, 0x40, 0xf9, 0x00, 0x28, 0x68, 0x1e, 0xe8, 0x07, 0x41, 0xfc, 0xc0, 0x03, 0x5f, 0xd6,
+];
+
+#[test]
+fn callee_saved_d8_across_a_call_recovers() {
+    let recovery: LeafRecovery = recover_aarch64_function(USES_D8_ACROSS_CALL, 0).expect(
+        "a real clang -O1 lowering of `double f(double a, double b) { return helper(a) + b; }`, which spills b through d8 across the call to helper, must recover",
+    );
+    assert!(
+        recovery.source.contains("x_xmm8"),
+        "the callee-saved half of the register file (d8) must thread through as an ordinary local:\n{}",
+        recovery.source
+    );
+}
+
+const SUM9_EIGHT_REGISTER_PLUS_ONE_STACKED_FLOAT_ARG: &[u8] = &[
+    0x00, 0x28, 0x21, 0x1e, 0xe1, 0x03, 0x40, 0xbd, 0x00, 0x28, 0x22, 0x1e, 0x00, 0x28, 0x23, 0x1e,
+    0x00, 0x28, 0x24, 0x1e, 0x00, 0x28, 0x25, 0x1e, 0x00, 0x28, 0x26, 0x1e, 0x00, 0x28, 0x27, 0x1e,
+    0x00, 0x28, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+];
+
+#[test]
+fn a_ninth_float_argument_spilled_to_the_stack_is_attributed() {
+    let recovery: LeafRecovery =
+        recover_aarch64_function(SUM9_EIGHT_REGISTER_PLUS_ONE_STACKED_FLOAT_ARG, 0).expect(
+            "a real clang -O1 lowering of `float sum9(float a,...,float i)`, which reads the ninth argument from `[sp]`, must recover rather than abstain",
+        );
+    assert!(
+        recovery.source.contains("x_xmm0") && recovery.source.contains("x_xmm7"),
+        "all eight register-passed float arguments must thread through:\n{}",
+        recovery.source
+    );
+    assert!(
+        recovery.source.contains("r_a64_stack0"),
+        "the ninth, stack-spilled float argument must be attributed rather than silently dropped:\n{}",
+        recovery.source
     );
 }
 

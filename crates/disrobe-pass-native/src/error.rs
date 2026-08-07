@@ -1,3 +1,4 @@
+use disrobe_bytes::AddressError;
 use miette::Diagnostic;
 use thiserror::Error;
 
@@ -103,4 +104,13 @@ pub enum Error {
 
     #[error("DR-NATIVE-0026: loader recovery failure ({stage}): {detail}")]
     LoaderRecovery { stage: &'static str, detail: String },
+
+    #[error(
+        "DR-NATIVE-0027: RVA 0x{rva:08X} in section '{section}' has no readable file bytes: {cause}"
+    )]
+    RvaNotFileBacked {
+        section: String,
+        rva: u32,
+        cause: AddressError,
+    },
 }

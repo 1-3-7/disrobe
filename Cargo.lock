@@ -1932,6 +1932,7 @@ dependencies = [
  "disrobe-pass-webview",
  "disrobe-passes",
  "disrobe-playground",
+ "disrobe-plugin-host",
  "disrobe-prowl",
  "disrobe-py-marshal",
  "disrobe-query",
@@ -1945,6 +1946,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "miette",
+ "minisign",
  "num_cpus",
  "object",
  "prost",
@@ -1957,6 +1959,7 @@ dependencies = [
  "sha2",
  "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1971,6 +1974,7 @@ dependencies = [
  "utoipa",
  "walkdir",
  "wasmparser 0.250.0",
+ "wasmtime",
  "wat",
  "zip",
  "zstd",
@@ -1989,6 +1993,7 @@ dependencies = [
  "chacha20poly1305",
  "cipher 0.4.4",
  "crc32fast",
+ "disrobe-bytes",
  "divan",
  "flate2",
  "gix",
@@ -2011,18 +2016,6 @@ dependencies = [
  "tracing",
  "wait-timeout",
  "zip",
-]
-
-[[package]]
-name = "disrobe-dart"
-version = "0.10.4"
-dependencies = [
- "clap",
- "object",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2099,6 +2092,7 @@ dependencies = [
 name = "disrobe-llm-metadata"
 version = "0.10.4"
 dependencies = [
+ "base64",
  "ciborium",
  "disrobe-core",
  "jsonschema",
@@ -2307,6 +2301,7 @@ dependencies = [
  "brotli-decompressor",
  "disrobe-binfmt",
  "disrobe-bytes",
+ "disrobe-cfg",
  "disrobe-core",
  "flate2",
  "miette",
@@ -2327,6 +2322,7 @@ dependencies = [
  "disrobe-cfg",
  "disrobe-core",
  "disrobe-nir",
+ "disrobe-pass-jvm",
  "disrobe-testkit",
  "miette",
  "object",
@@ -2784,6 +2780,7 @@ dependencies = [
  "disrobe-pass-sourcedefender",
  "disrobe-pass-swift-objc",
  "disrobe-pass-wasm-deob",
+ "disrobe-pass-webview",
 ]
 
 [[package]]
@@ -2870,6 +2867,7 @@ name = "disrobe-py-marshal"
 version = "0.10.4"
 dependencies = [
  "disrobe-bytes",
+ "disrobe-core",
  "disrobe-testkit",
  "divan",
  "indexmap 2.14.0",
@@ -2981,10 +2979,17 @@ name = "disrobe-taint"
 version = "0.10.4"
 dependencies = [
  "disrobe-core",
+ "disrobe-ir",
  "disrobe-nir",
  "disrobe-nir-lift",
+ "disrobe-pass-native",
+ "disrobe-query",
+ "rayon",
  "serde",
+ "serde_json",
+ "sha2",
  "wat",
+ "zip",
 ]
 
 [[package]]

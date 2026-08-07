@@ -795,6 +795,77 @@ pub fn extract_uefi_fv(bytes: &[u8], quota: ExtractionQuota) -> Result<FvExtract
 }
 
 #[cfg(test)]
+fn fv_section(kind: u8, body: &[u8]) -> Vec<u8> {
+    let total: usize = SECTION_HEADER_LEN + body.len();
+    let mut section: Vec<u8> = Vec::with_capacity(align_up_usize(total, SECTION_ALIGN));
+    section.extend_from_slice(&(total as u32).to_le_bytes()[..3]);
+    section.push(kind);
+    section.extend_from_slice(body);
+    let padded: usize = align_up_usize(section.len(), SECTION_ALIGN);
+    section.resize(padded, 0u8);
+    section
+}
+
+#[cfg(test)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let ui_section_decoding_breaks_at_the_first_embedded_nul: bool = name.contains('\u{0}');
+    if ui_section_decoding_breaks_at_the_first_embedded_nul {
+        return None;
+    }
+
+    let pe_section: Vec<u8> = fv_section(SECTION_PE32, body);
+    let name_units: Vec<u8> = name
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .chain([0u8, 0u8])
+        .collect();
+    let ui_section: Vec<u8> = fv_section(SECTION_USER_INTERFACE, &name_units);
+
+    let mut section_stream: Vec<u8> = Vec::new();
+    section_stream.extend_from_slice(&ui_section);
+    section_stream.extend_from_slice(&pe_section);
+
+    let ffs_file_guid: [u8; 16] = guid_from_fields(
+        0x1234_5678,
+        0x9abc,
+        0xdef0,
+        [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+    );
+    let file_size: usize = FFS_HEADER_LEN + section_stream.len();
+    let mut ffs_file: Vec<u8> = vec![0u8; FFS_HEADER_LEN];
+    ffs_file[0..16].copy_from_slice(&ffs_file_guid);
+    ffs_file[18] = 0x07;
+    ffs_file[19] = 0x00;
+    ffs_file[20..23].copy_from_slice(&(file_size as u32).to_le_bytes()[..3]);
+    ffs_file[23] = 0x00;
+    ffs_file.extend_from_slice(&section_stream);
+
+    let header_length: usize = FV_HEADER_FIXED_LEN;
+    let fv_length: usize = header_length + ffs_file.len();
+    let mut fv: Vec<u8> = vec![0u8; fv_length];
+    fv[16..32].copy_from_slice(&GUID_FFS2);
+    fv[32..40].copy_from_slice(&(fv_length as u64).to_le_bytes());
+    fv[40..44].copy_from_slice(&FV_SIGNATURE.to_le_bytes());
+    fv[48..50].copy_from_slice(&(header_length as u16).to_le_bytes());
+    fv[55] = 2;
+    fv[header_length..].copy_from_slice(&ffs_file);
+
+    let mut checksum: u16 = 0;
+    for chunk in fv[..header_length].chunks(2) {
+        let word: u16 = if chunk.len() == 2 {
+            u16::from_le_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from(chunk[0])
+        };
+        checksum = checksum.wrapping_add(word);
+    }
+    let residual: u16 = 0u16.wrapping_sub(checksum);
+    fv[50..52].copy_from_slice(&residual.to_le_bytes());
+
+    Some(fv)
+}
+
+#[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,

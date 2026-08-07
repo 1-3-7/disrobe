@@ -55,6 +55,39 @@ impl ExceptionTableEntry {
     }
 }
 
+#[must_use]
+pub fn followable_exception_entries(
+    entries: &[ExceptionTableEntry],
+    instruction_offsets: &[u32],
+    code_len: u32,
+) -> Vec<ExceptionTableEntry> {
+    let decoded = |offset: u32| -> bool { instruction_offsets.binary_search(&offset).is_ok() };
+    let mut accepted: Vec<ExceptionTableEntry> = Vec::with_capacity(entries.len());
+    for &entry in entries {
+        let Some(end): Option<u32> = entry.start.checked_add(entry.length) else {
+            continue;
+        };
+        if entry.length == 0 || end > code_len || entry.target >= code_len {
+            continue;
+        }
+        if !decoded(entry.start) || !decoded(entry.target) {
+            continue;
+        }
+        let partially_overlaps: bool = accepted.iter().any(|prior: &ExceptionTableEntry| {
+            let prior_end: u32 = prior.end();
+            let intersects: bool = entry.start < prior_end && prior.start < end;
+            let nested: bool = (entry.start >= prior.start && end <= prior_end)
+                || (prior.start >= entry.start && prior_end <= end);
+            intersects && !nested
+        });
+        if partially_overlaps {
+            continue;
+        }
+        accepted.push(entry);
+    }
+    accepted
+}
+
 pub fn parse_exception_table(bytes: &[u8]) -> Result<Vec<ExceptionTableEntry>> {
     let mut entries: Vec<ExceptionTableEntry> = Vec::new();
     let mut cursor: ExcCursor<'_> = ExcCursor::new(bytes);

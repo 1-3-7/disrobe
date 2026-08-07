@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use disrobe_core::anti_analysis::{self, AntiAnalysisReport, DefeatStatus};
+use disrobe_core::anti_analysis::{self, AntiAnalysisFinding, AntiAnalysisReport, DefeatStatus};
 use disrobe_core::behavior::{self, BehaviorReport};
 use serde::Serialize;
 
@@ -67,41 +67,75 @@ fn render_text(report: &BehaviorReport) {
 }
 
 fn render_anti_analysis(anti: &AntiAnalysisReport) {
-    if !anti.any_detected() {
-        return;
+    for line in anti_analysis_lines(anti) {
+        println!("{line}");
     }
-    println!(
+}
+
+fn anti_analysis_lines(anti: &AntiAnalysisReport) -> Vec<String> {
+    let detected: Vec<&AntiAnalysisFinding> = anti
+        .findings
+        .iter()
+        .filter(|f: &&AntiAnalysisFinding| f.detected)
+        .collect();
+    let informational: Vec<&AntiAnalysisFinding> = anti
+        .findings
+        .iter()
+        .filter(|f: &&AntiAnalysisFinding| !f.detected)
+        .collect();
+    if detected.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
         "\nanti-analysis ({} technique(s), {} overcome):",
-        anti.findings.len(),
+        detected.len(),
         anti.overcome_count()
-    );
-    for finding in &anti.findings {
-        let confidence: &str = finding.confidence.label();
-        match &finding.defeated_by {
-            DefeatStatus::OvercomeBy { mechanism } => {
-                println!(
-                    "  anti-analysis: [{confidence}] {} -> overcome via {}",
-                    finding.technique.label(),
-                    mechanism.label()
-                );
-            }
-            DefeatStatus::DetectedNotDefeated { reason } => {
-                println!(
-                    "  anti-analysis: [{confidence}] {} -> detected, not defeated: {}",
-                    finding.technique.label(),
-                    reason
-                );
-            }
+    ));
+    for finding in &detected {
+        push_anti_analysis_finding_lines(&mut lines, finding);
+    }
+    for finding in &informational {
+        lines.push(format!(
+            "  anti-analysis [informational]: [{}] {} -> weak signal surfaced for triage",
+            finding.confidence.label(),
+            finding.technique.label()
+        ));
+        push_anti_analysis_evidence_lines(&mut lines, finding);
+    }
+    lines
+}
+
+fn push_anti_analysis_finding_lines(lines: &mut Vec<String>, finding: &AntiAnalysisFinding) {
+    let confidence: &str = finding.confidence.label();
+    match &finding.defeated_by {
+        DefeatStatus::OvercomeBy { mechanism } => {
+            lines.push(format!(
+                "  anti-analysis: [{confidence}] {} -> overcome via {}",
+                finding.technique.label(),
+                mechanism.label()
+            ));
         }
-        for ev in finding.evidence.iter().take(MAX_EVIDENCE_SHOWN) {
-            println!("    - {}", trim_signal(ev));
+        DefeatStatus::DetectedNotDefeated { reason } => {
+            lines.push(format!(
+                "  anti-analysis: [{confidence}] {} -> detected, not defeated: {}",
+                finding.technique.label(),
+                reason
+            ));
         }
-        if finding.evidence.len() > MAX_EVIDENCE_SHOWN {
-            println!(
-                "    ... {} more signal(s)",
-                finding.evidence.len() - MAX_EVIDENCE_SHOWN
-            );
-        }
+    }
+    push_anti_analysis_evidence_lines(lines, finding);
+}
+
+fn push_anti_analysis_evidence_lines(lines: &mut Vec<String>, finding: &AntiAnalysisFinding) {
+    for ev in finding.evidence.iter().take(MAX_EVIDENCE_SHOWN) {
+        lines.push(format!("    - {}", trim_signal(ev)));
+    }
+    if finding.evidence.len() > MAX_EVIDENCE_SHOWN {
+        lines.push(format!(
+            "    ... {} more signal(s)",
+            finding.evidence.len() - MAX_EVIDENCE_SHOWN
+        ));
     }
 }
 
@@ -136,7 +170,102 @@ pub(crate) fn run(path: PathBuf, fmt: OutputFormat) -> miette::Result<()> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use disrobe_core::anti_analysis::{
+        Confidence, FindingSeverity, Mechanism, TargetFamily, Technique,
+    };
     use disrobe_core::behavior::{CategoryFinding, Evidence};
+
+    fn finding(detected: bool, defeated_by: DefeatStatus) -> AntiAnalysisFinding {
+        AntiAnalysisFinding {
+            technique: Technique::AntiDebug,
+            detected,
+            severity: if detected {
+                FindingSeverity::Detected
+            } else {
+                FindingSeverity::Informational
+            },
+            confidence: Confidence::Medium,
+            defeated_by,
+            evidence: vec!["IsDebuggerPresent".to_owned()],
+        }
+    }
+
+    #[test]
+    fn detected_and_informational_findings_render_distinct_phrasing() {
+        let report: AntiAnalysisReport = AntiAnalysisReport {
+            schema: "test".to_owned(),
+            uri: None,
+            byte_len: 0,
+            target_family: TargetFamily::Pe,
+            findings: vec![
+                finding(
+                    true,
+                    DefeatStatus::DetectedNotDefeated {
+                        reason: "no corroborating signal".to_owned(),
+                    },
+                ),
+                finding(
+                    false,
+                    DefeatStatus::DetectedNotDefeated {
+                        reason: "no corroborating signal".to_owned(),
+                    },
+                ),
+            ],
+        };
+        let lines: Vec<String> = anti_analysis_lines(&report);
+        let detected_count: usize = lines
+            .iter()
+            .filter(|l: &&String| l.contains("detected, not defeated"))
+            .count();
+        assert_eq!(detected_count, 1, "{lines:?}");
+        let informational_lines: Vec<&String> = lines
+            .iter()
+            .filter(|l: &&String| l.contains("[informational]"))
+            .collect();
+        assert_eq!(informational_lines.len(), 1, "{lines:?}");
+        assert!(
+            !informational_lines[0].contains("detected, not defeated"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn zero_detected_findings_render_nothing() {
+        let report: AntiAnalysisReport = AntiAnalysisReport {
+            schema: "test".to_owned(),
+            uri: None,
+            byte_len: 0,
+            target_family: TargetFamily::Pe,
+            findings: vec![finding(
+                false,
+                DefeatStatus::DetectedNotDefeated {
+                    reason: "no corroborating signal".to_owned(),
+                },
+            )],
+        };
+        assert!(anti_analysis_lines(&report).is_empty());
+    }
+
+    #[test]
+    fn a_detected_overcome_finding_still_renders_as_before() {
+        let report: AntiAnalysisReport = AntiAnalysisReport {
+            schema: "test".to_owned(),
+            uri: None,
+            byte_len: 0,
+            target_family: TargetFamily::Pe,
+            findings: vec![finding(
+                true,
+                DefeatStatus::OvercomeBy {
+                    mechanism: Mechanism::Desync,
+                },
+            )],
+        };
+        let lines: Vec<String> = anti_analysis_lines(&report);
+        assert!(
+            lines.iter().any(|l: &String| l.contains("overcome via")),
+            "{lines:?}"
+        );
+    }
 
     #[test]
     fn trim_signal_caps_long_input() {

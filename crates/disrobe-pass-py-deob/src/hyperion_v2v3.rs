@@ -1,5 +1,6 @@
 use disrobe_core::codec::DecodeError;
 use disrobe_core::codec::hex::encode as bytes_to_hex;
+use disrobe_core::codec::hex::nibble as hex_nibble;
 use disrobe_pass_py_disasm::{Instruction, disassemble, render_dis};
 use disrobe_py_marshal::{CodeObject, Object, PyVersion, load as marshal_load};
 use liblzma::read::XzDecoder;
@@ -650,16 +651,6 @@ fn decode_python_bytes(s: &str) -> Result<Vec<u8>> {
         }
     }
     Ok(out)
-}
-
-#[inline]
-const fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
 }
 
 fn decompress_xz(input: &[u8]) -> std::io::Result<Vec<u8>> {

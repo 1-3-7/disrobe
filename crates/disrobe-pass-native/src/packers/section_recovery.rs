@@ -131,6 +131,30 @@ fn classify_section(name: &[u8], stub_names: &[&[u8]]) -> SectionRole {
     SectionRole::LoaderRebuilt
 }
 
+pub const EMULATED_IMAGE_EXPANSION_LIMIT: u64 = 4096;
+const EMULATED_IMAGE_FLOOR_BYTES: u64 = 0x1_0000;
+
+#[must_use]
+pub fn last_section_end_va(img: &PeImage) -> u64 {
+    img.sections
+        .iter()
+        .map(|s: &PeSection| {
+            u64::from(s.virtual_address).saturating_add(u64::from(s.virtual_size.max(s.raw_size)))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[must_use]
+pub fn emulated_image_capacity(img: &PeImage, file_len: usize) -> u64 {
+    let declared: u64 = u64::from(img.size_of_image).max(last_section_end_va(img));
+    let justified: u64 = u64::try_from(file_len)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(EMULATED_IMAGE_EXPANSION_LIMIT)
+        .max(EMULATED_IMAGE_FLOOR_BYTES);
+    declared.min(justified).min(MAX_MAP_BYTES)
+}
+
 pub fn build_loaded_image(original: &[u8], capacity: usize) -> Result<Vec<u8>> {
     let img: PeImage = parse_pe_image(original)?;
     let bounded: usize = capacity.min(MAX_MAP_BYTES as usize);
@@ -160,8 +184,7 @@ pub fn section_recovery_report(
     stub_names: &[&[u8]],
 ) -> Result<SectionRecoveryReport> {
     let img: PeImage = parse_pe_image(original)?;
-    let capacity: usize = recovered.len().max(loaded_capacity(&img));
-    let baseline: Vec<u8> = build_loaded_image(original, capacity)?;
+    let baseline: Vec<u8> = build_loaded_image(original, recovered.len())?;
     let compare_len: usize = recovered.len().min(baseline.len());
 
     let mut rows: Vec<GranuleRecovery> = Vec::with_capacity(img.sections.len());
@@ -196,18 +219,6 @@ pub fn section_recovery_report(
         content_matching,
         content_compared,
     })
-}
-
-fn loaded_capacity(img: &PeImage) -> usize {
-    let last: u64 = img
-        .sections
-        .iter()
-        .map(|s: &PeSection| {
-            u64::from(s.virtual_address) + u64::from(s.virtual_size.max(s.raw_size))
-        })
-        .max()
-        .unwrap_or(0);
-    u64::from(img.size_of_image).max(last) as usize
 }
 
 struct SpanStats {

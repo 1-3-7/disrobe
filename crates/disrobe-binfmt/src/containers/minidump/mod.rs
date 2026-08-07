@@ -11,6 +11,19 @@ mod tests;
 pub use carve::{AbsentRange, AbsentReason, CarvedModule, CoverageReport, carve_module};
 pub use pe_emit::PeEmitReport;
 
+#[cfg(test)]
+pub(crate) fn hostile_named_dump(module_name: &str) -> Vec<u8> {
+    let text: Vec<u8> = tests::text_fixture();
+    let rdata: Vec<u8> = tests::rdata_fixture();
+    let image: Vec<u8> = tests::build_mapped_pe64(&text, &rdata);
+    tests::build_dump(
+        module_name,
+        9,
+        tests::SIZE_OF_IMAGE,
+        &[(tests::IMAGE_BASE, 0x3000, image)],
+    )
+}
+
 pub const MINIDUMP_SIGNATURE: u32 = 0x504D_444D;
 pub const MINIDUMP_VERSION: u16 = 42899;
 

@@ -13,6 +13,8 @@ pub mod moonsec_v1;
 pub mod moonsec_v2;
 pub mod moonsec_v3;
 pub mod prometheus;
+pub mod prometheus_vm_ast;
+pub mod prometheus_vm_cfg;
 pub mod prometheus_vmlift;
 pub mod psu;
 pub mod slua;

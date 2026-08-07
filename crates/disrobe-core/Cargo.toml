@@ -21,6 +21,7 @@ cache = []
 redact = []
 
 [dependencies]
+disrobe-bytes = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

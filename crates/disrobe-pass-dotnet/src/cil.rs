@@ -850,7 +850,7 @@ impl SlotOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SlotDecodeError {
     NotSlotAccess,
-    UndecodableOperand,
+    UndecodableOperand(SlotOp),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -888,9 +888,8 @@ pub fn decode_slot(instruction: &Instruction) -> std::result::Result<SlotAccess,
         return Err(SlotDecodeError::NotSlotAccess);
     };
     let index: u16 = match suffix {
-        "" | ".s" => {
-            operand_slot_index(&instruction.operand).ok_or(SlotDecodeError::UndecodableOperand)?
-        }
+        "" | ".s" => operand_slot_index(&instruction.operand)
+            .ok_or(SlotDecodeError::UndecodableOperand(op))?,
         ".0" if numeric_short_forms => 0,
         ".1" if numeric_short_forms => 1,
         ".2" if numeric_short_forms => 2,
@@ -1407,12 +1406,24 @@ pub(crate) fn fold_null_coalesce(body: &MethodBody) -> MethodBody {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallReceiverProof {
+    Instance,
+    Static,
+    ExplicitThis,
+    Indirect,
+    Unresolved,
+}
+
 #[must_use]
-pub(crate) fn fold_null_conditional_call(body: &MethodBody) -> MethodBody {
+pub(crate) fn fold_null_conditional_call(
+    body: &MethodBody,
+    receiver_proof: &dyn Fn(u32) -> CallReceiverProof,
+) -> MethodBody {
     let instrs: &[Instruction] = &body.instructions;
     let mut windows: Vec<CondCallWindow> = Vec::new();
     for j in 0..instrs.len() {
-        if let Some(window) = match_cond_call_window(instrs, j) {
+        if let Some(window) = match_cond_call_window(instrs, j, receiver_proof) {
             windows.push(window);
         }
     }
@@ -1442,7 +1453,29 @@ struct CondCallWindow {
     call: usize,
 }
 
-fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCallWindow> {
+fn resolve_branch_target(offset: u32, rel: i32) -> Option<u32> {
+    let target: i64 = i64::from(offset).checked_add(i64::from(rel))?;
+    u32::try_from(target).ok()
+}
+
+fn classify_call_receiver(
+    last: &Instruction,
+    receiver_proof: &dyn Fn(u32) -> CallReceiverProof,
+) -> CallReceiverProof {
+    if last.name == "calli" {
+        return CallReceiverProof::Indirect;
+    }
+    let OperandValue::Token(token) = last.operand else {
+        return CallReceiverProof::Unresolved;
+    };
+    receiver_proof(token)
+}
+
+fn match_cond_call_window(
+    instrs: &[Instruction],
+    dup: usize,
+    receiver_proof: &dyn Fn(u32) -> CallReceiverProof,
+) -> Option<CondCallWindow> {
     if instrs.get(dup)?.name != "dup" || dup == 0 {
         return None;
     }
@@ -1452,7 +1485,7 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
         return None;
     }
     let call_off: u32 = match cond.operand {
-        OperandValue::BrTarget(rel) => (i64::from(cond.offset) + i64::from(rel)) as u32,
+        OperandValue::BrTarget(rel) => resolve_branch_target(cond.offset, rel)?,
         _ => return None,
     };
     let pop: usize = brtrue + 1;
@@ -1468,9 +1501,7 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
     let (call_end, early_return): (usize, bool) = match guard_tail.name.as_str() {
         "br" | "br.s" => {
             let merge_off: u32 = match guard_tail.operand {
-                OperandValue::BrTarget(rel) => {
-                    (i64::from(guard_tail.offset) + i64::from(rel)) as u32
-                }
+                OperandValue::BrTarget(rel) => resolve_branch_target(guard_tail.offset, rel)?,
                 _ => return None,
             };
             (
@@ -1495,21 +1526,31 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
         return None;
     }
     let block: &[Instruction] = &instrs[call_start..call_end];
-    let (last, head): (&Instruction, &[Instruction]) = block.split_last()?;
+    let trailing_nops: usize = block
+        .iter()
+        .rev()
+        .take_while(|ins: &&Instruction| ins.name == "nop")
+        .count();
+    let call_index: usize = block.len().checked_sub(trailing_nops + 1)?;
+    let last: &Instruction = &block[call_index];
+    let head: &[Instruction] = &block[..call_index];
     if !matches!(last.name.as_str(), "call" | "callvirt" | "calli") {
         return None;
     }
-    if early_return
-        && (last.name != "callvirt" || !head.iter().all(null_conditional_early_return_load))
-    {
+    if classify_call_receiver(last, receiver_proof) != CallReceiverProof::Instance {
         return None;
     }
-    if !head.iter().all(|ins: &Instruction| {
-        matches!(
-            ins.flow,
-            FlowControl::Next | FlowControl::Call | FlowControl::Meta
-        )
-    }) {
+    let head_preserves_the_guarded_value: bool = if early_return {
+        head.iter().all(null_conditional_receiver_provenance_load)
+    } else {
+        head.iter().all(|ins: &Instruction| {
+            matches!(
+                ins.flow,
+                FlowControl::Next | FlowControl::Call | FlowControl::Meta
+            )
+        })
+    };
+    if !head_preserves_the_guarded_value {
         return None;
     }
     Some(CondCallWindow {
@@ -1517,15 +1558,17 @@ fn match_cond_call_window(instrs: &[Instruction], dup: usize) -> Option<CondCall
         brtrue,
         pop,
         skip,
-        call: call_end - 1,
+        call: call_start + call_index,
     })
 }
 
-fn null_conditional_early_return_load(ins: &Instruction) -> bool {
-    matches!(
-        ins.name.as_str(),
-        "nop" | "ldnull" | "ldstr" | "ldtoken" | "ldftn" | "ldsfld" | "ldsflda" | "sizeof"
-    ) || ins.name.starts_with("ldarg")
+fn null_conditional_receiver_provenance_load(ins: &Instruction) -> bool {
+    ins.flow == FlowControl::Meta
+        || matches!(
+            ins.name.as_str(),
+            "nop" | "ldnull" | "ldstr" | "ldtoken" | "ldftn" | "ldsfld" | "ldsflda" | "sizeof"
+        )
+        || ins.name.starts_with("ldarg")
         || ins.name.starts_with("ldloc")
         || ins.name.starts_with("ldc.")
 }
@@ -1559,7 +1602,7 @@ fn match_coalesce_window(instrs: &[Instruction], dup: usize) -> Option<CoalesceW
         return None;
     }
     let target: u32 = match cond.operand {
-        OperandValue::BrTarget(rel) => (i64::from(cond.offset) + i64::from(rel)) as u32,
+        OperandValue::BrTarget(rel) => resolve_branch_target(cond.offset, rel)?,
         _ => return None,
     };
     let pop: usize = brtrue + 1;
@@ -1742,13 +1785,23 @@ mod tests {
             OperandValue::Token(0x0A00_0001),
             OperandValue::Switch(vec![1, 2]),
         ] {
-            for name in [
-                "ldloc", "stloc", "ldloca", "ldarg", "starg", "ldarga", "ldloc.s", "stloc.s",
-                "ldloca.s", "ldarg.s", "starg.s", "ldarga.s",
+            for (name, op) in [
+                ("ldloc", SlotOp::LoadLocal),
+                ("stloc", SlotOp::StoreLocal),
+                ("ldloca", SlotOp::LocalAddress),
+                ("ldarg", SlotOp::LoadArgument),
+                ("starg", SlotOp::StoreArgument),
+                ("ldarga", SlotOp::ArgumentAddress),
+                ("ldloc.s", SlotOp::LoadLocal),
+                ("stloc.s", SlotOp::StoreLocal),
+                ("ldloca.s", SlotOp::LocalAddress),
+                ("ldarg.s", SlotOp::LoadArgument),
+                ("starg.s", SlotOp::StoreArgument),
+                ("ldarga.s", SlotOp::ArgumentAddress),
             ] {
                 assert_eq!(
                     decode_slot(&slot_ins(name, operand.clone())),
-                    Err(SlotDecodeError::UndecodableOperand),
+                    Err(SlotDecodeError::UndecodableOperand(op)),
                     "{name} {operand:?}"
                 );
             }
@@ -2082,6 +2135,79 @@ mod tests {
         );
     }
 
+    fn instance_receiver_proof(_token: u32) -> CallReceiverProof {
+        CallReceiverProof::Instance
+    }
+
+    fn static_receiver_proof(_token: u32) -> CallReceiverProof {
+        CallReceiverProof::Static
+    }
+
+    fn explicit_this_receiver_proof(_token: u32) -> CallReceiverProof {
+        CallReceiverProof::ExplicitThis
+    }
+
+    fn unresolved_receiver_proof(_token: u32) -> CallReceiverProof {
+        CallReceiverProof::Unresolved
+    }
+
+    fn unreachable_receiver_proof(_token: u32) -> CallReceiverProof {
+        unreachable!(
+            "calli must decline from the opcode name alone, never by consulting a resolver"
+        )
+    }
+
+    #[test]
+    fn classify_call_receiver_names_calli_indirect_without_consulting_the_resolver() {
+        let calli: Instruction = ins(
+            13,
+            "calli",
+            OperandValue::Token(0x1100_0001),
+            FlowControl::Call,
+        );
+        assert_eq!(
+            classify_call_receiver(&calli, &unreachable_receiver_proof),
+            CallReceiverProof::Indirect,
+            "calli has no static receiver, so it must classify as Indirect without ever calling the resolver"
+        );
+    }
+
+    #[test]
+    fn classify_call_receiver_reports_unresolved_when_the_operand_is_not_a_token() {
+        let broken: Instruction = ins(13, "call", OperandValue::None, FlowControl::Call);
+        assert_eq!(
+            classify_call_receiver(&broken, &unreachable_receiver_proof),
+            CallReceiverProof::Unresolved,
+            "a call instruction without a token operand cannot be resolved"
+        );
+    }
+
+    #[test]
+    fn classify_call_receiver_forwards_the_token_to_the_resolver() {
+        let call: Instruction = ins(
+            13,
+            "call",
+            OperandValue::Token(0x0600_0001),
+            FlowControl::Call,
+        );
+        assert_eq!(
+            classify_call_receiver(&call, &static_receiver_proof),
+            CallReceiverProof::Static
+        );
+        assert_eq!(
+            classify_call_receiver(&call, &instance_receiver_proof),
+            CallReceiverProof::Instance
+        );
+        assert_eq!(
+            classify_call_receiver(&call, &explicit_this_receiver_proof),
+            CallReceiverProof::ExplicitThis
+        );
+        assert_eq!(
+            classify_call_receiver(&call, &unresolved_receiver_proof),
+            CallReceiverProof::Unresolved
+        );
+    }
+
     fn cond_call_body() -> MethodBody {
         MethodBody {
             max_stack: 8,
@@ -2120,7 +2246,8 @@ mod tests {
 
     #[test]
     fn fold_null_conditional_call_collapses_dup_brtrue_pop_br_call_idiom() {
-        let folded: MethodBody = fold_null_conditional_call(&cond_call_body());
+        let folded: MethodBody =
+            fold_null_conditional_call(&cond_call_body(), &instance_receiver_proof);
         let names: Vec<&str> = folded
             .instructions
             .iter()
@@ -2141,6 +2268,126 @@ mod tests {
                 "ret",
             ],
             "the dup/brtrue/pop/br guard collapses to straight-line with a __null_cond marker before the call"
+        );
+    }
+
+    fn cond_call_body_long_form_branches() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 26,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(
+                    1,
+                    "ldfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(6, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    7,
+                    "brtrue",
+                    OperandValue::BrTarget(11),
+                    FlowControl::CondBranch,
+                ),
+                ins(12, "pop", OperandValue::None, FlowControl::Next),
+                ins(13, "br", OperandValue::BrTarget(11), FlowControl::Branch),
+                ins(18, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    19,
+                    "callvirt",
+                    OperandValue::Token(0x0A00_0002),
+                    FlowControl::Call,
+                ),
+                ins(24, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_covers_the_long_form_brtrue_and_br_operands() {
+        let folded: MethodBody = fold_null_conditional_call(
+            &cond_call_body_long_form_branches(),
+            &instance_receiver_proof,
+        );
+        assert_eq!(
+            folded
+                .instructions
+                .iter()
+                .filter(|i: &&Instruction| i.name == "__null_cond")
+                .count(),
+            1,
+            "the 4-byte brtrue/br operand forms must resolve to the same window as their .s siblings"
+        );
+    }
+
+    fn cond_call_body_with_trailing_debug_nop() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 21,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(
+                    1,
+                    "ldfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(6, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    7,
+                    "brtrue.s",
+                    OperandValue::BrTarget(5),
+                    FlowControl::CondBranch,
+                ),
+                ins(9, "pop", OperandValue::None, FlowControl::Next),
+                ins(10, "br.s", OperandValue::BrTarget(9), FlowControl::Branch),
+                ins(12, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    13,
+                    "callvirt",
+                    OperandValue::Token(0x0A00_0002),
+                    FlowControl::Call,
+                ),
+                ins(18, "nop", OperandValue::None, FlowControl::Next),
+                ins(19, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_tolerates_a_trailing_debug_nop_after_the_br_path_call() {
+        let folded: MethodBody = fold_null_conditional_call(
+            &cond_call_body_with_trailing_debug_nop(),
+            &instance_receiver_proof,
+        );
+        let names: Vec<&str> = folded
+            .instructions
+            .iter()
+            .map(|i: &Instruction| i.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "ldarg.0",
+                "ldfld",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "ldarg.1",
+                "__null_cond",
+                "callvirt",
+                "nop",
+                "ret",
+            ],
+            "a Debug-build sequence-point nop after a void call must not block the fold"
         );
     }
 
@@ -2183,7 +2430,8 @@ mod tests {
 
     #[test]
     fn fold_null_conditional_call_collapses_dup_brtrue_pop_early_return_call_idiom() {
-        let folded: MethodBody = fold_null_conditional_call(&cond_call_early_return_body());
+        let folded: MethodBody =
+            fold_null_conditional_call(&cond_call_early_return_body(), &instance_receiver_proof);
         let names: Vec<&str> = folded
             .instructions
             .iter()
@@ -2208,11 +2456,107 @@ mod tests {
         );
     }
 
+    fn cond_call_early_return_body_with_trailing_debug_nop() -> MethodBody {
+        MethodBody {
+            max_stack: 8,
+            code_size: 21,
+            local_var_sig_tok: 0,
+            init_locals: false,
+            instructions: vec![
+                ins(0, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(
+                    1,
+                    "ldfld",
+                    OperandValue::Token(0x0400_0001),
+                    FlowControl::Next,
+                ),
+                ins(6, "dup", OperandValue::None, FlowControl::Next),
+                ins(
+                    7,
+                    "brtrue.s",
+                    OperandValue::BrTarget(4),
+                    FlowControl::CondBranch,
+                ),
+                ins(9, "pop", OperandValue::None, FlowControl::Next),
+                ins(10, "ret", OperandValue::None, FlowControl::Return),
+                ins(11, "ldarg.0", OperandValue::None, FlowControl::Next),
+                ins(12, "ldarg.1", OperandValue::None, FlowControl::Next),
+                ins(
+                    13,
+                    "callvirt",
+                    OperandValue::Token(0x0A00_0002),
+                    FlowControl::Call,
+                ),
+                ins(18, "nop", OperandValue::None, FlowControl::Next),
+                ins(19, "ret", OperandValue::None, FlowControl::Return),
+            ],
+            exception_clauses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fold_null_conditional_call_tolerates_a_trailing_debug_nop_after_the_early_return_call() {
+        let folded: MethodBody = fold_null_conditional_call(
+            &cond_call_early_return_body_with_trailing_debug_nop(),
+            &instance_receiver_proof,
+        );
+        assert_eq!(
+            folded
+                .instructions
+                .iter()
+                .filter(|i: &&Instruction| i.name == "__null_cond")
+                .count(),
+            1,
+            "a Debug-build sequence-point nop after the guarded call must not block the early-return fold"
+        );
+    }
+
+    fn cond_call_early_return_body_direct_instance_call() -> MethodBody {
+        let mut body: MethodBody = cond_call_early_return_body();
+        body.instructions[8] = ins(
+            13,
+            "call",
+            OperandValue::Token(0x0600_0001),
+            FlowControl::Call,
+        );
+        body
+    }
+
+    #[test]
+    fn fold_null_conditional_call_folds_a_direct_instance_call_on_the_early_return_path() {
+        let folded: MethodBody = fold_null_conditional_call(
+            &cond_call_early_return_body_direct_instance_call(),
+            &instance_receiver_proof,
+        );
+        let names: Vec<&str> = folded
+            .instructions
+            .iter()
+            .map(|i: &Instruction| i.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "ldarg.0",
+                "ldfld",
+                "nop",
+                "nop",
+                "nop",
+                "nop",
+                "ldarg.0",
+                "ldarg.1",
+                "__null_cond",
+                "call",
+                "ret",
+            ],
+            "a non-virtual instance call proven has_this by metadata folds the same as a callvirt target"
+        );
+    }
+
     #[test]
     fn fold_null_conditional_call_ignores_missing_trailing_branch() {
         let mut body: MethodBody = cond_call_body();
         body.instructions[5] = ins(10, "nop", OperandValue::None, FlowControl::Next);
-        let folded: MethodBody = fold_null_conditional_call(&body);
+        let folded: MethodBody = fold_null_conditional_call(&body, &instance_receiver_proof);
         assert!(
             folded
                 .instructions
@@ -2226,13 +2570,98 @@ mod tests {
     fn fold_null_conditional_call_ignores_early_return_without_a_terminal_call_return() {
         let mut body: MethodBody = cond_call_early_return_body();
         body.instructions[9] = ins(18, "nop", OperandValue::None, FlowControl::Next);
-        let folded: MethodBody = fold_null_conditional_call(&body);
+        let folded: MethodBody = fold_null_conditional_call(&body, &instance_receiver_proof);
         assert!(
             folded
                 .instructions
                 .iter()
                 .all(|i: &Instruction| i.name != "__null_cond"),
             "the early-exit form requires the call path to terminate at its own ret"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_a_calli_target_on_the_br_continuation_path() {
+        let mut body: MethodBody = cond_call_body();
+        body.instructions[7] = ins(
+            13,
+            "calli",
+            OperandValue::Token(0x1100_0001),
+            FlowControl::Call,
+        );
+        let folded: MethodBody = fold_null_conditional_call(&body, &unreachable_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "calli has no static receiver, so the br-continuation path must no longer silently accept it"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_a_calli_target_on_the_early_return_path() {
+        let mut body: MethodBody = cond_call_early_return_body();
+        body.instructions[8] = ins(
+            13,
+            "calli",
+            OperandValue::Token(0x1100_0001),
+            FlowControl::Call,
+        );
+        let folded: MethodBody = fold_null_conditional_call(&body, &unreachable_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "calli must decline on the early-return path too, without ever consulting the resolver"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_an_unresolved_token() {
+        let folded: MethodBody =
+            fold_null_conditional_call(&cond_call_early_return_body(), &unresolved_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "a token the resolver cannot resolve must decline, never default to instance"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_an_explicit_this_target() {
+        let folded: MethodBody = fold_null_conditional_call(
+            &cond_call_early_return_body(),
+            &explicit_this_receiver_proof,
+        );
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "explicit_this encodes the receiver as an ordinary parameter, so has_this alone is the wrong test"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_a_br_continuation_static_call_that_consumes_the_guarded_value()
+     {
+        let declined: MethodBody =
+            fold_null_conditional_call(&cond_call_body(), &static_receiver_proof);
+        assert!(
+            declined
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "a static call reached on the ordinary br-continuation path must not fold just because the receiver kind gate is skipped there"
+        );
+        assert_eq!(
+            declined.instructions.len(),
+            cond_call_body().instructions.len(),
+            "a declined fold leaves the instruction stream untouched"
         );
     }
 
@@ -2266,15 +2695,28 @@ mod tests {
     }
 
     #[test]
-    fn fold_null_conditional_call_ignores_early_return_static_call_that_consumes_the_guarded_value()
-    {
-        let folded: MethodBody = fold_null_conditional_call(&early_return_static_call_body());
+    fn fold_null_conditional_call_declines_an_early_return_static_call_that_consumes_the_guarded_value()
+     {
+        let declined: MethodBody =
+            fold_null_conditional_call(&early_return_static_call_body(), &static_receiver_proof);
         assert!(
-            folded
+            declined
                 .instructions
                 .iter()
                 .all(|i: &Instruction| i.name != "__null_cond"),
             "a static call that consumes the guarded value is not a null-conditional call"
+        );
+
+        let folded: MethodBody =
+            fold_null_conditional_call(&early_return_static_call_body(), &instance_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .any(|i: &Instruction| i.name == "__null_cond"),
+            "the identical byte shape must fold once the resolver proves an instance receiver, \
+             so the decline above is attributable to the receiver-kind check and not some other \
+             property of the body"
         );
     }
 
@@ -2312,14 +2754,71 @@ mod tests {
     #[test]
     fn fold_null_conditional_call_ignores_early_return_instance_call_that_discards_the_guarded_value()
      {
-        let folded: MethodBody =
-            fold_null_conditional_call(&early_return_unrelated_instance_call_body());
+        let folded: MethodBody = fold_null_conditional_call(
+            &early_return_unrelated_instance_call_body(),
+            &instance_receiver_proof,
+        );
         assert!(
             folded
                 .instructions
                 .iter()
                 .all(|i: &Instruction| i.name != "__null_cond"),
-            "a guarded early return followed by an unrelated instance call is not a null-conditional call"
+            "a guarded early return followed by an unrelated instance call is not a null-conditional call, \
+             even once the resolver proves the receiver kind is instance"
+        );
+    }
+
+    #[test]
+    fn fold_null_conditional_call_ignores_early_return_direct_instance_call_that_discards_the_guarded_value()
+     {
+        let mut body: MethodBody = early_return_unrelated_instance_call_body();
+        body.instructions[7] = ins(
+            8,
+            "call",
+            OperandValue::Token(0x0600_0001),
+            FlowControl::Call,
+        );
+        let folded: MethodBody = fold_null_conditional_call(&body, &instance_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "the same discard-and-reload provenance gap applies to a direct-instance call, not only callvirt"
+        );
+    }
+
+    #[test]
+    fn resolve_branch_target_accepts_an_in_range_target() {
+        assert_eq!(resolve_branch_target(7, 5), Some(12));
+    }
+
+    #[test]
+    fn resolve_branch_target_declines_on_positive_overflow_past_u32_max() {
+        assert_eq!(resolve_branch_target(u32::MAX - 1, 100), None);
+    }
+
+    #[test]
+    fn resolve_branch_target_declines_on_negative_overflow_below_zero() {
+        assert_eq!(resolve_branch_target(0, -1), None);
+    }
+
+    #[test]
+    fn fold_null_conditional_call_declines_when_the_branch_target_overflows_u32() {
+        let mut body: MethodBody = cond_call_body();
+        body.instructions[3] = ins(
+            u32::MAX - 1,
+            "brtrue.s",
+            OperandValue::BrTarget(100),
+            FlowControl::CondBranch,
+        );
+        let folded: MethodBody = fold_null_conditional_call(&body, &unreachable_receiver_proof);
+        assert!(
+            folded
+                .instructions
+                .iter()
+                .all(|i: &Instruction| i.name != "__null_cond"),
+            "an operand that overflows u32 must decline rather than wrap into a bogus offset"
         );
     }
 

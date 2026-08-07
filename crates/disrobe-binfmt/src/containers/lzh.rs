@@ -272,6 +272,47 @@ pub fn parse_lzh(bytes: &[u8], max_total: u64) -> Result<LzhArchive> {
 }
 
 #[cfg(test)]
+pub(crate) fn lha_crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &byte in data {
+        crc ^= u16::from(byte);
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+#[cfg(test)]
+pub(crate) fn build_stored_lzh(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let name_len: u8 = u8::try_from(name.len()).ok()?;
+    let size: u32 = u32::try_from(body.len()).ok()?;
+    let header_len: u8 = u8::try_from(22usize.checked_add(name.len())?).ok()?;
+    let mut out: Vec<u8> = Vec::with_capacity(usize::from(header_len) + 2 + body.len() + 1);
+    out.push(header_len);
+    out.push(0);
+    out.extend_from_slice(b"-lh0-");
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.push(0x20);
+    out.push(0);
+    out.push(name_len);
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&lha_crc16(body).to_le_bytes());
+    out[1] = out[2..]
+        .iter()
+        .fold(0u8, |acc: u8, &b: &u8| acc.wrapping_add(b));
+    out.extend_from_slice(body);
+    out.push(0);
+    Some(out)
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -297,21 +338,6 @@ mod tests {
     #[test]
     fn detect_rejects_unrelated() {
         assert!(!detect_lzh(b"PK\x03\x04 not an lzh"));
-    }
-
-    fn lha_crc16(data: &[u8]) -> u16 {
-        let mut crc: u16 = 0;
-        for &byte in data {
-            crc ^= u16::from(byte);
-            for _ in 0..8 {
-                if crc & 1 != 0 {
-                    crc = (crc >> 1) ^ 0xA001;
-                } else {
-                    crc >>= 1;
-                }
-            }
-        }
-        crc
     }
 
     #[test]

@@ -46,7 +46,7 @@ The metadata bundle flags are also global. They are accepted everywhere, but onl
 | `--metadata-pack-1` | Pack-1: ast + disasm + symbols + strings. |
 | `--metadata-pack-2` | Pack-2: pack-1 + cfg + types + imports + provenance. |
 | `--metadata-pack-3` | Pack-3: pack-2 + dfg + signatures + constants + roundtrip + sourcemap + manifest. |
-| `--metadata-pack-4` | Pack-4: pack-3 + confidence + opcode-coverage + pii-map + decryption-keys (auth-gated). |
+| `--metadata-pack-4` | Pack-4: pack-3 + confidence + opcode-coverage + pii-map + decryption-keys. Only `decryption-keys` needs `--i-have-authorization`. |
 | `--ast`, `--disasm`, `--cfg`, `--dfg` | Add individual AST / disassembly / CFG / DFG categories. |
 | `--symbols`, `--strings`, `--types`, `--imports` | Add symbols / strings / recovered-types / imports categories. |
 | `--constants`, `--signatures`, `--provenance` | Add constants / function-signatures / provenance categories. |

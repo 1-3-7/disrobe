@@ -1,8 +1,22 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
-use disrobe_pass_jvm::{DecompiledDex, DexFile, decompile_dex, parse_dex};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
+use disrobe_pass_jvm::{
+    ClassFile, DecompiledClass, DecompiledDex, DexFile, decompile_class, decompile_dex,
+    parse_classfile, parse_dex,
+};
 
 const EDGECASES_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/EdgeCases.dex");
+const HELLO_DEX: &[u8] = include_bytes!("../../../corpus/jvm/dex/Hello.dex");
+
+const PROBE_FILE: &str = "TypeCheckReached.java";
+const PROBE_SOURCE: &str = "final class TypeCheckReached {\n    static final Object VALUE = \
+                            typeCheckReachedSymbolThatCannotResolve;\n}\n";
 
 fn is_identifier_start(c: char) -> bool {
     c.is_alphabetic() || c == '$' || c == '_'
@@ -97,6 +111,141 @@ fn distinct_unwritable_names_never_collapse_onto_one_legal_name() {
             );
         }
     }
+}
+
+fn classfile_route_sources(dex_bytes: &[u8]) -> BTreeMap<String, String> {
+    let translated: Dex2JarResult = translate_dex_bytes(dex_bytes).expect("translate the dex");
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
+    for (entry, bytes) in &translated.jar_entries {
+        let Some(stem): Option<&str> = entry.strip_suffix(".class") else {
+            continue;
+        };
+        let class: ClassFile = parse_classfile(bytes).expect("parse the translated class");
+        let recovered: DecompiledClass = decompile_class(&class);
+        sources.insert(format!("{stem}.java"), recovered.source);
+    }
+    assert!(
+        !sources.is_empty(),
+        "the classfile route has to emit at least one source file"
+    );
+    sources
+}
+
+fn jvm_name_call_sites(sources: &BTreeMap<String, String>) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for (path, source) in sources {
+        for (index, line) in source.lines().enumerate() {
+            if line.contains(".<init>(") || line.contains(".<clinit>(") {
+                found.push(format!("{path}:{}: {}", index + 1, line.trim()));
+            }
+        }
+    }
+    found
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
+    let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
+    for dir in std::env::split_paths(&path_var) {
+        for ext in exts {
+            let candidate: PathBuf = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn javac_reached_type_checking(sources: &BTreeMap<String, String>) -> bool {
+    let javac: PathBuf = find_on_path("javac")
+        .expect("javac (JDK) has to be on PATH; a compiler this gate cannot run grades nothing");
+    let scratch: ScratchDir = ScratchDir::create("disrobe_writable_java").expect("scratch dir");
+    let dir: &Path = scratch.path();
+    let mut written: Vec<PathBuf> = Vec::with_capacity(sources.len() + 1);
+    for (relative, text) in sources {
+        let path: PathBuf = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("source directory");
+        }
+        std::fs::write(&path, text).expect("write the recovered source");
+        written.push(path);
+    }
+    let probe: PathBuf = dir.join(PROBE_FILE);
+    std::fs::write(&probe, PROBE_SOURCE).expect("write the type-check probe");
+    written.push(probe);
+
+    let stub: PathBuf = dir.join("cp");
+    std::fs::create_dir(&stub).expect("stub classpath");
+    let out_dir: PathBuf = dir.join("out");
+    std::fs::create_dir(&out_dir).expect("javac output directory");
+    let mut command: Command = Command::new(&javac);
+    command
+        .arg("-nowarn")
+        .arg("-proc:none")
+        .arg("-Xmaxerrs")
+        .arg("100000")
+        .arg("-cp")
+        .arg(&stub)
+        .arg("-d")
+        .arg(&out_dir);
+    for source in &written {
+        command.arg(source);
+    }
+    let output: Output = command.output().expect("run javac");
+    assert!(
+        !output.status.success(),
+        "the type-check probe compiled without reporting its unresolvable symbol, so it can no \
+         longer tell a parsed file from an unparsed one"
+    );
+    let diagnostics: String = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    diagnostics.contains(PROBE_FILE)
+}
+
+#[test]
+fn a_deferred_constructor_call_is_emitted_as_one_allocation() {
+    let sources: BTreeMap<String, String> = classfile_route_sources(HELLO_DEX);
+    let main: &String = sources
+        .get("Hello.java")
+        .expect("the classfile route emits Hello.java");
+    assert!(
+        main.contains("= new Hello(arg0)"),
+        "the allocation and the constructor call it belongs to have to arrive as one assignment, \
+         with the arguments the constructor was actually passed:\n{main}"
+    );
+    assert!(
+        !main.contains("new Hello()"),
+        "emitting a no-argument allocation beside the merged one calls a constructor that may not \
+         exist, which reads as correct source and is not:\n{main}"
+    );
+}
+
+#[test]
+fn no_recovered_source_calls_a_method_by_its_jvm_internal_name() {
+    for dex_bytes in [HELLO_DEX, EDGECASES_DEX] {
+        let sources: BTreeMap<String, String> = classfile_route_sources(dex_bytes);
+        let offenders: Vec<String> = jvm_name_call_sites(&sources);
+        assert!(
+            offenders.is_empty(),
+            "`<init>` and `<clinit>` are legal in a class file and illegal in java source, so a \
+             call written under either name stops the compiler at the parser and certifies no \
+             method in that file: {offenders:?}"
+        );
+    }
+}
+
+#[test]
+fn javac_parses_the_unit_the_classfile_route_recovers_from_hello_dex() {
+    let sources: BTreeMap<String, String> = classfile_route_sources(HELLO_DEX);
+    assert!(
+        javac_reached_type_checking(&sources),
+        "real javac never reached type checking over the recovered unit, which means it stopped at \
+         a parse defect and no method in the file can be graded"
+    );
 }
 
 #[test]

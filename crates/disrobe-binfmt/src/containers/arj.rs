@@ -199,39 +199,51 @@ const ARJ_LZ_PARAMS: crate::containers::lha_huff::LhaParams =
     };
 
 #[cfg(test)]
+pub(crate) fn build_block(fields: &[u8], name: &str, data: &[u8]) -> Vec<u8> {
+    let mut basic: Vec<u8> = Vec::new();
+    basic.push(FIRST_HDR_SIZE as u8);
+    basic.extend_from_slice(fields);
+    while basic.len() < FIRST_HDR_SIZE {
+        basic.push(0);
+    }
+    basic.extend_from_slice(name.as_bytes());
+    basic.push(0);
+    basic.push(0);
+
+    let mut out: Vec<u8> = ARJ_MAGIC.to_vec();
+    out.extend_from_slice(&(basic.len() as u16).to_le_bytes());
+    out.extend_from_slice(&basic);
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn file_fields(method: u8, file_type: u8, comp: u32, orig: u32) -> Vec<u8> {
+    let mut f: Vec<u8> = vec![0u8; FIRST_HDR_SIZE - 1];
+    f[OFS_HOST_OS - 1] = 2;
+    f[OFS_METHOD - 1] = method;
+    f[OFS_FILE_TYPE - 1] = file_type;
+    f[(OFS_COMPRESSED - 1)..(OFS_COMPRESSED - 1 + 4)].copy_from_slice(&comp.to_le_bytes());
+    f[(OFS_ORIGINAL - 1)..(OFS_ORIGINAL - 1 + 4)].copy_from_slice(&orig.to_le_bytes());
+    f
+}
+
+#[cfg(test)]
+pub(crate) fn synth_stored_arj(name: &str, body: &[u8]) -> Vec<u8> {
+    let size: u32 = u32::try_from(body.len()).unwrap_or(u32::MAX);
+    let mut blob: Vec<u8> = build_block(&[], "main", &[]);
+    blob.extend(build_block(&file_fields(0, 0, size, size), name, body));
+    blob.extend_from_slice(ARJ_MAGIC);
+    blob.extend_from_slice(&0u16.to_le_bytes());
+    blob
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn build_block(fields: &[u8], name: &str, data: &[u8]) -> Vec<u8> {
-        let mut basic: Vec<u8> = Vec::new();
-        basic.push(FIRST_HDR_SIZE as u8);
-        basic.extend_from_slice(fields);
-        while basic.len() < FIRST_HDR_SIZE {
-            basic.push(0);
-        }
-        basic.extend_from_slice(name.as_bytes());
-        basic.push(0);
-        basic.push(0);
-
-        let mut out: Vec<u8> = ARJ_MAGIC.to_vec();
-        out.extend_from_slice(&(basic.len() as u16).to_le_bytes());
-        out.extend_from_slice(&basic);
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(data);
-        out
-    }
-
-    fn file_fields(method: u8, file_type: u8, comp: u32, orig: u32) -> Vec<u8> {
-        let mut f: Vec<u8> = vec![0u8; FIRST_HDR_SIZE - 1];
-        f[OFS_HOST_OS - 1] = 2;
-        f[OFS_METHOD - 1] = method;
-        f[OFS_FILE_TYPE - 1] = file_type;
-        f[(OFS_COMPRESSED - 1)..(OFS_COMPRESSED - 1 + 4)].copy_from_slice(&comp.to_le_bytes());
-        f[(OFS_ORIGINAL - 1)..(OFS_ORIGINAL - 1 + 4)].copy_from_slice(&orig.to_le_bytes());
-        f
-    }
 
     #[test]
     fn detect_matches_header_id() {

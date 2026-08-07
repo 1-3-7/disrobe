@@ -6,7 +6,7 @@
 
 | Surface | Support |
 |---|---|
-| Inputs | `.class`, `.jar`, `.dex`, `.apk`; the classfile itself validated in-house (format 1.0.2-25) |
+| Inputs | `.class`, `.jar`, `.dex`, `.apk`, `.aab`; the classfile itself validated in-house (format 1.0.2-25) |
 | Decompilers | In-house classfile and Dalvik decompilers, the Dalvik one default on `.dex` and `.apk`; CFR, Vineflower, Procyon, JADX, and others via `--backend` |
 | Language surface | Records, sealed types, pattern matching, enum constant bodies, declaration and member annotations, enhanced `for`, multi-`catch`, plus Kotlin and Scala idioms |
 | Obfuscator handling | String recovery for supported Zelix KlassMaster, Allatori, Stringer, and DashO patterns; DexGuard and BlackObfuscator control-flow analysis; ProGuard/R8 name reports from `mapping.txt` |
@@ -24,6 +24,11 @@ disrobe jvm decompile classes.dex --backend jadx --out src/
 disrobe jvm decompile app.jar --mapping mapping.txt --out src/   # write name-restoration.json
 disrobe jvm extract app.apk --out classes/    # extract a .jar / .apk + dump classfile inventory
 disrobe jvm backends                          # report available JVM/Android backends on PATH
+disrobe jvm jni app.apk                       # link native methods against the apk's own .so files
+disrobe jvm jni App.class --native libnative.so --json
+disrobe jvm jni module.aar                    # nested classes.jar against jni/<abi>/*.so
+disrobe jvm jni base.apk --native split.apk    # cross-split link against an APK Set member
+disrobe apk app.apk                           # also prints the JNI link table for the embedded dex/.so pair
 disrobe auto app.apk --out recovered/         # recursively process recognized payloads
 ```
 
@@ -52,6 +57,14 @@ String-encryption protectors are decrypted by emulating each class's decrypt met
 On the Android side, the BlackObfuscator analyzer recognizes the `String.hashCode()` keyed dispatcher, matches each block's `const-string` block-name to its switch case, and reports the recovered linear block order in the decompiled output. The method body remains rendered from the flattened graph; the annotation records the recovered order rather than replacing that body. Separately, obfuscator-planted out-of-range exception-table entries are dropped before classfile structuring so they cannot poison the control-flow graph, and `jsr`/`ret` subroutines are inlined into a linear stream.
 
 DexGuard hides string constants in an encrypted static `String[]` decrypted at run time through `java.lang.reflect.Method.invoke` rather than a direct call. The key and ciphertext are present in the dex; only the dispatch is reflective. `disrobe` runs a constrained Dalvik register machine over the dex's own routine: it executes the class `<clinit>` to rebuild the encrypted table, then runs the `decrypt(int)` body for each index (read the table element, apply the per-char transform against the embedded key, rebuild the string) and emits the plaintext, with the `Class.getDeclaredMethod` + `Method.invoke` call sites resolved to their concrete target. `disrobe jvm decompile app.dex` surfaces the recovered strings and resolved sites in the manifest.
+
+### JNI linking
+
+`disrobe jvm jni` and `disrobe apk` link each declared `native` method to its C implementation across the DEX/classfile-to-`.so`/`.dll`/`.dylib` boundary. Static binding computes both the short and the long JNI symbol from the class name, method name, and descriptor (`_`, `$`, `[`, and non-ASCII characters mangled per the JNI spec) and matches them against the library's exported symbols. A `RegisterNatives` call built at compile time is recovered directly from the library's read-only data: the tool walks candidate `JNINativeMethod` triples, applies ELF relocations to their pointer fields, and resolves the target function address to its symbol, including calls made indirectly through the `JNIEnv` function table. The output is the typed link table plus a `JNIEXPORT ... JNICALL` C prototype per native method, graded against `javac -h` and compiled against a real NDK `jni.h`. An APK or AAB whose zip carries both the DEX and the native library links them without the caller naming either side; `--native` supplies the library explicitly for a bare `.class`/`.jar`/`.dex` input, including a Windows `.dll` or a macOS `.dylib` for desktop JNI. An AAR unzips its nested `classes.jar` and scans `jni/<abi>/*.so` (the AAR convention, distinct from an APK's `lib/<abi>/`). An APK Set (`.apks`), or a base APK plus one or more split APKs passed via `--native`, merges every split's dex and native libraries into one input set, so a native method declared in the base dex can resolve against a symbol that exists only in a config split. A raw `.oat` file locates its single embedded dex through the OAT header's `oat_dex_files_offset`; a multi-dex `.oat` refuses rather than guesses the per-entry record stride, which is version-dependent and undocumented across ART releases. `disrobe auto` performs the same link and writes `jni-link.json` when both sides are present in one container.
+
+A native method with no matching symbol in any library is reported unresolved rather than dropped. A symbol exported by more than one library is reported ambiguous rather than silently bound to the first. Each resolving library's ABI directory name is carried on its entry so a multi-ABI APK states which `.so` a symbol came from. A `JNINativeMethod` array the compiler placed in the library's read-only data recovers as a static triple; a table a program assembles in memory at run time leaves no trace in the file and is not statically recoverable, so that native reports as unresolved with `dynamic_only` counting it.
+
+Only two things are absent from the static artifact and therefore unrecoverable: a `fnPtr` computed at runtime rather than stored as a relocatable pointer, and a `FindClass` target name built dynamically rather than passed as a string literal. The native function body at a recovered address is not this surface's job; it goes to the native pseudo-C decompiler.
 
 ## Limits
 

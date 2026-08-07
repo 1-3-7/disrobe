@@ -24,12 +24,12 @@ pub fn locate_onefile_payload(image: &[u8]) -> Option<LocatedOnefile> {
     let debug: bool = crate::util::dbg_enabled()
         && !LOCATE_HEADER_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed);
     if debug {
-        crate::util::dbg_line(&format!("locate: image_len={}", image.len()));
+        crate::util::dbg_line(|| format!("locate: image_len={}", image.len()));
         match crate::util::pe_overlay_offset(image) {
             Some(overlay) => {
-                crate::util::dbg_line(&format!(
-                    "locate: PE overlay (appended-payload start) at {overlay}"
-                ));
+                crate::util::dbg_line(|| {
+                    format!("locate: PE overlay (appended-payload start) at {overlay}")
+                });
                 crate::util::dbg_hex(
                     "locate: 64 bytes at PE overlay start",
                     image.get(overlay..).unwrap_or_default(),
@@ -37,7 +37,9 @@ pub fn locate_onefile_payload(image: &[u8]) -> Option<LocatedOnefile> {
                 );
             }
             None => {
-                crate::util::dbg_line("locate: no PE overlay computed (not PE or parse failed)");
+                crate::util::dbg_line(|| {
+                    "locate: no PE overlay computed (not PE or parse failed)".to_owned()
+                });
             }
         }
         let tail: usize = image.len().saturating_sub(512);
@@ -68,10 +70,12 @@ pub fn locate_onefile_payload(image: &[u8]) -> Option<LocatedOnefile> {
                 match crate::onefile::validates_at(image, abs) {
                     Some(compressed) => {
                         if debug && candidate_log_allowed() {
-                            crate::util::dbg_line(&format!(
-                                "locate: KA{} at offset {abs} VALIDATES (compressed={compressed})",
-                                indicator as char
-                            ));
+                            crate::util::dbg_line(|| {
+                                format!(
+                                    "locate: KA{} at offset {abs} VALIDATES (compressed={compressed})",
+                                    indicator as char
+                                )
+                            });
                         }
                         if found.is_none() {
                             found = Some(LocatedOnefile {
@@ -85,10 +89,12 @@ pub fn locate_onefile_payload(image: &[u8]) -> Option<LocatedOnefile> {
                     }
                     None => {
                         if debug && candidate_log_allowed() {
-                            crate::util::dbg_line(&format!(
-                                "locate: KA{} at offset {abs} rejected (not a valid first entry)",
-                                indicator as char
-                            ));
+                            crate::util::dbg_line(|| {
+                                format!(
+                                    "locate: KA{} at offset {abs} rejected (not a valid first entry)",
+                                    indicator as char
+                                )
+                            });
                         }
                     }
                 }
@@ -101,9 +107,9 @@ pub fn locate_onefile_payload(image: &[u8]) -> Option<LocatedOnefile> {
     }
 
     if debug {
-        crate::util::dbg_line(&format!(
-            "locate: done, {candidates} KAX/KAY candidates scanned, result={found:?}"
-        ));
+        crate::util::dbg_line(|| {
+            format!("locate: done, {candidates} KAX/KAY candidates scanned, result={found:?}")
+        });
     }
     found
 }

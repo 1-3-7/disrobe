@@ -1,14 +1,12 @@
 use std::collections::BTreeMap;
 
-use gimli::{Dwarf, EndianSlice, Operation, RunTimeEndian};
+use gimli::{Dwarf, EndianSlice, RunTimeEndian};
 use object::{Object, ObjectSection};
 
+use crate::dwarf_location::{self, FrameBase, FrameSlot, LocationSurvey, PcRange, UnlocatedReason};
 use crate::error::{Result, TypeRecError};
 use crate::lattice::{Sign, Width};
 
-const RBP_DWARF_REGISTER: u16 = 6;
-const STANDARD_PROLOGUE: [u8; 4] = [0x55, 0x48, 0x89, 0xe5];
-const CFA_TO_RBP: i64 = 16;
 const MAX_UNITS: usize = 1 << 12;
 const MAX_DIE_VISITS: usize = 1 << 20;
 const MAX_TYPE_DEPTH: u8 = 16;
@@ -111,17 +109,25 @@ pub struct DebugImage {
     pub text_base: u64,
     pub text: Vec<u8>,
     pub functions: Vec<GroundTruthFunction>,
+    pub locations: LocationSurvey,
 }
 
 impl DebugImage {
     #[must_use]
     pub fn function_bytes(&self, function: &GroundTruthFunction) -> Option<&[u8]> {
-        let start: usize = usize::try_from(function.low_pc.checked_sub(self.text_base)?).ok()?;
-        let end: usize = usize::try_from(function.high_pc.checked_sub(self.text_base)?).ok()?;
-        if end <= start {
-            return None;
-        }
-        self.text.get(start..end)
+        dwarf_location::function_slice(
+            &self.text,
+            self.text_base,
+            PcRange::new(function.low_pc, function.high_pc),
+        )
+    }
+
+    #[must_use]
+    pub fn variable_count(&self) -> usize {
+        self.functions
+            .iter()
+            .map(|function: &GroundTruthFunction| function.vars.len())
+            .sum()
     }
 }
 
@@ -132,15 +138,17 @@ pub fn load(bytes: &[u8]) -> Result<DebugImage> {
         .map_err(|e: object::Error| TypeRecError::Object(e.to_string()))?;
     let (text_base, text): (u64, Vec<u8>) = read_text(&file)?;
     let sections: BTreeMap<String, Vec<u8>> = collect_debug_sections(&file);
-    let functions: Vec<GroundTruthFunction> = if sections.contains_key(".debug_info") {
-        walk_functions(&sections, &text, text_base)?
-    } else {
-        Vec::new()
-    };
+    let (functions, locations): (Vec<GroundTruthFunction>, LocationSurvey) =
+        if sections.contains_key(".debug_info") {
+            walk_functions(&sections, &text, text_base)?
+        } else {
+            (Vec::new(), LocationSurvey::default())
+        };
     Ok(DebugImage {
         text_base,
         text,
         functions,
+        locations,
     })
 }
 
@@ -179,7 +187,7 @@ fn walk_functions(
     sections: &BTreeMap<String, Vec<u8>>,
     text: &[u8],
     text_base: u64,
-) -> Result<Vec<GroundTruthFunction>> {
+) -> Result<(Vec<GroundTruthFunction>, LocationSurvey)> {
     let empty: Vec<u8> = Vec::new();
     let load_section = |id: gimli::SectionId| -> core::result::Result<Slice<'_>, gimli::Error> {
         let data: &[u8] = sections.get(id.name()).unwrap_or(&empty);
@@ -189,6 +197,7 @@ fn walk_functions(
         Dwarf::load(load_section).map_err(|e: gimli::Error| TypeRecError::Dwarf(e.to_string()))?;
 
     let mut functions: Vec<GroundTruthFunction> = Vec::new();
+    let mut survey: LocationSurvey = LocationSurvey::default();
     let mut die_budget: usize = MAX_DIE_VISITS;
     let mut units: gimli::DebugInfoUnitHeadersIter<Slice<'_>> = dwarf.units();
     let mut unit_count: usize = 0;
@@ -203,10 +212,12 @@ fn walk_functions(
         let Ok(unit): core::result::Result<gimli::Unit<Slice<'_>>, _> = dwarf.unit(header) else {
             continue;
         };
+        survey.record_version(unit.encoding().version);
         collect_unit(
             &dwarf,
             &unit,
             &mut functions,
+            &mut survey,
             &mut die_budget,
             text,
             text_base,
@@ -215,16 +226,15 @@ fn walk_functions(
             break;
         }
     }
-    Ok(functions)
+    Ok((functions, survey))
 }
 
 #[derive(Debug)]
 struct FunctionCtx {
     function: GroundTruthFunction,
-    frame_offset: i64,
+    frame: FrameBase,
     fn_depth: isize,
-    low_pc: u64,
-    high_pc: u64,
+    range: PcRange,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -238,6 +248,7 @@ fn collect_unit(
     dwarf: &Dwarf<Slice<'_>>,
     unit: &gimli::Unit<Slice<'_>>,
     functions: &mut Vec<GroundTruthFunction>,
+    survey: &mut LocationSurvey,
     die_budget: &mut usize,
     text: &[u8],
     text_base: u64,
@@ -276,27 +287,27 @@ fn collect_unit(
                 push_function(functions, ctx.function);
             }
             scopes.clear();
-            if let Some((function, frame_offset)) =
-                start_function(dwarf, unit, entry, text, text_base)
-            {
-                let low_pc: u64 = function.low_pc;
-                let high_pc: u64 = function.high_pc;
+            survey.subprograms += 1;
+            if let Some((function, frame)) = start_function(dwarf, unit, entry, text, text_base) {
+                let range: PcRange = PcRange::new(function.low_pc, function.high_pc);
                 current = Some(FunctionCtx {
                     function,
-                    frame_offset,
+                    frame,
                     fn_depth: depth,
-                    low_pc,
-                    high_pc,
+                    range,
                 });
+            } else {
+                survey.subprograms_without_code += 1;
             }
             continue;
         }
-        if tag == gimli::DW_TAG_lexical_block
-            && let Some(ctx) = current.as_ref()
+        if matches!(
+            tag,
+            gimli::DW_TAG_lexical_block | gimli::DW_TAG_inlined_subroutine
+        ) && current.is_some()
             && let Some(low) = attr_low_pc(dwarf, unit, entry)
             && let Some(high) = attr_high_pc(entry, low)
         {
-            let _ = ctx;
             scopes.push(LexScope {
                 depth,
                 lo: low,
@@ -323,23 +334,13 @@ fn collect_unit(
                     sig.params.push(class);
                 }
             }
-            if depth <= ctx.fn_depth || ctx.function.vars.len() >= MAX_VARS_PER_FUNCTION {
+            if depth <= ctx.fn_depth {
                 continue;
             }
-            let (scope_lo, scope_hi): (u64, u64) = scopes
-                .last()
-                .map_or((ctx.low_pc, ctx.high_pc), |scope: &LexScope| {
-                    (scope.lo, scope.hi)
-                });
-            if let Some(var) =
-                read_variable(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
-            {
-                ctx.function.vars.push(var);
-            } else if let Some(aggregate) =
-                read_aggregate(dwarf, unit, entry, ctx.frame_offset, scope_lo, scope_hi)
-            {
-                ctx.function.aggregates.push(aggregate);
-            }
+            let scope: PcRange = scopes.last().map_or(ctx.range, |lexical: &LexScope| {
+                PcRange::new(lexical.lo, lexical.hi)
+            });
+            record_declaration(dwarf, unit, entry, ctx, survey, scope);
         }
     }
     if let Some(ctx) = current.take() {
@@ -359,10 +360,15 @@ fn start_function(
     entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
     text: &[u8],
     text_base: u64,
-) -> Option<(GroundTruthFunction, i64)> {
+) -> Option<(GroundTruthFunction, FrameBase)> {
     let low_pc: u64 = attr_low_pc(dwarf, unit, entry)?;
     let high_pc: u64 = attr_high_pc(entry, low_pc)?;
-    let frame_offset: i64 = frame_base_rbp_offset(unit, entry, low_pc, text, text_base)?;
+    let range: PcRange = PcRange::new(low_pc, high_pc);
+    if range.is_empty() {
+        return None;
+    }
+    let frame: FrameBase =
+        dwarf_location::resolve_frame_base(dwarf, unit, entry, range, text, text_base);
     let name: String = attr_string(dwarf, unit, entry, gimli::DW_AT_name).unwrap_or_default();
     let signature: GroundTruthSignature = GroundTruthSignature {
         prototyped: attr_flag(entry, gimli::DW_AT_prototyped),
@@ -379,7 +385,7 @@ fn start_function(
             aggregates: Vec::new(),
             signature: Some(signature),
         },
-        frame_offset,
+        frame,
     ))
 }
 
@@ -445,70 +451,75 @@ fn return_class(unit: &gimli::Unit<Slice<'_>>, type_offset: Option<gimli::UnitOf
     }
 }
 
-fn frame_base_rbp_offset(
-    unit: &gimli::Unit<Slice<'_>>,
-    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
-    low_pc: u64,
-    text: &[u8],
-    text_base: u64,
-) -> Option<i64> {
-    let value: gimli::AttributeValue<Slice<'_>> =
-        entry.attr_value(gimli::DW_AT_frame_base).ok()??;
-    let gimli::AttributeValue::Exprloc(expr) = value else {
-        return None;
-    };
-    let mut ops: gimli::OperationIter<Slice<'_>> = expr.operations(unit.encoding());
-    let first: Operation<Slice<'_>> = ops.next().ok()??;
-    match first {
-        Operation::CallFrameCFA => {
-            let start: usize = usize::try_from(low_pc.checked_sub(text_base)?).ok()?;
-            let window: &[u8] = text.get(start..start.checked_add(STANDARD_PROLOGUE.len())?)?;
-            (window == STANDARD_PROLOGUE).then_some(CFA_TO_RBP)
-        }
-        Operation::Register { register } if register.0 == RBP_DWARF_REGISTER => Some(0),
-        Operation::RegisterOffset {
-            register, offset, ..
-        } if register.0 == RBP_DWARF_REGISTER => Some(offset),
-        _ => None,
-    }
-}
-
-fn read_variable(
+fn record_declaration(
     dwarf: &Dwarf<Slice<'_>>,
     unit: &gimli::Unit<Slice<'_>>,
     entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
-    frame_offset: i64,
-    scope_lo: u64,
-    scope_hi: u64,
-) -> Option<GroundTruthVar> {
-    let fbreg: i64 = fbreg_offset(unit, entry)?;
-    let type_offset: gimli::UnitOffset = die_type_offset(entry)?;
-    let (bytes, sign): (u8, Sign) = resolve_int_type(unit, type_offset, 0)?;
-    let name: String = attr_string(dwarf, unit, entry, gimli::DW_AT_name).unwrap_or_default();
-    Some(GroundTruthVar {
-        name,
-        rbp_disp: frame_offset.checked_add(fbreg)?,
-        width: Width::from_bytes(bytes),
-        sign,
-        scope_lo,
-        scope_hi,
-    })
-}
-
-fn fbreg_offset(
-    unit: &gimli::Unit<Slice<'_>>,
-    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
-) -> Option<i64> {
-    let value: gimli::AttributeValue<Slice<'_>> =
-        entry.attr_value(gimli::DW_AT_location).ok()??;
-    let gimli::AttributeValue::Exprloc(expr) = value else {
-        return None;
-    };
-    let mut ops: gimli::OperationIter<Slice<'_>> = expr.operations(unit.encoding());
-    match ops.next().ok()?? {
-        Operation::FrameOffset { offset } => Some(offset),
-        _ => None,
+    ctx: &mut FunctionCtx,
+    survey: &mut LocationSurvey,
+    scope: PcRange,
+) {
+    survey.record_declared();
+    if ctx.function.vars.len() + ctx.function.aggregates.len() >= MAX_VARS_PER_FUNCTION {
+        survey.record_unlocated(UnlocatedReason::VariableBudgetExhausted);
+        return;
     }
+    let slots: Vec<FrameSlot> =
+        match dwarf_location::frame_slots(dwarf, unit, entry, &ctx.frame, ctx.range) {
+            Ok(slots) => slots,
+            Err(reason) => {
+                survey.record_unlocated(reason);
+                return;
+            }
+        };
+    let scoped: Vec<FrameSlot> = slots
+        .iter()
+        .filter_map(|slot: &FrameSlot| {
+            slot.range.intersect(scope).map(|range: PcRange| FrameSlot {
+                rbp_disp: slot.rbp_disp,
+                range,
+            })
+        })
+        .collect();
+    if scoped.is_empty() {
+        survey.record_unlocated(UnlocatedReason::ScopeOutsideFrameWindow);
+        return;
+    }
+    let Some(type_offset): Option<gimli::UnitOffset> = type_offset_through_origin(unit, entry, 0)
+    else {
+        survey.record_unlocated(UnlocatedReason::NoTypeAttribute);
+        return;
+    };
+    let name: String = name_through_origin(dwarf, unit, entry, 0).unwrap_or_default();
+    if let Some((bytes, sign)) = resolve_int_type(unit, type_offset, 0) {
+        for slot in &scoped {
+            ctx.function.vars.push(GroundTruthVar {
+                name: name.clone(),
+                rbp_disp: slot.rbp_disp,
+                width: Width::from_bytes(bytes),
+                sign,
+                scope_lo: slot.range.lo,
+                scope_hi: slot.range.hi,
+            });
+        }
+        survey.record_located();
+        return;
+    }
+    let Some(aggregate): Option<GroundTruthAggregate> =
+        read_aggregate(dwarf, unit, type_offset, &scoped)
+    else {
+        survey.record_unlocated(UnlocatedReason::NonIntegerType);
+        return;
+    };
+    for slot in &scoped {
+        ctx.function.aggregates.push(GroundTruthAggregate {
+            rbp_disp: slot.rbp_disp,
+            scope_lo: slot.range.lo,
+            scope_hi: slot.range.hi,
+            ..aggregate.clone()
+        });
+    }
+    survey.record_located();
 }
 
 fn resolve_int_type(
@@ -562,14 +573,10 @@ enum MemberType {
 fn read_aggregate(
     dwarf: &Dwarf<Slice<'_>>,
     unit: &gimli::Unit<Slice<'_>>,
-    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
-    frame_offset: i64,
-    scope_lo: u64,
-    scope_hi: u64,
+    type_offset: gimli::UnitOffset,
+    scoped: &[FrameSlot],
 ) -> Option<GroundTruthAggregate> {
-    let fbreg: i64 = fbreg_offset(unit, entry)?;
-    let rbp_disp: i64 = frame_offset.checked_add(fbreg)?;
-    let type_offset: gimli::UnitOffset = die_type_offset(entry)?;
+    let first: &FrameSlot = scoped.first()?;
     let outer: gimli::UnitOffset = strip_typedefs(unit, type_offset, 0)?;
     let outer_entry: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
         unit.entry(outer).ok()?;
@@ -623,12 +630,12 @@ fn read_aggregate(
     let type_name: String =
         attr_string(dwarf, unit, &pointee_entry, gimli::DW_AT_name).unwrap_or_default();
     Some(GroundTruthAggregate {
-        rbp_disp,
+        rbp_disp: first.rbp_disp,
         is_union,
         type_name,
         fields,
-        scope_lo,
-        scope_hi,
+        scope_lo: first.range.lo,
+        scope_hi: first.range.hi,
     })
 }
 
@@ -797,6 +804,58 @@ fn die_type_offset(
         gimli::AttributeValue::UnitRef(offset) => Some(offset),
         _ => None,
     }
+}
+
+fn die_reference(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+    attr: gimli::DwAt,
+) -> Option<gimli::UnitOffset> {
+    match entry.attr_value(attr).ok()?? {
+        gimli::AttributeValue::UnitRef(offset) => Some(offset),
+        _ => None,
+    }
+}
+
+fn origin_of(
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+) -> Option<gimli::UnitOffset> {
+    die_reference(entry, gimli::DW_AT_abstract_origin)
+        .or_else(|| die_reference(entry, gimli::DW_AT_specification))
+}
+
+fn type_offset_through_origin(
+    unit: &gimli::Unit<Slice<'_>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+    depth: u8,
+) -> Option<gimli::UnitOffset> {
+    if let Some(offset) = die_type_offset(entry) {
+        return Some(offset);
+    }
+    if depth >= MAX_TYPE_DEPTH {
+        return None;
+    }
+    let origin: gimli::UnitOffset = origin_of(entry)?;
+    let referenced: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
+        unit.entry(origin).ok()?;
+    type_offset_through_origin(unit, &referenced, depth + 1)
+}
+
+fn name_through_origin(
+    dwarf: &Dwarf<Slice<'_>>,
+    unit: &gimli::Unit<Slice<'_>>,
+    entry: &gimli::DebuggingInformationEntry<'_, '_, Slice<'_>>,
+    depth: u8,
+) -> Option<String> {
+    if let Some(name) = attr_string(dwarf, unit, entry, gimli::DW_AT_name) {
+        return Some(name);
+    }
+    if depth >= MAX_TYPE_DEPTH {
+        return None;
+    }
+    let origin: gimli::UnitOffset = origin_of(entry)?;
+    let referenced: gimli::DebuggingInformationEntry<'_, '_, Slice<'_>> =
+        unit.entry(origin).ok()?;
+    name_through_origin(dwarf, unit, &referenced, depth + 1)
 }
 
 fn attr_string(

@@ -38,7 +38,7 @@ fn sign(secret: &SecretKey, bytes: &[u8]) -> Vec<u8> {
 
 fn manifest_granting(names: &[&str]) -> Manifest {
     let grants: BTreeSet<String> = names.iter().map(|name: &&str| (*name).to_owned()).collect();
-    Manifest::new("test-plugin", grants).expect("manifest is valid")
+    Manifest::new("test-plugin", None, grants).expect("manifest is valid")
 }
 
 fn load_outcome(
@@ -215,9 +215,63 @@ fn manifest_round_trips_through_toml() {
     "#;
     let manifest: Manifest = Manifest::from_toml(source).expect("manifest parses");
     assert_eq!(manifest.name, "example");
+    assert_eq!(manifest.version, None);
     assert!(manifest.grants("wasi:io/streams"));
     assert!(manifest.grants("host:log/logger"));
     assert!(!manifest.grants("host:fs/write"));
+}
+
+#[test]
+fn manifest_carries_a_declared_version() {
+    let source: &str = r#"
+        name = "example"
+        version = "1.4.2"
+        capabilities = []
+    "#;
+    let manifest: Manifest = Manifest::from_toml(source).expect("manifest parses");
+    assert_eq!(manifest.version.as_deref(), Some("1.4.2"));
+}
+
+#[test]
+fn manifest_rejects_empty_version() {
+    let source: &str = r#"
+        name = "example"
+        version = ""
+        capabilities = []
+    "#;
+    let parsed: Result<Manifest, ManifestError> = Manifest::from_toml(source);
+    assert!(matches!(parsed, Err(ManifestError::EmptyVersion)));
+}
+
+#[test]
+fn manifest_rejects_whitespace_padded_version() {
+    let source: &str = r#"
+        name = "example"
+        version = " 1.0"
+        capabilities = []
+    "#;
+    let parsed: Result<Manifest, ManifestError> = Manifest::from_toml(source);
+    assert!(matches!(parsed, Err(ManifestError::VersionWhitespace)));
+}
+
+#[test]
+fn manifest_rejects_control_character_version() {
+    let source: &str = "name = \"example\"\nversion = \"1\\u00070\"\ncapabilities = []";
+    let parsed: Result<Manifest, ManifestError> = Manifest::from_toml(source);
+    assert!(matches!(parsed, Err(ManifestError::VersionControl { .. })));
+}
+
+#[test]
+fn manifest_rejects_oversized_version() {
+    let source: String = format!(
+        "name = \"example\"\nversion = \"{}\"\ncapabilities = []",
+        "9".repeat(65)
+    );
+    let parsed: Result<Manifest, ManifestError> = Manifest::from_toml(&source);
+    assert!(matches!(
+        parsed,
+        Err(ManifestError::VersionTooLarge { len: 65, limit: 64 })
+    ));
 }
 
 #[test]

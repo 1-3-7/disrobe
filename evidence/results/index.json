@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 29,
+  "descriptor_count": 30,
   "descriptors": [
     {
       "ci_attested": true,
@@ -199,6 +199,22 @@
     },
     {
       "ci_attested": true,
+      "claim": "disrobe decompiles a .NET CIL type to C# that recompiles error-free standalone under the real csc, across the EdgeCases corpus.",
+      "comparison_basis": null,
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "dotnet",
+      "external_oracle": "real csc (dotnet SDK 9.0.316): recovered C# must recompile standalone as its own single-file compilation unit",
+      "floor": 51.42857142857143,
+      "floor_holds": true,
+      "id": "dotnet-whole-type-recompile",
+      "measured": "51.43%",
+      "oracle_strength": "recompile-only",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-pass-dotnet --test whole_type_il_equivalence_oracle edgecases_whole_type_recompile_fraction_is_published_as_measured -- --nocapture"
+    },
+    {
+      "ci_attested": true,
       "claim": "On the identical planted APK, disrobe frisk recalls more of the hand-verified planted secrets than apkleaks (it catches the AWS secret key, the Basic-auth credential, and the JWT that apkleaks's rule set misses).",
       "comparison_basis": "highest reported numeric value",
       "competitors": [
@@ -386,12 +402,12 @@
     },
     {
       "ci_attested": true,
-      "claim": "across the 316 committed mixed-boolean-arithmetic cases, every answer disrobe returns agrees with the held-out original, and a case whose simplification exceeds a 2 second per-entry budget is named as a refusal rather than counted either way. The reference run recorded 254 answers and 62 refusals.",
+      "claim": "across the 316 committed mixed-boolean-arithmetic cases, every answer disrobe returns agrees with the held-out original, and a case whose simplification exceeds a 2 second per-entry budget is named as a refusal rather than counted either way. A reference run answered 247 cases, refused 69, and an external bitvector solver proved 236 of the answers equal to the original while refuting none.",
       "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
       "ecosystem": "mba",
-      "external_oracle": "the originals are held out of the input the pass receives. 100 of the 316 cases were produced by MBA-Obfuscator (ICICS 2021, MIT, pinned at commit 8574ef8) run over integer kernels this repository chose, so their obfuscated form is third-party and the original is the pre-transform kernel. The other 216 come from a forward rewriter under evidence/generators/mba that links no disrobe crate at all, which the workspace health check proves over the resolved dependency graph. Grading is a behavioural differential against check vectors the generator computed with its own evaluator, so a wrong answer cannot agree with a value the recovery path produced.",
+      "external_oracle": "the originals are held out of the input the pass receives. 100 of the 316 cases were produced by MBA-Obfuscator (ICICS 2021, MIT, pinned at commit 8574ef8) run over integer kernels this repository chose, so their obfuscated form is third-party and the original is the pre-transform kernel. The other 216 come from a forward rewriter under evidence/generators/mba that links no disrobe crate at all, which the workspace health check proves over the resolved dependency graph. Grading has two legs: a behavioural differential against check vectors the generator computed with its own evaluator, so a wrong answer cannot agree with a value the recovery path produced, and z3 or bitwuzla proving the recovered expression equal to the held-out original over every input, which is exact rather than sampled.",
       "floor": null,
       "floor_holds": null,
       "id": "mba-groundtruth-corpus",
@@ -598,6 +614,7 @@
     "android",
     "beam",
     "binfmt",
+    "dotnet",
     "go",
     "hermes",
     "jvm",

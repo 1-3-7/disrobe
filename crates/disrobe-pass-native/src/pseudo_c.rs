@@ -145,6 +145,22 @@ enum Xmm {
     Xmm13,
     Xmm14,
     Xmm15,
+    Xmm16,
+    Xmm17,
+    Xmm18,
+    Xmm19,
+    Xmm20,
+    Xmm21,
+    Xmm22,
+    Xmm23,
+    Xmm24,
+    Xmm25,
+    Xmm26,
+    Xmm27,
+    Xmm28,
+    Xmm29,
+    Xmm30,
+    Xmm31,
 }
 
 impl Xmm {
@@ -247,15 +263,24 @@ enum FpMinMaxKind {
     SelectMin,
     IeeeMax,
     IeeeMin,
+    PropagateMax,
+    PropagateMin,
 }
 
 impl FpMinMaxKind {
     const fn is_max(self) -> bool {
-        matches!(self, Self::SelectMax | Self::IeeeMax)
+        matches!(self, Self::SelectMax | Self::IeeeMax | Self::PropagateMax)
     }
 
-    const fn is_ieee_num(self) -> bool {
-        matches!(self, Self::IeeeMax | Self::IeeeMin)
+    const fn is_propagating_nan(self) -> bool {
+        matches!(self, Self::PropagateMax | Self::PropagateMin)
+    }
+
+    const fn uses_helper(self) -> bool {
+        matches!(
+            self,
+            Self::IeeeMax | Self::IeeeMin | Self::PropagateMax | Self::PropagateMin
+        )
     }
 }
 
@@ -1743,7 +1768,9 @@ fn build_leaf_items(
                 insn.mnemonic, insn.address
             )));
         }
-        if is_frame_management(&insn.mnemonic, &insn.operands) {
+        if is_frame_management(&insn.mnemonic, &insn.operands)
+            || is_ms_x64_callee_saved_xmm_spill(&insn.mnemonic, &insn.operands, abi)
+        {
             continue;
         }
         if packed_mode
@@ -2155,10 +2182,11 @@ fn recover_leaf_function_calls_impl(
         .then(|| detect_sret(&structured.body, abi))
         .flatten();
     let mut params: Vec<Reg> = infer_params(&structured.body, abi);
+    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
+    validate_ms_x64_shared_argument_index(abi, &params, &fp_args)?;
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
     }
-    let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
     let returns_fp: Option<ScalarType> = fp_return.map(scalar_of_fp);
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
@@ -2167,6 +2195,7 @@ fn recover_leaf_function_calls_impl(
         vec: Vec::new(),
         ret,
         exact_integer_types: false,
+        abi,
     };
     let fp_params: Vec<ScalarType> = signature.ordered_param_types();
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns, abi))?;
@@ -2258,18 +2287,104 @@ struct FnSignature {
     vec: Vec<(u8, VecArrangement)>,
     ret: FnReturn,
     exact_integer_types: bool,
+    abi: Abi,
 }
 
 impl FnSignature {
     fn ordered_param_types(&self) -> Vec<ScalarType> {
-        let mut out: Vec<ScalarType> = self
-            .fp
-            .iter()
-            .map(|(_, w): &(Xmm, FpWidth)| scalar_of_fp(*w))
-            .collect();
-        out.extend(std::iter::repeat_n(ScalarType::Int, self.int.len()));
-        out
+        match self.abi {
+            Abi::MsX64 => self.ms_x64_ordered_param_types(),
+            Abi::SysV | Abi::Aapcs64 => {
+                let mut out: Vec<ScalarType> = self
+                    .fp
+                    .iter()
+                    .map(|(_, w): &(Xmm, FpWidth)| scalar_of_fp(*w))
+                    .collect();
+                out.extend(std::iter::repeat_n(ScalarType::Int, self.int.len()));
+                out
+            }
+        }
     }
+
+    fn ms_x64_ordered_param_types(&self) -> Vec<ScalarType> {
+        let int_order: &'static [Reg] = Abi::MsX64.arg_order();
+        let fp_order: &'static [Xmm] = fp_arg_order(Abi::MsX64);
+        let mut slotted: Vec<(u8, ScalarType)> = Vec::with_capacity(self.int.len() + self.fp.len());
+        for (reg, _) in &self.int {
+            let slot: u8 = int_order
+                .iter()
+                .position(|r: &Reg| r == reg)
+                .map_or(u8::MAX, |i: usize| i as u8);
+            slotted.push((slot, ScalarType::Int));
+        }
+        for (xmm, width) in &self.fp {
+            let slot: u8 = fp_order
+                .iter()
+                .position(|x: &Xmm| x == xmm)
+                .map_or(u8::MAX, |i: usize| i as u8);
+            slotted.push((slot, scalar_of_fp(*width)));
+        }
+        slotted.sort_by_key(|(slot, _): &(u8, ScalarType)| *slot);
+        slotted
+            .into_iter()
+            .map(|(_, ty): (u8, ScalarType)| ty)
+            .collect()
+    }
+}
+
+fn ms_x64_shared_slot_conflict(slot: usize, prior: &'static str, claimant: &'static str) -> Error {
+    Error::LlvmIr(format!(
+        "microsoft x64 argument position {slot} is claimed by both {prior} and {claimant}; a single shared position cannot hold two argument classes"
+    ))
+}
+
+fn validate_ms_x64_shared_argument_index(
+    abi: Abi,
+    params: &[Reg],
+    fp_args: &[(Xmm, FpWidth)],
+) -> Result<()> {
+    if abi != Abi::MsX64 {
+        return Ok(());
+    }
+    let int_order: &'static [Reg] = Abi::MsX64.arg_order();
+    let fp_order: &'static [Xmm] = fp_arg_order(Abi::MsX64);
+    let mut slot_kind: [Option<&'static str>; 4] = [None; 4];
+    for reg in params {
+        let Some(slot) = int_order.iter().position(|r: &Reg| r == reg) else {
+            continue;
+        };
+        if let Some(prior) = slot_kind[slot] {
+            return Err(ms_x64_shared_slot_conflict(
+                slot,
+                prior,
+                "an integer register",
+            ));
+        }
+        slot_kind[slot] = Some("an integer register");
+    }
+    for (xmm, _) in fp_args {
+        let Some(slot) = fp_order.iter().position(|x: &Xmm| x == xmm) else {
+            continue;
+        };
+        if let Some(prior) = slot_kind[slot] {
+            return Err(ms_x64_shared_slot_conflict(
+                slot,
+                prior,
+                "a floating-point register",
+            ));
+        }
+        slot_kind[slot] = Some("a floating-point register");
+    }
+    let highest: usize = slot_kind
+        .iter()
+        .rposition(Option::is_some)
+        .map_or(0, |i: usize| i + 1);
+    if slot_kind[..highest].iter().any(Option::is_none) {
+        return Err(Error::LlvmIr(
+            "microsoft x64 argument positions read before a write are not contiguous from position 0; a gap between the lowest and highest observed register cannot be represented as a single callable prototype".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn wide_int_signature(params: &[Reg]) -> Vec<(Reg, Width)> {
@@ -2318,8 +2433,8 @@ fn recover_call_site_identity(
             "call-site signature evidence only applies to a result-free return body".to_owned(),
         ));
     }
-    if recovered_signature.fp_params.len() > FP_ARG_ORDER.len()
-        || recovered_signature.int_params.len() > 8
+    if recovered_signature.fp_params.len() > fp_arg_order(Abi::Aapcs64).len()
+        || recovered_signature.int_params.len() > Abi::Aapcs64.arg_order().len()
     {
         return Err(Error::LlvmIr(
             "call-site signature evidence exceeds the aapcs64 register argument limit".to_owned(),
@@ -2329,7 +2444,7 @@ fn recover_call_site_identity(
         .fp_params
         .iter()
         .copied()
-        .zip(FP_ARG_ORDER)
+        .zip(fp_arg_order(Abi::Aapcs64).iter().copied())
         .map(|(width, register): (FpWidth, Xmm)| (register, width))
         .collect();
     let int: Vec<(Reg, Width)> = recovered_signature
@@ -2349,6 +2464,7 @@ fn recover_call_site_identity(
         vec: Vec::new(),
         ret,
         exact_integer_types: true,
+        abi: Abi::Aapcs64,
     };
     let body: Block = vec![Node::Return];
     let aggregates: AggregatePlan = AggregatePlan::default();
@@ -2625,12 +2741,14 @@ fn build_switch_recovery(
     collect_call_targets(&body, &mut call_targets);
     let params: Vec<Reg> = infer_params(&body, abi);
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body, abi)?;
+    validate_ms_x64_shared_argument_index(abi, &params, &fp_args)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: wide_int_signature(&params),
         vec: Vec::new(),
         ret,
         exact_integer_types: false,
+        abi,
     };
     let returns_fp: Option<ScalarType> = match ret {
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
@@ -2866,6 +2984,7 @@ fn build_value_switch_recovery(
         vec: Vec::new(),
         ret: FnReturn::Int(return_width),
         exact_integer_types: false,
+        abi,
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
     let source: String = emit_c(&body, &signature, None, None, &aggregate_plan);
@@ -4623,6 +4742,57 @@ fn is_frame_management(mnemonic: &str, operands: &str) -> bool {
         "lea" => is_rbp_lea_frame(operands),
         _ => false,
     }
+}
+
+const MS_X64_CALLEE_SAVED_XMM: [Xmm; 10] = [
+    Xmm::Xmm6,
+    Xmm::Xmm7,
+    Xmm::Xmm8,
+    Xmm::Xmm9,
+    Xmm::Xmm10,
+    Xmm::Xmm11,
+    Xmm::Xmm12,
+    Xmm::Xmm13,
+    Xmm::Xmm14,
+    Xmm::Xmm15,
+];
+
+fn mem_operand_bracket(token: &str) -> Option<&str> {
+    let trimmed: &str = token.trim();
+    if trimmed.starts_with('[') {
+        return Some(trimmed);
+    }
+    let (kw, rest): (&str, &str) = trimmed.split_once(char::is_whitespace)?;
+    size_keyword_width(kw.trim())?;
+    let rest: &str = rest.trim();
+    rest.starts_with('[').then_some(rest)
+}
+
+fn is_ms_x64_callee_saved_xmm_spill(mnemonic: &str, operands: &str, abi: Abi) -> bool {
+    if abi != Abi::MsX64 || !matches!(mnemonic, "movaps" | "movapd" | "movups" | "movupd") {
+        return false;
+    }
+    let Some((lhs, rhs)): Option<(&str, &str)> = operands.split_once(',') else {
+        return false;
+    };
+    let (lhs, rhs): (&str, &str) = (lhs.trim(), rhs.trim());
+    let (mem, xmm_token): (&str, &str) = if let Some(mem) = mem_operand_bracket(lhs) {
+        (mem, rhs)
+    } else if let Some(mem) = mem_operand_bracket(rhs) {
+        (mem, lhs)
+    } else {
+        return false;
+    };
+    let Some(xmm): Option<Xmm> = parse_xmm(xmm_token) else {
+        return false;
+    };
+    if !MS_X64_CALLEE_SAVED_XMM.contains(&xmm) {
+        return false;
+    }
+    let Some((base, index, _disp)): Option<AddrTerms> = parse_addr_terms(mem) else {
+        return false;
+    };
+    index.is_none() && matches!(base, Some(Reg::Rsp | Reg::Rbp))
 }
 
 fn is_stack_pointer_move(operands: &str) -> bool {
@@ -8134,18 +8304,8 @@ const fn fp_arg_order(abi: Abi) -> &'static [Xmm] {
 fn infer_fp_params(body: &Block, abi: Abi) -> Result<Vec<(Xmm, FpWidth)>> {
     let mut written: BTreeMap<Xmm, bool> = BTreeMap::new();
     let mut read_before_write: Vec<(Xmm, FpWidth)> = Vec::new();
-    scan_fp_params(body, &mut written, &mut read_before_write)?;
+    scan_fp_params(body, &mut written, &mut read_before_write, abi)?;
     read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
-    let argument_registers: &'static [Xmm] = fp_arg_order(abi);
-    if let Some((xmm, _)) = read_before_write
-        .iter()
-        .find(|(x, _): &&(Xmm, FpWidth)| !argument_registers.contains(x))
-    {
-        return Err(Error::LlvmIr(format!(
-            "floating register {} is read before any write, but under {abi:?} it is volatile scratch rather than an argument register, so its entry value is not recoverable",
-            xmm.index()
-        )));
-    }
     Ok(read_before_write)
 }
 
@@ -8154,13 +8314,14 @@ fn note_fp_read(
     width: FpWidth,
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
+    abi: Abi,
 ) -> Result<()> {
     if written.get(&xmm).copied().unwrap_or(false) {
         return Ok(());
     }
-    if !FP_ARG_ORDER.contains(&xmm) {
+    if !fp_arg_order(abi).contains(&xmm) {
         return Err(Error::LlvmIr(format!(
-            "floating register {} is read before any write and cannot hold an incoming argument, so its entry value is not recoverable",
+            "floating register {} is read before any write, but under {abi:?} it is volatile scratch rather than an argument register, so its entry value is not recoverable",
             xmm.index()
         )));
     }
@@ -8185,9 +8346,10 @@ fn scan_fp_operand(
     width: FpWidth,
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
+    abi: Abi,
 ) -> Result<()> {
     if let FpOperand::Xmm(x) = operand {
-        note_fp_read(*x, width, written, acc)?;
+        note_fp_read(*x, width, written, acc, abi)?;
     }
     Ok(())
 }
@@ -8196,6 +8358,7 @@ fn scan_fp_stmt(
     stmt: &Stmt,
     written: &mut BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
+    abi: Abi,
 ) -> Result<()> {
     match stmt {
         Stmt::FpBin {
@@ -8205,27 +8368,27 @@ fn scan_fp_stmt(
             width,
             ..
         } => {
-            scan_fp_operand(lhs, *width, written, acc)?;
-            scan_fp_operand(rhs, *width, written, acc)?;
+            scan_fp_operand(lhs, *width, written, acc, abi)?;
+            scan_fp_operand(rhs, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpMov { dest, src, width } => {
-            scan_fp_operand(src, *width, written, acc)?;
+            scan_fp_operand(src, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpStore { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc)?;
+            note_fp_read(*src, *width, written, acc, abi)?;
         }
         Stmt::IntToFp { dest, .. } => {
             written.insert(*dest, true);
         }
         Stmt::FpToInt { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc)?;
+            note_fp_read(*src, *width, written, acc, abi)?;
         }
         Stmt::FpConvert {
             dest, src, from, ..
         } => {
-            note_fp_read(*src, *from, written, acc)?;
+            note_fp_read(*src, *from, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpMinMax {
@@ -8235,8 +8398,8 @@ fn scan_fp_stmt(
             width,
             ..
         } => {
-            scan_fp_operand(lhs, *width, written, acc)?;
-            scan_fp_operand(rhs, *width, written, acc)?;
+            scan_fp_operand(lhs, *width, written, acc, abi)?;
+            scan_fp_operand(rhs, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpFma {
@@ -8247,9 +8410,9 @@ fn scan_fp_stmt(
             width,
             ..
         } => {
-            scan_fp_operand(mul_lhs, *width, written, acc)?;
-            scan_fp_operand(mul_rhs, *width, written, acc)?;
-            scan_fp_operand(addend, *width, written, acc)?;
+            scan_fp_operand(mul_lhs, *width, written, acc, abi)?;
+            scan_fp_operand(mul_rhs, *width, written, acc, abi)?;
+            scan_fp_operand(addend, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpCsel {
@@ -8260,9 +8423,9 @@ fn scan_fp_stmt(
             width,
             ..
         } => {
-            scan_fp_operand(if_true, *width, written, acc)?;
-            scan_fp_operand(if_false, *width, written, acc)?;
-            scan_fp_flags(flags, written, acc)?;
+            scan_fp_operand(if_true, *width, written, acc, abi)?;
+            scan_fp_operand(if_false, *width, written, acc, abi)?;
+            scan_fp_flags(flags, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpSqrt {
@@ -8271,23 +8434,23 @@ fn scan_fp_stmt(
         | Stmt::FpUnary {
             dest, src, width, ..
         } => {
-            scan_fp_operand(src, *width, written, acc)?;
+            scan_fp_operand(src, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::FpRound {
             dest, src, width, ..
         } => {
-            scan_fp_operand(src, *width, written, acc)?;
+            scan_fp_operand(src, *width, written, acc, abi)?;
             written.insert(*dest, true);
         }
         Stmt::GprToXmm { dest, .. } => {
             written.insert(*dest, true);
         }
         Stmt::XmmToGpr { src, width, .. } => {
-            note_fp_read(*src, *width, written, acc)?;
+            note_fp_read(*src, *width, written, acc, abi)?;
         }
         Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
-            scan_fp_flags(flags, written, acc)?;
+            scan_fp_flags(flags, written, acc, abi)?;
         }
         _ => {}
     }
@@ -8298,17 +8461,18 @@ fn scan_fp_flags(
     flags: &Flags,
     written: &BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
+    abi: Abi,
 ) -> Result<()> {
     match flags {
         Flags::FpCmp {
             lhs, rhs, width, ..
         } => {
-            note_fp_read(*lhs, *width, written, acc)?;
-            scan_fp_operand(rhs, *width, written, acc)?;
+            note_fp_read(*lhs, *width, written, acc, abi)?;
+            scan_fp_operand(rhs, *width, written, acc, abi)?;
         }
         Flags::CondCmp { prior, taken, .. } => {
-            scan_fp_flags(prior, written, acc)?;
-            scan_fp_flags(taken, written, acc)?;
+            scan_fp_flags(prior, written, acc, abi)?;
+            scan_fp_flags(taken, written, acc, abi)?;
         }
         _ => {}
     }
@@ -8335,10 +8499,11 @@ fn scan_fp_params(
     body: &Block,
     written: &mut BTreeMap<Xmm, bool>,
     acc: &mut Vec<(Xmm, FpWidth)>,
+    abi: Abi,
 ) -> Result<()> {
     for node in body {
         match node {
-            Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc)?,
+            Node::Stmt(stmt) => scan_fp_stmt(stmt, written, acc, abi)?,
             Node::If {
                 cond,
                 then_body,
@@ -8347,18 +8512,18 @@ fn scan_fp_params(
                 let mut condition_error: Option<Error> = None;
                 cond.visit_leaves(&mut |_: CondKind, flags: &Flags| {
                     if condition_error.is_none() {
-                        condition_error = scan_fp_flags(flags, written, acc).err();
+                        condition_error = scan_fp_flags(flags, written, acc, abi).err();
                     }
                 });
                 if let Some(error) = condition_error {
                     return Err(error);
                 }
                 let mut then_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(then_body, &mut then_written, acc)?;
+                scan_fp_params(then_body, &mut then_written, acc, abi)?;
                 let mut branches: Vec<BTreeMap<Xmm, bool>> = vec![then_written];
                 if let Some(else_b) = else_body {
                     let mut else_written: BTreeMap<Xmm, bool> = written.clone();
-                    scan_fp_params(else_b, &mut else_written, acc)?;
+                    scan_fp_params(else_b, &mut else_written, acc, abi)?;
                     branches.push(else_written);
                 } else {
                     branches.push(written.clone());
@@ -8367,31 +8532,31 @@ fn scan_fp_params(
             }
             Node::DoWhile { body, cond } => {
                 let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(body, &mut loop_written, acc)?;
+                scan_fp_params(body, &mut loop_written, acc, abi)?;
                 if let LoopCond::Direct { flags, .. } = cond {
-                    scan_fp_flags(flags, &loop_written, acc)?;
+                    scan_fp_flags(flags, &loop_written, acc, abi)?;
                 }
             }
             Node::While { body, cond } => {
                 if let Some(LoopCond::Direct { flags, .. }) = cond {
-                    scan_fp_flags(flags, written, acc)?;
+                    scan_fp_flags(flags, written, acc, abi)?;
                 }
                 let mut loop_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(body, &mut loop_written, acc)?;
+                scan_fp_params(body, &mut loop_written, acc, abi)?;
             }
             Node::Switch { cases, default, .. } => {
                 let mut branches: Vec<BTreeMap<Xmm, bool>> = Vec::with_capacity(cases.len() + 1);
                 for case in cases {
                     let mut case_written: BTreeMap<Xmm, bool> = written.clone();
-                    scan_fp_params(&case.body, &mut case_written, acc)?;
+                    scan_fp_params(&case.body, &mut case_written, acc, abi)?;
                     branches.push(case_written);
                 }
                 let mut default_written: BTreeMap<Xmm, bool> = written.clone();
-                scan_fp_params(default, &mut default_written, acc)?;
+                scan_fp_params(default, &mut default_written, acc, abi)?;
                 branches.push(default_written);
                 merge_fp_writes(written, &branches);
             }
-            Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc)?,
+            Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc, abi)?,
             Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
         }
     }
@@ -10606,8 +10771,12 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
     for node in body {
         match node {
             Node::Stmt(stmt) => match stmt {
-                Stmt::FpMinMax { kind, width, .. } if kind.is_ieee_num() => {
-                    acc.insert(fp_semantics::minmax_helper(kind.is_max(), *width));
+                Stmt::FpMinMax { kind, width, .. } if kind.uses_helper() => {
+                    acc.insert(fp_semantics::minmax_helper(
+                        kind.is_max(),
+                        kind.is_propagating_nan(),
+                        *width,
+                    ));
                 }
                 Stmt::FpFma { width, .. } => {
                     acc.insert(fp_semantics::fma_helper(*width));
@@ -14060,8 +14229,9 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         } => {
             let lhs_val: String = fp_load(lhs, *width, aggregates);
             let rhs_val: String = fp_load(rhs, *width, aggregates);
-            let computed: String = if kind.is_ieee_num() {
-                let name: &'static str = fp_semantics::minmax_helper(kind.is_max(), *width);
+            let computed: String = if kind.uses_helper() {
+                let name: &'static str =
+                    fp_semantics::minmax_helper(kind.is_max(), kind.is_propagating_nan(), *width);
                 c_render(|cx| {
                     let lhs_arg: CExpr = cx.var(&lhs_val);
                     let rhs_arg: CExpr = cx.var(&rhs_val);
@@ -14759,6 +14929,22 @@ const fn xmm_var(xmm: Xmm) -> &'static str {
         Xmm::Xmm13 => "x_xmm13",
         Xmm::Xmm14 => "x_xmm14",
         Xmm::Xmm15 => "x_xmm15",
+        Xmm::Xmm16 => "x_xmm16",
+        Xmm::Xmm17 => "x_xmm17",
+        Xmm::Xmm18 => "x_xmm18",
+        Xmm::Xmm19 => "x_xmm19",
+        Xmm::Xmm20 => "x_xmm20",
+        Xmm::Xmm21 => "x_xmm21",
+        Xmm::Xmm22 => "x_xmm22",
+        Xmm::Xmm23 => "x_xmm23",
+        Xmm::Xmm24 => "x_xmm24",
+        Xmm::Xmm25 => "x_xmm25",
+        Xmm::Xmm26 => "x_xmm26",
+        Xmm::Xmm27 => "x_xmm27",
+        Xmm::Xmm28 => "x_xmm28",
+        Xmm::Xmm29 => "x_xmm29",
+        Xmm::Xmm30 => "x_xmm30",
+        Xmm::Xmm31 => "x_xmm31",
     }
 }
 
@@ -15952,8 +16138,9 @@ fn rs_fp_minmax_stmt(
 ) {
     let lhs_val: String = rs_fp_load(lhs, width, aggregates);
     let rhs_val: String = rs_fp_load(rhs, width, aggregates);
-    let computed: String = if kind.is_ieee_num() {
-        let helper: &'static str = fp_semantics::minmax_helper(kind.is_max(), width);
+    let computed: String = if kind.uses_helper() {
+        let helper: &'static str =
+            fp_semantics::minmax_helper(kind.is_max(), kind.is_propagating_nan(), width);
         format!("({helper}({lhs_val}, {rhs_val}))")
     } else {
         let opstr: &str = if kind.is_max() { ">" } else { "<" };
@@ -18536,6 +18723,133 @@ mod tests {
             ],
             "all four Microsoft x64 floating-point argument registers must stay recoverable: {}",
             rec.source
+        );
+    }
+
+    #[test]
+    fn ms_x64_treats_xmm5_through_xmm7_read_before_write_as_volatile_scratch_not_an_argument() {
+        for (modrm, xmm_index) in [(0xc5u8, 5u8), (0xc6, 6), (0xc7, 7)] {
+            let code: [u8; 5] = [0xf2, 0x0f, 0x58, modrm, 0xc3];
+            let err: Error = recover_leaf_function_abi(&code, 0xb0a0, Abi::MsX64)
+                .expect_err("xmm5..xmm7 carry no incoming argument under Microsoft x64");
+            let Error::LlvmIr(message) = err else {
+                panic!("expected a lifter rejection for xmm{xmm_index}");
+            };
+            assert!(
+                message.contains(&format!(
+                    "floating register {xmm_index} is read before any write"
+                )) && message.contains("volatile scratch rather than an argument register"),
+                "xmm{xmm_index} must be rejected as microsoft x64 volatile scratch: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn ms_x64_prologue_spill_of_xmm6_through_xmm15_is_frame_management_not_a_parameter_read() {
+        const CODE: [u8; 20] = [
+            0x48, 0x83, 0xec, 0x20, 0x0f, 0x29, 0x34, 0x24, 0x48, 0x89, 0xc8, 0x0f, 0x28, 0x34,
+            0x24, 0x48, 0x83, 0xc4, 0x20, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb0b0, Abi::MsX64)
+            .unwrap_or_else(|e: Error| {
+                panic!("a callee-saved xmm6 spill/restore must not block leaf recovery: {e}")
+            });
+        assert_eq!(
+            rec.params,
+            vec![Reg::Rcx],
+            "the only real argument read is rcx; the xmm6 spill contributes nothing: {}",
+            rec.source
+        );
+        assert_eq!(
+            rec.fp_params,
+            vec![ScalarType::Int],
+            "a callee-saved xmm6 spill/restore must never surface as a floating-point parameter: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn ms_x64_shared_argument_index_places_the_first_double_in_xmm1_when_rcx_holds_the_int() {
+        const CODE: [u8; 8] = [0x48, 0x89, 0xc8, 0xf2, 0x0f, 0x10, 0xd1, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb0c0, Abi::MsX64)
+            .expect("rcx and xmm1 are a contiguous Microsoft x64 shared-index pair");
+        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(
+            rec.fp_params,
+            vec![ScalarType::Int, ScalarType::Double],
+            "the int argument at position 0 must declare before the double at position 1, \
+             matching the shared Microsoft x64 argument index: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn ms_x64_shared_argument_index_rejects_a_position_claimed_by_both_classes() {
+        let params: Vec<Reg> = vec![Reg::Rcx];
+        let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm0, FpWidth::F64)];
+        let err: Error = validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args)
+            .expect_err("rcx and xmm0 both claim position 0");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a shared-index rejection");
+        };
+        assert!(
+            message.contains("position 0") && message.contains("claimed by both"),
+            "the rejection must name the contested position: {message}"
+        );
+    }
+
+    #[test]
+    fn ms_x64_shared_argument_index_rejects_a_gap_below_the_highest_observed_register() {
+        let params: Vec<Reg> = Vec::new();
+        let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm1, FpWidth::F64)];
+        let err: Error = validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args)
+            .expect_err("xmm1 alone leaves position 0 unaccounted for");
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a shared-index rejection");
+        };
+        assert!(
+            message.contains("not contiguous"),
+            "the rejection must name the contiguity rule: {message}"
+        );
+    }
+
+    #[test]
+    fn ms_x64_shared_argument_index_rule_never_applies_outside_microsoft_x64() {
+        let params: Vec<Reg> = vec![Reg::Rsi];
+        let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm0, FpWidth::F64)];
+        validate_ms_x64_shared_argument_index(Abi::SysV, &params, &fp_args)
+            .expect("system v counts the integer and floating-point files independently");
+    }
+
+    #[test]
+    fn ms_x64_ordered_param_types_interleaves_by_shared_slot_not_by_register_class() {
+        let signature: FnSignature = FnSignature {
+            fp: vec![(Xmm::Xmm1, FpWidth::F64)],
+            int: vec![(Reg::Rcx, Width::W64)],
+            vec: Vec::new(),
+            ret: FnReturn::Void,
+            exact_integer_types: false,
+            abi: Abi::MsX64,
+        };
+        assert_eq!(
+            signature.ordered_param_types(),
+            vec![ScalarType::Int, ScalarType::Double]
+        );
+    }
+
+    #[test]
+    fn sysv_ordered_param_types_still_groups_floating_point_before_integer() {
+        let signature: FnSignature = FnSignature {
+            fp: vec![(Xmm::Xmm0, FpWidth::F64)],
+            int: vec![(Reg::Rdi, Width::W64)],
+            vec: Vec::new(),
+            ret: FnReturn::Void,
+            exact_integer_types: false,
+            abi: Abi::SysV,
+        };
+        assert_eq!(
+            signature.ordered_param_types(),
+            vec![ScalarType::Double, ScalarType::Int]
         );
     }
 

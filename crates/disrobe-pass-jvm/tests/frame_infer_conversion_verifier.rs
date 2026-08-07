@@ -95,6 +95,11 @@ fn vt_tag(vt: &VerificationType) -> u8 {
         VerificationType::Long => 4,
         VerificationType::Null => 5,
         VerificationType::UninitializedThis => 6,
+        VerificationType::Uninitialized { .. } => {
+            panic!(
+                "the conversion method allocates nothing; uninitialized frame entries unexpected"
+            )
+        }
         VerificationType::Object(_) => {
             panic!("the conversion method has no object locals; object frame entries unexpected")
         }

@@ -152,6 +152,7 @@ struct Frame<'a> {
     nlocals: u32,
     nargs: u32,
     depth: u32,
+    is_block: bool,
 }
 
 #[derive(Debug)]
@@ -199,7 +200,7 @@ pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
         covered_ireps: BTreeSet::new(),
         coverage_complete: true,
     };
-    lifter.record(0, 0, 0, &mut out)?;
+    lifter.record(0, 0, 0, false, &mut out)?;
     let full_irep_coverage: bool =
         lifter.coverage_complete && lifter.covered_ireps.len() == tree.records.len();
     let modeled: u32 = lifter.stats.total.saturating_sub(lifter.stats.unmodeled);
@@ -316,10 +317,19 @@ fn source_symbol_is_safe(symbol: &str, usage: SourceSymbolUse) -> bool {
     }
 }
 
+const OPERATOR_METHOD_NAMES: &[&str] = &[
+    "+", "-", "*", "/", "%", "**", "==", "===", "!=", "<", "<=", ">", ">=", "<=>", "=~", "!~", "!",
+    "~", "&", "|", "^", "<<", ">>", "[]", "[]=", "+@", "-@",
+];
+
 fn is_method_identifier(symbol: &str) -> bool {
+    if OPERATOR_METHOD_NAMES.contains(&symbol) {
+        return true;
+    }
     let base: &str = symbol
         .strip_suffix('?')
         .or_else(|| symbol.strip_suffix('!'))
+        .or_else(|| symbol.strip_suffix('='))
         .map_or(symbol, |base: &str| base);
     is_local_identifier(base) && !is_ruby_keyword(base)
 }
@@ -397,7 +407,14 @@ fn valid_child_reference(record: &IrepRecord, selector: Option<u32>, record_coun
 }
 
 impl Lifter<'_> {
-    fn record(&mut self, index: u32, indent: u32, depth: u32, out: &mut String) -> Result<()> {
+    fn record(
+        &mut self,
+        index: u32,
+        indent: u32,
+        depth: u32,
+        is_block: bool,
+        out: &mut String,
+    ) -> Result<()> {
         if depth > MAX_LIFT_DEPTH {
             self.coverage_complete = false;
             return Ok(());
@@ -437,6 +454,7 @@ impl Lifter<'_> {
             nlocals,
             nargs,
             depth,
+            is_block,
         };
         let regions: Vec<Region> = if structurable(rec, &ins) {
             build_regions(&ins)
@@ -1116,11 +1134,7 @@ impl Lifter<'_> {
                 regs.set(a, RegVal::BlockProc(child));
             }
             MrubyOp::Break => {
-                let v: RegVal = regs.get(a);
-                match v {
-                    RegVal::Nil | RegVal::Unknown => push_line(out, format_args!("{pad}break")),
-                    other => push_line(out, format_args!("{pad}break {}", other.render())),
-                }
+                emit_keyword_value("break", &regs.get(a), &pad, out);
             }
             MrubyOp::Alias => {
                 push_line(
@@ -1233,11 +1247,24 @@ impl Lifter<'_> {
                     Some((keyword, name)) => {
                         self.emit_block(keyword, &name, child, indent, frame.depth, out)?;
                     }
-                    None => self.record(child, indent, frame.depth.saturating_add(1), out)?,
+                    None => {
+                        self.record(child, indent, frame.depth.saturating_add(1), false, out)?;
+                    }
                 }
             }
             MrubyOp::Return | MrubyOp::ReturnBlk => {
-                emit_return_value(&regs.get(a), &pad, out);
+                let is_natural_tail: bool =
+                    instr.op == MrubyOp::Return && Some(i) == last_return_slot(frame.ins);
+                if is_natural_tail {
+                    emit_return_value(&regs.get(a), &pad, out);
+                } else {
+                    let keyword: &str = if instr.op == MrubyOp::ReturnBlk || !frame.is_block {
+                        "return"
+                    } else {
+                        "next"
+                    };
+                    emit_keyword_value(keyword, &regs.get(a), &pad, out);
+                }
             }
             _ => {
                 self.mark(instr, &pad, out);
@@ -1264,7 +1291,7 @@ impl Lifter<'_> {
             format!("|{}| ", names.join(", "))
         };
         let mut body: String = String::new();
-        let _: Result<()> = self.record(child, 0, depth.saturating_add(1), &mut body);
+        let _: Result<()> = self.record(child, 0, depth.saturating_add(1), true, &mut body);
         let joined: String = body
             .lines()
             .map(str::trim)
@@ -1293,6 +1320,7 @@ impl Lifter<'_> {
             child,
             indent.saturating_add(1),
             depth.saturating_add(1),
+            false,
             out,
         )?;
         push_line(out, format_args!("{pad}end"));
@@ -1314,6 +1342,7 @@ impl Lifter<'_> {
             child,
             indent.saturating_add(1),
             depth.saturating_add(1),
+            false,
             out,
         )?;
         push_line(out, format_args!("{pad}end"));
@@ -1506,13 +1535,25 @@ fn try_structure_at(
         Some(_) => structure_range(ins, exit_idx, if_end),
         None => Vec::new(),
     };
-    let tail_return: Option<u32> = ins.get(if_end).and_then(|x| {
-        if matches!(x.op, MrubyOp::Return | MrubyOp::ReturnBlk) {
-            x.operands.first().copied()
-        } else {
-            None
-        }
-    });
+    let branch_self_terminates = |end: usize| -> bool {
+        end > 0
+            && ins
+                .get(end - 1)
+                .is_some_and(|x| matches!(x.op, MrubyOp::Return | MrubyOp::ReturnBlk))
+    };
+    let then_self_terminates: bool = branch_self_terminates(then_end);
+    let else_self_terminates: bool = else_jmp.is_some() && branch_self_terminates(if_end);
+    let tail_return: Option<u32> = if then_self_terminates || else_self_terminates {
+        None
+    } else {
+        ins.get(if_end).and_then(|x| {
+            if matches!(x.op, MrubyOp::Return | MrubyOp::ReturnBlk) {
+                x.operands.first().copied()
+            } else {
+                None
+            }
+        })
+    };
     let region: Region = Region::If {
         else_jmp,
         cond_reg,
@@ -1522,6 +1563,21 @@ fn try_structure_at(
         tail_return,
     };
     Some((region, if_end, i))
+}
+
+fn last_return_slot(ins: &[MrubyInstruction]) -> Option<usize> {
+    match ins.last() {
+        Some(last) if last.op == MrubyOp::Stop => ins.len().checked_sub(2),
+        Some(_) => ins.len().checked_sub(1),
+        None => None,
+    }
+}
+
+fn emit_keyword_value(keyword: &str, v: &RegVal, pad: &str, out: &mut String) {
+    match v {
+        RegVal::Nil | RegVal::Unknown => push_line(out, format_args!("{pad}{keyword}")),
+        other => push_line(out, format_args!("{pad}{keyword} {}", other.render())),
+    }
 }
 
 fn emit_return_value(v: &RegVal, pad: &str, out: &mut String) {
@@ -2356,5 +2412,155 @@ mod tests {
             "build_regions took {elapsed:?} for {count} branches"
         );
         assert!(!regions.is_empty());
+    }
+
+    #[test]
+    fn self_referencing_child_index_is_depth_bounded_not_infinite() {
+        let iseq: Vec<u8> = asm(&[("EXEC", &[1, 0]), ("RETURN", &[1])]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![0])],
+        };
+        let start: std::time::Instant = std::time::Instant::now();
+        let out: LiftOutput = lift_tree(&tree).expect("a self-referencing child must not error");
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "self-reference took {elapsed:?}, MAX_LIFT_DEPTH is not bounding recursion"
+        );
+        assert!(
+            !out.full_irep_coverage,
+            "a cycle that only stops at the depth cap must not report full coverage"
+        );
+    }
+
+    #[test]
+    fn ancestor_referencing_child_index_is_depth_bounded_not_infinite() {
+        let parent_iseq: Vec<u8> = asm(&[("EXEC", &[1, 0]), ("RETURN", &[1])]);
+        let child_iseq: Vec<u8> = asm(&[("EXEC", &[1, 0]), ("RETURN", &[1])]);
+        let mut parent: IrepRecord = rec(parent_iseq, vec![], vec![], vec![1]);
+        parent.index = 0;
+        let mut child: IrepRecord = rec(child_iseq, vec![], vec![], vec![0]);
+        child.index = 1;
+        child.depth = 1;
+        let total_insn_bytes: u32 =
+            u32::try_from(parent.iseq.len().saturating_add(child.iseq.len())).unwrap_or(0);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes,
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![parent, child],
+        };
+        let start: std::time::Instant = std::time::Instant::now();
+        let out: LiftOutput =
+            lift_tree(&tree).expect("a child pointing back at its ancestor must not error");
+        let elapsed: std::time::Duration = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "ancestor cycle took {elapsed:?}, MAX_LIFT_DEPTH is not bounding recursion"
+        );
+        assert!(!out.full_irep_coverage);
+    }
+
+    #[test]
+    fn mid_block_return_renders_as_next_and_tail_return_stays_bare() {
+        let iseq: Vec<u8> = asm(&[
+            ("ENTER", &[0x40000]),
+            ("MOVE", &[3, 1]),
+            ("LOADI_2", &[4]),
+            ("EQ", &[3]),
+            ("JMPNOT", &[3, 4]),
+            ("LOADI_0", &[3]),
+            ("RETURN", &[3]),
+            ("MOVE", &[3, 1]),
+            ("RETURN", &[3]),
+        ]);
+        let mut block: IrepRecord = rec(iseq, vec![], vec![], vec![]);
+        block.nlocals = 2;
+        block.nregs = 5;
+        block.index = 1;
+        block.depth = 1;
+        let mut root: IrepRecord = rec(asm(&[("STOP", &[])]), vec![], vec![], vec![0]);
+        root.index = 0;
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(root.iseq.len().saturating_add(block.iseq.len()))
+                .unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![root, block],
+        };
+        let body: String = render_block_for_test(&tree, 1);
+        assert!(
+            body.contains("next 0"),
+            "a mid-block RETURN must render as an explicit next: {body}"
+        );
+        assert!(
+            !body.contains("next arg0") && body.trim_end().ends_with("arg0 }"),
+            "the true tail RETURN must stay a bare value, not a next: {body}"
+        );
+    }
+
+    #[test]
+    fn setter_send_symbol_is_a_valid_method_reference_not_a_withheld_one() {
+        let iseq: Vec<u8> = asm(&[
+            ("ENTER", &[0x40000]),
+            ("LOADI_5", &[1]),
+            ("SSEND", &[1, 0, 1]),
+            ("RETURN", &[1]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 1,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec!["bar=".to_owned()], vec![])],
+        };
+        assert!(
+            !tree_has_invalid_references(&tree),
+            "a real mrbc-emitted setter send symbol like bar= (confirmed via `SEND R2 :bar= n=1` \
+             in real mrbc -v output for `obj.bar = 5`) must not be flagged as an invalid method \
+             reference and withhold otherwise-correct source"
+        );
+        let out: LiftOutput = lift_tree(&tree).expect("lift");
+        assert!(
+            out.source.contains("bar=("),
+            "the setter send must render as a real method call: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn operator_method_send_symbols_are_valid_method_references() {
+        for op in ["%", "<=>", "[]", "[]=", "-@"] {
+            let iseq: Vec<u8> = asm(&[
+                ("ENTER", &[0x40000]),
+                ("LOADI_1", &[1]),
+                ("SSEND", &[1, 0, 1]),
+                ("RETURN", &[1]),
+            ]);
+            let tree: IrepTree = IrepTree {
+                total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+                total_symbols: 1,
+                total_pool_entries: 0,
+                records: vec![rec(iseq, vec![], vec![op.to_owned()], vec![])],
+            };
+            assert!(
+                !tree_has_invalid_references(&tree),
+                "operator method symbol {op} must not be flagged as an invalid method reference"
+            );
+        }
+    }
+
+    fn render_block_for_test(tree: &IrepTree, child: u32) -> String {
+        let mut lifter: Lifter<'_> = Lifter {
+            tree,
+            stats: LiftStats::default(),
+            scopes: vec![0],
+            branch_value_reg: None,
+            covered_ireps: BTreeSet::new(),
+            coverage_complete: true,
+        };
+        lifter.render_block(child, 0)
     }
 }

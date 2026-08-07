@@ -91,26 +91,7 @@ fn stage1_codepoints(blob: &str, delimiter: char, kind: TokenKind) -> Option<Vec
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    let bytes: &[u8] = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 2);
-    let mut i: usize = 0;
-    while i + 1 < bytes.len() {
-        let hi: u8 = nibble(bytes[i])?;
-        let lo: u8 = nibble(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Some(out)
-}
-
-#[inline]
-const fn nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
+    disrobe_core::codec::hex::decode_str_with(s, disrobe_core::codec::hex::TRUNCATING).ok()
 }
 
 fn apply_shift(codepoints: &[u32], shift: u32) -> Option<String> {
@@ -302,6 +283,17 @@ mod tests {
     #[test]
     fn rejects_non_decodable_garbage() {
         assert!(decode_decimal_sparkle("zzzz").is_none());
+    }
+
+    #[test]
+    fn decode_hex_pins_the_shipped_truncating_and_whitespace_policy() {
+        assert_eq!(decode_hex(""), Some(Vec::new()));
+        assert_eq!(decode_hex("a"), Some(Vec::new()));
+        assert_eq!(decode_hex("ab"), Some(vec![0xab]));
+        assert_eq!(decode_hex("abc"), Some(vec![0xab]));
+        assert_eq!(decode_hex("DEADbeef"), Some(vec![0xde, 0xad, 0xbe, 0xef]));
+        assert_eq!(decode_hex("gg"), None);
+        assert_eq!(decode_hex("a b"), None);
     }
 
     #[test]

@@ -226,6 +226,66 @@ pub fn detect_cramfs(bytes: &[u8]) -> Option<CramfsHeader> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
+fn zlib_compress(input: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc: flate2::write::ZlibEncoder<Vec<u8>> =
+        flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(input).expect("zlib write");
+    enc.finish().expect("zlib finish")
+}
+
+#[cfg(test)]
+fn encode_inode(mode: u16, size: u32, namelen_div4: u32, offset_div4: u32) -> [u8; 12] {
+    let mut buf: [u8; 12] = [0u8; 12];
+    buf[0..4].copy_from_slice(&u32::from(mode).to_le_bytes());
+    buf[4..8].copy_from_slice(&(size & 0x00FF_FFFF).to_le_bytes());
+    let word2: u32 = (namelen_div4 & 0x3F) | (offset_div4 << 6);
+    buf[8..12].copy_from_slice(&word2.to_le_bytes());
+    buf
+}
+
+#[cfg(test)]
+pub(crate) fn build_real_cramfs(file_name: &str, file_body: &[u8]) -> Vec<u8> {
+    assert!(
+        file_name.len().is_multiple_of(4),
+        "test name must be 4-byte aligned"
+    );
+    let mut image: Vec<u8> = vec![0u8; CRAMFS_SUPER_LEN];
+    image[0..4].copy_from_slice(&CRAMFS_MAGIC.to_le_bytes());
+    image[16..32].copy_from_slice(b"Compressed ROMFS");
+
+    let root_dir_offset: usize = CRAMFS_SUPER_LEN;
+    let root_inode: [u8; 12] = encode_inode(
+        CRAMFS_MODE_DIR | 0o755,
+        (CRAMFS_INODE_LEN + file_name.len()) as u32,
+        0,
+        (root_dir_offset / 4) as u32,
+    );
+    image[64..76].copy_from_slice(&root_inode);
+
+    let compressed: Vec<u8> = zlib_compress(file_body);
+    let ptr_table_offset: usize = root_dir_offset + CRAMFS_INODE_LEN + file_name.len();
+    let block_data_offset: usize = ptr_table_offset + 4;
+    let block_end: usize = block_data_offset + compressed.len();
+
+    let file_inode: [u8; 12] = encode_inode(
+        CRAMFS_MODE_FILE | 0o755,
+        file_body.len() as u32,
+        (file_name.len() / 4) as u32,
+        (ptr_table_offset / 4) as u32,
+    );
+
+    image.extend_from_slice(&file_inode);
+    image.extend_from_slice(file_name.as_bytes());
+    assert_eq!(image.len(), ptr_table_offset);
+    image.extend_from_slice(&(block_end as u32).to_le_bytes());
+    image.extend_from_slice(&compressed);
+    assert_eq!(image.len(), block_end);
+    image
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
@@ -249,62 +309,6 @@ mod tests {
     fn rejects_non_cramfs() {
         let bytes: Vec<u8> = vec![0u8; 32];
         assert!(detect_cramfs(&bytes).is_none());
-    }
-
-    fn zlib_compress(input: &[u8]) -> Vec<u8> {
-        use std::io::Write as _;
-        let mut enc: flate2::write::ZlibEncoder<Vec<u8>> =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(input).expect("zlib write");
-        enc.finish().expect("zlib finish")
-    }
-
-    fn encode_inode(mode: u16, size: u32, namelen_div4: u32, offset_div4: u32) -> [u8; 12] {
-        let mut buf: [u8; 12] = [0u8; 12];
-        buf[0..4].copy_from_slice(&u32::from(mode).to_le_bytes());
-        buf[4..8].copy_from_slice(&(size & 0x00FF_FFFF).to_le_bytes());
-        let word2: u32 = (namelen_div4 & 0x3F) | (offset_div4 << 6);
-        buf[8..12].copy_from_slice(&word2.to_le_bytes());
-        buf
-    }
-
-    fn build_real_cramfs(file_name: &str, file_body: &[u8]) -> Vec<u8> {
-        assert!(
-            file_name.len().is_multiple_of(4),
-            "test name must be 4-byte aligned"
-        );
-        let mut image: Vec<u8> = vec![0u8; CRAMFS_SUPER_LEN];
-        image[0..4].copy_from_slice(&CRAMFS_MAGIC.to_le_bytes());
-        image[16..32].copy_from_slice(b"Compressed ROMFS");
-
-        let root_dir_offset: usize = CRAMFS_SUPER_LEN;
-        let root_inode: [u8; 12] = encode_inode(
-            CRAMFS_MODE_DIR | 0o755,
-            (CRAMFS_INODE_LEN + file_name.len()) as u32,
-            0,
-            (root_dir_offset / 4) as u32,
-        );
-        image[64..76].copy_from_slice(&root_inode);
-
-        let compressed: Vec<u8> = zlib_compress(file_body);
-        let ptr_table_offset: usize = root_dir_offset + CRAMFS_INODE_LEN + file_name.len();
-        let block_data_offset: usize = ptr_table_offset + 4;
-        let block_end: usize = block_data_offset + compressed.len();
-
-        let file_inode: [u8; 12] = encode_inode(
-            CRAMFS_MODE_FILE | 0o755,
-            file_body.len() as u32,
-            (file_name.len() / 4) as u32,
-            (ptr_table_offset / 4) as u32,
-        );
-
-        image.extend_from_slice(&file_inode);
-        image.extend_from_slice(file_name.as_bytes());
-        assert_eq!(image.len(), ptr_table_offset);
-        image.extend_from_slice(&(block_end as u32).to_le_bytes());
-        image.extend_from_slice(&compressed);
-        assert_eq!(image.len(), block_end);
-        image
     }
 
     #[test]

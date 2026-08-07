@@ -399,9 +399,102 @@ pub fn extract_wim_files(
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn hostile_named_image(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    Some(tests::build_single_file_wim(name, body))
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn reshdr_bytes(size: u64, flags: u8, offset: u64, original_size: u64) -> [u8; 24] {
+        let packed: u64 = (size & 0x00ff_ffff_ffff_ffff) | (u64::from(flags) << 56);
+        let mut out: [u8; 24] = [0u8; 24];
+        out[0..8].copy_from_slice(&packed.to_le_bytes());
+        out[8..16].copy_from_slice(&offset.to_le_bytes());
+        out[16..24].copy_from_slice(&original_size.to_le_bytes());
+        out
+    }
+
+    pub(super) fn build_single_file_wim(name: &str, body: &[u8]) -> Vec<u8> {
+        use super::super::wim::{WIM_HEADER_LEN, WIM_MAGIC};
+
+        let name_bytes: Vec<u8> = name
+            .encode_utf16()
+            .flat_map(|unit: u16| unit.to_le_bytes())
+            .collect();
+
+        let security_size: usize = 8;
+        let root_dentry_offset: usize = security_size;
+        let child_dentry_offset: usize = root_dentry_offset + align8(DENTRY_FIXED_LEN);
+        let child_dentry_len: usize = DENTRY_FIXED_LEN + name_bytes.len();
+        let terminator_offset: usize = child_dentry_offset + align8(child_dentry_len);
+        let metadata_len: usize = terminator_offset + 8;
+
+        let mut metadata: Vec<u8> = vec![0u8; metadata_len];
+        metadata[0..4].copy_from_slice(&8u32.to_le_bytes());
+        metadata[root_dentry_offset..root_dentry_offset + 8]
+            .copy_from_slice(&(DENTRY_FIXED_LEN as u64).to_le_bytes());
+        metadata[root_dentry_offset + 8..root_dentry_offset + 12]
+            .copy_from_slice(&ATTR_DIRECTORY.to_le_bytes());
+        metadata[root_dentry_offset + 16..root_dentry_offset + 24]
+            .copy_from_slice(&(child_dentry_offset as u64).to_le_bytes());
+
+        let hash: [u8; SHA1_LEN] = [0x11u8; SHA1_LEN];
+        metadata[child_dentry_offset..child_dentry_offset + 8]
+            .copy_from_slice(&(child_dentry_len as u64).to_le_bytes());
+        metadata[child_dentry_offset + 64..child_dentry_offset + 64 + SHA1_LEN]
+            .copy_from_slice(&hash);
+        metadata[child_dentry_offset + 100..child_dentry_offset + 102]
+            .copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        metadata[child_dentry_offset + DENTRY_FIXED_LEN
+            ..child_dentry_offset + DENTRY_FIXED_LEN + name_bytes.len()]
+            .copy_from_slice(&name_bytes);
+
+        let lookup_table_offset: u64 = WIM_HEADER_LEN as u64;
+        let lookup_table_len: u64 = 100;
+        let metadata_file_offset: u64 = lookup_table_offset + lookup_table_len;
+        let blob_file_offset: u64 = metadata_file_offset + metadata_len as u64;
+
+        let mut lookup_table: Vec<u8> = Vec::with_capacity(lookup_table_len as usize);
+        lookup_table.extend_from_slice(&reshdr_bytes(
+            metadata_len as u64,
+            RESHDR_FLAG_METADATA,
+            metadata_file_offset,
+            metadata_len as u64,
+        ));
+        lookup_table.extend_from_slice(&[0u8; 6]);
+        lookup_table.extend_from_slice(&[0u8; SHA1_LEN]);
+        lookup_table.extend_from_slice(&reshdr_bytes(
+            body.len() as u64,
+            0,
+            blob_file_offset,
+            body.len() as u64,
+        ));
+        lookup_table.extend_from_slice(&[0u8; 6]);
+        lookup_table.extend_from_slice(&hash);
+
+        let mut header: Vec<u8> = vec![0u8; WIM_HEADER_LEN];
+        header[0..8].copy_from_slice(WIM_MAGIC);
+        header[8..12].copy_from_slice(&(WIM_HEADER_LEN as u32).to_le_bytes());
+        header[12..16].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        header[48..72].copy_from_slice(&reshdr_bytes(
+            lookup_table_len,
+            0,
+            lookup_table_offset,
+            lookup_table_len,
+        ));
+
+        let mut out: Vec<u8> =
+            Vec::with_capacity(WIM_HEADER_LEN + lookup_table.len() + metadata.len() + body.len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(&lookup_table);
+        out.extend_from_slice(&metadata);
+        out.extend_from_slice(body);
+        out
+    }
 
     #[test]
     fn align8_rounds_up_to_multiple_of_eight() {

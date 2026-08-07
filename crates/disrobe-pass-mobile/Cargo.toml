@@ -19,6 +19,7 @@ disrobe-bytes = { workspace = true }
 disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
 disrobe-nir = { workspace = true }
+disrobe-pass-jvm = { workspace = true, optional = true }
 object = { workspace = true }
 yaxpeax-arch = { workspace = true }
 yaxpeax-arm = { workspace = true }
@@ -33,6 +34,7 @@ sha2 = { workspace = true }
 [features]
 default = []
 chain = ["disrobe-core/chain"]
+jni = ["dep:disrobe-pass-jvm"]
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }

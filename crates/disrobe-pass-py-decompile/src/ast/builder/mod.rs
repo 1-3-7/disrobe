@@ -373,6 +373,7 @@ fn decode_stream_with_offsets(
     let mut ops: Vec<CanonicalOp> = Vec::new();
     let mut offsets: Vec<u32> = Vec::new();
     let mut next_offsets: Vec<u32> = Vec::new();
+    let mut extended_arg_lead_ins: Vec<u32> = Vec::new();
     let wordcode: bool = version.supports_word_code();
     if wordcode {
         decode_wordcode_with_offsets(
@@ -382,6 +383,7 @@ fn decode_stream_with_offsets(
             &mut ops,
             &mut offsets,
             &mut next_offsets,
+            &mut extended_arg_lead_ins,
         );
     } else {
         decode_legacy_with_offsets(code, opmap, &mut ops, &mut offsets, &mut next_offsets);
@@ -389,14 +391,30 @@ fn decode_stream_with_offsets(
     let instr_unit_jumps: bool =
         version.major() > 3 || (version.major() == 3 && version.minor() >= 10);
     let relative_cond_jumps: bool = !version.is_pre_311();
-    let exception_table: Vec<crate::bytecode::flow::ExceptionTableEntry> =
-        if version.supports_pep_657_exception_table() && !code.exceptiontable.is_empty() {
-            crate::bytecode::flow::parse_exception_table(&code.exceptiontable).unwrap_or_default()
-        } else if version.is_pre_311() {
-            synthesize_pre_311_exception_table(code, opmap, version)
+    let code_len: u32 = u32::try_from(code.code.len()).unwrap_or(u32::MAX);
+    let exception_table: Vec<crate::bytecode::flow::ExceptionTableEntry> = if version
+        .supports_pep_657_exception_table()
+        && !code.exceptiontable.is_empty()
+    {
+        let parsed: Vec<crate::bytecode::flow::ExceptionTableEntry> =
+            crate::bytecode::flow::parse_exception_table(&code.exceptiontable).unwrap_or_default();
+        let boundary_offsets: Vec<u32> = if extended_arg_lead_ins.is_empty() {
+            offsets.clone()
         } else {
-            Vec::new()
+            let mut merged: Vec<u32> =
+                Vec::with_capacity(offsets.len() + extended_arg_lead_ins.len());
+            merged.extend_from_slice(&offsets);
+            merged.extend_from_slice(&extended_arg_lead_ins);
+            merged.sort_unstable();
+            merged.dedup();
+            merged
         };
+        crate::bytecode::flow::followable_exception_entries(&parsed, &boundary_offsets, code_len)
+    } else if version.is_pre_311() {
+        synthesize_pre_311_exception_table(code, opmap, version)
+    } else {
+        Vec::new()
+    };
     let pre311_end_finally_idx: std::collections::BTreeSet<usize> = if version.is_pre_311() {
         collect_pre_311_opcode_indices(
             code,
@@ -433,7 +451,7 @@ fn decode_stream_with_offsets(
         ops,
         offsets,
         next_offsets,
-        code_len: u32::try_from(code.code.len()).unwrap_or(u32::MAX),
+        code_len,
         lines,
         wordcode,
         instr_unit_jumps,
@@ -927,20 +945,28 @@ fn decode_wordcode_with_offsets(
     ops: &mut Vec<CanonicalOp>,
     offsets: &mut Vec<u32>,
     next_offsets: &mut Vec<u32>,
+    extended_arg_lead_ins: &mut Vec<u32>,
 ) {
     let bytes: &[u8] = &code.code;
     let mut cursor: usize = 0;
     let mut extended: u64 = 0;
+    let mut extended_lead_in: Option<u32> = None;
     while cursor + 1 < bytes.len() {
         let raw: u8 = bytes[cursor];
         let arg_byte: u8 = bytes[cursor + 1];
         if is_extended_arg(opmap, raw) {
+            if extended_lead_in.is_none() {
+                extended_lead_in = Some(u32::try_from(cursor).unwrap_or(u32::MAX));
+            }
             extended = accumulate_extended_arg(extended, arg_byte);
             cursor += WIDE_STEP;
             continue;
         }
         let arg: u32 = finalize_extended_arg(extended, arg_byte);
         extended = 0;
+        if let Some(lead_in) = extended_lead_in.take() {
+            extended_arg_lead_ins.push(lead_in);
+        }
         let here: u32 = u32::try_from(cursor).unwrap_or(u32::MAX);
         let entry_start: usize = ops.len();
         if crate::bytecode::opcode::shared_pushes_self_slot(version, raw, arg) {

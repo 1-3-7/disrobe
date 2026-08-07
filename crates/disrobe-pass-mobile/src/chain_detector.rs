@@ -1,5 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+#[cfg(feature = "jni")]
+use disrobe_core::chain::detection::TERMINAL_HINT;
 use disrobe_core::chain::{
     CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
     DetectorOutput, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
@@ -112,7 +114,11 @@ impl Pass for MobilePassAdapter {
                     .map_err(|e: crate::error::Error| {
                         CoreError::PassFailure(format!("DR-MOB-0905: android dex extract: {e}"))
                     })?;
-                Ok(to_children(dex_children, "android-dex"))
+                let sidecar_children: Vec<ChildArtifact> =
+                    android_jni_sidecar_children(bytes, &dex_children, dex_children.len());
+                let mut children: Vec<ChildArtifact> = to_children(dex_children, "android-dex");
+                children.extend(sidecar_children);
+                Ok(children)
             }
             DetectedKind::AndroidBundle => {
                 let entries: Vec<(String, Vec<u8>)> = extract_android_bundle_children(bytes)
@@ -154,6 +160,124 @@ pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::n
 );
 
 pub static MOBILE_PASS: MobilePassAdapter = MobilePassAdapter;
+
+#[cfg(feature = "jni")]
+fn android_jni_sidecar_children(
+    apk_bytes: &[u8],
+    dex_children: &[(String, Vec<u8>)],
+    index: usize,
+) -> Vec<ChildArtifact> {
+    android_jni_sidecar(apk_bytes, dex_children, index)
+        .into_iter()
+        .collect()
+}
+
+#[cfg(not(feature = "jni"))]
+fn android_jni_sidecar_children(
+    _apk_bytes: &[u8],
+    _dex_children: &[(String, Vec<u8>)],
+    _index: usize,
+) -> Vec<ChildArtifact> {
+    Vec::new()
+}
+
+#[cfg(feature = "jni")]
+fn android_jni_sidecar(
+    apk_bytes: &[u8],
+    dex_children: &[(String, Vec<u8>)],
+    index: usize,
+) -> Option<ChildArtifact> {
+    use disrobe_pass_jvm::{
+        DexFile, JniSurfaceReport, NativeMethod, analyze_jni_native_methods,
+        extract_native_methods, parse_dex,
+    };
+
+    let mut native_methods: Vec<NativeMethod> = Vec::new();
+    let mut code_scan_complete: bool = true;
+    let mut decode_error_count: usize = 0;
+    for (_name, dex_bytes) in dex_children {
+        match parse_dex(dex_bytes).map(|dex: DexFile| extract_native_methods(&dex, dex_bytes)) {
+            Ok(Ok(methods)) => native_methods.extend(methods),
+            Ok(Err(_)) | Err(_) => {
+                code_scan_complete = false;
+                decode_error_count += 1;
+            }
+        }
+    }
+
+    let native_libs_owned: Vec<(String, Vec<u8>)> = collect_android_native_libs(apk_bytes);
+    let native_libs: Vec<(&str, &[u8])> = native_libs_owned
+        .iter()
+        .map(|(p, b): &(String, Vec<u8>)| (p.as_str(), b.as_slice()))
+        .collect();
+
+    let mut surface: JniSurfaceReport = analyze_jni_native_methods(&native_methods, &native_libs);
+    surface.code_scan_complete = code_scan_complete;
+    surface.decode_error_count = decode_error_count;
+
+    if surface.native_method_count == 0
+        && surface.registered_natives.is_empty()
+        && surface.code_scan_complete
+    {
+        return None;
+    }
+
+    let native_lib_paths: Vec<String> = native_libs_owned
+        .iter()
+        .map(|(p, _): &(String, Vec<u8>)| p.clone())
+        .collect();
+    let json_value: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.mobile.jni-link/v1",
+        "native_libraries": native_lib_paths,
+        "surface": surface,
+    });
+    let encoded: Vec<u8> = serde_json::to_vec_pretty(&json_value).ok()?;
+    Some(ChildArtifact {
+        handle: ChildHandle {
+            artifact_index: u32::try_from(index).unwrap_or(u32::MAX),
+            relative_path: "jni-link.json".to_string(),
+            hint: Some(TERMINAL_HINT.to_string()),
+        },
+        bytes: encoded,
+    })
+}
+
+#[cfg(feature = "jni")]
+fn collect_android_native_libs(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Cursor;
+
+    use zip::ZipArchive;
+
+    let cursor: Cursor<&[u8]> = Cursor::new(bytes);
+    let Ok(mut archive): Result<ZipArchive<Cursor<&[u8]>>, _> = ZipArchive::new(cursor) else {
+        return Vec::new();
+    };
+    let entry_count: usize = match crate::checked_zip_entry_count(archive.len()) {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let mut names: Vec<String> = Vec::with_capacity(entry_count);
+    for i in 0..entry_count {
+        if let Ok(file) = archive.by_index(i) {
+            let name: String = file.name().to_owned();
+            if name.starts_with("lib/")
+                && (name.ends_with(".so") || name.ends_with(".dll") || name.ends_with(".dylib"))
+            {
+                names.push(name);
+            }
+        }
+    }
+    names.sort_unstable();
+    let mut out: Vec<(String, Vec<u8>)> = Vec::with_capacity(names.len());
+    for name in names {
+        if let Ok(file) = archive.by_name(name.as_str())
+            && let Ok(buf) = crate::read_zip_file_bounded(file, &name)
+        {
+            out.push((name, buf));
+        }
+    }
+    out
+}
 
 fn to_children(entries: Vec<(String, Vec<u8>)>, hint: &str) -> Vec<ChildArtifact> {
     entries
