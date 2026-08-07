@@ -1,4 +1,4 @@
-use crate::binary::{Endian, GoImage};
+use crate::binary::{Endian, GoImage, Section};
 use crate::error::{Error, Result};
 
 pub const MAGIC_GO12: u32 = 0xffff_fffb;
@@ -67,41 +67,55 @@ const fn magic_needle(magic: u32, endian: Endian) -> [u8; 4] {
     }
 }
 
+const ALIGNED_SCAN_STEP: usize = 16;
+
 pub fn locate_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
-    let candidates: [[u8; 4]; 4] = [
-        magic_needle(MAGIC_GO12, image.endian),
-        magic_needle(MAGIC_GO116, image.endian),
-        magic_needle(MAGIC_GO118, image.endian),
-        magic_needle(MAGIC_GO120, image.endian),
+    let candidates: [(u32, [u8; 4]); 4] = [
+        (MAGIC_GO12, magic_needle(MAGIC_GO12, image.endian)),
+        (MAGIC_GO116, magic_needle(MAGIC_GO116, image.endian)),
+        (MAGIC_GO118, magic_needle(MAGIC_GO118, image.endian)),
+        (MAGIC_GO120, magic_needle(MAGIC_GO120, image.endian)),
     ];
     for sec in &image.sections {
         if sec.data.len() < 16 {
             continue;
         }
-        for needle in &candidates {
-            if let Some(pos) = find_aligned(sec.data, needle, 16)
-                && pos + 16 <= sec.data.len()
-            {
-                let zero_ok: bool = sec.data[pos + 4] == 0 && sec.data[pos + 5] == 0;
-                if !zero_ok {
-                    continue;
-                }
-                let quantum: u8 = sec.data[pos + 6];
-                let ptr_size: u8 = sec.data[pos + 7];
-                if !matches!(quantum, 1 | 2 | 4) {
-                    continue;
-                }
-                if !matches!(ptr_size, 4 | 8) {
-                    continue;
-                }
-                let body: &[u8] = &sec.data[pos..];
-                let header: PclntabHeader =
-                    parse_header(body, sec.address + pos as u64, image.endian)?;
-                return Ok(LocatedPclntab { header, data: body });
+        for (magic, needle) in candidates {
+            if let Some(located) = locate_needle_in_section(image, sec, magic, needle) {
+                return Ok(located);
             }
         }
     }
     signature_scan_pclntab(image)
+}
+
+fn locate_needle_in_section<'a>(
+    image: &GoImage<'a>,
+    sec: &Section<'a>,
+    magic: u32,
+    needle: [u8; 4],
+) -> Option<LocatedPclntab<'a>> {
+    let mut aligned_pos: usize = 0;
+    while aligned_pos + needle.len() <= sec.data.len() {
+        if sec.data[aligned_pos..aligned_pos + needle.len()] == needle
+            && let Some(located) =
+                try_structural_header(image, sec.address, sec.data, aligned_pos, magic, false)
+        {
+            return Some(located);
+        }
+        aligned_pos += ALIGNED_SCAN_STEP;
+    }
+    let mut search: usize = 0;
+    while let Some(rel) = find_subslice(&sec.data[search..], &needle) {
+        let pos: usize = search + rel;
+        search = pos + 1;
+        if let Some(located) =
+            try_structural_header(image, sec.address, sec.data, pos, magic, false)
+        {
+            return Some(located);
+        }
+    }
+    None
 }
 
 pub fn signature_scan_pclntab<'a>(image: &GoImage<'a>) -> Result<LocatedPclntab<'a>> {
@@ -459,116 +473,6 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|w: &[u8]| w == needle)
-}
-
-fn find_aligned(haystack: &[u8], needle: &[u8], align: usize) -> Option<usize> {
-    let mut i: usize = 0;
-    while i + needle.len() <= haystack.len() {
-        if &haystack[i..i + needle.len()] == needle {
-            return Some(i);
-        }
-        i += align;
-    }
-    let mut j: usize = 0;
-    while j + needle.len() <= haystack.len() {
-        if &haystack[j..j + needle.len()] == needle {
-            return Some(j);
-        }
-        j += 1;
-    }
-    None
-}
-
-fn parse_header(body: &[u8], section_addr: u64, endian: Endian) -> Result<PclntabHeader> {
-    let magic: u32 = read_u32(body, 0, endian)?;
-    let version: PclntabVersion = PclntabVersion::from_magic(magic)?;
-    let quantum: u8 = read_u8(body, 6)?;
-    let ptr_size: u8 = read_u8(body, 7)?;
-    if quantum == 0 || ptr_size == 0 {
-        return Err(Error::PclntabInvariant("zero quantum/ptr_size"));
-    }
-    let ps: usize = ptr_size as usize;
-    let read_word = |off: usize| -> Result<u64> {
-        if ptr_size == 4 {
-            Ok(u64::from(read_u32(body, off, endian)?))
-        } else {
-            read_u64(body, off, endian)
-        }
-    };
-
-    let header: PclntabHeader = match version {
-        PclntabVersion::Go12 => {
-            let n_funcs: u64 = read_word(8)?;
-            PclntabHeader {
-                version,
-                quantum,
-                ptr_size,
-                endian,
-                n_funcs,
-                n_files: 0,
-                text_start: 0,
-                funcname_off: 0,
-                cu_off: 0,
-                filetab_off: 0,
-                pctab_off: 0,
-                funcdata_off: 0,
-                section_addr,
-                section_len: body.len(),
-            }
-        }
-        PclntabVersion::Go116 => {
-            let n_funcs: u64 = read_word(8)?;
-            let n_files: u64 = read_word(8 + ps)?;
-            let funcname_off: u64 = read_word(8 + 2 * ps)?;
-            let cu_off: u64 = read_word(8 + 3 * ps)?;
-            let filetab_off: u64 = read_word(8 + 4 * ps)?;
-            let pctab_off: u64 = read_word(8 + 5 * ps)?;
-            let funcdata_off: u64 = read_word(8 + 6 * ps)?;
-            PclntabHeader {
-                version,
-                quantum,
-                ptr_size,
-                endian,
-                n_funcs,
-                n_files,
-                text_start: 0,
-                funcname_off,
-                cu_off,
-                filetab_off,
-                pctab_off,
-                funcdata_off,
-                section_addr,
-                section_len: body.len(),
-            }
-        }
-        PclntabVersion::Go118 | PclntabVersion::Go120 => {
-            let n_funcs: u64 = read_word(8)?;
-            let n_files: u64 = read_word(8 + ps)?;
-            let text_start: u64 = read_word(8 + 2 * ps)?;
-            let funcname_off: u64 = read_word(8 + 3 * ps)?;
-            let cu_off: u64 = read_word(8 + 4 * ps)?;
-            let filetab_off: u64 = read_word(8 + 5 * ps)?;
-            let pctab_off: u64 = read_word(8 + 6 * ps)?;
-            let funcdata_off: u64 = read_word(8 + 7 * ps)?;
-            PclntabHeader {
-                version,
-                quantum,
-                ptr_size,
-                endian,
-                n_funcs,
-                n_files,
-                text_start,
-                funcname_off,
-                cu_off,
-                filetab_off,
-                pctab_off,
-                funcdata_off,
-                section_addr,
-                section_len: body.len(),
-            }
-        }
-    };
-    Ok(header)
 }
 
 pub(crate) fn read_u8(buf: &[u8], off: usize) -> Result<u8> {

@@ -11,9 +11,10 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
 use crate::GoAnalysis;
+use crate::binary::GoImage;
 use crate::embed_fs::EmbedFile;
 use crate::garble::GarbleQuality;
-use crate::pclntab::{MAGIC_GO12, MAGIC_GO116, MAGIC_GO118, MAGIC_GO120};
+use crate::pclntab::{PclntabVersion, locate_pclntab};
 use crate::symbols::GoFunc;
 
 pub const PASS_ID: PassId = "go.classify";
@@ -48,14 +49,16 @@ impl Detector for GoDetector {
         if bytes.len() < 64 {
             return None;
         }
+        if let Ok(image) = GoImage::parse(bytes)
+            && let Ok(located) = locate_pclntab(&image)
+        {
+            return Some(verdict_for_version(located.header.version));
+        }
         let scan: &[u8] = if bytes.len() > SCAN_LIMIT {
             &bytes[..SCAN_LIMIT]
         } else {
             bytes
         };
-        if let Some(magic) = first_pclntab_magic(scan) {
-            return Some(verdict_for_magic(magic));
-        }
         if window_contains(scan, FIRSTMODULEDATA_MARKER)
             || window_contains(scan, PCLNTAB_SECTION_MARKER)
         {
@@ -255,24 +258,12 @@ fn push_line(out: &mut String, line: &str) {
     out.push('\n');
 }
 
-fn first_pclntab_magic(bytes: &[u8]) -> Option<u32> {
-    let known: [u32; 4] = [MAGIC_GO12, MAGIC_GO116, MAGIC_GO118, MAGIC_GO120];
-    for chunk in bytes.windows(4) {
-        let m_le: u32 = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        if known.contains(&m_le) {
-            return Some(m_le);
-        }
-    }
-    None
-}
-
-fn verdict_for_magic(magic: u32) -> DetectVerdict {
-    let tag: &'static str = match magic {
-        MAGIC_GO12 => TAG_GO12,
-        MAGIC_GO116 => TAG_GO116,
-        MAGIC_GO118 => TAG_GO118,
-        MAGIC_GO120 => TAG_GO120,
-        _ => TAG_GO_SYMBOL,
+fn verdict_for_version(version: PclntabVersion) -> DetectVerdict {
+    let tag: &'static str = match version {
+        PclntabVersion::Go12 => TAG_GO12,
+        PclntabVersion::Go116 => TAG_GO116,
+        PclntabVersion::Go118 => TAG_GO118,
+        PclntabVersion::Go120 => TAG_GO120,
     };
     DetectVerdict::new(
         PASS_ID,
@@ -280,8 +271,11 @@ fn verdict_for_magic(magic: u32) -> DetectVerdict {
         FAMILY_NATIVE_FORMAT,
         0.92,
         35,
-        vec!["pclntab-magic"],
-        format!("go pclntab magic={magic:#010x}"),
+        vec!["pclntab-structural"],
+        format!(
+            "go pclntab structurally located, version={}",
+            version.label()
+        ),
     )
 }
 
@@ -422,11 +416,111 @@ mod tests {
     }
 
     #[test]
-    fn detect_pclntab_go118_magic() {
+    fn detect_rejects_loose_pclntab_magic_without_structure() {
+        use crate::pclntab::MAGIC_GO118;
         let mut bytes: Vec<u8> = vec![0u8; 128];
         bytes[64..68].copy_from_slice(&MAGIC_GO118.to_le_bytes());
-        let v: DetectVerdict = Detector::detect(&GoDetector, &ctx(&bytes)).expect("must detect");
-        assert_eq!(v.format_tag, TAG_GO118);
+        assert!(
+            Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
+            "four bare magic bytes with no valid pclntab table layout around them must not \
+             classify as go",
+        );
+    }
+
+    fn workspace_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p: &std::path::Path| p.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn find_versioned_native_host(base: &std::path::Path, filename: &str) -> Option<Vec<u8>> {
+        let entries: std::fs::ReadDir = std::fs::read_dir(base).ok()?;
+        let mut version_dirs: Vec<std::path::PathBuf> = entries
+            .filter_map(|e: std::io::Result<std::fs::DirEntry>| e.ok())
+            .map(|e: std::fs::DirEntry| e.path())
+            .filter(|p: &std::path::PathBuf| p.is_dir())
+            .collect();
+        version_dirs.sort();
+        for version_dir in version_dirs.into_iter().rev() {
+            let candidate: std::path::PathBuf = version_dir.join(filename);
+            if let Ok(bytes) = std::fs::read(&candidate) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn detect_rejects_aspack_packed_native_binary_as_go() {
+        let path: std::path::PathBuf = workspace_root()
+            .join("corpus")
+            .join("native")
+            .join("packers")
+            .join("aspack")
+            .join("AccessEnum.original.exe");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {} failed: {e}", path.display()));
+        assert!(
+            Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
+            "a real aspack-packed native binary must not classify as go via a loose pclntab \
+             magic byte match",
+        );
+    }
+
+    #[test]
+    fn detect_rejects_dotnet_hostpolicy_as_go() {
+        let base: std::path::PathBuf =
+            std::path::PathBuf::from(r"C:\Program Files\dotnet\shared\Microsoft.NETCore.App");
+        let Some(bytes): Option<Vec<u8>> = find_versioned_native_host(&base, "hostpolicy.dll")
+        else {
+            eprintln!(
+                "SKIP: no local dotnet runtime install found under {}",
+                base.display()
+            );
+            return;
+        };
+        assert!(
+            Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
+            "microsoft's hostpolicy.dll must not classify as go",
+        );
+    }
+
+    #[test]
+    fn detect_rejects_dotnet_hostfxr_as_go() {
+        let base: std::path::PathBuf =
+            std::path::PathBuf::from(r"C:\Program Files\dotnet\host\fxr");
+        let Some(bytes): Option<Vec<u8>> = find_versioned_native_host(&base, "hostfxr.dll") else {
+            eprintln!(
+                "SKIP: no local dotnet host fxr install found under {}",
+                base.display()
+            );
+            return;
+        };
+        assert!(
+            Detector::detect(&GoDetector, &ctx(&bytes)).is_none(),
+            "microsoft's hostfxr.dll must not classify as go",
+        );
+    }
+
+    #[test]
+    fn detect_fires_on_real_go_binary_after_tightening() {
+        let path: std::path::PathBuf = workspace_root()
+            .join("corpus")
+            .join("native")
+            .join("compilers")
+            .join("go")
+            .join("hello.go.exe");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|e: std::io::Error| panic!("read {} failed: {e}", path.display()));
+        let v: DetectVerdict = Detector::detect(&GoDetector, &ctx(&bytes))
+            .expect("a real go binary must still classify as go after the pclntab tightening");
+        assert!(
+            [TAG_GO12, TAG_GO116, TAG_GO118, TAG_GO120].contains(&v.format_tag),
+            "unexpected tag {}",
+            v.format_tag,
+        );
     }
 
     #[test]
@@ -489,14 +583,15 @@ mod tests {
     }
 
     #[test]
-    fn pass_run_rejects_synthetic_pclntab_without_image() {
+    fn pass_run_rejects_loose_pclntab_magic_without_structure() {
+        use crate::pclntab::MAGIC_GO118;
         let mut bytes: Vec<u8> = vec![0u8; 128];
         bytes[64..68].copy_from_slice(&MAGIC_GO118.to_le_bytes());
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let err: CoreError = GO_PASS
             .run(&a)
-            .expect_err("must reject without valid image");
-        assert!(format!("{err}").contains("DR-GO-0903"));
+            .expect_err("must reject bytes carrying only a bare pclntab magic");
+        assert!(format!("{err}").contains("DR-GO-0902"));
     }
 
     #[test]
