@@ -5089,6 +5089,53 @@ struct FrameShape {
     stack_pointer_break: Option<StackPointerBreak>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameClass {
+    FramePointer,
+    AllocatedStackPointer,
+    SysvRedZoneLeaf,
+    NoFrame,
+}
+
+impl FrameClass {
+    #[cfg(test)]
+    const ALL: [Self; 4] = [
+        Self::FramePointer,
+        Self::AllocatedStackPointer,
+        Self::SysvRedZoneLeaf,
+        Self::NoFrame,
+    ];
+
+    const fn indexed_refusal(self) -> Option<&'static str> {
+        match self {
+            Self::SysvRedZoneLeaf => None,
+            Self::FramePointer => Some(
+                "an indexed frame access sits on a frame-pointer frame, where bytes inside the fixed-offset accesses may still belong to the caller, so the region is not proven to be function scratch",
+            ),
+            Self::AllocatedStackPointer => Some(
+                "an indexed frame access sits on an allocated stack-pointer frame, where bytes inside the fixed-offset accesses may still hold the return address or an incoming argument, so the region is not proven to be function scratch",
+            ),
+            Self::NoFrame => Some(
+                "an indexed frame access needs a provably constant frame base, and this function has none",
+            ),
+        }
+    }
+}
+
+impl FrameShape {
+    const fn class(self) -> FrameClass {
+        if self.rbp_is_frame {
+            FrameClass::FramePointer
+        } else if self.red_zone {
+            FrameClass::SysvRedZoneLeaf
+        } else if self.base.is_some() {
+            FrameClass::AllocatedStackPointer
+        } else {
+            FrameClass::NoFrame
+        }
+    }
+}
+
 const SYSV_RED_ZONE_BYTES: i64 = 128;
 const MS_X64_HOME_BYTES: i64 = 32;
 const RETURN_ADDRESS_BYTES: i64 = 8;
@@ -11933,6 +11980,7 @@ struct FrameScanState {
     bounds: BTreeMap<Reg, u64>,
     misuse: bool,
     stack_pointer_escape: bool,
+    indexed_refusal: Option<&'static str>,
 }
 
 const fn masked_index_bound(stmt: &Stmt) -> Option<(Reg, u64)> {
@@ -12019,11 +12067,41 @@ fn block_has_unstructured_edge(body: &Block) -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexedModelling {
+    Allowed,
+    RefusedByFrameClass(FrameClass),
+    RefusedByUnstructuredEdge,
+}
+
+impl IndexedModelling {
+    const UNSTRUCTURED_EDGE_REFUSAL: &'static str = "an indexed frame access sits in a body with an unstructured edge, where the index bound proven on one path does not hold on every path reaching the access";
+
+    const fn decide(shape: FrameShape, body_has_unstructured_edge: bool) -> Self {
+        let class: FrameClass = shape.class();
+        if class.indexed_refusal().is_some() {
+            return Self::RefusedByFrameClass(class);
+        }
+        if body_has_unstructured_edge {
+            return Self::RefusedByUnstructuredEdge;
+        }
+        Self::Allowed
+    }
+
+    const fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Allowed => None,
+            Self::RefusedByFrameClass(class) => class.indexed_refusal(),
+            Self::RefusedByUnstructuredEdge => Some(Self::UNSTRUCTURED_EDGE_REFUSAL),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FrameScan {
     frame_base: Option<Reg>,
     rbp_is_frame: bool,
-    indexed_modelable: bool,
+    indexed: IndexedModelling,
 }
 
 impl FrameScan {
@@ -12044,7 +12122,7 @@ impl FrameScan {
         idx: IndexOperand,
         bounds: &BTreeMap<Reg, u64>,
     ) -> Option<IndexedRegion> {
-        if !self.indexed_modelable
+        if self.indexed != IndexedModelling::Allowed
             || idx.extend != IndexExtend::Full
             || self.is_stack_reg(idx.reg)
             || !matches!(idx.scale, 1 | 2 | 4 | 8)
@@ -12075,10 +12153,15 @@ impl FrameScan {
         match mem.base {
             Some(b) if Some(b) == self.frame_base => match mem.index {
                 None => state.slots.push((mem.disp, mem.width)),
-                Some(idx) => match self.indexed_region(mem, idx, &state.bounds) {
-                    Some(region) => state.regions.push(region),
-                    None => state.misuse = true,
-                },
+                Some(idx) => {
+                    if let Some(refusal) = self.indexed.refusal() {
+                        state.indexed_refusal.get_or_insert(refusal);
+                    }
+                    match self.indexed_region(mem, idx, &state.bounds) {
+                        Some(region) => state.regions.push(region),
+                        None => state.misuse = true,
+                    }
+                }
             },
             Some(b) if self.is_stack_reg(b) => self.note_reg(b, state),
             _ => {}
@@ -12373,7 +12456,7 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
     let ctx: FrameScan = FrameScan {
         frame_base: shape.base,
         rbp_is_frame: shape.rbp_is_frame,
-        indexed_modelable: shape.red_zone && !block_has_unstructured_edge(body),
+        indexed: IndexedModelling::decide(shape, block_has_unstructured_edge(body)),
     };
     let mut state: FrameScanState = FrameScanState::default();
     scan_frame_block(ctx, body, &mut state);
@@ -12385,6 +12468,9 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
                 "a stack-relative access cannot be given a fixed frame offset: {}",
                 unstable.reason()
             )));
+        }
+        if let Some(refusal) = state.indexed_refusal {
+            return Err(Error::LlvmIr(refusal.to_owned()));
         }
         return Err(Error::LlvmIr(
             "stack-frame register escapes a fixed-offset slot access (address-taken, dynamic, aliased, or used as a value); not a modelable spill frame".to_owned(),
@@ -20260,13 +20346,15 @@ mod tests {
         );
         let outcome: Result<LeafRecovery> =
             recover_leaf_function_abi(RSP_CONSTANT_INDEXED_OVER_RETURN_ADDRESS, 0x8600, Abi::SysV);
-        match outcome {
-            Err(_) => {}
-            Ok(rec) => panic!(
-                "an indexed region may not span a fixed access that reads the return address, because the recovery would read an unwritten local where the machine reads the live return address: {}",
-                rec.source
-            ),
-        }
+        let Err(Error::LlvmIr(message)) = outcome else {
+            panic!(
+                "an indexed region may not span a fixed access that reads the return address, because the recovery would read an unwritten local where the machine reads the live return address"
+            );
+        };
+        assert!(
+            message.contains("sits on an allocated stack-pointer frame"),
+            "the refusal must name the frame class that cannot prove the bytes are scratch: {message}"
+        );
     }
 
     #[test]
@@ -20530,6 +20618,468 @@ mod tests {
             "movsxd must sign-extend the reloaded dword: {}",
             rec.source
         );
+    }
+
+    const RZ_PICK8_FRAME_POINTER: [u8; 71] = [
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x89, 0x75, 0xf0, 0x48, 0x89, 0x55,
+        0xe8, 0x48, 0x89, 0x4d, 0xe0, 0x4c, 0x89, 0x45, 0xd8, 0x48, 0x8b, 0x45, 0xf0, 0x48, 0x89,
+        0x45, 0xb0, 0x48, 0x8b, 0x45, 0xe8, 0x48, 0x89, 0x45, 0xb8, 0x48, 0x8b, 0x45, 0xe0, 0x48,
+        0x89, 0x45, 0xc0, 0x48, 0x8b, 0x45, 0xd8, 0x48, 0x89, 0x45, 0xc8, 0x48, 0x8b, 0x45, 0xf8,
+        0x48, 0x83, 0xe0, 0x03, 0x48, 0x8b, 0x44, 0xc5, 0xb0, 0x5d, 0xc3,
+    ];
+
+    const RZ_PICK8_RED_ZONE_LEAF: [u8; 29] = [
+        0x48, 0x89, 0x74, 0x24, 0xd8, 0x48, 0x89, 0x54, 0x24, 0xe0, 0x48, 0x89, 0x4c, 0x24, 0xe8,
+        0x4c, 0x89, 0x44, 0x24, 0xf0, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x44, 0xfc, 0xd8, 0xc3,
+    ];
+
+    const RZ_PICK8_ALLOCATED_FRAME: [u8; 40] = [
+        0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x44, 0x24, 0x50, 0x48, 0x89, 0x14, 0x24, 0x4c, 0x89,
+        0x44, 0x24, 0x08, 0x4c, 0x89, 0x4c, 0x24, 0x10, 0x48, 0x89, 0x44, 0x24, 0x18, 0x83, 0xe1,
+        0x03, 0x48, 0x8b, 0x04, 0xcc, 0x48, 0x83, 0xc4, 0x28, 0xc3,
+    ];
+
+    fn frame_class_of(code: &[u8], abi: Abi) -> FrameClass {
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x9200, code).expect("disassemble frame-class probe");
+        classify_frame(&insns, abi).class()
+    }
+
+    fn rejection_message(code: &[u8], abi: Abi, why: &str) -> String {
+        let err: Error =
+            recover_leaf_function_abi(code, 0x9200, abi).expect_err(&format!("{why}: {abi:?}"));
+        let Error::LlvmIr(message) = err else {
+            panic!("{why}: expected a lifter rejection, got a different error kind");
+        };
+        message
+    }
+
+    #[test]
+    fn every_frame_class_either_admits_indexed_modelling_or_names_why_it_refuses() {
+        assert_eq!(
+            FrameClass::ALL.len(),
+            4,
+            "the enumeration below decides one row per frame class; a new class needs a new row"
+        );
+        let mut admitted: Vec<FrameClass> = Vec::new();
+        for class in FrameClass::ALL {
+            let refusal: Option<&'static str> = class.indexed_refusal();
+            match class {
+                FrameClass::SysvRedZoneLeaf => {
+                    assert_eq!(
+                        refusal, None,
+                        "the System V red-zone leaf is the graded class and must admit indexed modelling"
+                    );
+                    assert_eq!(
+                        frame_class_of(&RZ_PICK8_RED_ZONE_LEAF, Abi::SysV),
+                        class,
+                        "the graded row must really classify as this class"
+                    );
+                    admitted.push(class);
+                }
+                FrameClass::FramePointer => {
+                    assert!(
+                        refusal.is_some(),
+                        "a refused class must name the reason it refuses"
+                    );
+                    assert_eq!(frame_class_of(&RZ_PICK8_FRAME_POINTER, Abi::SysV), class);
+                }
+                FrameClass::AllocatedStackPointer => {
+                    assert!(
+                        refusal.is_some(),
+                        "a refused class must name the reason it refuses"
+                    );
+                    assert_eq!(frame_class_of(&RZ_PICK8_ALLOCATED_FRAME, Abi::MsX64), class);
+                }
+                FrameClass::NoFrame => {
+                    assert!(
+                        refusal.is_some(),
+                        "a refused class must name the reason it refuses"
+                    );
+                    assert_eq!(frame_class_of(&RZ_PICK8_RED_ZONE_LEAF, Abi::MsX64), class);
+                }
+            }
+        }
+        assert_eq!(
+            admitted,
+            vec![FrameClass::SysvRedZoneLeaf],
+            "exactly one frame class admits indexed modelling"
+        );
+    }
+
+    #[test]
+    fn the_frame_pointer_class_refuses_an_indexed_frame_access_by_name() {
+        let text: String = disasm_text(&RZ_PICK8_FRAME_POINTER, 0x9200);
+        assert!(
+            text.contains("mov rbp,rsp") && text.contains("mov rax,[rbp+rax*8-50h]"),
+            "the probe must build a frame pointer and index off it: {text}"
+        );
+        let message: String = rejection_message(
+            &RZ_PICK8_FRAME_POINTER,
+            Abi::SysV,
+            "a frame-pointer frame does not prove its indexed bytes are function scratch",
+        );
+        assert!(
+            message.contains("sits on a frame-pointer frame"),
+            "the refusal must name the frame class: {message}"
+        );
+    }
+
+    #[test]
+    fn the_allocated_stack_pointer_class_refuses_an_indexed_frame_access_by_name() {
+        let text: String = disasm_text(&RZ_PICK8_ALLOCATED_FRAME, 0x9200);
+        assert!(
+            text.contains("sub rsp,28h")
+                && text.contains("mov rax,[rsp+50h]")
+                && text.contains("mov rax,[rsp+rcx*8]"),
+            "the probe must allocate a frame, read an incoming stack argument and index the frame: {text}"
+        );
+        for abi in [Abi::MsX64, Abi::SysV] {
+            let message: String = rejection_message(
+                &RZ_PICK8_ALLOCATED_FRAME,
+                abi,
+                "an allocated frame does not prove its indexed bytes are function scratch",
+            );
+            assert!(
+                message.contains("sits on an allocated stack-pointer frame"),
+                "the refusal must name the frame class under {abi:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_no_frame_class_never_forms_an_indexed_region_at_all() {
+        assert_eq!(
+            frame_class_of(&RZ_PICK8_RED_ZONE_LEAF, Abi::MsX64),
+            FrameClass::NoFrame
+        );
+        let shape: FrameShape = FrameShape {
+            base: None,
+            rbp_is_frame: false,
+            red_zone: false,
+            stack_extent: None,
+            stack_pointer_break: None,
+        };
+        assert_eq!(shape.class(), FrameClass::NoFrame);
+        let ctx: FrameScan = FrameScan {
+            frame_base: shape.base,
+            rbp_is_frame: shape.rbp_is_frame,
+            indexed: IndexedModelling::decide(shape, false),
+        };
+        let mut state: FrameScanState = FrameScanState::default();
+        state.bounds.insert(Reg::Rdi, 3);
+        ctx.note_mem(&indexed_frame_mem(Reg::Rsp, Reg::Rdi, 8, -40), &mut state);
+        assert!(
+            state.regions.is_empty() && state.indexed_refusal.is_none(),
+            "a class with no frame base cannot match the frame base, so no indexed region and no indexed refusal can arise: {state:?}"
+        );
+        let message: String = rejection_message(
+            &RZ_PICK8_RED_ZONE_LEAF,
+            Abi::MsX64,
+            "Microsoft x64 reserves nothing below the stack pointer",
+        );
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "the no-frame rejection stays the general frame rejection: {message}"
+        );
+    }
+
+    #[test]
+    fn one_source_is_a_red_zone_leaf_under_system_v_and_an_allocated_frame_under_microsoft_x64() {
+        assert_eq!(
+            frame_class_of(&RZ_PICK8_RED_ZONE_LEAF, Abi::SysV),
+            FrameClass::SysvRedZoneLeaf
+        );
+        assert_eq!(
+            frame_class_of(&RZ_PICK8_ALLOCATED_FRAME, Abi::MsX64),
+            FrameClass::AllocatedStackPointer
+        );
+        let rec: LeafRecovery =
+            recover_leaf_function_abi(&RZ_PICK8_RED_ZONE_LEAF, 0x9200, Abi::SysV)
+                .expect("the System V lowering of the array pick must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[40];")
+                && rec.source.contains("r_rdi * 8ULL"),
+            "the red-zone lowering must recover the array and keep its stride: {}",
+            rec.source
+        );
+        let message: String = rejection_message(
+            &RZ_PICK8_ALLOCATED_FRAME,
+            Abi::MsX64,
+            "the Microsoft x64 lowering of the same source allocates a frame",
+        );
+        assert!(
+            message.contains("sits on an allocated stack-pointer frame"),
+            "the same source refuses under the other ABI, by class: {message}"
+        );
+    }
+
+    #[test]
+    fn a_one_element_indexed_region_keeps_its_stride_instead_of_collapsing_to_a_scalar_slot() {
+        const SINGLE_ELEMENT: [u8; 14] = [
+            0x48, 0x89, 0x7c, 0x24, 0xf8, 0x83, 0xe7, 0x00, 0x48, 0x8b, 0x44, 0xfc, 0xf8, 0xc3,
+        ];
+        let text: String = disasm_text(&SINGLE_ELEMENT, 0x9200);
+        assert!(
+            text.contains("and edi,0") && text.contains("mov rax,[rsp+rdi*8-8]"),
+            "the probe must bound the index to a single element: {text}"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&SINGLE_ELEMENT, 0x9200, Abi::SysV)
+            .expect("a one-element indexed region must lift");
+        assert!(
+            rec.source.contains("r_rdi * 8ULL"),
+            "a one-element region stays an indexed access and must not collapse to a scalar slot: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("unsigned char stack_frame[8];"),
+            "one eight-byte element backs exactly eight frame bytes: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn a_mask_of_zero_bounds_an_indexed_region_to_one_element_not_to_none() {
+        let mut state: FrameScanState = FrameScanState::default();
+        state.bounds.insert(Reg::Rdi, 0);
+        let ctx: FrameScan = red_zone_scan();
+        let region: IndexedRegion = ctx
+            .indexed_region(
+                &indexed_frame_mem(Reg::Rsp, Reg::Rdi, 8, -8),
+                IndexOperand::full(Reg::Rdi, 8),
+                &state.bounds,
+            )
+            .expect("a zero mask proves a single reachable index");
+        assert_eq!(
+            (region.elements, region.disp, region.end),
+            (1, -8, 0),
+            "a highest reachable index of zero is one element, never zero elements"
+        );
+    }
+
+    #[test]
+    fn an_indexed_region_whose_span_overflows_the_offset_space_is_refused() {
+        let mut state: FrameScanState = FrameScanState::default();
+        state.bounds.insert(Reg::Rdi, 255);
+        let ctx: FrameScan = red_zone_scan();
+        assert_eq!(
+            ctx.indexed_region(
+                &indexed_frame_mem(Reg::Rsp, Reg::Rdi, 8, i64::MAX - 8),
+                IndexOperand::full(Reg::Rdi, 8),
+                &state.bounds,
+            ),
+            None,
+            "an element count times a stride that runs past the offset space cannot name an extent"
+        );
+        state.bounds.insert(Reg::Rdi, u64::MAX);
+        assert_eq!(
+            ctx.indexed_region(
+                &indexed_frame_mem(Reg::Rsp, Reg::Rdi, 8, 0),
+                IndexOperand::full(Reg::Rdi, 8),
+                &state.bounds,
+            ),
+            None,
+            "an index bound of the whole unsigned range overflows the element count itself"
+        );
+    }
+
+    #[test]
+    fn an_indexed_region_at_the_red_zone_boundary_is_modeled_and_one_past_it_is_refused() {
+        const AT_BOUNDARY: [u8; 29] = [
+            0x48, 0x89, 0x74, 0x24, 0x80, 0x48, 0x89, 0x54, 0x24, 0x88, 0x48, 0x89, 0x4c, 0x24,
+            0x90, 0x4c, 0x89, 0x44, 0x24, 0x98, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x44, 0xfc, 0x80,
+            0xc3,
+        ];
+        const PAST_BOUNDARY: [u8; 35] = [
+            0x48, 0x89, 0xb4, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x89, 0x54, 0x24, 0x80, 0x48,
+            0x89, 0x4c, 0x24, 0x88, 0x4c, 0x89, 0x44, 0x24, 0x90, 0x83, 0xe7, 0x03, 0x48, 0x8b,
+            0x84, 0xfc, 0x78, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let at_text: String = disasm_text(&AT_BOUNDARY, 0x9200);
+        assert!(
+            at_text.contains("mov rax,[rsp+rdi*8-80h]"),
+            "the probe must start the region at exactly -128: {at_text}"
+        );
+        assert_eq!(
+            frame_class_of(&AT_BOUNDARY, Abi::SysV),
+            FrameClass::SysvRedZoneLeaf
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&AT_BOUNDARY, 0x9200, Abi::SysV)
+            .expect("a region starting at the last byte the red zone covers must lift");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[128];"),
+            "the region at -128 must back the full 128 red-zone bytes: {}",
+            rec.source
+        );
+
+        let past_text: String = disasm_text(&PAST_BOUNDARY, 0x9200);
+        assert!(
+            past_text.contains("mov rax,[rsp+rdi*8-88h]"),
+            "the probe must start the region at -136, one element past the red zone: {past_text}"
+        );
+        assert_eq!(
+            frame_class_of(&PAST_BOUNDARY, Abi::SysV),
+            FrameClass::NoFrame,
+            "an access below -128 takes the function out of the red-zone class entirely"
+        );
+        let message: String = rejection_message(
+            &PAST_BOUNDARY,
+            Abi::SysV,
+            "a region starting past -128 leaves the red zone",
+        );
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "a function that is no longer a red-zone leaf is refused as an unmodelable frame: {message}"
+        );
+    }
+
+    #[test]
+    fn an_indexed_region_that_abuts_the_return_address_slot_is_modeled() {
+        const ABUTTING: [u8; 29] = [
+            0x48, 0x89, 0x74, 0x24, 0xe0, 0x48, 0x89, 0x54, 0x24, 0xe8, 0x48, 0x89, 0x4c, 0x24,
+            0xf0, 0x4c, 0x89, 0x44, 0x24, 0xf8, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x44, 0xfc, 0xe0,
+            0xc3,
+        ];
+        let text: String = disasm_text(&ABUTTING, 0x9200);
+        assert!(
+            text.contains("mov [rsp-8],r8") && text.contains("mov rax,[rsp+rdi*8-20h]"),
+            "the probe must end the region on the entry stack pointer: {text}"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&ABUTTING, 0x9200, Abi::SysV)
+            .expect("a region ending exactly at the entry stack pointer touches no caller byte");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[32];"),
+            "four eight-byte elements ending at the entry stack pointer back 32 bytes: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("r_rdi * 8ULL"),
+            "the abutting region stays an indexed access: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn writing_the_frame_base_inside_the_body_takes_the_function_out_of_the_red_zone_class() {
+        let mut code: Vec<u8> = RZ_PICK8_RED_ZONE_LEAF[..RZ_PICK8_RED_ZONE_LEAF.len() - 1].to_vec();
+        code.extend_from_slice(&[0x48, 0x83, 0xc4, 0x08, 0xc3]);
+        let text: String = disasm_text(&code, 0x9200);
+        assert!(
+            text.contains("mov rax,[rsp+rdi*8-28h]") && text.contains("add rsp,8"),
+            "the probe must move the frame base after the indexed access: {text}"
+        );
+        assert_eq!(
+            frame_class_of(&code, Abi::SysV),
+            FrameClass::NoFrame,
+            "a body that moves the stack pointer has no constant frame base"
+        );
+        let message: String = rejection_message(
+            &code,
+            Abi::SysV,
+            "an unstable frame base cannot anchor an indexed region",
+        );
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "the unstable base must be refused as an unmodelable frame: {message}"
+        );
+    }
+
+    #[test]
+    fn an_unstructured_edge_refuses_indexed_modelling_by_name() {
+        let shape: FrameShape = FrameShape {
+            base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+            red_zone: true,
+            stack_extent: None,
+            stack_pointer_break: None,
+        };
+        assert_eq!(shape.class(), FrameClass::SysvRedZoneLeaf);
+        assert_eq!(
+            IndexedModelling::decide(shape, false),
+            IndexedModelling::Allowed,
+            "the admitted class with a structured body admits indexed modelling"
+        );
+        let refused: IndexedModelling = IndexedModelling::decide(shape, true);
+        assert_eq!(refused, IndexedModelling::RefusedByUnstructuredEdge);
+        assert!(
+            refused
+                .refusal()
+                .is_some_and(|reason: &str| reason.contains("unstructured edge")),
+            "the unstructured-edge refusal must name its own reason: {refused:?}"
+        );
+        let body: Block = vec![
+            Node::Label(0x9200),
+            Node::Stmt(indexed_frame_load(Reg::Rdi, 8, -40)),
+            Node::Goto(0x9200),
+        ];
+        assert!(block_has_unstructured_edge(&body));
+        let err: Error =
+            plan_frame(&body, shape).expect_err("an unstructured edge refuses indexed modelling");
+        assert!(
+            format!("{err}").contains("unstructured edge"),
+            "the plan must carry the unstructured-edge reason: {err}"
+        );
+    }
+
+    #[test]
+    fn the_frame_class_gate_is_what_stops_the_allocated_frame_region_from_forming() {
+        let body: Block = vec![Node::Stmt(indexed_frame_load(Reg::Rdi, 8, -40))];
+        let allowed: FrameScan = FrameScan {
+            frame_base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+            indexed: IndexedModelling::Allowed,
+        };
+        let refused: FrameScan = FrameScan {
+            indexed: IndexedModelling::RefusedByFrameClass(FrameClass::AllocatedStackPointer),
+            ..allowed
+        };
+        let mut open: FrameScanState = FrameScanState::default();
+        open.bounds.insert(Reg::Rdi, 3);
+        scan_frame_block(allowed, &body, &mut open);
+        assert_eq!(
+            open.regions.len(),
+            1,
+            "without the class gate the same body yields a modelable indexed region: {open:?}"
+        );
+        let mut gated: FrameScanState = FrameScanState::default();
+        gated.bounds.insert(Reg::Rdi, 3);
+        scan_frame_block(refused, &body, &mut gated);
+        assert!(
+            gated.regions.is_empty() && gated.misuse,
+            "the class gate is the single reason the region does not form: {gated:?}"
+        );
+        assert_eq!(
+            gated.indexed_refusal,
+            FrameClass::AllocatedStackPointer.indexed_refusal(),
+            "the refusal recorded must be the one the class names"
+        );
+    }
+
+    fn red_zone_scan() -> FrameScan {
+        FrameScan {
+            frame_base: Some(Reg::Rsp),
+            rbp_is_frame: false,
+            indexed: IndexedModelling::Allowed,
+        }
+    }
+
+    const fn indexed_frame_mem(base: Reg, index: Reg, scale: u8, disp: i64) -> MemRef {
+        MemRef {
+            base: Some(base),
+            index: Some(IndexOperand::full(index, scale)),
+            disp,
+            width: Width::W64,
+        }
+    }
+
+    fn indexed_frame_load(index: Reg, scale: u8, disp: i64) -> Stmt {
+        Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: Source::Mem(indexed_frame_mem(Reg::Rsp, index, scale, disp)),
+        }
     }
 
     const SYSV_MK3_SRET: [u8; 29] = [
