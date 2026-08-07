@@ -81,14 +81,14 @@ entry_points = [
   "disrobe-binfmt/src/containers/xalz.rs::detect_xalz",
   "disrobe-binfmt/src/containers/xar.rs::detect_xar",
   "disrobe-binfmt/src/containers/yaffs.rs::detect_yaffs2",
-  "disrobe-binfmt/src/structural.rs::identify_by_structure",
+  "disrobe-core/src/structural.rs::identify_by_structure",
 ]
 
 [[target]]
 name = "dex_jvm_classfile.rs"
 entry_points = [
-  "disrobe-binfmt/src/structural.rs::validate_dex",
-  "disrobe-binfmt/src/structural.rs::validate_java_class",
+  "disrobe-core/src/structural.rs::validate_dex",
+  "disrobe-core/src/structural.rs::validate_java_class",
   "disrobe-nir-lift/src/dalvik.rs::lift_dex",
   "disrobe-nir-lift/src/jvm.rs::lift_classfile",
   "disrobe-pass-jvm/src/arsc.rs::parse_arsc",
@@ -116,13 +116,13 @@ name = "native_formats.rs"
 entry_points = [
   "disrobe-binfmt/src/native.rs::parse_native",
   "disrobe-binfmt/src/native_image.rs::parse_native_image",
-  "disrobe-binfmt/src/structural.rs::locate_pe_header",
-  "disrobe-binfmt/src/structural.rs::locate_zip_central_directory",
-  "disrobe-binfmt/src/structural.rs::validate_elf",
-  "disrobe-binfmt/src/structural.rs::validate_macho",
-  "disrobe-binfmt/src/structural.rs::validate_macho_fat",
-  "disrobe-binfmt/src/structural.rs::validate_pe",
-  "disrobe-binfmt/src/structural.rs::validate_zip",
+  "disrobe-core/src/structural.rs::locate_pe_header",
+  "disrobe-core/src/structural.rs::locate_zip_central_directory",
+  "disrobe-core/src/structural.rs::validate_elf",
+  "disrobe-core/src/structural.rs::validate_macho",
+  "disrobe-core/src/structural.rs::validate_macho_fat",
+  "disrobe-core/src/structural.rs::validate_pe",
+  "disrobe-core/src/structural.rs::validate_zip",
 ]
 
 [[target]]
@@ -131,7 +131,7 @@ entry_points = [
   "disrobe-binfmt/src/classify.rs::classify_input",
   "disrobe-binfmt/src/container.rs::detect_container",
   "disrobe-binfmt/src/container.rs::detect_container_with_hint",
-  "disrobe-binfmt/src/structural.rs::identify_by_structure",
+  "disrobe-core/src/structural.rs::identify_by_structure",
 ]
 
 [[target]]
@@ -144,7 +144,7 @@ entry_points = [
 [[target]]
 name = "wasm_sections.rs"
 entry_points = [
-  "disrobe-binfmt/src/structural.rs::validate_wasm",
+  "disrobe-core/src/structural.rs::validate_wasm",
   "disrobe-nir-lift/src/wasm.rs::lift_wasm_module",
   "disrobe-pass-wasm-deob/src/analyze.rs::analyze_module",
   "disrobe-pass-wasm-deob/src/component/mod.rs::parse_component_manifest",
