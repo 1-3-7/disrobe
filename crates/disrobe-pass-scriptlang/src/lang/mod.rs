@@ -78,7 +78,9 @@ pub fn classify(bytes: &[u8]) -> Option<ScriptLang> {
     if perl_bytecode::is_bytecode(bytes) || perl::is_concise(bytes) {
         return Some(ScriptLang::Perl);
     }
-    if may_be_text_script(bytes) && winscript::looks_like_winscript(&winscript::decode_text(bytes))
+    if may_be_text_script(bytes)
+        && !is_native_binary_format(bytes)
+        && winscript::looks_like_winscript(&winscript::decode_text(bytes))
     {
         return Some(ScriptLang::WinScript);
     }
@@ -188,6 +190,7 @@ pub fn analyze(bytes: &[u8]) -> Result<ScriptArtifact> {
         return Ok(ScriptArtifact::Perl(tree));
     }
     if may_be_text_script(bytes)
+        && !is_native_binary_format(bytes)
         && let Ok(recovery) = winscript::analyze(bytes)
     {
         dbg_kv("classify", || "win-script".to_owned());
@@ -239,6 +242,18 @@ fn debug_perl_tree(tag: &str, tree: &perl::PerlOpTree) {
             )
         });
     }
+}
+
+fn is_native_binary_format(bytes: &[u8]) -> bool {
+    matches!(
+        disrobe_binfmt::structural::identify_by_structure(bytes),
+        Some(
+            disrobe_binfmt::structural::StructuralFormat::Pe
+                | disrobe_binfmt::structural::StructuralFormat::Elf
+                | disrobe_binfmt::structural::StructuralFormat::MachO
+                | disrobe_binfmt::structural::StructuralFormat::MachOFat
+        )
+    )
 }
 
 fn may_be_text_script(bytes: &[u8]) -> bool {
@@ -387,6 +402,52 @@ mod tests {
         bytes.extend_from_slice(b"powershell.exe -encodedcommand");
         bytes.extend(std::iter::repeat_n(0xffu8, 2048));
         assert!(classify(&bytes).is_none());
+    }
+
+    fn workspace_root() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p: &std::path::Path| p.parent())
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn classify_rejects_a_real_native_pe_whose_strings_incidentally_read_as_script_markers() {
+        let path: std::path::PathBuf = workspace_root()
+            .join("corpus")
+            .join("binfmt")
+            .join("dotnet-single-file")
+            .join("expected")
+            .join("libcustom.dll");
+        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
+            eprintln!("SKIP: {} missing", path.display());
+            return;
+        };
+        assert!(
+            classify(&bytes).is_none(),
+            "a real native pe dll must not classify as a windows script just because its \
+             string table happens to contain short powershell-verb-shaped substrings",
+        );
+    }
+
+    #[test]
+    fn is_native_binary_format_rejects_plain_text() {
+        assert!(!is_native_binary_format(b"not a native binary at all"));
+    }
+
+    #[test]
+    fn is_native_binary_format_recognizes_a_real_elf() {
+        let path: std::path::PathBuf = workspace_root()
+            .join("corpus")
+            .join("native")
+            .join("discovery")
+            .join("disc.unstripped.elf");
+        let Ok(bytes): std::io::Result<Vec<u8>> = std::fs::read(&path) else {
+            eprintln!("SKIP: {} missing", path.display());
+            return;
+        };
+        assert!(is_native_binary_format(&bytes));
     }
 
     #[test]

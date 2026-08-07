@@ -2631,6 +2631,7 @@ name = "disrobe-pass-scriptlang"
 version = "0.10.4"
 dependencies = [
  "bzip2-rs",
+ "disrobe-binfmt",
  "disrobe-bytes",
  "disrobe-core",
  "flate2",
