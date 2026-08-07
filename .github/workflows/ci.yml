@@ -331,6 +331,7 @@ jobs:
         run: |
           set -euo pipefail
           expected_xlm_version="0.2.7"
+          python -m pip install --disable-pip-version-check --upgrade setuptools
           python -m pip install --disable-pip-version-check "XLMMacroDeobfuscator==${expected_xlm_version}"
           xlm_version="$(python -c 'import importlib.metadata as m; print(m.version("XLMMacroDeobfuscator"))')"
           if [ "$xlm_version" != "$expected_xlm_version" ]; then
