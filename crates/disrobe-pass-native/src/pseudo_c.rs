@@ -20890,10 +20890,11 @@ mod tests {
             0x90, 0x4c, 0x89, 0x44, 0x24, 0x98, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x44, 0xfc, 0x80,
             0xc3,
         ];
-        const PAST_BOUNDARY: [u8; 35] = [
-            0x48, 0x89, 0xb4, 0x24, 0x78, 0xff, 0xff, 0xff, 0x48, 0x89, 0x54, 0x24, 0x80, 0x48,
-            0x89, 0x4c, 0x24, 0x88, 0x4c, 0x89, 0x44, 0x24, 0x90, 0x83, 0xe7, 0x03, 0x48, 0x8b,
-            0x84, 0xfc, 0x78, 0xff, 0xff, 0xff, 0xc3,
+        const ONE_BYTE_PAST_BOUNDARY: [u8; 44] = [
+            0x48, 0x89, 0xb4, 0x24, 0x7f, 0xff, 0xff, 0xff, 0x48, 0x89, 0x94, 0x24, 0x87, 0xff,
+            0xff, 0xff, 0x48, 0x89, 0x8c, 0x24, 0x8f, 0xff, 0xff, 0xff, 0x4c, 0x89, 0x84, 0x24,
+            0x97, 0xff, 0xff, 0xff, 0x83, 0xe7, 0x03, 0x48, 0x8b, 0x84, 0xfc, 0x7f, 0xff, 0xff,
+            0xff, 0xc3,
         ];
         let at_text: String = disasm_text(&AT_BOUNDARY, 0x9200);
         assert!(
@@ -20912,20 +20913,20 @@ mod tests {
             rec.source
         );
 
-        let past_text: String = disasm_text(&PAST_BOUNDARY, 0x9200);
+        let past_text: String = disasm_text(&ONE_BYTE_PAST_BOUNDARY, 0x9200);
         assert!(
-            past_text.contains("mov rax,[rsp+rdi*8-88h]"),
-            "the probe must start the region at -136, one element past the red zone: {past_text}"
+            past_text.contains("mov rax,[rsp+rdi*8-81h]"),
+            "the probe must start the region at -129, exactly one byte below the red zone: {past_text}"
         );
         assert_eq!(
-            frame_class_of(&PAST_BOUNDARY, Abi::SysV),
+            frame_class_of(&ONE_BYTE_PAST_BOUNDARY, Abi::SysV),
             FrameClass::NoFrame,
-            "an access below -128 takes the function out of the red-zone class entirely"
+            "one byte below -128 already takes the function out of the red-zone class"
         );
         let message: String = rejection_message(
-            &PAST_BOUNDARY,
+            &ONE_BYTE_PAST_BOUNDARY,
             Abi::SysV,
-            "a region starting past -128 leaves the red zone",
+            "a region starting one byte below -128 leaves the red zone",
         );
         assert!(
             message.contains("escapes a fixed-offset slot access"),
