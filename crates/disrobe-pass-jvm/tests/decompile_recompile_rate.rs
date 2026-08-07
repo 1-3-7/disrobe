@@ -586,6 +586,8 @@ fn type_check_was_reached(
 struct PerMethodJavacMeasurement {
     total: usize,
     ok: usize,
+    line_scan_ok: usize,
+    succeeded: bool,
     type_checked: bool,
     error_lines: Vec<usize>,
     diagnostics: String,
@@ -626,52 +628,53 @@ fn measure_per_method_javac_recompile(
         }
     }
 
+    let succeeded: bool = out.status.success();
     let type_checked: bool =
-        out.status.success() || type_check_was_reached(javac, dir, classpath, &[path.as_path()]);
+        succeeded || type_check_was_reached(javac, dir, classpath, &[path.as_path()]);
 
     let ranges: Vec<(String, usize, usize)> = method_line_ranges(source);
     let total: usize = ranges.len();
-    let ok: usize = if type_checked {
-        ranges
-            .iter()
-            .filter(|(_label, start, end): &&(String, usize, usize)| {
-                !error_lines.iter().any(|&l: &usize| l >= *start && l < *end)
-            })
-            .count()
-    } else {
-        0
-    };
+    let line_scan_ok: usize = ranges
+        .iter()
+        .filter(|(_label, start, end): &&(String, usize, usize)| {
+            !error_lines.iter().any(|&l: &usize| l >= *start && l < *end)
+        })
+        .count();
+    let ok: usize = if type_checked { line_scan_ok } else { 0 };
 
     PerMethodJavacMeasurement {
         total,
         ok,
+        line_scan_ok,
+        succeeded,
         type_checked,
         error_lines,
         diagnostics,
     }
 }
 
-#[test]
-fn report_per_method_javac_recompile() {
-    let javac: PathBuf = require_javac();
+fn decompile_edgecases() -> Option<String> {
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
-    let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!("skip: baseline jar absent");
-        return;
-    };
-    let Some((_n, bytes)): Option<&(String, Vec<u8>)> =
-        classes.iter().find(|(n, _)| n == "EdgeCases.class")
-    else {
-        eprintln!("skip: EdgeCases.class absent");
-        return;
-    };
-    let cf: ClassFile = parse_classfile(bytes).expect("parse");
+    let classes: Vec<(String, Vec<u8>)> = classes_from_jar(&jar)?;
+    let (_name, bytes): &(String, Vec<u8>) =
+        classes.iter().find(|(n, _)| n == "EdgeCases.class")?;
+    let cf: ClassFile = parse_classfile(bytes).expect("parse EdgeCases");
     let inners: BTreeMap<String, ClassFile> = classes
         .iter()
         .filter(|(n, _)| n.contains('$'))
         .filter_map(|(n, b)| parse_classfile(b).ok().map(|c| (n.clone(), c)))
         .collect();
-    let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
+    Some(decompile_class_with_inners(&cf, &inners).source)
+}
+
+#[test]
+fn report_per_method_javac_recompile() {
+    let javac: PathBuf = require_javac();
+    let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
+    let Some(source): Option<String> = decompile_edgecases() else {
+        eprintln!("skip: EdgeCases baseline absent");
+        return;
+    };
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_per_method_recompile")
@@ -679,7 +682,7 @@ fn report_per_method_javac_recompile() {
     let dir: PathBuf = scratch.path().to_path_buf();
 
     let measurement: PerMethodJavacMeasurement =
-        measure_per_method_javac_recompile(&javac, &dir, &jar, "EdgeCases.java", &d.source);
+        measure_per_method_javac_recompile(&javac, &dir, &jar, "EdgeCases.java", &source);
 
     let pct: f64 = measurement.ok as f64 * 100.0 / measurement.total.max(1) as f64;
     eprintln!(
@@ -726,13 +729,90 @@ fn report_per_method_javac_recompile() {
     );
 }
 
+const SEEDED_DEFECT_IN_RECOVERED_SOURCE: &str = "int ) broken;\n";
+
+#[test]
+fn a_seeded_defect_in_the_real_recovered_unit_drops_the_figure_to_zero_not_to_one_less() {
+    let javac: PathBuf = require_javac();
+    let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
+    let Some(source): Option<String> = decompile_edgecases() else {
+        eprintln!("skip: EdgeCases baseline absent");
+        return;
+    };
+    let seeded: String = format!("{SEEDED_DEFECT_IN_RECOVERED_SOURCE}{source}");
+
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_seeded_recovered_defect")
+            .expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+
+    let measurement: PerMethodJavacMeasurement =
+        measure_per_method_javac_recompile(&javac, &dir, &jar, "EdgeCases.java", &seeded);
+
+    assert_eq!(
+        measurement.total, PER_METHOD_JAVAC_TOTAL,
+        "seeding a defect must not change how many top-level methods the line scan sees, or \
+         this test is measuring a different unit than the gate it defends"
+    );
+    assert!(
+        !measurement.type_checked,
+        "a parse defect in the recovered unit must abort javac before attribution; \
+         diagnostics:\n{}",
+        measurement.diagnostics
+    );
+    assert_eq!(
+        measurement.line_scan_ok, measurement.total,
+        "the seeded defect sits outside every method range, so the line scan alone still reads \
+         all {} methods as clean; that is the reading this gate has to refuse",
+        measurement.total
+    );
+    assert_eq!(
+        measurement.ok, 0,
+        "a unit javac never type-checked certifies nothing, so the figure must fall to zero \
+         rather than to {} of {}",
+        measurement.line_scan_ok, measurement.total
+    );
+    assert!(per_method_measurement_is_publishable(
+        measurement.type_checked,
+        measurement.total,
+        measurement.ok
+    ));
+    assert!(!per_method_measurement_is_publishable(
+        measurement.type_checked,
+        measurement.total,
+        measurement.line_scan_ok
+    ));
+}
+
 fn empty_classpath_dir(dir: &Path) -> PathBuf {
     let cp: PathBuf = dir.join("cp");
     std::fs::create_dir_all(&cp).expect("create empty classpath dir");
     cp
 }
 
-const SEEDED_PARSE_DEFECT_SRC: &str = r"public class Seeded {
+struct SeededParseDefect {
+    position: &'static str,
+    file_name: &'static str,
+    source: &'static str,
+    line_scan_certifies_every_method: bool,
+}
+
+const SEEDED_PARSE_DEFECTS: &[SeededParseDefect] = &[
+    SeededParseDefect {
+        position: "before the first member",
+        file_name: "SeededEarly.java",
+        source: r"public class SeededEarly {
+    int ) broken;
+    public static int one() { return 1; }
+    public static int two() { return 2; }
+}
+",
+        line_scan_certifies_every_method: true,
+    },
+    SeededParseDefect {
+        position: "inside a method body",
+        file_name: "SeededInMethod.java",
+        source: r"public class SeededInMethod {
     public static int one() { return 1; }
     public static int two() {
         try {
@@ -741,10 +821,37 @@ const SEEDED_PARSE_DEFECT_SRC: &str = r"public class Seeded {
     public static int three() { return 3; }
     public static int four() { return 4; }
 }
-";
+",
+        line_scan_certifies_every_method: false,
+    },
+    SeededParseDefect {
+        position: "inside a nested type",
+        file_name: "SeededNested.java",
+        source: r"public class SeededNested {
+    public static int one() { return 1; }
+    static class Inner {
+        int ) broken;
+    }
+    public static int two() { return 2; }
+}
+",
+        line_scan_certifies_every_method: true,
+    },
+    SeededParseDefect {
+        position: "after the last member",
+        file_name: "SeededLate.java",
+        source: r"public class SeededLate {
+    public static int one() { return 1; }
+    public static int two() { return 2; }
+    int ) broken;
+}
+",
+        line_scan_certifies_every_method: true,
+    },
+];
 
 #[test]
-fn a_seeded_parse_defect_zeroes_the_per_method_certification_instead_of_scoring_it_partial() {
+fn a_seeded_parse_defect_at_any_position_zeroes_the_per_method_certification() {
     let javac: PathBuf = require_javac();
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_seeded_parse_defect")
@@ -752,36 +859,53 @@ fn a_seeded_parse_defect_zeroes_the_per_method_certification_instead_of_scoring_
     let dir: PathBuf = scratch.path().to_path_buf();
     let classpath: PathBuf = empty_classpath_dir(&dir);
 
-    let measurement: PerMethodJavacMeasurement = measure_per_method_javac_recompile(
-        &javac,
-        &dir,
-        &classpath,
-        "Seeded.java",
-        SEEDED_PARSE_DEFECT_SRC,
-    );
+    for case in SEEDED_PARSE_DEFECTS {
+        let measurement: PerMethodJavacMeasurement = measure_per_method_javac_recompile(
+            &javac,
+            &dir,
+            &classpath,
+            case.file_name,
+            case.source,
+        );
+        let position: &str = case.position;
 
-    assert!(
-        measurement.total > 0,
-        "the seeded fixture must still expose top-level methods to the naive line scan, or the \
-         test proves nothing about the masking bug"
-    );
-    assert!(
-        !measurement.type_checked,
-        "an unclosed try block must abort javac before attribution, but the probe reported \
-         type-checking anyway; diagnostics:\n{}",
-        measurement.diagnostics
-    );
-    assert_eq!(
-        measurement.ok, 0,
-        "javac never type-checked Seeded.java, so no method may be certified clean, yet the \
-         gate reported {} of {} as clean",
-        measurement.ok, measurement.total
-    );
-    assert!(!per_method_measurement_is_publishable(
-        measurement.type_checked,
-        measurement.total,
-        measurement.total
-    ));
+        assert!(
+            measurement.total > 0,
+            "the fixture with a defect {position} must still expose top-level methods to the \
+             line scan, or it proves nothing about the masking bug"
+        );
+        assert!(
+            !measurement.type_checked,
+            "a parse defect {position} must abort javac before attribution, but the probe \
+             reported type-checking anyway; diagnostics:\n{}",
+            measurement.diagnostics
+        );
+        assert!(
+            measurement.line_scan_ok > 0,
+            "a defect {position} that the line scan already attributes to every method would \
+             not exercise the masking this gate exists to catch; diagnostics:\n{}",
+            measurement.diagnostics
+        );
+        if case.line_scan_certifies_every_method {
+            assert_eq!(
+                measurement.line_scan_ok, measurement.total,
+                "a defect {position} falls outside every top-level method range, so the line \
+                 scan alone reads all {} methods as clean",
+                measurement.total
+            );
+        }
+        assert_eq!(
+            measurement.ok, 0,
+            "javac never type-checked the fixture with a defect {position}, so no method may be \
+             certified clean, yet the gate reported {} of {} as clean",
+            measurement.ok, measurement.total
+        );
+        assert!(!per_method_measurement_is_publishable(
+            measurement.type_checked,
+            measurement.total,
+            measurement.line_scan_ok
+        ));
+    }
 }
 
 const REAL_RESOLUTION_DEFECT_SRC: &str = r"public class Resolved {
@@ -904,29 +1028,16 @@ fn recompiled_class_links_under_jvm_verifier() {
         return;
     };
     let jar: PathBuf = corpus(&["megafile", "EdgeCases-baseline.jar"]);
-    let Some(classes): Option<Vec<(String, Vec<u8>)>> = classes_from_jar(&jar) else {
-        eprintln!("skip: baseline jar absent");
+    let Some(source): Option<String> = decompile_edgecases() else {
+        eprintln!("skip: EdgeCases baseline absent");
         return;
     };
-    let Some((_n, bytes)): Option<&(String, Vec<u8>)> =
-        classes.iter().find(|(n, _)| n == "EdgeCases.class")
-    else {
-        eprintln!("skip: EdgeCases.class absent");
-        return;
-    };
-    let cf: ClassFile = parse_classfile(bytes).expect("parse");
-    let inners: BTreeMap<String, ClassFile> = classes
-        .iter()
-        .filter(|(n, _)| n.contains('$'))
-        .filter_map(|(n, b)| parse_classfile(b).ok().map(|c| (n.clone(), c)))
-        .collect();
-    let d: DecompiledClass = decompile_class_with_inners(&cf, &inners);
 
     let purpose: String = format!("disrobe_verify_gate_{}", std::process::id());
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-    std::fs::write(dir.join("EdgeCases.java"), &d.source).expect("write java");
+    std::fs::write(dir.join("EdgeCases.java"), &source).expect("write java");
 
     let compiled: std::process::Output = Command::new(&javac)
         .arg("-nowarn")
@@ -1064,44 +1175,16 @@ fn report_gapcases_family_recovery() {
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
     let dir: PathBuf = scratch.path().to_path_buf();
-    let path: PathBuf = dir.join("GapCases.java");
-    std::fs::write(&path, &src).expect("write");
 
-    let out: std::process::Output = Command::new(&javac)
-        .arg("-nowarn")
-        .arg("-proc:none")
-        .arg("-cp")
-        .arg(&jar)
-        .arg("-d")
-        .arg(&dir)
-        .arg(&path)
-        .output()
-        .expect("javac");
-    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
-
-    let mut error_lines: Vec<usize> = Vec::new();
-    for line in stderr.lines() {
-        if let Some(rest) = line.split("GapCases.java:").nth(1)
-            && let Some(num) = rest.split(':').next()
-            && let Ok(n) = num.parse::<usize>()
-        {
-            error_lines.push(n);
-        }
-    }
-
-    let ranges: Vec<(String, usize, usize)> = method_line_ranges(&src);
-    let total: usize = ranges.len();
-    let mut ok: usize = 0;
-    for (_label, start, end) in &ranges {
-        let has_error: bool = error_lines.iter().any(|&l| l >= *start && l < *end);
-        if !has_error {
-            ok += 1;
-        }
-    }
+    let measurement: PerMethodJavacMeasurement =
+        measure_per_method_javac_recompile(&javac, &dir, &jar, "GapCases.java", &src);
+    let total: usize = measurement.total;
+    let ok: usize = measurement.ok;
     eprintln!(
         "GAPCASES FAMILY RECOMPILE (switch-on-String, switch-on-enum, assert): {ok}/{total} \
-         methods error-free; total javac errors: {}",
-        error_lines.len()
+         methods error-free; javac reached type-checking: {}; total javac diagnostics: {}",
+        measurement.type_checked,
+        measurement.error_lines.len()
     );
     assert_eq!(
         total, GAP_METHOD_TOTAL,
@@ -1109,10 +1192,13 @@ fn report_gapcases_family_recovery() {
          recompile floor is denominator-pinned, recheck the fixture"
     );
     assert!(
-        out.status.success() && ok >= GAP_METHOD_OK_FLOOR,
+        measurement.succeeded && ok >= GAP_METHOD_OK_FLOOR,
         "GapCases family recompile regressed: {ok}/{total} error-free < floor \
          {GAP_METHOD_OK_FLOOR}/{GAP_METHOD_TOTAL}; the assert / switch-on-String / switch-on-enum \
-         reconstruction no longer produces javac-clean output. stderr:\n{stderr}"
+         reconstruction no longer produces javac-clean output. javac reached type-checking: {}; \
+         diagnostics:\n{}",
+        measurement.type_checked,
+        measurement.diagnostics
     );
 }
 
