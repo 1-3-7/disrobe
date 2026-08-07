@@ -150,6 +150,9 @@ enum Stmt {
     ControlBlock {
         raw: Vec<u8>,
     },
+    FunctionDecl {
+        raw: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -219,20 +222,21 @@ impl<'a> Parser<'a> {
         self.buf.get(self.pos).copied()
     }
 
-    fn parse_statements(&mut self, cap: usize) -> Vec<Stmt> {
-        let mut out: Vec<Stmt> = Vec::new();
+    fn parse_statements(&mut self, cap: usize) -> Vec<(Stmt, std::ops::Range<usize>)> {
+        let mut out: Vec<(Stmt, std::ops::Range<usize>)> = Vec::new();
         while out.len() < cap {
             self.skip_trivia();
             if self.eof() || self.buf[self.pos..].starts_with(b"?>") {
                 break;
             }
+            let start: usize = self.pos;
             let Some(stmt): Option<Stmt> = self.parse_statement() else {
                 if !self.recover_to_semicolon() {
                     break;
                 }
                 continue;
             };
-            out.push(stmt);
+            out.push((stmt, start..self.pos));
         }
         out
     }
@@ -246,6 +250,48 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         self.pos > start && self.pos <= self.buf.len()
+    }
+
+    fn capture_function_decl(&mut self) -> Option<Vec<u8>> {
+        let start: usize = self.pos;
+        let captured: Option<Vec<u8>> = self.try_capture_function_decl();
+        if captured.is_none() {
+            self.pos = start;
+        }
+        captured
+    }
+
+    fn try_capture_function_decl(&mut self) -> Option<Vec<u8>> {
+        let start: usize = self.pos;
+        if !self.match_keyword(b"function") {
+            return None;
+        }
+        self.skip_trivia();
+        if self.peek() == Some(b'&') {
+            self.pos += 1;
+            self.skip_trivia();
+        }
+        if !self.peek().is_some_and(is_ident_byte) {
+            return None;
+        }
+        while self.peek().is_some_and(is_ident_byte) {
+            self.pos += 1;
+        }
+        self.skip_trivia();
+        self.consume_balanced(b'(', b')')?;
+        self.skip_trivia();
+        if self.peek() == Some(b':') {
+            self.pos += 1;
+            while self
+                .peek()
+                .is_some_and(|b: u8| b != b'{' && b != b';' && b != b'}')
+            {
+                self.pos += 1;
+            }
+        }
+        self.skip_trivia();
+        self.consume_balanced(b'{', b'}')?;
+        Some(self.buf[start..self.pos].to_vec())
     }
 
     fn capture_control_block(&mut self) -> Option<Vec<u8>> {
@@ -375,6 +421,9 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Option<Stmt> {
         self.skip_trivia();
+        if let Some(raw) = self.capture_function_decl() {
+            return Some(Stmt::FunctionDecl { raw });
+        }
         if let Some(raw) = self.capture_control_block() {
             return Some(Stmt::ControlBlock { raw });
         }
@@ -841,11 +890,11 @@ fn open_tag_offset(buf: &[u8]) -> usize {
 #[must_use]
 pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut parser: Parser<'_> = Parser::new(buf);
-    let stmts: Vec<Stmt> = parser.parse_statements(4096);
+    let stmts: Vec<(Stmt, std::ops::Range<usize>)> = parser.parse_statements(4096);
     if stmts.is_empty() {
         return None;
     }
-    if stmts.len() == 1 && !is_loader_owned_single(&stmts[0]) {
+    if stmts.len() == 1 && !is_loader_owned_single(&stmts[0].0) {
         return None;
     }
     let mut env: Env = Env::default();
@@ -854,8 +903,14 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut loop_src: Vec<u8> = Vec::new();
     let mut interp: crate::decode_loop::Interp =
         crate::decode_loop::Interp::new(crate::decode_loop::Budget::default());
-    for stmt in &stmts {
+    for (stmt, _span) in &stmts {
+        if let Stmt::FunctionDecl { raw } = stmt {
+            interp.declare_function(raw);
+        }
+    }
+    for (stmt, span) in &stmts {
         match stmt {
+            Stmt::FunctionDecl { .. } => {}
             Stmt::Assign { target, op, value } => {
                 let Some(name): Option<Vec<u8>> = resolve_assign_target(target, &env, depth) else {
                     continue;
@@ -874,6 +929,15 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                             interp.observe_scalar(&name, bytes);
                             env.set(name, v);
                             bound += 1;
+                        } else if depth > 0
+                            && let Some(produced) = buf
+                                .get(span.clone())
+                                .and_then(|raw: &[u8]| interp.run_block(raw))
+                        {
+                            for (produced_name, produced_value) in produced {
+                                env.set(produced_name, Value::Str(produced_value));
+                                bound += 1;
+                            }
                         }
                     }
                     AssignOp::Append => {
@@ -903,7 +967,9 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                     interp.observe_scalar(&name, &plaintext);
                     env.set(name, Value::Str(plaintext));
                     bound += 1;
-                } else if let Some(produced) = interp.run_block(raw) {
+                } else if depth > 0
+                    && let Some(produced) = interp.run_block(raw)
+                {
                     for (name, plaintext) in produced {
                         env.set(name, Value::Str(plaintext));
                         bound += 1;
@@ -915,6 +981,16 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                     sink_result = Some(LoaderReport {
                         sink,
                         recovered,
+                        bound_variable_count: bound,
+                    });
+                } else if depth > 0
+                    && let Some(sink) = sink_kind(expr)
+                    && let Some(raw) = buf.get(span.clone())
+                    && let Some(body) = interp.run_sink_statement(raw)
+                {
+                    sink_result = Some(LoaderReport {
+                        sink,
+                        recovered: body,
                         bound_variable_count: bound,
                     });
                 }
@@ -998,6 +1074,22 @@ fn preg_first_arg_is_e(args: &[Expr]) -> bool {
         return false;
     };
     pattern_has_e_modifier(pat)
+}
+
+fn sink_kind(expr: &Expr) -> Option<LoaderSink> {
+    let Expr::Call {
+        name: CallName::Ident(ident),
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if ident.eq_ignore_ascii_case(b"eval") {
+        return Some(LoaderSink::Eval);
+    }
+    ident
+        .eq_ignore_ascii_case(b"assert")
+        .then_some(LoaderSink::Assert)
 }
 
 fn eval_sink(expr: &Expr, env: &Env, depth: u32) -> Option<(LoaderSink, Vec<u8>)> {
@@ -1801,6 +1893,22 @@ mod tests {
         assert!(
             peel_loader(blob, 0).is_none(),
             "a zero depth budget must not resolve any expression"
+        );
+    }
+
+    #[test]
+    fn depth_zero_resolves_neither_a_decode_loop_nor_a_helper() {
+        let loop_src: &[u8] =
+            b"<?php $d='abc';$o='';for($i=0;$i<strlen($d);$i++){$o.=chr(ord($d[$i])^1);}eval($o);";
+        assert!(
+            peel_loader(loop_src, 0).is_none(),
+            "a zero depth budget must not run a decode loop through the interpreter"
+        );
+        let helper_src: &[u8] =
+            b"<?php function dd($s){ return strrev($s); } $c='abc'; $o=dd($c); eval($o);";
+        assert!(
+            peel_loader(helper_src, 0).is_none(),
+            "a zero depth budget must not run a helper through the interpreter"
         );
     }
 
