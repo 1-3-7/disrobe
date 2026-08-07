@@ -117,6 +117,7 @@ ands = "ands"
 padd = "padd"
 cpy = "cpy"
 lod = "lod"
+evn = "evn"
 
 [default.extend-identifiers]
 handler_vas = "handler_vas"
