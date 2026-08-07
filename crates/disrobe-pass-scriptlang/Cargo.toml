@@ -15,7 +15,6 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-disrobe-binfmt = { workspace = true }
 disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 miette = { workspace = true }

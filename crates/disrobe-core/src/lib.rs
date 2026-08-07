@@ -27,6 +27,7 @@ pub mod rng;
 pub mod rung;
 pub mod scratch;
 pub mod strings;
+pub mod structural;
 pub mod subprocess;
 pub mod time;
 pub mod yara;

@@ -246,12 +246,12 @@ fn debug_perl_tree(tag: &str, tree: &perl::PerlOpTree) {
 
 fn is_native_binary_format(bytes: &[u8]) -> bool {
     matches!(
-        disrobe_binfmt::structural::identify_by_structure(bytes),
+        disrobe_core::structural::identify_by_structure(bytes),
         Some(
-            disrobe_binfmt::structural::StructuralFormat::Pe
-                | disrobe_binfmt::structural::StructuralFormat::Elf
-                | disrobe_binfmt::structural::StructuralFormat::MachO
-                | disrobe_binfmt::structural::StructuralFormat::MachOFat
+            disrobe_core::structural::StructuralFormat::Pe
+                | disrobe_core::structural::StructuralFormat::Elf
+                | disrobe_core::structural::StructuralFormat::MachO
+                | disrobe_core::structural::StructuralFormat::MachOFat
         )
     )
 }

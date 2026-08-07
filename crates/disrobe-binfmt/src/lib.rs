@@ -19,7 +19,7 @@ pub mod native;
 pub mod native_graph;
 pub mod native_image;
 pub mod quota;
-pub mod structural;
+pub use disrobe_core::structural;
 
 pub use carve::{
     CarveConfig, CarveNode, CarveReport, CarvedChunk, ChunkClass, DEFAULT_MAX_DEPTH,
