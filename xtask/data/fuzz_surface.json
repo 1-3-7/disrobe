@@ -3,22 +3,22 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. A coverage-guided target counts only when fuzz/coverage.toml declares it and the target source names the function, so a name collision cannot be read as coverage. The resilience columns count dedicated resilience-shaped test files only; ad-hoc malformed-input assertions inside functional tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1331,
-    "parse_shaped": 553,
+    "entry_points": 1334,
+    "parse_shaped": 554,
     "coverage_guided_targets_in_tree": 11,
     "targets_declaring_entry_points": 8,
     "with_declared_coverage_guided_target": 118,
     "named_by_a_resilience_suite": 610,
     "named_by_a_suite_recording_seed_reach": 123,
-    "named_by_neither": 689
+    "named_by_neither": 692
   },
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 224,
-      "parse_shaped": 158,
-      "with_declared_coverage_guided_target": 76,
-      "named_by_a_resilience_suite": 156,
+      "entry_points": 216,
+      "parse_shaped": 151,
+      "with_declared_coverage_guided_target": 65,
+      "named_by_a_resilience_suite": 145,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -33,7 +33,10 @@
         "disrobe-binfmt/src/containers/bare_stream.rs::try_decompress_lznt1_oracle",
         "disrobe-binfmt/src/containers/bare_stream.rs::zlib_header_is_valid",
         "disrobe-binfmt/src/containers/cab_lzms.rs::build_lzms_cab",
+        "disrobe-binfmt/src/containers/dotnet_bundle.rs::bundle_deps_manifest",
         "disrobe-binfmt/src/containers/dotnet_bundle.rs::extract_dotnet_bundle",
+        "disrobe-binfmt/src/containers/dotnet_bundle.rs::parse_deps_manifest",
+        "disrobe-binfmt/src/containers/dotnet_bundle.rs::write_bundle_file",
         "disrobe-binfmt/src/containers/eszip.rs::extract_eszip",
         "disrobe-binfmt/src/containers/eszip.rs::parse_eszip_at",
         "disrobe-binfmt/src/containers/fat.rs::file_data",
@@ -107,10 +110,10 @@
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 88,
-      "parse_shaped": 7,
-      "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 21,
+      "entry_points": 99,
+      "parse_shaped": 15,
+      "with_declared_coverage_guided_target": 11,
+      "named_by_a_resilience_suite": 32,
       "named_by_a_suite_recording_seed_reach": 6,
       "named_by_neither": [
         "disrobe-core/src/anti_analysis.rs::classify_family",
