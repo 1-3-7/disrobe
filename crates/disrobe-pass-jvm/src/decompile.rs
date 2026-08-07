@@ -2152,6 +2152,7 @@ fn lift_structured(
     let string_switch_tables: BTreeMap<BlockId, crate::decompile_struct::StringSwitchTable> =
         structurer.take_string_switch_tables();
     let finally_inline_skips: BTreeMap<BlockId, usize> = structurer.take_finally_inline_skips();
+    let finally_tail_trims: BTreeMap<BlockId, usize> = structurer.take_finally_tail_trims();
     let finally_return_stores: BTreeMap<BlockId, u16> = structurer.take_finally_return_stores();
     let finally_exception_slots: BTreeSet<u16> = structurer.take_finally_exception_slots();
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
@@ -2183,6 +2184,7 @@ fn lift_structured(
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
         finally_inline_skips,
+        finally_tail_trims,
         finally_return_stores,
     };
     let mut out: String = String::new();
@@ -2432,10 +2434,10 @@ fn region_falls_through(region: &Region, cfg: &Cfg) -> bool {
         Region::TryFinally {
             try_body,
             handlers,
-            finally_trim,
+            finally_completes_normally,
             ..
         } => {
-            *finally_trim != 0
+            *finally_completes_normally
                 && (region_falls_through(try_body, cfg)
                     || handlers
                         .iter()
@@ -3862,6 +3864,7 @@ struct RenderCtx<'a> {
     foreach_suppress_slots: BTreeSet<u16>,
     foreach_hidden_slots: BTreeSet<u16>,
     finally_inline_skips: BTreeMap<BlockId, usize>,
+    finally_tail_trims: BTreeMap<BlockId, usize>,
     finally_return_stores: BTreeMap<BlockId, u16>,
 }
 
@@ -4007,7 +4010,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             try_body,
             handlers,
             finally_chain,
-            finally_trim,
+            ..
         } => {
             let pad: String = indent_string(level);
             let _ = writeln!(out, "{pad}try {{");
@@ -4020,7 +4023,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                 render_handler_region(ctx, handler_region, &var, out, level + 1);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
-            render_finally_body(ctx, finally_chain, *finally_trim, out, level + 1);
+            render_finally_body(ctx, finally_chain, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
         Region::TryWithResources {
@@ -4564,6 +4567,9 @@ fn render_block_seeded(
         }
     }
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
+    let end: usize = end
+        .saturating_sub(ctx.finally_tail_trims.get(&bid).copied().unwrap_or(0))
+        .max(start);
     let start: usize = start
         .saturating_add(ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0))
         .min(end);
@@ -4662,23 +4668,17 @@ fn render_block_seeded(
 fn render_finally_body(
     ctx: &mut RenderCtx<'_>,
     finally_chain: &[BlockId],
-    finally_trim: usize,
     out: &mut String,
     level: usize,
 ) {
-    let Some((&first, &last)): Option<(&BlockId, &BlockId)> =
-        finally_chain.first().zip(finally_chain.last())
-    else {
-        return;
-    };
     let pad: String = indent_string(level);
     let mut stack: Vec<Expr> = Vec::new();
     for &bid in finally_chain {
         ctx.rendered_blocks.insert(bid);
         let (block_start, block_end): (usize, usize) = block_insn_range(ctx, bid);
-        let skip_front: usize = usize::from(bid == first);
-        let trim_back: usize = if bid == last { finally_trim } else { 0 };
-        let lo: usize = block_start + skip_front;
+        let skip_front: usize = ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0);
+        let trim_back: usize = ctx.finally_tail_trims.get(&bid).copied().unwrap_or(0);
+        let lo: usize = block_start.saturating_add(skip_front);
         let hi: usize = block_end.saturating_sub(trim_back);
         if lo >= hi {
             continue;
@@ -4890,6 +4890,7 @@ fn compute_block_entry_stacks(
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
         finally_inline_skips: BTreeMap::new(),
+        finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
     };
     let dom: Dominators = compute_dominators(cfg);
@@ -6893,6 +6894,7 @@ const fn pattern_render_ctx<'a>(
         foreach_suppress_slots: BTreeSet::new(),
         foreach_hidden_slots: BTreeSet::new(),
         finally_inline_skips: BTreeMap::new(),
+        finally_tail_trims: BTreeMap::new(),
         finally_return_stores: BTreeMap::new(),
     }
 }
