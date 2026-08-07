@@ -15,10 +15,10 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 227,
-      "parse_shaped": 159,
+      "entry_points": 216,
+      "parse_shaped": 151,
       "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 156,
+      "named_by_a_resilience_suite": 145,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -129,10 +129,10 @@
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 88,
-      "parse_shaped": 7,
+      "entry_points": 99,
+      "parse_shaped": 15,
       "with_declared_coverage_guided_target": 0,
-      "named_by_a_resilience_suite": 21,
+      "named_by_a_resilience_suite": 32,
       "named_by_a_suite_recording_seed_reach": 6,
       "named_by_neither": [
         "disrobe-core/src/anti_analysis.rs::classify_family",
