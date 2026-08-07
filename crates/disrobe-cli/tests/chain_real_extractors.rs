@@ -793,3 +793,50 @@ fn registry_has_all_14_real_extractors() {
         assert!(r.get(id).is_some(), "missing pass {id}");
     }
 }
+
+#[test]
+fn real_extractor_dotnet_single_file_bundle_routes_its_assembly_to_the_cil_pass() {
+    const REL: &str = "binfmt/dotnet-single-file/probe.v6.all-types.exe";
+    let bytes: Vec<u8> = std::fs::read(corpus(REL)).unwrap_or_else(|e| {
+        panic!(
+            "corpus/{REL} is committed and must be readable, so a skip here would hide the \
+             routing this test exists to prove: {e}"
+        )
+    });
+    let doc: ChainDocument = run_chain_auto(bytes, "corpus://binfmt/probe.v6.all-types.exe");
+
+    assert_pass_id(&doc, "binfmt.container");
+
+    let container: &disrobe_core::chain::NodeDoc =
+        pick_first_pass_node(&doc).expect("container node");
+    assert_eq!(
+        container.verdict,
+        VerdictDoc::FanOut,
+        "the container pass must fan the bundle out into its entries, got {:?} (error={:?})",
+        container.verdict,
+        container.error,
+    );
+    assert_eq!(
+        container.format_tag_in.as_deref(),
+        Some("dotnet-single-file"),
+        "the bundle must be claimed as a .NET single-file container, not as a bare host binary",
+    );
+
+    let child_count: usize = doc
+        .nodes
+        .iter()
+        .filter(|n: &&disrobe_core::chain::NodeDoc| n.parent_id == Some(container.id))
+        .count();
+    assert_eq!(child_count, 5, "every embedded entry becomes a child");
+
+    let dispatched: Vec<String> = doc
+        .nodes
+        .iter()
+        .filter_map(|n: &disrobe_core::chain::NodeDoc| n.pass.clone())
+        .collect();
+    assert!(
+        dispatched.iter().any(|p: &String| p == "dotnet.classify"),
+        "the embedded managed assembly must reach the CIL pass through `auto` with no dedicated \
+         flag; passes dispatched were {dispatched:?}"
+    );
+}

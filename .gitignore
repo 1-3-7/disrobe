@@ -95,7 +95,9 @@ corpus/scratch/
 corpus/**/*.exe
 !corpus/python/freezers/cxfreeze/extracted/hello.exe
 !corpus/python/freezers/py2exe/hello.exe
+!corpus/binfmt/dotnet-single-file/*.exe
 corpus/**/*.dll
+!corpus/binfmt/dotnet-single-file/expected/*.dll
 corpus/**/*.pdb
 corpus/**/*.so
 corpus/**/*.so.*
@@ -371,6 +373,7 @@ corpus/**/*.actual.json
 scripts/*
 !scripts/wiki_sync.py
 *.pdb
+!corpus/binfmt/dotnet-single-file/expected/probe.pdb
 
 !corpus/python/decompile/playground/
 !corpus/python/decompile/playground/__pycache__/

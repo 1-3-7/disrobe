@@ -1,5 +1,5 @@
 {
-  "descriptor_count": 30,
+  "descriptor_count": 31,
   "descriptors": [
     {
       "ci_attested": true,
@@ -160,7 +160,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "binfmt-extract",
-      "measured": "34 extracted from a committed input / 100 detected",
+      "measured": "35 extracted from a committed input / 101 detected",
       "oracle_strength": "coverage-self-reported",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-binfmt published_container_counts_match_this_enum"
@@ -577,6 +577,22 @@
       "reproduce": "cargo test -p disrobe-pass-swift-objc --test swift_hello_symbol_pin"
     },
     {
+      "ci_attested": false,
+      "claim": "disrobe's taint engine recalls 93 of 190 labeled command-injection flows in the NIST SARD Juliet Test Suite's char/system/.c CWE-78 slice at gcc 16.1.0 -O2, with 0 false positives across every populated category, and the ground truth is the corpus's own manifest.xml and Flow Variant header, never a value authored in this repository.",
+      "comparison_basis": null,
+      "competitors": [],
+      "disrobe_leads": null,
+      "ecosystem": "taint",
+      "external_oracle": "the NIST SARD Juliet Test Suite for C/C++ v1.3 (2017-10-01), CWE-78 OS Command Injection, char/system/.c files only. Ground truth is manifest.xml's own flaw line plus each file's own Flow Variant header, parsed by a typed reader that rejects an unrecognized line rather than defaulting. A finding is a true positive only when it names a function on the corpus's own bad-labeled call chain, and a false positive when it names one on the good-labeled chain; every group contributes exactly one bad-side and one good-side verdict, so a case cannot be silently dropped.",
+      "floor": 48.9,
+      "floor_holds": true,
+      "id": "taint-juliet-cwe78",
+      "measured": "48.90%",
+      "oracle_strength": "strong",
+      "pairs": [],
+      "reproduce": "cargo test -p disrobe-taint --test graded_corpus published_juliet_o2_bars_match_the_pinned_floors (unconditional, needs no corpus: compares xtask/data/recovery.json against the pinned floors below, and runs in CI); DISROBE_REQUIRE_JULIET_CORPUS=1 cargo test -p disrobe-taint --test graded_corpus juliet_cwe78_command_injection_precision_recall_o2 (re-derives the floor against the real corpus; local-only, since the corpus is fetched to a scratch cache by pinned URL and sha256, never committed, and CI does not provision it)"
+    },
+    {
       "ci_attested": true,
       "claim": "disrobe lowers 1034 of the 1034 opcodes that wasm-tools counts across the 38 parseable modules of the committed corpus, and the WAT it emits re-assembles.",
       "comparison_basis": null,
@@ -628,6 +644,7 @@
     "ruby",
     "secrets",
     "swift",
+    "taint",
     "wasm"
   ],
   "failure_count": 12,

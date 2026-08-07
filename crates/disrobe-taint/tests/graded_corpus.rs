@@ -20,6 +20,8 @@ use disrobe_taint::{TaintConfig, TaintReport};
 
 #[path = "support/juliet_corpus.rs"]
 mod juliet_corpus;
+#[path = "support/published.rs"]
+mod published;
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 static CLI_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -230,6 +232,21 @@ fn names_symbol(json: &str, field: &str, symbol: &str) -> bool {
     json.contains(&bare) || json.contains(&underscored)
 }
 
+fn finding_functions(json: &str) -> Vec<String> {
+    let prefix: &str = "\"function\":\"";
+    let mut names: Vec<String> = Vec::new();
+    let mut rest: &str = json;
+    while let Some(at) = rest.find(prefix) {
+        let after: &str = &rest[at + prefix.len()..];
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        names.push(after[..end].trim_start_matches('_').to_owned());
+        rest = &after[end..];
+    }
+    names
+}
+
 #[test]
 fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
     let fixture: CompiledFixture = compile_program("flowing", FLOWING_BODY);
@@ -239,9 +256,19 @@ fn compiled_fgets_to_system_flow_is_attributed_to_its_exported_function() {
         count >= 1,
         "pinned native-flow floor is one finding; the graded flow needs an image whose imported fgets and system land at named call targets, which takes two things the lifted IR does not supply on every host: import-thunk naming for the object format, since an elf plt entry and a mach-o __stubs entry both resolve to an unnamed thunk while a pe import thunk carries its own symbol, and per-instruction flow facts for the architecture, since disasm_ir::instruction_facts only decodes x86 and x86-64 and hands every other architecture a default fact set with no call flow and no branch target: {json}"
     );
-    assert_eq!(
-        count, 1,
-        "the reference image has one source-to-sink finding: {json}"
+    let functions: Vec<String> = finding_functions(&json);
+    assert!(
+        functions.iter().any(|f: &String| f == "taint_entry"),
+        "the reference image's exported taint_entry must carry its own source-to-sink finding: {json}"
+    );
+    assert!(
+        functions
+            .iter()
+            .all(|f: &String| f == "taint_entry" || f == "main"),
+        "taint_entry and its FLOWING_BODY source can only produce the fgets-to-system sequence in \
+         taint_entry itself, or in main when the host compiler inlines the exported function's body \
+         into its one caller at -O2; a finding attributed to any other function is a false positive \
+         this compiled reference image cannot produce: {json}"
     );
     assert!(
         names_symbol(&json, "function", "taint_entry")
@@ -499,24 +526,294 @@ fn juliet_corpus_selection_matches_the_declared_population() {
     );
 }
 
-fn run_juliet_corpus_grading(opt_flag: &'static str, case: &str) {
-    let Some(content) = juliet_corpus::load_corpus_content(case) else {
-        return;
-    };
+fn run_juliet_corpus_grading(
+    opt_flag: &'static str,
+    case: &str,
+) -> Option<juliet_corpus::GradedReport> {
+    let content: juliet_corpus::JulietCorpusContent = juliet_corpus::load_corpus_content(case)?;
     let _compiler: &std::path::Path = juliet_corpus::require_host_compiler(case);
     let config: TaintConfig = juliet_corpus::default_taint_config();
     let report: juliet_corpus::GradedReport =
         juliet_corpus::grade_corpus(&content, opt_flag, &config);
     println!("{}", report.render());
     assert_no_case_is_silently_dropped(&report);
+    Some(report)
+}
+
+struct GradeFloor {
+    category: juliet_corpus::Category,
+    label: &'static str,
+    groups: u64,
+    true_positive_floor: u64,
+}
+
+const O0_CATEGORY_FLOORS: [GradeFloor; 8] = [
+    GradeFloor {
+        category: juliet_corpus::Category::DirectFlow,
+        label: "direct flow, gcc -O0",
+        groups: 15,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Field,
+        label: "flow through a field, gcc -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::ArrayElement,
+        label: "flow through an array element, gcc -O0",
+        groups: 5,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::FunctionPointer,
+        label: "flow across a function pointer, gcc -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::ControlDependence,
+        label: "implicit flow through a control dependence, gcc -O0",
+        groups: 85,
+        true_positive_floor: 6,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Loop,
+        label: "flow through a loop, gcc -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthOne,
+        label: "inter-procedural flow at depth one, gcc -O0",
+        groups: 40,
+        true_positive_floor: 6,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthGtOne,
+        label: "inter-procedural flow at depth greater than one, gcc -O0",
+        groups: 15,
+        true_positive_floor: 0,
+    },
+];
+
+const O0_AGGREGATE_GROUPS: u64 = 190;
+const O0_AGGREGATE_TP_FLOOR: u64 = 12;
+
+fn assert_fresh_grade_clears_named_floors(
+    report: &juliet_corpus::GradedReport,
+    floors: &[GradeFloor],
+    aggregate_groups_floor: u64,
+    aggregate_tp_floor: u64,
+    aggregate_label: &str,
+) {
+    let mut aggregate_groups: u64 = 0;
+    let mut aggregate_true_positives: u64 = 0;
+    for floor in floors {
+        let tally: juliet_corpus::CategoryTally = report
+            .tallies
+            .get(&floor.category)
+            .copied()
+            .unwrap_or_default();
+        let groups: u64 = tally.groups as u64;
+        let true_positives: u64 = tally.true_positives as u64;
+        assert_eq!(
+            groups, floor.groups,
+            "{}: the pinned Juliet corpus selection changed size, was {} testcase groups and is \
+             now {groups}",
+            floor.label, floor.groups
+        );
+        assert_eq!(
+            tally.false_positives, 0,
+            "{}: a false positive appeared where the published figure states precision 100%: \
+             {tally:?}",
+            floor.label
+        );
+        assert_eq!(
+            tally.timeouts, 0,
+            "{}: a compile or analyze timeout appeared, which must not silently lower recall by \
+             timing cases out: {tally:?}",
+            floor.label
+        );
+        assert_eq!(
+            tally.unanalysable, 0,
+            "{}: an unanalysable group appeared where every group counts as graded: {tally:?}",
+            floor.label
+        );
+        assert!(
+            true_positives >= floor.true_positive_floor,
+            "{}: true positives dropped to {true_positives} of {groups}, below the {} the \
+             published figure states as a floor",
+            floor.label,
+            floor.true_positive_floor
+        );
+        aggregate_groups += groups;
+        aggregate_true_positives += true_positives;
+    }
+    assert_eq!(
+        aggregate_groups, aggregate_groups_floor,
+        "{aggregate_label}: the populated categories no longer sum to the published \
+         {aggregate_groups_floor}-group population"
+    );
+    assert!(
+        aggregate_true_positives >= aggregate_tp_floor,
+        "{aggregate_label}: aggregate true positives dropped to {aggregate_true_positives} of \
+         {aggregate_groups}, below the published floor of {aggregate_tp_floor}"
+    );
 }
 
 #[test]
 fn juliet_cwe78_command_injection_precision_recall_o0() {
-    run_juliet_corpus_grading("-O0", "juliet_cwe78_command_injection_precision_recall_o0");
+    let Some(report): Option<juliet_corpus::GradedReport> =
+        run_juliet_corpus_grading("-O0", "juliet_cwe78_command_injection_precision_recall_o0")
+    else {
+        return;
+    };
+    assert_fresh_grade_clears_named_floors(
+        &report,
+        &O0_CATEGORY_FLOORS,
+        O0_AGGREGATE_GROUPS,
+        O0_AGGREGATE_TP_FLOOR,
+        "aggregate 12 of 190 (6.3%) at -O0, published in docs/src/anti-analysis.md and in the \
+         taint-juliet-cwe78 evidence descriptor's note",
+    );
 }
+
+const PUBLISHED_O2_HEADING: &str = "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.1.0 -O2 -fno-builtin, Windows x86-64)";
+const PUBLISHED_O2_AGGREGATE_LABEL: &str = "aggregate (8 populated categories), gcc -O2";
+const PUBLISHED_O2_AGGREGATE_GROUPS: u64 = 190;
+const PUBLISHED_O2_AGGREGATE_TP_FLOOR: u64 = 93;
+
+const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
+    GradeFloor {
+        category: juliet_corpus::Category::DirectFlow,
+        label: "direct flow, gcc -O2",
+        groups: 15,
+        true_positive_floor: 9,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Field,
+        label: "flow through a field, gcc -O2",
+        groups: 10,
+        true_positive_floor: 6,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::ArrayElement,
+        label: "flow through an array element, gcc -O2",
+        groups: 5,
+        true_positive_floor: 1,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::FunctionPointer,
+        label: "flow across a function pointer, gcc -O2",
+        groups: 10,
+        true_positive_floor: 6,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::ControlDependence,
+        label: "implicit flow through a control dependence, gcc -O2",
+        groups: 85,
+        true_positive_floor: 49,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Loop,
+        label: "flow through a loop, gcc -O2",
+        groups: 10,
+        true_positive_floor: 6,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthOne,
+        label: "inter-procedural flow at depth one, gcc -O2",
+        groups: 40,
+        true_positive_floor: 16,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthGtOne,
+        label: "inter-procedural flow at depth greater than one, gcc -O2",
+        groups: 15,
+        true_positive_floor: 0,
+    },
+];
 
 #[test]
 fn juliet_cwe78_command_injection_precision_recall_o2() {
-    run_juliet_corpus_grading("-O2", "juliet_cwe78_command_injection_precision_recall_o2");
+    let Some(report): Option<juliet_corpus::GradedReport> =
+        run_juliet_corpus_grading("-O2", "juliet_cwe78_command_injection_precision_recall_o2")
+    else {
+        return;
+    };
+    assert_fresh_grade_clears_named_floors(
+        &report,
+        &PUBLISHED_O2_CATEGORY_FLOORS,
+        PUBLISHED_O2_AGGREGATE_GROUPS,
+        PUBLISHED_O2_AGGREGATE_TP_FLOOR,
+        PUBLISHED_O2_AGGREGATE_LABEL,
+    );
+}
+
+fn assert_published_value_matches_its_own_num_and_den(
+    heading: &str,
+    label: &str,
+    num: u64,
+    den: u64,
+) {
+    let published_value: f64 = published::published_f64(heading, label, "value");
+    let true_ratio: f64 = 100.0 * (num as f64) / (den as f64);
+    assert!(
+        published_value <= true_ratio,
+        "{label}: xtask/data/recovery.json's value {published_value} overstates the {true_ratio} \
+         its own num/den compute; a published percentage must never round up past what its own \
+         counts prove"
+    );
+    assert!(
+        true_ratio - published_value <= 0.1,
+        "{label}: xtask/data/recovery.json's value {published_value} understates the {true_ratio} \
+         its own num/den compute by more than one-decimal rounding accounts for"
+    );
+}
+
+#[test]
+fn published_juliet_o2_bars_match_the_pinned_floors() {
+    for floor in &PUBLISHED_O2_CATEGORY_FLOORS {
+        let published_num: u64 = published::published_u64(PUBLISHED_O2_HEADING, floor.label, "num");
+        let published_den: u64 = published::published_u64(PUBLISHED_O2_HEADING, floor.label, "den");
+        assert_eq!(
+            published_den, floor.groups,
+            "{}: xtask/data/recovery.json's den disagrees with the population this file pins",
+            floor.label
+        );
+        assert_eq!(
+            published_num, floor.true_positive_floor,
+            "{}: xtask/data/recovery.json's num disagrees with the true-positive floor this file \
+             pins; editing either alone must fail this test",
+            floor.label
+        );
+        assert_published_value_matches_its_own_num_and_den(
+            PUBLISHED_O2_HEADING,
+            floor.label,
+            published_num,
+            published_den,
+        );
+    }
+    let published_aggregate_num: u64 =
+        published::published_u64(PUBLISHED_O2_HEADING, PUBLISHED_O2_AGGREGATE_LABEL, "num");
+    let published_aggregate_den: u64 =
+        published::published_u64(PUBLISHED_O2_HEADING, PUBLISHED_O2_AGGREGATE_LABEL, "den");
+    assert_eq!(
+        published_aggregate_den, PUBLISHED_O2_AGGREGATE_GROUPS,
+        "{PUBLISHED_O2_AGGREGATE_LABEL}: xtask/data/recovery.json's den disagrees with the \
+         population this file pins"
+    );
+    assert_eq!(
+        published_aggregate_num, PUBLISHED_O2_AGGREGATE_TP_FLOOR,
+        "{PUBLISHED_O2_AGGREGATE_LABEL}: xtask/data/recovery.json's num disagrees with the \
+         true-positive floor this file pins; editing either alone must fail this test"
+    );
+    assert_published_value_matches_its_own_num_and_den(
+        PUBLISHED_O2_HEADING,
+        PUBLISHED_O2_AGGREGATE_LABEL,
+        published_aggregate_num,
+        published_aggregate_den,
+    );
 }

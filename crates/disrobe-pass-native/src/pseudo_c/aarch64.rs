@@ -4676,6 +4676,7 @@ fn classify_frame(insns: &[DisasmInsn], frame_info: FrameInfo) -> Result<FrameSh
             rbp_is_frame: true,
             red_zone: false,
             stack_extent: Some(stack_extent),
+            stack_pointer_break: None,
         })
     } else if insns
         .iter()
@@ -4689,6 +4690,7 @@ fn classify_frame(insns: &[DisasmInsn], frame_info: FrameInfo) -> Result<FrameSh
             rbp_is_frame: false,
             red_zone: false,
             stack_extent: Some(stack_extent),
+            stack_pointer_break: None,
         })
     } else {
         Ok(FrameShape {
@@ -4696,6 +4698,7 @@ fn classify_frame(insns: &[DisasmInsn], frame_info: FrameInfo) -> Result<FrameSh
             rbp_is_frame: false,
             red_zone: false,
             stack_extent: None,
+            stack_pointer_break: None,
         })
     }
 }

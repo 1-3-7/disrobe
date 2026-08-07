@@ -107,6 +107,9 @@ pub enum Error {
     #[error("DR-JVM-0025: malformed bytecode at offset {offset}: {reason}")]
     BadBytecode { offset: usize, reason: &'static str },
 
+    #[error("DR-JVM-0093: method body not recovered: {reason}")]
+    UnrecoveredRegion { reason: &'static str },
+
     #[error("DR-JVM-0092: not an Android App Bundle (missing BundleConfig.pb at zip root)")]
     NotAab,
 

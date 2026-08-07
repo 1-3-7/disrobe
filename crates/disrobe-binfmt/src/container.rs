@@ -105,6 +105,7 @@ pub enum ContainerKind {
     FwAiroha,
     Minidump,
     UefiFv,
+    DotnetSingleFile,
     None,
 }
 
@@ -271,6 +272,7 @@ impl ContainerKind {
             Self::FwAiroha => "airoha",
             Self::Minidump => "minidump",
             Self::UefiFv => "uefi-fv",
+            Self::DotnetSingleFile => "dotnet-single-file",
             Self::None => "none",
         }
     }
@@ -293,7 +295,7 @@ impl ContainerKind {
         )
     }
 
-    pub const ALL: [Self; 100] = [
+    pub const ALL: [Self; 101] = [
         Self::Zip,
         Self::Tar,
         Self::TarGz,
@@ -394,6 +396,7 @@ impl ContainerKind {
         Self::FwAiroha,
         Self::Minidump,
         Self::UefiFv,
+        Self::DotnetSingleFile,
     ];
 
     #[must_use]
@@ -498,7 +501,8 @@ impl ContainerKind {
             | Self::FwAiroha
             | Self::Minidump
             | Self::UefiFv
-            | Self::InstallShield => ExtractionMode::Payload,
+            | Self::InstallShield
+            | Self::DotnetSingleFile => ExtractionMode::Payload,
             Self::None => ExtractionMode::Unsupported,
         }
     }
@@ -849,6 +853,9 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ContainerKind> {
 fn detect_by_tail(bytes: &[u8]) -> Option<ContainerKind> {
     if crate::containers::bun::detect_bun(bytes).is_some() {
         return Some(ContainerKind::BunStandalone);
+    }
+    if crate::containers::detect_dotnet_bundle(bytes).is_some() {
+        return Some(ContainerKind::DotnetSingleFile);
     }
     if smells_like_nsis(bytes) {
         return Some(ContainerKind::Nsis);
@@ -1414,9 +1421,9 @@ mod tests {
     }
 
     #[test]
-    fn detected_count_is_one_hundred() {
-        assert_eq!(ContainerKind::detected_format_count(), 100);
-        assert_eq!(ContainerKind::ALL.len(), 100);
+    fn detected_count_is_one_hundred_and_one() {
+        assert_eq!(ContainerKind::detected_format_count(), 101);
+        assert_eq!(ContainerKind::ALL.len(), 101);
     }
 
     const BREADTH_EVIDENCE: &str = "crates/disrobe-cli/tests/golden/container_breadth.txt";
@@ -1517,7 +1524,7 @@ mod tests {
         assert_eq!(external, 0);
         assert_eq!(
             ContainerKind::payload_extractor_count() + metadata_only + external,
-            100,
+            101,
             "this counts what the roster declares, not what any input reached; the delivered figure \
              is measured in {BREADTH_EVIDENCE} and asserted by \
              published_container_counts_match_this_enum"

@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use cfb::CompoundFile;
+use disrobe_core::debug::DebugLog;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -1559,9 +1560,7 @@ fn resolve_identifier(id_code: u16, identifiers: &[String], vba_ver: u8, is_64bi
             }
         }
         if idx >= 0 && (idx as usize) < identifiers.len() {
-            if std::env::var("DISROBE_ID_DEBUG").is_ok() {
-                return format!("{}#{idx}", identifiers[idx as usize]);
-            }
+            DebugLog::for_scope("shell").kv("resolved-identifier-index", || idx.to_string());
             return identifiers[idx as usize].clone();
         }
         return format!("id_{orig_code:04X}");

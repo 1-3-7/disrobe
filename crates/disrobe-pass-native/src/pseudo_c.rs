@@ -4802,17 +4802,115 @@ fn is_stack_pointer_move(operands: &str) -> bool {
     )
 }
 
-fn is_rbp_lea_frame(operands: &str) -> bool {
-    let Some((dest, src)): Option<(&str, &str)> = operands.split_once(',') else {
-        return false;
-    };
+fn rbp_lea_displacement(operands: &str) -> Option<i64> {
+    let (dest, src): (&str, &str) = operands.split_once(',')?;
     if !parse_reg(dest.trim()).is_some_and(|r: RegRef| r.reg == Reg::Rbp && r.width == Width::W64) {
-        return false;
+        return None;
     }
-    let Some((base, index, _disp)): Option<AddrTerms> = parse_addr_terms(src.trim()) else {
-        return false;
-    };
-    base == Some(Reg::Rsp) && index.is_none()
+    let (base, index, disp): AddrTerms = parse_addr_terms(src.trim())?;
+    (base == Some(Reg::Rsp) && index.is_none()).then_some(disp)
+}
+
+fn is_rbp_lea_frame(operands: &str) -> bool {
+    rbp_lea_displacement(operands).is_some()
+}
+
+fn writes_stack_pointer(insn: &DisasmInsn) -> bool {
+    first_operand_is_rsp(&insn.operands)
+}
+
+fn frame_pointer_anchor(real: &[&DisasmInsn]) -> Option<FramePointerAnchor> {
+    let mut delta: i64 = 0;
+    let mut saved: i64 = 0;
+    for insn in real {
+        match insn.mnemonic.as_str() {
+            "push" => {
+                delta = delta.checked_sub(RETURN_ADDRESS_BYTES)?;
+                saved = saved.checked_add(RETURN_ADDRESS_BYTES)?;
+            }
+            "mov" if is_stack_pointer_move(&insn.operands) => {
+                return insn
+                    .operands
+                    .split_once(',')
+                    .filter(|(dest, _): &(&str, &str)| dest.trim() == "rbp")
+                    .and_then(|_| {
+                        Some(FramePointerAnchor {
+                            entry_disp: delta.checked_neg()?,
+                            saved_bytes: saved,
+                        })
+                    });
+            }
+            "lea" if let Some(disp) = rbp_lea_displacement(&insn.operands) => {
+                return Some(FramePointerAnchor {
+                    entry_disp: delta.checked_add(disp)?.checked_neg()?,
+                    saved_bytes: saved,
+                });
+            }
+            "sub" | "add" if writes_stack_pointer(insn) => {
+                let imm: i64 = rsp_delta_imm(&insn.mnemonic, &insn.operands)?;
+                delta = if insn.mnemonic == "sub" {
+                    delta.checked_sub(imm)?
+                } else {
+                    delta.checked_add(imm)?
+                };
+            }
+            _ if writes_stack_pointer(insn) || stack_depth_changing_mnemonic(&insn.mnemonic) => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn preceding_real_insn<'a>(real: &[&'a DisasmInsn], index: usize) -> Option<&'a DisasmInsn> {
+    index
+        .checked_sub(1)
+        .and_then(|prior: usize| real.get(prior).copied())
+}
+
+fn stack_pointer_break(real: &[&DisasmInsn], rbp_is_frame: bool) -> Option<StackPointerBreak> {
+    let mut constant_allocations: usize = 0;
+    let mut pushes: usize = 0;
+    for (index, insn) in real.iter().enumerate() {
+        let mnemonic: &str = insn.mnemonic.as_str();
+        if matches!(mnemonic, "push" | "pop") {
+            pushes += 1;
+            continue;
+        }
+        if mnemonic == "lea" && writes_stack_pointer(insn) {
+            return Some(StackPointerBreak::PointerArithmetic);
+        }
+        if !writes_stack_pointer(insn) {
+            continue;
+        }
+        match mnemonic {
+            "and" | "or" | "xor" => return Some(StackPointerBreak::Realignment),
+            "sub" | "add" => {
+                if rsp_delta_imm(mnemonic, &insn.operands).is_none() {
+                    let probed: bool = preceding_real_insn(real, index)
+                        .is_some_and(|prior: &DisasmInsn| prior.mnemonic == "call");
+                    return Some(if probed {
+                        StackPointerBreak::StackProbe
+                    } else {
+                        StackPointerBreak::VariableAllocation
+                    });
+                }
+                if mnemonic == "sub" {
+                    constant_allocations += 1;
+                }
+            }
+            "mov" if is_stack_pointer_move(&insn.operands) && rbp_is_frame => {}
+            _ => return Some(StackPointerBreak::VariableAllocation),
+        }
+    }
+    if rbp_is_frame {
+        return None;
+    }
+    if pushes > 0 {
+        return Some(StackPointerBreak::PushBuilt);
+    }
+    (constant_allocations > 1).then_some(StackPointerBreak::ResizedMidBody)
 }
 
 fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
@@ -4827,13 +4925,13 @@ fn rsp_delta_imm(mnemonic: &str, operands: &str) -> Option<i64> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StackFrameBoundary {
-    ReturnAddress { home_bytes: i64 },
+    ReturnAddress { linkage_bytes: i64, home_bytes: i64 },
     EntryStackPointer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StackFrameExtent {
-    owned_start: i64,
+    owned_start: Option<i64>,
     private_end: i64,
     boundary: StackFrameBoundary,
 }
@@ -4841,15 +4939,29 @@ struct StackFrameExtent {
 impl StackFrameExtent {
     const fn x86(frame_bytes: i64, red_zone_below: i64, home_bytes: i64) -> Self {
         Self {
-            owned_start: -red_zone_below,
+            owned_start: Some(-red_zone_below),
             private_end: frame_bytes,
-            boundary: StackFrameBoundary::ReturnAddress { home_bytes },
+            boundary: StackFrameBoundary::ReturnAddress {
+                linkage_bytes: RETURN_ADDRESS_BYTES,
+                home_bytes,
+            },
         }
+    }
+
+    fn x86_frame_pointer(anchor: FramePointerAnchor, home_bytes: i64) -> Option<Self> {
+        Some(Self {
+            owned_start: None,
+            private_end: anchor.entry_disp.checked_sub(anchor.saved_bytes)?,
+            boundary: StackFrameBoundary::ReturnAddress {
+                linkage_bytes: anchor.saved_bytes.checked_add(RETURN_ADDRESS_BYTES)?,
+                home_bytes,
+            },
+        })
     }
 
     fn aarch64(frame_bytes: i64, base_to_entry: i64) -> Option<Self> {
         Some(Self {
-            owned_start: base_to_entry.checked_sub(frame_bytes)?,
+            owned_start: Some(base_to_entry.checked_sub(frame_bytes)?),
             private_end: base_to_entry,
             boundary: StackFrameBoundary::EntryStackPointer,
         })
@@ -4857,13 +4969,24 @@ impl StackFrameExtent {
 
     const fn home_bytes(self) -> i64 {
         match self.boundary {
-            StackFrameBoundary::ReturnAddress { home_bytes } => home_bytes,
+            StackFrameBoundary::ReturnAddress { home_bytes, .. } => home_bytes,
             StackFrameBoundary::EntryStackPointer => 0,
         }
     }
 
+    const fn linkage_bytes(self) -> i64 {
+        match self.boundary {
+            StackFrameBoundary::ReturnAddress { linkage_bytes, .. } => linkage_bytes,
+            StackFrameBoundary::EntryStackPointer => 0,
+        }
+    }
+
+    fn return_address_start(self) -> i64 {
+        self.home_start().saturating_sub(RETURN_ADDRESS_BYTES)
+    }
+
     fn home_start(self) -> i64 {
-        self.private_end.saturating_add(RETURN_ADDRESS_BYTES)
+        self.private_end.saturating_add(self.linkage_bytes())
     }
 
     fn home_end(self) -> i64 {
@@ -4874,12 +4997,16 @@ impl StackFrameExtent {
         let Some(end): Option<i64> = disp.checked_add(bytes) else {
             return false;
         };
-        (disp >= self.owned_start && end <= self.private_end)
+        let below: bool = self.owned_start.is_none_or(|start: i64| disp >= start);
+        (below && end <= self.private_end)
             || (self.home_bytes() > 0 && disp >= self.home_start() && end <= self.home_end())
     }
 
     fn describe(self) -> String {
-        let owned: String = format!("[{}, {})", self.owned_start, self.private_end);
+        let owned: String = self.owned_start.map_or_else(
+            || format!("(-inf, {})", self.private_end),
+            |start: i64| format!("[{start}, {})", self.private_end),
+        );
         if self.home_bytes() == 0 {
             owned
         } else {
@@ -4890,9 +5017,19 @@ impl StackFrameExtent {
     fn rejection(self, disp: i64, bytes: i64) -> String {
         let owned: String = self.describe();
         match self.boundary {
+            StackFrameBoundary::ReturnAddress { linkage_bytes, .. }
+                if linkage_bytes > RETURN_ADDRESS_BYTES =>
+            {
+                format!(
+                    "{bytes}-byte slot at {disp} is outside the {owned} bytes this frame owns; the saved registers sit at [{}, {}), the return address at {} and the caller owns the frame above it",
+                    self.private_end,
+                    self.return_address_start(),
+                    self.return_address_start()
+                )
+            }
             StackFrameBoundary::ReturnAddress { .. } => format!(
                 "{bytes}-byte slot at {disp} is outside the {owned} bytes this frame owns; the return address sits at {} and the caller owns the frame above it",
-                self.private_end
+                self.return_address_start()
             ),
             StackFrameBoundary::EntryStackPointer => format!(
                 "{bytes}-byte slot at {disp} is outside the {owned} bytes this frame owns; the entry stack pointer sits at {} and incoming stack arguments begin there",
@@ -4903,16 +5040,66 @@ impl StackFrameExtent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FramePointerAnchor {
+    entry_disp: i64,
+    saved_bytes: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackPointerBreak {
+    VariableAllocation,
+    Realignment,
+    PointerArithmetic,
+    ResizedMidBody,
+    PushBuilt,
+    StackProbe,
+}
+
+impl StackPointerBreak {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::VariableAllocation => {
+                "the stack pointer moves by a register, so the frame size is not fixed at any offset"
+            }
+            Self::Realignment => {
+                "the stack pointer is realigned by a mask, so no offset is constant relative to entry"
+            }
+            Self::PointerArithmetic => {
+                "the stack pointer is recomputed by an address calculation, so no offset is constant relative to entry"
+            }
+            Self::ResizedMidBody => {
+                "the stack pointer is lowered more than once, so one offset names different bytes in different blocks"
+            }
+            Self::PushBuilt => {
+                "the frame is built by pushes rather than one allocation, so each push shifts every offset"
+            }
+            Self::StackProbe => {
+                "a stack-probe prologue allocates through a register, so the frame size is not fixed at any offset"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FrameShape {
     base: Option<Reg>,
     rbp_is_frame: bool,
     red_zone: bool,
     stack_extent: Option<StackFrameExtent>,
+    stack_pointer_break: Option<StackPointerBreak>,
 }
 
 const SYSV_RED_ZONE_BYTES: i64 = 128;
 const MS_X64_HOME_BYTES: i64 = 32;
 const RETURN_ADDRESS_BYTES: i64 = 8;
+
+const fn home_space_above_return(abi: Abi) -> i64 {
+    if matches!(abi, Abi::MsX64) {
+        MS_X64_HOME_BYTES
+    } else {
+        0
+    }
+}
 
 fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
     let real: Vec<&DisasmInsn> = insns
@@ -4923,26 +5110,27 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
         (i.mnemonic == "mov" && is_stack_pointer_move(&i.operands))
             || (i.mnemonic == "lea" && is_rbp_lea_frame(&i.operands))
     });
+    let stack_pointer_break: Option<StackPointerBreak> = stack_pointer_break(&real, rbp_is_frame);
     if rbp_is_frame {
         return FrameShape {
             base: Some(Reg::Rbp),
             rbp_is_frame: true,
             red_zone: false,
-            stack_extent: None,
+            stack_extent: frame_pointer_anchor(&real).and_then(|anchor: FramePointerAnchor| {
+                StackFrameExtent::x86_frame_pointer(anchor, home_space_above_return(abi))
+            }),
+            stack_pointer_break,
         };
     }
-    if let Some(allocated) = rsp_frame_allocation(&real) {
+    if stack_pointer_break.is_none()
+        && let Some(allocated) = rsp_frame_allocation(&real)
+    {
         let red_zone_below: i64 =
             if abi == Abi::SysV && bytes_below_the_stack_pointer_stay_private(insns) {
                 SYSV_RED_ZONE_BYTES
             } else {
                 0
             };
-        let home_above_return: i64 = if abi == Abi::MsX64 {
-            MS_X64_HOME_BYTES
-        } else {
-            0
-        };
         return FrameShape {
             base: Some(Reg::Rsp),
             rbp_is_frame: false,
@@ -4950,8 +5138,9 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
             stack_extent: Some(StackFrameExtent::x86(
                 allocated,
                 red_zone_below,
-                home_above_return,
+                home_space_above_return(abi),
             )),
+            stack_pointer_break,
         };
     }
     if abi == Abi::SysV && sysv_red_zone_frame(insns) {
@@ -4960,6 +5149,7 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
             rbp_is_frame: false,
             red_zone: true,
             stack_extent: None,
+            stack_pointer_break,
         };
     }
     FrameShape {
@@ -4967,6 +5157,7 @@ fn classify_frame(insns: &[DisasmInsn], abi: Abi) -> FrameShape {
         rbp_is_frame: false,
         red_zone: false,
         stack_extent: None,
+        stack_pointer_break,
     }
 }
 
@@ -11741,6 +11932,7 @@ struct FrameScanState {
     regions: Vec<IndexedRegion>,
     bounds: BTreeMap<Reg, u64>,
     misuse: bool,
+    stack_pointer_escape: bool,
 }
 
 const fn masked_index_bound(stmt: &Stmt) -> Option<(Reg, u64)> {
@@ -11842,6 +12034,7 @@ impl FrameScan {
     fn note_reg(self, reg: Reg, state: &mut FrameScanState) {
         if self.is_stack_reg(reg) {
             state.misuse = true;
+            state.stack_pointer_escape |= reg == Reg::Rsp;
         }
     }
 
@@ -11877,7 +12070,7 @@ impl FrameScan {
         if let Some(idx) = mem.index
             && self.is_stack_reg(idx.reg)
         {
-            state.misuse = true;
+            self.note_reg(idx.reg, state);
         }
         match mem.base {
             Some(b) if Some(b) == self.frame_base => match mem.index {
@@ -11887,7 +12080,7 @@ impl FrameScan {
                     None => state.misuse = true,
                 },
             },
-            Some(b) if self.is_stack_reg(b) => state.misuse = true,
+            Some(b) if self.is_stack_reg(b) => self.note_reg(b, state),
             _ => {}
         }
     }
@@ -12185,6 +12378,14 @@ fn plan_frame(body: &Block, shape: FrameShape) -> Result<Option<FramePlan>> {
     let mut state: FrameScanState = FrameScanState::default();
     scan_frame_block(ctx, body, &mut state);
     if state.misuse {
+        if let Some(unstable) = shape.stack_pointer_break
+            && state.stack_pointer_escape
+        {
+            return Err(Error::LlvmIr(format!(
+                "a stack-relative access cannot be given a fixed frame offset: {}",
+                unstable.reason()
+            )));
+        }
         return Err(Error::LlvmIr(
             "stack-frame register escapes a fixed-offset slot access (address-taken, dynamic, aliased, or used as a value); not a modelable spill frame".to_owned(),
         ));
@@ -19441,6 +19642,7 @@ mod tests {
                 rbp_is_frame: false,
                 red_zone: false,
                 stack_extent: Some(StackFrameExtent::x86(24, 0, 0)),
+                stack_pointer_break: None,
             },
             "a callee clobbers the bytes below the stack pointer, so the red zone leaves the frame"
         );
@@ -19528,10 +19730,230 @@ mod tests {
                     rbp_is_frame: false,
                     red_zone: false,
                     stack_extent: Some(extent),
+                    stack_pointer_break: None,
                 },
                 "{abi:?} bounds the frame to the bytes its ABI makes private"
             );
         }
+    }
+
+    fn frame_plan_rejection(code: &[u8], base: u64, abi: Abi) -> String {
+        let err: Error = recover_leaf_function_abi(code, base, abi).map_or_else(
+            |e: Error| e,
+            |rec: LeafRecovery| {
+                panic!(
+                    "a frame this model cannot bound may not be recovered as a local frame: {}",
+                    rec.source
+                )
+            },
+        );
+        let Error::LlvmIr(message) = err else {
+            panic!("expected a lifter rejection");
+        };
+        message
+    }
+
+    #[test]
+    fn a_frame_pointer_frame_rejects_the_caller_frame_above_the_saved_registers() {
+        const ONE_PUSH: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3];
+        const TWO_PUSHES: [u8; 12] = [
+            0x55, 0x53, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x18, 0x5b, 0x5d, 0xc3,
+        ];
+        const LEA_ANCHOR: [u8; 12] = [
+            0x55, 0x48, 0x8d, 0x6c, 0x24, 0x00, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+        ];
+        let cases: [(&str, &[u8], &str, &str); 3] = [
+            (
+                "push rbp; mov rbp,rsp; mov rax,[rbp+10h]; pop rbp; ret ",
+                &ONE_PUSH,
+                "8-byte slot at 16 is outside the (-inf, 0) bytes this frame owns",
+                "the saved registers sit at [0, 8), the return address at 8",
+            ),
+            (
+                "push rbp; push rbx; mov rbp,rsp; mov rax,[rbp+18h]; pop rbx; pop rbp; ret ",
+                &TWO_PUSHES,
+                "8-byte slot at 24 is outside the (-inf, 0) bytes this frame owns",
+                "the saved registers sit at [0, 16), the return address at 16",
+            ),
+            (
+                "push rbp; lea rbp,[rsp]; mov rax,[rbp+10h]; pop rbp; ret ",
+                &LEA_ANCHOR,
+                "8-byte slot at 16 is outside the (-inf, 0) bytes this frame owns",
+                "the saved registers sit at [0, 8), the return address at 8",
+            ),
+        ];
+        for (index, (asm, code, extent, linkage)) in cases.into_iter().enumerate() {
+            let base: u64 = 0x9100 + (index as u64) * 0x40;
+            assert_eq!(
+                disasm_text(code, base),
+                asm,
+                "the probe must build the frame pointer the case describes"
+            );
+            let message: String = frame_plan_rejection(code, base, Abi::SysV);
+            assert!(
+                message.contains(extent),
+                "an incoming stack argument is not a local slot: {message}"
+            );
+            assert!(
+                message.contains(linkage),
+                "the rejection must place the saved registers the prologue pushed: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_microsoft_x64_frame_pointer_frame_owns_the_caller_reserved_home_space() {
+        const HOME_SLOT: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3];
+        const PAST_HOME: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x30, 0x5d, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&HOME_SLOT, 0x9200, Abi::MsX64)
+            .expect("the register home area is callee scratch the caller reserves");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[24];"),
+            "the home slot must be backed like any other byte this frame owns: {}",
+            rec.source
+        );
+        assert_eq!(
+            disasm_text(&PAST_HOME, 0x9240),
+            "push rbp; mov rbp,rsp; mov rax,[rbp+30h]; pop rbp; ret ",
+            "the probe must read the first byte above the home area"
+        );
+        let message: String = frame_plan_rejection(&PAST_HOME, 0x9240, Abi::MsX64);
+        assert!(
+            message.contains("8-byte slot at 48 is outside the (-inf, 0) and [16, 48) bytes"),
+            "the fifth incoming argument sits above the home area and is not a local: {message}"
+        );
+    }
+
+    #[test]
+    fn a_displaced_frame_pointer_anchor_bounds_the_frame_where_the_prologue_puts_it() {
+        const LOCAL_ABOVE_ANCHOR: [u8; 22] = [
+            0x55, 0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x6c, 0x24, 0x80, 0x48,
+            0x89, 0x7d, 0x78, 0x48, 0x8b, 0x45, 0x78, 0xc3,
+        ];
+        const CALLER_ARGUMENT: [u8; 21] = [
+            0x55, 0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00, 0x48, 0x8d, 0x6c, 0x24, 0x80, 0x48,
+            0x8b, 0x85, 0x90, 0x01, 0x00, 0x00, 0xc3,
+        ];
+        assert_eq!(
+            disasm_text(&LOCAL_ABOVE_ANCHOR, 0x9300),
+            "push rbp; sub rsp,100h; lea rbp,[rsp-80h]; mov [rbp+78h],rdi; mov rax,[rbp+78h]; ret ",
+            "the probe must anchor the frame pointer inside its own allocation"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&LOCAL_ABOVE_ANCHOR, 0x9300, Abi::SysV)
+            .expect("a displaced anchor leaves locals both above and below itself");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[128];"),
+            "a local above a displaced anchor is still a local: {}",
+            rec.source
+        );
+        assert_eq!(
+            disasm_text(&CALLER_ARGUMENT, 0x9340),
+            "push rbp; sub rsp,100h; lea rbp,[rsp-80h]; mov rax,[rbp+190h]; ret ",
+            "the probe must read the first byte above the return address"
+        );
+        let message: String = frame_plan_rejection(&CALLER_ARGUMENT, 0x9340, Abi::SysV);
+        assert!(
+            message.contains("8-byte slot at 400 is outside the (-inf, 384) bytes"),
+            "this prologue puts the entry stack pointer at 392, so 400 is the caller's: {message}"
+        );
+        assert!(
+            message.contains("the saved registers sit at [384, 392), the return address at 392"),
+            "the rejection must place the linkage where this prologue put it: {message}"
+        );
+    }
+
+    #[test]
+    fn the_frame_pointer_boundary_holds_at_the_last_local_byte_and_the_first_saved_byte() {
+        const LAST_LOCAL: [u8; 14] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0xf8, 0x48, 0x8b, 0x45, 0xf8, 0x5d, 0xc3,
+        ];
+        const FIRST_SAVED: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x00, 0x5d, 0xc3];
+        assert_eq!(
+            disasm_text(&LAST_LOCAL, 0x9400),
+            "push rbp; mov rbp,rsp; mov [rbp-8],rdi; mov rax,[rbp-8]; pop rbp; ret ",
+            "the probe must end its slot exactly on the boundary"
+        );
+        let rec: LeafRecovery = recover_leaf_function_abi(&LAST_LOCAL, 0x9400, Abi::SysV)
+            .expect("a slot ending on the boundary is the last in-frame slot");
+        assert!(
+            rec.source.contains("unsigned char stack_frame[8];"),
+            "the eight bytes below the frame pointer are the frame's own: {}",
+            rec.source
+        );
+        let message: String = frame_plan_rejection(&FIRST_SAVED, 0x9440, Abi::SysV);
+        assert!(
+            message.contains("8-byte slot at 0 is outside the (-inf, 0) bytes"),
+            "the byte on the boundary holds the saved frame pointer, not data: {message}"
+        );
+    }
+
+    #[test]
+    fn every_unstable_stack_pointer_shape_names_why_no_fixed_offset_exists() {
+        const VARIABLE: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x29, 0xc4, 0x48, 0x89, 0x7c, 0x24, 0x08, 0x48, 0x8b,
+            0x44, 0x24, 0x08, 0xc3,
+        ];
+        const REALIGNED: [u8; 19] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x83, 0xe4, 0xe0, 0x48, 0x89, 0x7c, 0x24, 0x08, 0x48,
+            0x8b, 0x44, 0x24, 0x08, 0xc3,
+        ];
+        const RECOMPUTED: [u8; 20] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8d, 0x64, 0x24, 0xf0, 0x48, 0x89, 0x7c, 0x24, 0x08,
+            0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3,
+        ];
+        const RESIZED: [u8; 25] = [
+            0x48, 0x81, 0xec, 0x00, 0x10, 0x00, 0x00, 0x48, 0x81, 0xec, 0x00, 0x10, 0x00, 0x00,
+            0x48, 0x89, 0x7c, 0x24, 0x08, 0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3,
+        ];
+        const PUSH_BUILT: [u8; 13] = [
+            0x53, 0x48, 0x89, 0x7c, 0x24, 0x08, 0x48, 0x8b, 0x44, 0x24, 0x08, 0x5b, 0xc3,
+        ];
+        const STACK_PROBE: [u8; 24] = [
+            0xb8, 0x00, 0x30, 0x00, 0x00, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x29, 0xc4, 0x48,
+            0x89, 0x7c, 0x24, 0x08, 0x48, 0x8b, 0x44, 0x24, 0x08, 0xc3,
+        ];
+        let cases: [(&[u8], Abi, StackPointerBreak); 6] = [
+            (&VARIABLE, Abi::SysV, StackPointerBreak::VariableAllocation),
+            (&REALIGNED, Abi::SysV, StackPointerBreak::Realignment),
+            (&RECOMPUTED, Abi::SysV, StackPointerBreak::PointerArithmetic),
+            (&RESIZED, Abi::SysV, StackPointerBreak::ResizedMidBody),
+            (&PUSH_BUILT, Abi::SysV, StackPointerBreak::PushBuilt),
+            (&STACK_PROBE, Abi::MsX64, StackPointerBreak::StackProbe),
+        ];
+        for (index, (code, abi, expected)) in cases.into_iter().enumerate() {
+            let base: u64 = 0x9500 + (index as u64) * 0x40;
+            let insns: Vec<DisasmInsn> =
+                disassemble(Arch::X86_64, base, code).expect("disassemble unstable frame probe");
+            assert_eq!(
+                classify_frame(&insns, abi).stack_pointer_break,
+                Some(expected),
+                "the classifier must name the shape that moves the stack pointer: {}",
+                disasm_text(code, base)
+            );
+            let message: String = frame_plan_rejection(code, base, abi);
+            assert!(
+                message.contains(expected.reason()),
+                "the rejection must say why no offset is fixed: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_address_taken_slot_keeps_the_escape_message_when_the_stack_pointer_is_constant() {
+        const ADDRESS_TAKEN: [u8; 10] =
+            [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8d, 0x45, 0xf8, 0x5d, 0xc3];
+        let insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, 0x9600, &ADDRESS_TAKEN)
+            .expect("disassemble address-taken probe");
+        assert_eq!(
+            classify_frame(&insns, Abi::SysV).stack_pointer_break,
+            None,
+            "this prologue moves the stack pointer by one constant, so nothing is unstable"
+        );
+        let message: String = frame_plan_rejection(&ADDRESS_TAKEN, 0x9600, Abi::SysV);
+        assert!(
+            message.contains("escapes a fixed-offset slot access"),
+            "a leaked slot address is an escape, not an unstable stack pointer: {message}"
+        );
     }
 
     #[test]
@@ -19722,6 +20144,7 @@ mod tests {
                 rbp_is_frame: false,
                 red_zone: true,
                 stack_extent: None,
+                stack_pointer_break: None,
             }
         );
         for abi in [Abi::MsX64, Abi::Aapcs64] {
@@ -19732,6 +20155,7 @@ mod tests {
                     rbp_is_frame: false,
                     red_zone: false,
                     stack_extent: None,
+                    stack_pointer_break: None,
                 },
                 "{abi:?} reserves nothing below the stack pointer"
             );

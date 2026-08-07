@@ -268,15 +268,15 @@
       "bars": [
         {
           "label": "Containers",
-          "detected": 100,
-          "delivered": 34,
+          "detected": 101,
+          "delivered": 35,
           "delivered_label": "extracted from a committed input",
-          "detail": "100 formats detected, and each declares a payload extractor. 33 of them write member bytes from an input this repository commits, which is the measured leg. The other 67 have no committed input, so nothing here states whether their extractors work.",
+          "detail": "101 formats detected, and each declares a payload extractor. 35 of them write member bytes from an input this repository commits, which is the measured leg. The other 66 have no committed input, so nothing here states whether their extractors work.",
           "verified_by": {
             "path": "crates/disrobe-binfmt/src/container.rs",
             "function": "published_container_counts_match_this_enum"
           },
-          "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (ContainerKind::ALL is [Self; 100], 100 real variants excluding None), asserted in detected_count_is_one_hundred; every one of the 100 declares a payload extractor rather than a metadata summary or an external-tool hand-off, asserted in every_declared_format_carries_a_payload_extractor, which is a roster declaration and not a run. The delivered count is the measured leg: 33 of the 100 are driven to member bytes on disk by an input this repository commits, measured by crates/disrobe-cli/tests/container_breadth.rs over `git ls-files`, pinned in crates/disrobe-cli/tests/golden/container_breadth.txt and read back by published_container_counts_match_this_enum. The remaining 67 carry an extractor no committed input reaches, so they are unverified rather than shown to fail: absence of an input is not evidence of a broken extractor, and nothing here claims they work. The declared superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
+          "source": "ContainerKind enum crates/disrobe-binfmt/src/container.rs (ContainerKind::ALL is [Self; 101], 101 real variants excluding None), asserted in detected_count_is_one_hundred_and_one; every one of the 101 declares a payload extractor rather than a metadata summary or an external-tool hand-off, asserted in every_declared_format_carries_a_payload_extractor, which is a roster declaration and not a run. The delivered count is the measured leg: 35 of the 101 are driven to member bytes on disk by an input this repository commits, measured by crates/disrobe-cli/tests/container_breadth.rs over `git ls-files`, pinned in crates/disrobe-cli/tests/golden/container_breadth.txt and read back by published_container_counts_match_this_enum. The remaining 66 carry an extractor no committed input reaches, so they are unverified rather than shown to fail: absence of an input is not evidence of a broken extractor, and nothing here claims they work. The declared superset spans archives/installers (ZIP/tar/7z/RAR/cab/MSI/NSIS/deb/rpm/Docker/OCI/ISO), bare single-stream compression (gz/bz2/zst/lzma/lzip/lz4-frame/zlib/.Z), legacy archives (ar/arj/arc/lzh/lzop/uzip/xamarin-xalz/par2/ELF-overlay carve), embedded-linux filesystems (squashfs/cramfs/ext4/romfs/minixfs/jffs2/ubi-ubifs/yaffs/erofs/ntfs/android-sparse/btrfs-send), disk-image/partition containers (GPT/MBR/VHD/VHDX/WIM walked through FAT), .NET single-file bundles (majors 1/2/6, deflate-compressed and stored entries), and vendor firmware decryptors (D-Link AES/EnGenius XOR/Autel table/QNAP PC1 plus CRC-verified Netgear/Xiaomi/Tesla carves); a recursive carve-everything engine (multi-magic scan, chunk model, depth recursion, entropy gating) drives nested extraction. InnoSetup writes the decoded setup-data block stream (per-file split via the version-specific TSetupHeader parse is the documented limit) and InstallShield writes its stored and zlib members; the arj/arc/stuffit/partclone heavy codecs are carved verbatim with a documented note"
         }
       ]
     },
@@ -799,6 +799,130 @@
           },
           "detail": "316 entries, each an obfuscated expression whose original is held in a separate file the recovery path never opens: 216 from a forward rewriter written from the published identity tables, at widths 2 through 64 over 1 to 8 variables, and 100 from MBA-Obfuscator run over kernels this repository chose. The count is the population, not a recovery rate. Measured alongside it on this box: 254 of the 316 entries returned an answer inside a 2 second per-entry budget and 0 of those answers disagreed with the held-out original; the other 62 refused the budget and are reported as refusals rather than counted either way. A seeded-wrong recovery that returns one more than the truth is rejected on all 254, and one that swaps addition for exclusive-or is rejected on 252, the 2 survivors being cases where the substitution happens to preserve the value.",
           "source": "evidence/corpus/mba/cases.jsonl, regenerated byte-identically by the corpus generator's generate command and gated by cargo test -p disrobe-mba --test evidence_corpus_gate"
+        }
+      ]
+    },
+    {
+      "heading": "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.1.0 -O2 -fno-builtin, Windows x86-64)",
+      "axis_label": "recall (true positives / labeled flows), %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "direct flow, gcc -O2",
+          "value": 60.0,
+          "num": 9,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "9 of 15 labeled direct-flow command-injection cases recalled, precision 100% (9 of 9 flagged findings land on the corpus's own bad-labeled chain, 0 on a good-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category direct flow; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through a field, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "6 of 10 labeled struct-field flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a field; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through an array element, gcc -O2",
+          "value": 20.0,
+          "num": 1,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "1 of 5 labeled array-element flow cases recalled, precision 100% (1 of 1 flagged findings lands on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through an array element; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow across a function pointer, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "6 of 10 labeled function-pointer flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow across a function pointer; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "implicit flow through a control dependence, gcc -O2",
+          "value": 57.6,
+          "num": 49,
+          "den": 85,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "49 of 85 labeled control-dependence (implicit flow) cases recalled, precision 100% (49 of 49 flagged findings land on the corpus's own bad-labeled chain). This is the largest populated category, 85 of the corpus's 190 selected groups.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category implicit flow through a control dependence; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "flow through a loop, gcc -O2",
+          "value": 60.0,
+          "num": 6,
+          "den": 10,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "6 of 10 labeled loop-flow cases recalled, precision 100% (6 of 6 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category flow through a loop; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "inter-procedural flow at depth one, gcc -O2",
+          "value": 40.0,
+          "num": 16,
+          "den": 40,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "16 of 40 labeled depth-one inter-procedural cases recalled, precision 100% (16 of 16 flagged findings land on the corpus's own bad-labeled chain).",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth one; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "inter-procedural flow at depth greater than one, gcc -O2",
+          "value": 0.0,
+          "num": 0,
+          "den": 15,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "0 of 15 labeled depth-greater-than-one inter-procedural cases recalled at either -O0 or -O2; precision is undefined (0 true or false positive calls in this category, since nothing was flagged). A measured ceiling: the engine does not currently propagate taint through a second call boundary on this corpus.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, category inter-procedural flow at depth greater than one; ground truth is manifest.xml and each file's own Flow Variant header"
+        },
+        {
+          "label": "aggregate (8 populated categories), gcc -O2",
+          "value": 48.9,
+          "num": 93,
+          "den": 190,
+          "verified_by": {
+            "path": "crates/disrobe-taint/tests/graded_corpus.rs",
+            "function": "published_juliet_o2_bars_match_the_pinned_floors",
+            "measured_by": "juliet_cwe78_command_injection_precision_recall_o2"
+          },
+          "detail": "93 of 190 labeled command-injection flows recalled across the 8 populated categories (48.9%), precision 100% (93 of 93 flagged findings land on a corpus-labeled bad chain, 0 false positives against any of the 190 good-labeled counterparts). The other 7 declared categories (container, callback, virtual call, string operation, sanitiser-severs, recursion, library boundary) hold 0 cases in this corpus slice. The same corpus and engine at -O0 recall only 12 of 190 (6.3%); the move from a prior 39 of 190 (20.5%) to 93 of 190 came from teaching the engine to track a source call's out-argument register, not from this row's own wiring.",
+          "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, sum over the 8 populated categories; ground truth is manifest.xml and each file's own Flow Variant header"
         }
       ]
     }

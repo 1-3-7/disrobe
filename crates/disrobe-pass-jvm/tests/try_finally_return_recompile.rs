@@ -82,6 +82,40 @@ const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
             CTR++;\n\
         }\n\
     }\n\
+    static long longFinallyReturns(long a) {\n\
+        try {\n\
+            return a * 2L;\n\
+        } finally {\n\
+            return a + 1L;\n\
+        }\n\
+    }\n\
+    static float floatFinallyReturns(float a) {\n\
+        try {\n\
+            return a * 2.0f;\n\
+        } finally {\n\
+            return a + 1.0f;\n\
+        }\n\
+    }\n\
+    static double doubleFinallyReturns(double a) {\n\
+        try {\n\
+            return a * 2.0;\n\
+        } finally {\n\
+            return a + 1.0;\n\
+        }\n\
+    }\n\
+    static Object objFinallyReturns(Object o) {\n\
+        try {\n\
+            return o.toString();\n\
+        } finally {\n\
+            return o;\n\
+        }\n\
+    }\n\
+    static int emptyFinally(int a) {\n\
+        try {\n\
+            return a * 3;\n\
+        } finally {\n\
+        }\n\
+    }\n\
 }\n";
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
@@ -239,6 +273,136 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
         orig_code, rec_code,
         "recompiled try/finally bytecode is not instruction/exception-table equivalent to the \
          original.\n--- recovered source ---\n{}",
+        decompiled.source
+    );
+}
+
+const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
+    static int CTR = 0;\n\
+    static int finallyWithIf(int a) {\n\
+        try {\n\
+            return a * 2;\n\
+        } finally {\n\
+            if (a > 0) { CTR++; } else { CTR--; }\n\
+        }\n\
+    }\n\
+    static int finallyBreaks(int[] xs) {\n\
+        int acc = 0;\n\
+        for (int x : xs) {\n\
+            try {\n\
+                acc += x;\n\
+            } finally {\n\
+                if (acc > 5) { break; }\n\
+            }\n\
+        }\n\
+        return acc;\n\
+    }\n\
+    static int finallyContinues(int[] xs) {\n\
+        int acc = 0;\n\
+        for (int x : xs) {\n\
+            try {\n\
+                acc += x;\n\
+            } finally {\n\
+                if (acc > 5) { continue; }\n\
+                acc += 100;\n\
+            }\n\
+        }\n\
+        return acc;\n\
+    }\n\
+    static int finallyNestedTry(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException ex) {\n\
+                CTR = -1;\n\
+            }\n\
+        }\n\
+    }\n\
+    static int finallyThrows(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
+        }\n\
+    }\n\
+}\n";
+
+const UNMODELLED_FINALLY_METHODS: &[&str] = &[
+    "finallyWithIf",
+    "finallyBreaks",
+    "finallyContinues",
+    "finallyNestedTry",
+    "finallyThrows",
+];
+
+#[test]
+fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+
+    let purpose: String = format!("disrobe_unmodelled_finally_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let orig_dir: PathBuf = dir.join("orig");
+    let rec_dir: PathBuf = dir.join("rec");
+    std::fs::create_dir_all(&orig_dir).expect("mkdir orig");
+    std::fs::create_dir_all(&rec_dir).expect("mkdir rec");
+
+    let src_path: PathBuf = orig_dir.join("UnmodelledFinally.java");
+    std::fs::write(&src_path, UNMODELLED_FINALLY_SRC).expect("write src");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&orig_dir)
+        .arg(&src_path)
+        .output()
+        .expect("javac orig");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let class_bytes: Vec<u8> =
+        std::fs::read(orig_dir.join("UnmodelledFinally.class")).expect("read class");
+    let cf: ClassFile = parse_classfile(&class_bytes).expect("parse");
+    let decompiled: DecompiledClass = decompile_class(&cf);
+
+    assert!(
+        !decompiled.source.contains("catch (Throwable"),
+        "a compiler-inserted finally was rendered as a catch clause, which changes what the \
+         method does with a pending exception:\n{}",
+        decompiled.source
+    );
+    for method in UNMODELLED_FINALLY_METHODS {
+        assert!(
+            decompiled.source.contains(method),
+            "method {method} vanished from the recovered class:\n{}",
+            decompiled.source
+        );
+    }
+    assert_eq!(
+        decompiled.source.matches("not recovered:").count(),
+        UNMODELLED_FINALLY_METHODS.len(),
+        "every finally shape the structurer cannot model must name its own refusal reason:\n{}",
+        decompiled.source
+    );
+
+    let rec_src: PathBuf = rec_dir.join("UnmodelledFinally.java");
+    std::fs::write(&rec_src, &decompiled.source).expect("write rec");
+    let recompile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&rec_dir)
+        .arg(&rec_src)
+        .output()
+        .expect("javac rec");
+    assert!(
+        recompile.status.success(),
+        "a refused method must still leave the class compilable:\n{}\n---source---\n{}",
+        String::from_utf8_lossy(&recompile.stderr),
         decompiled.source
     );
 }

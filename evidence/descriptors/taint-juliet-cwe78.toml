@@ -1,0 +1,17 @@
+id = "taint-juliet-cwe78"
+ecosystem = "taint"
+title = "Native taint source-to-sink flow, graded against the Juliet CWE-78 corpus's own manifest"
+claim = "disrobe's taint engine recalls 93 of 190 labeled command-injection flows in the NIST SARD Juliet Test Suite's char/system/.c CWE-78 slice at gcc 16.1.0 -O2, with 0 false positives across every populated category, and the ground truth is the corpus's own manifest.xml and Flow Variant header, never a value authored in this repository."
+oracle_strength = "strong"
+ci = false
+
+[oracle]
+kind = "recovery-import"
+external = "the NIST SARD Juliet Test Suite for C/C++ v1.3 (2017-10-01), CWE-78 OS Command Injection, char/system/.c files only. Ground truth is manifest.xml's own flaw line plus each file's own Flow Variant header, parsed by a typed reader that rejects an unrecognized line rather than defaulting. A finding is a true positive only when it names a function on the corpus's own bad-labeled call chain, and a false positive when it names one on the good-labeled chain; every group contributes exactly one bad-side and one good-side verdict, so a case cannot be silently dropped."
+reproduce = "cargo test -p disrobe-taint --test graded_corpus published_juliet_o2_bars_match_the_pinned_floors (unconditional, needs no corpus: compares xtask/data/recovery.json against the pinned floors below, and runs in CI); DISROBE_REQUIRE_JULIET_CORPUS=1 cargo test -p disrobe-taint --test graded_corpus juliet_cwe78_command_injection_precision_recall_o2 (re-derives the floor against the real corpus; local-only, since the corpus is fetched to a scratch cache by pinned URL and sha256, never committed, and CI does not provision it)"
+note = "The .cpp files in the same corpus slice are excluded because the taint engine's function-name matcher has no Itanium demangling. Only the native lift path is graded here: docs/src/cli/reference.md also claims disrobe taint reaches wasm, JVM, Dalvik, CIL, ABC, Ruby, Lua, BEAM and .pyc inputs, and none of those has a graded corpus yet. 7 of the 15 declared flow categories (container, callback, virtual call, string operation, sanitiser-severs, recursion, library boundary) have zero cases in this corpus slice; they are reported at 0 groups by the test's own render() rather than omitted, and no other pinned corpus supplies them yet. Recall is sharply sensitive to the host compiler's inlining choices: the same corpus at -O0 on the same gcc 16.1.0 recalls only 12 of 190 (6.3%), and inter-procedural flow at depth greater than one stays at 0 of 15 true positives at both -O0 and -O2, a measured ceiling rather than a category this engine currently reaches. A prior measurement of this same corpus and engine, before crates/disrobe-taint/src/engine.rs::taint_def_use() was changed to also track a source call's declared out-argument register (not only its return register), recalled 39 of 190 (20.5%); the move to 93 of 190 comes from that fix, not from this wiring change. CI enforces only that the published num/den still equal the pinned Rust floors, never that they still hold against the real corpus, so a compiler-driven regression below the floor is caught only on a machine with the corpus cached."
+
+[source]
+recovery_group = "Native taint source-to-sink flow (Juliet CWE-78 char/system corpus, gcc 16.1.0 -O2 -fno-builtin, Windows x86-64)"
+recovery_bar = "aggregate (8 populated categories), gcc -O2"
+floor = 48.9

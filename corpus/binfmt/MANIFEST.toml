@@ -565,3 +565,48 @@ status = "DT_NEEDED + DT_SONAME + DT_RPATH + DT_RUNPATH recovered, byte-exact st
 oracle = "readelf -d (GNU binutils 2.42): NEEDED=[libc.so.6, libm.so.6], SONAME=libsample.so.1, RPATH=/opt/legacy/lib, RUNPATH=$ORIGIN/../lib:/usr/local/sample/lib"
 layout = "ELF64 DYN with a PT_LOAD over the headers + string table and a PT_DYNAMIC walked from DT_STRTAB (vaddr resolved to file offset through the load segment) up to DT_NULL"
 note = "spec-construct ELF whose every dynamic entry readelf itself reports is asserted against the parser; the real corpus elves native/nim/hello.nim.elf and python/pyarmor/.../pyarmor_runtime.so cover the DT_NEEDED path on genuine binaries"
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v6.win-x64.exe"
+format = "dotnet-single-file bundle major 6, PE apphost, win-x64"
+tool = ".NET SDK 9.0.316 targeting net8.0"
+build = "dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -p:Deterministic=true"
+provenance = "real"
+note = "framework-dependent single file. Entries are types 1/3/4, all stored. expected/probe.dll and expected/probe.runtimeconfig.json are the same files the publish produced before bundling, so the round trip is graded byte for byte against them. The bundler regenerates deps.json for single-file, so expected/probe.deps.json is the pre-bundle copy and does not match the embedded one."
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v6.linux-x64"
+format = "dotnet-single-file bundle major 6, ELF apphost, linux-x64"
+tool = ".NET SDK 9.0.316 targeting net8.0"
+build = "dotnet publish -c Release -r linux-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -p:Deterministic=true"
+provenance = "real"
+note = "same app through a non-PE host, so detection cannot depend on the MZ prefix"
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v6.osx-x64"
+format = "dotnet-single-file bundle major 6, Mach-O apphost, osx-x64"
+tool = ".NET SDK 9.0.316 targeting net8.0"
+build = "dotnet publish -c Release -r osx-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -p:Deterministic=true"
+provenance = "real"
+note = "thin Mach-O host. A fat (universal) host is not covered by any committed fixture"
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v6.all-types.exe"
+format = "dotnet-single-file bundle major 6, every entry type, mixed compression"
+tool = "Microsoft.NET.HostModel 8.0.29 Bundler, driven with targetFrameworkVersion 8.0 and BundleAllContent | BundleSymbolFiles | EnableCompression"
+provenance = "real"
+note = "the only fixture carrying all of Assembly(1), NativeBinary(2), DepsJson(3), RuntimeConfigJson(4) and Symbols(5), and the only one mixing deflate-compressed entries with stored ones in one bundle. header flags=1 (NetcoreApp3CompatMode). expected/libcustom.dll and expected/probe.pdb are the inputs the bundler compressed, so inflation is graded against them. libcustom.dll is a verbatim copy of the runtime pack's mscorrc.dll, chosen because it is the smallest real native PE to hand"
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v2.win-x64.exe"
+format = "dotnet-single-file bundle major 2, PE apphost"
+tool = "Microsoft.NET.HostModel 8.0.29 Bundler, driven with targetFrameworkVersion 5.0"
+provenance = "real"
+note = "major 2 is what .NET 5 wrote. It adds the deps.json and runtimeconfig.json locations and the flags word to the header, and has no compressed-size field on an entry"
+
+[[fixtures]]
+path = "dotnet-single-file/probe.v1.win-x64.exe"
+format = "dotnet-single-file bundle major 1, PE apphost"
+tool = "Microsoft.NET.HostModel 8.0.29 Bundler, driven with targetFrameworkVersion 3.1"
+provenance = "real"
+note = "major 1 is what .NET Core 3.x wrote. The header stops after the bundle id, and the writer records every entry as type 0 (Unknown), so a reader cannot tell an assembly from a symbol file by type on this version"

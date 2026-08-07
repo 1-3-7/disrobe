@@ -1,5 +1,6 @@
 use std::borrow::Cow;
-use std::io::Read;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
 
 use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,13 @@ const MARKER_SIGNATURE: [u8; 32] = [
 const HEADER_OFFSET_FIELD_LEN: usize = 8;
 const COMPRESSION_MAJOR_VERSION: u32 = 6;
 const V2_HEADER_MAJOR_VERSION: u32 = 2;
-const MAX_MAJOR_VERSION: u32 = 64;
+const V1_HEADER_MAJOR_VERSION: u32 = 1;
+const SUPPORTED_MAJOR_VERSIONS: [u32; 3] = [
+    V1_HEADER_MAJOR_VERSION,
+    V2_HEADER_MAJOR_VERSION,
+    COMPRESSION_MAJOR_VERSION,
+];
+const MAX_PLAUSIBLE_MAJOR_VERSION: u32 = 64;
 const MAX_EMBEDDED_FILES: usize = 1_000_000;
 const MAX_PATH_LEN: usize = 64 * 1024;
 const MAX_VARINT_SHIFT: u32 = 28;
@@ -66,7 +73,7 @@ impl DotnetBundleFile {
     }
 
     #[must_use]
-    const fn stored_len(&self) -> u64 {
+    pub const fn stored_len(&self) -> u64 {
         if self.compressed_size > 0 {
             self.compressed_size
         } else {
@@ -153,10 +160,15 @@ fn read_7bit_prefixed_string(reader: &mut ByteReader<'_>, field: &str) -> Result
     String::from_utf8(raw.to_vec()).map_err(|_| bundle_err(&format!("{field} is not valid utf-8")))
 }
 
-const fn version_supported(major: u32, minor: u32) -> bool {
+const fn version_is_supported(major: u32, minor: u32) -> bool {
     minor == 0
-        && major <= MAX_MAJOR_VERSION
-        && (major == 1 || major == V2_HEADER_MAJOR_VERSION || major >= COMPRESSION_MAJOR_VERSION)
+        && (major == V1_HEADER_MAJOR_VERSION
+            || major == V2_HEADER_MAJOR_VERSION
+            || major == COMPRESSION_MAJOR_VERSION)
+}
+
+const fn version_is_plausible(major: u32, minor: u32) -> bool {
+    minor == 0 && major > 0 && major <= MAX_PLAUSIBLE_MAJOR_VERSION
 }
 
 fn read_header_offset(bytes: &[u8], signature_start: usize) -> Option<u64> {
@@ -179,7 +191,7 @@ fn header_is_plausible(bytes: &[u8], header_offset: u64) -> bool {
     else {
         return false;
     };
-    if !version_supported(major, minor) {
+    if !version_is_plausible(major, minor) {
         return false;
     }
     matches!(reader.read_i32_le(), Ok(count) if count > 0)
@@ -189,20 +201,12 @@ fn locate_header_offset(bytes: &[u8]) -> Option<u64> {
     if bytes.len() < MARKER_SIGNATURE.len() + HEADER_OFFSET_FIELD_LEN {
         return None;
     }
-    let last_start: usize = bytes.len() - MARKER_SIGNATURE.len();
-    let mut index: usize = HEADER_OFFSET_FIELD_LEN;
-    while index <= last_start {
-        if bytes
-            .get(index..)
-            .is_some_and(|window: &[u8]| window.starts_with(&MARKER_SIGNATURE))
-            && let Some(offset) = read_header_offset(bytes, index)
-            && header_is_plausible(bytes, offset)
-        {
-            return Some(offset);
-        }
-        index += 1;
-    }
-    None
+    memchr::memmem::find_iter(bytes, &MARKER_SIGNATURE)
+        .filter(|start: &usize| *start >= HEADER_OFFSET_FIELD_LEN)
+        .find_map(|start: usize| {
+            read_header_offset(bytes, start)
+                .filter(|offset: &u64| header_is_plausible(bytes, *offset))
+        })
 }
 
 fn has_native_magic(bytes: &[u8]) -> bool {
@@ -272,8 +276,10 @@ pub fn parse_dotnet_bundle(bytes: &[u8]) -> Result<DotnetBundle> {
 
     let major_version: u32 = read_u32(&mut reader, "major version")?;
     let minor_version: u32 = read_u32(&mut reader, "minor version")?;
-    if !version_supported(major_version, minor_version) {
-        return Err(bundle_err("unsupported bundle version"));
+    if !version_is_supported(major_version, minor_version) {
+        return Err(bundle_err(&format!(
+            "unsupported bundle version {major_version}.{minor_version}; this format defines majors {SUPPORTED_MAJOR_VERSIONS:?} with minor 0"
+        )));
     }
     let file_count_signed: i32 = read_i32(&mut reader, "embedded file count")?;
     if file_count_signed <= 0 {
@@ -300,8 +306,16 @@ pub fn parse_dotnet_bundle(bytes: &[u8]) -> Result<DotnetBundle> {
     };
 
     let mut files: Vec<DotnetBundleFile> = Vec::with_capacity(file_count.min(4096));
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     for _ in 0..file_count {
-        files.push(parse_file_entry(&mut reader, major_version)?);
+        let entry: DotnetBundleFile = parse_file_entry(&mut reader, major_version)?;
+        if !seen.insert(entry.relative_path.clone()) {
+            return Err(bundle_err(&format!(
+                "bundle declares two entries for `{}`",
+                entry.relative_path
+            )));
+        }
+        files.push(entry);
     }
 
     Ok(DotnetBundle {
@@ -343,16 +357,7 @@ pub fn bundle_file_bytes<'a>(
             reason: format!("declared size {} exceeds cap {max_uncompressed}", file.size),
         });
     }
-    let offset: usize =
-        usize::try_from(file.offset).map_err(|_| bundle_err("file entry offset out of range"))?;
-    let stored_len: usize = usize::try_from(file.stored_len())
-        .map_err(|_| bundle_err("file entry stored length out of range"))?;
-    let end: usize = offset
-        .checked_add(stored_len)
-        .ok_or_else(|| bundle_err("file entry extent overflow"))?;
-    let stored: &[u8] = bytes
-        .get(offset..end)
-        .ok_or_else(|| bundle_err("file entry extent past end of file"))?;
+    let stored: &[u8] = stored_slice(bytes, file)?;
 
     if file.is_compressed() {
         let decoded: Vec<u8> = inflate_deflate(stored, file.size, &file.relative_path)?;
@@ -371,6 +376,156 @@ pub fn bundle_file_bytes<'a>(
         Ok(Cow::Borrowed(stored))
     }
 }
+
+fn stored_slice<'a>(bytes: &'a [u8], file: &DotnetBundleFile) -> Result<&'a [u8]> {
+    let offset: usize =
+        usize::try_from(file.offset).map_err(|_| bundle_err("file entry offset out of range"))?;
+    let stored_len: usize = usize::try_from(file.stored_len())
+        .map_err(|_| bundle_err("file entry stored length out of range"))?;
+    let end: usize = offset
+        .checked_add(stored_len)
+        .ok_or_else(|| bundle_err("file entry extent overflow"))?;
+    bytes
+        .get(offset..end)
+        .ok_or_else(|| bundle_err("file entry extent past end of file"))
+}
+
+pub fn write_bundle_file<W: Write>(
+    bytes: &[u8],
+    file: &DotnetBundleFile,
+    max_uncompressed: u64,
+    sink: &mut W,
+) -> Result<u64> {
+    if file.size > max_uncompressed {
+        return Err(Error::QuotaExceeded {
+            entry: file.relative_path.clone(),
+            reason: format!("declared size {} exceeds cap {max_uncompressed}", file.size),
+        });
+    }
+    let stored: &[u8] = stored_slice(bytes, file)?;
+    if !file.is_compressed() {
+        if stored.len() as u64 != file.size {
+            return Err(bundle_err(
+                "stored file extent does not match declared size",
+            ));
+        }
+        sink.write_all(stored)
+            .map_err(|e: std::io::Error| bundle_err(&format!("write failed: {e}")))?;
+        return Ok(file.size);
+    }
+    let limit: u64 = file.size.saturating_add(1);
+    let mut decoder: flate2::read::DeflateDecoder<&[u8]> =
+        flate2::read::DeflateDecoder::new(stored);
+    let written: u64 = std::io::copy(&mut (&mut decoder).take(limit), sink)
+        .map_err(|e: std::io::Error| bundle_err(&format!("deflate decode failed: {e}")))?;
+    if written > file.size {
+        return Err(Error::QuotaExceeded {
+            entry: file.relative_path.clone(),
+            reason: format!("inflated stream exceeds declared size {}", file.size),
+        });
+    }
+    if written != file.size {
+        return Err(bundle_err(
+            "inflated output length does not match declared size",
+        ));
+    }
+    Ok(written)
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepsRuntimeTarget {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepsTargetLibrary {
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, String>,
+    #[serde(default)]
+    pub runtime: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub native: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub resources: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepsLibrary {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub serviceable: bool,
+    #[serde(default)]
+    pub sha512: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub hash_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepsManifest {
+    #[serde(default)]
+    pub runtime_target: DepsRuntimeTarget,
+    #[serde(default)]
+    pub targets: BTreeMap<String, BTreeMap<String, DepsTargetLibrary>>,
+    #[serde(default)]
+    pub libraries: BTreeMap<String, DepsLibrary>,
+}
+
+impl DepsManifest {
+    #[must_use]
+    pub fn runtime_assemblies(&self) -> BTreeSet<String> {
+        self.targets
+            .values()
+            .flat_map(|libs: &BTreeMap<String, DepsTargetLibrary>| libs.values())
+            .flat_map(|lib: &DepsTargetLibrary| lib.runtime.keys())
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn native_assets(&self) -> BTreeSet<String> {
+        self.targets
+            .values()
+            .flat_map(|libs: &BTreeMap<String, DepsTargetLibrary>| libs.values())
+            .flat_map(|lib: &DepsTargetLibrary| lib.native.keys())
+            .cloned()
+            .collect()
+    }
+}
+
+pub fn parse_deps_manifest(bytes: &[u8]) -> Result<DepsManifest> {
+    serde_json::from_slice(bytes)
+        .map_err(|e: serde_json::Error| bundle_err(&format!("deps.json is not valid: {e}")))
+}
+
+pub fn bundle_deps_manifest(bytes: &[u8], bundle: &DotnetBundle) -> Result<Option<DepsManifest>> {
+    let Some(file): Option<&DotnetBundleFile> = bundle
+        .files
+        .iter()
+        .find(|f: &&DotnetBundleFile| f.file_type == BundleFileType::DepsJson)
+        .or_else(|| {
+            bundle
+                .files
+                .iter()
+                .find(|f: &&DotnetBundleFile| f.relative_path.ends_with(".deps.json"))
+        })
+    else {
+        return Ok(None);
+    };
+    let data: Cow<'_, [u8]> = bundle_file_bytes(bytes, file, DEPS_JSON_PARSE_CAP)?;
+    parse_deps_manifest(data.as_ref()).map(Some)
+}
+
+const DEPS_JSON_PARSE_CAP: u64 = 64 * 1024 * 1024;
 
 pub fn extract_dotnet_bundle(
     bytes: &[u8],
@@ -394,25 +549,87 @@ pub fn extract_dotnet_bundle(
 }
 
 #[cfg(test)]
+fn put_7bit_string(buf: &mut Vec<u8>, text: &str) {
+    let mut length: usize = text.len();
+    loop {
+        let mut byte: u8 = (length & 0x7f) as u8;
+        length >>= 7;
+        if length != 0 {
+            byte |= 0x80;
+        }
+        buf.push(byte);
+        if length == 0 {
+            break;
+        }
+    }
+    buf.extend_from_slice(text.as_bytes());
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+pub(crate) fn deflate_compress(data: &[u8]) -> Vec<u8> {
+    let mut encoder: flate2::write::DeflateEncoder<Vec<u8>> =
+        flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(3));
+    encoder
+        .write_all(data)
+        .expect("deflate into a vec cannot fail");
+    encoder.finish().expect("deflate into a vec cannot fail")
+}
+
+#[cfg(test)]
+pub(crate) fn build_dotnet_bundle(
+    major_version: u32,
+    files: &[(&str, BundleFileType, &[u8], bool)],
+) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+    out.extend(std::iter::repeat_n(0u8, 60));
+
+    let mut placements: Vec<(u64, u64, u64)> = Vec::with_capacity(files.len());
+    for (_, _, content, compress) in files {
+        let stored: Vec<u8> = if *compress {
+            deflate_compress(content)
+        } else {
+            (*content).to_vec()
+        };
+        let offset: u64 = out.len() as u64;
+        let compressed_size: u64 = if *compress { stored.len() as u64 } else { 0 };
+        out.extend_from_slice(&stored);
+        placements.push((offset, content.len() as u64, compressed_size));
+    }
+
+    let header_offset: u64 = out.len() as u64;
+    out.extend_from_slice(&major_version.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(files.len() as i32).to_le_bytes());
+    put_7bit_string(&mut out, "TESTBUNDLEID");
+    if major_version >= V2_HEADER_MAJOR_VERSION {
+        for _ in 0..4 {
+            out.extend_from_slice(&0i64.to_le_bytes());
+        }
+        out.extend_from_slice(&0u64.to_le_bytes());
+    }
+    for ((path, file_type, _, _), &(offset, size, compressed_size)) in
+        files.iter().zip(placements.iter())
+    {
+        out.extend_from_slice(&(offset as i64).to_le_bytes());
+        out.extend_from_slice(&(size as i64).to_le_bytes());
+        if major_version >= COMPRESSION_MAJOR_VERSION {
+            out.extend_from_slice(&(compressed_size as i64).to_le_bytes());
+        }
+        out.push(*file_type as u8);
+        put_7bit_string(&mut out, path);
+    }
+
+    out.extend_from_slice(&header_offset.to_le_bytes());
+    out.extend_from_slice(&MARKER_SIGNATURE);
+    out
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    fn put_7bit_string(buf: &mut Vec<u8>, text: &str) {
-        let mut length: usize = text.len();
-        loop {
-            let mut byte: u8 = (length & 0x7f) as u8;
-            length >>= 7;
-            if length != 0 {
-                byte |= 0x80;
-            }
-            buf.push(byte);
-            if length == 0 {
-                break;
-            }
-        }
-        buf.extend_from_slice(text.as_bytes());
-    }
 
     struct FileSpec {
         path: &'static str,
@@ -421,58 +638,19 @@ mod tests {
         compressed: Option<Vec<u8>>,
     }
 
-    fn deflate_compress(data: &[u8]) -> Vec<u8> {
-        use std::io::Write;
-        let mut encoder: flate2::write::DeflateEncoder<Vec<u8>> =
-            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(3));
-        encoder.write_all(data).expect("deflate write");
-        encoder.finish().expect("deflate finish")
-    }
-
     fn build_bundle(major_version: u32, files: &[FileSpec]) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
-        out.extend(std::iter::repeat_n(0u8, 60));
-
-        let mut placements: Vec<(u64, u64, u64)> = Vec::new();
-        for spec in files {
-            let stored: &[u8] = spec.compressed.as_deref().unwrap_or(&spec.content);
-            let offset: u64 = out.len() as u64;
-            out.extend_from_slice(stored);
-            let compressed_size: u64 = spec
-                .compressed
-                .as_ref()
-                .map_or(0, |c: &Vec<u8>| c.len() as u64);
-            placements.push((offset, spec.content.len() as u64, compressed_size));
-        }
-
-        let header_offset: u64 = out.len() as u64;
-        out.extend_from_slice(&major_version.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
-        out.extend_from_slice(&(files.len() as i32).to_le_bytes());
-        put_7bit_string(&mut out, "TESTBUNDLEID");
-        if major_version >= V2_HEADER_MAJOR_VERSION {
-            out.extend_from_slice(&0i64.to_le_bytes());
-            out.extend_from_slice(&0i64.to_le_bytes());
-            out.extend_from_slice(&0i64.to_le_bytes());
-            out.extend_from_slice(&0i64.to_le_bytes());
-            out.extend_from_slice(&0u64.to_le_bytes());
-        }
-        for (spec, &(offset, size, compressed_size)) in files.iter().zip(placements.iter()) {
-            out.extend_from_slice(&(offset as i64).to_le_bytes());
-            out.extend_from_slice(&(size as i64).to_le_bytes());
-            if major_version >= COMPRESSION_MAJOR_VERSION {
-                out.extend_from_slice(&(compressed_size as i64).to_le_bytes());
-            }
-            out.push(spec.file_type as u8);
-            put_7bit_string(&mut out, spec.path);
-        }
-
-        let marker_at: u64 = out.len() as u64;
-        out.extend_from_slice(&header_offset.to_le_bytes());
-        out.extend_from_slice(&MARKER_SIGNATURE);
-        let _ = marker_at;
-        out
+        let rows: Vec<(&str, BundleFileType, &[u8], bool)> = files
+            .iter()
+            .map(|spec: &FileSpec| {
+                (
+                    spec.path,
+                    spec.file_type,
+                    spec.content.as_slice(),
+                    spec.compressed.is_some(),
+                )
+            })
+            .collect();
+        build_dotnet_bundle(major_version, &rows)
     }
 
     fn sample_files(compressed: bool) -> Vec<FileSpec> {

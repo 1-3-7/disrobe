@@ -24,6 +24,7 @@ const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
+const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -46,11 +47,30 @@ impl Detector for ContainerDetector {
                 t,
                 FAMILY_CONTAINER,
                 0.90,
-                50,
-                vec!["container-magic"],
+                tag_specificity(t),
+                vec![tag_marker(t)],
                 format!("container format: {t}"),
             )
         })
+    }
+}
+
+const SPECIFICITY_PREFIX_MAGIC: u16 = 50;
+const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
+
+const fn tag_specificity(tag: &str) -> u16 {
+    if matches!(tag.as_bytes(), b"dotnet-single-file") {
+        SPECIFICITY_VERIFIED_SIGNATURE
+    } else {
+        SPECIFICITY_PREFIX_MAGIC
+    }
+}
+
+const fn tag_marker(tag: &str) -> &'static str {
+    if matches!(tag.as_bytes(), b"dotnet-single-file") {
+        "bundle-signature+header"
+    } else {
+        "container-magic"
     }
 }
 
@@ -263,8 +283,24 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_XZ => extract_single_stream(bytes, "xz", decode_xz),
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
+        TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_dotnet_single_file_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let entries: Vec<crate::containers::DotnetBundleEntry> =
+        crate::containers::extract_dotnet_bundle(
+            bytes,
+            crate::quota::ExtractionQuota::default_safe(),
+        )
+        .map_err(|e: crate::error::Error| {
+            CoreError::PassFailure(format!("dotnet single-file bundle: {e}"))
+        })?;
+    Ok(entries
+        .into_iter()
+        .map(|entry: crate::containers::DotnetBundleEntry| (entry.relative_path, entry.data))
+        .collect())
 }
 
 const fn fail(msg: String) -> CoreError {
@@ -480,6 +516,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::squashfs::parse_squashfs_superblock(bytes, 0).is_ok() {
         return Some(TAG_SQUASHFS);
+    }
+    if crate::containers::detect_dotnet_bundle(bytes).is_some() {
+        return Some(TAG_DOTNET_SINGLE_FILE);
     }
     None
 }

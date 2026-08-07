@@ -1613,6 +1613,80 @@ mod tests {
         );
     }
 
+    const PAST_THE_TABLE: u32 = 250;
+
+    #[test]
+    fn a_dropped_plain_jump_lowers_the_flag_this_lifter_reports() {
+        let proto: LuaProto = luau_proto(
+            vec![u32::from(LOP_JUMP) | (5 << 16), u32::from(LOP_RETURN)],
+            4,
+        );
+
+        let (body, _, fully_structured): (String, Vec<String>, bool) = lift_once(&proto);
+
+        assert!(
+            !fully_structured,
+            "the jump names a target outside every region this walk visits, so no structure \
+             carries it; the count the structurer reports has to reach the flag this lifter \
+             publishes, not stop at the structurer; body:\n{body}"
+        );
+    }
+
+    #[test]
+    fn every_luau_arm_that_loses_an_edge_lowers_the_flag() {
+        let cases: Vec<(&str, Vec<u32>)> = vec![
+            (
+                "a BREAK is a debugger trap the recovered source cannot carry, so the edge it \
+                 interrupts is lost",
+                vec![u32::from(LOP_BREAK), u32::from(LOP_RETURN)],
+            ),
+            (
+                "an opcode past the end of the table decodes to nothing this lifter can place",
+                vec![PAST_THE_TABLE, u32::from(LOP_RETURN)],
+            ),
+            (
+                "a NEWCLOSURE naming a child proto the chunk does not carry recovers no body at \
+                 all",
+                vec![u32::from(LOP_NEWCLOSURE) | (7 << 16), u32::from(LOP_RETURN)],
+            ),
+        ];
+
+        for (why, code) in cases {
+            let proto: LuaProto = luau_proto(code, 4);
+
+            let (body, _, fully_structured): (String, Vec<String>, bool) = lift_once(&proto);
+
+            assert!(
+                !fully_structured,
+                "{why}; the flag must not claim a complete structure here, got:\n{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_proto_nested_past_the_lift_depth_limit_lowers_the_flag() {
+        let proto: LuaProto = luau_proto(vec![u32::from(LOP_RETURN)], 4);
+        let mut warnings: Vec<String> = Vec::new();
+        let mut fully_structured: bool = true;
+        let mut next_scope: usize = 1;
+
+        let body: String = lift_proto(
+            &proto,
+            MAX_LIFT_DEPTH + 1,
+            0,
+            &[],
+            &mut next_scope,
+            &mut warnings,
+            &mut fully_structured,
+        );
+
+        assert!(
+            !fully_structured,
+            "past this depth the body is never lifted at all, so every edge it holds is lost and \
+             the flag cannot stand; body:\n{body}"
+        );
+    }
+
     #[test]
     fn decode_basic_layout() {
         let raw: u32 = u32::from(LOP_MOVE) | (3 << 8) | (5 << 16);

@@ -33,3 +33,4 @@ lz4	extract	corpus/binfmt/bare-stream/payload-legacy.lz4
 zlib	extract	corpus/binfmt/bare-stream/payload.zlib
 Z	extract	corpus/binfmt/bare-stream/payload.Z
 uefi-fv	extract	crates/disrobe-binfmt/tests/fixtures/uefi_fv/inner.fv
+dotnet-single-file	extract	corpus/binfmt/dotnet-single-file/probe.v1.win-x64.exe

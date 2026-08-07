@@ -195,6 +195,7 @@ pub fn extract_to_with_quota(
         ContainerKind::Mbr => carve_mbr(bytes, bytes, out_dir, 0, quota),
         ContainerKind::Fat => extract_fat(bytes, out_dir, quota),
         ContainerKind::BunStandalone => extract_bun(bytes, out_dir, quota),
+        ContainerKind::DotnetSingleFile => extract_dotnet_single_file(bytes, out_dir, quota),
         ContainerKind::UnityFs => extract_unityfs(bytes, out_dir, quota),
         ContainerKind::Minidump => extract_minidump(bytes, out_dir, quota),
         ContainerKind::FwDlinkShrs
@@ -1808,6 +1809,71 @@ fn extract_bun(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
 
     Ok(ExtractionResult {
         kind: ContainerKind::BunStandalone,
+        entries: entries_out,
+        encoding,
+        integrity_violations: violations,
+        quota: QuotaSummary::from(guard.report()),
+    })
+}
+
+fn extract_dotnet_single_file(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    use crate::containers::dotnet_bundle::{DotnetBundle, write_bundle_file};
+
+    let bundle: DotnetBundle = crate::containers::parse_dotnet_bundle(bytes)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut guard: QuotaGuard = QuotaGuard::new(quota);
+    let cap: u64 = guard.max_per_entry_uncompressed();
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(bundle.files.len());
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    let mut violations: Vec<String> = Vec::new();
+
+    for file in &bundle.files {
+        let safe_name: String = match sanitize_entry_path(&file.relative_path) {
+            Ok(s) => s,
+            Err(e) => {
+                violations.push(format!("dotnet-bundle-slip: {e}"));
+                continue;
+            }
+        };
+        if let Err(e) = guard.admit_entry(&safe_name, file.size, file.stored_len()) {
+            violations.push(format!("dotnet-bundle-quota `{safe_name}`: {e}"));
+            continue;
+        }
+        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+        let mut sink: std::io::BufWriter<std::fs::File> =
+            std::io::BufWriter::new(std::fs::File::create(&disk_path)?);
+        if let Err(e) = write_bundle_file(bytes, file, cap, &mut sink) {
+            violations.push(format!("dotnet-bundle-decode `{safe_name}`: {e}"));
+            drop(sink);
+            let _ = std::fs::remove_file(&disk_path);
+            continue;
+        }
+        std::io::Write::flush(&mut sink)?;
+        let compression: EntryCompression = if file.is_compressed() {
+            EntryCompression::Deflate
+        } else {
+            EntryCompression::Stored
+        };
+        encoding.insert(safe_name.clone(), compression);
+        entries_out.push(ExtractedEntry {
+            name: safe_name,
+            disk_path: Some(disk_path),
+            uncompressed_size: file.size,
+            compressed_size: file.stored_len(),
+            compression,
+            is_executable: matches!(
+                file.file_type,
+                crate::containers::BundleFileType::NativeBinary
+            ),
+        });
+    }
+
+    Ok(ExtractionResult {
+        kind: ContainerKind::DotnetSingleFile,
         entries: entries_out,
         encoding,
         integrity_violations: violations,
@@ -5348,6 +5414,11 @@ mod tests {
         row("extract_bun", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_cab", NameOrigin::ArchiveSupplied, DRIVEN),
         row(
+            "extract_dotnet_single_file",
+            NameOrigin::ArchiveSupplied,
+            DRIVEN,
+        ),
+        row(
             "extract_cab_lzms_folders",
             NameOrigin::ArchiveSupplied,
             DRIVEN,
@@ -5671,6 +5742,14 @@ mod tests {
             build: build_hostile_bun,
         },
         DrivenWritePath {
+            function: "extract_dotnet_single_file",
+            kind: ContainerKind::DotnetSingleFile,
+            slip_tag: "dotnet-bundle-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_dotnet_single_file,
+        },
+        DrivenWritePath {
             function: "extract_bare_gzip",
             kind: ContainerKind::Gzip,
             slip_tag: "gzip-slip",
@@ -5976,6 +6055,21 @@ mod tests {
         Some(crate::containers::bun::build_bun(&[(name, body)]))
     }
 
+    fn build_hostile_dotnet_single_file(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.is_empty() || name.len() > 64 * 1024 {
+            return None;
+        }
+        Some(crate::containers::dotnet_bundle::build_dotnet_bundle(
+            6,
+            &[(
+                name,
+                crate::containers::BundleFileType::Assembly,
+                body,
+                false,
+            )],
+        ))
+    }
+
     fn build_hostile_gzip(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         if name.contains('\u{0}') {
             return None;
@@ -6190,6 +6284,11 @@ mod tests {
     #[test]
     fn hostile_names_reach_the_bun_write_path_guard() {
         drive_write_path("extract_bun");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_dotnet_single_file_write_path_guard() {
+        drive_write_path("extract_dotnet_single_file");
     }
 
     #[test]
