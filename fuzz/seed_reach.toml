@@ -1,0 +1,166 @@
+schema = 3
+
+[[surface]]
+target = "python_bytecode"
+id = "python.pyc.header"
+entry_point = "disrobe-py-marshal/src/pyc.rs::read_pyc"
+
+[[surface]]
+target = "python_bytecode"
+id = "python.marshal.root"
+entry_point = "disrobe-py-marshal/src/reader.rs::load"
+
+[[surface]]
+target = "python_bytecode"
+id = "python.reference-table"
+entry_point = "disrobe-py-marshal/src/reftable.rs::dump_reftable"
+
+[[seed]]
+target = "python_bytecode"
+source = "corpus/python/freezers/pyc_zipper/original.pyc.bin"
+offset = 0
+length = 978
+sha256 = "94a93aad7c1c0a0551cb1e84549d3ab9d6570dfa492ddaa4789857e13d322feb"
+
+[[seed.obligation]]
+surface = "python.pyc.header"
+outcome = "accepted"
+minimum_bytes = 16
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "python.marshal.root"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "python.reference-table"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed]]
+target = "python_bytecode"
+source = "corpus/python/freezers/pyc_zipper/original.pyc.bin"
+offset = 0
+length = 4
+sha256 = "f18590fc1a3bbbfb9b610044565038b27f6113f553bf47899a4c48d62d485444"
+
+[[seed.obligation]]
+surface = "python.pyc.header"
+outcome = "rejected"
+minimum_bytes = 0
+minimum_items = 0
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "jvm.class-file"
+entry_point = "disrobe-pass-jvm/src/classfile.rs::parse"
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "jvm.code-attribute"
+entry_point = "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute"
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "jvm.bytecode"
+entry_point = "disrobe-pass-jvm/src/bytecode.rs::disassemble"
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "android.dex.header"
+entry_point = "disrobe-pass-jvm/src/dex.rs::parse_header"
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "android.dex.file"
+entry_point = "disrobe-pass-jvm/src/dex.rs::parse"
+
+[[surface]]
+target = "dex_jvm_classfile"
+id = "android.dex.code-items"
+entry_point = "disrobe-pass-jvm/src/dex.rs::parse_code_items"
+
+[[seed]]
+target = "dex_jvm_classfile"
+source = "corpus/jvm/stringer/StringerClassic.class"
+offset = 0
+length = 1641
+sha256 = "b450d4d07fb685e57e53e34aab4816e42e0ec1358ece457da1368c51c3613b78"
+
+[[seed.obligation]]
+surface = "jvm.class-file"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "jvm.code-attribute"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "jvm.bytecode"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed]]
+target = "dex_jvm_classfile"
+source = "corpus/jvm/stringer/StringerClassic.class"
+offset = 0
+length = 4
+sha256 = "65ab12a8ff3263fbc257e5ddf0aa563c64573d0bab1f1115b9b107834cfa6971"
+
+[[seed.obligation]]
+surface = "jvm.class-file"
+outcome = "rejected"
+minimum_bytes = 0
+minimum_items = 0
+
+[[seed]]
+target = "dex_jvm_classfile"
+source = "corpus/jvm/dex/Hello.dex"
+offset = 0
+length = 1660
+sha256 = "4057e61e1df4a583690a5f7f0b0ecc8db0c6f2c4676c78978aeafda7be1256f8"
+
+[[seed.obligation]]
+surface = "android.dex.header"
+outcome = "accepted"
+minimum_bytes = 112
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "android.dex.file"
+outcome = "accepted"
+minimum_bytes = 112
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "android.dex.code-items"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed]]
+target = "dex_jvm_classfile"
+source = "corpus/jvm/dex/Hello.dex"
+offset = 0
+length = 8
+sha256 = "2c54a4c51192601674623d247e827ff8fcee7212eda7fed6bab5a4e959ace58e"
+
+[[seed.obligation]]
+surface = "android.dex.header"
+outcome = "rejected"
+minimum_bytes = 0
+minimum_items = 0
+
+[[seed.obligation]]
+surface = "android.dex.file"
+outcome = "rejected"
+minimum_bytes = 0
+minimum_items = 0

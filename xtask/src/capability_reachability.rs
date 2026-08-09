@@ -1093,7 +1093,7 @@ fn cfg_test_blocks(text: &str) -> Result<Vec<&str>> {
         .collect())
 }
 
-fn strip_cfg_test(text: &str) -> Result<String> {
+pub(crate) fn strip_cfg_test(text: &str) -> Result<String> {
     let mut cuts: Vec<(usize, usize)> = cfg_test_modules(text)?
         .into_iter()
         .map(|(start, end, _): (usize, usize, CfgTestModule<'_>)| (start, end))

@@ -4,6 +4,8 @@ use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 pub const CLASS_MAGIC: u32 = 0xCAFE_BABE;
 pub const MIN_MAJOR: u16 = 45;
@@ -264,6 +266,24 @@ fn bounded_capacity(count: u16, remaining: usize) -> usize {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::ClassFile,
+        SemanticEntryPoint::ParseClassFile,
+    );
+    let result: Result<(ClassFile, usize)> = parse_with_position(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((class, bytes_consumed)) => {
+            let items: usize = class_item_count(class);
+            observation.accepted(*bytes_consumed, items);
+        }
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(class, _): (ClassFile, usize)| class)
+}
+
+fn parse_with_position(bytes: &[u8]) -> Result<(ClassFile, usize)> {
     let mut r: ByteReader<'_> = ByteReader::new(bytes);
     let magic: u32 = r.read_u32_be()?;
     if magic != CLASS_MAGIC && !disrobe_binfmt::structural::validate_java_class(bytes) {
@@ -377,7 +397,7 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
     for _ in 0..attrs_count {
         attributes.push(parse_attribute(&mut r)?);
     }
-    Ok(ClassFile {
+    let class: ClassFile = ClassFile {
         minor_version,
         major_version,
         constant_pool: cp,
@@ -388,7 +408,31 @@ pub fn parse(bytes: &[u8]) -> Result<ClassFile> {
         fields,
         methods,
         attributes,
-    })
+    };
+    Ok((class, r.position()))
+}
+
+#[cfg(feature = "semantic-reach")]
+fn class_item_count(class: &ClassFile) -> usize {
+    let field_attributes: usize = class
+        .fields
+        .iter()
+        .map(|field: &FieldInfo| field.attributes.len())
+        .sum();
+    let method_attributes: usize = class
+        .methods
+        .iter()
+        .map(|method: &MethodInfo| method.attributes.len())
+        .sum();
+    class
+        .constant_pool
+        .len()
+        .saturating_add(class.interfaces.len())
+        .saturating_add(class.fields.len())
+        .saturating_add(field_attributes)
+        .saturating_add(class.methods.len())
+        .saturating_add(method_attributes)
+        .saturating_add(class.attributes.len())
 }
 
 fn parse_field(r: &mut ByteReader<'_>) -> Result<FieldInfo> {

@@ -73,6 +73,8 @@ pub mod proguard_fingerprint;
 pub mod protectors;
 pub mod provenance_header;
 pub mod rasp;
+#[cfg(feature = "semantic-reach")]
+pub mod reach;
 pub mod scala;
 pub mod sccp;
 pub(crate) mod signature;
@@ -243,6 +245,11 @@ pub use provenance_header::{
     scala_decompiled_header, smali_disasm_header,
 };
 pub use rasp::{RaspReport, RaspSignal, RaspVendor, detect_in_apk as detect_rasp_in_apk};
+#[cfg(feature = "semantic-reach")]
+pub use reach::{
+    CaptureError, Captured, Observation, ObservationPhase, SemanticEntryPoint, SemanticSurface,
+    capture_observations,
+};
 pub use scala::{Demangled as ScalaDemangled, demangle as demangle_scala};
 pub use sccp::{SccpReport, simplify_flattened_cfg};
 pub use smali::{SmaliEmission, emit as emit_smali, emit_method_body, emit_method_body_from_insns};

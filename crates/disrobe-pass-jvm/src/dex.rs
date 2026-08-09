@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 pub const DEX_NO_INDEX: u32 = 0xFFFF_FFFF;
 
@@ -76,6 +78,21 @@ pub struct DexHeader {
 }
 
 pub fn parse_header(bytes: &[u8]) -> Result<DexHeader> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::DexHeader,
+        SemanticEntryPoint::ParseDexHeader,
+    );
+    let result: Result<DexHeader> = parse_header_inner(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(_) => observation.accepted(0x70, 1),
+        Err(_) => observation.rejected(),
+    }
+    result
+}
+
+fn parse_header_inner(bytes: &[u8]) -> Result<DexHeader> {
     if bytes.len() < 0x70 {
         return Err(Error::Truncated {
             offset: 0,
@@ -361,6 +378,19 @@ impl WalkBudget {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<DexFile> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken =
+        reach::enter(SemanticSurface::DexFile, SemanticEntryPoint::ParseDex);
+    let result: Result<DexFile> = parse_inner(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(dex) => observation.accepted(0x70, dex_item_count(dex)),
+        Err(_) => observation.rejected(),
+    }
+    result
+}
+
+fn parse_inner(bytes: &[u8]) -> Result<DexFile> {
     let header: DexHeader = parse_header(bytes)?;
     let string_count: usize = declared_table_count(
         bytes,
@@ -451,6 +481,20 @@ pub fn parse(bytes: &[u8]) -> Result<DexFile> {
         call_site_ids_size,
         method_handles_size,
     })
+}
+
+#[cfg(feature = "semantic-reach")]
+fn dex_item_count(dex: &DexFile) -> usize {
+    1usize
+        .saturating_add(dex.strings.len())
+        .saturating_add(dex.type_names.len())
+        .saturating_add(dex.class_descriptors.len())
+        .saturating_add(dex.class_super_descriptors.len())
+        .saturating_add(dex.proto_ids.len())
+        .saturating_add(dex.field_ids.len())
+        .saturating_add(dex.method_ids.len())
+        .saturating_add(dex.call_site_ids_size)
+        .saturating_add(dex.method_handles_size)
 }
 
 #[inline]
@@ -1570,6 +1614,28 @@ fn validate_code_references(insns: &[u16], dex: &DexFile, insns_offset: usize) -
 
 #[must_use]
 pub fn parse_code_items(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::DexCodeItems,
+        SemanticEntryPoint::ParseDexCodeItems,
+    );
+    let report: CodeItemsReport = parse_code_items_inner(dex, bytes);
+    #[cfg(feature = "semantic-reach")]
+    if report.unrecovered_tail.is_some() {
+        observation.rejected();
+    } else {
+        let bytes_consumed: usize = report
+            .decoded
+            .iter()
+            .map(|item: &CodeItem| item.insns.len().saturating_mul(2))
+            .fold(0usize, usize::saturating_add);
+        let items: usize = report.decoded.len().saturating_add(report.methods.len());
+        observation.accepted(bytes_consumed, items);
+    }
+    report
+}
+
+fn parse_code_items_inner(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
     let header: &DexHeader = &dex.header;
     let class_defs_off: usize = header.class_defs_off as usize;
     let mut decoded: Vec<CodeItem> = Vec::new();

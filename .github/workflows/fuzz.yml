@@ -6,12 +6,14 @@ on:
       - 'fuzz/**'
       - 'crates/disrobe-binfmt/**'
       - 'crates/disrobe-bytes/**'
+      - 'crates/disrobe-core/**'
       - 'crates/disrobe-ir/**'
       - 'crates/disrobe-nir-lift/**'
       - 'crates/disrobe-pass-dotnet/**'
       - 'crates/disrobe-pass-jvm/**'
       - 'crates/disrobe-pass-wasm-deob/**'
       - 'crates/disrobe-py-marshal/**'
+      - 'xtask/data/fuzz_seed_reach.json'
   schedule:
     - cron: '0 3 * * 1'  # weekly, monday 03:00 UTC
   workflow_dispatch:
@@ -27,8 +29,24 @@ env:
   PER_INPUT_TIMEOUT_SECONDS: 25
 
 jobs:
+  seed-reach:
+    name: committed seed reach
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SEED_REPLAY_MEMORY_LIMIT_BYTES: 2147483648
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: require the Linux memory limiter
+        run: command -v prlimit
+      - name: replay the semantic seed contract
+        run: cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay -- --memory-limit-bytes ${SEED_REPLAY_MEMORY_LIMIT_BYTES} --check xtask/data/fuzz_seed_reach.json
+
   smoke:
     name: smoke (${{ matrix.target }})
+    needs: seed-reach
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -72,6 +90,7 @@ jobs:
 
   campaign:
     name: campaign (${{ matrix.target }})
+    needs: seed-reach
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:

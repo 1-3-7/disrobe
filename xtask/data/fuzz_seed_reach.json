@@ -1,0 +1,2242 @@
+{
+  "schema": 3,
+  "generator": "cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay",
+  "contract_sha256": "f5661313ec1bc6670ca2a9796af69bfd9b5545058572d3bb5ace58f344d8e160",
+  "obligations": {
+    "satisfied": 13,
+    "declared": 13,
+    "positive_witnesses": 9,
+    "expected_rejection_witnesses": 4
+  },
+  "targets": [
+    {
+      "name": "python_bytecode",
+      "satisfied_obligations": 4,
+      "declared_obligations": 4,
+      "positive_witnesses": [
+        {
+          "seed": "94a93aad7c1c0a0551cb1e84549d3ab9d6570dfa492ddaa4789857e13d322feb",
+          "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+          "surface": "python.pyc.header"
+        },
+        {
+          "seed": "94a93aad7c1c0a0551cb1e84549d3ab9d6570dfa492ddaa4789857e13d322feb",
+          "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+          "surface": "python.marshal.root"
+        },
+        {
+          "seed": "94a93aad7c1c0a0551cb1e84549d3ab9d6570dfa492ddaa4789857e13d322feb",
+          "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+          "surface": "python.reference-table"
+        }
+      ],
+      "expected_rejection_witnesses": [
+        {
+          "seed": "f18590fc1a3bbbfb9b610044565038b27f6113f553bf47899a4c48d62d485444",
+          "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+          "surface": "python.pyc.header"
+        }
+      ],
+      "seeds": [
+        {
+          "sha256": "94a93aad7c1c0a0551cb1e84549d3ab9d6570dfa492ddaa4789857e13d322feb",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "python.pyc.header",
+              "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "python.pyc.header",
+              "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+              "phase": "accepted",
+              "bytes_consumed": 16,
+              "items": 1
+            },
+            {
+              "span": 1,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "accepted",
+              "bytes_consumed": 962,
+              "items": 1
+            },
+            {
+              "span": 2,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "accepted",
+              "bytes_consumed": 962,
+              "items": 65
+            },
+            {
+              "span": 2,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "accepted",
+              "bytes_consumed": 962,
+              "items": 65
+            },
+            {
+              "span": 4,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 5,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 5,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 11,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 11,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 13,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 13,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 15,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 15,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 17,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 17,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 19,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 19,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 21,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 21,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 23,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 23,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 29,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 30,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 30,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 29,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 31,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 31,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        },
+        {
+          "sha256": "f18590fc1a3bbbfb9b610044565038b27f6113f553bf47899a4c48d62d485444",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "python.pyc.header",
+              "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "python.pyc.header",
+              "entry_point": "disrobe-py-marshal/src/pyc.rs::read_pyc",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 5,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 5,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 11,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 11,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 13,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 13,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 15,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 15,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 17,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 17,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 19,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 19,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 21,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 21,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 23,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 23,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "python.marshal.root",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reftable.rs::dump_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "python.reference-table",
+              "entry_point": "disrobe-py-marshal/src/reader.rs::load_with_reftable",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dex_jvm_classfile",
+      "satisfied_obligations": 9,
+      "declared_obligations": 9,
+      "positive_witnesses": [
+        {
+          "seed": "b450d4d07fb685e57e53e34aab4816e42e0ec1358ece457da1368c51c3613b78",
+          "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+          "surface": "jvm.class-file"
+        },
+        {
+          "seed": "b450d4d07fb685e57e53e34aab4816e42e0ec1358ece457da1368c51c3613b78",
+          "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+          "surface": "jvm.code-attribute"
+        },
+        {
+          "seed": "b450d4d07fb685e57e53e34aab4816e42e0ec1358ece457da1368c51c3613b78",
+          "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+          "surface": "jvm.bytecode"
+        },
+        {
+          "seed": "4057e61e1df4a583690a5f7f0b0ecc8db0c6f2c4676c78978aeafda7be1256f8",
+          "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+          "surface": "android.dex.header"
+        },
+        {
+          "seed": "4057e61e1df4a583690a5f7f0b0ecc8db0c6f2c4676c78978aeafda7be1256f8",
+          "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+          "surface": "android.dex.file"
+        },
+        {
+          "seed": "4057e61e1df4a583690a5f7f0b0ecc8db0c6f2c4676c78978aeafda7be1256f8",
+          "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+          "surface": "android.dex.code-items"
+        }
+      ],
+      "expected_rejection_witnesses": [
+        {
+          "seed": "65ab12a8ff3263fbc257e5ddf0aa563c64573d0bab1f1115b9b107834cfa6971",
+          "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+          "surface": "jvm.class-file"
+        },
+        {
+          "seed": "2c54a4c51192601674623d247e827ff8fcee7212eda7fed6bab5a4e959ace58e",
+          "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+          "surface": "android.dex.header"
+        },
+        {
+          "seed": "2c54a4c51192601674623d247e827ff8fcee7212eda7fed6bab5a4e959ace58e",
+          "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+          "surface": "android.dex.file"
+        }
+      ],
+      "seeds": [
+        {
+          "sha256": "b450d4d07fb685e57e53e34aab4816e42e0ec1358ece457da1368c51c3613b78",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 1641,
+              "items": 111
+            },
+            {
+              "span": 1,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 29,
+              "items": 6
+            },
+            {
+              "span": 2,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 5,
+              "items": 3
+            },
+            {
+              "span": 3,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 5,
+              "items": 3
+            },
+            {
+              "span": 4,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 93,
+              "items": 39
+            },
+            {
+              "span": 5,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 5,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 37,
+              "items": 24
+            },
+            {
+              "span": 6,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 37,
+              "items": 24
+            },
+            {
+              "span": 7,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 161,
+              "items": 78
+            },
+            {
+              "span": 8,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 76,
+              "items": 49
+            },
+            {
+              "span": 9,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 76,
+              "items": 49
+            },
+            {
+              "span": 10,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 11,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 11,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 12,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 13,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 13,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 14,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 15,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 15,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 16,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 17,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 17,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 18,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 19,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 19,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 20,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 21,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 21,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 22,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 23,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 23,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 24,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 25,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 90,
+              "items": 47
+            },
+            {
+              "span": 26,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 46,
+              "items": 16
+            },
+            {
+              "span": 27,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 46,
+              "items": 16
+            },
+            {
+              "span": 28,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 33,
+              "items": 10
+            },
+            {
+              "span": 29,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 29,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 30,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 30,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 31,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 31,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 1641,
+              "items": 111
+            },
+            {
+              "span": 32,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 32,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 29,
+              "items": 6
+            },
+            {
+              "span": 33,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 33,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 5,
+              "items": 3
+            },
+            {
+              "span": 34,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 34,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 93,
+              "items": 39
+            },
+            {
+              "span": 35,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 35,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 37,
+              "items": 24
+            },
+            {
+              "span": 36,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 36,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 161,
+              "items": 78
+            },
+            {
+              "span": 37,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 37,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 76,
+              "items": 49
+            },
+            {
+              "span": 38,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 38,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 39,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 39,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 40,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 40,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 41,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 41,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 42,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 42,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 43,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 43,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 44,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 44,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 45,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 45,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 46,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 46,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 30,
+              "items": 7
+            },
+            {
+              "span": 47,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 47,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 6,
+              "items": 3
+            },
+            {
+              "span": 48,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 48,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 90,
+              "items": 47
+            },
+            {
+              "span": 49,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 49,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 46,
+              "items": 16
+            },
+            {
+              "span": 50,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 50,
+              "surface": "jvm.code-attribute",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::parse_code_attribute",
+              "phase": "accepted",
+              "bytes_consumed": 33,
+              "items": 10
+            },
+            {
+              "span": 51,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 51,
+              "surface": "jvm.bytecode",
+              "entry_point": "disrobe-pass-jvm/src/bytecode.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 52,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 52,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 53,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 54,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 54,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 53,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        },
+        {
+          "sha256": "65ab12a8ff3263fbc257e5ddf0aa563c64573d0bab1f1115b9b107834cfa6971",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        },
+        {
+          "sha256": "4057e61e1df4a583690a5f7f0b0ecc8db0c6f2c4676c78978aeafda7be1256f8",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "accepted",
+              "bytes_consumed": 112,
+              "items": 1
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "accepted",
+              "bytes_consumed": 112,
+              "items": 1
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 112,
+              "items": 74
+            },
+            {
+              "span": 4,
+              "surface": "android.dex.code-items",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "android.dex.code-items",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+              "phase": "accepted",
+              "bytes_consumed": 226,
+              "items": 12
+            },
+            {
+              "span": 5,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "accepted",
+              "bytes_consumed": 112,
+              "items": 1
+            },
+            {
+              "span": 5,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 112,
+              "items": 74
+            },
+            {
+              "span": 7,
+              "surface": "android.dex.code-items",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "android.dex.code-items",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+              "phase": "accepted",
+              "bytes_consumed": 226,
+              "items": 12
+            }
+          ]
+        },
+        {
+          "sha256": "2c54a4c51192601674623d247e827ff8fcee7212eda7fed6bab5a4e959ace58e",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "jvm.class-file",
+              "entry_point": "disrobe-pass-jvm/src/classfile.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "android.dex.header",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse_header",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "android.dex.file",
+              "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

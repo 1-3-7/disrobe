@@ -138,6 +138,7 @@ entry_points = [
 name = "python_bytecode.rs"
 entry_points = [
   "disrobe-py-marshal/src/pyc.rs::read_pyc",
+  "disrobe-py-marshal/src/reader.rs::load",
   "disrobe-py-marshal/src/reftable.rs::dump_reftable",
 ]
 

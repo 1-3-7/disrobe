@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
 use crate::object::Object;
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 use crate::version::{PyVersion, magic_for, pyversion_from_magic};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +67,25 @@ pub fn write_pyc(file: &PycFile) -> Result<Vec<u8>> {
 }
 
 pub fn read_pyc(bytes: &[u8]) -> Result<PycFile> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken =
+        reach::enter(SemanticSurface::PycHeader, SemanticEntryPoint::ReadPyc);
+    let header: PycHeader = match read_pyc_header(bytes) {
+        Ok(header) => header,
+        Err(error) => {
+            #[cfg(feature = "semantic-reach")]
+            observation.rejected();
+            return Err(error);
+        }
+    };
+    let header_len: usize = header.header_len();
+    #[cfg(feature = "semantic-reach")]
+    observation.accepted(header_len, 1);
+    let code: Object = crate::reader::load(&bytes[header_len..], header.version)?;
+    Ok(PycFile { header, code })
+}
+
+fn read_pyc_header(bytes: &[u8]) -> Result<PycHeader> {
     if bytes.len() < 4 {
         return Err(Error::PycHeaderShort {
             need: 4,
@@ -96,16 +117,13 @@ pub fn read_pyc(bytes: &[u8]) -> Result<PycFile> {
             (None, ts, None)
         };
 
-    let header: PycHeader = PycHeader {
+    Ok(PycHeader {
         version,
         magic,
         bit_field,
         timestamp,
         source_size,
-    };
-
-    let code: Object = crate::reader::load(&bytes[header_len..], version)?;
-    Ok(PycFile { header, code })
+    })
 }
 
 #[cfg(test)]

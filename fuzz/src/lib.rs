@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+pub mod dex_jvm_classfile;
+pub mod python_bytecode;
+pub mod seed_reach;
+
 use disrobe_bytes::{ByteReadError, ByteReader};
 
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
