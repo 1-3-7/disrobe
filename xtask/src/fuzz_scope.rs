@@ -66,15 +66,16 @@ fn read_cargo_toml_bin_filenames(cargo_toml_path: &Path) -> Result<BTreeSet<Stri
                     cargo_toml_path.display()
                 )
             })?;
-        let filename: &str = Path::new(path_str)
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| {
-                eyre!(
-                    "[[bin]] path `{path_str}` in {} has no file name",
-                    cargo_toml_path.display()
-                )
-            })?;
+        let path: &Path = Path::new(path_str);
+        if path.parent() != Some(Path::new("fuzz_targets")) {
+            continue;
+        }
+        let filename: &str = path.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            eyre!(
+                "[[bin]] path `{path_str}` in {} has no file name",
+                cargo_toml_path.display()
+            )
+        })?;
         filenames.insert(filename.to_owned());
     }
     Ok(filenames)
@@ -178,6 +179,24 @@ mod tests {
 
     fn set(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name: &&str| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn cargo_bins_exclude_non_mutating_support_binaries() -> core::result::Result<(), String> {
+        let temporary: tempfile::TempDir =
+            tempfile::tempdir().map_err(|error| error.to_string())?;
+        let manifest: PathBuf = temporary.path().join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[[bin]]\nname = \"python_bytecode\"\npath = \"fuzz_targets/python_bytecode.rs\"\n\n[[bin]]\nname = \"seed_replay\"\npath = \"src/bin/seed_replay.rs\"\n",
+        )
+        .map_err(|error: std::io::Error| error.to_string())?;
+
+        let targets: BTreeSet<String> =
+            read_cargo_toml_bin_filenames(&manifest).map_err(|error| error.to_string())?;
+
+        assert_eq!(targets, set(&["python_bytecode.rs"]));
+        Ok(())
     }
 
     #[test]

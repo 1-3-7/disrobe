@@ -35,6 +35,7 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 lifter-diag = []
 opcode-census = []
+semantic-reach = []
 
 [dev-dependencies]
 object = { workspace = true, features = ["write"] }

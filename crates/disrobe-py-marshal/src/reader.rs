@@ -3,6 +3,8 @@ use indexmap::IndexMap;
 
 use crate::error::{Error, Result};
 use crate::object::{BigInt, CodeEra, CodeObject, Object};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 use crate::reftable::{RefEntry, RefKind, RefTableDump};
 use crate::version::PyVersion;
 
@@ -222,16 +224,40 @@ fn charged_node_total_after_clone(obj: &Object, already: u64) -> Result<u64> {
 }
 
 pub fn load(data: &[u8], version: PyVersion) -> Result<Object> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken =
+        reach::enter(SemanticSurface::MarshalRoot, SemanticEntryPoint::Load);
     let mut r: Reader<'_> = Reader::new(data, version, false);
-    r.read_object(0)
+    let result: Result<Object> = r.read_object(0);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(_) => observation.accepted(r.cursor.position(), 1),
+        Err(_) => observation.rejected(),
+    }
+    result
 }
 
 pub fn load_with_reftable(data: &[u8], version: PyVersion) -> Result<(Object, RefTableDump)> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::ReferenceTable,
+        SemanticEntryPoint::LoadWithRefTable,
+    );
     let mut r: Reader<'_> = Reader::new(data, version, true);
-    let obj: Object = r.read_object(0)?;
-    let mut dump: RefTableDump = r.dump.take().unwrap_or_else(RefTableDump::empty);
-    dump.finalize(r.cursor.position());
-    Ok((obj, dump))
+    let result: Result<(Object, RefTableDump)> = match r.read_object(0) {
+        Ok(obj) => {
+            let mut dump: RefTableDump = r.dump.take().unwrap_or_else(RefTableDump::empty);
+            dump.finalize(r.cursor.position());
+            Ok((obj, dump))
+        }
+        Err(error) => Err(error),
+    };
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((_, dump)) => observation.accepted(dump.total_bytes, dump.entries.len()),
+        Err(_) => observation.rejected(),
+    }
+    result
 }
 
 #[derive(Debug)]

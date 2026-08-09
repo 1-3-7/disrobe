@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::object::Object;
+#[cfg(feature = "semantic-reach")]
+use crate::reach::SemanticEntryPoint;
 use crate::version::PyVersion;
 
 extern crate alloc;
@@ -155,7 +157,18 @@ impl RefTableDump {
 }
 
 pub fn dump_reftable(data: &[u8], version: PyVersion) -> Result<(Object, RefTableDump)> {
-    crate::reader::load_with_reftable(data, version)
+    #[cfg(feature = "semantic-reach")]
+    let observation: crate::reach::ObservationToken = crate::reach::enter(
+        crate::reach::SemanticSurface::ReferenceTable,
+        SemanticEntryPoint::DumpRefTable,
+    );
+    let result: Result<(Object, RefTableDump)> = crate::reader::load_with_reftable(data, version);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((_, dump)) => observation.accepted(dump.total_bytes, dump.entries.len()),
+        Err(_) => observation.rejected(),
+    }
+    result
 }
 
 #[cfg(test)]

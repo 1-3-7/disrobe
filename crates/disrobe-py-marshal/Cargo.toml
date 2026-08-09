@@ -14,6 +14,10 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+semantic-reach = []
+
 [dependencies]
 disrobe-bytes = { workspace = true }
 thiserror = { workspace = true }
@@ -29,3 +33,7 @@ divan = { workspace = true }
 [[bench]]
 name = "pyc_roundtrip"
 harness = false
+
+[[test]]
+name = "seed_reach"
+required-features = ["semantic-reach"]

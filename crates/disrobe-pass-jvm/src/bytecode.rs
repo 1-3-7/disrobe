@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::classfile::{ClassFile, ConstantPoolEntry};
 use crate::error::{Error, Result};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperandShape {
@@ -335,6 +337,28 @@ const fn be_i32(b: &[u8], o: usize) -> i32 {
 }
 
 pub fn parse_code_attribute(info: &[u8]) -> Result<CodeAttribute> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::CodeAttribute,
+        SemanticEntryPoint::ParseCodeAttribute,
+    );
+    let result: Result<CodeAttribute> = parse_code_attribute_inner(info);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(attribute) => {
+            let items: usize = attribute
+                .code
+                .len()
+                .saturating_add(attribute.exception_table.len())
+                .saturating_add(attribute.nested_attribute_name_indices.len());
+            observation.accepted(info.len(), items);
+        }
+        Err(_) => observation.rejected(),
+    }
+    result
+}
+
+fn parse_code_attribute_inner(info: &[u8]) -> Result<CodeAttribute> {
     if info.len() < 8 {
         return Err(Error::Truncated {
             offset: 0,
@@ -944,6 +968,19 @@ fn validate_control_target(pc: u32, relative: i32, boundaries: &BTreeSet<u32>) -
 }
 
 pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken =
+        reach::enter(SemanticSurface::Bytecode, SemanticEntryPoint::Disassemble);
+    let result: Result<Vec<Instruction>> = disassemble_inner(code);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(instructions) => observation.accepted(code.len(), instructions.len()),
+        Err(_) => observation.rejected(),
+    }
+    result
+}
+
+fn disassemble_inner(code: &[u8]) -> Result<Vec<Instruction>> {
     let mut out: Vec<Instruction> = Vec::new();
     let mut i: usize = 0;
     while i < code.len() {
