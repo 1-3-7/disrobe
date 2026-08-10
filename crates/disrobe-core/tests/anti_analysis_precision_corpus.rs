@@ -7,24 +7,22 @@
     clippy::missing_panics_doc
 )]
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
 use std::sync::OnceLock;
 
-use disrobe_core::anti_analysis::{AntiAnalysisReport, Technique, scan};
-#[cfg(windows)]
-use disrobe_core::anti_analysis::{Confidence, FindingSeverity};
+use disrobe_core::anti_analysis::{
+    AntiAnalysisReport, Confidence, FindingSeverity, Technique, scan,
+};
 use disrobe_core::scratch::ScratchDir;
-#[cfg(windows)]
 use goblin::pe::PE;
 #[cfg(windows)]
 use iced_x86::{
     ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory,
     Mnemonic, OpAccess, OpKind, Register,
 };
-#[cfg(windows)]
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 fn scratch_dir() -> ScratchDir {
@@ -2554,171 +2552,200 @@ fn positive_recall_real_binary_calling_two_debugger_checks() {
     );
 }
 
-const GENERATED_KERNEL_COUNT: u32 = 2048;
-const GENERATED_SAMPLE_FLOOR_BYTES: usize = 512 * 1024;
+const LARGE_BENIGN_FIXTURE: &str = "large-benign-x86_64-pc-windows-msvc.exe";
+const LARGE_BENIGN_MANIFEST: &str = "MANIFEST.toml";
+const LARGE_BENIGN_GENERATOR: &str = "generate.ps1";
+const LARGE_BENIGN_MINIMUM_TEXT_BYTES: u64 = 5 * 1024 * 1024;
+const LARGE_BENIGN_MAXIMUM_TEXT_BYTES: u64 = 16 * 1024 * 1024;
 
-const GENERATED_ENTRY_POINT: &str = r#"fn main() {
-    let mut total: u64 = std::env::args().count() as u64;
-    for kernel in KERNELS {
-        total = total.wrapping_add(kernel(total));
-    }
-    println!("{}", total);
-}
-"#;
-
-fn toolchain_rustc() -> PathBuf {
-    let cargo: PathBuf =
-        std::env::var_os("CARGO").map_or_else(|| PathBuf::from(env!("CARGO")), PathBuf::from);
-    let Some(bin_dir): Option<&std::path::Path> = cargo.parent() else {
-        return PathBuf::from("rustc");
-    };
-    let sibling: PathBuf = bin_dir.join(exe_name("rustc"));
-    if sibling.is_file() {
-        sibling
-    } else {
-        PathBuf::from("rustc")
-    }
+#[derive(Deserialize)]
+struct LargeBenignManifest {
+    schema_version: u32,
+    description: String,
+    fixtures: Vec<LargeBenignFixture>,
 }
 
-fn integer_kernel_body(salt: u32, mul: u32, modulus: u32) -> String {
-    format!(
-        "    let mut acc: u64 = seed ^ 0x{salt:08x};
-    let mut step: u64 = 0;
-    while step < 24 {{
-        acc = acc.rotate_left((step % 61) as u32) ^ acc.wrapping_mul(0x{mul:08x});
-        if acc % {modulus} == 0 {{
-            acc = acc.wrapping_add(step ^ 0x{salt:08x});
-        }} else if acc & 0x{mul:08x} != 0 {{
-            acc ^= acc >> 7;
-        }} else {{
-            acc = acc.wrapping_sub(step.wrapping_mul(3));
-        }}
-        step += 1;
-    }}
-    acc
-"
-    )
+#[derive(Deserialize)]
+struct LargeBenignFixture {
+    path: String,
+    format: String,
+    tool: String,
+    sha256: String,
+    bytes: u64,
+    text_raw_bytes: u64,
+    generator_sha256: String,
+    target: String,
+    compiler_release: String,
+    compiler_commit: String,
+    rustc_args: Vec<String>,
+    linker_release: String,
+    linker_sha256: String,
+    sdk_version: String,
+    sdk_kernel32_sha256: String,
+    provenance: String,
+    source_license: String,
+    rust_runtime_license: String,
+    llvm_license: String,
+    windows_sdk_license: String,
 }
 
-fn jump_table_kernel_body(salt: u32, mul: u32) -> String {
-    let arms: String = (0..48u32).fold(String::new(), |mut out: String, arm: u32| {
-        let factor: u32 = salt.wrapping_add(arm.wrapping_mul(0x9E37)) | 1;
-        let _ = writeln!(
-            out,
-            "        {arm} => acc.wrapping_mul(0x{factor:08x}) ^ {arm},"
-        );
-        out
-    });
-    format!(
-        "    let mut acc: u64 = seed.wrapping_add(0x{mul:08x});
-    acc = match acc % 48 {{
-{arms}        _ => acc.swap_bytes(),
-    }};
-    acc
-"
-    )
+fn large_benign_fixture_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("corpus/native/anti-analysis")
 }
 
-fn bounds_checked_kernel_body(salt: u32, mul: u32, modulus: u32) -> String {
-    format!(
-        "    let mut table: [u32; 64] = [0u32; 64];
-    let mut idx: usize = 0;
-    while idx < 64 {{
-        table[idx] = (idx as u32).wrapping_mul(0x{salt:08x}) ^ 0x{mul:08x};
-        idx += 1;
-    }}
-    let mut acc: u64 = seed;
-    for value in table {{
-        if value % {modulus} == 0 {{
-            acc ^= u64::from(value);
-        }} else {{
-            acc = acc.rotate_left(5) ^ u64::from(value);
-        }}
-    }}
-    acc
-"
-    )
+fn large_benign_fixture_path() -> PathBuf {
+    large_benign_fixture_directory().join(LARGE_BENIGN_FIXTURE)
 }
 
-fn floating_point_kernel_body(salt: u32, modulus: u32) -> String {
-    format!(
-        "    let mut x: f64 = (seed % 10007) as f64 / {modulus}.0;
-    let mut n: u32 = 0;
-    while n < 18 {{
-        x = x.mul_add(1.0009, f64::from(n) / 3.0);
-        if x > 1.0e12 {{
-            x /= 2.0;
-        }} else if x < -1.0e12 {{
-            x = -x;
-        }}
-        n += 1;
-    }}
-    (x.abs() as u64) ^ 0x{salt:08x}
-"
-    )
-}
-
-fn generated_kernel(index: u32) -> String {
-    let salt: u32 = index.wrapping_mul(0x9E37_79B9).wrapping_add(0x85EB_CA6B);
-    let mul: u32 = index.wrapping_mul(0xC2B2_AE35).wrapping_add(0x27D4_EB2F) | 1;
-    let modulus: u32 = (index % 13) + 3;
-    let body: String = match index % 4 {
-        0 => integer_kernel_body(salt, mul, modulus),
-        1 => jump_table_kernel_body(salt, mul),
-        2 => bounds_checked_kernel_body(salt, mul, modulus),
-        _ => floating_point_kernel_body(salt, modulus),
-    };
-    format!("#[inline(never)]\nfn kernel_{index}(seed: u64) -> u64 {{\n{body}}}\n")
-}
-
-fn generated_benign_program(kernels: u32) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(usize::try_from(kernels).unwrap_or(0) + 2);
-    for index in 0..kernels {
-        parts.push(generated_kernel(index));
-    }
-    let table: String = (0..kernels).fold(String::new(), |mut out: String, index: u32| {
-        let _ = writeln!(out, "    kernel_{index},");
-        out
-    });
-    parts.push(format!(
-        "static KERNELS: [fn(u64) -> u64; {kernels}] = [\n{table}];\n"
-    ));
-    parts.push(GENERATED_ENTRY_POINT.to_string());
-    parts.concat()
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 #[test]
-fn large_generated_benign_binary_yields_zero_verdicts() {
-    let rustc: PathBuf = toolchain_rustc();
-    let scratch: ScratchDir = scratch_dir();
-    let dir: PathBuf = scratch.path().to_path_buf();
-    let src_path: PathBuf = dir.join("aa_large_benign.rs");
-    std::fs::write(&src_path, generated_benign_program(GENERATED_KERNEL_COUNT))
-        .expect("write generated source");
-    let out_path: PathBuf = dir.join(exe_name("aa_large_benign"));
-    let built: bool = Command::new(&rustc)
-        .arg("-Copt-level=2")
-        .arg(&src_path)
-        .arg("-o")
-        .arg(&out_path)
-        .status()
-        .is_ok_and(|s: std::process::ExitStatus| s.success());
-    assert!(
-        built,
-        "the precision corpus compiles its own large benign sample with {}; a binary built from \
-         disrobe's own source cannot serve as one, because it carries the scanner's signature \
-         tables as read-only data and matches every needle in them, and a missing compiler must \
-         fail this test rather than skip it",
-        rustc.display()
+fn committed_large_benign_fixture_has_no_detected_findings() {
+    let fixture_directory: PathBuf = large_benign_fixture_directory();
+    let mut fixture_entries: Vec<String> = std::fs::read_dir(&fixture_directory)
+        .expect("read fixture directory")
+        .map(|entry: Result<std::fs::DirEntry, std::io::Error>| {
+            entry
+                .expect("read fixture directory entry")
+                .file_name()
+                .into_string()
+                .expect("fixture entry name must be UTF-8")
+        })
+        .collect();
+    fixture_entries.sort();
+    assert_eq!(
+        fixture_entries,
+        vec![
+            LARGE_BENIGN_MANIFEST.to_string(),
+            LARGE_BENIGN_GENERATOR.to_string(),
+            LARGE_BENIGN_FIXTURE.to_string(),
+        ]
     );
-    let bytes: Vec<u8> = std::fs::read(&out_path).expect("read generated sample");
+    let fixture_path: PathBuf = large_benign_fixture_path();
     assert!(
-        bytes.len() >= GENERATED_SAMPLE_FLOOR_BYTES,
-        "the generated sample holds {} bytes, under the {GENERATED_SAMPLE_FLOOR_BYTES} byte \
-         floor; a sample that small says nothing about precision on real compiler output",
-        bytes.len()
+        fixture_path.is_file(),
+        "the large benign fixture must be committed at {}",
+        fixture_path.display()
     );
-    assert_zero_anti_analysis_verdicts("generated-large-benign", &bytes);
+    let manifest_path: PathBuf = fixture_directory.join(LARGE_BENIGN_MANIFEST);
+    let generator_path: PathBuf = fixture_directory.join(LARGE_BENIGN_GENERATOR);
+    let manifest_text: String =
+        std::fs::read_to_string(&manifest_path).expect("read fixture manifest");
+    let manifest: LargeBenignManifest =
+        toml::from_str(&manifest_text).expect("parse fixture manifest");
+    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(
+        manifest.description,
+        "Pinned self-authored Rust PE32+ x86-64 fixture for the anti-analysis precision corpus. The committed executable provides a 5-16 MiB file-backed executable text span and must not reach a detected finding."
+    );
+    assert_eq!(manifest.fixtures.len(), 1);
+    let fixture: &LargeBenignFixture = &manifest.fixtures[0];
+    let fixture_bytes: Vec<u8> = std::fs::read(&fixture_path).expect("read committed fixture");
+    let generator_bytes: Vec<u8> = std::fs::read(&generator_path).expect("read fixture generator");
+    assert_eq!(fixture.path, LARGE_BENIGN_FIXTURE);
+    assert_eq!(fixture.format, "PE32+ x86-64");
+    assert_eq!(fixture.sha256, sha256_hex(&fixture_bytes));
+    assert_eq!(fixture.generator_sha256, sha256_hex(&generator_bytes));
+    let fixture_bytes_len: u64 =
+        u64::try_from(fixture_bytes.len()).expect("fixture size must fit in u64");
+    assert_eq!(fixture.bytes, fixture_bytes_len);
+    assert_eq!(fixture.target, "x86_64-pc-windows-msvc");
+    assert_eq!(fixture.compiler_release, "1.96.1");
+    assert_eq!(
+        fixture.compiler_commit,
+        "31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd"
+    );
+    assert_eq!(
+        fixture.rustc_args,
+        vec![
+            "--target".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+            "--edition".to_string(),
+            "2024".to_string(),
+            "-Copt-level=1".to_string(),
+            "-Cdebuginfo=0".to_string(),
+            "-Cstrip=symbols".to_string(),
+            "-Clinker=<pinned-rust-lld>".to_string(),
+            "-Clinker-flavor=lld-link".to_string(),
+            "-Clink-arg=/Brepro".to_string(),
+            "-Clink-arg=/DEBUG:NONE".to_string(),
+            "--remap-path-prefix=<owned-temp>=.".to_string(),
+        ]
+    );
+    assert_eq!(
+        fixture.tool,
+        "rustc 1.96.1 (31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd), rust-lld 22.1.2 (1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e), Windows SDK 10.0.26100.0"
+    );
+    assert_eq!(
+        fixture.provenance,
+        "self-authored deterministic Rust source generated in an owned unique temporary directory and compiled directly with the pinned toolchain"
+    );
+    assert_eq!(
+        fixture.linker_release,
+        "LLD 22.1.2 (https://github.com/rust-lang/llvm-project.git 1cb4e3833c1919c2e6fb579a23ac0e2b22587b7e)"
+    );
+    assert_eq!(
+        fixture.linker_sha256,
+        "21d542ef31ee7308dffb79f3e7ebf4ffa0f4a109874c95b8cc78190c36fccbbe"
+    );
+    assert_eq!(fixture.sdk_version, "10.0.26100.0");
+    assert_eq!(
+        fixture.sdk_kernel32_sha256,
+        "341c7d56125a03b458e4d5093e4c79b33123ccfdfd610fe236937b8e6f3134bb"
+    );
+    assert_eq!(fixture.source_license, "MIT OR Apache-2.0");
+    assert_eq!(fixture.rust_runtime_license, "MIT OR Apache-2.0");
+    assert_eq!(fixture.llvm_license, "Apache-2.0 WITH LLVM-exception");
+    assert_eq!(
+        fixture.windows_sdk_license,
+        "Microsoft Software License Terms for the Windows Software Development Kit"
+    );
+    let pe: PE<'_> = PE::parse(&fixture_bytes).expect("parse committed PE32+ fixture");
+    assert!(pe.is_64, "fixture must be PE32+");
+    assert_eq!(
+        pe.header.coff_header.machine,
+        goblin::pe::header::COFF_MACHINE_X86_64,
+        "fixture must target x86-64"
+    );
+    let text_sections: Vec<&goblin::pe::section_table::SectionTable> = pe
+        .sections
+        .iter()
+        .filter(|section: &&goblin::pe::section_table::SectionTable| {
+            section.name().is_ok_and(|name: &str| name == ".text")
+                && section.characteristics & goblin::pe::section_table::IMAGE_SCN_MEM_EXECUTE != 0
+        })
+        .collect();
+    assert_eq!(
+        text_sections.len(),
+        1,
+        "fixture must contain one executable .text section"
+    );
+    let text_raw_start: usize = usize::try_from(text_sections[0].pointer_to_raw_data)
+        .expect(".text raw offset must fit in usize");
+    let text_raw_len: usize = usize::try_from(text_sections[0].size_of_raw_data)
+        .expect(".text raw size must fit in usize");
+    let text_raw_end: usize = text_raw_start
+        .checked_add(text_raw_len)
+        .expect(".text raw range must not overflow usize");
+    assert!(
+        text_raw_end <= fixture_bytes.len(),
+        ".text raw range must lie inside the committed fixture"
+    );
+    let text_raw_bytes: u64 = u64::from(text_sections[0].size_of_raw_data);
+    assert_eq!(fixture.text_raw_bytes, text_raw_bytes);
+    assert!(text_raw_bytes >= LARGE_BENIGN_MINIMUM_TEXT_BYTES);
+    assert!(text_raw_bytes <= LARGE_BENIGN_MAXIMUM_TEXT_BYTES);
+    let report: AntiAnalysisReport =
+        scan(&fixture_bytes, Some("large-benign-x86_64-pc-windows-msvc"));
+    assert!(
+        report.findings.iter().all(|finding| !finding.detected),
+        "the committed large benign fixture must not reach an anti-analysis verdict: {:?}",
+        report.findings
+    );
 }
 
 #[test]

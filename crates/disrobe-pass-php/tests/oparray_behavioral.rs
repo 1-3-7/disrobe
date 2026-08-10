@@ -28,14 +28,16 @@ use disrobe_pass_php::{
     opcode_name, parse_oparray,
 };
 use php_toolchain::{PHP_OPCACHE, PhpRuntime, require_php, unmeasured};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 7] = [
+const PINNED_SAMPLES: [&str; 8] = [
     "arithmetic",
+    "closures",
     "control_flow",
     "do_while",
     "functions",
@@ -51,6 +53,17 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 6] = [
     "functions",
     "keyed_foreach",
     "variable_variable",
+];
+
+const OPCODE_NAMING_SAMPLES: [&str; 8] = [
+    "arithmetic",
+    "closures",
+    "control_flow",
+    "do_while",
+    "functions",
+    "keyed_foreach",
+    "variable_variable",
+    "versioned",
 ];
 
 fn required_sample(sample: &str) -> PathBuf {
@@ -93,10 +106,17 @@ fn find_opcache(php: &Path, graded: &str) -> Option<String> {
 }
 
 fn opcache_dll(php: &Path) -> Option<String> {
-    if let Ok(explicit) = std::env::var("DZOA_OPCACHE_DLL")
-        && Path::new(&explicit).exists()
-    {
-        return Some(explicit);
+    let explicit: Option<OsString> = std::env::var_os("DZOA_OPCACHE_DLL");
+    opcache_dll_with_explicit(php, explicit)
+}
+
+fn opcache_dll_with_explicit(php: &Path, explicit: Option<OsString>) -> Option<String> {
+    if let Some(explicit) = explicit {
+        let canonical: PathBuf = PathBuf::from(explicit).canonicalize().ok()?;
+        if !canonical.is_file() {
+            return None;
+        }
+        return canonical.into_os_string().into_string().ok();
     }
     let resolved: PathBuf = if php == Path::new("php") {
         let which: std::io::Result<std::process::Output> = Command::new("php")
@@ -149,7 +169,17 @@ fn run_php_source(php: &Path, source: &str) -> Option<String> {
 }
 
 fn emit_dzoa(php: &Path, dll: &str, src: &Path, out: &Path) -> Result<(), String> {
-    emit_dzoa_versioned(php, dll, src, out, None)
+    emit_dzoa_versioned(php, dll, src, out, None, None)
+}
+
+fn emit_dzoa_with_dump(
+    php: &Path,
+    dll: &str,
+    src: &Path,
+    out: &Path,
+    dump: &Path,
+) -> Result<(), String> {
+    emit_dzoa_versioned(php, dll, src, out, None, Some(dump))
 }
 
 fn emit_dzoa_versioned(
@@ -158,6 +188,7 @@ fn emit_dzoa_versioned(
     src: &Path,
     out: &Path,
     force_version: Option<u8>,
+    dump: Option<&Path>,
 ) -> Result<(), String> {
     let emitter: PathBuf = oparray_dir().join("emit_dzoa.php");
     let mut command: Command = Command::new(php);
@@ -165,10 +196,11 @@ fn emit_dzoa_versioned(
     if let Some(v) = force_version {
         command.env("DZOA_FORCE_VERSION", v.to_string());
     }
+    command.arg(&emitter).arg(src).arg(out);
+    if let Some(path) = dump {
+        command.arg(path);
+    }
     let output: std::process::Output = command
-        .arg(&emitter)
-        .arg(src)
-        .arg(out)
         .output()
         .map_err(|e: std::io::Error| format!("could not spawn emit_dzoa.php: {e}"))?;
     if output.status.success() {
@@ -312,9 +344,18 @@ fn every_committed_oparray_sample_is_pinned_by_name() {
     let not_behavioral: Vec<&String> = pinned.difference(&behavioral).collect();
     assert_eq!(
         not_behavioral,
-        vec!["versioned"],
-        "every pinned sample except `versioned`, which carries the schema-version cases, must have \
-         a behavioral roundtrip; these do not: {not_behavioral:?}"
+        vec!["closures", "versioned"],
+        "every pinned sample except `closures`, which grades anonymous closure opcode blocks, and \
+         `versioned`, which carries the schema-version cases, must have a behavioral roundtrip; \
+         these do not: {not_behavioral:?}"
+    );
+    let opcode_naming: BTreeSet<String> = OPCODE_NAMING_SAMPLES
+        .iter()
+        .map(|sample: &&str| (*sample).to_owned())
+        .collect();
+    assert_eq!(
+        opcode_naming, pinned,
+        "every pinned sample must compare its opcodes against the raw opcache dump"
     );
     for sample in PINNED_SAMPLES {
         required_sample(sample);
@@ -351,8 +392,6 @@ fn variable_variable_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("variable_variable");
 }
 
-const MAIN_BLOCK_HEADER: &str = "$_main:";
-
 const EMITTER_SEND_FAMILY_TARGET: &str = "ZEND_SEND_VAL";
 
 const EMITTER_ASSIGN_OP_TARGET: &str = "ZEND_ASSIGN_OP";
@@ -381,29 +420,100 @@ fn mnemonic_of(line: &str) -> Option<String> {
     Some(token.to_owned())
 }
 
-fn main_block_mnemonics(text: &str) -> Option<Vec<String>> {
-    let mut inside: bool = false;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum OpcodeBlockId {
+    Main,
+    Named(String),
+    Closure { path: Vec<u32> },
+}
+
+fn opcode_block_label(id: &OpcodeBlockId) -> String {
+    match id {
+        OpcodeBlockId::Main => "$_main".to_owned(),
+        OpcodeBlockId::Named(name) => name.clone(),
+        OpcodeBlockId::Closure { path } => format!("{{closure}}#{path:?}"),
+    }
+}
+
+fn opcode_block_name(line: &str) -> Option<&str> {
+    let name: &str = line.strip_suffix(':')?;
+    if name.is_empty()
+        || (name.len() == 4 && name.bytes().all(|byte: u8| byte.is_ascii_digit()))
+        || name.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(name)
+}
+
+fn raw_opcode_block_id(name: &str, closure_ordinal: &mut u32) -> Result<OpcodeBlockId, String> {
+    if name == "$_main" {
+        return Ok(OpcodeBlockId::Main);
+    }
+    if name.starts_with("{closure") {
+        let ordinal: u32 = *closure_ordinal;
+        *closure_ordinal = closure_ordinal
+            .checked_add(1)
+            .ok_or_else(|| "raw opcache dump has too many closure blocks".to_owned())?;
+        return Ok(OpcodeBlockId::Closure {
+            path: vec![ordinal],
+        });
+    }
+    Ok(OpcodeBlockId::Named(name.to_owned()))
+}
+
+fn flush_raw_opcode_block(
+    blocks: &mut BTreeMap<OpcodeBlockId, Vec<String>>,
+    id: OpcodeBlockId,
+    mnemonics: Vec<String>,
+) -> Result<(), String> {
+    if mnemonics.is_empty() {
+        return Err(format!(
+            "raw opcache dump block `{}` is empty",
+            opcode_block_label(&id)
+        ));
+    }
+    if blocks.insert(id.clone(), mnemonics).is_some() {
+        return Err(format!(
+            "raw opcache dump has duplicate block `{}`",
+            opcode_block_label(&id)
+        ));
+    }
+    Ok(())
+}
+
+fn raw_opcache_dump_blocks(text: &str) -> Result<BTreeMap<OpcodeBlockId, Vec<String>>, String> {
+    let mut current: Option<OpcodeBlockId> = None;
     let mut mnemonics: Vec<String> = Vec::new();
+    let mut blocks: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::new();
+    let mut closure_ordinal: u32 = 0;
     for raw in text.lines() {
-        let line: &str = raw.trim();
-        if line == MAIN_BLOCK_HEADER {
-            inside = true;
-            continue;
-        }
-        if !inside {
-            continue;
-        }
+        let line: &str = raw.trim_end();
         if line.starts_with("LIVE RANGES") || line.starts_with("EXCEPTION TABLE") {
-            break;
+            continue;
         }
-        if line.ends_with(':') && !line.starts_with(';') && mnemonic_of(line).is_none() {
-            break;
+        if let Some(name) = opcode_block_name(line) {
+            let next: OpcodeBlockId = raw_opcode_block_id(name, &mut closure_ordinal)?;
+            if let Some(previous) = current.replace(next) {
+                flush_raw_opcode_block(&mut blocks, previous, std::mem::take(&mut mnemonics))?;
+            }
+            continue;
         }
-        if let Some(mnemonic) = mnemonic_of(line) {
+        if current.is_none() {
+            continue;
+        }
+        if let Some(mnemonic) = mnemonic_of(line.trim()) {
             mnemonics.push(mnemonic);
         }
     }
-    inside.then_some(mnemonics)
+    let Some(name) = current else {
+        return Err("raw opcache dump has no named blocks".to_owned());
+    };
+    flush_raw_opcode_block(&mut blocks, name, mnemonics)?;
+    if !blocks.contains_key(&OpcodeBlockId::Main) {
+        return Err("raw opcache dump has no $_main block".to_owned());
+    }
+    Ok(blocks)
 }
 
 fn expected_zend_name(mnemonic: &str) -> String {
@@ -421,35 +531,141 @@ fn expected_zend_name(mnemonic: &str) -> String {
     format!("ZEND_{mnemonic}")
 }
 
-fn opcache_dump_text(php: &Path, dll: &str, src: &Path) -> Option<String> {
-    let output: std::process::Output = Command::new(php)
-        .args(["-d", "opcache.error_log="])
-        .arg("-d")
-        .arg(format!("zend_extension={dll}"))
-        .args([
-            "-d",
-            "opcache.enable=1",
-            "-d",
-            "opcache.enable_cli=1",
-            "-d",
-            "opcache.jit=disable",
-            "-d",
-            "opcache.jit_buffer_size=0",
-            "-d",
-            "opcache.opt_debug_level=0x10000",
-        ])
-        .arg(src)
-        .output()
-        .ok()?;
-    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
-    if stderr.contains(MAIN_BLOCK_HEADER) {
-        return Some(stderr);
+fn parsed_opcode_blocks(array: &OpArray) -> Result<BTreeMap<OpcodeBlockId, Vec<String>>, String> {
+    fn collect(
+        array: &OpArray,
+        blocks: &mut BTreeMap<OpcodeBlockId, Vec<String>>,
+        id: OpcodeBlockId,
+        closure_ordinal: &mut u32,
+    ) -> Result<(), String> {
+        let mnemonics: Vec<String> = array
+            .ops
+            .iter()
+            .map(|op: &Op| opcode_name(op.opcode).to_owned())
+            .collect();
+        if mnemonics.is_empty() {
+            return Err(format!("DZOA block `{}` is empty", opcode_block_label(&id)));
+        }
+        if blocks.insert(id.clone(), mnemonics).is_some() {
+            return Err(format!(
+                "DZOA has duplicate block `{}`",
+                opcode_block_label(&id)
+            ));
+        }
+        for child in &array.children {
+            let child_id: OpcodeBlockId = match (&child.class_name, &child.name) {
+                (Some(class_name), Some(name)) => {
+                    OpcodeBlockId::Named(format!("{class_name}::{name}"))
+                }
+                (None, Some(name)) => OpcodeBlockId::Named(name.clone()),
+                (None, None) => {
+                    let ordinal: u32 = *closure_ordinal;
+                    *closure_ordinal = closure_ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| "DZOA has too many closure blocks".to_owned())?;
+                    OpcodeBlockId::Closure {
+                        path: vec![ordinal],
+                    }
+                }
+                (Some(_), None) => {
+                    return Err("DZOA contains a method block without a method name".to_owned());
+                }
+            };
+            collect(child, blocks, child_id, closure_ordinal)?;
+        }
+        Ok(())
     }
-    if stdout.contains(MAIN_BLOCK_HEADER) {
-        return Some(stdout);
+
+    let mut blocks: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::new();
+    let mut closure_ordinal: u32 = 0;
+    collect(
+        array,
+        &mut blocks,
+        OpcodeBlockId::Main,
+        &mut closure_ordinal,
+    )?;
+    Ok(blocks)
+}
+
+fn expected_opcode_blocks(
+    raw: &BTreeMap<OpcodeBlockId, Vec<String>>,
+) -> BTreeMap<OpcodeBlockId, Vec<String>> {
+    raw.iter()
+        .map(|(id, mnemonics): (&OpcodeBlockId, &Vec<String>)| {
+            let expected: Vec<String> = mnemonics
+                .iter()
+                .map(|mnemonic: &String| expected_zend_name(mnemonic))
+                .collect();
+            (id.clone(), expected)
+        })
+        .collect()
+}
+
+fn require_closure_opcode_blocks(
+    raw: &BTreeMap<OpcodeBlockId, Vec<String>>,
+    parsed: &BTreeMap<OpcodeBlockId, Vec<String>>,
+) -> Result<(), String> {
+    for ordinal in [0u32, 1] {
+        let id: OpcodeBlockId = OpcodeBlockId::Closure {
+            path: vec![ordinal],
+        };
+        if !raw.contains_key(&id) {
+            return Err(format!(
+                "raw opcache dump is missing required closure path [{ordinal}]"
+            ));
+        }
+        if !parsed.contains_key(&id) {
+            return Err(format!("DZOA is missing required closure path [{ordinal}]"));
+        }
     }
-    None
+    Ok(())
+}
+
+fn compare_opcode_blocks(
+    raw: &BTreeMap<OpcodeBlockId, Vec<String>>,
+    parsed: &BTreeMap<OpcodeBlockId, Vec<String>>,
+    sample: &str,
+) -> Result<(), String> {
+    let expected: BTreeMap<OpcodeBlockId, Vec<String>> = expected_opcode_blocks(raw);
+    for id in expected.keys() {
+        if !parsed.contains_key(id) {
+            return Err(format!(
+                "{sample}: raw opcache dump block `{}` has no matching DZOA block",
+                opcode_block_label(id)
+            ));
+        }
+    }
+    for id in parsed.keys() {
+        if !expected.contains_key(id) {
+            return Err(format!(
+                "{sample}: DZOA block `{}` is absent from the raw opcache dump",
+                opcode_block_label(id)
+            ));
+        }
+    }
+    for (id, expected_mnemonics) in &expected {
+        let Some(parsed_mnemonics): Option<&Vec<String>> = parsed.get(id) else {
+            return Err(format!(
+                "{sample}: DZOA block `{}` is absent",
+                opcode_block_label(id)
+            ));
+        };
+        if parsed_mnemonics.len() != expected_mnemonics.len() {
+            return Err(format!(
+                "{sample}: block `{}` has {} raw opcache dump opcodes but {} DZOA opcodes; raw={expected_mnemonics:?}; dzoa={parsed_mnemonics:?}",
+                opcode_block_label(id),
+                expected_mnemonics.len(),
+                parsed_mnemonics.len()
+            ));
+        }
+        if parsed_mnemonics != expected_mnemonics {
+            return Err(format!(
+                "{sample}: block `{}` differs; raw={expected_mnemonics:?}; dzoa={parsed_mnemonics:?}",
+                opcode_block_label(id)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn opcode_naming_agrees_with_real_php(sample: &str) {
@@ -466,7 +682,8 @@ fn opcode_naming_agrees_with_real_php(sample: &str) {
         disrobe_core::scratch::ScratchDir::create("disrobe_oparray_mnemonics")
             .expect("mkdir mnemonic scratch");
     let dzoa: PathBuf = scratch.path().join(format!("{sample}.dzoa"));
-    if let Err(diag) = emit_dzoa(&php, &dll, &src, &dzoa) {
+    let dump: PathBuf = scratch.path().join(format!("{sample}.opcache"));
+    if let Err(diag) = emit_dzoa_with_dump(&php, &dll, &src, &dzoa, &dump) {
         unmeasured(
             &PHP_OPCACHE,
             &graded,
@@ -477,64 +694,46 @@ fn opcode_naming_agrees_with_real_php(sample: &str) {
         );
         return;
     }
-    let Some(text): Option<String> = opcache_dump_text(&php, &dll, &src) else {
-        unmeasured(
-            &PHP_OPCACHE,
-            &graded,
-            "the opcache textual dump carried no $_main block on either stream",
-        );
-        return;
-    };
-    let Some(reference): Option<Vec<String>> = main_block_mnemonics(&text) else {
-        panic!("the dump for {sample} names $_main and then loses it:\n{text}");
-    };
-    assert!(
-        !reference.is_empty(),
-        "real php printed no opcode for {sample}, so comparing names against it would accept any \
-         naming at all"
-    );
+    let text: String = std::fs::read_to_string(&dump).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "the selected emitter run did not leave its raw opcache dump at {}: {error}",
+            dump.display()
+        )
+    });
+    let reference: BTreeMap<OpcodeBlockId, Vec<String>> = raw_opcache_dump_blocks(&text)
+        .unwrap_or_else(|error: String| {
+            panic!("the raw opcache dump for {sample} is invalid: {error}\n{text}")
+        });
 
     let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read dzoa");
     let parsed: OpArray = parse_oparray(&bytes).expect("disrobe parse real op_array");
-    let ours: Vec<String> = parsed
-        .ops
-        .iter()
-        .map(|op: &Op| opcode_name(op.opcode).to_owned())
-        .collect();
-    let expected: Vec<String> = reference
-        .iter()
-        .map(|mnemonic: &String| expected_zend_name(mnemonic))
-        .collect();
+    let ours: BTreeMap<OpcodeBlockId, Vec<String>> =
+        parsed_opcode_blocks(&parsed).unwrap_or_else(|error: String| {
+            panic!("DZOA for {sample} has invalid block names: {error}")
+        });
+    if sample == "closures" {
+        require_closure_opcode_blocks(&reference, &ours)
+            .unwrap_or_else(|error: String| panic!("closure opcode differential failed: {error}"));
+    }
+    compare_opcode_blocks(&reference, &ours, sample)
+        .unwrap_or_else(|error: String| panic!("opcode differential failed: {error}"));
 
-    assert_eq!(
-        ours.len(),
-        expected.len(),
-        "{sample}: real php printed {} opcodes for $_main and the container carries {}, so the two \
-         streams cannot be compared name by name\n--- php ---\n{reference:?}\n--- ours ---\n{ours:?}",
-        expected.len(),
-        ours.len()
-    );
-    assert_eq!(
-        ours, expected,
-        "{sample}: the opcode name this crate reports is not the mnemonic real php printed for that \
-         position"
-    );
-
+    let raw_count: usize = reference.values().map(Vec::len).sum();
     let passthrough: usize = reference
-        .iter()
+        .values()
+        .flatten()
         .filter(|mnemonic: &&String| expected_zend_name(mnemonic) == format!("ZEND_{mnemonic}"))
         .count();
     assert!(
-        passthrough * 2 > reference.len(),
-        "{sample}: {passthrough} of {} opcodes survive the emitter unrenamed. Below half, the \
+        passthrough * 2 > raw_count,
+        "{sample}: {passthrough} of {raw_count} opcodes survive the emitter unrenamed. Below half, the \
          comparison is mostly checking the rename table rather than the opcode names",
-        reference.len()
     );
 }
 
 #[test]
 fn opcode_names_are_the_mnemonics_real_php_prints() {
-    for sample in BEHAVIORALLY_GRADED_SAMPLES {
+    for sample in OPCODE_NAMING_SAMPLES {
         opcode_naming_agrees_with_real_php(sample);
     }
 }
@@ -563,6 +762,287 @@ fn the_mnemonic_reader_takes_the_opcode_and_not_the_result_slot() {
     assert_eq!(expected_zend_name("ECHO"), "ZEND_ECHO");
 }
 
+#[test]
+fn opcode_dump_blocks_keep_main_and_named_function_mnemonics_in_order() {
+    let text: &str = "$_main:\n0000 INIT_FCALL 2 112 string(\"add\")\n0001 SEND_VAL int(40) 1\n0002 DO_UCALL\n\nadd:\n; (lines=3, args=2)\n0000 RECV 1\n0001 T2 = ADD CV0($a) CV1($b)\n0002 RETURN T2\n";
+    let blocks: BTreeMap<OpcodeBlockId, Vec<String>> =
+        raw_opcache_dump_blocks(text).expect("parse blocks");
+    assert_eq!(
+        blocks.get(&OpcodeBlockId::Main),
+        Some(&vec![
+            "INIT_FCALL".to_owned(),
+            "SEND_VAL".to_owned(),
+            "DO_UCALL".to_owned(),
+        ])
+    );
+    assert_eq!(
+        blocks.get(&OpcodeBlockId::Named("add".to_owned())),
+        Some(&vec![
+            "RECV".to_owned(),
+            "ADD".to_owned(),
+            "RETURN".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn opcode_dump_blocks_reject_missing_empty_and_duplicate_names() {
+    let missing: Result<BTreeMap<OpcodeBlockId, Vec<String>>, String> =
+        raw_opcache_dump_blocks("add:\n0000 RETURN int(1)\n");
+    assert!(
+        missing
+            .expect_err("missing main must fail")
+            .contains("$_main")
+    );
+    let empty: Result<BTreeMap<OpcodeBlockId, Vec<String>>, String> =
+        raw_opcache_dump_blocks("$_main:\n\nadd:\n0000 RETURN int(1)\n");
+    assert!(empty.expect_err("empty block must fail").contains("empty"));
+    let duplicate: Result<BTreeMap<OpcodeBlockId, Vec<String>>, String> =
+        raw_opcache_dump_blocks("$_main:\n0000 RETURN int(1)\n\n$_main:\n0000 RETURN int(2)\n");
+    assert!(
+        duplicate
+            .expect_err("duplicate block must fail")
+            .contains("duplicate")
+    );
+}
+
+#[test]
+fn opcode_dump_blocks_ignore_live_ranges_between_named_blocks() {
+    let blocks: BTreeMap<OpcodeBlockId, Vec<String>> = raw_opcache_dump_blocks(
+        "$_main:\n0000 RETURN int(1)\nLIVE RANGES:\n     4: 0000 - 0000 (tmp/var)\n\nadd:\n0000 RETURN int(2)\n",
+    )
+    .expect("live ranges are not blocks");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(
+        blocks.get(&OpcodeBlockId::Main),
+        Some(&vec!["RETURN".to_owned()])
+    );
+    assert_eq!(
+        blocks.get(&OpcodeBlockId::Named("add".to_owned())),
+        Some(&vec!["RETURN".to_owned()])
+    );
+}
+
+#[test]
+fn opcode_dump_headers_match_the_php_producer_grammar() {
+    assert_eq!(opcode_block_name("$_main:"), Some("$_main"));
+    assert_eq!(opcode_block_name("Worker::run:"), Some("Worker::run"));
+    assert_eq!(opcode_block_name("0000:"), None);
+    assert_eq!(opcode_block_name("JIT tracing header:"), None);
+    let blocks: BTreeMap<OpcodeBlockId, Vec<String>> =
+        raw_opcache_dump_blocks("$_main:\n0000 RETURN int(1)\n  add:\n0001 RETURN int(2)\n")
+            .expect("indented heading is not a block");
+    assert!(!blocks.contains_key(&OpcodeBlockId::Named("add".to_owned())));
+}
+
+#[test]
+fn opcode_block_comparison_rejects_unknown_missing_and_wrong_mnemonics() {
+    let raw: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (OpcodeBlockId::Main, vec!["ECHO".to_owned()]),
+        (
+            OpcodeBlockId::Named("add".to_owned()),
+            vec!["RETURN".to_owned()],
+        ),
+    ]);
+    let unknown: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (OpcodeBlockId::Main, vec!["ZEND_ECHO".to_owned()]),
+        (
+            OpcodeBlockId::Named("other".to_owned()),
+            vec!["ZEND_RETURN".to_owned()],
+        ),
+    ]);
+    assert!(
+        compare_opcode_blocks(&raw, &unknown, "fixture")
+            .expect_err("unknown raw block must fail")
+            .contains("matching DZOA")
+    );
+    let missing: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (OpcodeBlockId::Main, vec!["ZEND_ECHO".to_owned()]),
+        (
+            OpcodeBlockId::Named("add".to_owned()),
+            vec!["ZEND_RETURN".to_owned()],
+        ),
+        (
+            OpcodeBlockId::Named("extra".to_owned()),
+            vec!["ZEND_RETURN".to_owned()],
+        ),
+    ]);
+    assert!(
+        compare_opcode_blocks(&raw, &missing, "fixture")
+            .expect_err("missing raw block must fail")
+            .contains("absent from the raw opcache dump")
+    );
+    let wrong: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (OpcodeBlockId::Main, vec!["ZEND_PRINT".to_owned()]),
+        (
+            OpcodeBlockId::Named("add".to_owned()),
+            vec!["ZEND_RETURN".to_owned()],
+        ),
+    ]);
+    assert!(
+        compare_opcode_blocks(&raw, &wrong, "fixture")
+            .expect_err("wrong mnemonic must fail")
+            .contains("differs")
+    );
+}
+
+#[test]
+fn raw_opcache_dump_closures_receive_stable_ordinals() {
+    let blocks: BTreeMap<OpcodeBlockId, Vec<String>> = raw_opcache_dump_blocks(
+        "$_main:\n0000 DECLARE_LAMBDA_FUNCTION 0\n\n{closure}:\n0000 RECV 1\n0001 RETURN CV0($value)\n\n{closure}:\n0000 RECV 1\n0001 RETURN CV0($value)\n",
+    )
+    .expect("parse closure blocks");
+    assert!(blocks.contains_key(&OpcodeBlockId::Main));
+    assert!(blocks.contains_key(&OpcodeBlockId::Closure { path: vec![0] }));
+    assert!(blocks.contains_key(&OpcodeBlockId::Closure { path: vec![1] }));
+}
+
+#[test]
+fn supplied_opcache_path_wins_over_php_sibling_discovery() {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_explicit_opcache")
+            .expect("create explicit opcache scratch");
+    let php: PathBuf = scratch.path().join("php-bin").join("php");
+    let supplied: PathBuf = scratch.path().join("provided").join(".").join("opcache.so");
+    std::fs::create_dir_all(supplied.parent().expect("provided parent"))
+        .expect("create supplied parent");
+    std::fs::write(&supplied, b"provided opcache").expect("write supplied opcache");
+    let expected: PathBuf = supplied
+        .canonicalize()
+        .expect("canonicalize supplied opcache");
+    let actual: String = opcache_dll_with_explicit(&php, Some(supplied.into_os_string()))
+        .expect("use supplied opcache");
+    assert_eq!(actual, expected.to_string_lossy());
+}
+
+#[test]
+fn nonexistent_supplied_opcache_path_does_not_fall_back_to_php_sibling() {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_missing_opcache")
+            .expect("create missing opcache scratch");
+    let php: PathBuf = scratch.path().join("php-bin").join("php");
+    let sibling: PathBuf = scratch
+        .path()
+        .join("php-bin")
+        .join("ext")
+        .join("opcache.so");
+    std::fs::create_dir_all(sibling.parent().expect("sibling parent"))
+        .expect("create sibling parent");
+    std::fs::write(&sibling, b"sibling opcache").expect("write sibling opcache");
+    let missing: PathBuf = scratch.path().join("missing").join("opcache.so");
+    assert!(opcache_dll_with_explicit(&php, Some(missing.into_os_string())).is_none());
+}
+
+#[test]
+fn emitter_rejects_identical_and_aliased_output_paths() {
+    let graded: &str = "the raw opcache dump output path check";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_output_paths")
+            .expect("create output-path scratch");
+    let src: PathBuf = required_sample("arithmetic");
+    let same: PathBuf = scratch.path().join("same.dzoa");
+    let same_error: String = emit_dzoa_with_dump(&php, &dll, &src, &same, &same)
+        .expect_err("identical output paths must fail");
+    assert!(same_error.contains("raw opcache dump"));
+    let alias: PathBuf = scratch.path().join(".").join("same.dzoa");
+    let alias_error: String = emit_dzoa_with_dump(&php, &dll, &src, &same, &alias)
+        .expect_err("aliased output paths must fail");
+    assert!(alias_error.contains("raw opcache dump"));
+}
+
+#[test]
+fn emitter_rejects_hard_linked_output_paths() {
+    let graded: &str = "the raw opcache dump hard-link output path check";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_hard_links")
+            .expect("create hard-link scratch");
+    let src: PathBuf = required_sample("arithmetic");
+    let dzoa: PathBuf = scratch.path().join("same.dzoa");
+    let dump: PathBuf = scratch.path().join("same.opcache");
+    std::fs::write(&dzoa, b"seed").expect("create DZOA hard-link source");
+    std::fs::hard_link(&dzoa, &dump).expect("create hard-linked raw opcache dump path");
+    let error: String = emit_dzoa_with_dump(&php, &dll, &src, &dzoa, &dump)
+        .expect_err("hard-linked output paths must fail");
+    assert!(error.contains("raw opcache dump"));
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[test]
+fn emitter_rejects_dangling_raw_opcache_dump_symlink() {
+    let graded: &str = "the raw opcache dump dangling symlink output path check";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_oparray_dangling_symlink")
+            .expect("create dangling-symlink scratch");
+    let src: PathBuf = required_sample("arithmetic");
+    let dzoa: PathBuf = scratch.path().join("out.dzoa");
+    let dump: PathBuf = scratch.path().join("out.dump");
+    create_file_symlink(&dzoa, &dump).expect("create dangling raw opcache dump symlink");
+    let error: String = emit_dzoa_with_dump(&php, &dll, &src, &dzoa, &dump)
+        .expect_err("dangling raw opcache dump symlink must fail");
+    assert!(error.contains("raw opcache dump"));
+    assert!(!dzoa.exists());
+}
+
+#[test]
+fn closure_opcode_blocks_require_each_raw_and_dzoa_ordinal() {
+    let raw: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (
+            OpcodeBlockId::Main,
+            vec!["DECLARE_LAMBDA_FUNCTION".to_owned()],
+        ),
+        (
+            OpcodeBlockId::Closure { path: vec![0] },
+            vec!["RETURN".to_owned()],
+        ),
+        (
+            OpcodeBlockId::Closure { path: vec![1] },
+            vec!["RETURN".to_owned()],
+        ),
+    ]);
+    let parsed: BTreeMap<OpcodeBlockId, Vec<String>> = BTreeMap::from([
+        (
+            OpcodeBlockId::Main,
+            vec!["ZEND_DECLARE_LAMBDA_FUNCTION".to_owned()],
+        ),
+        (
+            OpcodeBlockId::Closure { path: vec![0] },
+            vec!["ZEND_RETURN".to_owned()],
+        ),
+    ]);
+    assert!(
+        require_closure_opcode_blocks(&raw, &parsed)
+            .expect_err("missing closure ordinal must fail")
+            .contains("path [1]")
+    );
+}
+
 struct RealDump {
     php: PathBuf,
     original_stdout: String,
@@ -588,7 +1068,8 @@ fn emit_real_dump_versioned(sample: &str, force_version: Option<u8>) -> Option<R
     std::fs::copy(&canonical_src, &src).expect("copy sample to unique path");
     let original_stdout: String = run_php(&php, &src)?;
     let dzoa: PathBuf = out_dir.join(format!("{sample}_{pid}_{seq}.dzoa"));
-    let emitted: Result<(), String> = emit_dzoa_versioned(&php, &dll, &src, &dzoa, force_version);
+    let emitted: Result<(), String> =
+        emit_dzoa_versioned(&php, &dll, &src, &dzoa, force_version, None);
     if let Err(diag) = emitted {
         unmeasured(
             &PHP_OPCACHE,

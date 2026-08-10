@@ -753,8 +753,74 @@ function run_opcache_dump(string $dll, array $iniOverrides, string $srcPath): ar
     return [$stdout, $stderr];
 }
 
-$srcPath = $argv[1] ?? fail('usage: emit_dzoa.php <source.php> <out.dzoa>');
-$outPath = $argv[2] ?? fail('usage: emit_dzoa.php <source.php> <out.dzoa>');
+function output_path_key(string $path): string
+{
+    $resolved = realpath($path);
+    if ($resolved === false) {
+        $directory = realpath(dirname($path));
+        if ($directory !== false) {
+            $resolved = $directory . DIRECTORY_SEPARATOR . basename($path);
+        } else {
+            $resolved = $path;
+        }
+    }
+    if (PHP_OS_FAMILY === 'Windows') {
+        return strtolower($resolved);
+    }
+
+    return $resolved;
+}
+
+function existing_output_identity(string $path): ?string
+{
+    if (!file_exists($path)) {
+        return null;
+    }
+    clearstatcache(true, $path);
+    $metadata = stat($path);
+    if ($metadata === false) {
+        fail("could not inspect output path $path");
+    }
+
+    return (string) $metadata['dev'] . ':' . (string) $metadata['ino'];
+}
+
+function require_non_symlink_output(string $path, string $kind): void
+{
+    if (is_link($path)) {
+        fail("$kind output path is a symlink: $path");
+    }
+}
+
+function require_distinct_outputs(string $outPath, ?string $dumpPath): void
+{
+    require_non_symlink_output($outPath, 'DZOA');
+    if ($dumpPath === null) {
+        return;
+    }
+    require_non_symlink_output($dumpPath, 'raw opcache dump');
+    if (output_path_key($outPath) === output_path_key($dumpPath)) {
+        fail("DZOA output and raw opcache dump output resolve to the same path $outPath");
+    }
+    $outIdentity = existing_output_identity($outPath);
+    $dumpIdentity = existing_output_identity($dumpPath);
+    if ($outIdentity !== null && $outIdentity === $dumpIdentity) {
+        fail("DZOA output and raw opcache dump output share one file identity");
+    }
+}
+
+function write_exact_output(string $path, string $bytes, string $kind): void
+{
+    $written = file_put_contents($path, $bytes);
+    if ($written !== strlen($bytes)) {
+        $actual = $written === false ? 'write failure' : (string) $written;
+        fail("could not write exact $kind output $path; wrote $actual of " . strlen($bytes) . ' bytes');
+    }
+}
+
+$srcPath = $argv[1] ?? fail('usage: emit_dzoa.php <source.php> <out.dzoa> [out.dump]');
+$outPath = $argv[2] ?? fail('usage: emit_dzoa.php <source.php> <out.dzoa> [out.dump]');
+$dumpPath = $argv[3] ?? null;
 
 $opcacheDll = getenv('DZOA_OPCACHE_DLL');
 $dll = ($opcacheDll !== false && $opcacheDll !== '') ? $opcacheDll : '';
@@ -814,5 +880,9 @@ $forced = getenv('DZOA_FORCE_VERSION');
 $schemaVersion = ($forced !== false && $forced !== '') ? (int) $forced : DZOA_VERSION;
 
 $container = DZOA_MAGIC . chr($schemaVersion) . serialize_body($main, $schemaVersion);
-file_put_contents($outPath, $container);
+require_distinct_outputs($outPath, $dumpPath);
+write_exact_output($outPath, $container, 'DZOA');
+if ($dumpPath !== null) {
+    write_exact_output($dumpPath, $dump, 'raw opcache dump');
+}
 fwrite(STDOUT, sprintf("wrote %s (%d bytes), %d op_array(s)\n", $outPath, strlen($container), count($arrays)));

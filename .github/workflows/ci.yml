@@ -769,6 +769,9 @@ jobs:
           DISROBE_REQUIRE_MRUBY: "1"
         run: cargo test -p disrobe-pass-ruby --test mruby_recompile_oracle -- --nocapture
       - name: php op_array behavioral differential
+        env:
+          DISROBE_REQUIRE_PHP: "1"
+          DISROBE_REQUIRE_PHP_OPCACHE: "1"
         run: cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture
       - name: php loader re-execution differential
         run: cargo test -p disrobe-pass-php --test loader_behavioral -- --nocapture

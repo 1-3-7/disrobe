@@ -126,6 +126,86 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             Value::String("windows-latest".to_owned())
         ]
     );
+    let differential_steps: &Vec<Value> = jobs
+        .get("execution-differentials")
+        .and_then(|value: &Value| value.get("steps"))
+        .and_then(Value::as_sequence)
+        .expect("ci.yml execution differential steps");
+    assert_eq!(
+        jobs.get("execution-differentials")
+            .and_then(|value: &Value| value.get("runs-on"))
+            .and_then(Value::as_str),
+        Some("ubuntu-latest")
+    );
+    let php_setup_index: usize = differential_steps
+        .iter()
+        .position(|step: &Value| {
+            step.get("uses").and_then(Value::as_str) == Some("shivammathur/setup-php@v2")
+        })
+        .expect("ci.yml PHP setup step");
+    let php_setup: &Value = &differential_steps[php_setup_index];
+    assert_eq!(
+        php_setup
+            .get("with")
+            .and_then(|value: &Value| value.get("php-version"))
+            .and_then(Value::as_str),
+        Some("8.3")
+    );
+    assert_eq!(
+        php_setup
+            .get("with")
+            .and_then(|value: &Value| value.get("extensions"))
+            .and_then(Value::as_str),
+        Some("opcache")
+    );
+    let php_oparray_index: usize = differential_steps
+        .iter()
+        .position(|step: &Value| {
+            step.get("name").and_then(Value::as_str) == Some("php op_array behavioral differential")
+        })
+        .expect("ci.yml php op_array behavioral differential step");
+    assert!(
+        php_setup_index < php_oparray_index,
+        "ci.yml must provision PHP before the op_array differential"
+    );
+    let opcache_locator_index: usize = differential_steps
+        .iter()
+        .position(|step: &Value| {
+            step.get("name").and_then(Value::as_str)
+                == Some("locate the opcache zend_extension the op_array emitter loads")
+        })
+        .expect("ci.yml opcache locator step");
+    assert!(
+        php_setup_index < opcache_locator_index && opcache_locator_index < php_oparray_index,
+        "ci.yml must locate opcache after PHP setup and before the op_array differential"
+    );
+    assert!(
+        differential_steps[opcache_locator_index]
+            .get("run")
+            .and_then(Value::as_str)
+            .is_some_and(|run: &str| run.contains("DZOA_OPCACHE_DLL=${dll}")),
+        "ci.yml opcache locator must export DZOA_OPCACHE_DLL"
+    );
+    let php_oparray: &Value = &differential_steps[php_oparray_index];
+    let php_environment: &Value = php_oparray
+        .get("env")
+        .expect("ci.yml php op_array behavioral differential environment");
+    assert_eq!(
+        php_environment
+            .get("DISROBE_REQUIRE_PHP")
+            .and_then(Value::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        php_environment
+            .get("DISROBE_REQUIRE_PHP_OPCACHE")
+            .and_then(Value::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        php_oparray.get("run").and_then(Value::as_str),
+        Some("cargo test -p disrobe-pass-php --test oparray_behavioral -- --nocapture")
+    );
     let release: Value = workflow("release.yml");
     let release_on: &Value = release
         .get("on")

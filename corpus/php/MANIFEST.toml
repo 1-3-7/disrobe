@@ -46,13 +46,13 @@ TOOL-GENUINE-WALL: ionCube, SourceGuardian, Zend Guard - these ship encrypted
 DZOA-CONTAINER-HONESTY: `decompile.rs` parses + lifts a Zend op_array via
   disrobe's OWN canonical container (magic `DZOA`). The lifter (temporary folding
   into expressions, if/while/foreach/ternary/short-circuit recovery from the
-  opcode jumps) is graded by a NON-CIRCULAR behavioral oracle: oparray/emit_dzoa.php
-  drives PHP's real opcache opcode dump (opt_debug_level) of the benign
-  oparray/src/*.php into DZOA, disrobe lifts it back to PHP WITHOUT seeing the
-  source, and `tests/oparray_behavioral.rs` re-runs the recovered PHP under the
-  interpreter and asserts stdout equals the original program's (the opcode
-  sequence, operand wiring, and control-flow graph come from PHP's compiler, not
-  from hand-rigged bytes). Local variable names stay $vN: original identifiers are
+  opcode jumps) is graded against PHP's real opcache opcode dump. The emitter
+  compiles every benign oparray/src sample into DZOA and
+  `tests/oparray_behavioral.rs` compares every parsed block with that dump. The
+  named behavioral subset is lifted back to PHP without source access, then the
+  test runs it and compares stdout with the original program. Anonymous closures
+  stay opcode-only because the current PHP printer repeats their `{closure}`
+  declarations. Local variable names stay $vN: original identifiers are
   not carried in the opcode stream. Fully-const array literals are elided by the
   textual opcache dump (printed as `array(...)`), so the behavioral samples build
   arrays with a non-const element; that is an emit_dzoa.php transport limit, not a
@@ -152,6 +152,13 @@ source_tool = "manual"
 size_bytes = 303
 sha256 = "4c990b7e338c0a2405c2b6aa642de392c6df4b51d3c1afdb22546cefe5130e6e"
 notes = "Benign op_array behavioral-oracle sample: int arithmetic, pow, short-circuit &&, ternary. Compiled to DZOA by oparray/emit_dzoa.php (PHP opcache dump), lifted by disrobe, re-run for stdout equivalence."
+
+[[sample]]
+name = "oparray/src/closures.php"
+source_tool = "manual"
+size_bytes = 126
+sha256 = "458fee0cb21c900f08de709dd0ebbc708f8ca35096ac0b65623370d285d5eeea"
+notes = "Anonymous closure opcode differential sample. The raw opcache dump and DZOA blocks must match. It is not in the PHP behavioral recompile subset."
 
 [[sample]]
 name = "oparray/src/control_flow.php"

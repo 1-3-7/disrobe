@@ -196,6 +196,16 @@ function Plan-EdgeJavascript { $f = Get-EdgeFiles 'javascript' @('*.js','*.mjs')
 function Plan-EdgeTypescript { $f = Get-EdgeFiles 'typescript' @('*.ts'); foreach ($x in $f) { Write-Plan "typescript-edge: $($x.FullName)" }; Write-Host "[summary] typescript-edge: $($f.Count) sources" }
 function Plan-EdgeWasm { $f = Get-EdgeFiles 'wasm' @('*.wat'); foreach ($x in $f) { Write-Plan "wasm-edge: $($x.FullName)" }; Write-Host "[summary] wasm-edge: $($f.Count) sources" }
 function Plan-EdgeNative { $f = Get-EdgeFiles 'native' @('*.c','*.cpp','*.go','*.rs'); foreach ($x in $f) { Write-Plan "native-edge: $($x.FullName)" }; Write-Host "[summary] native-edge: $($f.Count) sources" }
+function Get-AntiAnalysisRecipe {
+    $recipe = Join-Path $ScriptDir 'native\anti-analysis\generate.ps1'
+    if (-not (Test-Path -LiteralPath $recipe -PathType Leaf)) { throw "anti-analysis recipe missing: $recipe" }
+    return (Resolve-Path -LiteralPath $recipe).Path
+}
+
+function Plan-AntiAnalysis {
+    $recipe = Get-AntiAnalysisRecipe
+    Write-Plan "anti-analysis: $recipe"
+}
 function Plan-EdgeJava { $f = Get-EdgeFiles 'java' @('*.java'); foreach ($x in $f) { Write-Plan "java-edge: $($x.FullName)" }; Write-Host "[summary] java-edge: $($f.Count) sources" }
 function Plan-EdgeLua { $f = Get-EdgeFiles 'lua' @('*.lua'); foreach ($x in $f) { Write-Plan "lua-edge: $($x.FullName)" }; Write-Host "[summary] lua-edge: $($f.Count) sources" }
 
@@ -265,6 +275,13 @@ function Build-EdgeNative {
     }
 }
 
+function Build-AntiAnalysis {
+    $recipe = Get-AntiAnalysisRecipe
+    Write-Run "anti-analysis: $recipe"
+    & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $recipe
+    if ($LASTEXITCODE -ne 0) { throw 'anti-analysis fixture build failed' }
+}
+
 function Build-EdgeJava {
     $outDir = Join-Path $Out 'java-edge'
     $files = Get-EdgeFiles 'java' @('*.java')
@@ -287,12 +304,12 @@ function Build-EdgeLua {
 
 if ($EdgeCases) {
     if ($DryRun) {
-        Plan-EdgePython; Plan-EdgeJavascript; Plan-EdgeTypescript; Plan-EdgeWasm; Plan-EdgeNative; Plan-EdgeJava; Plan-EdgeLua
+        Plan-EdgePython; Plan-EdgeJavascript; Plan-EdgeTypescript; Plan-EdgeWasm; Plan-EdgeNative; Plan-AntiAnalysis; Plan-EdgeJava; Plan-EdgeLua
         Write-Host 'dry-run complete (edge-cases only; no compilers invoked)'
         exit 0
     }
     New-Item -ItemType Directory -Force -Path $Out | Out-Null
-    Build-EdgePython; Build-EdgeJavascript; Build-EdgeTypescript; Build-EdgeWasm; Build-EdgeNative; Build-EdgeJava; Build-EdgeLua
+    Build-EdgePython; Build-EdgeJavascript; Build-EdgeTypescript; Build-EdgeWasm; Build-EdgeNative; Build-AntiAnalysis; Build-EdgeJava; Build-EdgeLua
     Write-Host "edge-case corpus generation complete. output: $Out"
     exit 0
 }
@@ -306,7 +323,7 @@ if ($DryRun) {
     Plan-Pyinstaller
     Plan-Nuitka
     Plan-Sourcedefender
-    Plan-EdgePython; Plan-EdgeJavascript; Plan-EdgeTypescript; Plan-EdgeWasm; Plan-EdgeNative; Plan-EdgeJava; Plan-EdgeLua
+    Plan-EdgePython; Plan-EdgeJavascript; Plan-EdgeTypescript; Plan-EdgeWasm; Plan-EdgeNative; Plan-AntiAnalysis; Plan-EdgeJava; Plan-EdgeLua
     Write-Host 'dry-run complete (no compilers invoked)'
     exit 0
 }
@@ -320,6 +337,6 @@ Build-Pyarmor
 Build-Pyinstaller
 Build-Nuitka
 Build-Sourcedefender
-Build-EdgePython; Build-EdgeJavascript; Build-EdgeTypescript; Build-EdgeWasm; Build-EdgeNative; Build-EdgeJava; Build-EdgeLua
+Build-EdgePython; Build-EdgeJavascript; Build-EdgeTypescript; Build-EdgeWasm; Build-EdgeNative; Build-AntiAnalysis; Build-EdgeJava; Build-EdgeLua
 
 Write-Host "corpus generation complete. output: $Out"

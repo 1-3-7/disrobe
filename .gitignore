@@ -93,6 +93,7 @@ corpus/generated/
 corpus/external/
 corpus/scratch/
 corpus/**/*.exe
+!corpus/native/anti-analysis/large-benign-x86_64-pc-windows-msvc.exe
 !corpus/python/freezers/cxfreeze/extracted/hello.exe
 !corpus/python/freezers/py2exe/hello.exe
 !corpus/binfmt/dotnet-single-file/*.exe
