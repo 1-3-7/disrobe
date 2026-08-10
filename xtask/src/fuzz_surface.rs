@@ -111,6 +111,8 @@ enum SeedReplayTarget {
     PythonBytecode,
     #[serde(rename = "dex_jvm_classfile")]
     DexJvmClassfile,
+    #[serde(rename = "cil_metadata")]
+    CilMetadata,
 }
 
 impl SeedReplayTarget {
@@ -118,6 +120,7 @@ impl SeedReplayTarget {
         match self {
             Self::PythonBytecode => "python_bytecode.rs",
             Self::DexJvmClassfile => "dex_jvm_classfile.rs",
+            Self::CilMetadata => "cil_metadata.rs",
         }
     }
 }
@@ -127,6 +130,7 @@ impl std::fmt::Display for SeedReplayTarget {
         formatter.write_str(match self {
             Self::PythonBytecode => "python_bytecode",
             Self::DexJvmClassfile => "dex_jvm_classfile",
+            Self::CilMetadata => "cil_metadata",
         })
     }
 }
@@ -175,6 +179,24 @@ enum SeedSemanticSurface {
     DexFile,
     #[serde(rename = "android.dex.code-items")]
     DexCodeItems,
+    #[serde(rename = "dotnet.pe.image")]
+    DotnetPeImage,
+    #[serde(rename = "dotnet.clr.header")]
+    DotnetClrHeader,
+    #[serde(rename = "dotnet.metadata.root")]
+    DotnetMetadataRoot,
+    #[serde(rename = "dotnet.metadata.table-stream")]
+    DotnetTableStream,
+    #[serde(rename = "dotnet.metadata.strings-heap")]
+    DotnetStringsHeap,
+    #[serde(rename = "dotnet.metadata.user-strings-heap")]
+    DotnetUserStringsHeap,
+    #[serde(rename = "dotnet.metadata.compressed-uint")]
+    DotnetCompressedUint,
+    #[serde(rename = "dotnet.cil.method-body")]
+    DotnetMethodBody,
+    #[serde(rename = "dotnet.cil.instructions")]
+    DotnetInstructions,
 }
 
 impl SeedSemanticSurface {
@@ -189,6 +211,15 @@ impl SeedSemanticSurface {
             | Self::DexHeader
             | Self::DexFile
             | Self::DexCodeItems => SeedReplayTarget::DexJvmClassfile,
+            Self::DotnetPeImage
+            | Self::DotnetClrHeader
+            | Self::DotnetMetadataRoot
+            | Self::DotnetTableStream
+            | Self::DotnetStringsHeap
+            | Self::DotnetUserStringsHeap
+            | Self::DotnetCompressedUint
+            | Self::DotnetMethodBody
+            | Self::DotnetInstructions => SeedReplayTarget::CilMetadata,
         }
     }
 }
@@ -215,6 +246,24 @@ enum SeedSemanticEntryPoint {
     ParseDex,
     #[serde(rename = "disrobe-pass-jvm/src/dex.rs::parse_code_items")]
     ParseDexCodeItems,
+    #[serde(rename = "disrobe-pass-dotnet/src/pe.rs::parse")]
+    ParseDotnetPe,
+    #[serde(rename = "disrobe-pass-dotnet/src/pe.rs::parse_clr_header")]
+    ParseDotnetClrHeader,
+    #[serde(rename = "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root")]
+    ParseDotnetMetadataRoot,
+    #[serde(rename = "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream")]
+    ParseDotnetTableStream,
+    #[serde(rename = "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap")]
+    ReadDotnetStringsHeap,
+    #[serde(rename = "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings")]
+    ReadDotnetUserStringsHeap,
+    #[serde(rename = "disrobe-pass-dotnet/src/metadata.rs::decompress_uint")]
+    DecompressDotnetUint,
+    #[serde(rename = "disrobe-pass-dotnet/src/cil.rs::parse_method_body")]
+    ParseDotnetMethodBody,
+    #[serde(rename = "disrobe-pass-dotnet/src/cil.rs::disassemble")]
+    DisassembleDotnet,
 }
 
 impl SeedSemanticEntryPoint {
@@ -230,6 +279,21 @@ impl SeedSemanticEntryPoint {
             Self::ParseDexHeader => "disrobe-pass-jvm/src/dex.rs::parse_header",
             Self::ParseDex => "disrobe-pass-jvm/src/dex.rs::parse",
             Self::ParseDexCodeItems => "disrobe-pass-jvm/src/dex.rs::parse_code_items",
+            Self::ParseDotnetPe => "disrobe-pass-dotnet/src/pe.rs::parse",
+            Self::ParseDotnetClrHeader => "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+            Self::ParseDotnetMetadataRoot => {
+                "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root"
+            }
+            Self::ParseDotnetTableStream => {
+                "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream"
+            }
+            Self::ReadDotnetStringsHeap => "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap",
+            Self::ReadDotnetUserStringsHeap => {
+                "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings"
+            }
+            Self::DecompressDotnetUint => "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+            Self::ParseDotnetMethodBody => "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+            Self::DisassembleDotnet => "disrobe-pass-dotnet/src/cil.rs::disassemble",
         }
     }
 
@@ -244,6 +308,15 @@ impl SeedSemanticEntryPoint {
             | Self::ParseDexHeader
             | Self::ParseDex
             | Self::ParseDexCodeItems => SeedReplayTarget::DexJvmClassfile,
+            Self::ParseDotnetPe
+            | Self::ParseDotnetClrHeader
+            | Self::ParseDotnetMetadataRoot
+            | Self::ParseDotnetTableStream
+            | Self::ReadDotnetStringsHeap
+            | Self::ReadDotnetUserStringsHeap
+            | Self::DecompressDotnetUint
+            | Self::ParseDotnetMethodBody
+            | Self::DisassembleDotnet => SeedReplayTarget::CilMetadata,
         }
     }
 
@@ -258,6 +331,15 @@ impl SeedSemanticEntryPoint {
             Self::ParseDexHeader => SeedSemanticSurface::DexHeader,
             Self::ParseDex => SeedSemanticSurface::DexFile,
             Self::ParseDexCodeItems => SeedSemanticSurface::DexCodeItems,
+            Self::ParseDotnetPe => SeedSemanticSurface::DotnetPeImage,
+            Self::ParseDotnetClrHeader => SeedSemanticSurface::DotnetClrHeader,
+            Self::ParseDotnetMetadataRoot => SeedSemanticSurface::DotnetMetadataRoot,
+            Self::ParseDotnetTableStream => SeedSemanticSurface::DotnetTableStream,
+            Self::ReadDotnetStringsHeap => SeedSemanticSurface::DotnetStringsHeap,
+            Self::ReadDotnetUserStringsHeap => SeedSemanticSurface::DotnetUserStringsHeap,
+            Self::DecompressDotnetUint => SeedSemanticSurface::DotnetCompressedUint,
+            Self::ParseDotnetMethodBody => SeedSemanticSurface::DotnetMethodBody,
+            Self::DisassembleDotnet => SeedSemanticSurface::DotnetInstructions,
         }
     }
 }
@@ -1139,6 +1221,13 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cil_metadata_target_uses_its_declared_fuzz_target() -> Result<()> {
+        let target: SeedReplayTarget = serde_json::from_str("\"cil_metadata\"")?;
+        assert_eq!(target.declaration_name(), "cil_metadata.rs");
+        Ok(())
+    }
 
     #[test]
     fn public_entry_after_test_only_item_keeps_its_canonical_identifier() -> Result<()> {

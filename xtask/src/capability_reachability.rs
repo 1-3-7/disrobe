@@ -58,10 +58,11 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-dotnet",
-        7,
+        8,
         "decompile_method and emit_csharp are lower-level steps the real decompile entry point \
          wraps, plan_execution is a protector planner the CLI does not yet call ahead of \
-         extraction, and four are per-dialect provenance-header renderers never spliced into the \
+         extraction, capture_observations is feature-gated parser instrumentation for the seed \
+         reach harness, and four are per-dialect provenance-header renderers never spliced into \
          `--emit` output path",
     ),
     (

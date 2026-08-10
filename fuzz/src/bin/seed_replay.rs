@@ -7,7 +7,7 @@ use disrobe_fuzz::seed_reach::{
     ReplayTarget, SeedContract, SeedReachReport, SeedReplayFragment, TargetReplay,
     assemble_contract_replay, replay_target_seed, run_isolated_replay,
 };
-use disrobe_fuzz::{dex_jvm_classfile, python_bytecode};
+use disrobe_fuzz::{cil_metadata, dex_jvm_classfile, python_bytecode};
 
 const SHUFFLE_SEED: u64 = 0x5445_5354_0004;
 
@@ -136,6 +136,13 @@ fn run_worker(
             target,
             manifest_index,
             dex_jvm_classfile::replay,
+        )?,
+        ReplayTarget::CilMetadata => replay_target_seed(
+            &root,
+            &contract,
+            target,
+            manifest_index,
+            cil_metadata::replay,
         )?,
     };
     print!("{}", fragment.canonical_json()?);
