@@ -107,7 +107,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-native",
-        64,
+        65,
         "the largest single group in this sweep: convenience wrappers over a sibling variant the \
          real caller uses (apply_patches over apply_patches_reported, collect_recovered_symbols \
          over the _with_oep form, discover_functions over discover_functions_with_status, and \
@@ -116,7 +116,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
          reconstruction and recovery helpers proven by a dedicated oracle test but not yet called \
          from the CLI's native subcommands, fixture builders exposed publicly for their own tests, \
          and three per-language provenance-header renderers never spliced into the `--emit` \
-         output path",
+         output path, plus the public sparse integer arity adapter retained for library users",
     ),
     (
         "disrobe-pass-nuitka",
