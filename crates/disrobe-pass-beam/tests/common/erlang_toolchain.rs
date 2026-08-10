@@ -58,13 +58,8 @@ pub fn requirement(toolchain: &Toolchain) -> Requirement {
 
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
     let path_var: OsString = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
     for dir in std::env::split_paths(&path_var) {
-        for ext in exts {
+        for ext in candidate_extensions() {
             let candidate: PathBuf = dir.join(format!("{name}{ext}"));
             if candidate.is_file() {
                 return Some(candidate);
@@ -72,6 +67,14 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn candidate_extensions() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &[".cmd", ".bat", ".exe", ""]
+    } else {
+        &[""]
+    }
 }
 
 pub fn command_for(program: &Path) -> Command {
@@ -203,5 +206,21 @@ pub fn otp_version(erl: &Path) -> Result<String, String> {
             "`erl` at {} did not report its full OTP version within {CALL_TIMEOUT:?}",
             erl.display()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::candidate_extensions;
+
+    #[test]
+    fn windows_prefers_command_wrappers_before_extensionless_launchers() {
+        let actual: &[&str] = candidate_extensions();
+        let expected: &[&str] = if cfg!(windows) {
+            &[".cmd", ".bat", ".exe", ""]
+        } else {
+            &[""]
+        };
+        assert_eq!(actual, expected);
     }
 }
