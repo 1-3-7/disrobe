@@ -24,8 +24,9 @@ jobs:
           $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $installerPath).Hash.ToLowerInvariant()
           $expectedSha256 = "11d721f66d46b216f69a4a9db75ac8b36933c50c59da83c67129a06740af22fc"
           if ($actualSha256 -ne $expectedSha256) { throw "LLVM installer checksum mismatch: $actualSha256" }
-          & $installerPath /S "/D=$installRoot"
-          if ($LASTEXITCODE -ne 0) { throw "LLVM installer failed with exit code $LASTEXITCODE" }
+          $installerProcess = Start-Process -FilePath $installerPath -ArgumentList @('/S', "/D=$installRoot") -Wait -PassThru -NoNewWindow
+          $installerExitCode = $installerProcess.ExitCode
+          if ($installerExitCode -ne 0) { throw "LLVM installer failed with exit code $installerExitCode" }
           $clangPath = Join-Path $installRoot "bin\clang.exe"
           if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "LLVM installer did not provide clang.exe" }
           "DISROBE_MS_X64_CLANG=$clangPath" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
