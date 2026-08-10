@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
 use disrobe_pass_dotnet::model::{
     AssemblyModel, FieldConstant, FieldModel, MethodModel, Resolver, TypeModel,
@@ -1824,10 +1825,23 @@ fn states_refusal(methods: &[UserMethod]) -> bool {
     methods.iter().any(|m: &UserMethod| {
         m.source
             .contains(disrobe_pass_dotnet::iterator_reverse::UNRECONSTRUCTED_STATE_MACHINE_MARKER)
-            || m.source.contains(
-                disrobe_pass_dotnet::iterator_reverse::UNLOWERED_COMPILER_CONSTRUCT_MARKER,
-            )
+            || is_unlowered_compiler_construct_refusal(&m.source)
     })
+}
+
+#[test]
+fn unlowered_compiler_construct_marker_inside_string_data_does_not_state_refusal() {
+    let methods: Vec<UserMethod> = vec![UserMethod {
+        name: "MoveNext".to_owned(),
+        source: concat!(
+            "private void MoveNext()\n",
+            "{\n",
+            "    string note = \"disrobe: compiler-generated construct not lowered\";\n",
+            "}\n"
+        )
+        .to_owned(),
+    }];
+    assert!(!states_refusal(&methods));
 }
 
 fn error_code(line: &str) -> Option<&str> {

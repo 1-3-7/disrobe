@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use disrobe_pass_dotnet::structurize::StructuredMethod;
 
 fn decompile() -> DecompiledAssembly {
@@ -89,27 +90,23 @@ fn await_foreach_dispose_rethrow_recovers_the_captured_exception() {
 }
 
 #[test]
-fn async_iterator_yield_break_does_not_leak_movenext_bool_contract() {
+fn async_iterator_with_unlowered_compiler_residue_states_an_unlowered_compiler_construct_refusal() {
     let asm: DecompiledAssembly = decompile();
     let body: String = move_next_body(&asm, "RangeAsync");
-    let has_bare_await: bool = body
-        .lines()
-        .any(|line: &str| line.trim() == "await System.Threading.Tasks.Task.Yield();");
     assert!(
-        has_bare_await,
-        "RangeAsync must retain its qualified await:\n{body}"
+        is_unlowered_compiler_construct_refusal(&body),
+        "RangeAsync MoveNext must state the live unlowered compiler-construct refusal instead of emitting compiler-generated plumbing:\n{body}"
     );
     assert!(
-        body.contains("yield return"),
-        "RangeAsync must retain its yielded values:\n{body}"
+        body.contains("// if (!this.<>w__disposeMode)"),
+        "RangeAsync MoveNext must retain the intact compiler-generated disposal-mode field as refusal evidence:\n{body}"
     );
     assert!(
-        body.contains("yield break;"),
-        "expected yield break:\n{body}"
-    );
-    assert!(
-        !body.contains("return 0;") && !body.contains("return false;"),
-        "async iterator MoveNext must not leak bool-contract returns after yield break:\n{body}"
+        !body
+            .lines()
+            .filter(|line: &&str| !line.trim_start().starts_with("//"))
+            .any(|line: &str| line.contains("__w__disposeMode")),
+        "RangeAsync MoveNext must not emit the compiler-generated disposal-mode field as sanitized live code:\n{body}"
     );
 }
 
@@ -191,4 +188,15 @@ fn static_calls_in_iterators_are_qualified_with_declaring_type() {
             .any(|l: &str| l.trim_start().starts_with("local3 = WhenAny(")),
         "WhenAny must not be emitted as a bare unqualified call:\n{body}"
     );
+}
+#[test]
+fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    throw new System.NotSupportedException(\"disrobe: compiler-generated construct not lowered\");\n",
+        "    return;\n",
+        "}\n"
+    );
+    assert!(!is_unlowered_compiler_construct_refusal(body));
 }

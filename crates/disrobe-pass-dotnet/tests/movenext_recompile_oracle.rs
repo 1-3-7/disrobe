@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
+use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use disrobe_pass_dotnet::structurize::StructuredMethod;
 
 fn manifest(rel: &str) -> PathBuf {
@@ -28,13 +29,12 @@ fn decompile() -> DecompiledAssembly {
     decompile_assembly(&bytes).expect("decompile")
 }
 
-fn move_next_bodies(asm: &DecompiledAssembly) -> Vec<String> {
+fn move_next_methods(asm: &DecompiledAssembly) -> Vec<&StructuredMethod> {
     asm.methods
         .iter()
         .filter(|m: &&StructuredMethod| {
             m.signature.contains("state machine") && m.signature.contains("MoveNext")
         })
-        .map(|m: &StructuredMethod| m.body.clone())
         .collect()
 }
 
@@ -250,6 +250,9 @@ fn collect_type_parameters(body: &str) -> BTreeSet<String> {
 }
 
 fn host_source(id: usize, body: &str) -> Option<String> {
+    if is_unlowered_compiler_construct_refusal(body) {
+        return None;
+    }
     let lines: Vec<&str> = body_lines(body);
     let open: usize = lines.iter().position(|l: &&str| l.trim() == "{")?;
     let close: usize = lines.iter().rposition(|l: &&str| l.trim() == "}")?;
@@ -713,22 +716,173 @@ fn write_project(dir: &Path) {
     std::fs::write(dir.join("oracle.csproj"), csproj).expect("write csproj");
 }
 
-fn compile_errors(dir: &Path, src: &str) -> Vec<String> {
+fn compile_output(dir: &Path, src: &str) -> std::process::Output {
     std::fs::write(dir.join("host.cs"), src).expect("write host source");
-    let out: std::process::Output = Command::new("dotnet")
+    Command::new("dotnet")
         .args(["build", "-c", "Release", "-v", "q", "-nologo"])
         .current_dir(dir)
         .output()
-        .expect("dotnet build");
-    String::from_utf8_lossy(&out.stdout)
+        .expect("dotnet build")
+}
+
+fn compiler_diagnostics(output: &std::process::Output) -> Vec<String> {
+    String::from_utf8_lossy(&output.stdout)
         .lines()
-        .chain(String::from_utf8_lossy(&out.stderr).lines())
+        .chain(String::from_utf8_lossy(&output.stderr).lines())
         .filter(|l: &&str| l.contains(": error "))
         .map(|l: &str| l.trim().to_owned())
         .collect()
 }
 
-const FLOOR: usize = 29;
+fn compiler_succeeded(output: &std::process::Output, diagnostics: &[String]) -> bool {
+    output.status.success() && diagnostics.is_empty()
+}
+
+const COMPILED_FLOOR: usize = 18;
+const EXPECTED_UNLOWERED_COMPILER_CONSTRUCT_REFUSALS: [(u32, &str); 11] = [
+    (
+        0x0600_0205,
+        "// <RangeAsync>d__2 [async iterator state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_0208,
+        "// <RangeAsync>d__2 [async iterator state machine]\nprivate System.Threading.Tasks.ValueTask<bool> System.Collections.Generic.IAsyncEnumerator<System.Int32>.MoveNextAsync()",
+    ),
+    (
+        0x0600_021d,
+        "// <CountWithAsync>d__1 [async state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_0225,
+        "// <ParallelForAsync>d__1 [async state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_0227,
+        "// <ProducerConsumerAsync>d__0 [async state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_0233,
+        "// <Enumerated>d__2 [iterator state machine]\nprivate bool MoveNext()",
+    ),
+    (
+        0x0600_023c,
+        "// <WithEarlyExit>d__1 [iterator state machine]\nprivate bool MoveNext()",
+    ),
+    (
+        0x0600_0245,
+        "// <EnumerateFiles>d__0 [iterator state machine]\nprivate bool MoveNext()",
+    ),
+    (
+        0x0600_0293,
+        "// <BatchAsync>d__2 [async state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_02a9,
+        "// <<BatchAsync>b__0>d [async state machine]\nprivate void MoveNext()",
+    ),
+    (
+        0x0600_02ab,
+        "// <<Register>b__0>d [async state machine]\nprivate void MoveNext()",
+    ),
+];
+
+fn unlowered_compiler_construct_refusals(methods: &[&StructuredMethod]) -> Vec<(u32, String)> {
+    methods
+        .iter()
+        .filter(|method: &&&StructuredMethod| is_unlowered_compiler_construct_refusal(&method.body))
+        .map(|method: &&StructuredMethod| (method.token, method.signature.clone()))
+        .collect()
+}
+
+fn expected_unlowered_compiler_construct_refusals() -> Vec<(u32, String)> {
+    EXPECTED_UNLOWERED_COMPILER_CONSTRUCT_REFUSALS
+        .iter()
+        .map(|(token, signature): &(u32, &str)| (*token, (*signature).to_owned()))
+        .collect()
+}
+
+#[test]
+fn named_refusals_match_the_pinned_state_machine_set() {
+    let asm: DecompiledAssembly = decompile();
+    let methods: Vec<&StructuredMethod> = move_next_methods(&asm);
+    let range_async: &StructuredMethod = asm
+        .methods
+        .iter()
+        .find(|method: &&StructuredMethod| method.token == 0x0600_0205)
+        .expect(
+            "RangeAsync MoveNext MethodDef token 0x06000205 must be present in the baseline corpus",
+        );
+    assert!(
+        is_unlowered_compiler_construct_refusal(&range_async.body),
+        "RangeAsync MoveNext must carry the canonical unlowered compiler-construct refusal:\n{}",
+        range_async.body
+    );
+    let observed: Vec<(u32, String)> = unlowered_compiler_construct_refusals(&methods);
+    assert_eq!(
+        observed,
+        expected_unlowered_compiler_construct_refusals(),
+        "the pinned unlowered compiler-construct refusal set changed"
+    );
+}
+
+#[test]
+fn compiler_construct_text_inside_a_string_does_not_skip_compiler_hosting() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    string note = \"disrobe: compiler-generated construct not lowered\";\n",
+        "}\n"
+    );
+    assert!(!is_unlowered_compiler_construct_refusal(body));
+    assert!(
+        host_source(0, body).is_some(),
+        "unlowered compiler-construct refusal text inside a string literal is ordinary recovered code"
+    );
+}
+
+#[test]
+fn sentinel_plus_malformed_live_code_does_not_skip_compiler_hosting() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    throw new System.NotSupportedException(\"disrobe: compiler-generated construct not lowered\");\n",
+        "    this.__9__1_0 = ;\n",
+        "}\n"
+    );
+    assert!(!is_unlowered_compiler_construct_refusal(body));
+    assert!(
+        host_source(0, body).is_some(),
+        "a sentinel alongside malformed live code must reach compiler classification"
+    );
+}
+
+#[cfg(windows)]
+fn process_failure_without_diagnostic() -> std::process::Output {
+    Command::new("cmd")
+        .args(["/C", "exit", "1"])
+        .output()
+        .expect("run a process that exits without compiler diagnostics")
+}
+
+#[cfg(unix)]
+fn process_failure_without_diagnostic() -> std::process::Output {
+    Command::new("sh")
+        .args(["-c", "exit 1"])
+        .output()
+        .expect("run a process that exits without compiler diagnostics")
+}
+
+#[cfg(any(windows, unix))]
+#[test]
+fn compiler_exit_failure_without_diagnostic_is_unclassified() {
+    let output: std::process::Output = process_failure_without_diagnostic();
+    let diagnostics: Vec<String> = Vec::new();
+    assert!(!output.status.success());
+    assert!(
+        !compiler_succeeded(&output, &diagnostics),
+        "a nonzero compiler exit without a parsed diagnostic is unclassified, not compiled"
+    );
+}
 
 #[test]
 fn movenext_bodies_recompile_against_csc() {
@@ -737,37 +891,90 @@ fn movenext_bodies_recompile_against_csc() {
         return;
     }
     let asm: DecompiledAssembly = decompile();
-    let bodies: Vec<String> = move_next_bodies(&asm);
+    let methods: Vec<&StructuredMethod> = move_next_methods(&asm);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_movenext_recompile_oracle")
             .expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp);
 
-    let mut total: usize = 0;
-    let mut clean: usize = 0;
+    let total: usize = methods.len();
+    let mut compiled: usize = 0;
+    let mut refused: usize = 0;
+    let mut unclassified: usize = 0;
     let mut failures: Vec<(usize, String)> = Vec::new();
-    for (id, body) in bodies.iter().enumerate() {
+    let observed_refusals: Vec<(u32, String)> = unlowered_compiler_construct_refusals(&methods);
+    assert_eq!(
+        observed_refusals,
+        expected_unlowered_compiler_construct_refusals(),
+        "the compiler host must exclude only the pinned unlowered compiler-construct refusals"
+    );
+    for (id, method) in methods.iter().enumerate() {
+        let body: &str = &method.body;
+        if is_unlowered_compiler_construct_refusal(body) {
+            refused = refused.saturating_add(1);
+            continue;
+        }
         let Some(src): Option<String> = host_source(id, body) else {
+            unclassified = unclassified.saturating_add(1);
+            failures.push((id, "could not construct a compiler host".to_owned()));
             continue;
         };
-        total += 1;
-        let errs: Vec<String> = compile_errors(&tmp, &format!("{PREAMBLE}{src}"));
-        if errs.is_empty() {
-            clean += 1;
+        let output: std::process::Output = compile_output(&tmp, &format!("{PREAMBLE}{src}"));
+        let diagnostics: Vec<String> = compiler_diagnostics(&output);
+        if compiler_succeeded(&output, &diagnostics) {
+            compiled = compiled.saturating_add(1);
         } else {
-            failures.push((id, errs.first().cloned().unwrap_or_default()));
+            unclassified = unclassified.saturating_add(1);
+            let reason: String = diagnostics.first().cloned().unwrap_or_else(|| {
+                format!(
+                    "compiler exited with status {} without a parsed error",
+                    output.status
+                )
+            });
+            failures.push((id, reason));
         }
     }
     eprintln!(
-        "MOVENEXT RECOMPILE ORACLE: {clean}/{total} recovered MoveNext bodies compile clean against csc"
+        "MOVENEXT RECOMPILE: {compiled} compiled, {refused} unlowered compiler-construct refusals, {unclassified} unclassified / {total} total MoveNext bodies"
     );
     for (id, err) in &failures {
         eprintln!("  FAIL __Mover{id}: {err}");
     }
     assert!(
-        clean >= FLOOR,
-        "recompile-ready MoveNext rate regressed below the floor: {clean}/{total} (floor {FLOOR}). Failures:\n{}",
+        compiled >= COMPILED_FLOOR,
+        "MoveNext compiler baseline regressed: {compiled} compiled, {refused} unlowered compiler-construct refusals, {unclassified} unclassified / {total} total MoveNext bodies (compiled floor {COMPILED_FLOOR}). Failures:\n{}",
+        failures
+            .iter()
+            .map(|(id, err): &(usize, String)| format!("  __Mover{id}: {err}"))
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+    assert_eq!(
+        refused,
+        EXPECTED_UNLOWERED_COMPILER_CONSTRUCT_REFUSALS.len(),
+        "only the pinned unlowered compiler-construct refusals may be excluded from compiler hosting"
+    );
+    assert_eq!(
+        unclassified,
+        0,
+        "every non-refused MoveNext body must compile; failures:\n{}",
+        failures
+            .iter()
+            .map(|(id, err): &(usize, String)| format!("  __Mover{id}: {err}"))
+            .collect::<Vec<String>>()
+            .join("\n")
+    );
+    assert_eq!(
+        compiled
+            .saturating_add(refused)
+            .saturating_add(unclassified),
+        total,
+        "every MoveNext body must be classified as compiled, refused, or unclassified"
+    );
+    assert!(
+        failures.is_empty(),
+        "non-refused MoveNext bodies must compile against csc; unclassified failures:\n{}",
         failures
             .iter()
             .map(|(id, err): &(usize, String)| format!("  __Mover{id}: {err}"))

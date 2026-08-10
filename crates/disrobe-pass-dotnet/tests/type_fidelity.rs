@@ -9,13 +9,15 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use disrobe_pass_dotnet::cil::{Instruction, MethodBody, OperandValue, parse_method_body};
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::iterator_reverse::{
-    UNLOWERED_COMPILER_CONSTRUCT_MARKER, UNRECONSTRUCTED_STATE_MACHINE_MARKER,
-    is_mangled_metadata_identifier,
+    is_mangled_metadata_identifier, is_unlowered_compiler_construct_refusal,
 };
 use disrobe_pass_dotnet::metadata::{MetadataRoot, parse_metadata_root};
-use disrobe_pass_dotnet::model::{AssemblyModel, MethodModel, ParamModel, Resolver, TypeModel};
+use disrobe_pass_dotnet::model::{
+    AssemblyModel, FieldModel, MethodModel, ParamModel, Resolver, TypeModel,
+};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 use disrobe_pass_dotnet::signature::{TypeSig, element_type, parse_local_sig};
 use disrobe_pass_dotnet::structurize::{StructuredMethod, split_csharp_parameter_declarations};
@@ -32,6 +34,18 @@ const CORPUS_ASSEMBLIES: usize = 46;
 const CORPUS_METHOD_FLOOR: usize = 3121;
 const BUILD_OUTPUT_DIRS: [&str; 2] = ["bin", "obj"];
 const REFRESH_COMMAND: &str = "DISROBE_UPDATE_STACK_UNDERFLOW_GOLDEN=1 cargo test -p disrobe-pass-dotnet --test type_fidelity";
+
+#[test]
+fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    throw new System.NotSupportedException(\"disrobe: compiler-generated construct not lowered\");\n",
+        "    return;\n",
+        "}\n"
+    );
+    assert!(!is_unlowered_compiler_construct_refusal(body));
+}
 
 fn load(rel: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -666,7 +680,7 @@ const BASELINE_MERGE_RECOVERED: [(u32, &str); 7] = [
     (
         0x0600_0223,
         "a merge whose taken edge reaches the join directly with the tested value, while the other \
-         arm stores one delegate to a local and to the cache field before pushing it",
+         arm stores one delegate to a local and to the cached-lambda field before pushing it",
     ),
 ];
 
@@ -941,22 +955,72 @@ fn no_recovered_body_emits_a_mangled_metadata_identifier_as_live_code() {
 }
 
 #[test]
-fn disposalplayground_count_with_async_states_a_refusal_instead_of_a_stripped_cache_field() {
-    let asm: DecompiledAssembly = baseline();
-    let method: &StructuredMethod = method_by_signature(&asm, "CountWithAsync(")
-        .expect("EdgeCases.DisposalPlayground.CountWithAsync must be in the baseline corpus");
+fn count_with_async_move_next_refuses_an_unlowered_cached_lambda_field() {
+    let model: AssemblyModel = baseline_model();
+    let state_machine: &TypeModel = model
+        .types
+        .iter()
+        .find(|ty: &&TypeModel| ty.namespace.is_empty() && ty.name == "<CountWithAsync>d__1")
+        .expect("<CountWithAsync>d__1 must be in the baseline metadata");
+    let cached_lambda_owner: &TypeModel = model
+        .types
+        .iter()
+        .find(|ty: &&TypeModel| {
+            ty.namespace.is_empty()
+                && ty.name == "<>c"
+                && ty
+                    .methods
+                    .iter()
+                    .any(|method: &MethodModel| method.name == "<CountWithAsync>b__1_0")
+                && ty
+                    .fields
+                    .iter()
+                    .any(|field: &FieldModel| field.name == "<>9__1_0")
+        })
+        .expect(
+            "the CountWithAsync cached-lambda field owner must preserve <>9__1_0 beside <CountWithAsync>b__1_0",
+        );
+    assert_eq!(cached_lambda_owner.name, "<>c");
+    let cached_lambda_field: &FieldModel = cached_lambda_owner
+        .fields
+        .iter()
+        .find(|field: &&FieldModel| field.name == "<>9__1_0")
+        .expect("<>c must define the CountWithAsync cached-lambda field");
+    let move_next: &MethodModel = state_machine
+        .methods
+        .iter()
+        .find(|method: &&MethodModel| method.name == "MoveNext")
+        .expect("EdgeCases.<CountWithAsync>d__1 must define MoveNext in metadata");
+    let bytes: Vec<u8> = load(EDGECASES_BASELINE_REL);
+    let pe: PeImage = parse(&bytes).expect("parse the clean baseline as a PE image");
+    let offset: usize = pe
+        .rva_to_offset(move_next.rva)
+        .expect("CountWithAsync MoveNext RVA must be file-backed");
+    let il: MethodBody = parse_method_body(&bytes[offset..])
+        .expect("CountWithAsync MoveNext must contain a parseable IL body");
     assert!(
-        !method.body.contains("__9__1_0"),
-        "the cached-lambda field `<>9__1_0` reached the emitter with its angle brackets \
-         stripped into a bare identifier no compiler can resolve:\n{}",
+        il.instructions.iter().any(|instruction: &Instruction| {
+            matches!(&instruction.operand, OperandValue::Token(token) if *token == cached_lambda_field.token)
+        }),
+        "the CountWithAsync MoveNext IL must reference the exact <>c::<>9__1_0 cached-lambda field token 0x{:08x}",
+        cached_lambda_field.token
+    );
+    let asm: DecompiledAssembly = baseline();
+    let method: &StructuredMethod = asm
+        .methods
+        .iter()
+        .find(|candidate: &&StructuredMethod| candidate.token == move_next.token)
+        .expect("the exact CountWithAsync MoveNext method must be decompiled");
+    assert!(
+        is_unlowered_compiler_construct_refusal(&method.body),
+        "the exact MoveNext body must state the live unlowered compiler-construct refusal rather than emit compiler-generated plumbing:\n{}",
         method.body
     );
-    let states_a_refusal: bool = method.body.contains(UNRECONSTRUCTED_STATE_MACHINE_MARKER)
-        || method.body.contains(UNLOWERED_COMPILER_CONSTRUCT_MARKER);
     assert!(
-        states_a_refusal,
-        "the cached lambda could not be lowered, so the body must state a refusal instead of \
-         emitting live code that references it:\n{}",
+        !live_statement_lines(&method.body)
+            .any(|(_, line): (usize, &str)| line.contains("__9__1_0")),
+        "the cached-lambda field `<>9__1_0` reached the emitter with its angle brackets \
+         stripped into a bare identifier no compiler can resolve:\n{}",
         method.body
     );
 }

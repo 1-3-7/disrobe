@@ -3,6 +3,7 @@ use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use zip::write::{FileOptions, ZipWriter};
 
 fn cli_binary() -> PathBuf {
@@ -1933,6 +1934,64 @@ fn dotnet_recover_iterators_json_carries_yield_and_await_bodies() {
             .any(|m: &serde_json::Value| m["body"].as_str().is_some_and(|b| b.contains("await"))),
         "a recovered MoveNext body must carry await (async state machine):\n{}",
         r.stdout
+    );
+}
+
+#[test]
+fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {
+    let body: &str = concat!(
+        "private void MoveNext()\n",
+        "{\n",
+        "    throw new System.NotSupportedException(\"disrobe: compiler-generated construct not lowered\");\n",
+        "    return;\n",
+        "}\n"
+    );
+    assert!(!is_unlowered_compiler_construct_refusal(body));
+}
+
+#[test]
+fn dotnet_recover_iterators_json_refuses_count_with_async_cached_lambda_field() {
+    let dll: PathBuf = corpus_path("dotnet/megafile/EdgeCases.baseline.dll");
+    assert!(
+        dll.exists(),
+        "{} is tracked in git and this case grades nothing without it, so its \
+         absence is a damaged checkout rather than an optional dependency",
+        dll.display()
+    );
+    let r: Run = run_disrobe(&[
+        "dotnet",
+        "decompile",
+        dll.to_str().unwrap(),
+        "--recover-iterators",
+        "--json",
+    ]);
+    assert_eq!(r.code, 0, "stderr: {}", r.stderr);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&r.stdout).expect("dotnet recover-iterators --json emits valid json");
+    let bodies: &Vec<serde_json::Value> = parsed["move_next_bodies"]
+        .as_array()
+        .expect("move_next_bodies array present");
+    let count_with_async: &serde_json::Value = bodies
+        .iter()
+        .find(|body: &&serde_json::Value| {
+            body["signature"].as_str().is_some_and(|signature: &str| {
+                signature.contains("<CountWithAsync>d__1") && signature.contains("MoveNext(")
+            })
+        })
+        .expect("CountWithAsync MoveNext state-machine body present in iterator JSON");
+    let body: &str = count_with_async["body"]
+        .as_str()
+        .expect("CountWithAsync MoveNext body present in iterator JSON");
+    assert!(
+        is_unlowered_compiler_construct_refusal(body),
+        "CountWithAsync MoveNext must state the live unlowered compiler-construct refusal instead of emitting compiler-generated plumbing:\n{body}"
+    );
+    assert!(
+        !body
+            .lines()
+            .filter(|line: &&str| !line.trim_start().starts_with("//"))
+            .any(|line: &str| line.contains("__9__1_0")),
+        "CountWithAsync MoveNext must not emit the stripped cached-lambda field as live code:\n{body}"
     );
 }
 

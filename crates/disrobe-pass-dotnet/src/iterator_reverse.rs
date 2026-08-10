@@ -15,6 +15,30 @@ pub const UNLOWERED_COMPILER_CONSTRUCT_MARKER: &str =
     "disrobe: compiler-generated construct not lowered";
 
 #[must_use]
+pub fn is_unlowered_compiler_construct_refusal(body: &str) -> bool {
+    let refusal: String = format!(
+        "throw new System.NotSupportedException(\"{UNLOWERED_COMPILER_CONSTRUCT_MARKER}\");"
+    );
+    let lines: Vec<&str> = body.lines().collect();
+    let Some(open): Option<usize> = lines.iter().position(|line: &&str| line.trim() == "{") else {
+        return false;
+    };
+    let Some(close): Option<usize> = lines.iter().rposition(|line: &&str| line.trim() == "}")
+    else {
+        return false;
+    };
+    if close <= open {
+        return false;
+    }
+    let live_statements: Vec<&str> = lines[open + 1..close]
+        .iter()
+        .map(|line: &&str| line.trim())
+        .filter(|line: &&str| !line.is_empty() && !line.starts_with("//"))
+        .collect();
+    live_statements.as_slice() == [refusal.as_str()]
+}
+
+#[must_use]
 pub fn is_mangled_metadata_identifier(token: &str) -> bool {
     if token.contains("<>") {
         return true;
@@ -52,9 +76,6 @@ pub fn is_mangled_metadata_identifier(token: &str) -> bool {
 pub fn refuse_unlowered_compiler_constructs(methods: &mut [StructuredMethod]) -> u32 {
     let mut refused: u32 = 0;
     for m in methods.iter_mut() {
-        if declaring_type(&m.signature).is_some_and(is_state_machine_type) {
-            continue;
-        }
         if m.body.contains(UNRECONSTRUCTED_STATE_MACHINE_MARKER) {
             continue;
         }
