@@ -124,8 +124,15 @@ impl PeImage {
             }
             return Err(AddressError::RvaNotMapped { rva: Rva::new(rva) });
         };
-        let offset: FileOffset = section.mapped_span().translate(Rva::new(rva))?;
-        offset
+        let _: FileOffset = section.mapped_span().translate(Rva::new(rva))?;
+        let delta: u32 = rva
+            .checked_sub(section.virtual_address)
+            .ok_or_else(|| AddressError::RvaNotMapped { rva: Rva::new(rva) })?;
+        let raw_offset: u32 = section
+            .raw_pointer
+            .checked_add(delta)
+            .ok_or(AddressError::ArithmeticOverflow)?;
+        FileOffset::new(u64::from(raw_offset))
             .checked_range(Size::new(1), file_len)
             .map(|readable: core::ops::Range<usize>| readable.start)
     }

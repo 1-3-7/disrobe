@@ -14,6 +14,7 @@
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod packer_fixture;
 
+use disrobe_bytes::AddressError;
 use disrobe_pass_native::error::Error;
 use disrobe_pass_native::packers::pe_sections::{DataDirectory, PeImage, PeSection};
 use disrobe_pass_native::packers::{FsgImport, FsgUnpackOutput, parse_pe_image, unpack_fsg};
@@ -363,9 +364,13 @@ fn every_declared_section_layout_translates_or_is_refused_and_none_reads_past_th
     );
     let wrapped: u32 = 0xFFFF_FFF0u32.wrapping_add(0x50);
     assert_eq!(wrapped, 0x40, "the wrap this case exercises");
-    assert!(
-        wrapping.file_offset_for_rva(0x1050, file_len).is_err(),
-        "a raw pointer plus delta that wraps u32 must be refused, never folded to {wrapped:#x}",
+    let wrapping_error: AddressError = wrapping
+        .file_offset_for_rva(0x1050, file_len)
+        .expect_err("a raw pointer plus delta that wraps u32 must be refused");
+    assert_eq!(
+        wrapping_error,
+        AddressError::ArithmeticOverflow,
+        "the raw offset must be rejected at its 32-bit arithmetic boundary, never folded to {wrapped:#x}",
     );
 
     let overlapping: PeImage = image_of(
