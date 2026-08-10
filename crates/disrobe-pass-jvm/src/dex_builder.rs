@@ -541,7 +541,7 @@ impl DexBuilder {
 
         let signature: [u8; 20] = sha1(&out[32..]);
         out[12..32].copy_from_slice(&signature);
-        let checksum: u32 = adler32(&out[12..]);
+        let checksum: u32 = adler32(1, &out[12..]);
         out[8..12].copy_from_slice(&checksum.to_le_bytes());
 
         out
@@ -1082,15 +1082,7 @@ fn base64_encode_standard(data: &[u8]) -> String {
     out
 }
 
-pub(crate) fn adler32(data: &[u8]) -> u32 {
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    for &byte in data {
-        a = (a + u32::from(byte)) % 65521;
-        b = (b + a) % 65521;
-    }
-    (b << 16) | a
-}
+pub(crate) use disrobe_core::codec::adler32;
 
 #[allow(clippy::many_single_char_names)]
 pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
@@ -3097,7 +3089,7 @@ mod tests {
 
     #[test]
     fn adler32_known_vector() {
-        assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
+        assert_eq!(adler32(1, b"Wikipedia"), 0x11E6_0398);
     }
 
     #[test]
@@ -3113,7 +3105,7 @@ mod tests {
         let dex: Vec<u8> = dexguard_reflect_sample(&plaintexts, 0x66);
         assert_eq!(&dex[..4], b"dex\n");
         let parsed: crate::dex::DexFile = crate::dex::parse(&dex).expect("dex parses");
-        assert_eq!(parsed.header.checksum, adler32(&dex[12..]));
+        assert_eq!(parsed.header.checksum, adler32(1, &dex[12..]));
         assert!(
             parsed
                 .class_descriptors

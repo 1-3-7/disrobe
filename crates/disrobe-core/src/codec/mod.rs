@@ -18,9 +18,43 @@ pub use crc32::crc32_ieee;
 pub use crypto_wall::{CryptoWall, CryptoWallKind, classify as classify_crypto_wall};
 pub use hex::{decode as hex_decode, encode as hex_encode};
 
+const ADLER_MODULUS: u32 = 65_521;
+const ADLER_CHUNK_LEN: usize = 5_552;
+const ADLER_ACCUMULATOR_MAX: u64 = u16::MAX as u64
+    + ADLER_CHUNK_LEN as u64 * u16::MAX as u64
+    + u8::MAX as u64 * ADLER_CHUNK_LEN as u64 * (ADLER_CHUNK_LEN as u64 + 1) / 2;
+const _: () = assert!(ADLER_ACCUMULATOR_MAX <= u32::MAX as u64);
+
 const MIN_CASCADE_INPUT: usize = 8;
 const VALIDATE_PRINTABLE_RATIO: f64 = 0.90;
 const VALIDATE_MIN_WORD_HITS: usize = 1;
+
+#[must_use]
+pub const fn adler32(seed: u32, bytes: &[u8]) -> u32 {
+    if bytes.is_empty() {
+        return seed;
+    }
+    let mut low: u32 = seed & u16::MAX as u32;
+    let mut high: u32 = seed >> 16;
+    let mut offset: usize = 0;
+    while offset < bytes.len() {
+        let remaining: usize = bytes.len() - offset;
+        let chunk_len: usize = if remaining > ADLER_CHUNK_LEN {
+            ADLER_CHUNK_LEN
+        } else {
+            remaining
+        };
+        let chunk_end: usize = offset + chunk_len;
+        while offset < chunk_end {
+            low += bytes[offset] as u32;
+            high += low;
+            offset += 1;
+        }
+        low %= ADLER_MODULUS;
+        high %= ADLER_MODULUS;
+    }
+    (high << 16) | low
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum DecodeError {
@@ -416,6 +450,50 @@ pub fn try_known_custom_b64(input: &[u8]) -> Vec<CustomB64Match> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn adler32_per_byte(seed: u32, bytes: &[u8]) -> u32 {
+        const MODULUS: u32 = 65_521;
+        let mut low: u32 = seed & 0xffff;
+        let mut high: u32 = seed >> 16;
+        for byte in bytes {
+            low = (low + u32::from(*byte)) % MODULUS;
+            high = (high + low) % MODULUS;
+        }
+        (high << 16) | low
+    }
+
+    #[test]
+    fn adler32_matches_per_byte_reference_across_chunk_boundaries() {
+        let mut bytes: Vec<u8> = Vec::with_capacity(100_000);
+        let mut state: u32 = 0x9e37_79b9;
+        for _ in 0..100_000usize {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            bytes.push((state >> 24) as u8);
+        }
+        for length in [0usize, 1, 5_551, 5_552, 5_553, 11_104, 100_000] {
+            let input: &[u8] = &bytes[..length];
+            for seed in [1u32, 0x1234_5678, u32::MAX] {
+                assert_eq!(adler32(seed, input), adler32_per_byte(seed, input));
+            }
+        }
+    }
+
+    #[test]
+    fn adler32_seeded_restart_matches_one_shot() {
+        let bytes: Vec<u8> = (0u8..=255).cycle().take(12_345).collect();
+        let split: usize = 6_789;
+        let prefix: u32 = adler32(1, &bytes[..split]);
+        assert_eq!(adler32(prefix, &bytes[split..]), adler32(1, &bytes));
+    }
+
+    #[test]
+    fn adler32_pins_vectors_and_out_of_range_seed_behavior() {
+        assert_eq!(adler32(1, b""), 1);
+        assert_eq!(adler32(1, b"a"), 0x0062_0062);
+        assert_eq!(adler32(1, b"abc"), 0x024d_0127);
+        assert_eq!(adler32(u32::MAX, b""), u32::MAX);
+        assert_eq!(adler32(u32::MAX, b"a"), 0x007d_006f);
+    }
 
     #[test]
     fn decode_dispatches_each_scheme() {

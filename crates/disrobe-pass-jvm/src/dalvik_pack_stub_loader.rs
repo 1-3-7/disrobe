@@ -42,7 +42,7 @@ fn parse_container_header(bytes: &[u8]) -> Option<ContainerHeader> {
     let keystream_seed: u32 = read_u32(16);
     let header_checksum: u32 = read_u32(20);
     let payload_checksum: u32 = read_u32(24);
-    if crate::dex_builder::adler32(&bytes[0..20]) != header_checksum {
+    if crate::dex_builder::adler32(1, &bytes[0..20]) != header_checksum {
         return None;
     }
     Some(ContainerHeader {
@@ -56,7 +56,7 @@ fn parse_container_header(bytes: &[u8]) -> Option<ContainerHeader> {
 #[must_use]
 pub fn encode_container(payload: &[u8], key: &[u8], keystream_seed: u32) -> Vec<u8> {
     let ciphertext: Vec<u8> = apply_keystream_cipher(payload, keystream_seed, key);
-    let payload_checksum: u32 = crate::dex_builder::adler32(&ciphertext);
+    let payload_checksum: u32 = crate::dex_builder::adler32(1, &ciphertext);
     let key_len: u32 = u32::try_from(key.len()).unwrap_or(u32::MAX);
     let payload_len: u32 = u32::try_from(ciphertext.len()).unwrap_or(u32::MAX);
     let mut out: Vec<u8> = Vec::with_capacity(CONTAINER_HEADER_LEN + key.len() + ciphertext.len());
@@ -65,7 +65,7 @@ pub fn encode_container(payload: &[u8], key: &[u8], keystream_seed: u32) -> Vec<
     out.extend_from_slice(&key_len.to_le_bytes());
     out.extend_from_slice(&payload_len.to_le_bytes());
     out.extend_from_slice(&keystream_seed.to_le_bytes());
-    let header_checksum: u32 = crate::dex_builder::adler32(&out[0..20]);
+    let header_checksum: u32 = crate::dex_builder::adler32(1, &out[0..20]);
     out.extend_from_slice(&header_checksum.to_le_bytes());
     out.extend_from_slice(&payload_checksum.to_le_bytes());
     out.extend_from_slice(key);
@@ -154,7 +154,7 @@ impl PackingScheme for StubLoaderKeystreamScheme {
         }
         let key: Vec<u8> = container_entry.bytes[key_start..key_end].to_vec();
         let ciphertext: Vec<u8> = container_entry.bytes[key_end..payload_end].to_vec();
-        if crate::dex_builder::adler32(&ciphertext) != header.payload_checksum {
+        if crate::dex_builder::adler32(1, &ciphertext) != header.payload_checksum {
             return None;
         }
         Some(LocatedPayload {
@@ -275,7 +275,7 @@ mod tests {
         assert!(
             parse_container_header(&container).is_none() || {
                 let header: ContainerHeader = parse_container_header(&container).unwrap();
-                crate::dex_builder::adler32(&container[CONTAINER_HEADER_LEN + key.len()..])
+                crate::dex_builder::adler32(1, &container[CONTAINER_HEADER_LEN + key.len()..])
                     != header.payload_checksum
             }
         );

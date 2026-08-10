@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use disrobe_core::codec::adler32 as ucl_adler32;
+
 use crate::error::{Error, Result};
 use crate::packers::pe_sections::{find_subsequence, read_u16, read_u32};
 
@@ -1433,17 +1435,6 @@ fn unfilter_ctok(code: &mut [u8], filter_id: u8, cto: u8) -> Result<()> {
         i += 1;
     }
     Ok(())
-}
-
-fn ucl_adler32(seed: u32, data: &[u8]) -> u32 {
-    const MOD: u32 = 65521;
-    let mut s1: u32 = seed & 0xffff;
-    let mut s2: u32 = (seed >> 16) & 0xffff;
-    for &b in data {
-        s1 = (s1 + u32::from(b)) % MOD;
-        s2 = (s2 + s1) % MOD;
-    }
-    (s2 << 16) | s1
 }
 
 #[cfg(test)]

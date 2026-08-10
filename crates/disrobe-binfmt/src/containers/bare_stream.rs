@@ -1,5 +1,7 @@
 use std::io::Read;
 
+use disrobe_core::codec::adler32;
+
 use crate::error::{Error, Result};
 
 pub const LZIP_MAGIC: &[u8; 5] = b"LZIP\x01";
@@ -70,28 +72,13 @@ pub fn inflate_zlib_verified(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
         .get(trailer_start..consumed_usize)
         .ok_or_else(|| Error::Decompression("zlib: adler32 trailer out of range".to_owned()))?;
     let stored: u32 = u32::from_be_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
-    let computed: u32 = adler32(&out);
+    let computed: u32 = adler32(1, &out);
     if stored != computed {
         return Err(Error::Decompression(format!(
             "zlib: adler32 mismatch (stored {stored:#010x}, computed {computed:#010x})"
         )));
     }
     Ok(out)
-}
-
-fn adler32(data: &[u8]) -> u32 {
-    const MOD_ADLER: u32 = 65_521;
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    for chunk in data.chunks(5552) {
-        for &byte in chunk {
-            a += u32::from(byte);
-            b += a;
-        }
-        a %= MOD_ADLER;
-        b %= MOD_ADLER;
-    }
-    (b << 16) | a
 }
 
 #[must_use]
