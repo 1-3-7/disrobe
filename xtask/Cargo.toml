@@ -40,3 +40,4 @@ roxmltree = { version = "0.21.1", default-features = false, features = ["std"] }
 disrobe-core = { workspace = true }
 disrobe-ir = { workspace = true }
 iced-x86 = { workspace = true, features = ["code_asm"] }
+serde_yaml_ng = "0.10"
