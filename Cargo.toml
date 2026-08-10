@@ -18,6 +18,7 @@ members = [
     "crates/disrobe-similarity",
     "crates/disrobe-sleigh",
     "crates/disrobe-taint",
+    "crates/disrobe-tool-process",
     "crates/disrobe-irsummary",
     "crates/disrobe-lift-x86",
     "crates/disrobe-pass-as3",
@@ -176,6 +177,7 @@ disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.5" }
 disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.5" }
 disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.5" }
 disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.5" }
+disrobe-tool-process = { path = "crates/disrobe-tool-process", version = "0.10.5" }
 disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.5" }
 disrobe-vulnmatch = { path = "crates/disrobe-vulnmatch", version = "0.10.5" }
 disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.5" }
@@ -223,6 +225,7 @@ iced-x86 = "1.21.0"
 indexmap = { version = "2.14.0", features = ["serde"] }
 indicatif = "0.18.4"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native"] }
+libc = "0.2.186"
 liblzma = "0.4.6"
 lsp-server = "0.7.9"
 lz4_flex = { version = "0.13.1", default-features = false, features = ["frame", "std"] }
@@ -293,6 +296,7 @@ walkdir = "2.5.0"
 walrus = "0.24.5"
 wasmparser = "0.250.0"
 wasmtime = "36.0.13"
+windows-sys = "0.61.2"
 yaxpeax-arch = "0.3.2"
 yaxpeax-arch-avr = { package = "yaxpeax-arch", version = "0.2.8" }
 yaxpeax-arm = "0.3.1"

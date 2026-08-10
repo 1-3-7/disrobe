@@ -1995,6 +1995,7 @@ dependencies = [
  "cipher 0.4.4",
  "crc32fast",
  "disrobe-bytes",
+ "disrobe-tool-process",
  "divan",
  "flate2",
  "gix",
@@ -2998,6 +2999,15 @@ dependencies = [
 [[package]]
 name = "disrobe-testkit"
 version = "0.10.5"
+
+[[package]]
+name = "disrobe-tool-process"
+version = "0.10.5"
+dependencies = [
+ "libc",
+ "thiserror 2.0.18",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "disrobe-transcode"

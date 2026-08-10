@@ -23,7 +23,7 @@ Run `cargo xtask prepush --full` before a release to gate every crate unscoped. 
 
 ## Workspace map
 
-The workspace has 61 crates under `crates/`, layered core -> ir -> passes -> surfaces.
+The workspace has 62 crates under `crates/`, layered core -> ir -> passes -> surfaces.
 
 **Core and plumbing**
 

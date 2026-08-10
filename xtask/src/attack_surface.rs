@@ -14,7 +14,7 @@ const UNTRUSTED_PARSERS_HEADING: &str =
 const SUBPROCESS_HEADING: &str = "**Subprocess-capable code**";
 const NETWORK_HEADING: &str = "**Network-capable code**";
 const CRYPTOGRAPHY_HEADING: &str = "## Cryptography";
-const CFG_TEST_ATTR: &str = "#[cfg(test)]";
+const CFG_ATTR_PREFIX: &str = "#[cfg(";
 const COMMAND_NEW_CALL: &str = "Command::new(";
 const NETWORK_DEP_NAMES: &[&str] = &[
     "attohttpc",
@@ -121,6 +121,10 @@ const NON_PARSER_ALLOWLIST: &[NonParserCrate] = &[
     NonParserCrate {
         package_name: "disrobe-testkit",
         rationale: "test-only stress harness consumed as a dev-dependency; the only format it reads is the batch wire record it wrote itself, and it is absent from every shipped target",
+    },
+    NonParserCrate {
+        package_name: "disrobe-tool-process",
+        rationale: "bounded trusted-tool process containment and capture, not an input parser",
     },
     NonParserCrate {
         package_name: "disrobe-vulnmatch",
@@ -477,21 +481,154 @@ fn cfg_test_spans(source: &str) -> Vec<(usize, usize)> {
     let bytes: &[u8] = source.as_bytes();
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut search_from: usize = 0;
-    while let Some(relative) = source[search_from..].find(CFG_TEST_ATTR) {
+    while let Some(relative) = source[search_from..].find(CFG_ATTR_PREFIX) {
         let attr_start: usize = search_from + relative;
-        let after_attr: usize = attr_start + CFG_TEST_ATTR.len();
-        match find_item_body_open(bytes, after_attr) {
+        let after_attr: usize = attr_start + CFG_ATTR_PREFIX.len();
+        let Some(attr_end): Option<usize> = matching_paren(bytes, after_attr - 1) else {
+            break;
+        };
+        let attr_after: usize = attr_end + 1;
+        let attr: &str = &source[attr_start..attr_after];
+        if !cfg_attribute_has_test_predicate(attr) {
+            search_from = attr_after;
+            continue;
+        }
+        match find_item_body_open(bytes, attr_after) {
             Some(open) => match matching_brace(bytes, open) {
                 Some(close) => {
                     spans.push((attr_start, close + 1));
                     search_from = close + 1;
                 }
-                None => search_from = after_attr,
+                None => search_from = attr_after,
             },
-            None => search_from = after_attr,
+            None => search_from = attr_after,
         }
     }
     spans
+}
+
+fn cfg_attribute_has_test_predicate(attribute: &str) -> bool {
+    let bytes: &[u8] = attribute.as_bytes();
+    let mut index: usize = CFG_ATTR_PREFIX.len();
+    while index < bytes.len() {
+        if let Some((prefix_len, hashes)) = raw_string_prefix_len(bytes, index) {
+            index = raw_string_end(bytes, index + prefix_len, hashes).unwrap_or(bytes.len());
+            continue;
+        }
+        match bytes[index] {
+            b'"' | b'\'' => {
+                index = quoted_literal_end(bytes, index).unwrap_or(bytes.len());
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = bytes[index + 2..]
+                    .iter()
+                    .position(|byte: &u8| *byte == b'\n')
+                    .map_or(bytes.len(), |relative: usize| index + relative + 3);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(bytes, index).unwrap_or(bytes.len());
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                let start: usize = index;
+                index += 1;
+                while bytes
+                    .get(index)
+                    .is_some_and(|byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
+                    index += 1;
+                }
+                if &bytes[start..index] == b"test"
+                    && matches!(next_cfg_token(bytes, index), Some((b',' | b')', _)))
+                {
+                    return true;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    false
+}
+
+fn next_cfg_token(bytes: &[u8], mut index: usize) -> Option<(u8, usize)> {
+    while index < bytes.len() {
+        match bytes[index] {
+            byte if byte.is_ascii_whitespace() => index += 1,
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = bytes[index + 2..]
+                    .iter()
+                    .position(|byte: &u8| *byte == b'\n')
+                    .map_or(bytes.len(), |relative: usize| index + relative + 3);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(bytes, index)?;
+            }
+            byte => return Some((byte, index)),
+        }
+    }
+    None
+}
+
+fn quoted_literal_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let quote: u8 = *bytes.get(open)?;
+    let mut index: usize = open + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = index.checked_add(2)?,
+            byte if byte == quote => return index.checked_add(1),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn raw_string_end(bytes: &[u8], mut index: usize, hashes: u32) -> Option<usize> {
+    while index < bytes.len() {
+        if bytes[index] == b'"' && has_hash_run(bytes, index + 1, hashes) {
+            return index.checked_add(1 + hashes as usize);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn block_comment_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth: u32 = 1;
+    let mut index: usize = open.checked_add(2)?;
+    while index < bytes.len() {
+        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            depth = depth.checked_add(1)?;
+            index += 2;
+        } else if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+            depth = depth.checked_sub(1)?;
+            index += 2;
+            if depth == 0 {
+                return Some(index);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth: u32 = 0;
+    for (index, byte) in bytes.iter().copied().enumerate().skip(open) {
+        match byte {
+            b'(' => depth = depth.checked_add(1)?,
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn find_item_body_open(bytes: &[u8], from: usize) -> Option<usize> {
@@ -792,6 +929,24 @@ mod tests {
     fn cfg_test_spans_excludes_purely_test_only_call() {
         let source: &str = "fn setup() {\n    let x = 1;\n}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
         assert!(!has_real_command_new(source));
+    }
+
+    #[test]
+    fn cfg_test_spans_excludes_compound_test_configuration() {
+        let source: &str = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\nmod tests {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
+        assert!(!has_real_command_new(source));
+    }
+
+    #[test]
+    fn cfg_test_spans_does_not_treat_feature_values_as_test_configuration() {
+        let source: &str = "#[cfg(feature = \"test\")]\nmod support {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
+        assert!(has_real_command_new(source));
+    }
+
+    #[test]
+    fn cfg_test_spans_does_not_treat_identifier_substrings_as_test_configuration() {
+        let source: &str = "#[cfg(contest)]\nmod support {\n    fn helper() {\n        Command::new(\"y\");\n    }\n}\n";
+        assert!(has_real_command_new(source));
     }
 
     #[test]
