@@ -571,6 +571,11 @@ struct EvidenceItem {
     corroboration: SignalCorroboration,
 }
 
+struct VerdictEvaluation {
+    detected: bool,
+    eligible_item_indices: Vec<usize>,
+}
+
 #[derive(Default)]
 struct TechniqueAccum {
     items: Vec<EvidenceItem>,
@@ -611,16 +616,24 @@ impl TechniqueAccumulator {
             if accum.items.is_empty() {
                 continue;
             }
-            let Some(confidence): Option<Confidence> = accum
-                .items
-                .iter()
+            let evaluation: VerdictEvaluation = evaluate_verdict(technique, &accum.items);
+            let confidence_items: Vec<&EvidenceItem> = if evaluation.detected {
+                evaluation
+                    .eligible_item_indices
+                    .iter()
+                    .filter_map(|index: &usize| accum.items.get(*index))
+                    .collect()
+            } else {
+                accum.items.iter().collect()
+            };
+            let Some(confidence): Option<Confidence> = confidence_items
+                .into_iter()
                 .map(|i: &EvidenceItem| i.confidence)
                 .max()
             else {
                 continue;
             };
-            let verdict: bool = technique_reaches_verdict(technique, &accum.items);
-            let severity: FindingSeverity = if verdict {
+            let severity: FindingSeverity = if evaluation.detected {
                 FindingSeverity::Detected
             } else {
                 FindingSeverity::Informational
@@ -629,7 +642,7 @@ impl TechniqueAccumulator {
                 resolve_defeat(technique, family, accum.grey_zone_vm, chain);
             findings.push(AntiAnalysisFinding {
                 technique,
-                detected: verdict,
+                detected: evaluation.detected,
                 severity,
                 confidence,
                 defeated_by,
@@ -652,49 +665,70 @@ const fn technique_is_structural(technique: Technique) -> bool {
     )
 }
 
-fn technique_reaches_verdict(technique: Technique, items: &[EvidenceItem]) -> bool {
+fn evaluate_verdict(technique: Technique, items: &[EvidenceItem]) -> VerdictEvaluation {
+    let non_context_indices: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item): (usize, &EvidenceItem)| {
+            (item.corroboration != SignalCorroboration::ContextOnly).then_some(index)
+        })
+        .collect();
     if technique_is_structural(technique) {
-        return !items.is_empty();
+        return VerdictEvaluation {
+            detected: !non_context_indices.is_empty(),
+            eligible_item_indices: non_context_indices,
+        };
     }
-    if items.iter().any(|i: &EvidenceItem| {
-        i.tier == Tier::A && i.corroboration == SignalCorroboration::Standalone
-    }) {
-        return true;
-    }
-    let has_tier_a_corroborated: bool = items.iter().any(|i: &EvidenceItem| {
-        i.tier == Tier::A && i.corroboration == SignalCorroboration::Corroborated
-    });
-    if has_tier_a_corroborated {
-        let mut strong_kinds: Vec<&'static str> = items
-            .iter()
-            .filter(|i: &&EvidenceItem| matches!(i.tier, Tier::A | Tier::B))
-            .map(|i: &EvidenceItem| i.kind)
-            .collect();
-        strong_kinds.sort_unstable();
-        strong_kinds.dedup();
-        if strong_kinds.len() >= 2 {
-            return true;
-        }
-    }
-    let mut b_windows: Vec<usize> = items
+    let strong_kinds: std::collections::BTreeSet<&'static str> = non_context_indices
         .iter()
-        .filter(|i: &&EvidenceItem| i.tier == Tier::B)
-        .map(|i: &EvidenceItem| i.window.map_or(usize::MAX, |w: usize| w / LOCALITY_WINDOW))
+        .filter_map(|index: &usize| items.get(*index))
+        .filter(|item: &&EvidenceItem| matches!(item.tier, Tier::A | Tier::B))
+        .map(|item: &EvidenceItem| item.kind)
         .collect();
-    let b_count: usize = b_windows.len();
-    b_windows.sort_unstable();
-    b_windows.dedup();
-    if b_windows.len() >= 2 {
-        return true;
-    }
-    let mut c_kinds: Vec<&'static str> = items
+    let eligible_item_indices: Vec<usize> = non_context_indices
+        .into_iter()
+        .filter(|index: &usize| {
+            let Some(item): Option<&EvidenceItem> = items.get(*index) else {
+                return false;
+            };
+            match item.corroboration {
+                SignalCorroboration::Standalone => true,
+                SignalCorroboration::Corroborated => strong_kinds
+                    .iter()
+                    .any(|kind: &&'static str| *kind != item.kind),
+                SignalCorroboration::ContextOnly => false,
+            }
+        })
+        .collect();
+    let eligible_items: Vec<&EvidenceItem> = eligible_item_indices
         .iter()
-        .filter(|i: &&EvidenceItem| i.tier == Tier::C)
-        .map(|i: &EvidenceItem| i.kind)
+        .filter_map(|index: &usize| items.get(*index))
         .collect();
-    c_kinds.sort_unstable();
-    c_kinds.dedup();
-    b_count >= 1 && c_kinds.len() >= 3
+    let tier_a_detected: bool = eligible_items
+        .iter()
+        .copied()
+        .any(|item: &EvidenceItem| item.tier == Tier::A);
+    let b_windows: std::collections::BTreeSet<usize> = eligible_items
+        .iter()
+        .copied()
+        .filter(|item: &&EvidenceItem| item.tier == Tier::B)
+        .filter_map(|item: &EvidenceItem| item.window)
+        .map(|window: usize| window / LOCALITY_WINDOW)
+        .collect();
+    let has_tier_b: bool = eligible_items
+        .iter()
+        .copied()
+        .any(|item: &EvidenceItem| item.tier == Tier::B);
+    let c_kinds: std::collections::BTreeSet<&'static str> = eligible_items
+        .iter()
+        .copied()
+        .filter(|item: &&EvidenceItem| item.tier == Tier::C)
+        .map(|item: &EvidenceItem| item.kind)
+        .collect();
+    VerdictEvaluation {
+        detected: tier_a_detected || b_windows.len() >= 2 || (has_tier_b && c_kinds.len() >= 3),
+        eligible_item_indices,
+    }
 }
 
 fn cap_evidence(items: &[EvidenceItem]) -> Vec<String> {
@@ -939,6 +973,47 @@ fn collect_string_rules(bytes: &[u8], acc: &mut TechniqueAccumulator) {
                 continue;
             }
             match sig.class {
+                SigClass::Timing if sig.corroboration == SignalCorroboration::ContextOnly => {
+                    acc.add(
+                        Technique::TimingEvasion,
+                        sig.confidence,
+                        sig.needle,
+                        Some(s.offset),
+                        format!(
+                            "timing primitive '{}' ({}) at offset 0x{:x}",
+                            sig.needle, sig.note, s.offset
+                        ),
+                        sig.corroboration,
+                    );
+                }
+                SigClass::ResourceFloor
+                    if sig.corroboration == SignalCorroboration::ContextOnly =>
+                {
+                    acc.add(
+                        Technique::AntiSandbox,
+                        sig.confidence,
+                        sig.needle,
+                        Some(s.offset),
+                        format!(
+                            "resource-floor probe '{}' ({}) at offset 0x{:x}",
+                            sig.needle, sig.note, s.offset
+                        ),
+                        sig.corroboration,
+                    );
+                }
+                SigClass::Interaction if sig.corroboration == SignalCorroboration::ContextOnly => {
+                    acc.add(
+                        Technique::AntiSandbox,
+                        sig.confidence,
+                        sig.needle,
+                        Some(s.offset),
+                        format!(
+                            "human-interaction probe '{}' ({}) at offset 0x{:x}",
+                            sig.needle, sig.note, s.offset
+                        ),
+                        sig.corroboration,
+                    );
+                }
                 SigClass::Timing => timing_hits.push((*sig, s.offset)),
                 SigClass::ResourceFloor => resource_hits.push((*sig, s.offset)),
                 SigClass::Interaction => interaction_hits.push((*sig, s.offset)),
@@ -1050,6 +1125,18 @@ fn finalize_tool_hits(hits: &[(StringSig, usize)], acc: &mut TechniqueAccumulato
 #[cfg(target_arch = "wasm32")]
 const NUMBER_CORROBORATION_WINDOW: usize = 32;
 
+const fn qualified_number_role(
+    role: SignalCorroboration,
+    corroborated: bool,
+) -> Option<SignalCorroboration> {
+    match role {
+        SignalCorroboration::Standalone => Some(SignalCorroboration::Standalone),
+        SignalCorroboration::Corroborated if corroborated => Some(SignalCorroboration::Standalone),
+        SignalCorroboration::Corroborated => None,
+        SignalCorroboration::ContextOnly => Some(SignalCorroboration::ContextOnly),
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut TechniqueAccumulator) {
     if slice.len() < 4 {
@@ -1063,11 +1150,15 @@ fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut Techni
             if sig.value != dword {
                 continue;
             }
-            if matches!(sig.corroboration, SignalCorroboration::Corroborated)
-                && !number_sig_corroborated(whole, base + i, sig)
-            {
+            let corroborated: bool = match sig.corroboration {
+                SignalCorroboration::Corroborated => number_sig_corroborated(whole, base + i, sig),
+                SignalCorroboration::Standalone | SignalCorroboration::ContextOnly => false,
+            };
+            let Some(role): Option<SignalCorroboration> =
+                qualified_number_role(sig.corroboration, corroborated)
+            else {
                 continue;
-            }
+            };
             acc.add(
                 sig_class_technique(sig.class),
                 sig.confidence,
@@ -1079,7 +1170,7 @@ fn collect_number_sigs(slice: &[u8], base: usize, whole: &[u8], acc: &mut Techni
                     sig.note,
                     base + i
                 ),
-                SignalCorroboration::Standalone,
+                role,
             );
         }
         i += 1;
@@ -1612,7 +1703,10 @@ fn scan_region_opcodes(
 mod decode {
     use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
-    use super::{CodeBitness, Confidence, Technique, TechniqueAccumulator, sig_class_technique};
+    use super::{
+        CodeBitness, Confidence, Technique, TechniqueAccumulator, qualified_number_role,
+        sig_class_technique,
+    };
     use crate::anti_analysis_sigs::{NUMBER_SIGS, SignalCorroboration};
 
     const DECODE_CAP_BYTES: usize = 16 * 1024 * 1024;
@@ -1929,16 +2023,20 @@ mod decode {
                 if u64::from(sig.value) != value {
                     continue;
                 }
-                if matches!(sig.corroboration, SignalCorroboration::Corroborated)
-                    && !immediate_corroborated(
+                let corroborated: bool = match sig.corroboration {
+                    SignalCorroboration::Corroborated => immediate_corroborated(
                         sig.value,
                         cpuid_present,
                         io_port_present,
                         vmxh_present,
-                    )
-                {
+                    ),
+                    SignalCorroboration::Standalone | SignalCorroboration::ContextOnly => false,
+                };
+                let Some(role): Option<SignalCorroboration> =
+                    qualified_number_role(sig.corroboration, corroborated)
+                else {
                     continue;
-                }
+                };
                 acc.add(
                     sig_class_technique(sig.class),
                     sig.confidence,
@@ -1948,7 +2046,7 @@ mod decode {
                         "magic constant 0x{:x} ({}) at offset 0x{:x}",
                         sig.value, sig.note, ip
                     ),
-                    SignalCorroboration::Standalone,
+                    role,
                 );
             }
         }
@@ -2466,6 +2564,34 @@ const fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn qualified_number_roles_preserve_the_closed_role_semantics() {
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::Standalone, false),
+            Some(SignalCorroboration::Standalone)
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::Standalone, true),
+            Some(SignalCorroboration::Standalone)
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::Corroborated, false),
+            None
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::Corroborated, true),
+            Some(SignalCorroboration::Standalone)
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::ContextOnly, false),
+            Some(SignalCorroboration::ContextOnly)
+        );
+        assert_eq!(
+            qualified_number_role(SignalCorroboration::ContextOnly, true),
+            Some(SignalCorroboration::ContextOnly)
+        );
+    }
+
     fn assert_regions_inside(layout: &CodeLayout, image_len: usize, label: &str) {
         for region in &layout.regions {
             let end: usize = region
@@ -2598,6 +2724,283 @@ mod tests {
             .findings
             .iter()
             .find(|f: &&AntiAnalysisFinding| f.technique == technique)
+    }
+
+    #[derive(Clone, Copy)]
+    struct ContextRow {
+        needle: &'static str,
+        class: SigClass,
+        confidence: Confidence,
+        word_bounded: bool,
+    }
+
+    const CONTEXT_ROWS: [ContextRow; 23] = [
+        ContextRow {
+            needle: "queryperformancecounter",
+            class: SigClass::Timing,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "gettickcount",
+            class: SigClass::Timing,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "rdtsc",
+            class: SigClass::Timing,
+            confidence: Confidence::Low,
+            word_bounded: true,
+        },
+        ContextRow {
+            needle: "globalmemorystatusex",
+            class: SigClass::ResourceFloor,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getdiskfreespaceex",
+            class: SigClass::ResourceFloor,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getsystempowerstatus",
+            class: SigClass::ResourceFloor,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "ioctl_disk_get_length_info",
+            class: SigClass::ResourceFloor,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getcursorpos",
+            class: SigClass::Interaction,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getlastinputinfo",
+            class: SigClass::Interaction,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getforegroundwindow",
+            class: SigClass::Interaction,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getasynckeystate",
+            class: SigClass::Interaction,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "outputdebugstring",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "dbghelp.dll",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "dbghelp",
+            class: SigClass::Sandbox,
+            confidence: Confidence::Info,
+            word_bounded: true,
+        },
+        ContextRow {
+            needle: "ntqueryinformationprocess",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "ntsetinformationthread",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "ntqueryobject",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "blockinput",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "getthreadcontext",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "ntgetcontextthread",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "ptrace",
+            class: SigClass::AntiDebug,
+            confidence: Confidence::Medium,
+            word_bounded: true,
+        },
+        ContextRow {
+            needle: "dbgbreakpoint",
+            class: SigClass::AntiAttach,
+            confidence: Confidence::Medium,
+            word_bounded: false,
+        },
+        ContextRow {
+            needle: "dbguiremotebreakin",
+            class: SigClass::AntiAttach,
+            confidence: Confidence::High,
+            word_bounded: false,
+        },
+    ];
+
+    fn context_technique(class: SigClass) -> Technique {
+        match class {
+            SigClass::Timing => Technique::TimingEvasion,
+            SigClass::ResourceFloor | SigClass::Interaction | SigClass::Sandbox => {
+                Technique::AntiSandbox
+            }
+            SigClass::AntiDebug => Technique::AntiDebug,
+            SigClass::AntiAttach => Technique::AntiAttach,
+            _ => panic!("non-context class {class:?}"),
+        }
+    }
+
+    fn evidence_key(detail: &str) -> (String, usize) {
+        let first_quote: usize = detail.find('\'').expect("evidence opening quote");
+        let relative_end: usize = detail[first_quote + 1..]
+            .find('\'')
+            .expect("evidence closing quote");
+        let end_quote: usize = first_quote + 1 + relative_end;
+        let offset_text: &str = detail
+            .get(end_quote + 1..)
+            .and_then(|tail: &str| tail.rsplit_once(" at offset 0x"))
+            .map(|(_, offset): (&str, &str)| offset)
+            .expect("evidence offset");
+        let offset: usize = usize::from_str_radix(offset_text, 16).expect("hex evidence offset");
+        (detail[first_quote + 1..end_quote].to_string(), offset)
+    }
+
+    fn context_fixture(
+        rows: &[ContextRow],
+        split_after: Option<usize>,
+    ) -> (Vec<u8>, Vec<(ContextRow, usize)>) {
+        let mut bytes: Vec<u8> = vec![0u8; 64];
+        bytes[0] = b'M';
+        bytes[1] = b'Z';
+        let mut expected: Vec<(ContextRow, usize)> = Vec::new();
+        for (index, row) in rows.iter().copied().enumerate() {
+            if split_after == Some(index) && bytes.len() < 8192 {
+                bytes.resize(8192, 0);
+            }
+            let offset: usize = bytes.len();
+            bytes.extend_from_slice(row.needle.as_bytes());
+            bytes.push(0);
+            expected.push((row, offset));
+        }
+        (bytes, expected)
+    }
+
+    fn expected_context_findings(
+        occurrences: &[(ContextRow, usize)],
+    ) -> std::collections::BTreeMap<Technique, (Confidence, Vec<(String, usize)>)> {
+        let mut expected: std::collections::BTreeMap<
+            Technique,
+            (Confidence, Vec<(String, usize)>),
+        > = std::collections::BTreeMap::new();
+        for (row, offset) in occurrences {
+            let technique: Technique = context_technique(row.class);
+            let entry: &mut (Confidence, Vec<(String, usize)>) = expected
+                .entry(technique)
+                .or_insert((row.confidence, Vec::new()));
+            entry.0 = entry.0.max(row.confidence);
+            entry.1.push((row.needle.to_string(), *offset));
+            if row.needle == "dbghelp.dll" {
+                let sandbox: &mut (Confidence, Vec<(String, usize)>) = expected
+                    .entry(Technique::AntiSandbox)
+                    .or_insert((Confidence::Info, Vec::new()));
+                sandbox.0 = sandbox.0.max(Confidence::Info);
+                sandbox.1.push(("dbghelp".to_string(), *offset));
+            }
+        }
+        for (_, evidence) in expected.values_mut() {
+            evidence.sort();
+        }
+        expected
+    }
+
+    fn assert_context_fixture(rows: &[ContextRow], split_after: Option<usize>) {
+        let (bytes, occurrences): (Vec<u8>, Vec<(ContextRow, usize)>) =
+            context_fixture(rows, split_after);
+        let report: AntiAnalysisReport = scan(&bytes, None);
+        let expected: std::collections::BTreeMap<Technique, (Confidence, Vec<(String, usize)>)> =
+            expected_context_findings(&occurrences);
+        assert_eq!(
+            report.findings.len(),
+            expected.len(),
+            "{:?}",
+            report.findings
+        );
+        for (technique, (confidence, expected_evidence)) in expected {
+            let finding: &AntiAnalysisFinding =
+                finding(&report, technique).expect("expected context finding");
+            assert!(!finding.detected, "{finding:?}");
+            assert_eq!(finding.severity, FindingSeverity::Informational);
+            assert_eq!(finding.confidence, confidence);
+            let mut actual_evidence: Vec<(String, usize)> = finding
+                .evidence
+                .iter()
+                .map(|detail: &String| evidence_key(detail))
+                .collect();
+            actual_evidence.sort();
+            assert_eq!(actual_evidence, expected_evidence, "{finding:?}");
+        }
+    }
+
+    fn assert_all_context_techniques_on_both_sides(rows: &[ContextRow], split_after: usize) {
+        let expected_techniques: std::collections::BTreeSet<Technique> = [
+            Technique::TimingEvasion,
+            Technique::AntiSandbox,
+            Technique::AntiDebug,
+            Technique::AntiAttach,
+        ]
+        .into_iter()
+        .collect();
+        let techniques: fn(&[ContextRow]) -> std::collections::BTreeSet<Technique> = |side| {
+            side.iter()
+                .flat_map(|row: &ContextRow| {
+                    let overlap: Option<Technique> =
+                        (row.needle == "dbghelp.dll").then_some(Technique::AntiSandbox);
+                    std::iter::once(context_technique(row.class)).chain(overlap)
+                })
+                .collect()
+        };
+        let first: std::collections::BTreeSet<Technique> = techniques(&rows[..split_after]);
+        let second: std::collections::BTreeSet<Technique> = techniques(&rows[split_after..]);
+        assert_eq!(first, expected_techniques);
+        assert_eq!(second, expected_techniques);
+        assert_context_fixture(rows, Some(split_after));
     }
 
     #[test]
@@ -3041,23 +3444,30 @@ mod tests {
 
         let timing: &AntiAnalysisFinding =
             finding(&report, Technique::TimingEvasion).expect("timing attributed");
-        assert_eq!(
-            timing.confidence,
-            Confidence::Medium,
-            "two corroborating timing primitives raise confidence to medium: {timing:?}"
+        assert_eq!(timing.confidence, Confidence::Low);
+        assert!(!timing.detected);
+        assert_eq!(timing.severity, FindingSeverity::Informational);
+        assert!(timing.evidence.iter().any(|e: &String| e.contains("rdtsc")));
+        assert!(
+            timing
+                .evidence
+                .iter()
+                .any(|e: &String| e.contains("gettickcount"))
         );
     }
 
     #[test]
-    fn lone_timing_primitive_is_not_flagged() {
+    fn lone_timing_primitive_is_visible_and_informational() {
         let mut buf: Vec<u8> = b"MZ\x90\x00".to_vec();
         buf.extend_from_slice(b"\x00GetTickCount only one timing primitive here\x00");
         let report: AntiAnalysisReport = scan(&buf, None);
-        assert!(
-            finding(&report, Technique::TimingEvasion).is_none(),
-            "a single timing primitive is not corroborated evasion: {:?}",
-            report.findings
-        );
+        let timing: &AntiAnalysisFinding =
+            finding(&report, Technique::TimingEvasion).expect("timing context surfaced");
+        assert_eq!(timing.confidence, Confidence::Low);
+        assert!(!timing.detected);
+        assert_eq!(timing.severity, FindingSeverity::Informational);
+        assert_eq!(timing.evidence.len(), 1);
+        assert!(timing.evidence[0].contains("gettickcount"));
     }
 
     #[test]
@@ -3284,6 +3694,247 @@ mod tests {
         );
     }
 
+    fn verdict_item(
+        confidence: Confidence,
+        kind: &'static str,
+        window: Option<usize>,
+        corroboration: SignalCorroboration,
+    ) -> EvidenceItem {
+        EvidenceItem {
+            tier: tier_of(confidence),
+            confidence,
+            kind,
+            window,
+            detail: kind.to_string(),
+            corroboration,
+        }
+    }
+
+    #[test]
+    fn context_only_is_excluded_before_structural_evaluation() {
+        let context: EvidenceItem = verdict_item(
+            Confidence::High,
+            "context",
+            Some(0),
+            SignalCorroboration::ContextOnly,
+        );
+        let standalone: EvidenceItem = verdict_item(
+            Confidence::Low,
+            "structural",
+            Some(1),
+            SignalCorroboration::Standalone,
+        );
+        let context_evaluation: VerdictEvaluation =
+            evaluate_verdict(Technique::Packing, std::slice::from_ref(&context));
+        assert!(!context_evaluation.detected);
+        assert!(context_evaluation.eligible_item_indices.is_empty());
+
+        let evaluation: VerdictEvaluation =
+            evaluate_verdict(Technique::Packing, &[context.clone(), standalone.clone()]);
+        assert!(evaluation.detected);
+        assert_eq!(evaluation.eligible_item_indices, vec![1]);
+
+        let mut context_acc: TechniqueAccumulator = TechniqueAccumulator::default();
+        context_acc.add(
+            Technique::Packing,
+            context.confidence,
+            context.kind,
+            context.window,
+            context.detail,
+            context.corroboration,
+        );
+        let informational: Vec<AntiAnalysisFinding> =
+            context_acc.finalize(TargetFamily::Pe, &ChainEvidence::default());
+        assert_eq!(informational.len(), 1);
+        assert!(!informational[0].detected);
+        assert_eq!(informational[0].severity, FindingSeverity::Informational);
+
+        let mut mixed_acc: TechniqueAccumulator = TechniqueAccumulator::default();
+        mixed_acc.add(
+            Technique::Packing,
+            Confidence::High,
+            "context",
+            Some(0),
+            "context".to_string(),
+            SignalCorroboration::ContextOnly,
+        );
+        mixed_acc.add(
+            Technique::Packing,
+            Confidence::Low,
+            standalone.kind,
+            standalone.window,
+            standalone.detail,
+            standalone.corroboration,
+        );
+        let detected: Vec<AntiAnalysisFinding> =
+            mixed_acc.finalize(TargetFamily::Pe, &ChainEvidence::default());
+        assert_eq!(detected.len(), 1);
+        assert!(detected[0].detected);
+        assert_eq!(detected[0].confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn corroborated_tier_b_duplicates_cannot_self_corroborate() {
+        let duplicate_items: Vec<EvidenceItem> = [0usize, 8192, 16_384]
+            .into_iter()
+            .map(|window: usize| {
+                verdict_item(
+                    Confidence::Medium,
+                    "/proc/self/status",
+                    Some(window),
+                    SignalCorroboration::Corroborated,
+                )
+            })
+            .collect();
+        let duplicates: VerdictEvaluation =
+            evaluate_verdict(Technique::AntiDebug, &duplicate_items);
+        assert!(!duplicates.detected);
+        assert!(duplicates.eligible_item_indices.is_empty());
+
+        let mut partnered_items: Vec<EvidenceItem> = duplicate_items;
+        partnered_items.push(verdict_item(
+            Confidence::High,
+            "tracerpid",
+            Some(24_576),
+            SignalCorroboration::Corroborated,
+        ));
+        let partnered: VerdictEvaluation = evaluate_verdict(Technique::AntiDebug, &partnered_items);
+        assert!(partnered.detected);
+        assert_eq!(partnered.eligible_item_indices, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn verdict_evaluation_owns_membership_detection_and_confidence() {
+        let cases: Vec<(Vec<EvidenceItem>, Vec<usize>, bool)> = vec![
+            (
+                vec![verdict_item(
+                    Confidence::High,
+                    "context",
+                    Some(0),
+                    SignalCorroboration::ContextOnly,
+                )],
+                vec![],
+                false,
+            ),
+            (
+                vec![verdict_item(
+                    Confidence::High,
+                    "standalone-a",
+                    Some(0),
+                    SignalCorroboration::Standalone,
+                )],
+                vec![0],
+                true,
+            ),
+            (
+                vec![verdict_item(
+                    Confidence::High,
+                    "corroborated-a",
+                    Some(0),
+                    SignalCorroboration::Corroborated,
+                )],
+                vec![],
+                false,
+            ),
+            (
+                vec![
+                    verdict_item(
+                        Confidence::High,
+                        "corroborated-a",
+                        Some(0),
+                        SignalCorroboration::Corroborated,
+                    ),
+                    verdict_item(
+                        Confidence::Medium,
+                        "corroborated-b",
+                        Some(1),
+                        SignalCorroboration::Corroborated,
+                    ),
+                ],
+                vec![0, 1],
+                true,
+            ),
+            (
+                vec![
+                    verdict_item(
+                        Confidence::Medium,
+                        "tier-b",
+                        Some(0),
+                        SignalCorroboration::Standalone,
+                    ),
+                    verdict_item(
+                        Confidence::Medium,
+                        "tier-b",
+                        Some(4096),
+                        SignalCorroboration::Standalone,
+                    ),
+                ],
+                vec![0, 1],
+                true,
+            ),
+            (
+                vec![
+                    verdict_item(
+                        Confidence::Medium,
+                        "tier-b",
+                        Some(0),
+                        SignalCorroboration::Standalone,
+                    ),
+                    verdict_item(
+                        Confidence::Low,
+                        "tier-c-1",
+                        Some(0),
+                        SignalCorroboration::Standalone,
+                    ),
+                    verdict_item(
+                        Confidence::Low,
+                        "tier-c-2",
+                        Some(0),
+                        SignalCorroboration::Standalone,
+                    ),
+                    verdict_item(
+                        Confidence::Low,
+                        "tier-c-3",
+                        Some(0),
+                        SignalCorroboration::Standalone,
+                    ),
+                ],
+                vec![0, 1, 2, 3],
+                true,
+            ),
+        ];
+        for (items, expected_indices, expected_detected) in cases {
+            let evaluation: VerdictEvaluation = evaluate_verdict(Technique::AntiDebug, &items);
+            assert_eq!(evaluation.eligible_item_indices, expected_indices);
+            assert_eq!(evaluation.detected, expected_detected);
+        }
+
+        let mut acc: TechniqueAccumulator = TechniqueAccumulator::default();
+        acc.add(
+            Technique::AntiDebug,
+            Confidence::High,
+            "excluded-context",
+            Some(0),
+            "excluded-context".to_string(),
+            SignalCorroboration::ContextOnly,
+        );
+        for window in [0usize, 4096] {
+            acc.add(
+                Technique::AntiDebug,
+                Confidence::Medium,
+                "eligible-tier-b",
+                Some(window),
+                format!("eligible-tier-b-{window}"),
+                SignalCorroboration::Standalone,
+            );
+        }
+        let findings: Vec<AntiAnalysisFinding> =
+            acc.finalize(TargetFamily::Pe, &ChainEvidence::default());
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].detected);
+        assert_eq!(findings[0].confidence, Confidence::Medium);
+    }
+
     #[test]
     fn evidence_is_capped_per_kind_with_a_total_count() {
         let mut payload: Vec<u8> = Vec::new();
@@ -3431,27 +4082,225 @@ mod tests {
     }
 
     #[test]
-    fn resource_floor_requires_corroboration() {
+    fn resource_floor_context_is_visible_but_never_votes() {
         let lone: Vec<u8> = pe(b"\x00GlobalMemoryStatusEx only one floor query\x00");
         let report: AntiAnalysisReport = scan(&lone, None);
+        let lone_finding: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiSandbox).expect("resource context surfaced");
+        assert_eq!(lone_finding.confidence, Confidence::Low);
+        assert!(!lone_finding.detected);
+        assert_eq!(lone_finding.severity, FindingSeverity::Informational);
+        assert_eq!(lone_finding.evidence.len(), 1);
+        assert!(lone_finding.evidence[0].contains("globalmemorystatusex"));
+
+        let three: Vec<u8> =
+            pe(b"\x00GlobalMemoryStatusEx\x00GetDiskFreeSpaceEx\x00GetSystemPowerStatus\x00");
+        let report2: AntiAnalysisReport = scan(&three, None);
+        let f: &AntiAnalysisFinding =
+            finding(&report2, Technique::AntiSandbox).expect("resource context surfaced");
+        assert_eq!(f.confidence, Confidence::Low);
+        assert!(!f.detected);
+        assert_eq!(f.severity, FindingSeverity::Informational);
+        assert_eq!(f.evidence.len(), 3);
+        for needle in [
+            "globalmemorystatusex",
+            "getdiskfreespaceex",
+            "getsystempowerstatus",
+        ] {
+            assert!(f.evidence.iter().any(|e: &String| e.contains(needle)));
+        }
+    }
+
+    #[test]
+    fn lone_wine_loader_probe_is_informational() {
+        let payload: Vec<u8> =
+            pe(b"\x00wine_get_version\x00ntdll.dll\x00GetModuleHandleW\x00GetProcAddress\x00");
+        let report: AntiAnalysisReport = scan(&payload, None);
+        let finding: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiSandbox).expect("wine context surfaced");
+        assert!(!finding.detected);
+        assert_eq!(finding.severity, FindingSeverity::Informational);
+        assert_eq!(finding.confidence, Confidence::High);
         assert!(
-            finding(&report, Technique::AntiSandbox).is_none_or(|f: &AntiAnalysisFinding| !f
+            finding
                 .evidence
                 .iter()
-                .any(|e: &String| e.contains("resource-floor"))),
-            "a single resource query is not corroborated evasion: {:?}",
-            report.findings
+                .any(|e: &String| e.contains("wine_get_version"))
         );
+    }
 
-        let two: Vec<u8> =
-            pe(b"\x00GlobalMemoryStatusEx\x00GetDiskFreeSpaceEx\x00GetSystemPowerStatus\x00");
-        let report2: AntiAnalysisReport = scan(&two, None);
-        let f: &AntiAnalysisFinding = finding(&report2, Technique::AntiSandbox)
-            .expect("two resource-floor probes corroborate");
-        assert!(
-            f.evidence
-                .iter()
-                .any(|e: &String| e.contains("resource-floor"))
+    #[test]
+    fn cargo_like_context_surface_cannot_cross_corroborate() {
+        let mut payload: Vec<u8> = pe(
+            b"\x00wine_get_version\x00dbghelp.dll\x00QueryPerformanceCounter\x00GetTickCount\x00",
+        );
+        payload.resize(8192, 0);
+        payload.extend_from_slice(
+            b"\x00GetTickCount64\x00GetTickCount\x00QueryPerformanceCounter\x00dbghelp.dll\x00wine_get_version\x00",
+        );
+        let report: AntiAnalysisReport = scan(&payload, None);
+        for technique in [Technique::AntiSandbox, Technique::TimingEvasion] {
+            let finding: &AntiAnalysisFinding =
+                finding(&report, technique).expect("context surfaced");
+            assert!(!finding.detected, "{technique:?}: {finding:?}");
+            assert_eq!(finding.severity, FindingSeverity::Informational);
+        }
+    }
+
+    #[test]
+    fn context_only_timer_names_never_vote() {
+        for needles in [
+            vec!["QueryPerformanceCounter", "GetTickCount", "rdtsc"],
+            vec!["rdtsc", "GetTickCount64", "QueryPerformanceCounter"],
+        ] {
+            let mut payload: Vec<u8> = pe(needles[0].as_bytes());
+            payload.resize(8192, 0);
+            for needle in &needles {
+                payload.extend_from_slice(needle.as_bytes());
+                payload.push(0);
+            }
+            let report: AntiAnalysisReport = scan(&payload, None);
+            let finding: &AntiAnalysisFinding =
+                finding(&report, Technique::TimingEvasion).expect("timing context surfaced");
+            assert!(!finding.detected, "{finding:?}");
+            assert_eq!(finding.severity, FindingSeverity::Informational);
+            assert_eq!(finding.confidence, Confidence::Low);
+        }
+    }
+
+    #[test]
+    fn context_only_resource_and_interaction_apis_never_vote() {
+        let needles: [&str; 8] = [
+            "GlobalMemoryStatusEx",
+            "GetDiskFreeSpaceEx",
+            "GetSystemPowerStatus",
+            "IOCTL_DISK_GET_LENGTH_INFO",
+            "GetCursorPos",
+            "GetLastInputInfo",
+            "GetForegroundWindow",
+            "GetAsyncKeyState",
+        ];
+        for needle in needles {
+            let report: AntiAnalysisReport = scan(&pe(needle.as_bytes()), None);
+            let finding: &AntiAnalysisFinding =
+                finding(&report, Technique::AntiSandbox).expect("sandbox context surfaced");
+            assert!(!finding.detected, "{needle}: {finding:?}");
+        }
+        let mut combined: Vec<u8> = pe(b"GetAsyncKeyState\x00GlobalMemoryStatusEx\x00");
+        combined.resize(8192, 0);
+        for needle in needles.into_iter().rev() {
+            combined.extend_from_slice(needle.as_bytes());
+            combined.push(0);
+        }
+        let report: AntiAnalysisReport = scan(&combined, None);
+        let finding: &AntiAnalysisFinding =
+            finding(&report, Technique::AntiSandbox).expect("sandbox context surfaced");
+        assert!(!finding.detected, "{finding:?}");
+        assert_eq!(finding.severity, FindingSeverity::Informational);
+    }
+
+    #[test]
+    fn context_only_tuple_golden_and_exhaustive_matrix() {
+        let declared: std::collections::BTreeSet<(&str, SigClass, Confidence, bool)> = STRING_SIGS
+            .iter()
+            .filter(|sig: &&StringSig| sig.corroboration == SignalCorroboration::ContextOnly)
+            .map(|sig: &StringSig| (sig.needle, sig.class, sig.confidence, sig.word_bounded))
+            .collect();
+        let golden: std::collections::BTreeSet<(&str, SigClass, Confidence, bool)> = CONTEXT_ROWS
+            .iter()
+            .map(|row: &ContextRow| (row.needle, row.class, row.confidence, row.word_bounded))
+            .collect();
+        assert_eq!(declared.len(), 23);
+        assert_eq!(declared, golden);
+
+        for row in CONTEXT_ROWS {
+            assert_context_fixture(std::slice::from_ref(&row), None);
+        }
+        for (left, left_row) in CONTEXT_ROWS.iter().copied().enumerate() {
+            for right_row in CONTEXT_ROWS.iter().copied().skip(left + 1) {
+                if left_row.class == right_row.class {
+                    continue;
+                }
+                let forward: [ContextRow; 2] = [left_row, right_row];
+                let reverse: [ContextRow; 2] = [right_row, left_row];
+                assert_context_fixture(&forward, None);
+                assert_context_fixture(&forward, Some(1));
+                assert_context_fixture(&reverse, None);
+                assert_context_fixture(&reverse, Some(1));
+            }
+        }
+
+        assert_context_fixture(&CONTEXT_ROWS, None);
+        let first_permutation: [ContextRow; 23] = [
+            CONTEXT_ROWS[0],
+            CONTEXT_ROWS[3],
+            CONTEXT_ROWS[7],
+            CONTEXT_ROWS[11],
+            CONTEXT_ROWS[13],
+            CONTEXT_ROWS[21],
+            CONTEXT_ROWS[1],
+            CONTEXT_ROWS[4],
+            CONTEXT_ROWS[8],
+            CONTEXT_ROWS[14],
+            CONTEXT_ROWS[15],
+            CONTEXT_ROWS[2],
+            CONTEXT_ROWS[5],
+            CONTEXT_ROWS[6],
+            CONTEXT_ROWS[9],
+            CONTEXT_ROWS[10],
+            CONTEXT_ROWS[12],
+            CONTEXT_ROWS[16],
+            CONTEXT_ROWS[17],
+            CONTEXT_ROWS[18],
+            CONTEXT_ROWS[19],
+            CONTEXT_ROWS[20],
+            CONTEXT_ROWS[22],
+        ];
+        let second_permutation: [ContextRow; 23] = [
+            CONTEXT_ROWS[2],
+            CONTEXT_ROWS[6],
+            CONTEXT_ROWS[10],
+            CONTEXT_ROWS[12],
+            CONTEXT_ROWS[22],
+            CONTEXT_ROWS[3],
+            CONTEXT_ROWS[7],
+            CONTEXT_ROWS[16],
+            CONTEXT_ROWS[17],
+            CONTEXT_ROWS[18],
+            CONTEXT_ROWS[19],
+            CONTEXT_ROWS[0],
+            CONTEXT_ROWS[1],
+            CONTEXT_ROWS[4],
+            CONTEXT_ROWS[5],
+            CONTEXT_ROWS[8],
+            CONTEXT_ROWS[9],
+            CONTEXT_ROWS[11],
+            CONTEXT_ROWS[13],
+            CONTEXT_ROWS[14],
+            CONTEXT_ROWS[15],
+            CONTEXT_ROWS[20],
+            CONTEXT_ROWS[21],
+        ];
+        assert_all_context_techniques_on_both_sides(&first_permutation, 11);
+        assert_all_context_techniques_on_both_sides(&second_permutation, 11);
+
+        let tick64: ContextRow = ContextRow {
+            needle: "gettickcount64",
+            class: SigClass::Timing,
+            confidence: Confidence::Low,
+            word_bounded: false,
+        };
+        let (bytes, occurrences): (Vec<u8>, Vec<(ContextRow, usize)>) =
+            context_fixture(std::slice::from_ref(&tick64), None);
+        let report: AntiAnalysisReport = scan(&bytes, None);
+        let timing: &AntiAnalysisFinding =
+            finding(&report, Technique::TimingEvasion).expect("tick64 context surfaced");
+        assert!(!timing.detected);
+        assert_eq!(timing.confidence, Confidence::Low);
+        assert_eq!(timing.evidence.len(), 1);
+        assert_eq!(
+            evidence_key(&timing.evidence[0]),
+            ("gettickcount".to_string(), occurrences[0].1)
         );
     }
 

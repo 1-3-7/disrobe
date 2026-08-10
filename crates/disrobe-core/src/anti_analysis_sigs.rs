@@ -42,6 +42,7 @@ pub enum SigClass {
 pub enum SignalCorroboration {
     Standalone,
     Corroborated,
+    ContextOnly,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,7 +78,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "process-debug-port query primitive",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "ntsetinformationthread",
@@ -85,7 +86,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "thread-hide-from-debugger primitive",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "outputdebugstring",
@@ -93,7 +94,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "debug-channel write, also benign logging",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "dbghelp.dll",
@@ -101,7 +102,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "debug-help library reference",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "ptrace",
@@ -109,7 +110,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: true,
         note: "posix ptrace self-attach guard",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "/proc/self/status",
@@ -117,7 +118,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "linux tracerpid status probe path",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "tracerpid",
@@ -125,7 +126,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "linux tracerpid field name",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "vmware",
@@ -373,7 +374,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Info,
         word_bounded: true,
         note: "debug-help reference, weak signal",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "wine_get_unix_file_name",
@@ -381,7 +382,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine emulation-layer export probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "sandboxie",
@@ -533,7 +534,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "high-resolution timer query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "gettickcount",
@@ -541,7 +542,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "tick-count timer query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "rdtsc",
@@ -549,7 +550,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: true,
         note: "timestamp-counter mnemonic reference",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "wudfisanydebuggerpresent",
@@ -557,7 +558,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "umdf any-debugger-present query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "wudfiskerneldebuggerpresent",
@@ -565,7 +566,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "umdf kernel-debugger-present query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "ntqueryobject",
@@ -573,7 +574,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "debug-object type-information count primitive",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "dbgbreakpoint",
@@ -581,7 +582,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "ntdll breakpoint entry, anti-attach patch target",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "dbguiremotebreakin",
@@ -589,7 +590,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "ntdll remote-break-in entry, anti-attach patch target",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "blockinput",
@@ -597,7 +598,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "input-blocking guard during sensitive work",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "processdebugport",
@@ -605,7 +606,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-port information class name",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "processdebugobject",
@@ -613,7 +614,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-object information class name",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "processdebugflags",
@@ -621,7 +622,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "process-debug-flags information class name",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "threadhidefromdebugger",
@@ -629,7 +630,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "thread-hide-from-debugger information class name",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "getthreadcontext",
@@ -637,7 +638,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "thread context read, hardware-breakpoint inspection primitive",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "ntgetcontextthread",
@@ -645,7 +646,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "native thread context read, debug-register inspection primitive",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "windbgframeclass",
@@ -1149,7 +1150,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine emulation-layer registry probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "\\\\.\\winex11",
@@ -1157,7 +1158,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine x11 driver device probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "wine_get_version",
@@ -1165,7 +1166,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::High,
         word_bounded: false,
         note: "wine ntdll version export probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::Corroborated,
     },
     StringSig {
         needle: "globalmemorystatusex",
@@ -1173,7 +1174,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "physical-memory floor query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getdiskfreespaceex",
@@ -1181,7 +1182,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "disk-size floor query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getsystempowerstatus",
@@ -1189,7 +1190,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "battery-presence sandbox query",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "ioctl_disk_get_length_info",
@@ -1197,7 +1198,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Medium,
         word_bounded: false,
         note: "raw disk-length floor probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getcursorpos",
@@ -1205,7 +1206,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "mouse-position interaction probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getlastinputinfo",
@@ -1213,7 +1214,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "idle-time interaction probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getforegroundwindow",
@@ -1221,7 +1222,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "foreground-window interaction probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
     StringSig {
         needle: "getasynckeystate",
@@ -1229,7 +1230,7 @@ pub static STRING_SIGS: &[StringSig] = &[
         confidence: Confidence::Low,
         word_bounded: false,
         note: "keystroke interaction probe",
-        corroboration: SignalCorroboration::Standalone,
+        corroboration: SignalCorroboration::ContextOnly,
     },
 ];
 
@@ -1371,6 +1372,39 @@ pub static NUMBER_SIGS: &[NumberSig] = &[
 mod tests {
     use super::*;
 
+    fn class_name(class: SigClass) -> &'static str {
+        match class {
+            SigClass::AntiDebug => "AntiDebug",
+            SigClass::AntiVm => "AntiVm",
+            SigClass::Sandbox => "Sandbox",
+            SigClass::Hypervisor => "Hypervisor",
+            SigClass::VmMacOui => "VmMacOui",
+            SigClass::Timing => "Timing",
+            SigClass::AntiTool => "AntiTool",
+            SigClass::ResourceFloor => "ResourceFloor",
+            SigClass::Interaction => "Interaction",
+            SigClass::AntiDump => "AntiDump",
+            SigClass::AntiAttach => "AntiAttach",
+        }
+    }
+
+    fn confidence_name(confidence: Confidence) -> &'static str {
+        match confidence {
+            Confidence::Info => "Info",
+            Confidence::Low => "Low",
+            Confidence::Medium => "Medium",
+            Confidence::High => "High",
+        }
+    }
+
+    fn role_name(role: SignalCorroboration) -> &'static str {
+        match role {
+            SignalCorroboration::Standalone => "Standalone",
+            SignalCorroboration::Corroborated => "Corroborated",
+            SignalCorroboration::ContextOnly => "ContextOnly",
+        }
+    }
+
     #[test]
     fn confidence_orders_low_to_high() {
         assert!(Confidence::Info < Confidence::Low);
@@ -1401,6 +1435,168 @@ mod tests {
     }
 
     #[test]
+    fn signal_role_roster_is_closed() {
+        let expected_context: std::collections::BTreeSet<(&str, &str, &str, bool, &str)> = [
+            (
+                "queryperformancecounter",
+                "Timing",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            ("gettickcount", "Timing", "Low", false, "ContextOnly"),
+            ("rdtsc", "Timing", "Low", true, "ContextOnly"),
+            (
+                "globalmemorystatusex",
+                "ResourceFloor",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "getdiskfreespaceex",
+                "ResourceFloor",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "getsystempowerstatus",
+                "ResourceFloor",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "ioctl_disk_get_length_info",
+                "ResourceFloor",
+                "Medium",
+                false,
+                "ContextOnly",
+            ),
+            ("getcursorpos", "Interaction", "Low", false, "ContextOnly"),
+            (
+                "getlastinputinfo",
+                "Interaction",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "getforegroundwindow",
+                "Interaction",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "getasynckeystate",
+                "Interaction",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "outputdebugstring",
+                "AntiDebug",
+                "Low",
+                false,
+                "ContextOnly",
+            ),
+            ("dbghelp.dll", "AntiDebug", "Low", false, "ContextOnly"),
+            ("dbghelp", "Sandbox", "Info", true, "ContextOnly"),
+            (
+                "ntqueryinformationprocess",
+                "AntiDebug",
+                "Medium",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "ntsetinformationthread",
+                "AntiDebug",
+                "Medium",
+                false,
+                "ContextOnly",
+            ),
+            ("ntqueryobject", "AntiDebug", "Medium", false, "ContextOnly"),
+            ("blockinput", "AntiDebug", "Low", false, "ContextOnly"),
+            ("getthreadcontext", "AntiDebug", "Low", false, "ContextOnly"),
+            (
+                "ntgetcontextthread",
+                "AntiDebug",
+                "Medium",
+                false,
+                "ContextOnly",
+            ),
+            ("ptrace", "AntiDebug", "Medium", true, "ContextOnly"),
+            (
+                "dbgbreakpoint",
+                "AntiAttach",
+                "Medium",
+                false,
+                "ContextOnly",
+            ),
+            (
+                "dbguiremotebreakin",
+                "AntiAttach",
+                "High",
+                false,
+                "ContextOnly",
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let actual_context: std::collections::BTreeSet<(&str, &str, &str, bool, &str)> =
+            STRING_SIGS
+                .iter()
+                .filter(|sig: &&StringSig| sig.corroboration == SignalCorroboration::ContextOnly)
+                .map(|sig: &StringSig| {
+                    (
+                        sig.needle,
+                        class_name(sig.class),
+                        confidence_name(sig.confidence),
+                        sig.word_bounded,
+                        role_name(sig.corroboration),
+                    )
+                })
+                .collect();
+        assert_eq!(actual_context.len(), 23);
+        assert_eq!(actual_context, expected_context);
+
+        let expected_corroborated: std::collections::BTreeSet<&str> = [
+            "wine_get_version",
+            "wine_get_unix_file_name",
+            "software\\wine",
+            "\\\\.\\winex11",
+            "isdebuggerpresent",
+            "checkremotedebuggerpresent",
+            "/proc/self/status",
+            "tracerpid",
+            "wudfisanydebuggerpresent",
+            "wudfiskerneldebuggerpresent",
+            "processdebugport",
+            "processdebugobject",
+            "processdebugflags",
+            "threadhidefromdebugger",
+        ]
+        .into_iter()
+        .collect();
+        let actual_corroborated: std::collections::BTreeSet<&str> = STRING_SIGS
+            .iter()
+            .filter(|sig: &&StringSig| sig.corroboration == SignalCorroboration::Corroborated)
+            .map(|sig: &StringSig| sig.needle)
+            .collect();
+        assert_eq!(actual_corroborated.len(), 14);
+        assert_eq!(actual_corroborated, expected_corroborated);
+        assert!(STRING_SIGS.iter().all(|sig: &StringSig| {
+            expected_context.iter().any(|entry| entry.0 == sig.needle)
+                || expected_corroborated.contains(sig.needle)
+                || sig.corroboration == SignalCorroboration::Standalone
+        }));
+    }
+
+    #[test]
     fn number_sigs_are_nonzero_and_unique() {
         let mut seen: Vec<u32> = NUMBER_SIGS.iter().map(|s: &NumberSig| s.value).collect();
         let total: usize = seen.len();
@@ -1410,6 +1606,27 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(total, seen.len(), "duplicate value in NUMBER_SIGS");
+    }
+
+    #[test]
+    fn number_signal_role_roster_is_closed() {
+        let expected: std::collections::BTreeSet<(u32, &str)> = [
+            (0x564d_5868, "Standalone"),
+            (0x0000_5658, "Corroborated"),
+            (0xc000_0008, "Corroborated"),
+            (0x4001_0006, "Standalone"),
+            (0x4001_000a, "Standalone"),
+            (0x8000_0001, "Corroborated"),
+            (0x000a_fe74, "Standalone"),
+            (0x4000_0000, "Corroborated"),
+        ]
+        .into_iter()
+        .collect();
+        let actual: std::collections::BTreeSet<(u32, &str)> = NUMBER_SIGS
+            .iter()
+            .map(|sig: &NumberSig| (sig.value, role_name(sig.corroboration)))
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]

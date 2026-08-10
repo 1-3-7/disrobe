@@ -58,6 +58,7 @@ iced-x86 = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 divan = { workspace = true }
+goblin = { workspace = true }
 
 [[bin]]
 name = "disrobe-core-mock-proc"
