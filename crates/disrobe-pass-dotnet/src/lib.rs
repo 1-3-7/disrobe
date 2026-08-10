@@ -32,6 +32,8 @@ pub mod protectors;
 pub mod provenance_header;
 pub mod r2r;
 pub(crate) mod range_switch_reverse;
+#[cfg(feature = "semantic-reach")]
+mod reach;
 pub mod records;
 pub mod signature;
 pub mod state_machine;
@@ -97,6 +99,11 @@ pub use provenance_header::{
     vbnet_decompiled_header,
 };
 pub use r2r::{R2rHeader, R2rReport};
+#[cfg(feature = "semantic-reach")]
+pub use reach::{
+    CaptureError, Captured, Observation, ObservationPhase, SemanticEntryPoint, SemanticSurface,
+    capture_observations, without_observations,
+};
 pub use signature::{
     MethodSig, TypeSig, TypeSigOrVoid, parse_field_sig, parse_local_sig, parse_method_sig,
 };

@@ -164,3 +164,122 @@ surface = "android.dex.file"
 outcome = "rejected"
 minimum_bytes = 0
 minimum_items = 0
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.pe.image"
+entry_point = "disrobe-pass-dotnet/src/pe.rs::parse"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.clr.header"
+entry_point = "disrobe-pass-dotnet/src/pe.rs::parse_clr_header"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.metadata.root"
+entry_point = "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.metadata.table-stream"
+entry_point = "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.metadata.strings-heap"
+entry_point = "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.metadata.user-strings-heap"
+entry_point = "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.metadata.compressed-uint"
+entry_point = "disrobe-pass-dotnet/src/metadata.rs::decompress_uint"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.cil.method-body"
+entry_point = "disrobe-pass-dotnet/src/cil.rs::parse_method_body"
+
+[[surface]]
+target = "cil_metadata"
+id = "dotnet.cil.instructions"
+entry_point = "disrobe-pass-dotnet/src/cil.rs::disassemble"
+
+[[seed]]
+target = "cil_metadata"
+source = "corpus/dotnet/cil/CilProbe.dll"
+offset = 0
+length = 4096
+sha256 = "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e"
+
+[[seed.obligation]]
+surface = "dotnet.pe.image"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.clr.header"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.metadata.root"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.metadata.table-stream"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.metadata.strings-heap"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.metadata.user-strings-heap"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.metadata.compressed-uint"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.cil.method-body"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed.obligation]]
+surface = "dotnet.cil.instructions"
+outcome = "accepted"
+minimum_bytes = 1
+minimum_items = 1
+
+[[seed]]
+target = "cil_metadata"
+source = "corpus/dotnet/cil/CilProbe.dll"
+offset = 0
+length = 2
+sha256 = "9b8db510ef42b8ed54a3712636fda55a4f8cfcd5493e20b74ab00cd4f3979f2d"
+
+[[seed.obligation]]
+surface = "dotnet.pe.image"
+outcome = "rejected"
+minimum_bytes = 0
+minimum_items = 0

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod cil_metadata;
 pub mod dex_jvm_classfile;
 pub mod python_bytecode;
 pub mod seed_reach;

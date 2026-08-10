@@ -8,16 +8,16 @@
     "coverage_guided_targets_in_tree": 11,
     "targets_declaring_entry_points": 8,
     "with_declared_coverage_guided_target": 119,
-    "with_replay_proven_semantic_reach": 9,
+    "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 619,
     "named_by_a_suite_recording_seed_reach": 126,
     "named_by_neither": 716
   },
   "seed_reach": {
-    "satisfied_obligations": 13,
-    "declared_obligations": 13,
-    "positive_witnesses": 9,
-    "expected_rejection_witnesses": 4
+    "satisfied_obligations": 23,
+    "declared_obligations": 23,
+    "positive_witnesses": 18,
+    "expected_rejection_witnesses": 5
   },
   "crates": [
     {
@@ -311,7 +311,7 @@
       "entry_points": 116,
       "parse_shaped": 29,
       "with_declared_coverage_guided_target": 9,
-      "with_replay_proven_semantic_reach": 0,
+      "with_replay_proven_semantic_reach": 9,
       "named_by_a_resilience_suite": 50,
       "named_by_a_suite_recording_seed_reach": 8,
       "named_by_neither": [

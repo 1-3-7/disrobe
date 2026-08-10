@@ -2,6 +2,8 @@ use disrobe_bytes::ByteReader;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 pub const DOS_MAGIC: u16 = 0x5A4D;
 pub const NT_SIGNATURE: u32 = 0x0000_4550;
@@ -160,6 +162,19 @@ impl PeImage {
 }
 
 pub fn parse(bytes: &[u8]) -> Result<PeImage> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken =
+        reach::enter(SemanticSurface::PeImage, SemanticEntryPoint::ParsePe);
+    let result: Result<(PeImage, usize)> = parse_with_position(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((image, consumed)) => observation.accepted(*consumed, image.sections.len()),
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(image, _consumed): (PeImage, usize)| image)
+}
+
+fn parse_with_position(bytes: &[u8]) -> Result<(PeImage, usize)> {
     let mut r: ByteReader<'_> = ByteReader::new(bytes);
     let dos_magic: u16 = r.read_u16_le()?;
     if dos_magic != DOS_MAGIC {
@@ -244,7 +259,7 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage> {
             characteristics: characteristics_s,
         });
     }
-    Ok(PeImage {
+    let image: PeImage = PeImage {
         bitness,
         machine,
         number_of_sections,
@@ -254,10 +269,26 @@ pub fn parse(bytes: &[u8]) -> Result<PeImage> {
         image_base,
         data_directories,
         sections,
-    })
+    };
+    Ok((image, r.position()))
 }
 
 pub fn parse_clr_header(image: &[u8], pe: &PeImage) -> Result<ClrHeader> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::ClrHeader,
+        SemanticEntryPoint::ParseClrHeader,
+    );
+    let result: Result<(ClrHeader, usize)> = parse_clr_header_with_position(image, pe);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((_header, consumed)) => observation.accepted(*consumed, 1),
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(header, _consumed): (ClrHeader, usize)| header)
+}
+
+fn parse_clr_header_with_position(image: &[u8], pe: &PeImage) -> Result<(ClrHeader, usize)> {
     let dir: DataDirectory = pe.clr_directory().ok_or(Error::NoClrHeader)?;
     if dir.rva == 0 {
         return Err(Error::NoClrHeader);
@@ -276,7 +307,7 @@ pub fn parse_clr_header(image: &[u8], pe: &PeImage) -> Result<ClrHeader> {
     let vtable_fixups: DataDirectory = read_data_dir(&mut r)?;
     let export_address_table_jumps: DataDirectory = read_data_dir(&mut r)?;
     let managed_native_header: DataDirectory = read_data_dir(&mut r)?;
-    Ok(ClrHeader {
+    let header: ClrHeader = ClrHeader {
         cb,
         major_runtime_version,
         minor_runtime_version,
@@ -289,7 +320,8 @@ pub fn parse_clr_header(image: &[u8], pe: &PeImage) -> Result<ClrHeader> {
         vtable_fixups,
         export_address_table_jumps,
         managed_native_header,
-    })
+    };
+    Ok((header, r.position()))
 }
 
 fn read_data_dir(r: &mut ByteReader<'_>) -> Result<DataDirectory> {

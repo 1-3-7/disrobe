@@ -127,6 +127,8 @@ pub enum ReplayTarget {
     PythonBytecode,
     #[serde(rename = "dex_jvm_classfile")]
     DexJvmClassfile,
+    #[serde(rename = "cil_metadata")]
+    CilMetadata,
 }
 
 impl fmt::Display for ReplayTarget {
@@ -134,6 +136,7 @@ impl fmt::Display for ReplayTarget {
         formatter.write_str(match self {
             Self::PythonBytecode => "python_bytecode",
             Self::DexJvmClassfile => "dex_jvm_classfile",
+            Self::CilMetadata => "cil_metadata",
         })
     }
 }
@@ -149,6 +152,7 @@ struct SurfaceSpec {
 enum ParserEntryPoint {
     Python(disrobe_py_marshal::SemanticEntryPoint),
     Jvm(disrobe_pass_jvm::SemanticEntryPoint),
+    Dotnet(disrobe_pass_dotnet::SemanticEntryPoint),
 }
 
 impl ParserEntryPoint {
@@ -157,7 +161,16 @@ impl ParserEntryPoint {
             (self, target),
             (Self::Python(_), ReplayTarget::PythonBytecode)
                 | (Self::Jvm(_), ReplayTarget::DexJvmClassfile)
+                | (Self::Dotnet(_), ReplayTarget::CilMetadata)
         )
+    }
+
+    const fn canonical_surface(self) -> &'static str {
+        match self {
+            Self::Python(entry_point) => python_entry_surface_id(entry_point),
+            Self::Jvm(entry_point) => jvm_entry_surface_id(entry_point),
+            Self::Dotnet(entry_point) => dotnet_entry_surface_id(entry_point),
+        }
     }
 }
 
@@ -169,6 +182,7 @@ impl Serialize for ParserEntryPoint {
         match self {
             Self::Python(entry_point) => entry_point.serialize(serializer),
             Self::Jvm(entry_point) => entry_point.serialize(serializer),
+            Self::Dotnet(entry_point) => entry_point.serialize(serializer),
         }
     }
 }
@@ -183,14 +197,19 @@ impl<'de> Deserialize<'de> for ParserEntryPoint {
             disrobe_py_marshal::SemanticEntryPoint::deserialize(value.as_str().into_deserializer());
         let jvm: Result<disrobe_pass_jvm::SemanticEntryPoint, serde::de::value::Error> =
             disrobe_pass_jvm::SemanticEntryPoint::deserialize(value.as_str().into_deserializer());
-        match (python, jvm) {
-            (Ok(entry_point), Err(_)) => Ok(Self::Python(entry_point)),
-            (Err(_), Ok(entry_point)) => Ok(Self::Jvm(entry_point)),
-            (Ok(_), Ok(_)) => Err(serde::de::Error::custom(format!(
-                "semantic entry point {value} is ambiguous"
-            ))),
-            (Err(_), Err(_)) => Err(serde::de::Error::custom(format!(
+        let dotnet: Result<disrobe_pass_dotnet::SemanticEntryPoint, serde::de::value::Error> =
+            disrobe_pass_dotnet::SemanticEntryPoint::deserialize(
+                value.as_str().into_deserializer(),
+            );
+        match (python, jvm, dotnet) {
+            (Ok(entry_point), Err(_), Err(_)) => Ok(Self::Python(entry_point)),
+            (Err(_), Ok(entry_point), Err(_)) => Ok(Self::Jvm(entry_point)),
+            (Err(_), Err(_), Ok(entry_point)) => Ok(Self::Dotnet(entry_point)),
+            (Err(_), Err(_), Err(_)) => Err(serde::de::Error::custom(format!(
                 "unknown semantic entry point {value}"
+            ))),
+            _ => Err(serde::de::Error::custom(format!(
+                "semantic entry point {value} is ambiguous"
             ))),
         }
     }
@@ -330,6 +349,13 @@ impl SeedContract {
                     surface.id, surface.target
                 )));
             }
+            if surface.id != surface.entry_point.canonical_surface() {
+                return Err(SeedReachError::Invalid(format!(
+                    "surface {} does not match the canonical route {}",
+                    surface.id,
+                    surface.entry_point.canonical_surface()
+                )));
+            }
         }
 
         let mut seed_keys: BTreeSet<(ReplayTarget, String)> = BTreeSet::new();
@@ -443,6 +469,7 @@ pub enum ObservedPhase {
 pub enum ReplayObservations<'a> {
     Python(&'a [disrobe_py_marshal::Observation]),
     Jvm(&'a [disrobe_pass_jvm::Observation]),
+    Dotnet(&'a [disrobe_pass_dotnet::Observation]),
 }
 
 pub trait ReplayTrace {
@@ -832,6 +859,7 @@ pub fn assemble_target_replay(
             )));
         }
         validate_complete_trace(target, &seed.sha256, &work.replay.trace)?;
+        validate_declared_trace(target, &seed.sha256, &work.replay.trace)?;
         let (expected_positive, expected_rejection): (Vec<Witness>, Vec<Witness>) =
             witnesses_for_seed(seed, &surfaces, &work.replay.trace)?;
         if work.positive_witnesses != expected_positive
@@ -924,6 +952,7 @@ where
     })?;
     let trace: Vec<TraceEvent> = snapshot_trace(replay.observations());
     validate_complete_trace(target, &seed.sha256, &trace)?;
+    validate_declared_trace(target, &seed.sha256, &trace)?;
     let (positive_witnesses, expected_rejection_witnesses): (Vec<Witness>, Vec<Witness>) =
         witnesses_for_seed(seed, surfaces, &trace)?;
     Ok(SeedReplayFragment {
@@ -1066,6 +1095,19 @@ fn snapshot_trace(observations: ReplayObservations<'_>) -> Vec<TraceEvent> {
                 items: observation.items(),
             })
             .collect(),
+        ReplayObservations::Dotnet(values) => values
+            .iter()
+            .map(
+                |observation: &disrobe_pass_dotnet::Observation| TraceEvent {
+                    span: observation.span(),
+                    surface: dotnet_surface_id(observation.surface()).to_owned(),
+                    entry_point: ParserEntryPoint::Dotnet(observation.entry_point()),
+                    phase: dotnet_phase(observation.phase()),
+                    bytes_consumed: observation.bytes_consumed(),
+                    items: observation.items(),
+                },
+            )
+            .collect(),
     }
 }
 
@@ -1077,6 +1119,17 @@ const fn python_surface_id(surface: disrobe_py_marshal::SemanticSurface) -> &'st
     }
 }
 
+const fn python_entry_surface_id(
+    entry_point: disrobe_py_marshal::SemanticEntryPoint,
+) -> &'static str {
+    match entry_point {
+        disrobe_py_marshal::SemanticEntryPoint::ReadPyc => "python.pyc.header",
+        disrobe_py_marshal::SemanticEntryPoint::Load => "python.marshal.root",
+        disrobe_py_marshal::SemanticEntryPoint::LoadWithRefTable
+        | disrobe_py_marshal::SemanticEntryPoint::DumpRefTable => "python.reference-table",
+    }
+}
+
 const fn jvm_surface_id(surface: disrobe_pass_jvm::SemanticSurface) -> &'static str {
     match surface {
         disrobe_pass_jvm::SemanticSurface::ClassFile => "jvm.class-file",
@@ -1085,6 +1138,53 @@ const fn jvm_surface_id(surface: disrobe_pass_jvm::SemanticSurface) -> &'static 
         disrobe_pass_jvm::SemanticSurface::DexHeader => "android.dex.header",
         disrobe_pass_jvm::SemanticSurface::DexFile => "android.dex.file",
         disrobe_pass_jvm::SemanticSurface::DexCodeItems => "android.dex.code-items",
+    }
+}
+
+const fn jvm_entry_surface_id(entry_point: disrobe_pass_jvm::SemanticEntryPoint) -> &'static str {
+    match entry_point {
+        disrobe_pass_jvm::SemanticEntryPoint::ParseClassFile => "jvm.class-file",
+        disrobe_pass_jvm::SemanticEntryPoint::ParseCodeAttribute => "jvm.code-attribute",
+        disrobe_pass_jvm::SemanticEntryPoint::Disassemble => "jvm.bytecode",
+        disrobe_pass_jvm::SemanticEntryPoint::ParseDexHeader => "android.dex.header",
+        disrobe_pass_jvm::SemanticEntryPoint::ParseDex => "android.dex.file",
+        disrobe_pass_jvm::SemanticEntryPoint::ParseDexCodeItems => "android.dex.code-items",
+    }
+}
+
+const fn dotnet_surface_id(surface: disrobe_pass_dotnet::SemanticSurface) -> &'static str {
+    match surface {
+        disrobe_pass_dotnet::SemanticSurface::PeImage => "dotnet.pe.image",
+        disrobe_pass_dotnet::SemanticSurface::ClrHeader => "dotnet.clr.header",
+        disrobe_pass_dotnet::SemanticSurface::MetadataRoot => "dotnet.metadata.root",
+        disrobe_pass_dotnet::SemanticSurface::TableStream => "dotnet.metadata.table-stream",
+        disrobe_pass_dotnet::SemanticSurface::StringsHeap => "dotnet.metadata.strings-heap",
+        disrobe_pass_dotnet::SemanticSurface::UserStringsHeap => {
+            "dotnet.metadata.user-strings-heap"
+        }
+        disrobe_pass_dotnet::SemanticSurface::CompressedUint => "dotnet.metadata.compressed-uint",
+        disrobe_pass_dotnet::SemanticSurface::MethodBody => "dotnet.cil.method-body",
+        disrobe_pass_dotnet::SemanticSurface::Instructions => "dotnet.cil.instructions",
+    }
+}
+
+const fn dotnet_entry_surface_id(
+    entry_point: disrobe_pass_dotnet::SemanticEntryPoint,
+) -> &'static str {
+    match entry_point {
+        disrobe_pass_dotnet::SemanticEntryPoint::ParsePe => "dotnet.pe.image",
+        disrobe_pass_dotnet::SemanticEntryPoint::ParseClrHeader => "dotnet.clr.header",
+        disrobe_pass_dotnet::SemanticEntryPoint::ParseMetadataRoot => "dotnet.metadata.root",
+        disrobe_pass_dotnet::SemanticEntryPoint::ParseTableStream => "dotnet.metadata.table-stream",
+        disrobe_pass_dotnet::SemanticEntryPoint::ReadStringsHeap => "dotnet.metadata.strings-heap",
+        disrobe_pass_dotnet::SemanticEntryPoint::ReadUserStringsHeap => {
+            "dotnet.metadata.user-strings-heap"
+        }
+        disrobe_pass_dotnet::SemanticEntryPoint::DecompressUint => {
+            "dotnet.metadata.compressed-uint"
+        }
+        disrobe_pass_dotnet::SemanticEntryPoint::ParseMethodBody => "dotnet.cil.method-body",
+        disrobe_pass_dotnet::SemanticEntryPoint::Disassemble => "dotnet.cil.instructions",
     }
 }
 
@@ -1102,6 +1202,24 @@ const fn jvm_phase(phase: disrobe_pass_jvm::ObservationPhase) -> ObservedPhase {
         disrobe_pass_jvm::ObservationPhase::Accepted => ObservedPhase::Accepted,
         disrobe_pass_jvm::ObservationPhase::Rejected => ObservedPhase::Rejected,
     }
+}
+
+const fn dotnet_phase(phase: disrobe_pass_dotnet::ObservationPhase) -> ObservedPhase {
+    match phase {
+        disrobe_pass_dotnet::ObservationPhase::Entered => ObservedPhase::Entered,
+        disrobe_pass_dotnet::ObservationPhase::Accepted => ObservedPhase::Accepted,
+        disrobe_pass_dotnet::ObservationPhase::Rejected => ObservedPhase::Rejected,
+    }
+}
+
+const fn permits_empty_acceptance(entry_point: ParserEntryPoint) -> bool {
+    matches!(
+        entry_point,
+        ParserEntryPoint::Dotnet(disrobe_pass_dotnet::SemanticEntryPoint::ReadStringsHeap)
+            | ParserEntryPoint::Dotnet(
+                disrobe_pass_dotnet::SemanticEntryPoint::ReadUserStringsHeap
+            )
+    )
 }
 
 fn validate_complete_trace(
@@ -1154,6 +1272,7 @@ fn validate_complete_trace(
                 *complete = true;
                 if observation.phase == ObservedPhase::Accepted
                     && (observation.bytes_consumed == 0 || observation.items == 0)
+                    && !permits_empty_acceptance(observation.entry_point)
                 {
                     return Err(SeedReachError::Invalid(format!(
                         "target {target} seed {seed} has a vacuous accepted observation"
@@ -1177,6 +1296,28 @@ fn validate_complete_trace(
         return Err(SeedReachError::Invalid(format!(
             "target {target} seed {seed} has an empty or incomplete trace"
         )));
+    }
+    Ok(())
+}
+
+fn validate_declared_trace(
+    target: ReplayTarget,
+    seed: &str,
+    trace: &[TraceEvent],
+) -> Result<(), SeedReachError> {
+    for observation in trace {
+        if !observation.entry_point.belongs_to(target) {
+            return Err(SeedReachError::Invalid(format!(
+                "target {target} seed {seed} has a foreign trace event for {}",
+                observation.surface
+            )));
+        }
+        if observation.surface != observation.entry_point.canonical_surface() {
+            return Err(SeedReachError::Invalid(format!(
+                "target {target} seed {seed} has an undeclared or mismatched trace event for {}",
+                observation.surface
+            )));
+        }
     }
     Ok(())
 }

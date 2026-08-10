@@ -1,12 +1,12 @@
 {
   "schema": 3,
   "generator": "cargo run --manifest-path fuzz/Cargo.toml --bin seed_replay",
-  "contract_sha256": "f5661313ec1bc6670ca2a9796af69bfd9b5545058572d3bb5ace58f344d8e160",
+  "contract_sha256": "fdb5ecf462b5adcc8c0ab159a6a03042e0b147a6563d6b4758c4e468e0af594b",
   "obligations": {
-    "satisfied": 13,
-    "declared": 13,
-    "positive_witnesses": 9,
-    "expected_rejection_witnesses": 4
+    "satisfied": 23,
+    "declared": 23,
+    "positive_witnesses": 18,
+    "expected_rejection_witnesses": 5
   },
   "targets": [
     {
@@ -2230,6 +2230,1117 @@
               "span": 2,
               "surface": "android.dex.file",
               "entry_point": "disrobe-pass-jvm/src/dex.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cil_metadata",
+      "satisfied_obligations": 10,
+      "declared_obligations": 10,
+      "positive_witnesses": [
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+          "surface": "dotnet.pe.image"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+          "surface": "dotnet.clr.header"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+          "surface": "dotnet.metadata.root"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+          "surface": "dotnet.metadata.table-stream"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap",
+          "surface": "dotnet.metadata.strings-heap"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings",
+          "surface": "dotnet.metadata.user-strings-heap"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+          "surface": "dotnet.metadata.compressed-uint"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+          "surface": "dotnet.cil.method-body"
+        },
+        {
+          "seed": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+          "surface": "dotnet.cil.instructions"
+        }
+      ],
+      "expected_rejection_witnesses": [
+        {
+          "seed": "9b8db510ef42b8ed54a3712636fda55a4f8cfcd5493e20b74ab00cd4f3979f2d",
+          "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+          "surface": "dotnet.pe.image"
+        }
+      ],
+      "seeds": [
+        {
+          "sha256": "e85090d905a4419a70804025f81c20b3ab7edc9f273c3aaa97ed914dc00c0b9e",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 496,
+              "items": 3
+            },
+            {
+              "span": 1,
+              "surface": "dotnet.clr.header",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "dotnet.clr.header",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+              "phase": "accepted",
+              "bytes_consumed": 72,
+              "items": 1
+            },
+            {
+              "span": 2,
+              "surface": "dotnet.metadata.root",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 2,
+              "surface": "dotnet.metadata.root",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+              "phase": "accepted",
+              "bytes_consumed": 108,
+              "items": 5
+            },
+            {
+              "span": 3,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 3,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "accepted",
+              "bytes_consumed": 68,
+              "items": 56
+            },
+            {
+              "span": 4,
+              "surface": "dotnet.metadata.strings-heap",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 4,
+              "surface": "dotnet.metadata.strings-heap",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_strings_heap",
+              "phase": "accepted",
+              "bytes_consumed": 512,
+              "items": 35
+            },
+            {
+              "span": 5,
+              "surface": "dotnet.metadata.user-strings-heap",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 6,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 7,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 7,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 8,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 8,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 5,
+              "surface": "dotnet.metadata.user-strings-heap",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::read_us_heap_strings",
+              "phase": "accepted",
+              "bytes_consumed": 70,
+              "items": 2
+            },
+            {
+              "span": 9,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 9,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "accepted",
+              "bytes_consumed": 68,
+              "items": 56
+            },
+            {
+              "span": 10,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 10,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "accepted",
+              "bytes_consumed": 68,
+              "items": 56
+            },
+            {
+              "span": 11,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 12,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 8,
+              "items": 4
+            },
+            {
+              "span": 11,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 13,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 14,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 15,
+              "items": 7
+            },
+            {
+              "span": 13,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 16,
+              "items": 7
+            },
+            {
+              "span": 15,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 16,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 79,
+              "items": 59
+            },
+            {
+              "span": 15,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 91,
+              "items": 59
+            },
+            {
+              "span": 17,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 18,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 41,
+              "items": 20
+            },
+            {
+              "span": 17,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 53,
+              "items": 20
+            },
+            {
+              "span": 19,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 20,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 14,
+              "items": 9
+            },
+            {
+              "span": 19,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 26,
+              "items": 9
+            },
+            {
+              "span": 21,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 22,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 15,
+              "items": 9
+            },
+            {
+              "span": 21,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 27,
+              "items": 9
+            },
+            {
+              "span": 23,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 24,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 8,
+              "items": 4
+            },
+            {
+              "span": 23,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 25,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 25,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "accepted",
+              "bytes_consumed": 496,
+              "items": 3
+            },
+            {
+              "span": 26,
+              "surface": "dotnet.clr.header",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 26,
+              "surface": "dotnet.clr.header",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse_clr_header",
+              "phase": "accepted",
+              "bytes_consumed": 72,
+              "items": 1
+            },
+            {
+              "span": 27,
+              "surface": "dotnet.metadata.root",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 27,
+              "surface": "dotnet.metadata.root",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_metadata_root",
+              "phase": "accepted",
+              "bytes_consumed": 108,
+              "items": 5
+            },
+            {
+              "span": 28,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 28,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "accepted",
+              "bytes_consumed": 68,
+              "items": 56
+            },
+            {
+              "span": 29,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 29,
+              "surface": "dotnet.metadata.table-stream",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::parse_table_stream",
+              "phase": "accepted",
+              "bytes_consumed": 68,
+              "items": 56
+            },
+            {
+              "span": 30,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 30,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 31,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 31,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 32,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 32,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 33,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 33,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 34,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 34,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 35,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 35,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 36,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 36,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 37,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 37,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 38,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 38,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 39,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 39,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 40,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 40,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 41,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 41,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 42,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 42,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 43,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 43,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 44,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 44,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 45,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 45,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 46,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 46,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 47,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 48,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 48,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 8,
+              "items": 4
+            },
+            {
+              "span": 47,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            },
+            {
+              "span": 49,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 50,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 50,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 15,
+              "items": 7
+            },
+            {
+              "span": 49,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 16,
+              "items": 7
+            },
+            {
+              "span": 51,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 52,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 52,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 79,
+              "items": 59
+            },
+            {
+              "span": 51,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 91,
+              "items": 59
+            },
+            {
+              "span": 53,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 54,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 54,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 41,
+              "items": 20
+            },
+            {
+              "span": 53,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 53,
+              "items": 20
+            },
+            {
+              "span": 55,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 55,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 56,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 56,
+              "surface": "dotnet.metadata.compressed-uint",
+              "entry_point": "disrobe-pass-dotnet/src/metadata.rs::decompress_uint",
+              "phase": "accepted",
+              "bytes_consumed": 1,
+              "items": 1
+            },
+            {
+              "span": 57,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 58,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 58,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 14,
+              "items": 9
+            },
+            {
+              "span": 57,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 26,
+              "items": 9
+            },
+            {
+              "span": 59,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 60,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 60,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 15,
+              "items": 9
+            },
+            {
+              "span": 59,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 27,
+              "items": 9
+            },
+            {
+              "span": 61,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 62,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 62,
+              "surface": "dotnet.cil.instructions",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::disassemble",
+              "phase": "accepted",
+              "bytes_consumed": 8,
+              "items": 4
+            },
+            {
+              "span": 61,
+              "surface": "dotnet.cil.method-body",
+              "entry_point": "disrobe-pass-dotnet/src/cil.rs::parse_method_body",
+              "phase": "accepted",
+              "bytes_consumed": 9,
+              "items": 4
+            }
+          ]
+        },
+        {
+          "sha256": "9b8db510ef42b8ed54a3712636fda55a4f8cfcd5493e20b74ab00cd4f3979f2d",
+          "trace": [
+            {
+              "span": 0,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 0,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "rejected",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
+              "phase": "entered",
+              "bytes_consumed": 0,
+              "items": 0
+            },
+            {
+              "span": 1,
+              "surface": "dotnet.pe.image",
+              "entry_point": "disrobe-pass-dotnet/src/pe.rs::parse",
               "phase": "rejected",
               "bytes_consumed": 0,
               "items": 0

@@ -14,21 +14,23 @@ fn mixed_target_process_replay_aggregates_reports_in_manifest_order()
     assert!(output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(report["schema"], 3usize);
-    assert_eq!(report["obligations"]["satisfied"], 13usize);
-    assert_eq!(report["obligations"]["declared"], 13usize);
-    assert_eq!(report["obligations"]["positive_witnesses"], 9usize);
+    assert_eq!(report["obligations"]["satisfied"], 23usize);
+    assert_eq!(report["obligations"]["declared"], 23usize);
+    assert_eq!(report["obligations"]["positive_witnesses"], 18usize);
     assert_eq!(
         report["obligations"]["expected_rejection_witnesses"],
-        4usize
+        5usize
     );
     let Some(targets): Option<&Vec<serde_json::Value>> = report["targets"].as_array() else {
         return Err("the process replay report has no target array".into());
     };
-    assert_eq!(targets.len(), 2usize);
+    assert_eq!(targets.len(), 3usize);
     assert_eq!(targets[0]["name"], "python_bytecode");
     assert_eq!(targets[0]["seeds"].as_array().map(Vec::len), Some(2usize));
     assert_eq!(targets[1]["name"], "dex_jvm_classfile");
     assert_eq!(targets[1]["seeds"].as_array().map(Vec::len), Some(4usize));
+    assert_eq!(targets[2]["name"], "cil_metadata");
+    assert_eq!(targets[2]["seeds"].as_array().map(Vec::len), Some(2usize));
 
     let contract_path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("seed_reach.toml");
     let contract: disrobe_fuzz::seed_reach::SeedContract =
@@ -37,7 +39,7 @@ fn mixed_target_process_replay_aggregates_reports_in_manifest_order()
         .args([
             "--worker",
             "--manifest-index",
-            "2",
+            "6",
             "--contract-sha256",
             contract.sha256(),
         ])
@@ -45,7 +47,7 @@ fn mixed_target_process_replay_aggregates_reports_in_manifest_order()
         .output()?;
     assert!(worker_output.status.success());
     let fragment: serde_json::Value = serde_json::from_slice(&worker_output.stdout)?;
-    assert_eq!(fragment["target"], "dex_jvm_classfile");
-    assert_eq!(fragment["manifest_index"], 2usize);
+    assert_eq!(fragment["target"], "cil_metadata");
+    assert_eq!(fragment["manifest_index"], 6usize);
     Ok(())
 }

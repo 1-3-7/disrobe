@@ -39,9 +39,14 @@ disrobe-llm-metadata = { workspace = true, optional = true }
 default = []
 chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
+semantic-reach = []
 
 [dev-dependencies]
 des = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 flate2 = { workspace = true }
+
+[[test]]
+name = "seed_reach"
+required-features = ["semantic-reach"]

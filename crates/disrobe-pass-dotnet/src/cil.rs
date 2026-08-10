@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::debug::{dbg_kv, dbg_line};
 use crate::error::{Error, Result};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OperandKind {
@@ -1030,6 +1032,26 @@ pub(crate) fn method_body_extent(bytes: &[u8]) -> Result<MethodBodyExtent> {
 }
 
 pub fn parse_method_body(bytes: &[u8]) -> Result<MethodBody> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::MethodBody,
+        SemanticEntryPoint::ParseMethodBody,
+    );
+    let result: Result<(MethodBody, usize)> = parse_method_body_with_extent(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((body, consumed)) => observation.accepted(
+            *consumed,
+            body.instructions
+                .len()
+                .saturating_add(body.exception_clauses.len()),
+        ),
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(body, _consumed): (MethodBody, usize)| body)
+}
+
+fn parse_method_body_with_extent(bytes: &[u8]) -> Result<(MethodBody, usize)> {
     let header: MethodHeader = parse_method_header(bytes)?;
     let extent: MethodBodyExtent = method_body_extent(bytes)?;
     let code_size: usize =
@@ -1061,14 +1083,15 @@ pub fn parse_method_body(bytes: &[u8]) -> Result<MethodBody> {
             exception_clauses.len()
         )
     });
-    Ok(MethodBody {
+    let body: MethodBody = MethodBody {
         max_stack: header.max_stack,
         code_size: header.code_size,
         local_var_sig_tok: header.local_var_sig_tok,
         init_locals: header.init_locals,
         instructions,
         exception_clauses,
-    })
+    };
+    Ok((body, extent.consumed_bytes))
 }
 
 fn exception_sections_end(bytes: &[u8], code_end: usize) -> Result<usize> {
@@ -1212,6 +1235,21 @@ fn parse_eh_clauses(
 }
 
 pub fn disassemble(code: &[u8]) -> Result<Vec<Instruction>> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::Instructions,
+        SemanticEntryPoint::Disassemble,
+    );
+    let result: Result<Vec<Instruction>> = disassemble_inner(code);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok(instructions) => observation.accepted(code.len(), instructions.len()),
+        Err(_) => observation.rejected(),
+    }
+    result
+}
+
+fn disassemble_inner(code: &[u8]) -> Result<Vec<Instruction>> {
     let mut out: Vec<Instruction> = Vec::with_capacity(code.len().min(MAX_CIL_INSTRUCTIONS));
     let mut pos: usize = 0;
     while pos < code.len() {

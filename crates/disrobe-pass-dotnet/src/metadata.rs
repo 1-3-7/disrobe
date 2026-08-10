@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::pe::{ClrHeader, PeImage};
+#[cfg(feature = "semantic-reach")]
+use crate::reach::{self, SemanticEntryPoint, SemanticSurface};
 
 pub const METADATA_SIGNATURE: u32 = 0x424A_5342;
 
@@ -94,6 +96,25 @@ impl RuntimeLabel {
 }
 
 pub fn parse_metadata_root(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Result<MetadataRoot> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::MetadataRoot,
+        SemanticEntryPoint::ParseMetadataRoot,
+    );
+    let result: Result<(MetadataRoot, usize)> = parse_metadata_root_with_position(image, pe, clr);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((root, consumed)) => observation.accepted(*consumed, root.streams.len()),
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(root, _consumed): (MetadataRoot, usize)| root)
+}
+
+fn parse_metadata_root_with_position(
+    image: &[u8],
+    pe: &PeImage,
+    clr: &ClrHeader,
+) -> Result<(MetadataRoot, usize)> {
     let slice: &[u8] = if clr.metadata.size == 0 {
         pe.slice_at_rva_to_end(image, clr.metadata.rva)?
     } else {
@@ -120,14 +141,15 @@ pub fn parse_metadata_root(image: &[u8], pe: &PeImage, clr: &ClrHeader) -> Resul
         let name: String = read_aligned_cstring(&mut r)?;
         streams.insert(name, StreamHeader { offset, size });
     }
-    Ok(MetadataRoot {
+    let root: MetadataRoot = MetadataRoot {
         signature,
         major,
         minor,
         version,
         flags: 0,
         streams,
-    })
+    };
+    Ok((root, r.position()))
 }
 
 #[must_use]
@@ -184,6 +206,35 @@ pub struct TableStream {
 }
 
 pub fn parse_table_stream(metadata_bytes: &[u8], header: StreamHeader) -> Result<TableStream> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::TableStream,
+        SemanticEntryPoint::ParseTableStream,
+    );
+    let result: Result<(TableStream, usize)> =
+        parse_table_stream_with_position(metadata_bytes, header);
+    #[cfg(feature = "semantic-reach")]
+    match &result {
+        Ok((stream, consumed)) => observation.accepted(
+            *consumed,
+            stream
+                .row_counts
+                .values()
+                .fold(0usize, |total: usize, count: &u32| {
+                    total.saturating_add(
+                        usize::try_from(*count).map_or(usize::MAX, |value: usize| value),
+                    )
+                }),
+        ),
+        Err(_) => observation.rejected(),
+    }
+    result.map(|(stream, _consumed): (TableStream, usize)| stream)
+}
+
+fn parse_table_stream_with_position(
+    metadata_bytes: &[u8],
+    header: StreamHeader,
+) -> Result<(TableStream, usize)> {
     let off: usize = header.offset as usize;
     let end: usize = off.saturating_add(header.size as usize);
     if end > metadata_bytes.len() {
@@ -208,22 +259,41 @@ pub fn parse_table_stream(metadata_bytes: &[u8], header: StreamHeader) -> Result
             row_counts.insert(i, count);
         }
     }
-    Ok(TableStream {
+    let stream: TableStream = TableStream {
         heap_sizes,
         valid,
         sorted,
         row_counts,
-    })
+    };
+    Ok((stream, r.position()))
 }
 
 #[must_use]
 pub fn read_us_heap_strings(metadata_bytes: &[u8], us_header: StreamHeader) -> Vec<String> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::UserStringsHeap,
+        SemanticEntryPoint::ReadUserStringsHeap,
+    );
+    let (strings, consumed): (Vec<String>, usize) =
+        read_us_heap_strings_with_position(metadata_bytes, us_header);
+    #[cfg(feature = "semantic-reach")]
+    observation.accepted(consumed, strings.len());
+    #[cfg(not(feature = "semantic-reach"))]
+    let _: usize = consumed;
+    strings
+}
+
+fn read_us_heap_strings_with_position(
+    metadata_bytes: &[u8],
+    us_header: StreamHeader,
+) -> (Vec<String>, usize) {
     let off: usize = us_header.offset as usize;
     let end: usize = off
         .saturating_add(us_header.size as usize)
         .min(metadata_bytes.len());
     if off >= end {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let slice: &[u8] = &metadata_bytes[off..end];
     let mut out: Vec<String> = Vec::new();
@@ -247,17 +317,35 @@ pub fn read_us_heap_strings(metadata_bytes: &[u8], us_header: StreamHeader) -> V
         out.push(String::from_utf16_lossy(&units));
         pos += blob_len;
     }
-    out
+    (out, pos.min(slice.len()))
 }
 
 #[must_use]
 pub fn read_strings_heap(metadata_bytes: &[u8], strings: StreamHeader) -> BTreeMap<u32, String> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::StringsHeap,
+        SemanticEntryPoint::ReadStringsHeap,
+    );
+    let (values, consumed): (BTreeMap<u32, String>, usize) =
+        read_strings_heap_with_position(metadata_bytes, strings);
+    #[cfg(feature = "semantic-reach")]
+    observation.accepted(consumed, values.len());
+    #[cfg(not(feature = "semantic-reach"))]
+    let _: usize = consumed;
+    values
+}
+
+fn read_strings_heap_with_position(
+    metadata_bytes: &[u8],
+    strings: StreamHeader,
+) -> (BTreeMap<u32, String>, usize) {
     let off: usize = strings.offset as usize;
     let end: usize = off
         .saturating_add(strings.size as usize)
         .min(metadata_bytes.len());
     if off >= end {
-        return BTreeMap::new();
+        return (BTreeMap::new(), 0);
     }
     let slice: &[u8] = &metadata_bytes[off..end];
     let mut out: BTreeMap<u32, String> = BTreeMap::new();
@@ -274,11 +362,26 @@ pub fn read_strings_heap(metadata_bytes: &[u8], strings: StreamHeader) -> BTreeM
         }
         cursor += 1;
     }
-    out
+    (out, cursor.min(slice.len()))
 }
 
 #[must_use]
 pub fn decompress_uint(bytes: &[u8]) -> Option<(u32, usize)> {
+    #[cfg(feature = "semantic-reach")]
+    let observation: reach::ObservationToken = reach::enter(
+        SemanticSurface::CompressedUint,
+        SemanticEntryPoint::DecompressUint,
+    );
+    let result: Option<(u32, usize)> = decompress_uint_inner(bytes);
+    #[cfg(feature = "semantic-reach")]
+    match result {
+        Some((_value, consumed)) => observation.accepted(consumed, 1),
+        None => observation.rejected(),
+    }
+    result
+}
+
+fn decompress_uint_inner(bytes: &[u8]) -> Option<(u32, usize)> {
     if bytes.is_empty() {
         return None;
     }
