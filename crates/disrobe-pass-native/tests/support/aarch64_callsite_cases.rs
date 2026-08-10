@@ -352,9 +352,9 @@ fn assert_fp_signature(
     rule: CallSiteReturnProof,
 ) {
     assert_eq!(function.returns_fp, Some(scalar));
-    assert_eq!(function.fp_params, vec![scalar]);
-    assert!(function.params.is_empty());
-    assert!(function.param_width_bits.is_empty());
+    assert_eq!(function.signature.parameter_types(), vec![scalar]);
+    assert!(function.signature.observed_integer_registers().is_empty());
+    assert!(function.signature.integer_width_bits().is_empty());
     let evidence: CallSiteSignatureProof = proof(function);
     assert_eq!(evidence.return_proof, rule);
     assert_eq!(evidence.attributed_sites, 1);
@@ -362,9 +362,12 @@ fn assert_fp_signature(
 
 fn assert_int_signature(function: &RecoveredFunction, width: u32, rule: CallSiteReturnProof) {
     assert_eq!(function.returns_fp, None);
-    assert!(function.fp_params.is_empty());
-    assert_eq!(function.params, vec![Reg::Rax]);
-    assert_eq!(function.param_width_bits, vec![width]);
+    assert!(function.signature.parameter_types().is_empty());
+    assert_eq!(
+        function.signature.observed_integer_registers(),
+        vec![Reg::Rax]
+    );
+    assert_eq!(function.signature.integer_width_bits(), vec![width]);
     let evidence: CallSiteSignatureProof = proof(function);
     assert_eq!(evidence.return_proof, rule);
     assert_eq!(evidence.attributed_sites, 1);
@@ -612,7 +615,10 @@ tail_caller:
     ]);
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "target");
-    assert_eq!(function.fp_params, vec![ScalarType::Float]);
+    assert_eq!(
+        function.signature.parameter_types(),
+        vec![ScalarType::Float]
+    );
     assert_eq!(proof(function).attributed_sites, 2);
 }
 
@@ -954,7 +960,7 @@ extended_caller:
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "target");
     assert_eq!(function.return_width_bits, 64);
-    assert_eq!(function.param_width_bits, vec![32]);
+    assert_eq!(function.signature.integer_width_bits(), vec![32]);
     assert_eq!(proof(function).return_proof, CallSiteReturnProof::Integer64);
 }
 
@@ -1017,7 +1023,10 @@ scalar_caller:
     ]);
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "target");
-    assert_eq!(function.fp_params, vec![ScalarType::Float]);
+    assert_eq!(
+        function.signature.parameter_types(),
+        vec![ScalarType::Float]
+    );
     assert_eq!(function.returns_fp, Some(ScalarType::Float));
 }
 
@@ -1253,9 +1262,15 @@ mixed_caller:
     let object: Vec<u8> = compile_asm_units(&[("callee", callee), ("caller", caller)]);
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "mixed_target");
-    assert_eq!(function.fp_params, vec![ScalarType::Float, ScalarType::Int]);
-    assert_eq!(function.params, vec![Reg::Rax]);
-    assert_eq!(function.param_width_bits, vec![32]);
+    assert_eq!(
+        function.signature.parameter_types(),
+        vec![ScalarType::Float, ScalarType::Int]
+    );
+    assert_eq!(
+        function.signature.observed_integer_registers(),
+        vec![Reg::Rax]
+    );
+    assert_eq!(function.signature.integer_width_bits(), vec![32]);
 }
 
 #[test]
@@ -1618,7 +1633,7 @@ mixed_width_caller:
     let object: Vec<u8> = compile_asm_units(&[("callee", RET_CALLEE_ASM), ("caller", caller)]);
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "target");
-    assert_eq!(function.param_width_bits, vec![64]);
+    assert_eq!(function.signature.integer_width_bits(), vec![64]);
     assert_eq!(function.return_width_bits, 64);
     assert_eq!(proof(function).return_proof, CallSiteReturnProof::Integer64);
 }
@@ -1832,7 +1847,10 @@ scalar_caller:
     ]);
     let program: RecoveredProgram = recover_aarch64_program(&object);
     let function: &RecoveredFunction = recovered(&program, "target");
-    assert_eq!(function.fp_params, vec![ScalarType::Float]);
+    assert_eq!(
+        function.signature.parameter_types(),
+        vec![ScalarType::Float]
+    );
     assert_eq!(function.returns_fp, Some(ScalarType::Float));
 }
 

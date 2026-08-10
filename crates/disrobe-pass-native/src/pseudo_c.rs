@@ -346,8 +346,10 @@ enum PackedOp {
     AndN(Xmm),
     ShlQ(u8),
     ShlDq(u8),
+    ShrDq8,
     CmpEqD(Xmm),
     ShufD { src: Xmm, imm: u8 },
+    UnpackLowQ(Xmm),
     FromGpr { src: RegRef },
 }
 
@@ -679,6 +681,27 @@ struct MemRef {
     index: Option<IndexOperand>,
     disp: i64,
     width: Width,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RipRelativeAddress {
+    target: u64,
+}
+
+impl RipRelativeAddress {
+    fn checked(instruction_end: u64, displacement: i32) -> Option<Self> {
+        let magnitude: u64 = u64::from(displacement.unsigned_abs());
+        let target: u64 = if displacement.is_negative() {
+            instruction_end.checked_sub(magnitude)?
+        } else {
+            instruction_end.checked_add(magnitude)?
+        };
+        Some(Self { target })
+    }
+
+    const fn target(self) -> u64 {
+        self.target
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1165,6 +1188,10 @@ enum Node {
     },
     Break,
     Continue,
+    BreakLoop(LoopId),
+    ContinueLoop(LoopId),
+    ResumeAt(OuterBodyResume),
+    OuterResume(OuterResumeTree),
     Return,
     Label(u32),
     Goto(u32),
@@ -1192,6 +1219,215 @@ pub enum ScalarType {
     Float,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterBinding {
+    Integer {
+        register: Reg,
+        width_bits: u32,
+    },
+    FloatingPoint {
+        register_index: u8,
+        scalar_type: ScalarType,
+    },
+    Vector {
+        register_index: u8,
+        width_bits: u32,
+    },
+    UnobservedMsX64 {
+        slot: u8,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredSignature {
+    abi: Abi,
+    parameter_bindings: Vec<ParameterBinding>,
+}
+
+impl RecoveredSignature {
+    pub fn from_bindings(abi: Abi, parameter_bindings: Vec<ParameterBinding>) -> Result<Self> {
+        validate_parameter_bindings(abi, &parameter_bindings)?;
+        Ok(Self {
+            abi,
+            parameter_bindings,
+        })
+    }
+
+    pub(crate) fn from_canonical_bindings(
+        abi: Abi,
+        parameter_bindings: Vec<ParameterBinding>,
+    ) -> Self {
+        Self {
+            abi,
+            parameter_bindings,
+        }
+    }
+
+    pub const fn abi(&self) -> Abi {
+        self.abi
+    }
+
+    pub fn parameter_bindings(&self) -> &[ParameterBinding] {
+        &self.parameter_bindings
+    }
+
+    pub fn observed_integer_registers(&self) -> Vec<Reg> {
+        self.parameter_bindings
+            .iter()
+            .filter_map(|binding: &ParameterBinding| match binding {
+                ParameterBinding::Integer { register, .. } => Some(*register),
+                ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::Vector { .. }
+                | ParameterBinding::UnobservedMsX64 { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn integer_width_bits(&self) -> Vec<u32> {
+        self.parameter_bindings
+            .iter()
+            .filter_map(|binding: &ParameterBinding| match binding {
+                ParameterBinding::Integer { width_bits, .. } => Some(*width_bits),
+                ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::Vector { .. }
+                | ParameterBinding::UnobservedMsX64 { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn parameter_types(&self) -> Vec<ScalarType> {
+        self.parameter_bindings
+            .iter()
+            .filter_map(|binding: &ParameterBinding| match binding {
+                ParameterBinding::Integer { .. } | ParameterBinding::UnobservedMsX64 { .. } => {
+                    Some(ScalarType::Int)
+                }
+                ParameterBinding::FloatingPoint { scalar_type, .. } => Some(*scalar_type),
+                ParameterBinding::Vector { .. } => None,
+            })
+            .collect()
+    }
+
+    pub fn callable_arity(&self) -> usize {
+        self.parameter_bindings.len()
+    }
+}
+
+fn validate_parameter_bindings(abi: Abi, bindings: &[ParameterBinding]) -> Result<()> {
+    if abi == Abi::MsX64 {
+        let integer_order: &[Reg] = abi.arg_order();
+        for (slot, binding) in bindings.iter().enumerate() {
+            let expected_slot: u8 = u8::try_from(slot)
+                .map_err(|_| Error::LlvmIr("parameter slot index overflow".to_owned()))?;
+            match binding {
+                ParameterBinding::Integer {
+                    register,
+                    width_bits,
+                } => {
+                    if *width_bits == 0 || integer_order.get(slot) != Some(register) {
+                        return Err(Error::LlvmIr(
+                            "microsoft x64 integer parameter binding is not canonical".to_owned(),
+                        ));
+                    }
+                }
+                ParameterBinding::FloatingPoint { register_index, .. } => {
+                    if *register_index != expected_slot || slot >= fp_arg_order(abi).len() {
+                        return Err(Error::LlvmIr(
+                            "microsoft x64 floating-point parameter binding is not canonical"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                ParameterBinding::Vector {
+                    register_index,
+                    width_bits,
+                } => {
+                    if *width_bits == 0
+                        || *register_index != expected_slot
+                        || slot >= integer_order.len()
+                    {
+                        return Err(Error::LlvmIr(
+                            "microsoft x64 vector parameter binding is not canonical".to_owned(),
+                        ));
+                    }
+                }
+                ParameterBinding::UnobservedMsX64 { slot } => {
+                    if *slot != expected_slot || usize::from(*slot) >= integer_order.len() {
+                        return Err(Error::LlvmIr(
+                            "microsoft x64 unobserved parameter slot is not canonical".to_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let integer_order: &[Reg] = abi.arg_order();
+    let mut stage: u8 = 0;
+    let mut prior_vector_register: Option<u8> = None;
+    let mut prior_integer: Option<usize> = None;
+    for binding in bindings {
+        match binding {
+            ParameterBinding::FloatingPoint { register_index, .. } => {
+                if stage != 0
+                    || usize::from(*register_index) >= fp_arg_order(abi).len()
+                    || prior_vector_register.is_some_and(|prior: u8| prior >= *register_index)
+                {
+                    return Err(Error::LlvmIr(
+                        "floating-point parameter bindings are not canonical".to_owned(),
+                    ));
+                }
+                prior_vector_register = Some(*register_index);
+            }
+            ParameterBinding::Integer {
+                register,
+                width_bits,
+            } => {
+                stage = stage.max(1);
+                let Some(position): Option<usize> = integer_order
+                    .iter()
+                    .position(|candidate: &Reg| candidate == register)
+                else {
+                    return Err(Error::LlvmIr(
+                        "integer parameter register is outside the ABI argument order".to_owned(),
+                    ));
+                };
+                if *width_bits == 0
+                    || stage > 1
+                    || prior_integer.is_some_and(|prior: usize| prior >= position)
+                {
+                    return Err(Error::LlvmIr(
+                        "integer parameter bindings are not canonical".to_owned(),
+                    ));
+                }
+                prior_integer = Some(position);
+            }
+            ParameterBinding::Vector {
+                register_index,
+                width_bits,
+            } => {
+                stage = 2;
+                if *width_bits == 0
+                    || usize::from(*register_index) >= fp_arg_order(abi).len()
+                    || prior_vector_register.is_some_and(|prior: u8| prior >= *register_index)
+                {
+                    return Err(Error::LlvmIr(
+                        "vector parameter bindings are not canonical".to_owned(),
+                    ));
+                }
+                prior_vector_register = Some(*register_index);
+            }
+            ParameterBinding::UnobservedMsX64 { .. } => {
+                return Err(Error::LlvmIr(
+                    "unobserved parameter slots are specific to microsoft x64".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SretReturn {
     pub field_widths: Vec<u32>,
@@ -1217,9 +1453,7 @@ pub struct LeafRecovery {
     pub source: String,
     pub rust_source: Option<String>,
     pub return_width_bits: u32,
-    pub param_width_bits: Vec<u32>,
-    pub params: Vec<Reg>,
-    pub fp_params: Vec<ScalarType>,
+    pub signature: RecoveredSignature,
     pub returns_fp: Option<ScalarType>,
     pub lifted_split_return: bool,
     pub lifted_loop: bool,
@@ -1239,7 +1473,34 @@ pub struct JumpTable {
 pub struct ResolvedCall {
     pub target: u64,
     pub name: Option<String>,
-    pub arg_count: usize,
+    pub signature: RecoveredSignature,
+}
+
+impl ResolvedCall {
+    pub fn from_integer_arity(
+        target: u64,
+        name: Option<String>,
+        abi: Abi,
+        arg_count: usize,
+    ) -> Result<Self> {
+        if arg_count > abi.arg_order().len() {
+            return Err(Error::LlvmIr(
+                "resolved call argument count exceeds the bounded ABI locations".to_owned(),
+            ));
+        }
+        let bindings: Vec<ParameterBinding> = abi.arg_order()[..arg_count]
+            .iter()
+            .map(|register: &Reg| ParameterBinding::Integer {
+                register: *register,
+                width_bits: 64,
+            })
+            .collect();
+        Ok(Self {
+            target,
+            name,
+            signature: RecoveredSignature::from_bindings(abi, bindings)?,
+        })
+    }
 }
 
 pub fn recover_leaf_function(machine_code: &[u8], base: u64) -> Result<LeafRecovery> {
@@ -1294,7 +1555,15 @@ pub fn recover_leaf_function_const_abi(
     abi: Abi,
     consts: &[FpConstant],
 ) -> Result<LeafRecovery> {
-    recover_leaf_function_calls_impl(machine_code, base, abi, consts, &[], &[])
+    recover_leaf_function_calls_impl(
+        machine_code,
+        base,
+        abi,
+        consts,
+        &[],
+        &[],
+        RipRelativeLeaPolicy::Allow,
+    )
 }
 
 pub fn recover_leaf_function_with_calls(
@@ -1303,7 +1572,15 @@ pub fn recover_leaf_function_with_calls(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
-    recover_leaf_function_calls_impl(machine_code, base, abi, &[], &[], calls)
+    recover_leaf_function_calls_impl(
+        machine_code,
+        base,
+        abi,
+        &[],
+        &[],
+        calls,
+        RipRelativeLeaPolicy::Allow,
+    )
 }
 
 pub fn recover_vectorized_reduction(
@@ -1327,12 +1604,30 @@ pub fn recover_leaf_function_in_object(
         return Ok(recovery);
     }
     let packed_consts: Vec<PackedConstant> = resolve_packed_constants(object, machine_code, base);
-    let straight_err: Error =
-        match recover_leaf_function_calls_impl(machine_code, base, abi, &[], &packed_consts, calls)
-        {
-            Ok(recovery) => return Ok(recovery),
-            Err(err) => err,
+    let rip_relative_lea_policy: RipRelativeLeaPolicy =
+        match disassemble(Arch::X86_64, base, machine_code) {
+            Ok(insns)
+                if detect_switch_dispatch(&insns).is_some()
+                    || detect_value_table_switch(&insns).is_some()
+                    || detect_value_table_dispatch_setup(&insns)
+                    || object_has_relocated_rip_relative_lea(object, base, &insns) =>
+            {
+                RipRelativeLeaPolicy::Refuse
+            }
+            _ => RipRelativeLeaPolicy::Allow,
         };
+    let straight_err: Error = match recover_leaf_function_calls_impl(
+        machine_code,
+        base,
+        abi,
+        &[],
+        &packed_consts,
+        calls,
+        rip_relative_lea_policy,
+    ) {
+        Ok(recovery) => return Ok(recovery),
+        Err(err) => err,
+    };
     match recover_switch_in_object(object, machine_code, base, abi, calls) {
         Ok(recovery) => return Ok(recovery),
         Err(switch_err) => {
@@ -1372,10 +1667,164 @@ pub fn recover_leaf_function_in_object(
     }
 }
 
+fn object_has_relocated_rip_relative_lea(object: &[u8], base: u64, insns: &[DisasmInsn]) -> bool {
+    use object::ObjectSection as _;
+
+    let liftable: Vec<&DisasmInsn> = insns
+        .iter()
+        .filter(|insn: &&DisasmInsn| lift_rip_relative_lea(insn).is_some())
+        .collect();
+    if liftable.is_empty() {
+        return false;
+    }
+    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
+        object::File::parse(object)
+    else {
+        return true;
+    };
+    let Ok(code_section): Result<object::Section<'_, '_>> =
+        unique_bound_text_section(&file, base, insns)
+    else {
+        return true;
+    };
+    liftable.iter().any(|insn: &&DisasmInsn| {
+        let Some(disp_field_va): Option<u64> = insn
+            .address
+            .checked_add(insn.bytes.len() as u64)
+            .and_then(|end: u64| end.checked_sub(4))
+        else {
+            return true;
+        };
+        let Some(disp_field_offset): Option<u64> =
+            disp_field_va.checked_sub(code_section.address())
+        else {
+            return true;
+        };
+        let Some(disp_field_end): Option<u64> = disp_field_offset.checked_add(4) else {
+            return true;
+        };
+        code_section
+            .relocations()
+            .any(|(offset, relocation): (u64, object::Relocation)| {
+                let Ok(span): Result<RelocationByteSpan> =
+                    relocation_byte_span(offset, &relocation)
+                else {
+                    return true;
+                };
+                span.overlaps(disp_field_offset, disp_field_end)
+            })
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RelocationByteSpan {
+    start: u64,
+    end: u64,
+}
+
+impl RelocationByteSpan {
+    fn overlaps(self, start: u64, end: u64) -> bool {
+        self.start < end && start < self.end
+    }
+
+    fn exactly(self, start: u64, end: u64) -> bool {
+        self.start == start && self.end == end
+    }
+}
+
+fn relocation_byte_span(
+    offset: u64,
+    relocation: &object::Relocation,
+) -> Result<RelocationByteSpan> {
+    let bits: u64 = u64::from(relocation.size());
+    let bytes: u64 = bits
+        .checked_add(7)
+        .and_then(|rounded: u64| rounded.checked_div(8))
+        .filter(|width: &u64| *width != 0)
+        .ok_or_else(|| Error::LlvmIr("relocation width is not bounded".to_owned()))?;
+    let end: u64 = offset
+        .checked_add(bytes)
+        .ok_or_else(|| Error::LlvmIr("relocation byte extent overflow".to_owned()))?;
+    Ok(RelocationByteSpan { start: offset, end })
+}
+
+fn unique_bound_text_section<'data, 'file>(
+    file: &'file object::File<'data>,
+    base: u64,
+    insns: &[DisasmInsn],
+) -> Result<object::Section<'data, 'file>> {
+    use object::{Object as _, ObjectSection as _};
+
+    let mut cursor: u64 = base;
+    for insn in insns {
+        if insn.address != cursor {
+            return Err(Error::LlvmIr(
+                "object instruction span is not contiguous".to_owned(),
+            ));
+        }
+        cursor = cursor
+            .checked_add(insn.bytes.len() as u64)
+            .ok_or_else(|| Error::LlvmIr("object instruction span overflow".to_owned()))?;
+    }
+    if cursor == base {
+        return Err(Error::LlvmIr("object instruction span is empty".to_owned()));
+    }
+    let mut code_section: Option<object::Section<'data, 'file>> = None;
+    for section in file.sections() {
+        if section.kind() != object::SectionKind::Text {
+            continue;
+        }
+        let start: u64 = section.address();
+        let end: u64 = start
+            .checked_add(section.size())
+            .ok_or_else(|| Error::LlvmIr("object text section extent overflow".to_owned()))?;
+        if start > base || cursor > end {
+            continue;
+        }
+        if code_section.is_some() {
+            return Err(Error::LlvmIr(
+                "object instruction span has no unique text section".to_owned(),
+            ));
+        }
+        code_section = Some(section);
+    }
+    let Some(code_section): Option<object::Section<'data, 'file>> = code_section else {
+        return Err(Error::LlvmIr(
+            "object instruction span has no unique text section".to_owned(),
+        ));
+    };
+    let code_data: &[u8] = code_section.data().map_err(|error: object::Error| {
+        Error::LlvmIr(format!("object text unavailable: {error}"))
+    })?;
+    for insn in insns {
+        let offset: usize = usize::try_from(
+            insn.address
+                .checked_sub(code_section.address())
+                .ok_or_else(|| Error::LlvmIr("object instruction precedes text".to_owned()))?,
+        )
+        .map_err(|_| Error::LlvmIr("object instruction offset overflow".to_owned()))?;
+        let end: usize = offset
+            .checked_add(insn.bytes.len())
+            .ok_or_else(|| Error::LlvmIr("object instruction extent overflow".to_owned()))?;
+        if code_data.get(offset..end) != Some(insn.bytes.as_slice()) {
+            return Err(Error::LlvmIr(
+                "object instruction bytes do not match text".to_owned(),
+            ));
+        }
+    }
+    Ok(code_section)
+}
+
 pub fn callee_int_arity(callee_code: &[u8], callee_base: u64, abi: Abi) -> Option<usize> {
     recover_leaf_function_abi(callee_code, callee_base, abi)
         .ok()
-        .map(|recovery: LeafRecovery| recovery.params.len())
+        .and_then(|recovery: LeafRecovery| integer_call_arity(&recovery))
+}
+
+fn integer_call_arity(recovery: &LeafRecovery) -> Option<usize> {
+    resolved_call_integer_registers(&recovery.signature)
+        .ok()
+        .map(|registers: Vec<Reg>| registers.len())
 }
 
 const CALL_RESOLUTION_DEPTH: usize = 16;
@@ -1396,10 +1845,24 @@ fn resolved_int_arity(
     abi: Abi,
     depth: usize,
 ) -> Option<usize> {
+    let signature: RecoveredSignature =
+        resolved_signature(object, callee_code, callee_base, abi, depth)?;
+    resolved_call_integer_registers(&signature)
+        .ok()
+        .map(|registers: Vec<Reg>| registers.len())
+}
+
+fn resolved_signature(
+    object: &[u8],
+    callee_code: &[u8],
+    callee_base: u64,
+    abi: Abi,
+    depth: usize,
+) -> Option<RecoveredSignature> {
     let probe: LeafRecovery =
         recover_leaf_function_in_object(object, callee_code, callee_base, abi, &[]).ok()?;
     if probe.call_targets.is_empty() || depth == 0 {
-        return Some(probe.params.len());
+        return Some(probe.signature);
     }
     let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
     let mut seen: Vec<u64> = Vec::new();
@@ -1413,20 +1876,20 @@ fn resolved_int_arity(
         else {
             continue;
         };
-        let Some(arg_count): Option<usize> =
-            resolved_int_arity(object, &nested_code, nested_base, abi, depth - 1)
+        let Some(signature): Option<RecoveredSignature> =
+            resolved_signature(object, &nested_code, nested_base, abi, depth - 1)
         else {
             continue;
         };
         resolved.push(ResolvedCall {
             target,
             name: None,
-            arg_count,
+            signature,
         });
     }
     recover_leaf_function_in_object(object, callee_code, callee_base, abi, &resolved)
         .ok()
-        .map(|recovery: LeafRecovery| recovery.params.len())
+        .map(|recovery: LeafRecovery| recovery.signature)
 }
 
 fn callee_code_by_target(object: &[u8], target: u64) -> Option<(Vec<u8>, u64)> {
@@ -1501,9 +1964,7 @@ pub struct RecoveredFunction {
     pub source: String,
     pub rust_source: Option<String>,
     pub return_width_bits: u32,
-    pub param_width_bits: Vec<u32>,
-    pub params: Vec<Reg>,
-    pub fp_params: Vec<ScalarType>,
+    pub signature: RecoveredSignature,
     pub returns_fp: Option<ScalarType>,
     pub resolved_calls: Vec<u64>,
     pub call_site_signature: Option<CallSiteSignatureProof>,
@@ -1570,15 +2031,19 @@ fn recover_program_function(
         let Some(callee): Option<&&ProgramFunction> = by_addr.get(&sibling_addr) else {
             continue;
         };
-        let Some(arg_count): Option<usize> =
-            resolved_int_arity_in_object(object, &callee.code, callee.address, abi)
-        else {
+        let Some(signature): Option<RecoveredSignature> = resolved_signature(
+            object,
+            &callee.code,
+            callee.address,
+            abi,
+            CALL_RESOLUTION_DEPTH,
+        ) else {
             continue;
         };
         resolved.push(ResolvedCall {
             target,
             name: Some(callee.name.clone()),
-            arg_count,
+            signature,
         });
     }
     let rec: LeafRecovery =
@@ -1599,9 +2064,7 @@ fn recover_program_function(
         source,
         rust_source,
         return_width_bits: rec.return_width_bits,
-        param_width_bits: rec.param_width_bits,
-        params: rec.params,
-        fp_params: rec.fp_params,
+        signature: rec.signature,
         returns_fp: rec.returns_fp,
         resolved_calls: resolved.iter().map(|c: &ResolvedCall| c.target).collect(),
         call_site_signature: rec.call_site_signature,
@@ -1701,12 +2164,19 @@ struct LeafItems {
     return_width: Width,
 }
 
+#[derive(Clone, Copy)]
+enum RipRelativeLeaPolicy {
+    Allow,
+    Refuse,
+}
+
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
+    rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafItems> {
     require_x86_abi(abi)?;
     if machine_code.is_empty() {
@@ -1774,8 +2244,13 @@ fn build_leaf_items(
             continue;
         }
         if packed_mode
-            && let Some(stmt) =
-                lift_packed(&insn.mnemonic, &insn.operands, insn.address, packed_consts)?
+            && let Some(stmt) = lift_packed(
+                &insn.mnemonic,
+                &insn.operands,
+                &insn.bytes,
+                insn.address,
+                packed_consts,
+            )?
         {
             if let Stmt::PackedToGpr { dest, .. } = &stmt
                 && dest.reg == Reg::Rax
@@ -2022,6 +2497,20 @@ fn build_leaf_items(
             });
             continue;
         }
+        if matches!(rip_relative_lea_policy, RipRelativeLeaPolicy::Allow)
+            && let Some(stmt) = lift_rip_relative_lea(insn)
+        {
+            if let Stmt::Assign { dest, .. } = &stmt
+                && dest.reg == Reg::Rax
+            {
+                return_width = dest.width;
+            }
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(stmt),
+            });
+            continue;
+        }
         let stmt: Stmt = lift_one(&insn.mnemonic, &insn.operands).ok_or_else(|| {
             Error::LlvmIr(format!(
                 "unsupported leaf instruction `{} {}` at {:#x}",
@@ -2159,17 +2648,25 @@ fn recover_leaf_function_calls_impl(
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
     calls: &[ResolvedCall],
+    rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
     let LeafItems {
         insns,
         items,
         mut return_width,
-    } = build_leaf_items(machine_code, base, abi, consts, packed_consts)?;
+    } = build_leaf_items(
+        machine_code,
+        base,
+        abi,
+        consts,
+        packed_consts,
+        rip_relative_lea_policy,
+    )?;
     let mut structured: Structured = structure_items(&items)?;
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
             calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
-        annotate_calls_block(&mut structured.body, &call_map, abi);
+        annotate_calls_block(&mut structured.body, &call_map, abi)?;
     }
     let fp_return: Option<FpWidth> = scalar_fp_return_channel(&structured.body)?;
     let mut call_targets: Vec<u64> = Vec::new();
@@ -2181,9 +2678,9 @@ fn recover_leaf_function_calls_impl(
         .is_none()
         .then(|| detect_sret(&structured.body, abi))
         .flatten();
-    let mut params: Vec<Reg> = infer_params(&structured.body, abi);
+    let mut params: Vec<Reg> = infer_params(&structured.body, abi)?;
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
-    validate_ms_x64_shared_argument_index(abi, &params, &fp_args)?;
+    validate_ms_x64_shared_argument_index(abi, &params, &fp_args, sret_plan.is_some())?;
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
     }
@@ -2197,7 +2694,6 @@ fn recover_leaf_function_calls_impl(
         exact_integer_types: false,
         abi,
     };
-    let fp_params: Vec<ScalarType> = signature.ordered_param_types();
     let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns, abi))?;
     let mut aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame_plan.as_ref());
@@ -2211,7 +2707,7 @@ fn recover_leaf_function_calls_impl(
         frame_plan.as_ref(),
         sret_plan.as_ref(),
         &aggregate_plan,
-    );
+    )?;
     let rust_source: Option<String> = emit_rust(
         &structured.body,
         &signature,
@@ -2231,9 +2727,10 @@ fn recover_leaf_function_calls_impl(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params,
+        signature: RecoveredSignature::from_canonical_bindings(
+            signature.abi,
+            signature.parameter_bindings(),
+        ),
         returns_fp,
         lifted_split_return: structured.lifted_split_return,
         lifted_loop: structured.lifted_loop,
@@ -2290,44 +2787,119 @@ struct FnSignature {
     abi: Abi,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarParam {
+    Integer { reg: Reg, width: Width },
+    FloatingPoint { xmm: Xmm, width: FpWidth },
+    UnobservedMsX64 { slot: u8 },
+}
+
+impl ScalarParam {
+    const fn parameter_binding(self) -> ParameterBinding {
+        match self {
+            Self::Integer { reg, width } => ParameterBinding::Integer {
+                register: reg,
+                width_bits: width.bits(),
+            },
+            Self::FloatingPoint { xmm, width } => ParameterBinding::FloatingPoint {
+                register_index: xmm.index(),
+                scalar_type: scalar_of_fp(width),
+            },
+            Self::UnobservedMsX64 { slot } => ParameterBinding::UnobservedMsX64 { slot },
+        }
+    }
+}
+
 impl FnSignature {
-    fn ordered_param_types(&self) -> Vec<ScalarType> {
+    fn parameter_bindings(&self) -> Vec<ParameterBinding> {
+        let mut bindings: Vec<ParameterBinding> = self
+            .ordered_params()
+            .into_iter()
+            .map(ScalarParam::parameter_binding)
+            .collect();
+        bindings.extend(self.vec.iter().map(
+            |(register_index, arrangement): &(u8, VecArrangement)| ParameterBinding::Vector {
+                register_index: *register_index,
+                width_bits: arrangement.total_bits(),
+            },
+        ));
+        bindings
+    }
+
+    fn ordered_params(&self) -> Vec<ScalarParam> {
         match self.abi {
-            Abi::MsX64 => self.ms_x64_ordered_param_types(),
+            Abi::MsX64 => self.ms_x64_ordered_params(),
             Abi::SysV | Abi::Aapcs64 => {
-                let mut out: Vec<ScalarType> = self
+                let mut out: Vec<ScalarParam> = self
                     .fp
                     .iter()
-                    .map(|(_, w): &(Xmm, FpWidth)| scalar_of_fp(*w))
+                    .map(|(xmm, width): &(Xmm, FpWidth)| ScalarParam::FloatingPoint {
+                        xmm: *xmm,
+                        width: *width,
+                    })
                     .collect();
-                out.extend(std::iter::repeat_n(ScalarType::Int, self.int.len()));
+                out.extend(self.int.iter().map(|(reg, width): &(Reg, Width)| {
+                    ScalarParam::Integer {
+                        reg: *reg,
+                        width: *width,
+                    }
+                }));
                 out
             }
         }
     }
 
-    fn ms_x64_ordered_param_types(&self) -> Vec<ScalarType> {
+    fn ms_x64_ordered_params(&self) -> Vec<ScalarParam> {
         let int_order: &'static [Reg] = Abi::MsX64.arg_order();
         let fp_order: &'static [Xmm] = fp_arg_order(Abi::MsX64);
-        let mut slotted: Vec<(u8, ScalarType)> = Vec::with_capacity(self.int.len() + self.fp.len());
-        for (reg, _) in &self.int {
-            let slot: u8 = int_order
-                .iter()
-                .position(|r: &Reg| r == reg)
-                .map_or(u8::MAX, |i: usize| i as u8);
-            slotted.push((slot, ScalarType::Int));
+        let mut slotted: Vec<(u8, ScalarParam)> =
+            Vec::with_capacity(self.int.len() + self.fp.len());
+        for (reg, width) in &self.int {
+            let Some(slot): Option<usize> = int_order.iter().position(|r: &Reg| r == reg) else {
+                continue;
+            };
+            slotted.push((
+                slot as u8,
+                ScalarParam::Integer {
+                    reg: *reg,
+                    width: *width,
+                },
+            ));
         }
         for (xmm, width) in &self.fp {
-            let slot: u8 = fp_order
-                .iter()
-                .position(|x: &Xmm| x == xmm)
-                .map_or(u8::MAX, |i: usize| i as u8);
-            slotted.push((slot, scalar_of_fp(*width)));
+            let Some(slot): Option<usize> = fp_order.iter().position(|x: &Xmm| x == xmm) else {
+                continue;
+            };
+            slotted.push((
+                slot as u8,
+                ScalarParam::FloatingPoint {
+                    xmm: *xmm,
+                    width: *width,
+                },
+            ));
         }
-        slotted.sort_by_key(|(slot, _): &(u8, ScalarType)| *slot);
-        slotted
-            .into_iter()
-            .map(|(_, ty): (u8, ScalarType)| ty)
+        slotted.sort_by_key(|(slot, _): &(u8, ScalarParam)| *slot);
+        if slotted
+            .first()
+            .is_none_or(|(slot, _): &(u8, ScalarParam)| *slot != 0)
+        {
+            return slotted
+                .into_iter()
+                .map(|(_, param): (u8, ScalarParam)| param)
+                .collect();
+        }
+        let highest: u8 = slotted
+            .last()
+            .map_or(0, |(slot, _): &(u8, ScalarParam)| *slot);
+        let mut observed: std::collections::BTreeMap<u8, ScalarParam> =
+            slotted.into_iter().collect();
+        (0..=highest)
+            .map(|slot: u8| {
+                observed.remove(&slot).map_or(
+                    ScalarParam::UnobservedMsX64 { slot },
+                    |param: ScalarParam| param,
+                )
+            })
             .collect()
     }
 }
@@ -2342,6 +2914,7 @@ fn validate_ms_x64_shared_argument_index(
     abi: Abi,
     params: &[Reg],
     fp_args: &[(Xmm, FpWidth)],
+    hidden_sret: bool,
 ) -> Result<()> {
     if abi != Abi::MsX64 {
         return Ok(());
@@ -2379,7 +2952,7 @@ fn validate_ms_x64_shared_argument_index(
         .iter()
         .rposition(Option::is_some)
         .map_or(0, |i: usize| i + 1);
-    if slot_kind[..highest].iter().any(Option::is_none) {
+    if slot_kind[..highest].iter().any(Option::is_none) && (slot_kind[0].is_none() || hidden_sret) {
         return Err(Error::LlvmIr(
             "microsoft x64 argument positions read before a write are not contiguous from position 0; a gap between the lowest and highest observed register cannot be represented as a single callable prototype".to_owned(),
         ));
@@ -2460,7 +3033,7 @@ fn recover_call_site_identity(
     };
     let signature: FnSignature = FnSignature {
         fp,
-        int: int.clone(),
+        int,
         vec: Vec::new(),
         ret,
         exact_integer_types: true,
@@ -2468,18 +3041,8 @@ fn recover_call_site_identity(
     };
     let body: Block = vec![Node::Return];
     let aggregates: AggregatePlan = AggregatePlan::default();
-    let source: String = emit_c(&body, &signature, None, None, &aggregates);
+    let source: String = emit_c(&body, &signature, None, None, &aggregates)?;
     let rust_source: Option<String> = emit_rust(&body, &signature, None, None, &aggregates);
-    let params: Vec<Reg> = int.iter().map(|(reg, _): &(Reg, Width)| *reg).collect();
-    let param_width_bits: Vec<u32> = int
-        .iter()
-        .map(|(_, width): &(Reg, Width)| width.bits())
-        .collect();
-    let fp_params: Vec<ScalarType> = if signature.fp.is_empty() {
-        Vec::new()
-    } else {
-        signature.ordered_param_types()
-    };
     let (return_width_bits, returns_fp): (u32, Option<ScalarType>) =
         match recovered_signature.return_type {
             CallSiteScalar::Integer(width) => (width.bits(), None),
@@ -2490,9 +3053,10 @@ fn recover_call_site_identity(
         source,
         rust_source,
         return_width_bits,
-        param_width_bits,
-        params,
-        fp_params,
+        signature: RecoveredSignature::from_canonical_bindings(
+            signature.abi,
+            signature.parameter_bindings(),
+        ),
         returns_fp,
         lifted_split_return: false,
         lifted_loop: false,
@@ -2501,6 +3065,13 @@ fn recover_call_site_identity(
         sret: None,
         call_site_signature: Some(recovered_signature.proof.clone()),
     })
+}
+
+fn dispatch_entry_count(bound: u64) -> Result<usize> {
+    usize::try_from(bound)
+        .ok()
+        .and_then(|value: usize| value.checked_add(1))
+        .ok_or_else(|| Error::LlvmIr("jump-table bound overflow".to_owned()))
 }
 
 pub fn recover_leaf_function_switch_abi(
@@ -2542,16 +3113,14 @@ pub fn recover_leaf_function_switch_const_abi(
         .find(|t: &&JumpTable| t.table_va == dispatch.table_va)
     else {
         return Err(Error::LlvmIr(format!(
-            "no resolved jump table supplied for base {:#x}",
+            "no resolved jump-table supplied for base {:#x}",
             dispatch.table_va
         )));
     };
-    let expected: usize = (dispatch.bound as usize)
-        .checked_add(1)
-        .ok_or_else(|| Error::LlvmIr("jump-table bound overflow".to_owned()))?;
+    let expected: usize = dispatch_entry_count(dispatch.bound)?;
     if table.entries.len() != expected {
         return Err(Error::LlvmIr(format!(
-            "jump table has {} entries but bound implies {expected} cases",
+            "jump-table has {} entries but bound implies {expected} cases",
             table.entries.len()
         )));
     }
@@ -2734,14 +3303,14 @@ fn build_switch_recovery(
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
             calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
-        annotate_calls_block(&mut body, &call_map, abi);
+        annotate_calls_block(&mut body, &call_map, abi)?;
     }
 
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
-    let params: Vec<Reg> = infer_params(&body, abi);
+    let params: Vec<Reg> = infer_params(&body, abi)?;
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body, abi)?;
-    validate_ms_x64_shared_argument_index(abi, &params, &fp_args)?;
+    validate_ms_x64_shared_argument_index(abi, &params, &fp_args, false)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
         int: wide_int_signature(&params),
@@ -2762,7 +3331,7 @@ fn build_switch_recovery(
         frame_plan.as_ref(),
         None,
         &aggregate_plan,
-    );
+    )?;
     let rust_source: Option<String> = emit_rust(
         &body,
         &signature,
@@ -2774,9 +3343,10 @@ fn build_switch_recovery(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params: signature.ordered_param_types(),
+        signature: RecoveredSignature::from_canonical_bindings(
+            signature.abi,
+            signature.parameter_bindings(),
+        ),
         returns_fp,
         lifted_split_return: false,
         lifted_loop: false,
@@ -2881,18 +3451,10 @@ fn verify_shared_table_lea(
     first_lea_idx: usize,
     second_lea_idx: usize,
 ) -> Result<()> {
-    use object::{Object as _, ObjectSection as _};
-
     let file: object::File<'_> = object::File::parse(object)
         .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for table leas: {e}")))?;
-    let code_section: object::Section<'_, '_> = file
-        .sections()
-        .find(|section: &object::Section<'_, '_>| {
-            let start: u64 = section.address();
-            let end: u64 = start.saturating_add(section.size());
-            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
-        })
-        .ok_or_else(|| Error::LlvmIr("dispatch code section not located".to_owned()))?;
+    let code_section: object::Section<'_, '_> = unique_bound_text_section(&file, base, insns)
+        .map_err(|_| Error::LlvmIr("dispatch code section not located".to_owned()))?;
     let first: (object::SectionIndex, u64) =
         lea_table_location(&file, &code_section, insns, first_lea_idx)?;
     let second: (object::SectionIndex, u64) =
@@ -2977,7 +3539,8 @@ fn build_value_switch_recovery(
         default,
     }];
     let return_width: Width = Width::W64;
-    let params: Vec<Reg> = infer_params(&body, abi);
+    let params: Vec<Reg> = infer_params(&body, abi)?;
+    validate_ms_x64_shared_argument_index(abi, &params, &[], false)?;
     let signature: FnSignature = FnSignature {
         fp: Vec::new(),
         int: wide_int_signature(&params),
@@ -2987,15 +3550,16 @@ fn build_value_switch_recovery(
         abi,
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
-    let source: String = emit_c(&body, &signature, None, None, &aggregate_plan);
+    let source: String = emit_c(&body, &signature, None, None, &aggregate_plan)?;
     let rust_source: Option<String> = emit_rust(&body, &signature, None, None, &aggregate_plan);
     Ok(LeafRecovery {
         source,
         rust_source,
         return_width_bits: return_width.bits(),
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params: signature.ordered_param_types(),
+        signature: RecoveredSignature::from_canonical_bindings(
+            signature.abi,
+            signature.parameter_bindings(),
+        ),
         returns_fp: None,
         lifted_split_return: false,
         lifted_loop: false,
@@ -3021,7 +3585,7 @@ fn object_value_table(
     use object::{Object as _, ObjectSection as _};
 
     let file: object::File<'_> = object::File::parse(object)
-        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for value table: {e}")))?;
+        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for value-table: {e}")))?;
     let width: u64 = u64::from(switch.entry_width);
     let lea: &DisasmInsn = insns
         .get(switch.lea_idx)
@@ -3031,14 +3595,7 @@ fn object_value_table(
         .checked_add(lea.bytes.len() as u64)
         .and_then(|end: u64| end.checked_sub(4))
         .ok_or_else(|| Error::LlvmIr("value-table lea has no displacement field".to_owned()))?;
-    let code_section: object::Section<'_, '_> = file
-        .sections()
-        .find(|section: &object::Section<'_, '_>| {
-            let start: u64 = section.address();
-            let end: u64 = start.saturating_add(section.size());
-            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
-        })
-        .ok_or_else(|| Error::LlvmIr("value-table code section not located".to_owned()))?;
+    let code_section: object::Section<'_, '_> = unique_bound_text_section(&file, base, insns)?;
     let (table_index, table_off): (object::SectionIndex, u64) =
         resolve_lea_table(&file, &code_section, disp_field_va)?;
     let table_section: object::Section<'_, '_> = file
@@ -3047,7 +3604,6 @@ fn object_value_table(
     let table_data: &[u8] = table_section
         .data()
         .map_err(|e: object::Error| Error::LlvmIr(format!("value-table data unavailable: {e}")))?;
-    let table_addr: u64 = table_section.address();
     let span: u64 = width
         .checked_mul(switch.count as u64)
         .ok_or_else(|| Error::LlvmIr("value-table span overflow".to_owned()))?;
@@ -3056,9 +3612,12 @@ fn object_value_table(
             "value-table exceeds table section".to_owned(),
         ));
     }
-    for (off, _reloc) in table_section.relocations() {
-        let slot: u64 = off.saturating_sub(table_addr);
-        if slot >= table_off && slot < table_off.saturating_add(span) {
+    let table_end: u64 = table_off
+        .checked_add(span)
+        .ok_or_else(|| Error::LlvmIr("value-table span overflow".to_owned()))?;
+    for (off, reloc) in table_section.relocations() {
+        let relocation_span: RelocationByteSpan = relocation_byte_span(off, &reloc)?;
+        if relocation_span.overlaps(table_off, table_end) {
             return Err(Error::LlvmIr(
                 "value-table slot carries a relocation; entries are addresses, not constants"
                     .to_owned(),
@@ -3091,6 +3650,10 @@ fn object_value_table(
                 .get(start..start + 4)
                 .and_then(|b: &[u8]| b.try_into().ok())
                 .map(|b: [u8; 4]| i64::from(u32::from_le_bytes(b)))
+                .ok_or_else(|| Error::LlvmIr("value-table slot out of range".to_owned()))?,
+            (1, true) => table_data
+                .get(start)
+                .map(|byte: &u8| i64::from(i8::from_le_bytes([*byte])))
                 .ok_or_else(|| Error::LlvmIr("value-table slot out of range".to_owned()))?,
             _ => {
                 return Err(Error::LlvmIr(
@@ -3130,7 +3693,9 @@ fn reloc_effective_addend(
             i64::from(i32::from_le_bytes(bytes))
         }
     };
-    Ok(stored.wrapping_add(reloc.addend()))
+    stored
+        .checked_add(reloc.addend())
+        .ok_or_else(|| Error::LlvmIr("relocation addend overflow".to_owned()))
 }
 
 fn resolve_lea_table<'data>(
@@ -3143,37 +3708,80 @@ fn resolve_lea_table<'data>(
     let code_data: &[u8] = code_section
         .data()
         .map_err(|e: object::Error| Error::LlvmIr(format!("code section data unavailable: {e}")))?;
+    let disp_field_offset: u64 = disp_field_va
+        .checked_sub(code_section.address())
+        .ok_or_else(|| Error::LlvmIr("switch lea displacement precedes its section".to_owned()))?;
+    let disp_field_end: u64 = disp_field_offset
+        .checked_add(4)
+        .ok_or_else(|| Error::LlvmIr("switch lea displacement extent overflow".to_owned()))?;
+    let mut matched: Option<(u64, object::Relocation)> = None;
     for (off, reloc) in code_section.relocations() {
-        if off != disp_field_va {
+        let relocation_span: RelocationByteSpan = relocation_byte_span(off, &reloc)?;
+        if !relocation_span.overlaps(disp_field_offset, disp_field_end) {
             continue;
         }
-        let RelocationTarget::Symbol(index) = reloc.target() else {
-            continue;
-        };
-        let sym: object::Symbol<'data, '_> = file
-            .symbol_by_index(index)
-            .map_err(|e: object::Error| Error::LlvmIr(format!("switch lea symbol missing: {e}")))?;
-        let slot: u64 = off.saturating_sub(code_section.address());
-        let effective: i64 = reloc_effective_addend(&reloc, code_data, slot, 4)?;
-        let target_va: i64 = (sym.address() as i64)
-            .checked_add(effective)
-            .and_then(|v: i64| v.checked_add(4))
-            .ok_or_else(|| Error::LlvmIr("switch table address overflow".to_owned()))?;
-        let object::SymbolSection::Section(section_index) = sym.section() else {
+        if !relocation_span.exactly(disp_field_offset, disp_field_end) {
             return Err(Error::LlvmIr(
-                "switch table symbol is not section-relative".to_owned(),
+                "switch lea displacement has an overlapping relocation".to_owned(),
             ));
-        };
-        let table_section: object::Section<'data, '_> = file
-            .section_by_index(section_index)
-            .map_err(|e: object::Error| Error::LlvmIr(format!("table section missing: {e}")))?;
-        let table_off: u64 = u64::try_from(target_va - table_section.address() as i64)
-            .map_err(|_| Error::LlvmIr("switch table offset negative".to_owned()))?;
-        return Ok((section_index, table_off));
+        }
+        if matched.replace((off, reloc)).is_some() {
+            return Err(Error::LlvmIr(
+                "switch lea displacement has multiple relocations".to_owned(),
+            ));
+        }
     }
-    Err(Error::LlvmIr(
-        "switch lea has no relocation naming the jump table".to_owned(),
-    ))
+    let Some((off, reloc)): Option<(u64, object::Relocation)> = matched else {
+        return Err(Error::LlvmIr(
+            "switch lea has no relocation naming the jump-table".to_owned(),
+        ));
+    };
+    if reloc.kind() != object::RelocationKind::Relative
+        || reloc.size() != 32
+        || !matches!(
+            reloc.encoding(),
+            object::RelocationEncoding::Generic | object::RelocationEncoding::X86RipRelative
+        )
+    {
+        return Err(Error::LlvmIr(
+            "switch lea relocation is not a 32-bit PC-relative displacement".to_owned(),
+        ));
+    }
+    let RelocationTarget::Symbol(index) = reloc.target() else {
+        return Err(Error::LlvmIr(
+            "switch lea relocation does not name a symbol".to_owned(),
+        ));
+    };
+    let sym: object::Symbol<'data, '_> = file
+        .symbol_by_index(index)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("switch lea symbol missing: {e}")))?;
+    let effective: i64 = reloc_effective_addend(&reloc, code_data, off, 4)?;
+    let object::SymbolSection::Section(section_index) = sym.section() else {
+        return Err(Error::LlvmIr(
+            "switch table symbol is not section-relative".to_owned(),
+        ));
+    };
+    let table_section: object::Section<'data, '_> = file
+        .section_by_index(section_index)
+        .map_err(|e: object::Error| Error::LlvmIr(format!("table section missing: {e}")))?;
+    let table_off: u64 = resolved_table_offset(sym.address(), effective, table_section.address())?;
+    Ok((section_index, table_off))
+}
+
+fn resolved_table_offset(
+    symbol_address: u64,
+    effective_addend: i64,
+    section_address: u64,
+) -> Result<u64> {
+    let target_address: i128 = i128::from(symbol_address)
+        .checked_add(i128::from(effective_addend))
+        .and_then(|value: i128| value.checked_add(4))
+        .ok_or_else(|| Error::LlvmIr("switch table address overflow".to_owned()))?;
+    let section_offset: i128 = target_address
+        .checked_sub(i128::from(section_address))
+        .ok_or_else(|| Error::LlvmIr("switch table offset negative".to_owned()))?;
+    u64::try_from(section_offset)
+        .map_err(|_| Error::LlvmIr("switch table offset negative".to_owned()))
 }
 
 fn resolve_packed_constants(object: &[u8], machine_code: &[u8], base: u64) -> Vec<PackedConstant> {
@@ -3187,12 +3795,8 @@ fn resolve_packed_constants(object: &[u8], machine_code: &[u8], base: u64) -> Ve
     else {
         return Vec::new();
     };
-    let Some(code_section): Option<object::Section<'_, '_>> =
-        file.sections().find(|section: &object::Section<'_, '_>| {
-            let start: u64 = section.address();
-            let end: u64 = start.saturating_add(section.size());
-            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
-        })
+    let Ok(code_section): Result<object::Section<'_, '_>> =
+        unique_bound_text_section(&file, base, &insns)
     else {
         return Vec::new();
     };
@@ -3252,10 +3856,8 @@ fn object_switch_case_targets(
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationTarget};
 
     let file: object::File<'_> = object::File::parse(object)
-        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for jump table: {e}")))?;
-    let count: usize = (dispatch.bound as usize)
-        .checked_add(1)
-        .ok_or_else(|| Error::LlvmIr("jump-table bound overflow".to_owned()))?;
+        .map_err(|e: object::Error| Error::LlvmIr(format!("object parse for jump-table: {e}")))?;
+    let count: usize = dispatch_entry_count(dispatch.bound)?;
     let width: u64 = u64::from(dispatch.entry_width);
 
     let lea: &DisasmInsn = insns
@@ -3266,14 +3868,8 @@ fn object_switch_case_targets(
         .and_then(|end: u64| end.checked_sub(4))
         .ok_or_else(|| Error::LlvmIr("switch lea has no displacement field".to_owned()))?;
 
-    let code_section: object::Section<'_, '_> = file
-        .sections()
-        .find(|section: &object::Section<'_, '_>| {
-            let start: u64 = section.address();
-            let end: u64 = start.saturating_add(section.size());
-            section.kind() == object::SectionKind::Text && (start..end).contains(&base)
-        })
-        .ok_or_else(|| Error::LlvmIr("switch code section not located".to_owned()))?;
+    let code_section: object::Section<'_, '_> = unique_bound_text_section(&file, base, insns)
+        .map_err(|_| Error::LlvmIr("switch code section not located".to_owned()))?;
 
     let (table_index, table_off): (object::SectionIndex, u64) =
         resolve_lea_table(&file, &code_section, disp_field_va)?;
@@ -3284,26 +3880,70 @@ fn object_switch_case_targets(
         .data()
         .map_err(|e: object::Error| Error::LlvmIr(format!("table data unavailable: {e}")))?;
     let table_addr: u64 = table_section.address();
-    let table_va: u64 = table_addr.saturating_add(table_off);
+    let table_va: u64 = table_addr
+        .checked_add(table_off)
+        .ok_or_else(|| Error::LlvmIr("jump-table address overflow".to_owned()))?;
     let span: u64 = width
         .checked_mul(count as u64)
         .ok_or_else(|| Error::LlvmIr("jump-table span overflow".to_owned()))?;
     if !table_span_within_section(table_off, span, table_data.len()) {
-        return Err(Error::LlvmIr("jump table exceeds table section".to_owned()));
+        return Err(Error::LlvmIr("jump-table exceeds table section".to_owned()));
     }
+    let table_end: u64 = table_off
+        .checked_add(span)
+        .ok_or_else(|| Error::LlvmIr("jump-table span overflow".to_owned()))?;
+    let relocation_bits: u8 = dispatch
+        .entry_width
+        .checked_mul(8)
+        .ok_or_else(|| Error::LlvmIr("jump-table relocation width overflow".to_owned()))?;
 
     let mut slot_relocs: BTreeMap<u64, object::Relocation> = BTreeMap::new();
     for (off, reloc) in table_section.relocations() {
-        let slot: u64 = off.saturating_sub(table_addr);
-        if slot < table_off || slot >= table_off + span || (slot - table_off) % width != 0 {
+        let relocation_span: RelocationByteSpan = relocation_byte_span(off, &reloc)?;
+        if !relocation_span.overlaps(table_off, table_end) {
             continue;
         }
-        slot_relocs.insert(slot, reloc);
+        let Some(slot_end): Option<u64> = off.checked_add(width) else {
+            return Err(Error::LlvmIr(
+                "jump-table relocation extent overflow".to_owned(),
+            ));
+        };
+        if off < table_off
+            || slot_end > table_end
+            || (off - table_off) % width != 0
+            || !relocation_span.exactly(off, slot_end)
+        {
+            return Err(Error::LlvmIr(
+                "relocation lands inside a jump-table slot".to_owned(),
+            ));
+        }
+        if reloc.kind() != object::RelocationKind::Relative
+            || reloc.size() != relocation_bits
+            || !matches!(
+                reloc.encoding(),
+                object::RelocationEncoding::Generic | object::RelocationEncoding::X86RipRelative
+            )
+        {
+            return Err(Error::LlvmIr(
+                "jump-table relocation is not an entry-width PC-relative displacement".to_owned(),
+            ));
+        }
+        if slot_relocs.insert(off, reloc).is_some() {
+            return Err(Error::LlvmIr(
+                "jump-table slot has multiple relocations".to_owned(),
+            ));
+        }
     }
 
     let mut case_targets: Vec<u64> = Vec::with_capacity(count);
     for index in 0..count {
-        let slot: u64 = table_off + width * index as u64;
+        let slot: u64 = table_off
+            .checked_add(
+                width
+                    .checked_mul(index as u64)
+                    .ok_or_else(|| Error::LlvmIr("jump-table slot overflow".to_owned()))?,
+            )
+            .ok_or_else(|| Error::LlvmIr("jump-table slot overflow".to_owned()))?;
         if let Some(reloc) = slot_relocs.get(&slot) {
             let RelocationTarget::Symbol(sym_index) = reloc.target() else {
                 return Err(Error::LlvmIr(
@@ -3315,11 +3955,10 @@ fn object_switch_case_targets(
                 .map_err(|e| Error::LlvmIr(format!("jump-table entry symbol missing: {e}")))?;
             let effective: i64 =
                 reloc_effective_addend(reloc, table_data, slot, dispatch.entry_width)?;
-            let intra_table: i64 = i64::try_from(slot - table_off)
-                .map_err(|_| Error::LlvmIr("jump-table offset overflow".to_owned()))?;
-            let case_off: i64 = (sym.address() as i64)
-                .checked_add(effective)
-                .and_then(|v: i64| v.checked_sub(intra_table))
+            let intra_table: i128 = i128::from(slot - table_off);
+            let case_off: i128 = i128::from(sym.address())
+                .checked_add(i128::from(effective))
+                .and_then(|value: i128| value.checked_sub(intra_table))
                 .ok_or_else(|| Error::LlvmIr("jump-table entry overflow".to_owned()))?;
             let target: u64 = u64::try_from(case_off)
                 .map_err(|_| Error::LlvmIr("jump-table entry target negative".to_owned()))?;
@@ -3345,7 +3984,7 @@ fn object_switch_case_targets(
             case_targets.push(target);
         } else {
             return Err(Error::LlvmIr(
-                "jump table is partially relocated; cannot resolve every entry".to_owned(),
+                "jump-table is partially relocated; cannot resolve every entry".to_owned(),
             ));
         }
     }
@@ -3462,6 +4101,46 @@ struct ValueTableSwitch {
     signed_load: bool,
 }
 
+fn detect_value_table_dispatch_setup(insns: &[DisasmInsn]) -> bool {
+    for cmp_idx in 0..insns.len() {
+        let Some((disc, bound)): Option<(RegRef, u64)> = parse_cmp_bound(&insns[cmp_idx]) else {
+            continue;
+        };
+        if disc.reg == Reg::Rax
+            || usize::try_from(bound)
+                .ok()
+                .and_then(|value: usize| value.checked_add(1))
+                .is_none()
+        {
+            continue;
+        }
+        let Some(jump): Option<&DisasmInsn> = insns.get(cmp_idx + 1) else {
+            continue;
+        };
+        if !matches!(jump.mnemonic.as_str(), "ja" | "jnbe" | "jae" | "jnb")
+            || parse_branch_target(&jump.operands).is_none()
+        {
+            continue;
+        }
+        let Some(lea_idx): Option<usize> = next_effective(insns, cmp_idx + 2) else {
+            continue;
+        };
+        let Some((table_reg, _)): Option<(Reg, u64)> = parse_lea_rip(&insns[lea_idx]) else {
+            continue;
+        };
+        if table_reg == disc.reg {
+            continue;
+        }
+        let Some(load_idx): Option<usize> = next_effective(insns, lea_idx + 1) else {
+            continue;
+        };
+        if parse_value_table_load(&insns[load_idx], table_reg, disc.reg).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
     for cmp_idx in 0..insns.len() {
         let Some((disc, bound)): Option<(RegRef, u64)> = parse_cmp_bound(&insns[cmp_idx]) else {
@@ -3510,17 +4189,17 @@ fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
         else {
             continue;
         };
-        let Some(ret_idx): Option<usize> = next_effective(insns, load_idx + 1) else {
+        let Some(ret_idx): Option<usize> = value_table_return_index(insns, load_idx) else {
             continue;
         };
-        if insns[ret_idx].mnemonic != "ret" {
-            continue;
-        }
-        let Some(default_value): Option<i64> = (if default_target == insns[ret_idx].address {
-            preloaded_default(insns, cmp_idx)
-        } else {
-            default_block_value(insns, default_target)
-        }) else {
+        let Some(default_value): Option<i64> = value_table_instruction_coverage(
+            insns,
+            cmp_idx,
+            lea_idx,
+            load_idx,
+            ret_idx,
+            default_target,
+        ) else {
             continue;
         };
         return Some(ValueTableSwitch {
@@ -3533,6 +4212,86 @@ fn detect_value_table_switch(insns: &[DisasmInsn]) -> Option<ValueTableSwitch> {
         });
     }
     None
+}
+
+fn value_table_instruction_coverage(
+    insns: &[DisasmInsn],
+    cmp_idx: usize,
+    lea_idx: usize,
+    load_idx: usize,
+    ret_idx: usize,
+    default_target: u64,
+) -> Option<i64> {
+    let branch_idx: usize = cmp_idx.checked_add(1)?;
+    let load_exit_idx: usize = next_effective(insns, load_idx.checked_add(1)?)?;
+    let mut covered: BTreeSet<usize> = BTreeSet::from([
+        cmp_idx,
+        branch_idx,
+        lea_idx,
+        load_idx,
+        load_exit_idx,
+        ret_idx,
+    ]);
+    let default_value: i64 = if default_target == insns.get(ret_idx)?.address {
+        let preload_idx: usize = prev_effective(insns, cmp_idx)?;
+        if next_effective(insns, 0) != Some(preload_idx)
+            || next_effective(insns, preload_idx.checked_add(1)?) != Some(cmp_idx)
+        {
+            return None;
+        }
+        covered.insert(preload_idx);
+        preloaded_default(insns, cmp_idx)?
+    } else {
+        if next_effective(insns, 0) != Some(cmp_idx) {
+            return None;
+        }
+        let default_start: usize = insns
+            .iter()
+            .position(|insn: &DisasmInsn| insn.address == default_target)?;
+        let default_mov_idx: usize = next_effective(insns, default_start)?;
+        let default_ret_idx: usize = next_effective(insns, default_mov_idx.checked_add(1)?)?;
+        covered.insert(default_mov_idx);
+        covered.insert(default_ret_idx);
+        default_block_value(insns, default_target)?
+    };
+    insns
+        .iter()
+        .enumerate()
+        .all(|(index, insn): (usize, &DisasmInsn)| {
+            is_value_table_padding(insn) || covered.contains(&index)
+        })
+        .then_some(default_value)
+}
+
+fn is_value_table_padding(insn: &DisasmInsn) -> bool {
+    insn.mnemonic == "nop"
+        || (insn.bytes == [0x66, 0x90] && insn.mnemonic == "xchg" && insn.operands == "ax,ax")
+}
+
+fn value_table_return_index(insns: &[DisasmInsn], load_idx: usize) -> Option<usize> {
+    let next_idx: usize = next_effective(insns, load_idx + 1)?;
+    if insns[next_idx].mnemonic == "ret" {
+        return Some(next_idx);
+    }
+    let target: u64 = short_relative_jump_target(&insns[next_idx])?;
+    let target_idx: usize = insns
+        .iter()
+        .position(|insn: &DisasmInsn| insn.address == target)?;
+    (insns[target_idx].mnemonic == "ret").then_some(target_idx)
+}
+
+fn short_relative_jump_target(insn: &DisasmInsn) -> Option<u64> {
+    let encoded: &[u8; 2] = insn.bytes.as_slice().try_into().ok()?;
+    let [0xeb, encoded_displacement]: &[u8; 2] = encoded else {
+        return None;
+    };
+    if insn.mnemonic != "jmp" {
+        return None;
+    }
+    let instruction_end: u64 = insn.address.checked_add(2)?;
+    let displacement: i8 = i8::from_le_bytes([*encoded_displacement]);
+    let target: u64 = instruction_end.checked_add_signed(i64::from(displacement))?;
+    (parse_branch_target(&insn.operands) == Some(target)).then_some(target)
 }
 
 fn next_effective(insns: &[DisasmInsn], from: usize) -> Option<usize> {
@@ -3549,11 +4308,27 @@ fn preloaded_default(insns: &[DisasmInsn], cmp_idx: usize) -> Option<i64> {
     let idx: usize = (0..cmp_idx)
         .rev()
         .find(|&i: &usize| !is_ignorable(&insns[i]))?;
-    match lift_one(&insns[idx].mnemonic, &insns[idx].operands)? {
+    full_rax_immediate(&insns[idx])
+}
+
+fn full_rax_immediate(insn: &DisasmInsn) -> Option<i64> {
+    match lift_one(&insn.mnemonic, &insn.operands)? {
         Stmt::Assign {
-            dest,
+            dest:
+                RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
             src: Source::Imm(value),
-        } if dest.reg == Reg::Rax => Some(value),
+        } => Some(value),
+        Stmt::Assign {
+            dest:
+                RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W32,
+                },
+            src: Source::Imm(value),
+        } => Some(value & i64::from(u32::MAX)),
         _ => None,
     }
 }
@@ -3563,13 +4338,7 @@ fn default_block_value(insns: &[DisasmInsn], target: u64) -> Option<i64> {
         .iter()
         .position(|insn: &DisasmInsn| insn.address == target)?;
     let mov_idx: usize = next_effective(insns, start)?;
-    let value: i64 = match lift_one(&insns[mov_idx].mnemonic, &insns[mov_idx].operands)? {
-        Stmt::Assign {
-            dest,
-            src: Source::Imm(value),
-        } if dest.reg == Reg::Rax => value,
-        _ => return None,
-    };
+    let value: i64 = full_rax_immediate(&insns[mov_idx])?;
     let ret_idx: usize = next_effective(insns, mov_idx + 1)?;
     (insns[ret_idx].mnemonic == "ret").then_some(value)
 }
@@ -3602,7 +4371,13 @@ fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Opt
                 return None;
             }
             let mem: MemRef = parse_mem_access(rhs.trim(), Some(Width::W32))?;
-            if mem.width != Width::W32 {
+            let entry_width: u8 = u8::try_from(mem.width.bits() / 8).ok()?;
+            let supported_width: bool = match insn.mnemonic.as_str() {
+                "movsxd" => entry_width == 4,
+                "movsx" => matches!(entry_width, 1 | 4),
+                _ => false,
+            };
+            if !supported_width {
                 return None;
             }
             let IndexOperand {
@@ -3610,10 +4385,14 @@ fn parse_value_table_load(insn: &DisasmInsn, tbl_reg: Reg, disc_reg: Reg) -> Opt
                 scale,
                 ..
             }: IndexOperand = mem.index?;
-            if mem.base != Some(tbl_reg) || index_reg != disc_reg || mem.disp != 0 || scale != 4 {
+            if mem.base != Some(tbl_reg)
+                || index_reg != disc_reg
+                || mem.disp != 0
+                || scale != entry_width
+            {
                 return None;
             }
-            Some((4, true))
+            Some((entry_width, true))
         }
         _ => None,
     }
@@ -3964,6 +4743,58 @@ fn parse_case_bias(insn: &DisasmInsn, disc: Reg) -> Option<i64> {
         "add" if imm < 0 => Some(-imm),
         _ => None,
     }
+}
+
+const fn x86_gpr_from_index(index: u8) -> Option<Reg> {
+    match index {
+        0 => Some(Reg::Rax),
+        1 => Some(Reg::Rcx),
+        2 => Some(Reg::Rdx),
+        3 => Some(Reg::Rbx),
+        4 => Some(Reg::Rsp),
+        5 => Some(Reg::Rbp),
+        6 => Some(Reg::Rsi),
+        7 => Some(Reg::Rdi),
+        8 => Some(Reg::R8),
+        9 => Some(Reg::R9),
+        10 => Some(Reg::R10),
+        11 => Some(Reg::R11),
+        12 => Some(Reg::R12),
+        13 => Some(Reg::R13),
+        14 => Some(Reg::R14),
+        15 => Some(Reg::R15),
+        _ => None,
+    }
+}
+
+fn lift_rip_relative_lea(insn: &DisasmInsn) -> Option<Stmt> {
+    let [rex, opcode, modrm, d0, d1, d2, d3]: &[u8; 7] = insn.bytes.as_slice().try_into().ok()?;
+    if insn.mnemonic != "lea"
+        || !matches!(*rex, 0x48 | 0x4c)
+        || *opcode != 0x8d
+        || *modrm & 0xc7 != 0x05
+    {
+        return None;
+    }
+    let encoded_index: u8 = ((*modrm >> 3) & 0x07) | ((*rex & 0x04) << 1);
+    let encoded_dest: Reg = x86_gpr_from_index(encoded_index)?;
+    let (text_dest, text_target): (Reg, u64) = parse_lea_rip(insn)?;
+    if text_dest != encoded_dest {
+        return None;
+    }
+    let displacement: i32 = i32::from_le_bytes([*d0, *d1, *d2, *d3]);
+    let instruction_end: u64 = insn.address.checked_add(7)?;
+    let address: RipRelativeAddress = RipRelativeAddress::checked(instruction_end, displacement)?;
+    if address.target() != text_target {
+        return None;
+    }
+    Some(Stmt::Assign {
+        dest: RegRef {
+            reg: encoded_dest,
+            width: Width::W64,
+        },
+        src: Source::Imm(i64::from_le_bytes(address.target().to_le_bytes())),
+    })
 }
 
 fn parse_lea_rip(insn: &DisasmInsn) -> Option<(Reg, u64)> {
@@ -4473,6 +5304,10 @@ fn folded_int_return_width(nodes: &[Node], incoming: Width) -> Width {
             Node::Break
             | Node::CondSnapshot { .. }
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Label(_)
             | Node::Goto(_) => {}
         }
@@ -4651,21 +5486,61 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
     }
 }
 
-fn annotate_calls_block(body: &mut Block, map: &BTreeMap<u64, &ResolvedCall>, abi: Abi) {
-    annotate_calls_block_with_order(body, map, abi.arg_order());
+fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec<Reg>> {
+    let abi: Abi = signature.abi();
+    let argument_order: &[Reg] = abi.arg_order();
+    let mut registers: Vec<Reg> = Vec::with_capacity(signature.callable_arity());
+    for binding in signature.parameter_bindings() {
+        match binding {
+            ParameterBinding::Integer { register, .. } => registers.push(*register),
+            ParameterBinding::UnobservedMsX64 { slot } if abi == Abi::MsX64 => {
+                let Some(register): Option<&Reg> = argument_order.get(usize::from(*slot)) else {
+                    return Err(Error::LlvmIr(
+                        "resolved call has an invalid microsoft x64 parameter slot".to_owned(),
+                    ));
+                };
+                registers.push(*register);
+            }
+            ParameterBinding::FloatingPoint { .. } | ParameterBinding::Vector { .. } => {
+                return Err(Error::LlvmIr(
+                    "resolved call has a non-integer parameter binding that the call IR cannot carry"
+                        .to_owned(),
+                ));
+            }
+            ParameterBinding::UnobservedMsX64 { .. } => {
+                return Err(Error::LlvmIr(
+                    "resolved call has a microsoft x64 unobserved parameter slot under another ABI"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(registers)
 }
 
-fn annotate_calls_block_with_order(
+fn annotate_calls_block(
     body: &mut Block,
     map: &BTreeMap<u64, &ResolvedCall>,
-    arg_order: &[Reg],
-) {
+    abi: Abi,
+) -> Result<()> {
+    annotate_calls_block_with_abi(body, map, abi)
+}
+
+fn annotate_calls_block_with_abi(
+    body: &mut Block,
+    map: &BTreeMap<u64, &ResolvedCall>,
+    abi: Abi,
+) -> Result<()> {
     for node in body.iter_mut() {
         match node {
             Node::Stmt(Stmt::Call { target, args, name }) => {
                 if let Some(resolved) = map.get(target) {
-                    let count: usize = resolved.arg_count.min(arg_order.len());
-                    *args = arg_order[..count].to_vec();
+                    if resolved.signature.abi() != abi {
+                        return Err(Error::LlvmIr(
+                            "resolved call signature uses a different ABI".to_owned(),
+                        ));
+                    }
+                    *args = resolved_call_integer_registers(&resolved.signature)?;
                     name.clone_from(&resolved.name);
                 }
             }
@@ -4675,28 +5550,33 @@ fn annotate_calls_block_with_order(
                 else_body,
                 ..
             } => {
-                annotate_calls_block_with_order(then_body, map, arg_order);
+                annotate_calls_block_with_abi(then_body, map, abi)?;
                 if let Some(else_b) = else_body {
-                    annotate_calls_block_with_order(else_b, map, arg_order);
+                    annotate_calls_block_with_abi(else_b, map, abi)?;
                 }
             }
             Node::DoWhile { body, .. } | Node::While { body, .. } => {
-                annotate_calls_block_with_order(body, map, arg_order);
+                annotate_calls_block_with_abi(body, map, abi)?;
             }
             Node::Switch { cases, default, .. } => {
                 for case in cases.iter_mut() {
-                    annotate_calls_block_with_order(&mut case.body, map, arg_order);
+                    annotate_calls_block_with_abi(&mut case.body, map, abi)?;
                 }
-                annotate_calls_block_with_order(default, map, arg_order);
+                annotate_calls_block_with_abi(default, map, abi)?;
             }
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
         }
     }
+    Ok(())
 }
 
 fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
@@ -4726,6 +5606,10 @@ fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -5546,6 +6430,38 @@ fn cfg_from_leaf_blocks(blocks: &[CfgBlock]) -> Option<structuring::Cfg> {
     structuring::Cfg::new(0, nodes).ok()
 }
 
+fn structure_boundaries(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Option<structuring::StructureBoundaries> {
+    structure_boundaries_for_owner(blocks, labels, None)
+}
+
+fn structure_boundaries_for_owner(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    owner: Option<usize>,
+) -> Option<structuring::StructureBoundaries> {
+    let mut terminals: std::collections::BTreeSet<structuring::NodeId> =
+        std::collections::BTreeSet::new();
+    for (index, label) in labels {
+        if let SinkLabel::ResumeAt(resume) = label {
+            let block: &CfgBlock = blocks.get(*index)?;
+            if resume.inner == resume.outer
+                || !block.stmts.is_empty()
+                || !matches!(block.term, BlockTerm::Ret)
+            {
+                return None;
+            }
+            if owner != Some(resume.outer.header) {
+                let terminal: structuring::NodeId = (*index).try_into().ok()?;
+                terminals.insert(terminal);
+            }
+        }
+    }
+    Some(structuring::StructureBoundaries::new(terminals))
+}
+
 fn atom_branch(blocks: &[CfgBlock], atom: structuring::Atom) -> Option<(CondKind, Flags)> {
     match &blocks.get(atom as usize)?.term {
         BlockTerm::Branch { kind, flags, .. } => Some((*kind, flags.clone())),
@@ -5585,7 +6501,27 @@ enum SinkLabel {
     Return,
     Break,
     Continue,
+    BreakLoop(LoopId),
+    ContinueLoop(LoopId),
+    ResumeAt(OuterBodyResume),
     Goto(u32),
+}
+
+#[derive(Clone, Copy)]
+enum ResumeProof<'a> {
+    Absent {
+        source: &'a [CfgBlock],
+    },
+    Nested {
+        source: &'a [CfgBlock],
+        residual: &'a std::collections::BTreeMap<usize, usize>,
+        resume: OuterBodyResume,
+    },
+    Original {
+        source: &'a [CfgBlock],
+        residual: &'a std::collections::BTreeMap<usize, usize>,
+        resume: Option<OuterBodyResume>,
+    },
 }
 
 const TAIL_SPLIT_BLOCK_CAP: usize = 256;
@@ -5728,6 +6664,9 @@ impl RegionRenderer<'_> {
             SinkLabel::Return => out.push(Node::Return),
             SinkLabel::Break => out.push(Node::Break),
             SinkLabel::Continue => out.push(Node::Continue),
+            SinkLabel::BreakLoop(loop_id) => out.push(Node::BreakLoop(loop_id)),
+            SinkLabel::ContinueLoop(loop_id) => out.push(Node::ContinueLoop(loop_id)),
+            SinkLabel::ResumeAt(resume) => out.push(Node::ResumeAt(resume)),
             SinkLabel::Goto(id) => out.push(Node::Goto(id)),
         }
     }
@@ -5749,23 +6688,71 @@ impl RegionRenderer<'_> {
         body: &std::collections::BTreeSet<usize>,
     ) -> Option<std::collections::BTreeSet<usize>> {
         let cfg: structuring::Cfg = cfg_from_leaf_blocks(self.blocks)?;
+        let boundaries: structuring::StructureBoundaries =
+            structure_boundaries_for_owner(self.blocks, self.labels, Some(header))?;
         let mut nodes: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         for node in body {
             nodes.insert(u32::try_from(*node).ok()?);
         }
         let extended: std::collections::BTreeSet<u32> =
-            structuring::loop_body_absorbing_return_tails(
+            structuring::loop_body_absorbing_return_tails_with_boundaries(
                 &cfg,
                 u32::try_from(header).ok()?,
                 &nodes,
+                &boundaries,
             )?;
         let mut absorbed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let follow: Option<(usize, OuterBodyResume)> = extended
+            .iter()
+            .flat_map(|node: &u32| self.blocks[*node as usize].successors())
+            .filter(|successor: &usize| !extended.contains(&(*successor as u32)))
+            .find_map(|successor: usize| {
+                let original: usize = self.original_entry(successor)?;
+                let SinkLabel::ResumeAt(resume) = self.labels.get(&original).copied()? else {
+                    return None;
+                };
+                Some((successor, resume))
+            });
+        let mut parent_continue: bool = false;
+        let mut parent_break: bool = false;
         for node in &extended {
             let index: usize = *node as usize;
             if !nodes.contains(node) && !self.absorbable_sink(index) {
-                return None;
+                let original: usize = self.original_entry(index)?;
+                if self.label_targets.contains_key(&original)
+                    || !matches!(self.blocks[index].term, BlockTerm::Ret)
+                {
+                    return None;
+                }
+                match self.labels.get(&original).copied() {
+                    Some(SinkLabel::ResumeAt(resume)) if resume.outer.header == header => {}
+                    Some(SinkLabel::ContinueLoop(loop_id))
+                        if follow.is_some_and(|(_, resume): (usize, OuterBodyResume)| {
+                            loop_id == resume.outer
+                        }) =>
+                    {
+                        parent_continue = true;
+                    }
+                    Some(SinkLabel::BreakLoop(loop_id))
+                        if follow.is_some_and(|(_, resume): (usize, OuterBodyResume)| {
+                            loop_id == resume.outer
+                        }) =>
+                    {
+                        parent_break = true;
+                    }
+                    _ => return None,
+                }
             }
             absorbed.insert(index);
+        }
+        if let Some((_, resume)) = follow {
+            if resume.outer.header == header {
+                if parent_continue || parent_break {
+                    return None;
+                }
+            } else if !(parent_continue && parent_break) {
+                return None;
+            }
         }
         Some(absorbed)
     }
@@ -5863,8 +6850,35 @@ impl RegionRenderer<'_> {
         });
         let mut sub_labels: std::collections::BTreeMap<usize, SinkLabel> =
             std::collections::BTreeMap::new();
-        sub_labels.insert(cont_idx, SinkLabel::Continue);
-        sub_labels.insert(brk_idx, SinkLabel::Break);
+        let outer_resume: Option<(usize, OuterBodyResume)> = body
+            .iter()
+            .filter_map(|node: &usize| {
+                let original: usize = self.original_entry(*node)?;
+                let SinkLabel::ResumeAt(resume) = self.labels.get(&original).copied()? else {
+                    return None;
+                };
+                (resume.outer.header == header).then_some((*node, resume))
+            })
+            .try_fold(
+                None,
+                |found: Option<(usize, OuterBodyResume)>, resume: (usize, OuterBodyResume)| {
+                    match found {
+                        None => Some(Some(resume)),
+                        Some(_) => None,
+                    }
+                },
+            )
+            .flatten();
+        match outer_resume {
+            Some((_, resume)) => {
+                sub_labels.insert(cont_idx, SinkLabel::ContinueLoop(resume.outer));
+                sub_labels.insert(brk_idx, SinkLabel::BreakLoop(resume.outer));
+            }
+            None => {
+                sub_labels.insert(cont_idx, SinkLabel::Continue);
+                sub_labels.insert(brk_idx, SinkLabel::Break);
+            }
+        }
         for &node in &order {
             if matches!(self.blocks[node].term, BlockTerm::Ret)
                 && let Some(original) = self.original_entry(node)
@@ -5883,9 +6897,21 @@ impl RegionRenderer<'_> {
                 sub_targets.insert(idx, label);
             }
         }
-        let Some(loop_body): Option<Block> =
-            render_cfg_blocks(&sub_blocks, &sub_labels, true, &sub_targets)
-        else {
+        let loop_body: Option<Block> = match outer_resume {
+            Some((_, resume)) => {
+                render_cfg_blocks_nested(&sub_blocks, &sub_labels, true, &sub_targets, resume)
+            }
+            None => render_cfg_blocks_once(
+                &sub_blocks,
+                &sub_labels,
+                true,
+                &sub_targets,
+                ResumeProof::Absent {
+                    source: &sub_blocks,
+                },
+            ),
+        };
+        let Some(loop_body): Option<Block> = loop_body else {
             return false;
         };
         out.push(Node::While {
@@ -6150,31 +7176,256 @@ fn render_cfg_blocks_via_cns(
     Some(body)
 }
 
+fn loop_forests_match(
+    semantic: &structuring::LoopForest,
+    structural: &structuring::LoopForest,
+) -> bool {
+    semantic.irreducible == structural.irreducible
+        && semantic.loops.len() == structural.loops.len()
+        && semantic.loops.iter().zip(&structural.loops).all(
+            |(left, right): (&structuring::NaturalLoop, &structuring::NaturalLoop)| {
+                left.header == right.header
+                    && left.latches == right.latches
+                    && left.body == right.body
+                    && left.parent == right.parent
+            },
+        )
+}
+
+fn region_leaf_entry_count(
+    result: &structuring::StructureResult,
+    root: structuring::RegionId,
+    entry: usize,
+) -> Option<usize> {
+    let mut pending: Vec<structuring::RegionId> = vec![root];
+    let mut seen: std::collections::BTreeSet<structuring::RegionId> =
+        std::collections::BTreeSet::new();
+    let mut count: usize = 0;
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let region: &structuring::Region = result.regions.get(id as usize)?;
+        if region.children.is_empty() && region.entry as usize == entry {
+            count = count.checked_add(1)?;
+        }
+        pending.extend(region.children.iter().copied());
+    }
+    Some(count)
+}
+
+fn local_resume_boundaries_match_regions(
+    result: &structuring::StructureResult,
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> bool {
+    let Some(root): Option<structuring::RegionId> = result.root else {
+        return false;
+    };
+    let mut semantic_stubs: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut count: usize = 0;
+    for (local, label) in labels {
+        let SinkLabel::ResumeAt(resume) = label else {
+            continue;
+        };
+        if resume.inner == resume.outer
+            || !semantic_stubs.insert(resume.stub)
+            || region_leaf_entry_count(result, root, *local) != Some(1)
+        {
+            return false;
+        }
+        let Some(next): Option<usize> = count.checked_add(1) else {
+            return false;
+        };
+        count = next;
+    }
+    count > 0
+}
+
+fn resume_edges_from_labels(
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Option<std::collections::BTreeMap<usize, usize>> {
+    let mut residual: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for label in labels.values() {
+        let SinkLabel::ResumeAt(resume) = label else {
+            continue;
+        };
+        if resume.inner == resume.outer || residual.insert(resume.stub, resume.block).is_some() {
+            return None;
+        }
+    }
+    (!residual.is_empty()).then_some(residual)
+}
+
+fn resume_boundaries_match_regions(
+    result: &structuring::StructureResult,
+    forest: &structuring::LoopForest,
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    residual: &std::collections::BTreeMap<usize, usize>,
+) -> bool {
+    let resume_count: usize = labels
+        .values()
+        .filter(|label: &&SinkLabel| matches!(label, SinkLabel::ResumeAt(_)))
+        .count();
+    if resume_count == 0 {
+        return true;
+    }
+    if !local_resume_boundaries_match_regions(result, labels) {
+        return false;
+    }
+    if resume_count != residual.len() {
+        return false;
+    }
+    let Some(root): Option<structuring::RegionId> = result.root else {
+        return false;
+    };
+    for (stub, target) in residual {
+        let Some(SinkLabel::ResumeAt(resume)): Option<SinkLabel> = labels.get(stub).copied() else {
+            return false;
+        };
+        if resume.stub != *stub
+            || resume.block != *target
+            || region_leaf_entry_count(result, root, *stub) != Some(1)
+        {
+            return false;
+        }
+        let Some((inner_index, _)): Option<(usize, &structuring::NaturalLoop)> =
+            forest.loops.iter().enumerate().find(
+                |(_, natural): &(usize, &structuring::NaturalLoop)| {
+                    natural.header as usize == resume.inner.header
+                },
+            )
+        else {
+            return false;
+        };
+        let Some(outer_index): Option<usize> = forest
+            .loops
+            .get(inner_index)
+            .and_then(|natural: &structuring::NaturalLoop| natural.parent)
+        else {
+            return false;
+        };
+        if forest
+            .loops
+            .get(outer_index)
+            .is_none_or(|natural: &structuring::NaturalLoop| {
+                natural.header as usize != resume.outer.header
+            })
+        {
+            return false;
+        }
+        let Some((inner_region_id, _)): Option<(structuring::RegionId, &structuring::Region)> =
+            result
+                .regions
+                .iter()
+                .enumerate()
+                .find(|(_, region): &(usize, &structuring::Region)| {
+                    matches!(
+                        region.kind,
+                        structuring::RegionKind::While
+                            | structuring::RegionKind::DoWhile
+                            | structuring::RegionKind::NaturalLoop
+                            | structuring::RegionKind::SelfLoop
+                    ) && region.entry as usize == resume.inner.header
+                })
+                .map(|(id, region): (usize, &structuring::Region)| (id as u32, region))
+        else {
+            return false;
+        };
+        let Some((outer_region_id, _)): Option<(structuring::RegionId, &structuring::Region)> =
+            result
+                .regions
+                .iter()
+                .enumerate()
+                .find(|(_, region): &(usize, &structuring::Region)| {
+                    matches!(
+                        region.kind,
+                        structuring::RegionKind::While
+                            | structuring::RegionKind::DoWhile
+                            | structuring::RegionKind::NaturalLoop
+                            | structuring::RegionKind::SelfLoop
+                    ) && region.entry as usize == resume.outer.header
+                })
+                .map(|(id, region): (usize, &structuring::Region)| (id as u32, region))
+        else {
+            return false;
+        };
+        if region_leaf_entry_count(result, inner_region_id, *stub) != Some(0)
+            || region_leaf_entry_count(result, outer_region_id, *stub) != Some(1)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 fn render_cfg_blocks_once(
     blocks: &[CfgBlock],
     labels: &std::collections::BTreeMap<usize, SinkLabel>,
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
-    original_blocks: &[CfgBlock],
-    residual: &std::collections::BTreeMap<usize, usize>,
+    proof: ResumeProof<'_>,
 ) -> Option<Block> {
-    let cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
-    let result: structuring::StructureResult = structuring::structure(&cfg);
+    let has_resume: bool = labels
+        .values()
+        .any(|label: &SinkLabel| matches!(label, SinkLabel::ResumeAt(_)));
+    if matches!(proof, ResumeProof::Absent { .. }) && has_resume {
+        return None;
+    }
+    let semantic_cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
+    let boundaries: structuring::StructureBoundaries = structure_boundaries(blocks, labels)?;
+    let structural_cfg: structuring::Cfg = semantic_cfg.clone();
+    let semantic_forest: structuring::LoopForest = structuring::loop_forest(&semantic_cfg);
+    let forest: structuring::LoopForest = structuring::loop_forest(&structural_cfg);
+    if !loop_forests_match(&semantic_forest, &forest) {
+        return None;
+    }
+    let result: structuring::StructureResult =
+        structuring::structure_with_boundaries(&structural_cfg, &boundaries)?;
     if !result.is_complete() {
         return None;
     }
-    if !region_structuring_is_sound(blocks, &cfg, &result) {
+    let resume_boundaries_match: bool = match proof {
+        ResumeProof::Absent { .. } => !has_resume,
+        ResumeProof::Nested { resume, .. } => {
+            let expected: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::from([(resume.stub, resume.block)]);
+            local_resume_boundaries_match_regions(&result, labels)
+                && resume_edges_from_labels(labels) == Some(expected)
+        }
+        ResumeProof::Original {
+            residual,
+            resume: Some(resume),
+            ..
+        } => {
+            let expected: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::from([(resume.stub, resume.block)]);
+            residual == &expected
+                && resume_boundaries_match_regions(&result, &forest, labels, residual)
+        }
+        ResumeProof::Original { resume: None, .. } => !has_resume,
+    };
+    if !region_structuring_is_sound(blocks, &structural_cfg, &result) || !resume_boundaries_match {
         return None;
     }
-    let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(original_blocks)?;
+    let empty_residual: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    let (source, residual): (&[CfgBlock], &std::collections::BTreeMap<usize, usize>) = match proof {
+        ResumeProof::Absent { source } => (source, &empty_residual),
+        ResumeProof::Nested {
+            source, residual, ..
+        }
+        | ResumeProof::Original {
+            source, residual, ..
+        } => (source, residual),
+    };
+    let original_cfg: structuring::Cfg = cfg_from_leaf_blocks(source)?;
     let residual_nodes: std::collections::BTreeMap<u32, u32> = residual
         .iter()
         .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
         .collect();
-    if !structuring::relowered_matches_original(&original_cfg, &cfg, &residual_nodes) {
+    if !structuring::relowered_matches_original(&original_cfg, &semantic_cfg, &residual_nodes) {
         return None;
     }
-    let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
     let root: structuring::RegionId = result.root?;
     let mut renderer: RegionRenderer<'_> = RegionRenderer {
         blocks,
@@ -6193,7 +7444,263 @@ fn render_cfg_blocks_once(
     if renderer.consumed != reachable_blocks(blocks) {
         return None;
     }
+    match proof {
+        ResumeProof::Absent { .. } | ResumeProof::Original { resume: None, .. } => {}
+        ResumeProof::Nested { resume, .. } => {
+            let expected: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::from([(resume.stub, resume.block)]);
+            if !nested_node_resume_relowering_matches(&body, &expected) {
+                return None;
+            }
+        }
+        ResumeProof::Original {
+            resume: Some(resume),
+            ..
+        } => {
+            let expected: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::from([(resume.stub, resume.block)]);
+            if !node_resume_relowering_matches(&body, &expected) {
+                return None;
+            }
+        }
+    }
     Some(body)
+}
+
+fn render_cfg_blocks_nested(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+    allow_loops: bool,
+    label_targets: &std::collections::BTreeMap<usize, u32>,
+    resume: OuterBodyResume,
+) -> Option<Block> {
+    let empty_residual: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    if let Some(body) = render_cfg_blocks_once(
+        blocks,
+        labels,
+        allow_loops,
+        label_targets,
+        ResumeProof::Nested {
+            source: blocks,
+            residual: &empty_residual,
+            resume,
+        },
+    ) {
+        return Some(body);
+    }
+    let cfg: structuring::Cfg = cfg_from_leaf_blocks(blocks)?;
+    if !structuring::multi_entry_irreducible_sccs(&cfg).is_empty() {
+        return None;
+    }
+    for plan in forward_join_lowering_candidates(blocks, labels) {
+        let mut merged: std::collections::BTreeMap<usize, u32> = label_targets.clone();
+        for (block, label) in &plan.label_targets {
+            if merged.insert(*block, *label).is_some() {
+                return None;
+            }
+        }
+        if let Some(body) = render_cfg_blocks_once(
+            &plan.blocks,
+            &plan.labels,
+            allow_loops,
+            &merged,
+            ResumeProof::Nested {
+                source: blocks,
+                residual: &plan.residual,
+                resume,
+            },
+        ) {
+            return Some(body);
+        }
+    }
+    OuterResumeTree::checked(blocks, labels, resume)
+        .map(|tree: OuterResumeTree| vec![Node::OuterResume(tree)])
+}
+
+fn collect_node_resume_edges(
+    body: &Block,
+    loop_depth: usize,
+    residual: &mut std::collections::BTreeMap<usize, usize>,
+    resumes: &mut Vec<(OuterBodyResume, usize)>,
+    parent_continues: &mut Vec<(LoopId, usize)>,
+    parent_breaks: &mut Vec<(LoopId, usize)>,
+) -> bool {
+    for node in body {
+        match node {
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if !collect_node_resume_edges(
+                    then_body,
+                    loop_depth,
+                    residual,
+                    resumes,
+                    parent_continues,
+                    parent_breaks,
+                ) || else_body.as_ref().is_some_and(|arm: &Block| {
+                    !collect_node_resume_edges(
+                        arm,
+                        loop_depth,
+                        residual,
+                        resumes,
+                        parent_continues,
+                        parent_breaks,
+                    )
+                }) {
+                    return false;
+                }
+            }
+            Node::DoWhile { body, .. } => {
+                if !collect_node_resume_edges(
+                    body,
+                    loop_depth + 1,
+                    residual,
+                    resumes,
+                    parent_continues,
+                    parent_breaks,
+                ) {
+                    return false;
+                }
+            }
+            Node::While { body, .. } => {
+                if !collect_node_resume_edges(
+                    body,
+                    loop_depth + 1,
+                    residual,
+                    resumes,
+                    parent_continues,
+                    parent_breaks,
+                ) {
+                    return false;
+                }
+            }
+            Node::Switch { cases, default, .. } => {
+                if cases.iter().any(|case: &SwitchCase| {
+                    !collect_node_resume_edges(
+                        &case.body,
+                        loop_depth,
+                        residual,
+                        resumes,
+                        parent_continues,
+                        parent_breaks,
+                    )
+                }) || !collect_node_resume_edges(
+                    default,
+                    loop_depth,
+                    residual,
+                    resumes,
+                    parent_continues,
+                    parent_breaks,
+                ) {
+                    return false;
+                }
+            }
+            Node::ContinueLoop(loop_id) => {
+                if loop_depth < 2 {
+                    return false;
+                }
+                parent_continues.push((*loop_id, loop_depth));
+            }
+            Node::BreakLoop(loop_id) => {
+                if loop_depth < 2 {
+                    return false;
+                }
+                parent_breaks.push((*loop_id, loop_depth));
+            }
+            Node::ResumeAt(resume) => {
+                if resume.inner == resume.outer
+                    || residual.insert(resume.stub, resume.block).is_some()
+                {
+                    return false;
+                }
+                resumes.push((*resume, loop_depth));
+            }
+            Node::OuterResume(tree) => {
+                if tree.resume.inner == tree.resume.outer
+                    || residual
+                        .insert(tree.resume.stub, tree.resume.block)
+                        .is_some()
+                {
+                    return false;
+                }
+                resumes.push((tree.resume, loop_depth));
+                parent_continues.push((tree.resume.outer, loop_depth + 1));
+                parent_breaks.push((tree.resume.outer, loop_depth + 1));
+            }
+            Node::Stmt(_)
+            | Node::CondSnapshot { .. }
+            | Node::Break
+            | Node::Continue
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+    true
+}
+
+fn node_resume_relowering_matches(
+    body: &Block,
+    expected: &std::collections::BTreeMap<usize, usize>,
+) -> bool {
+    node_resume_relowering_matches_at_depth(body, expected, 0)
+}
+
+fn nested_node_resume_relowering_matches(
+    body: &Block,
+    expected: &std::collections::BTreeMap<usize, usize>,
+) -> bool {
+    node_resume_relowering_matches_at_depth(body, expected, 1)
+}
+
+fn node_resume_relowering_matches_at_depth(
+    body: &Block,
+    expected: &std::collections::BTreeMap<usize, usize>,
+    loop_depth: usize,
+) -> bool {
+    let mut residual: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    let mut resumes: Vec<(OuterBodyResume, usize)> = Vec::new();
+    let mut parent_continues: Vec<(LoopId, usize)> = Vec::new();
+    let mut parent_breaks: Vec<(LoopId, usize)> = Vec::new();
+    if !collect_node_resume_edges(
+        body,
+        loop_depth,
+        &mut residual,
+        &mut resumes,
+        &mut parent_continues,
+        &mut parent_breaks,
+    ) || residual != *expected
+    {
+        return false;
+    }
+    let resumes_have_roles: bool =
+        resumes
+            .iter()
+            .all(|(resume, depth): &(OuterBodyResume, usize)| {
+                parent_continues
+                    .iter()
+                    .any(|(loop_id, role_depth): &(LoopId, usize)| {
+                        *loop_id == resume.outer && *role_depth > *depth
+                    })
+                    && parent_breaks
+                        .iter()
+                        .any(|(loop_id, role_depth): &(LoopId, usize)| {
+                            *loop_id == resume.outer && *role_depth > *depth
+                        })
+            });
+    let roles_have_resumes: bool = parent_continues.iter().chain(parent_breaks.iter()).all(
+        |(loop_id, role_depth): &(LoopId, usize)| {
+            resumes
+                .iter()
+                .any(|(resume, depth): &(OuterBodyResume, usize)| {
+                    resume.outer == *loop_id && *depth < *role_depth
+                })
+        },
+    );
+    resumes_have_roles && roles_have_resumes
 }
 
 fn render_cfg_blocks(
@@ -6202,14 +7709,12 @@ fn render_cfg_blocks(
     allow_loops: bool,
     label_targets: &std::collections::BTreeMap<usize, u32>,
 ) -> Option<Block> {
-    let no_residual: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
     if let Some(body) = render_cfg_blocks_once(
         blocks,
         labels,
         allow_loops,
         label_targets,
-        blocks,
-        &no_residual,
+        ResumeProof::Absent { source: blocks },
     ) {
         return Some(body);
     }
@@ -6231,8 +7736,7 @@ fn render_cfg_blocks(
             elabels,
             allow_loops,
             label_targets,
-            eblocks,
-            &no_residual,
+            ResumeProof::Absent { source: eblocks },
         )
     {
         return Some(body);
@@ -6249,8 +7753,11 @@ fn render_cfg_blocks(
             &plan.labels,
             allow_loops,
             &merged,
-            blocks,
-            &plan.residual,
+            ResumeProof::Original {
+                source: blocks,
+                residual: &plan.residual,
+                resume: None,
+            },
         ) {
             return Some(body);
         }
@@ -6273,11 +7780,56 @@ fn render_cfg_blocks(
                 &plan.labels,
                 allow_loops,
                 &merged,
-                source,
-                &plan.residual,
+                ResumeProof::Original {
+                    source,
+                    residual: &plan.residual,
+                    resume: None,
+                },
             ) {
                 return Some(body);
             }
+        }
+    }
+    for plan in outer_resume_lowering_candidates(blocks, labels) {
+        if !plan
+            .blocks
+            .get(plan.predecessor.index())
+            .is_some_and(|block: &CfgBlock| block.successors().contains(&plan.resume.stub))
+        {
+            continue;
+        }
+        let mut plan_labels: std::collections::BTreeMap<usize, SinkLabel> = labels.clone();
+        if plan_labels
+            .insert(plan.resume.stub, SinkLabel::ResumeAt(plan.resume))
+            .is_some()
+        {
+            continue;
+        }
+        let Ok(resume_label): core::result::Result<u32, _> = u32::try_from(plan.resume.block)
+        else {
+            continue;
+        };
+        let mut plan_targets: std::collections::BTreeMap<usize, u32> = label_targets.clone();
+        if plan_targets.iter().any(|(block, label): (&usize, &u32)| {
+            (*block != plan.resume.block && *label == resume_label)
+                || (*block == plan.resume.block && *label != resume_label)
+        }) {
+            continue;
+        }
+        plan_targets.insert(plan.resume.block, resume_label);
+        if let Some(body) = render_cfg_blocks_once(
+            &plan.blocks,
+            &plan_labels,
+            allow_loops,
+            &plan_targets,
+            ResumeProof::Original {
+                source: blocks,
+                residual: &plan.residual,
+                resume: Some(plan.resume),
+            },
+        ) && node_resume_relowering_matches(&body, &plan.residual)
+        {
+            return Some(body);
         }
     }
     None
@@ -6288,6 +7840,1050 @@ struct IrreduciblePlan {
     labels: std::collections::BTreeMap<usize, SinkLabel>,
     label_targets: std::collections::BTreeMap<usize, u32>,
     residual: std::collections::BTreeMap<usize, usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct LoopId {
+    header: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct OriginalBlockId(usize);
+
+impl OriginalBlockId {
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SyntheticBlockId(usize);
+
+impl SyntheticBlockId {
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OuterBodyResume {
+    inner: LoopId,
+    outer: LoopId,
+    block: usize,
+    stub: usize,
+}
+
+struct OuterResumePlan {
+    predecessor: OriginalBlockId,
+    resume: OuterBodyResume,
+    blocks: Vec<CfgBlock>,
+    residual: std::collections::BTreeMap<usize, usize>,
+}
+
+impl OuterResumePlan {
+    fn checked(
+        source: &[CfgBlock],
+        predecessor: OriginalBlockId,
+        resume: OuterBodyResume,
+        blocks: Vec<CfgBlock>,
+        residual: std::collections::BTreeMap<usize, usize>,
+    ) -> Option<Self> {
+        let source_len: usize = source.len();
+        let transformed_len: usize = source_len.checked_add(1)?;
+        let synthetic: SyntheticBlockId = SyntheticBlockId(resume.stub);
+        if predecessor.index() >= source_len
+            || resume.block >= source_len
+            || resume.inner == resume.outer
+            || resume.inner.header >= source_len
+            || resume.outer.header >= source_len
+            || synthetic.index() != source_len
+            || blocks.len() != transformed_len
+            || residual != std::collections::BTreeMap::from([(synthetic.index(), resume.block)])
+        {
+            return None;
+        }
+        let synthetic_block: &CfgBlock = blocks.get(synthetic.index())?;
+        if !synthetic_block.stmts.is_empty() || !matches!(synthetic_block.term, BlockTerm::Ret) {
+            return None;
+        }
+        let source_predecessor: &CfgBlock = source.get(predecessor.index())?;
+        if term_edge_count(&source_predecessor.term, resume.block) != 1 {
+            return None;
+        }
+        let mut expected_predecessor: CfgBlock = source_predecessor.clone();
+        retarget_block(
+            &mut expected_predecessor.term,
+            resume.block,
+            synthetic.index(),
+        );
+        for (index, original) in source.iter().enumerate() {
+            let transformed: &CfgBlock = blocks.get(index)?;
+            if index == predecessor.index() {
+                if transformed != &expected_predecessor {
+                    return None;
+                }
+            } else if transformed != original {
+                return None;
+            }
+        }
+        let predecessors: Vec<Vec<usize>> = block_predecessors(&blocks);
+        if predecessors.get(synthetic.index()).map(Vec::as_slice) != Some(&[predecessor.index()]) {
+            return None;
+        }
+        Some(Self {
+            predecessor,
+            resume,
+            blocks,
+            residual,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct PlanBlockId(usize);
+
+impl PlanBlockId {
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockCoordinateBijection {
+    original_to_plan: std::collections::BTreeMap<OriginalBlockId, PlanBlockId>,
+    plan_to_original: Vec<OriginalBlockId>,
+}
+
+impl BlockCoordinateBijection {
+    fn canonical(blocks: &[CfgBlock]) -> Option<Self> {
+        if blocks.is_empty() {
+            return None;
+        }
+        let mut original_to_plan: std::collections::BTreeMap<OriginalBlockId, PlanBlockId> =
+            std::collections::BTreeMap::new();
+        let mut plan_to_original: Vec<OriginalBlockId> = Vec::with_capacity(blocks.len());
+        let mut pending: Vec<OriginalBlockId> = vec![OriginalBlockId(0)];
+        while let Some(original) = pending.pop() {
+            if original.index() >= blocks.len() || original_to_plan.contains_key(&original) {
+                continue;
+            }
+            let plan: PlanBlockId = PlanBlockId(plan_to_original.len());
+            if original_to_plan.insert(original, plan).is_some() {
+                return None;
+            }
+            plan_to_original.push(original);
+            let mut successors: Vec<usize> = blocks.get(original.index())?.successors();
+            if successors
+                .iter()
+                .any(|successor: &usize| *successor >= blocks.len())
+            {
+                return None;
+            }
+            successors.reverse();
+            pending.extend(successors.into_iter().map(OriginalBlockId));
+        }
+        if plan_to_original.len() != blocks.len() {
+            return None;
+        }
+        Some(Self {
+            original_to_plan,
+            plan_to_original,
+        })
+    }
+
+    fn plan(&self, original: OriginalBlockId) -> Option<PlanBlockId> {
+        self.original_to_plan.get(&original).copied()
+    }
+
+    fn original(&self, plan: PlanBlockId) -> Option<OriginalBlockId> {
+        self.plan_to_original.get(plan.index()).copied()
+    }
+
+    fn is_total_for(&self, count: usize) -> bool {
+        if self.original_to_plan.len() != count || self.plan_to_original.len() != count {
+            return false;
+        }
+        self.plan_to_original.iter().enumerate().all(
+            |(plan_index, original): (usize, &OriginalBlockId)| {
+                original.index() < count
+                    && self.original_to_plan.get(original) == Some(&PlanBlockId(plan_index))
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OuterResumeRole {
+    ResumeAt,
+    Continue,
+    Break,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OuterResumeTreeTerm {
+    Ret,
+    Jump {
+        fallthrough: bool,
+        target: PlanBlockId,
+    },
+    Branch {
+        atom: OriginalBlockId,
+        kind: CondKind,
+        flags: Flags,
+        taken: PlanBlockId,
+        fallthrough: PlanBlockId,
+    },
+}
+
+impl OuterResumeTreeTerm {
+    fn from_block(
+        original: OriginalBlockId,
+        block: &CfgBlock,
+        bijection: &BlockCoordinateBijection,
+    ) -> Option<Self> {
+        match &block.term {
+            BlockTerm::Ret => Some(Self::Ret),
+            BlockTerm::Jump(target) => Some(Self::Jump {
+                fallthrough: false,
+                target: bijection.plan(OriginalBlockId(*target))?,
+            }),
+            BlockTerm::Fall(target) => Some(Self::Jump {
+                fallthrough: true,
+                target: bijection.plan(OriginalBlockId(*target))?,
+            }),
+            BlockTerm::Branch {
+                kind,
+                flags,
+                taken,
+                fallthrough,
+            } => Some(Self::Branch {
+                atom: original,
+                kind: *kind,
+                flags: flags.clone(),
+                taken: bijection.plan(OriginalBlockId(*taken))?,
+                fallthrough: bijection.plan(OriginalBlockId(*fallthrough))?,
+            }),
+        }
+    }
+
+    fn successors(&self) -> Vec<PlanBlockId> {
+        match self {
+            Self::Ret => Vec::new(),
+            Self::Jump { target, .. } => vec![*target],
+            Self::Branch {
+                taken, fallthrough, ..
+            } => vec![*taken, *fallthrough],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OuterResumeTreeBlock {
+    original: OriginalBlockId,
+    stmts: Vec<Stmt>,
+    term: OuterResumeTreeTerm,
+    role: Option<OuterResumeRole>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OuterResumeTree {
+    bijection: BlockCoordinateBijection,
+    blocks: Vec<OuterResumeTreeBlock>,
+    resume: OuterBodyResume,
+    resume_label: u32,
+}
+
+impl OuterResumeTree {
+    fn checked(
+        source: &[CfgBlock],
+        labels: &std::collections::BTreeMap<usize, SinkLabel>,
+        resume: OuterBodyResume,
+    ) -> Option<Self> {
+        let bijection: BlockCoordinateBijection = BlockCoordinateBijection::canonical(source)?;
+        let mut blocks: Vec<OuterResumeTreeBlock> = Vec::with_capacity(source.len());
+        for original in &bijection.plan_to_original {
+            let source_block: &CfgBlock = source.get(original.index())?;
+            let role: Option<OuterResumeRole> = match labels.get(&original.index()).copied() {
+                None => None,
+                Some(SinkLabel::ResumeAt(actual)) if actual == resume => {
+                    Some(OuterResumeRole::ResumeAt)
+                }
+                Some(SinkLabel::ContinueLoop(actual)) if actual == resume.outer => {
+                    Some(OuterResumeRole::Continue)
+                }
+                Some(SinkLabel::BreakLoop(actual)) if actual == resume.outer => {
+                    Some(OuterResumeRole::Break)
+                }
+                _ => return None,
+            };
+            if role.is_some()
+                != (source_block.stmts.is_empty() && matches!(source_block.term, BlockTerm::Ret))
+            {
+                return None;
+            }
+            blocks.push(OuterResumeTreeBlock {
+                original: *original,
+                stmts: source_block.stmts.clone(),
+                term: OuterResumeTreeTerm::from_block(*original, source_block, &bijection)?,
+                role,
+            });
+        }
+        let tree: Self = Self {
+            bijection,
+            blocks,
+            resume,
+            resume_label: u32::try_from(resume.block).ok()?,
+        };
+        if !tree.analysis_contract_holds()
+            || !tree.topology_matches()
+            || !tree.audit(source, labels, resume)
+            || !tree.relowers_to(source)
+        {
+            return None;
+        }
+        Some(tree)
+    }
+
+    fn analysis_contract_holds(&self) -> bool {
+        self.blocks.iter().all(|block: &OuterResumeTreeBlock| {
+            block.stmts.iter().all(outer_resume_stmt_supported)
+                && match &block.term {
+                    OuterResumeTreeTerm::Branch { flags, .. } => {
+                        outer_resume_flags_supported(flags)
+                    }
+                    OuterResumeTreeTerm::Ret | OuterResumeTreeTerm::Jump { .. } => true,
+                }
+        })
+    }
+
+    fn topology_matches(&self) -> bool {
+        const EXPECTED_SUCCESSORS: &[&[usize]] = &[
+            &[1, 19],
+            &[2],
+            &[3, 6],
+            &[4, 5],
+            &[],
+            &[],
+            &[3, 7],
+            &[3, 8],
+            &[3, 9],
+            &[3, 10],
+            &[3, 11],
+            &[3, 12],
+            &[3, 13],
+            &[3, 14],
+            &[3, 15],
+            &[5, 16],
+            &[17, 18],
+            &[],
+            &[7, 3],
+            &[20],
+            &[20, 21],
+            &[3, 22],
+            &[2],
+        ];
+        if self.blocks.len() != EXPECTED_SUCCESSORS.len() {
+            return false;
+        }
+        for (index, block) in self.blocks.iter().enumerate() {
+            let actual: Vec<usize> = block
+                .term
+                .successors()
+                .iter()
+                .map(|target: &PlanBlockId| target.index())
+                .collect();
+            if actual.as_slice() != EXPECTED_SUCCESSORS[index] {
+                return false;
+            }
+            let expected_term: bool = match index {
+                4 | 5 | 17 => matches!(block.term, OuterResumeTreeTerm::Ret),
+                1 | 19 | 22 => matches!(block.term, OuterResumeTreeTerm::Jump { .. }),
+                _ => matches!(block.term, OuterResumeTreeTerm::Branch { .. }),
+            };
+            if !expected_term {
+                return false;
+            }
+        }
+        let mut predecessor_counts: Vec<usize> = vec![0; self.blocks.len()];
+        for block in &self.blocks {
+            for successor in block.term.successors() {
+                let Some(count): Option<&mut usize> = predecessor_counts.get_mut(successor.index())
+                else {
+                    return false;
+                };
+                let Some(next): Option<usize> = count.checked_add(1) else {
+                    return false;
+                };
+                *count = next;
+            }
+        }
+        if predecessor_counts.get(4) != Some(&1)
+            || predecessor_counts.get(5) != Some(&2)
+            || predecessor_counts.get(17) != Some(&1)
+        {
+            return false;
+        }
+        self.blocks
+            .get(4)
+            .and_then(|block: &OuterResumeTreeBlock| block.role)
+            == Some(OuterResumeRole::Continue)
+            && self
+                .blocks
+                .get(5)
+                .and_then(|block: &OuterResumeTreeBlock| block.role)
+                == Some(OuterResumeRole::Break)
+            && self
+                .blocks
+                .get(17)
+                .and_then(|block: &OuterResumeTreeBlock| block.role)
+                == Some(OuterResumeRole::ResumeAt)
+    }
+
+    fn audit(
+        &self,
+        source: &[CfgBlock],
+        labels: &std::collections::BTreeMap<usize, SinkLabel>,
+        resume: OuterBodyResume,
+    ) -> bool {
+        if self.resume != resume
+            || !self.bijection.is_total_for(source.len())
+            || self.blocks.len() != source.len()
+            || labels.len() != 3
+            || !self.topology_matches()
+        {
+            return false;
+        }
+        let mut originals: std::collections::BTreeSet<OriginalBlockId> =
+            std::collections::BTreeSet::new();
+        let mut role_counts: std::collections::BTreeMap<OuterResumeRole, usize> =
+            std::collections::BTreeMap::new();
+        for (plan_index, block) in self.blocks.iter().enumerate() {
+            let plan: PlanBlockId = PlanBlockId(plan_index);
+            if self.bijection.original(plan) != Some(block.original)
+                || !originals.insert(block.original)
+            {
+                return false;
+            }
+            let Some(source_block): Option<&CfgBlock> = source.get(block.original.index()) else {
+                return false;
+            };
+            let Some(expected_term): Option<OuterResumeTreeTerm> =
+                OuterResumeTreeTerm::from_block(block.original, source_block, &self.bijection)
+            else {
+                return false;
+            };
+            if block.stmts != source_block.stmts || block.term != expected_term {
+                return false;
+            }
+            let expected_role: Option<OuterResumeRole> =
+                match labels.get(&block.original.index()).copied() {
+                    None => None,
+                    Some(SinkLabel::ResumeAt(actual)) if actual == resume => {
+                        Some(OuterResumeRole::ResumeAt)
+                    }
+                    Some(SinkLabel::ContinueLoop(actual)) if actual == resume.outer => {
+                        Some(OuterResumeRole::Continue)
+                    }
+                    Some(SinkLabel::BreakLoop(actual)) if actual == resume.outer => {
+                        Some(OuterResumeRole::Break)
+                    }
+                    _ => return false,
+                };
+            if block.role != expected_role {
+                return false;
+            }
+            if let Some(role) = block.role {
+                let count: &mut usize = role_counts.entry(role).or_insert(0);
+                let Some(next): Option<usize> = count.checked_add(1) else {
+                    return false;
+                };
+                *count = next;
+            }
+        }
+        originals.len() == source.len()
+            && role_counts.get(&OuterResumeRole::ResumeAt) == Some(&1)
+            && role_counts.get(&OuterResumeRole::Continue) == Some(&1)
+            && role_counts.get(&OuterResumeRole::Break) == Some(&1)
+    }
+
+    fn lower_blocks(&self) -> Option<Vec<CfgBlock>> {
+        let mut lowered: Vec<Option<CfgBlock>> = vec![None; self.blocks.len()];
+        for block in &self.blocks {
+            let term: BlockTerm = match &block.term {
+                OuterResumeTreeTerm::Ret => BlockTerm::Ret,
+                OuterResumeTreeTerm::Jump {
+                    fallthrough,
+                    target,
+                } => {
+                    let target: usize = self.bijection.original(*target)?.index();
+                    if *fallthrough {
+                        BlockTerm::Fall(target)
+                    } else {
+                        BlockTerm::Jump(target)
+                    }
+                }
+                OuterResumeTreeTerm::Branch {
+                    atom,
+                    kind,
+                    flags,
+                    taken,
+                    fallthrough,
+                } => {
+                    if *atom != block.original {
+                        return None;
+                    }
+                    BlockTerm::Branch {
+                        kind: *kind,
+                        flags: flags.clone(),
+                        taken: self.bijection.original(*taken)?.index(),
+                        fallthrough: self.bijection.original(*fallthrough)?.index(),
+                    }
+                }
+            };
+            let slot: &mut Option<CfgBlock> = lowered.get_mut(block.original.index())?;
+            if slot.is_some() {
+                return None;
+            }
+            *slot = Some(CfgBlock {
+                stmts: block.stmts.clone(),
+                term,
+            });
+        }
+        lowered.into_iter().collect()
+    }
+
+    fn lower_cfg(&self) -> Option<structuring::Cfg> {
+        cfg_from_leaf_blocks(&self.lower_blocks()?)
+    }
+
+    fn relowers_to(&self, source: &[CfgBlock]) -> bool {
+        let Some(source_cfg): Option<structuring::Cfg> = cfg_from_leaf_blocks(source) else {
+            return false;
+        };
+        let Some(lowered_cfg): Option<structuring::Cfg> = self.lower_cfg() else {
+            return false;
+        };
+        structuring::relowered_matches_original_modulo_clones(
+            &source_cfg,
+            &lowered_cfg,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    fn analysis_block(&self) -> Block {
+        let mut body: Block = Vec::new();
+        for block in &self.blocks {
+            body.extend(block.stmts.iter().cloned().map(Node::Stmt));
+            if let OuterResumeTreeTerm::Branch { kind, flags, .. } = &block.term {
+                body.push(Node::If {
+                    cond: Cond::leaf(*kind, flags.clone()),
+                    then_body: Vec::new(),
+                    else_body: None,
+                });
+            }
+        }
+        body
+    }
+
+    fn validate_packed_inputs(&self, entry: &BTreeSet<Xmm>) -> Result<()> {
+        let block_count: usize = self.blocks.len();
+        if block_count == 0 {
+            return Err(Error::LlvmIr(
+                "outer-body resume packed flow has no entry block".to_owned(),
+            ));
+        }
+        let mut reachable: Vec<bool> = vec![false; block_count];
+        let mut pending: Vec<PlanBlockId> = vec![PlanBlockId(0)];
+        while let Some(block_id) = pending.pop() {
+            let Some(seen): Option<&mut bool> = reachable.get_mut(block_id.index()) else {
+                return Err(Error::LlvmIr(
+                    "outer-body resume packed flow has an invalid successor".to_owned(),
+                ));
+            };
+            if *seen {
+                continue;
+            }
+            *seen = true;
+            let Some(block): Option<&OuterResumeTreeBlock> = self.blocks.get(block_id.index())
+            else {
+                return Err(Error::LlvmIr(
+                    "outer-body resume packed flow has an invalid block".to_owned(),
+                ));
+            };
+            pending.extend(block.term.successors());
+        }
+        if reachable.iter().any(|seen: &bool| !seen) {
+            return Err(Error::LlvmIr(
+                "outer-body resume packed flow has an unreachable block".to_owned(),
+            ));
+        }
+        let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); block_count];
+        let mut top: BTreeSet<Xmm> = entry.clone();
+        for (index, block) in self.blocks.iter().enumerate() {
+            for successor in block.term.successors() {
+                let Some(incoming): Option<&mut Vec<usize>> =
+                    predecessors.get_mut(successor.index())
+                else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume packed flow has an invalid successor".to_owned(),
+                    ));
+                };
+                incoming.push(index);
+            }
+            for stmt in &block.stmts {
+                if let Stmt::Packed { dest, .. } = stmt {
+                    top.insert(*dest);
+                }
+            }
+        }
+        let mut inputs: Vec<BTreeSet<Xmm>> = vec![top; block_count];
+        inputs[0].clone_from(entry);
+        let mut outputs: Vec<BTreeSet<Xmm>> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block): (usize, &OuterResumeTreeBlock)| {
+                packed_written_after(&block.stmts, &inputs[index])
+            })
+            .collect();
+        loop {
+            let mut changed: bool = false;
+            for index in 1..block_count {
+                let Some(incoming): Option<&Vec<usize>> = predecessors.get(index) else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume packed flow has an invalid block".to_owned(),
+                    ));
+                };
+                let Some(first): Option<&usize> = incoming.first() else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume packed flow has a non-entry block without predecessors"
+                            .to_owned(),
+                    ));
+                };
+                let Some(first_output): Option<&BTreeSet<Xmm>> = outputs.get(*first) else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume packed flow has an invalid predecessor".to_owned(),
+                    ));
+                };
+                let mut merged: BTreeSet<Xmm> = first_output.clone();
+                for predecessor in incoming.iter().skip(1) {
+                    let Some(output): Option<&BTreeSet<Xmm>> = outputs.get(*predecessor) else {
+                        return Err(Error::LlvmIr(
+                            "outer-body resume packed flow has an invalid predecessor".to_owned(),
+                        ));
+                    };
+                    merged.retain(|xmm: &Xmm| output.contains(xmm));
+                }
+                if inputs[index] != merged {
+                    inputs[index] = merged;
+                    outputs[index] =
+                        packed_written_after(&self.blocks[index].stmts, &inputs[index]);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (index, block) in self.blocks.iter().enumerate() {
+            let mut initialized: BTreeSet<Xmm> = inputs[index].clone();
+            validate_packed_statements(&block.stmts, &mut initialized)?;
+        }
+        Ok(())
+    }
+
+    fn scan_gpr_params(
+        &self,
+        entry_written: &BTreeMap<Reg, bool>,
+        acc: &mut Vec<Reg>,
+        note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+    ) -> Result<()> {
+        let block_count: usize = self.blocks.len();
+        if block_count == 0 {
+            return Err(Error::LlvmIr(
+                "outer-body resume parameter flow has no entry block".to_owned(),
+            ));
+        }
+        let mut reachable: Vec<bool> = vec![false; block_count];
+        let mut pending: Vec<PlanBlockId> = vec![PlanBlockId(0)];
+        while let Some(block_id) = pending.pop() {
+            let Some(seen): Option<&mut bool> = reachable.get_mut(block_id.index()) else {
+                return Err(Error::LlvmIr(
+                    "outer-body resume parameter flow has an invalid successor".to_owned(),
+                ));
+            };
+            if *seen {
+                continue;
+            }
+            *seen = true;
+            let Some(block): Option<&OuterResumeTreeBlock> = self.blocks.get(block_id.index())
+            else {
+                return Err(Error::LlvmIr(
+                    "outer-body resume parameter flow has an invalid block".to_owned(),
+                ));
+            };
+            pending.extend(block.term.successors());
+        }
+        if reachable.iter().any(|seen: &bool| !seen) {
+            return Err(Error::LlvmIr(
+                "outer-body resume parameter flow has an unreachable block".to_owned(),
+            ));
+        }
+        let mut predecessors: Vec<Vec<usize>> = vec![Vec::new(); block_count];
+        let mut top: BTreeSet<Reg> = entry_written
+            .iter()
+            .filter_map(|(reg, written): (&Reg, &bool)| written.then_some(*reg))
+            .collect();
+        for (index, block) in self.blocks.iter().enumerate() {
+            for successor in block.term.successors() {
+                let Some(incoming): Option<&mut Vec<usize>> =
+                    predecessors.get_mut(successor.index())
+                else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume parameter flow has an invalid successor".to_owned(),
+                    ));
+                };
+                incoming.push(index);
+            }
+            let mut generated: BTreeMap<Reg, bool> = BTreeMap::new();
+            let mut ignored_reads: Vec<Reg> = Vec::new();
+            scan_gpr_statements(
+                &block.stmts,
+                &mut generated,
+                &mut ignored_reads,
+                &mut |_: Reg, _: &BTreeMap<Reg, bool>, _: &mut Vec<Reg>| {},
+            );
+            top.extend(
+                generated
+                    .into_iter()
+                    .filter_map(|(reg, written): (Reg, bool)| written.then_some(reg)),
+            );
+        }
+        let entry: BTreeSet<Reg> = entry_written
+            .iter()
+            .filter_map(|(reg, written): (&Reg, &bool)| written.then_some(*reg))
+            .collect();
+        let mut inputs: Vec<BTreeSet<Reg>> = vec![top.clone(); block_count];
+        inputs[0] = entry;
+        let mut outputs: Vec<BTreeSet<Reg>> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block): (usize, &OuterResumeTreeBlock)| {
+                gpr_written_after(&block.stmts, &inputs[index])
+            })
+            .collect();
+        loop {
+            let mut changed: bool = false;
+            for index in 1..block_count {
+                let Some(incoming): Option<&Vec<usize>> = predecessors.get(index) else {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume parameter flow has an invalid block".to_owned(),
+                    ));
+                };
+                if incoming.is_empty() {
+                    return Err(Error::LlvmIr(
+                        "outer-body resume parameter flow has a non-entry block without a predecessor"
+                            .to_owned(),
+                    ));
+                }
+                let next_input: BTreeSet<Reg> = top
+                    .iter()
+                    .copied()
+                    .filter(|reg: &Reg| {
+                        incoming
+                            .iter()
+                            .all(|predecessor: &usize| outputs[*predecessor].contains(reg))
+                    })
+                    .collect();
+                let next_output: BTreeSet<Reg> =
+                    gpr_written_after(&self.blocks[index].stmts, &next_input);
+                if inputs[index] != next_input || outputs[index] != next_output {
+                    inputs[index] = next_input;
+                    outputs[index] = next_output;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (index, block) in self.blocks.iter().enumerate() {
+            let mut written: BTreeMap<Reg, bool> = inputs[index]
+                .iter()
+                .copied()
+                .map(|reg: Reg| (reg, true))
+                .collect();
+            scan_gpr_statements(&block.stmts, &mut written, acc, note);
+            if let OuterResumeTreeTerm::Branch { flags, .. } = &block.term {
+                read_flags(flags, &written, acc, note);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn outer_resume_source_supported(source: &Source) -> bool {
+    matches!(source, Source::Reg(_) | Source::Imm(_) | Source::Lea { .. })
+}
+
+fn outer_resume_flags_supported(flags: &Flags) -> bool {
+    match flags {
+        Flags::Cmp { rhs, .. } | Flags::Add { rhs, .. } => outer_resume_source_supported(rhs),
+        Flags::Test { .. } | Flags::TestImm { .. } | Flags::Sign { .. } => true,
+        Flags::CondCmp { prior, taken, .. } => {
+            outer_resume_flags_supported(prior) && outer_resume_flags_supported(taken)
+        }
+        Flags::CmpMem { .. } | Flags::FpCmp { .. } | Flags::Snapshot { .. } => false,
+    }
+}
+
+fn outer_resume_stmt_supported(statement: &Stmt) -> bool {
+    match statement {
+        Stmt::Assign { src, .. } | Stmt::BinAssign { src, .. } => {
+            outer_resume_source_supported(src)
+        }
+        Stmt::UnAssign { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => true,
+        Stmt::Cond { src, flags, .. } => {
+            outer_resume_source_supported(src) && outer_resume_flags_supported(flags)
+        }
+        Stmt::SetCc { flags, .. } => outer_resume_flags_supported(flags),
+        Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
+            matches!(src, ExtSource::Reg(_))
+        }
+        Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::FpBin { .. }
+        | Stmt::FpMov { .. }
+        | Stmt::FpStore { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::FpMinMax { .. }
+        | Stmt::FpFma { .. }
+        | Stmt::FpCsel { .. }
+        | Stmt::FpSqrt { .. }
+        | Stmt::FpUnary { .. }
+        | Stmt::FpRound { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::FlagSnapshot { .. }
+        | Stmt::Vector(_) => false,
+    }
+}
+
+fn scan_gpr_statements(
+    statements: &[Stmt],
+    written: &mut BTreeMap<Reg, bool>,
+    acc: &mut Vec<Reg>,
+    note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
+) {
+    for statement in statements {
+        scan_stmt_params(statement, written, acc, note);
+    }
+}
+
+fn gpr_written_after(statements: &[Stmt], input: &BTreeSet<Reg>) -> BTreeSet<Reg> {
+    let mut written: BTreeMap<Reg, bool> =
+        input.iter().copied().map(|reg: Reg| (reg, true)).collect();
+    let mut ignored_reads: Vec<Reg> = Vec::new();
+    scan_gpr_statements(
+        statements,
+        &mut written,
+        &mut ignored_reads,
+        &mut |_: Reg, _: &BTreeMap<Reg, bool>, _: &mut Vec<Reg>| {},
+    );
+    written
+        .into_iter()
+        .filter_map(|(reg, is_written): (Reg, bool)| is_written.then_some(reg))
+        .collect()
+}
+
+fn loop_parent_header(
+    forest: &structuring::LoopForest,
+    natural: &structuring::NaturalLoop,
+) -> Option<usize> {
+    natural
+        .parent
+        .and_then(|parent: usize| forest.loops.get(parent))
+        .map(|parent: &structuring::NaturalLoop| parent.header as usize)
+}
+
+fn loop_shape(
+    forest: &structuring::LoopForest,
+) -> std::collections::BTreeMap<usize, (Vec<usize>, Option<usize>)> {
+    forest
+        .loops
+        .iter()
+        .map(|natural: &structuring::NaturalLoop| {
+            (
+                natural.header as usize,
+                (
+                    natural
+                        .latches
+                        .iter()
+                        .map(|latch: &u32| *latch as usize)
+                        .collect(),
+                    loop_parent_header(forest, natural),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn term_edge_count(term: &BlockTerm, target: usize) -> usize {
+    match term {
+        BlockTerm::Ret => 0,
+        BlockTerm::Jump(actual) | BlockTerm::Fall(actual) => usize::from(*actual == target),
+        BlockTerm::Branch {
+            taken, fallthrough, ..
+        } => usize::from(*taken == target) + usize::from(*fallthrough == target),
+    }
+}
+
+fn outer_resume_lowering_candidates(
+    blocks: &[CfgBlock],
+    labels: &std::collections::BTreeMap<usize, SinkLabel>,
+) -> Vec<OuterResumePlan> {
+    let Some(original_cfg): Option<structuring::Cfg> = cfg_from_leaf_blocks(blocks) else {
+        return Vec::new();
+    };
+    let forest: structuring::LoopForest = structuring::loop_forest(&original_cfg);
+    if !forest.irreducible || !structuring::multi_entry_irreducible_sccs(&original_cfg).is_empty() {
+        return Vec::new();
+    }
+    let Some(flow): Option<structuring::FlowGraph<usize>> = block_flow(blocks) else {
+        return Vec::new();
+    };
+    let predecessors: Vec<Vec<usize>> = block_predecessors(blocks);
+    let original_shape: std::collections::BTreeMap<usize, (Vec<usize>, Option<usize>)> =
+        loop_shape(&forest);
+    let mut plans: Vec<OuterResumePlan> = Vec::new();
+    for (predecessor, block) in blocks.iter().enumerate() {
+        let BlockTerm::Branch {
+            taken, fallthrough, ..
+        } = &block.term
+        else {
+            continue;
+        };
+        for target in [*taken, *fallthrough] {
+            if target >= blocks.len()
+                || target == predecessor
+                || labels.contains_key(&target)
+                || term_edge_count(&block.term, target) != 1
+            {
+                continue;
+            }
+            let inner_index: Option<usize> = forest
+                .loops
+                .iter()
+                .enumerate()
+                .filter(|(_, natural): &(usize, &structuring::NaturalLoop)| {
+                    natural.body.contains(&(predecessor as u32))
+                        && !natural.body.contains(&(target as u32))
+                })
+                .min_by_key(|(_, natural): &(usize, &structuring::NaturalLoop)| natural.body.len())
+                .map(|(index, _): (usize, &structuring::NaturalLoop)| index);
+            let Some(inner_index): Option<usize> = inner_index else {
+                continue;
+            };
+            let inner: &structuring::NaturalLoop = &forest.loops[inner_index];
+            let mut outer_index: Option<usize> = inner.parent;
+            while let Some(index) = outer_index {
+                let outer: &structuring::NaturalLoop = &forest.loops[index];
+                if outer.body.contains(&(target as u32)) {
+                    break;
+                }
+                outer_index = outer.parent;
+            }
+            let Some(outer_index): Option<usize> = outer_index else {
+                continue;
+            };
+            let outer: &structuring::NaturalLoop = &forest.loops[outer_index];
+            if target == outer.header as usize
+                || !flow.dominates(outer.header as usize, predecessor)
+                || !flow.dominates(outer.header as usize, target)
+                || !flow.dominates(inner.header as usize, predecessor)
+                || predecessors[target]
+                    .iter()
+                    .any(|candidate: &usize| !outer.body.contains(&(*candidate as u32)))
+                || forest.loops.iter().enumerate().any(
+                    |(index, natural): (usize, &structuring::NaturalLoop)| {
+                        index != inner_index
+                            && natural.parent == Some(outer_index)
+                            && natural.body.contains(&(target as u32))
+                    },
+                )
+            {
+                continue;
+            }
+            let other: usize = if *taken == target {
+                *fallthrough
+            } else {
+                *taken
+            };
+            if !inner.body.contains(&(other as u32)) {
+                continue;
+            }
+            let stub: usize = blocks.len();
+            let mut transformed: Vec<CfgBlock> = blocks.to_vec();
+            transformed.push(CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Ret,
+            });
+            retarget_block(&mut transformed[predecessor].term, target, stub);
+            let Some(transformed_cfg): Option<structuring::Cfg> =
+                cfg_from_leaf_blocks(&transformed)
+            else {
+                continue;
+            };
+            let transformed_forest: structuring::LoopForest =
+                structuring::loop_forest(&transformed_cfg);
+            let residual_u32: std::collections::BTreeMap<u32, u32> =
+                std::collections::BTreeMap::from([(stub as u32, target as u32)]);
+            if transformed_forest.irreducible
+                || loop_shape(&transformed_forest) != original_shape
+                || !structuring::relowered_matches_original(
+                    &original_cfg,
+                    &transformed_cfg,
+                    &residual_u32,
+                )
+            {
+                continue;
+            }
+            let resume: OuterBodyResume = OuterBodyResume {
+                inner: LoopId {
+                    header: inner.header as usize,
+                },
+                outer: LoopId {
+                    header: outer.header as usize,
+                },
+                block: target,
+                stub,
+            };
+            let residual: std::collections::BTreeMap<usize, usize> =
+                std::collections::BTreeMap::from([(stub, target)]);
+            if let Some(plan) = OuterResumePlan::checked(
+                blocks,
+                OriginalBlockId(predecessor),
+                resume,
+                transformed,
+                residual,
+            ) {
+                plans.push(plan);
+            }
+        }
+    }
+    plans
 }
 
 fn irreducible_lowering_candidates(
@@ -6918,7 +9514,7 @@ fn structure_split_return(items: &[Item], ret_pos: usize) -> Result<Option<Block
     Ok(Some(head))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BlockTerm {
     Ret,
     Jump(usize),
@@ -6931,7 +9527,7 @@ enum BlockTerm {
     Fall(usize),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CfgBlock {
     stmts: Vec<Stmt>,
     term: BlockTerm,
@@ -8496,7 +11092,9 @@ fn nzcv_condition_holds(kind: CondKind, nzcv: u8) -> bool {
     }
 }
 
-fn infer_params(body: &Block, abi: Abi) -> Vec<Reg> {
+fn infer_params(body: &Block, abi: Abi) -> Result<Vec<Reg>> {
+    let mut packed_initialized: BTreeSet<Xmm> = BTreeSet::new();
+    validate_packed_block(body, &mut packed_initialized)?;
     let arg_order: &[Reg] = abi.arg_order();
     let mut written: BTreeMap<Reg, bool> = BTreeMap::new();
     let mut read_before_write: Vec<Reg> = Vec::new();
@@ -8508,7 +11106,7 @@ fn infer_params(body: &Block, abi: Abi) -> Vec<Reg> {
             acc.push(reg);
         }
     };
-    scan_block_params(body, &mut written, &mut read_before_write, &mut note_read);
+    scan_block_params(body, &mut written, &mut read_before_write, &mut note_read)?;
     let mut ordered: Vec<Reg> = read_before_write;
     ordered.sort_by_key(|r: &Reg| {
         arg_order
@@ -8516,7 +11114,149 @@ fn infer_params(body: &Block, abi: Abi) -> Vec<Reg> {
             .position(|a: &Reg| a == r)
             .unwrap_or(usize::MAX)
     });
-    ordered
+    Ok(ordered)
+}
+
+fn packed_read_sources(dest: Xmm, op: &PackedOp) -> (Option<Xmm>, Option<Xmm>) {
+    match op {
+        PackedOp::Const { .. } | PackedOp::Zero | PackedOp::FromGpr { .. } => (None, None),
+        PackedOp::MovReg(src) | PackedOp::ShufD { src, .. } => (Some(*src), None),
+        PackedOp::ShlQ(_) | PackedOp::ShlDq(_) | PackedOp::ShrDq8 => (Some(dest), None),
+        PackedOp::AddQ(src)
+        | PackedOp::And(src)
+        | PackedOp::AndN(src)
+        | PackedOp::CmpEqD(src)
+        | PackedOp::UnpackLowQ(src) => (Some(dest), Some(*src)),
+    }
+}
+
+fn packed_missing_source(dest: Xmm, op: &PackedOp, initialized: &BTreeSet<Xmm>) -> Option<Xmm> {
+    let (first, second): (Option<Xmm>, Option<Xmm>) = packed_read_sources(dest, op);
+    let sources: [Option<Xmm>; 2] = (first, second).into();
+    sources
+        .into_iter()
+        .flatten()
+        .find(|xmm: &Xmm| !initialized.contains(xmm))
+}
+
+fn packed_written_after(stmts: &[Stmt], entry: &BTreeSet<Xmm>) -> BTreeSet<Xmm> {
+    let mut initialized: BTreeSet<Xmm> = entry.clone();
+    for stmt in stmts {
+        if let Stmt::Packed { dest, op } = stmt {
+            if packed_missing_source(*dest, op, &initialized).is_none() {
+                initialized.insert(*dest);
+            } else {
+                initialized.remove(dest);
+            }
+        }
+    }
+    initialized
+}
+
+fn validate_packed_statements(stmts: &[Stmt], initialized: &mut BTreeSet<Xmm>) -> Result<()> {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Packed { dest, op } => {
+                let missing: Option<Xmm> = packed_missing_source(*dest, op, initialized);
+                if let Some(missing) = missing {
+                    return Err(Error::LlvmIr(format!(
+                        "packed register {} is read before a complete write and has no vector parameter binding",
+                        missing.index()
+                    )));
+                }
+                initialized.insert(*dest);
+            }
+            Stmt::PackedToGpr { src, .. } if !initialized.contains(src) => {
+                return Err(Error::LlvmIr(format!(
+                    "packed register {} is read before a complete write and has no vector parameter binding",
+                    src.index()
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn merge_packed_writes(initialized: &mut BTreeSet<Xmm>, branches: &[BTreeSet<Xmm>]) {
+    let Some(first): Option<&BTreeSet<Xmm>> = branches.first() else {
+        initialized.clear();
+        return;
+    };
+    let mut merged: BTreeSet<Xmm> = first.clone();
+    for branch in branches.iter().skip(1) {
+        merged.retain(|xmm: &Xmm| branch.contains(xmm));
+    }
+    *initialized = merged;
+}
+
+fn validate_packed_block(body: &Block, initialized: &mut BTreeSet<Xmm>) -> Result<()> {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => {
+                validate_packed_statements(std::slice::from_ref(stmt), initialized)?;
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let then_terminal: bool = block_terminates(then_body);
+                let mut then_initialized: BTreeSet<Xmm> = initialized.clone();
+                validate_packed_block(then_body, &mut then_initialized)?;
+                let mut branches: Vec<BTreeSet<Xmm>> = Vec::with_capacity(2);
+                if !then_terminal {
+                    branches.push(then_initialized);
+                }
+                if let Some(else_body) = else_body {
+                    let else_terminal: bool = block_terminates(else_body);
+                    let mut else_initialized: BTreeSet<Xmm> = initialized.clone();
+                    validate_packed_block(else_body, &mut else_initialized)?;
+                    if !else_terminal {
+                        branches.push(else_initialized);
+                    }
+                } else {
+                    branches.push(initialized.clone());
+                }
+                if !branches.is_empty() {
+                    merge_packed_writes(initialized, &branches);
+                }
+            }
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                let mut loop_initialized: BTreeSet<Xmm> = initialized.clone();
+                validate_packed_block(body, &mut loop_initialized)?;
+            }
+            Node::Switch { cases, default, .. } => {
+                let mut branches: Vec<BTreeSet<Xmm>> = Vec::with_capacity(cases.len() + 1);
+                for case in cases {
+                    let mut case_initialized: BTreeSet<Xmm> = initialized.clone();
+                    validate_packed_block(&case.body, &mut case_initialized)?;
+                    if !block_terminates(&case.body) {
+                        branches.push(case_initialized);
+                    }
+                }
+                let mut default_initialized: BTreeSet<Xmm> = initialized.clone();
+                validate_packed_block(default, &mut default_initialized)?;
+                if !block_terminates(default) {
+                    branches.push(default_initialized);
+                }
+                if !branches.is_empty() {
+                    merge_packed_writes(initialized, &branches);
+                }
+            }
+            Node::OuterResume(tree) => tree.validate_packed_inputs(initialized)?,
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::Return
+            | Node::CondSnapshot { .. }
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+    Ok(())
 }
 
 const FP_ARG_ORDER: [Xmm; 8] = [
@@ -8795,7 +11535,15 @@ fn scan_fp_params(
                 merge_fp_writes(written, &branches);
             }
             Node::CondSnapshot { flags, .. } => scan_fp_flags(flags, written, acc, abi)?,
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
     Ok(())
@@ -8803,7 +11551,14 @@ fn scan_fp_params(
 
 fn node_terminates(node: &Node) -> bool {
     match node {
-        Node::Return | Node::Break | Node::Continue | Node::Goto(_) => true,
+        Node::Return
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Goto(_) => true,
         Node::If {
             then_body,
             else_body: Some(else_body),
@@ -8817,12 +11572,27 @@ fn block_terminates(body: &Block) -> bool {
     body.last().is_some_and(node_terminates)
 }
 
+fn merge_gpr_writes(written: &mut BTreeMap<Reg, bool>, branches: &[BTreeMap<Reg, bool>]) {
+    let mut registers: BTreeSet<Reg> = BTreeSet::new();
+    for branch in branches {
+        registers.extend(branch.keys().copied());
+    }
+    written.clear();
+    for register in registers {
+        if branches.iter().all(|branch: &BTreeMap<Reg, bool>| {
+            branch.get(&register).is_some_and(|value: &bool| *value)
+        }) {
+            written.insert(register, true);
+        }
+    }
+}
+
 fn scan_block_params(
     body: &Block,
     written: &mut BTreeMap<Reg, bool>,
     acc: &mut Vec<Reg>,
     note: &mut impl FnMut(Reg, &BTreeMap<Reg, bool>, &mut Vec<Reg>),
-) {
+) -> Result<()> {
     for node in body {
         match node {
             Node::Stmt(stmt) => scan_stmt_params(stmt, written, acc, note),
@@ -8836,21 +11606,24 @@ fn scan_block_params(
                 });
                 let then_terminal: bool = block_terminates(then_body);
                 let mut then_written: BTreeMap<Reg, bool> = written.clone();
-                scan_block_params(then_body, &mut then_written, acc, note);
+                scan_block_params(then_body, &mut then_written, acc, note)?;
                 if let Some(else_b) = else_body {
                     let else_terminal: bool = block_terminates(else_b);
                     let mut else_written: BTreeMap<Reg, bool> = written.clone();
-                    scan_block_params(else_b, &mut else_written, acc, note);
-                    if then_terminal && !else_terminal {
-                        *written = else_written;
-                    } else if else_terminal && !then_terminal {
-                        *written = then_written;
+                    scan_block_params(else_b, &mut else_written, acc, note)?;
+                    match (then_terminal, else_terminal) {
+                        (true, false) => *written = else_written,
+                        (false, true) => *written = then_written,
+                        (false, false) => {
+                            merge_gpr_writes(written, &[then_written, else_written]);
+                        }
+                        (true, true) => {}
                     }
                 }
             }
             Node::DoWhile { body, cond } => {
                 let mut loop_written: BTreeMap<Reg, bool> = written.clone();
-                scan_block_params(body, &mut loop_written, acc, note);
+                scan_block_params(body, &mut loop_written, acc, note)?;
                 if let LoopCond::Direct { flags, .. } = cond {
                     read_flags(flags, &loop_written, acc, note);
                 }
@@ -8860,7 +11633,7 @@ fn scan_block_params(
                     read_flags(flags, written, acc, note);
                 }
                 let mut loop_written: BTreeMap<Reg, bool> = written.clone();
-                scan_block_params(body, &mut loop_written, acc, note);
+                scan_block_params(body, &mut loop_written, acc, note)?;
             }
             Node::Switch {
                 disc,
@@ -8868,17 +11641,36 @@ fn scan_block_params(
                 default,
             } => {
                 note(disc.reg, written, acc);
+                let mut branches: Vec<BTreeMap<Reg, bool>> = Vec::with_capacity(cases.len() + 1);
                 for case in cases {
                     let mut case_written: BTreeMap<Reg, bool> = written.clone();
-                    scan_block_params(&case.body, &mut case_written, acc, note);
+                    scan_block_params(&case.body, &mut case_written, acc, note)?;
+                    if !block_terminates(&case.body) {
+                        branches.push(case_written);
+                    }
                 }
                 let mut default_written: BTreeMap<Reg, bool> = written.clone();
-                scan_block_params(default, &mut default_written, acc, note);
+                scan_block_params(default, &mut default_written, acc, note)?;
+                if !block_terminates(default) {
+                    branches.push(default_written);
+                }
+                if !branches.is_empty() {
+                    merge_gpr_writes(written, &branches);
+                }
             }
             Node::CondSnapshot { flags, .. } => read_flags(flags, written, acc, note),
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+            Node::OuterResume(tree) => tree.scan_gpr_params(written, acc, note)?,
         }
     }
+    Ok(())
 }
 
 fn scan_stmt_params(
@@ -9609,9 +12401,47 @@ fn packed_xmm_pair(operands: &str) -> Option<(Xmm, Xmm)> {
     Some((parse_xmm(lhs.trim())?, parse_xmm(rhs.trim())?))
 }
 
+const fn legacy_xmm_from_index(index: u8) -> Option<Xmm> {
+    match index {
+        0 => Some(Xmm::Xmm0),
+        1 => Some(Xmm::Xmm1),
+        2 => Some(Xmm::Xmm2),
+        3 => Some(Xmm::Xmm3),
+        4 => Some(Xmm::Xmm4),
+        5 => Some(Xmm::Xmm5),
+        6 => Some(Xmm::Xmm6),
+        7 => Some(Xmm::Xmm7),
+        _ => None,
+    }
+}
+
+fn exact_legacy_punpcklqdq_pair(bytes: &[u8], operands: &str) -> Option<(Xmm, Xmm)> {
+    let [prefix, escape, opcode, modrm]: &[u8; 4] = bytes.try_into().ok()?;
+    if (*prefix, *escape, *opcode) != (0x66, 0x0f, 0x6c) || *modrm & 0xc0 != 0xc0 {
+        return None;
+    }
+    let encoded_dest: Xmm = legacy_xmm_from_index((*modrm >> 3) & 0x07)?;
+    let encoded_src: Xmm = legacy_xmm_from_index(*modrm & 0x07)?;
+    let (text_dest, text_src): (Xmm, Xmm) = packed_xmm_pair(operands)?;
+    (encoded_dest == text_dest && encoded_src == text_src).then_some((encoded_dest, encoded_src))
+}
+
+fn exact_legacy_psrldq8_dest(bytes: &[u8], operands: &str) -> Option<Xmm> {
+    let [prefix, escape, opcode, modrm, imm]: &[u8; 5] = bytes.try_into().ok()?;
+    if (*prefix, *escape, *opcode) != (0x66, 0x0f, 0x73) || *modrm & 0xf8 != 0xd8 || *imm != 8 {
+        return None;
+    }
+    let encoded_dest: Xmm = legacy_xmm_from_index(*modrm & 0x07)?;
+    let (lhs, rhs): (&str, &str) = operands.split_once(',')?;
+    let text_dest: Xmm = parse_xmm(lhs.trim())?;
+    let text_imm: i64 = parse_imm(rhs.trim())?;
+    (encoded_dest == text_dest && text_imm == 8).then_some(encoded_dest)
+}
+
 fn lift_packed(
     mnemonic: &str,
     operands: &str,
+    bytes: &[u8],
     site: u64,
     consts: &[PackedConstant],
 ) -> Result<Option<Stmt>> {
@@ -9735,6 +12565,15 @@ fn lift_packed(
                 op: PackedOp::ShlDq(imm as u8),
             }))
         }
+        "psrldq" => {
+            let Some(dest): Option<Xmm> = exact_legacy_psrldq8_dest(bytes, operands) else {
+                return reject("only the exact legacy register shift by eight is modeled");
+            };
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::ShrDq8,
+            }))
+        }
         "pshufd" => {
             let mut parts = operands.splitn(3, ',');
             let dest_tok: &str = parts.next().unwrap_or("").trim();
@@ -9756,6 +12595,17 @@ fn lift_packed(
                     src,
                     imm: imm as u8,
                 },
+            }))
+        }
+        "punpcklqdq" => {
+            let Some((dest, src)): Option<(Xmm, Xmm)> =
+                exact_legacy_punpcklqdq_pair(bytes, operands)
+            else {
+                return reject("only the exact legacy register form is modeled");
+            };
+            Ok(Some(Stmt::Packed {
+                dest,
+                op: PackedOp::UnpackLowQ(src),
             }))
         }
         _ => reject("xmm-touching instruction outside the recovered packed-integer class"),
@@ -10509,6 +13359,10 @@ fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
             | Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -10546,6 +13400,10 @@ fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
             Node::Stmt(_)
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -10957,6 +13815,10 @@ fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -11077,6 +13939,10 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -11518,7 +14384,15 @@ fn aggregate_scan_block(scan: &mut AggregateScan, body: &Block, depth: usize) {
                 }
                 aggregate_scan_block(scan, default, depth + 1);
             }
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
         if scan.exceeded {
             return;
@@ -12036,6 +14910,10 @@ fn forget_block_bounds(body: &Block, bounds: &mut BTreeMap<Reg, u64>) {
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -12061,9 +14939,15 @@ fn block_has_unstructured_edge(body: &Block) -> bool {
                 .any(|case: &SwitchCase| block_has_unstructured_edge(&case.body))
                 || block_has_unstructured_edge(default)
         }
-        Node::Stmt(_) | Node::CondSnapshot { .. } | Node::Break | Node::Continue | Node::Return => {
-            false
-        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Return => false,
     })
 }
 
@@ -12393,7 +15277,15 @@ fn scan_frame_block(ctx: FrameScan, body: &Block, state: &mut FrameScanState) {
                 scan_frame_block(ctx, default, state);
             }
             Node::CondSnapshot { flags, .. } => ctx.note_flags(flags, state),
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -12951,13 +15843,78 @@ fn detect_sret(body: &Block, abi: Abi) -> Option<SretPlan> {
     Some(SretPlan { ptr, fields, size })
 }
 
+#[cfg(test)]
+fn block_has_continue_at(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::BreakLoop(_) | Node::ContinueLoop(_) | Node::ResumeAt(_) | Node::OuterResume(_) => {
+            true
+        }
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_has_continue_at(then_body)
+                || else_body.as_ref().is_some_and(block_has_continue_at)
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_has_continue_at(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case: &SwitchCase| block_has_continue_at(&case.body))
+                || block_has_continue_at(default)
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => false,
+    })
+}
+
+fn block_has_unresolved_resume(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::BreakLoop(_) | Node::ContinueLoop(_) | Node::ResumeAt(_) => true,
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_has_unresolved_resume(then_body)
+                || else_body.as_ref().is_some_and(block_has_unresolved_resume)
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_has_unresolved_resume(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case: &SwitchCase| block_has_unresolved_resume(&case.body))
+                || block_has_unresolved_resume(default)
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::OuterResume(_)
+        | Node::Break
+        | Node::Continue
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => false,
+    })
+}
+
 fn emit_c(
     body: &Block,
     signature: &FnSignature,
     frame: Option<&FramePlan>,
     sret: Option<&SretPlan>,
     aggregates: &AggregatePlan,
-) -> String {
+) -> Result<String> {
+    if block_has_unresolved_resume(body) {
+        return Err(Error::LlvmIr(
+            "C emitter does not support an outer-body resume role".to_owned(),
+        ));
+    }
     let mut out: String = String::new();
     let _ = writeln!(out, "#include <stdint.h>");
     let uses_fp: bool = !signature.fp.is_empty() || matches!(signature.ret, FnReturn::Fp(_)) || {
@@ -12986,25 +15943,29 @@ fn emit_c(
         let _ = writeln!(out, "extern uint64_t {}({params});", decl.display_name);
     }
 
-    let param_types: Vec<ScalarType> = signature.ordered_param_types();
-    let scalar_count: usize = param_types.len();
-    let mut int_param_index: usize = 0;
-    let mut param_decls: Vec<String> = param_types
+    let scalar_params: Vec<ScalarParam> = signature.ordered_params();
+    let scalar_count: usize = scalar_params.len();
+    let mut param_decls: Vec<String> = scalar_params
         .iter()
         .enumerate()
-        .map(|(i, ty): (usize, &ScalarType)| match ty {
-            ScalarType::Int => {
-                let width: Width = signature.int[int_param_index].1;
-                int_param_index += 1;
+        .map(|(i, param): (usize, &ScalarParam)| match param {
+            ScalarParam::Integer { width, .. } => {
                 let c_type: &str = if signature.exact_integer_types {
-                    width_c_uint(width)
+                    width_c_uint(*width)
                 } else {
                     "uint64_t"
                 };
                 format!("{c_type} a{i}")
             }
-            ScalarType::Double => format!("double a{i}"),
-            ScalarType::Float => format!("float a{i}"),
+            ScalarParam::FloatingPoint {
+                width: FpWidth::F64,
+                ..
+            } => format!("double a{i}"),
+            ScalarParam::FloatingPoint {
+                width: FpWidth::F32,
+                ..
+            } => format!("float a{i}"),
+            ScalarParam::UnobservedMsX64 { slot } => format!("uint64_t a{slot}"),
         })
         .collect();
     for (k, (_, arr)) in signature.vec.iter().enumerate() {
@@ -13090,25 +16051,22 @@ fn emit_c(
 
     let mut declared_gp: Vec<Reg> = Vec::new();
     let mut declared_xmm: Vec<Xmm> = Vec::new();
-    for (i, ty) in param_types.iter().enumerate() {
-        match ty {
-            ScalarType::Int => {
-                let index: usize = declared_gp.len();
-                let reg: Reg = signature.int[index].0;
-                let _ = writeln!(out, "    uint64_t {} = a{i};", reg_var(reg));
-                declared_gp.push(reg);
+    for (i, param) in scalar_params.iter().enumerate() {
+        match param {
+            ScalarParam::Integer { reg, .. } => {
+                let _ = writeln!(out, "    uint64_t {} = a{i};", reg_var(*reg));
+                declared_gp.push(*reg);
             }
-            ScalarType::Double | ScalarType::Float => {
-                let index: usize = declared_xmm.len();
-                let (xmm, width): (Xmm, FpWidth) = signature.fp[index];
+            ScalarParam::FloatingPoint { xmm, width } => {
                 let _ = writeln!(
                     out,
                     "    uint64_t {} = {};",
-                    xmm_var(xmm),
-                    fp_store_expr(&format!("a{i}"), width)
+                    xmm_var(*xmm),
+                    fp_store_expr(&format!("a{i}"), *width)
                 );
-                declared_xmm.push(xmm);
+                declared_xmm.push(*xmm);
             }
+            ScalarParam::UnobservedMsX64 { .. } => {}
         }
     }
     for reg in &touched_gp {
@@ -13180,7 +16138,11 @@ fn emit_c(
         }
     };
 
-    emit_block(&mut out, body, &ret_expr, aggregates);
+    if !emit_block(&mut out, body, &ret_expr, aggregates) {
+        return Err(Error::LlvmIr(
+            "C emitter rejected an invalid outer-body resume tree".to_owned(),
+        ));
+    }
 
     if !matches!(body.last(), Some(Node::Return)) {
         let rendered: String = c_render_stmt(|cx| {
@@ -13193,7 +16155,7 @@ fn emit_c(
         write_indented(&mut out, &rendered, "    ");
     }
     let _ = writeln!(out, "}}");
-    out
+    Ok(out)
 }
 
 fn block_string_ops_present(body: &Block) -> bool {
@@ -13219,6 +16181,10 @@ fn block_string_ops_present(body: &Block) -> bool {
         Node::CondSnapshot { .. }
         | Node::Break
         | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
         | Node::Return
         | Node::Label(_)
         | Node::Goto(_) => false,
@@ -13467,8 +16433,16 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                 }
                 collect_block_regs(default, acc);
             }
+            Node::OuterResume(tree) => collect_block_regs(&tree.analysis_block(), acc),
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -13597,7 +16571,15 @@ fn collect_block_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 collect_block_xmm(default, acc);
             }
             Node::CondSnapshot { flags, .. } => push_flags(flags, acc),
-            Node::Break | Node::Continue | Node::Return | Node::Label(_) | Node::Goto(_) => {}
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
         }
     }
 }
@@ -13617,11 +16599,13 @@ fn packed_stmt_lanes(stmt: &Stmt, acc: &mut Vec<Xmm>) {
                 | PackedOp::And(src)
                 | PackedOp::AndN(src)
                 | PackedOp::CmpEqD(src)
-                | PackedOp::ShufD { src, .. } => push(*src, acc),
+                | PackedOp::ShufD { src, .. }
+                | PackedOp::UnpackLowQ(src) => push(*src, acc),
                 PackedOp::Const { .. }
                 | PackedOp::Zero
                 | PackedOp::ShlQ(_)
                 | PackedOp::ShlDq(_)
+                | PackedOp::ShrDq8
                 | PackedOp::FromGpr { .. } => {}
             }
         }
@@ -13653,9 +16637,13 @@ fn collect_block_packed_xmm(body: &Block, acc: &mut Vec<Xmm>) {
                 }
                 collect_block_packed_xmm(default, acc);
             }
+            Node::OuterResume(tree) => collect_block_packed_xmm(&tree.analysis_block(), acc),
             Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -13671,6 +16659,10 @@ fn for_each_vec_stmt(body: &Block, visit: &mut impl FnMut(&VecStmt)) {
             | Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::OuterResume(_)
             | Node::Return
             | Node::Label(_)
             | Node::Goto(_) => {}
@@ -13912,8 +16904,8 @@ fn switch_case_chain(
     case: &SwitchCase,
     ret_expr: &str,
     aggregates: &AggregatePlan,
-) -> CStmt {
-    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, &case.body, ret_expr, aggregates);
+) -> Option<CStmt> {
+    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, &case.body, ret_expr, aggregates)?;
     if !case.fallthrough {
         stmts.push(CStmt::Break);
     }
@@ -13924,7 +16916,7 @@ fn switch_case_chain(
             body: Box::new(chain),
         };
     }
-    chain
+    Some(chain)
 }
 
 fn switch_default_cstmt(
@@ -13932,12 +16924,130 @@ fn switch_default_cstmt(
     default: &Block,
     ret_expr: &str,
     aggregates: &AggregatePlan,
-) -> CStmt {
-    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, default, ret_expr, aggregates);
+) -> Option<CStmt> {
+    let mut stmts: Vec<CStmt> = block_to_cstmts(cx, default, ret_expr, aggregates)?;
     stmts.push(CStmt::Break);
-    CStmt::Default {
+    Some(CStmt::Default {
         body: Box::new(CStmt::Block(stmts)),
+    })
+}
+
+fn outer_resume_cstmts(
+    cx: &mut Cx<'_>,
+    tree: &OuterResumeTree,
+    aggregates: &AggregatePlan,
+) -> Option<Vec<CStmt>> {
+    if !tree.topology_matches() {
+        return None;
     }
+    let stmts = |cx: &mut Cx<'_>, index: usize| -> Option<Vec<CStmt>> {
+        let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
+        Some(
+            block
+                .stmts
+                .iter()
+                .map(|stmt: &Stmt| stmt_to_cstmt(cx, stmt, aggregates))
+                .collect(),
+        )
+    };
+    let condition = |cx: &mut Cx<'_>, index: usize, negate: bool| -> Option<CExpr> {
+        let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
+        let OuterResumeTreeTerm::Branch { kind, flags, .. } = &block.term else {
+            return None;
+        };
+        let kind: CondKind = if negate { kind.negate() } else { *kind };
+        Some(cx.var(&cond_expr(kind, flags, aggregates)))
+    };
+    let action: &str = "outer_resume_action";
+    let mut result: Vec<CStmt> = vec![decl_with_init(cx, "uint64_t", action, CExpr::int(0))];
+    result.extend(stmts(cx, 0)?);
+    let mut entry_taken: Vec<CStmt> = stmts(cx, 1)?;
+    entry_taken.push(assign_cstmt(cx, action, "1"));
+    let mut entry_fallthrough: Vec<CStmt> = stmts(cx, 19)?;
+    entry_fallthrough.push(CStmt::DoWhile {
+        body: Box::new(CStmt::Block(stmts(cx, 20)?)),
+        cond: condition(cx, 20, false)?,
+    });
+    entry_fallthrough.extend(stmts(cx, 21)?);
+    let mut common_from_fallthrough: Vec<CStmt> = vec![CStmt::Label {
+        name: cx.sym(&label_name(tree.resume_label)),
+        body: Box::new(CStmt::Empty),
+    }];
+    common_from_fallthrough.extend(stmts(cx, 22)?);
+    common_from_fallthrough.push(assign_cstmt(cx, action, "1"));
+    entry_fallthrough.push(CStmt::If {
+        cond: condition(cx, 21, true)?,
+        then: Box::new(CStmt::Block(common_from_fallthrough)),
+        els: None,
+    });
+    result.push(CStmt::If {
+        cond: condition(cx, 0, false)?,
+        then: Box::new(CStmt::Block(entry_taken)),
+        els: Some(Box::new(CStmt::Block(entry_fallthrough))),
+    });
+    let mut scalar_loop: Vec<CStmt> = Vec::new();
+    for index in 7..=14 {
+        scalar_loop.extend(stmts(cx, index)?);
+        scalar_loop.push(CStmt::If {
+            cond: condition(cx, index, false)?,
+            then: Box::new(CStmt::Break),
+            els: None,
+        });
+    }
+    scalar_loop.extend(stmts(cx, 15)?);
+    scalar_loop.push(CStmt::If {
+        cond: condition(cx, 15, false)?,
+        then: Box::new(CStmt::Block(vec![
+            assign_cstmt(cx, action, "2"),
+            CStmt::Break,
+        ])),
+        els: None,
+    });
+    scalar_loop.extend(stmts(cx, 16)?);
+    scalar_loop.push(CStmt::If {
+        cond: condition(cx, 16, false)?,
+        then: Box::new(CStmt::Goto(cx.sym(&label_name(tree.resume_label)))),
+        els: None,
+    });
+    scalar_loop.extend(stmts(cx, 18)?);
+    scalar_loop.push(CStmt::If {
+        cond: condition(cx, 18, true)?,
+        then: Box::new(CStmt::Break),
+        els: None,
+    });
+    let mut chain: Vec<CStmt> = stmts(cx, 6)?;
+    chain.push(CStmt::If {
+        cond: condition(cx, 6, true)?,
+        then: Box::new(CStmt::While {
+            cond: CExpr::int(1),
+            body: Box::new(CStmt::Block(scalar_loop)),
+        }),
+        els: None,
+    });
+    let mut common: Vec<CStmt> = stmts(cx, 2)?;
+    common.push(CStmt::If {
+        cond: condition(cx, 2, true)?,
+        then: Box::new(CStmt::Block(chain)),
+        els: None,
+    });
+    result.push(CStmt::If {
+        cond: cx.var("outer_resume_action != 0"),
+        then: Box::new(CStmt::Block(common)),
+        els: None,
+    });
+    result.push(CStmt::If {
+        cond: cx.var("outer_resume_action == 2"),
+        then: Box::new(CStmt::Break),
+        els: None,
+    });
+    result.extend(stmts(cx, 3)?);
+    result.push(CStmt::If {
+        cond: condition(cx, 3, false)?,
+        then: Box::new(CStmt::Continue),
+        els: None,
+    });
+    result.push(CStmt::Break);
+    Some(result)
 }
 
 fn node_to_cstmt(
@@ -13945,8 +17055,8 @@ fn node_to_cstmt(
     node: &Node,
     ret_expr: &str,
     aggregates: &AggregatePlan,
-) -> CStmt {
-    match node {
+) -> Option<CStmt> {
+    let stmt: CStmt = match node {
         Node::Stmt(stmt) => stmt_to_cstmt(cx, stmt, aggregates),
         Node::If {
             cond,
@@ -13954,10 +17064,11 @@ fn node_to_cstmt(
             else_body,
         } => {
             let cond_text: String = if_cond_expr(cond, aggregates);
-            let then_cstmt: CStmt = braced_block(cx, then_body, ret_expr, aggregates);
-            let els_cstmt: Option<Box<CStmt>> = else_body
-                .as_ref()
-                .map(|b: &Block| Box::new(braced_block(cx, b, ret_expr, aggregates)));
+            let then_cstmt: CStmt = braced_block(cx, then_body, ret_expr, aggregates)?;
+            let els_cstmt: Option<Box<CStmt>> = match else_body {
+                Some(body) => Some(Box::new(braced_block(cx, body, ret_expr, aggregates)?)),
+                None => None,
+            };
             CStmt::If {
                 cond: cx.var(&cond_text),
                 then: Box::new(then_cstmt),
@@ -13970,7 +17081,7 @@ fn node_to_cstmt(
                 LoopCond::Snapshot { var } => loop_cond_var(*var),
             };
             CStmt::DoWhile {
-                body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
+                body: Box::new(braced_block(cx, body, ret_expr, aggregates)?),
                 cond: cx.var(&cond_text),
             }
         }
@@ -13985,7 +17096,7 @@ fn node_to_cstmt(
             };
             CStmt::While {
                 cond: condition,
-                body: Box::new(braced_block(cx, body, ret_expr, aggregates)),
+                body: Box::new(braced_block(cx, body, ret_expr, aggregates)?),
             }
         }
         Node::Switch {
@@ -13996,9 +17107,9 @@ fn node_to_cstmt(
             let key: String = switch_key_expr(*disc, cases, aggregates);
             let mut body_stmts: Vec<CStmt> = Vec::with_capacity(cases.len() + 1);
             for case in cases {
-                body_stmts.push(switch_case_chain(cx, case, ret_expr, aggregates));
+                body_stmts.push(switch_case_chain(cx, case, ret_expr, aggregates)?);
             }
-            body_stmts.push(switch_default_cstmt(cx, default, ret_expr, aggregates));
+            body_stmts.push(switch_default_cstmt(cx, default, ret_expr, aggregates)?);
             CStmt::Switch {
                 value: cx.var(&key),
                 body: Box::new(CStmt::Block(body_stmts)),
@@ -14010,6 +17121,8 @@ fn node_to_cstmt(
         }
         Node::Break => CStmt::Break,
         Node::Continue => CStmt::Continue,
+        Node::BreakLoop(_) | Node::ContinueLoop(_) | Node::ResumeAt(_) => CStmt::Empty,
+        Node::OuterResume(tree) => CStmt::Block(outer_resume_cstmts(cx, tree, aggregates)?),
         Node::Return => {
             if ret_expr.is_empty() {
                 CStmt::Return(None)
@@ -14022,7 +17135,8 @@ fn node_to_cstmt(
             body: Box::new(CStmt::Empty),
         },
         Node::Goto(id) => CStmt::Goto(cx.sym(&label_name(*id))),
-    }
+    };
+    Some(stmt)
 }
 
 fn label_name(id: u32) -> String {
@@ -14034,12 +17148,12 @@ fn block_to_cstmts(
     body: &Block,
     ret_expr: &str,
     aggregates: &AggregatePlan,
-) -> Vec<CStmt> {
+) -> Option<Vec<CStmt>> {
     let mut stmts: Vec<CStmt> = Vec::with_capacity(body.len());
     for node in body {
-        stmts.push(node_to_cstmt(cx, node, ret_expr, aggregates));
+        stmts.push(node_to_cstmt(cx, node, ret_expr, aggregates)?);
     }
-    stmts
+    Some(stmts)
 }
 
 fn braced_block(
@@ -14047,20 +17161,25 @@ fn braced_block(
     body: &Block,
     ret_expr: &str,
     aggregates: &AggregatePlan,
-) -> CStmt {
-    CStmt::Block(block_to_cstmts(cx, body, ret_expr, aggregates))
+) -> Option<CStmt> {
+    Some(CStmt::Block(block_to_cstmts(
+        cx, body, ret_expr, aggregates,
+    )?))
 }
 
-fn emit_block(out: &mut String, body: &Block, ret_expr: &str, aggregates: &AggregatePlan) {
+fn emit_block(out: &mut String, body: &Block, ret_expr: &str, aggregates: &AggregatePlan) -> bool {
     let mut interner: Interner = Interner::new();
-    let stmts: Vec<CStmt> = {
+    let Some(stmts): Option<Vec<CStmt>> = ({
         let mut cx: Cx<'_> = Cx::new(&mut interner);
         block_to_cstmts(&mut cx, body, ret_expr, aggregates)
+    }) else {
+        return false;
     };
     for stmt in &stmts {
         let rendered: String = render_stmt(stmt, &interner, C_RENDER_WIDTH);
         write_indented(out, &rendered, "    ");
     }
+    true
 }
 
 fn c_render_stmt(build: impl FnOnce(&mut Cx<'_>) -> CStmt) -> String {
@@ -14147,6 +17266,12 @@ fn packed_op_cstmt(cx: &mut Cx<'_>, dest: Xmm, op: &PackedOp) -> CStmt {
             stmts.push(assign_cstmt(cx, &d_lo, &lo_expr));
             stmts.push(assign_cstmt(cx, &d_hi, &hi_expr));
         }
+        PackedOp::ShrDq8 => {
+            let hi_init: CExpr = cx.var(&d_hi);
+            stmts.push(decl_with_init(cx, "uint64_t", "vsr_hi", hi_init));
+            stmts.push(assign_cstmt(cx, &d_lo, "vsr_hi"));
+            stmts.push(assign_cstmt(cx, &d_hi, "0ULL"));
+        }
         PackedOp::CmpEqD(src) => {
             let s_lo: String = packed_lane(*src, false);
             let s_hi: String = packed_lane(*src, true);
@@ -14168,6 +17293,10 @@ fn packed_op_cstmt(cx: &mut Cx<'_>, dest: Xmm, op: &PackedOp) -> CStmt {
             let d3: String = packed_dword_expr("vsf_lo", "vsf_hi", (imm >> 6) & 3);
             stmts.push(assign_cstmt(cx, &d_lo, &format!("{d0} | ({d1} << 32)")));
             stmts.push(assign_cstmt(cx, &d_hi, &format!("{d2} | ({d3} << 32)")));
+        }
+        PackedOp::UnpackLowQ(src) => {
+            let s_lo: String = packed_lane(*src, false);
+            stmts.push(assign_cstmt(cx, &d_hi, &s_lo));
         }
         PackedOp::FromGpr { src } => {
             let mut masked: String = String::new();
@@ -15951,24 +19080,28 @@ fn emit_rust(
         let _ = writeln!(out, "{source}");
     }
 
-    let param_types: Vec<ScalarType> = signature.ordered_param_types();
-    let mut int_param_index: usize = 0;
-    let params_sig: String = param_types
+    let scalar_params: Vec<ScalarParam> = signature.ordered_params();
+    let params_sig: String = scalar_params
         .iter()
         .enumerate()
-        .map(|(i, ty): (usize, &ScalarType)| match ty {
-            ScalarType::Int => {
-                let width: Width = signature.int[int_param_index].1;
-                int_param_index += 1;
+        .map(|(i, param): (usize, &ScalarParam)| match param {
+            ScalarParam::Integer { width, .. } => {
                 let rust_type: &str = if signature.exact_integer_types {
-                    rs_uint_ty(width)
+                    rs_uint_ty(*width)
                 } else {
                     "u64"
                 };
                 format!("a{i}: {rust_type}")
             }
-            ScalarType::Double => format!("a{i}: f64"),
-            ScalarType::Float => format!("a{i}: f32"),
+            ScalarParam::FloatingPoint {
+                width: FpWidth::F64,
+                ..
+            } => format!("a{i}: f64"),
+            ScalarParam::FloatingPoint {
+                width: FpWidth::F32,
+                ..
+            } => format!("a{i}: f32"),
+            ScalarParam::UnobservedMsX64 { slot } => format!("a{slot}: u64"),
         })
         .collect::<Vec<String>>()
         .join(", ");
@@ -16010,30 +19143,27 @@ fn emit_rust(
 
     let mut declared_gp: Vec<Reg> = Vec::new();
     let mut declared_xmm: Vec<Xmm> = Vec::new();
-    for (i, ty) in param_types.iter().enumerate() {
-        match ty {
-            ScalarType::Int => {
-                let index: usize = declared_gp.len();
-                let (reg, width): (Reg, Width) = signature.int[index];
-                let init: String = if signature.exact_integer_types && width != Width::W64 {
+    for (i, param) in scalar_params.iter().enumerate() {
+        match param {
+            ScalarParam::Integer { reg, width } => {
+                let init: String = if signature.exact_integer_types && *width != Width::W64 {
                     format!("u64::from(a{i})")
                 } else {
                     format!("a{i}")
                 };
-                let _ = writeln!(out, "    let mut {}: u64 = {init};", reg_var(reg));
-                declared_gp.push(reg);
+                let _ = writeln!(out, "    let mut {}: u64 = {init};", reg_var(*reg));
+                declared_gp.push(*reg);
             }
-            ScalarType::Double | ScalarType::Float => {
-                let index: usize = declared_xmm.len();
-                let (xmm, width): (Xmm, FpWidth) = signature.fp[index];
+            ScalarParam::FloatingPoint { xmm, width } => {
                 let _ = writeln!(
                     out,
                     "    let mut {}: u64 = {};",
-                    xmm_var(xmm),
-                    rs_fp_store_expr(&format!("a{i}"), width)
+                    xmm_var(*xmm),
+                    rs_fp_store_expr(&format!("a{i}"), *width)
                 );
-                declared_xmm.push(xmm);
+                declared_xmm.push(*xmm);
             }
+            ScalarParam::UnobservedMsX64 { .. } => {}
         }
     }
     for reg in &touched_gp {
@@ -16054,6 +19184,12 @@ fn emit_rust(
             let _ = writeln!(out, "    let mut {}: u64 = 0;", xmm_var(*xmm));
             declared_xmm.push(*xmm);
         }
+    }
+    let mut packed_xmm: Vec<Xmm> = Vec::new();
+    collect_block_packed_xmm(body, &mut packed_xmm);
+    for xmm in &packed_xmm {
+        let _ = writeln!(out, "    let mut {}: u64 = 0;", packed_lane(*xmm, false));
+        let _ = writeln!(out, "    let mut {}: u64 = 0;", packed_lane(*xmm, true));
     }
     let mut snapshot_vars: Vec<u32> = Vec::new();
     collect_snapshot_vars(body, &mut snapshot_vars);
@@ -16084,6 +19220,135 @@ fn emit_rust(
     }
     let _ = writeln!(out, "}}");
     Some(out)
+}
+
+fn rs_emit_outer_resume_stmts(
+    out: &mut String,
+    tree: &OuterResumeTree,
+    index: usize,
+    depth: usize,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
+    let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
+    let indent: String = "    ".repeat(depth);
+    for stmt in &block.stmts {
+        rs_emit_stmt(out, stmt, &indent, aggregates)?;
+    }
+    Some(())
+}
+
+fn rs_outer_resume_condition(
+    tree: &OuterResumeTree,
+    index: usize,
+    negate: bool,
+    aggregates: &AggregatePlan,
+) -> Option<String> {
+    let block: &OuterResumeTreeBlock = tree.blocks.get(index)?;
+    let OuterResumeTreeTerm::Branch { kind, flags, .. } = &block.term else {
+        return None;
+    };
+    rs_cond_expr(
+        if negate { kind.negate() } else { *kind },
+        flags,
+        aggregates,
+    )
+}
+
+fn rs_emit_outer_resume(
+    out: &mut String,
+    tree: &OuterResumeTree,
+    depth: usize,
+    aggregates: &AggregatePlan,
+) -> Option<()> {
+    if !tree.topology_matches() {
+        return None;
+    }
+    let indent: String = "    ".repeat(depth);
+    let inner: String = "    ".repeat(depth + 1);
+    let nested: String = "    ".repeat(depth + 2);
+    let deep: String = "    ".repeat(depth + 3);
+    let _ = writeln!(out, "{indent}let mut outer_resume_state: u64 = 0;");
+    let _ = writeln!(out, "{indent}let outer_resume_control: u64 = loop {{");
+    let _ = writeln!(out, "{inner}let mut outer_resume_action: u64 = 0;");
+    let _ = writeln!(out, "{inner}if outer_resume_state == 1 {{");
+    let _ = writeln!(out, "{nested}outer_resume_state = 0;");
+    rs_emit_outer_resume_stmts(out, tree, 22, depth + 2, aggregates)?;
+    let _ = writeln!(out, "{nested}outer_resume_action = 1;");
+    let _ = writeln!(out, "{inner}}} else {{");
+    rs_emit_outer_resume_stmts(out, tree, 0, depth + 2, aggregates)?;
+    let condition_0: String = rs_outer_resume_condition(tree, 0, false, aggregates)?;
+    let _ = writeln!(out, "{nested}if {condition_0} {{");
+    rs_emit_outer_resume_stmts(out, tree, 1, depth + 3, aggregates)?;
+    let _ = writeln!(out, "{deep}outer_resume_action = 1;");
+    let _ = writeln!(out, "{nested}}} else {{");
+    rs_emit_outer_resume_stmts(out, tree, 19, depth + 3, aggregates)?;
+    let _ = writeln!(out, "{deep}loop {{");
+    rs_emit_outer_resume_stmts(out, tree, 20, depth + 4, aggregates)?;
+    let condition_20: String = rs_outer_resume_condition(tree, 20, false, aggregates)?;
+    let _ = writeln!(
+        out,
+        "{}if !({condition_20}) {{ break; }}",
+        "    ".repeat(depth + 4)
+    );
+    let _ = writeln!(out, "{deep}}}");
+    rs_emit_outer_resume_stmts(out, tree, 21, depth + 3, aggregates)?;
+    let condition_21: String = rs_outer_resume_condition(tree, 21, false, aggregates)?;
+    let _ = writeln!(out, "{deep}if {condition_21} {{");
+    let _ = writeln!(out, "{}outer_resume_action = 0;", "    ".repeat(depth + 4));
+    let _ = writeln!(out, "{deep}}} else {{");
+    let _ = writeln!(out, "{}outer_resume_state = 1;", "    ".repeat(depth + 4));
+    let _ = writeln!(out, "{}continue;", "    ".repeat(depth + 4));
+    let _ = writeln!(out, "{deep}}}");
+    let _ = writeln!(out, "{nested}}}");
+    let _ = writeln!(out, "{inner}}}");
+    let _ = writeln!(out, "{inner}if outer_resume_action != 0 {{");
+    rs_emit_outer_resume_stmts(out, tree, 2, depth + 2, aggregates)?;
+    let condition_2: String = rs_outer_resume_condition(tree, 2, true, aggregates)?;
+    let _ = writeln!(out, "{nested}if {condition_2} {{");
+    rs_emit_outer_resume_stmts(out, tree, 6, depth + 3, aggregates)?;
+    let condition_6: String = rs_outer_resume_condition(tree, 6, true, aggregates)?;
+    let _ = writeln!(out, "{deep}if {condition_6} {{");
+    let loop_indent: String = "    ".repeat(depth + 4);
+    let loop_body_indent: String = "    ".repeat(depth + 5);
+    let loop_arm_indent: String = "    ".repeat(depth + 6);
+    let _ = writeln!(out, "{loop_indent}loop {{");
+    for index in 7..=14 {
+        rs_emit_outer_resume_stmts(out, tree, index, depth + 5, aggregates)?;
+        let condition: String = rs_outer_resume_condition(tree, index, false, aggregates)?;
+        let _ = writeln!(out, "{loop_body_indent}if {condition} {{ break; }}");
+    }
+    rs_emit_outer_resume_stmts(out, tree, 15, depth + 5, aggregates)?;
+    let condition_15: String = rs_outer_resume_condition(tree, 15, false, aggregates)?;
+    let _ = writeln!(out, "{loop_body_indent}if {condition_15} {{");
+    let _ = writeln!(out, "{loop_arm_indent}outer_resume_action = 2;");
+    let _ = writeln!(out, "{loop_arm_indent}break;");
+    let _ = writeln!(out, "{loop_body_indent}}}");
+    rs_emit_outer_resume_stmts(out, tree, 16, depth + 5, aggregates)?;
+    let condition_16: String = rs_outer_resume_condition(tree, 16, false, aggregates)?;
+    let _ = writeln!(out, "{loop_body_indent}if {condition_16} {{");
+    let _ = writeln!(out, "{loop_arm_indent}outer_resume_action = 3;");
+    let _ = writeln!(out, "{loop_arm_indent}break;");
+    let _ = writeln!(out, "{loop_body_indent}}}");
+    rs_emit_outer_resume_stmts(out, tree, 18, depth + 5, aggregates)?;
+    let condition_18: String = rs_outer_resume_condition(tree, 18, true, aggregates)?;
+    let _ = writeln!(out, "{loop_body_indent}if {condition_18} {{ break; }}");
+    let _ = writeln!(out, "{loop_indent}}}");
+    let _ = writeln!(out, "{deep}}}");
+    let _ = writeln!(out, "{nested}}}");
+    let _ = writeln!(out, "{inner}}}");
+    let _ = writeln!(out, "{inner}if outer_resume_action == 3 {{");
+    let _ = writeln!(out, "{nested}outer_resume_state = 1;");
+    let _ = writeln!(out, "{nested}continue;");
+    let _ = writeln!(out, "{inner}}}");
+    let _ = writeln!(out, "{inner}if outer_resume_action == 2 {{ break 2; }}");
+    rs_emit_outer_resume_stmts(out, tree, 3, depth + 1, aggregates)?;
+    let condition_3: String = rs_outer_resume_condition(tree, 3, false, aggregates)?;
+    let _ = writeln!(out, "{inner}if {condition_3} {{ break 1; }}");
+    let _ = writeln!(out, "{inner}break 2;");
+    let _ = writeln!(out, "{indent}}};");
+    let _ = writeln!(out, "{indent}if outer_resume_control == 1 {{ continue; }}");
+    let _ = writeln!(out, "{indent}break;");
+    Some(())
 }
 
 fn rs_emit_block(
@@ -16185,6 +19450,10 @@ fn rs_emit_block(
             Node::Continue => {
                 let _ = writeln!(out, "{indent}continue;");
             }
+            Node::OuterResume(tree) => {
+                rs_emit_outer_resume(out, tree, depth, aggregates)?;
+            }
+            Node::BreakLoop(_) | Node::ContinueLoop(_) | Node::ResumeAt(_) => return None,
             Node::Return => {
                 let _ = writeln!(out, "{indent}return {ret_expr};");
             }
@@ -16697,11 +19966,11 @@ fn rs_emit_stmt(
         Stmt::FpStore { addr, src, width } => {
             rs_emit_fp_store(out, addr, *src, *width, indent, aggregates);
         }
-        Stmt::BlockMove { .. }
-        | Stmt::BlockFill { .. }
-        | Stmt::Packed { .. }
-        | Stmt::Vector(_)
-        | Stmt::PackedToGpr { .. } => return None,
+        Stmt::Packed { dest, op } => rs_emit_packed_stmt(out, *dest, op, indent)?,
+        Stmt::PackedToGpr { dest, src } => {
+            rs_emit_reg_assign(out, *dest, &packed_lane(*src, false), indent);
+        }
+        Stmt::BlockMove { .. } | Stmt::BlockFill { .. } | Stmt::Vector(_) => return None,
     }
     Some(())
 }
@@ -16869,6 +20138,57 @@ fn rs_emit_fp_store(
     }
     let bits: String = rs_xmm_bits(src, width);
     rs_emit_store(out, addr, &bits, indent, aggregates);
+}
+
+fn rs_emit_packed_stmt(out: &mut String, dest: Xmm, op: &PackedOp, indent: &str) -> Option<()> {
+    let d_lo: String = packed_lane(dest, false);
+    let d_hi: String = packed_lane(dest, true);
+    match op {
+        PackedOp::MovReg(src) => {
+            let _ = writeln!(out, "{indent}{d_lo} = {};", packed_lane(*src, false));
+            let _ = writeln!(out, "{indent}{d_hi} = {};", packed_lane(*src, true));
+        }
+        PackedOp::Const { q0, q1 } => {
+            let _ = writeln!(out, "{indent}{d_lo} = 0x{q0:x}u64;");
+            let _ = writeln!(out, "{indent}{d_hi} = 0x{q1:x}u64;");
+        }
+        PackedOp::Zero => {
+            let _ = writeln!(out, "{indent}{d_lo} = 0;");
+            let _ = writeln!(out, "{indent}{d_hi} = 0;");
+        }
+        PackedOp::AddQ(src) => {
+            let _ = writeln!(
+                out,
+                "{indent}{d_lo} = {d_lo}.wrapping_add({});",
+                packed_lane(*src, false)
+            );
+            let _ = writeln!(
+                out,
+                "{indent}{d_hi} = {d_hi}.wrapping_add({});",
+                packed_lane(*src, true)
+            );
+        }
+        PackedOp::ShrDq8 => {
+            let _ = writeln!(out, "{indent}let shifted_high: u64 = {d_hi};");
+            let _ = writeln!(out, "{indent}{d_lo} = shifted_high;");
+            let _ = writeln!(out, "{indent}{d_hi} = 0;");
+        }
+        PackedOp::UnpackLowQ(src) => {
+            let _ = writeln!(out, "{indent}{d_hi} = {};", packed_lane(*src, false));
+        }
+        PackedOp::FromGpr { src } => {
+            let value: String = rs_width_mask(src.width, reg_var(src.reg));
+            let _ = writeln!(out, "{indent}{d_lo} = {value};");
+            let _ = writeln!(out, "{indent}{d_hi} = 0;");
+        }
+        PackedOp::And(_)
+        | PackedOp::AndN(_)
+        | PackedOp::ShlQ(_)
+        | PackedOp::ShlDq(_)
+        | PackedOp::CmpEqD(_)
+        | PackedOp::ShufD { .. } => return None,
+    }
+    Some(())
 }
 
 const fn rs_fp_bits_ty(width: FpWidth) -> &'static str {
@@ -17655,9 +20975,126 @@ mod tests {
     fn lea_add_recovers_two_param_add() {
         let code: [u8; 4] = [0x8d, 0x04, 0x11, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(rec.source.contains("uint64_t recovered"));
         assert!(rec.source.contains("return"));
+    }
+
+    #[test]
+    fn rip_relative_leaf_lea_constructs_the_checked_next_instruction_address() {
+        const CODE: [u8; 8] = [0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function(&CODE, 0x1000)
+            .expect("rex.w lea with rip plus disp32 constructs an address");
+        assert!(rec.signature.observed_integer_registers().is_empty());
+        assert!(
+            rec.source.contains("r_rax = (uint64_t)(int64_t)4103LL;")
+                && rec.source.contains("return r_rax;"),
+            "the recovered address must use the checked instruction end: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn rip_relative_leaf_lea_with_a_32_bit_destination_stays_refused() {
+        const CODE: [u8; 7] = [0x8d, 0x05, 0x00, 0x00, 0x00, 0x00, 0xc3];
+        let err: Error = recover_leaf_function(&CODE, 0x1000)
+            .expect_err("a 32-bit destination is outside the exact 64-bit address shape");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn value_table_switch_requires_entry_coverage() {
+        const SWITCH: [u8; 24] = [
+            0x83, 0xf9, 0x02, 0x77, 0x0d, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0f,
+            0xbe, 0x04, 0x0a, 0xc3, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        const MUTATED: [u8; 28] = [
+            0x48, 0x83, 0xc1, 0x01, 0x83, 0xf9, 0x02, 0x77, 0x0d, 0x48, 0x8d, 0x15, 0x00, 0x00,
+            0x00, 0x00, 0x48, 0x0f, 0xbe, 0x04, 0x0a, 0xc3, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        const AL_DEFAULT: [u8; 21] = [
+            0x83, 0xf9, 0x02, 0x77, 0x0d, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0f,
+            0xbe, 0x04, 0x0a, 0xc3, 0xb0, 0xff, 0xc3,
+        ];
+        const AX_DEFAULT: [u8; 23] = [
+            0x83, 0xf9, 0x02, 0x77, 0x0d, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0f,
+            0xbe, 0x04, 0x0a, 0xc3, 0x66, 0xb8, 0xff, 0xff, 0xc3,
+        ];
+        let accepted: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x9b00, &SWITCH).expect("value-table switch");
+        let mutated: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0x9c00, &MUTATED).expect("prefixed value-table switch");
+        let accepted_switch: ValueTableSwitch =
+            detect_value_table_switch(&accepted).expect("covered value-table switch");
+        assert_eq!(accepted_switch.default_value, i64::from(u32::MAX));
+        assert!(
+            detect_value_table_switch(&mutated).is_none(),
+            "a switch-only recovery must refuse an executable entry prefix"
+        );
+        for (index, prefix) in [0x51_u8, 0x59, 0x52, 0x5a].into_iter().enumerate() {
+            let mut prefixed: Vec<u8> = Vec::with_capacity(SWITCH.len() + 1);
+            prefixed.push(prefix);
+            prefixed.extend_from_slice(&SWITCH);
+            let prefix_base: u64 = 0x9d00 + index as u64 * 0x100;
+            let prefixed_insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, prefix_base, &prefixed)
+                .expect("stack-mutating value-table");
+            assert!(
+                detect_value_table_switch(&prefixed_insns).is_none(),
+                "push and pop on the discriminator or table base must stay executable"
+            );
+        }
+        let mut padded: Vec<u8> = Vec::with_capacity(SWITCH.len() + 1);
+        padded.push(0x90);
+        padded.extend_from_slice(&SWITCH);
+        let padded_insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0xa100, &padded).expect("NOP-padded value-table");
+        assert!(detect_value_table_switch(&padded_insns).is_some());
+        let mut wide_padded: Vec<u8> = Vec::with_capacity(SWITCH.len() + 2);
+        wide_padded.extend_from_slice(&[0x66, 0x90]);
+        wide_padded.extend_from_slice(&SWITCH);
+        let wide_padded_insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0xa200, &wide_padded).expect("wide-NOP-padded value-table");
+        assert!(detect_value_table_switch(&wide_padded_insns).is_some());
+        for (base, code) in [
+            (0xa300_u64, AL_DEFAULT.as_slice()),
+            (0xa400, AX_DEFAULT.as_slice()),
+        ] {
+            let partial_default: Vec<DisasmInsn> =
+                disassemble(Arch::X86_64, base, code).expect("partial default write");
+            assert!(
+                detect_value_table_switch(&partial_default).is_none(),
+                "partial RAX default writes must retain unknown upper bits"
+            );
+        }
+    }
+
+    #[test]
+    fn value_table_switch_refuses_a_non_entry_ms_x64_discriminator() {
+        const CODE: [u8; 25] = [
+            0x41, 0x83, 0xf8, 0x02, 0x77, 0x0d, 0x48, 0x8d, 0x15, 0x00, 0x00, 0x00, 0x00, 0x4a,
+            0x0f, 0xbe, 0x04, 0x02, 0xc3, 0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3,
+        ];
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, 0xa600, &CODE).expect("R8 value-table switch");
+        let switch: ValueTableSwitch =
+            detect_value_table_switch(&insns).expect("detect R8 value-table switch");
+        assert_eq!(switch.disc.reg, Reg::R8);
+        let result: Result<LeafRecovery> =
+            build_value_switch_recovery(Abi::MsX64, &switch, &[1, 2, 3]);
+        assert!(
+            result.is_err(),
+            "a non-entry discriminator must not become parameter position zero: {result:?}"
+        );
+    }
+
+    #[test]
+    fn jump_table_entry_count_refuses_host_width_truncation() {
+        assert!(dispatch_entry_count(u64::MAX).is_err());
+        #[cfg(target_pointer_width = "32")]
+        assert!(dispatch_entry_count(u64::from(u32::MAX) + 1).is_err());
     }
 
     #[test]
@@ -17684,7 +21121,7 @@ mod tests {
     fn pointer_load_cluster_lifts_to_width_exact_fields() {
         let code: [u8; 8] = [0x48, 0x8b, 0x01, 0x48, 0x03, 0x41, 0x08, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(rec.source.contains("recovered_struct_0_t"));
         assert!(rec.source.contains("recovered_struct_0->field_0"));
         assert!(rec.source.contains("recovered_struct_0->field_8"));
@@ -17708,7 +21145,10 @@ mod tests {
     fn pointer_store_lifts_to_assignment_through_deref() {
         let code: [u8; 10] = [0x48, 0x89, 0xd0, 0x48, 0x03, 0x01, 0x48, 0x89, 0x01, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(
             rec.source
                 .contains("(*(uint64_t*)(uintptr_t)(r_rcx)) = r_rax")
@@ -17719,7 +21159,10 @@ mod tests {
     fn scaled_index_load_lifts_to_array_index() {
         let code: [u8; 5] = [0x48, 0x8b, 0x04, 0xd1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x1000).expect("recover");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(rec.source.contains("recovered_array_0[r_rdx]"));
         assert!(rec.source.contains("typedef uint64_t recovered_array_0_t;"));
         let rust: &str = rec.rust_source.as_deref().expect("rust output");
@@ -18030,7 +21473,10 @@ mod tests {
             0x48, 0x8d, 0x04, 0x11, 0x48, 0x39, 0xd1, 0x7e, 0x04, 0x48, 0x83, 0xc0, 0x0a, 0xc3,
         ];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x2000).expect("recover");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(
             rec.source.contains("if ("),
             "expected a structured if: {}",
@@ -18114,7 +21560,7 @@ mod tests {
         let code: [u8; 8] = [0x48, 0x89, 0xc8, 0xc3, 0x90, 0x48, 0xff, 0xc0];
         let rec: LeafRecovery =
             recover_leaf_function(&code, 0x5000).expect("trailing padding must not abort");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(!rec.source.contains("if ("));
     }
 
@@ -18138,7 +21584,7 @@ mod tests {
             "must take the out-of-line tail-return path: {}",
             rec.source
         );
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert_eq!(
             rec.source.matches("return ").count(),
             1,
@@ -18160,7 +21606,10 @@ mod tests {
         ];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x8000).expect("orconst idiom");
         assert!(rec.lifted_split_return, "split-return path: {}", rec.source);
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         let head_pos: usize = rec.source.find("r_rax =").expect("head assign");
         let if_pos: usize = rec.source.find("if (").expect("guard if");
         assert!(
@@ -18206,7 +21655,7 @@ mod tests {
     fn movzx_reg_zero_extends_subregister() {
         let code: [u8; 4] = [0x0f, 0xb7, 0xc1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9000).expect("movzx");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert_eq!(rec.return_width_bits, 32);
         assert!(
             rec.source
@@ -18220,7 +21669,7 @@ mod tests {
     fn movsx_reg_sign_extends_to_full_width() {
         let code: [u8; 5] = [0x48, 0x0f, 0xbe, 0xc9, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9100).expect("movsx");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert_eq!(rec.return_width_bits, 64);
         assert!(
             rec.source
@@ -18234,7 +21683,7 @@ mod tests {
     fn movsxd_reg_sign_extends_dword() {
         let code: [u8; 4] = [0x48, 0x63, 0xc1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9200).expect("movsxd");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(
             rec.source
                 .contains("r_rax = (uint64_t)(int64_t)(int32_t)((r_rcx) & 0xffffffffULL)"),
@@ -18259,7 +21708,7 @@ mod tests {
     fn movzx_mem_zero_extends_byte_load() {
         let code: [u8; 4] = [0x0f, 0xb6, 0x01, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0x9400).expect("movzx mem");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(
             rec.source.contains("(*(uint8_t*)(uintptr_t)(r_rcx))"),
             "byte load must deref through uint8_t: {}",
@@ -18352,7 +21801,7 @@ mod tests {
     fn ternary_imul_lifts_to_source_times_constant() {
         let code: [u8; 5] = [0x48, 0x6b, 0xc7, 0x64, 0xc3];
         let rec: LeafRecovery = recover_leaf_function_abi(&code, 0x9500, Abi::SysV).expect("imul3");
-        assert_eq!(rec.params, vec![Reg::Rdi]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rdi]);
         assert!(
             rec.source
                 .contains("r_rax = r_rdi * (uint64_t)(int64_t)100LL"),
@@ -18442,11 +21891,11 @@ mod tests {
             0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
             0x83, 0xc4, 0x28, 0xc3,
         ];
-        let calls: [ResolvedCall; 1] = [ResolvedCall {
-            target: 0x0,
-            name: Some("helper".to_owned()),
-            arg_count: 1,
-        }];
+        let calls: [ResolvedCall; 1] =
+            [
+                ResolvedCall::from_integer_arity(0x0, Some("helper".to_owned()), Abi::MsX64, 1)
+                    .expect("canonical resolved call"),
+            ];
         let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
             .expect("resolved call recover");
         assert!(
@@ -18460,9 +21909,80 @@ mod tests {
             rec.source
         );
         assert_eq!(
-            rec.params,
+            rec.signature.observed_integer_registers(),
             vec![Reg::Rcx],
             "the forwarded first argument register must be recovered as the caller's sole parameter"
+        );
+    }
+
+    #[test]
+    fn resolved_call_preserves_sparse_ms_x64_argument_slots() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let calls: [ResolvedCall; 1] = [ResolvedCall {
+            target: 0x0,
+            name: Some("sparse_helper".to_owned()),
+            signature: RecoveredSignature::from_bindings(
+                Abi::MsX64,
+                vec![
+                    ParameterBinding::Integer {
+                        register: Reg::Rcx,
+                        width_bits: 64,
+                    },
+                    ParameterBinding::UnobservedMsX64 { slot: 1 },
+                    ParameterBinding::Integer {
+                        register: Reg::R8,
+                        width_bits: 64,
+                    },
+                ],
+            )
+            .expect("canonical sparse signature"),
+        }];
+        let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
+            .expect("sparse resolved call recovery");
+        assert!(
+            rec.source
+                .contains("r_rax = sparse_helper(r_rcx, r_rdx, r_r8);"),
+            "the call must preserve the unobserved shared slot: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn resolved_call_refuses_non_integer_parameter_bindings() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
+            0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let calls: [ResolvedCall; 1] = [ResolvedCall {
+            target: 0x0,
+            name: Some("mixed_helper".to_owned()),
+            signature: RecoveredSignature::from_bindings(
+                Abi::MsX64,
+                vec![
+                    ParameterBinding::Integer {
+                        register: Reg::Rcx,
+                        width_bits: 64,
+                    },
+                    ParameterBinding::FloatingPoint {
+                        register_index: 1,
+                        scalar_type: ScalarType::Double,
+                    },
+                    ParameterBinding::Integer {
+                        register: Reg::R8,
+                        width_bits: 64,
+                    },
+                ],
+            )
+            .expect("canonical mixed signature"),
+        }];
+        let result: Result<LeafRecovery> =
+            recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls);
+        assert!(
+            result.is_err(),
+            "a resolved call with an unmodeled floating-point binding must refuse: {result:?}"
         );
     }
 
@@ -18472,11 +21992,8 @@ mod tests {
             0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
             0x83, 0xc4, 0x28, 0xc3,
         ];
-        let calls: [ResolvedCall; 1] = [ResolvedCall {
-            target: 0x0,
-            name: None,
-            arg_count: 0,
-        }];
+        let calls: [ResolvedCall; 1] = [ResolvedCall::from_integer_arity(0x0, None, Abi::MsX64, 0)
+            .expect("canonical zero-argument call")];
         let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
             .expect("resolved zero-arg call recover");
         assert!(
@@ -18490,9 +22007,9 @@ mod tests {
             rec.source
         );
         assert!(
-            rec.params.is_empty(),
+            rec.signature.observed_integer_registers().is_empty(),
             "a caller that sets no argument registers has no parameters: {:?}",
-            rec.params
+            rec.signature.observed_integer_registers()
         );
     }
 
@@ -18502,11 +22019,11 @@ mod tests {
             0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
             0x83, 0xc4, 0x28, 0xc3,
         ];
-        let calls: [ResolvedCall; 1] = [ResolvedCall {
-            target: 0x0,
-            name: Some("helper".to_owned()),
-            arg_count: 1,
-        }];
+        let calls: [ResolvedCall; 1] =
+            [
+                ResolvedCall::from_integer_arity(0x0, Some("helper".to_owned()), Abi::MsX64, 1)
+                    .expect("canonical resolved call"),
+            ];
         let rec: LeafRecovery = recover_leaf_function_with_calls(&code, 0x8, Abi::MsX64, &calls)
             .expect("resolved call recover");
         let rust: String = rec
@@ -18591,7 +22108,10 @@ mod tests {
             "must flag a lifted switch: {}",
             rec.source
         );
-        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rdi, Reg::Rsi, Reg::Rdx]
+        );
         assert!(
             rec.source.contains("switch (r_rdi)"),
             "must switch on the discriminant register: {}",
@@ -18858,7 +22378,10 @@ mod tests {
         let code: [u8; 9] = [0x48, 0x89, 0xf8, 0x48, 0x99, 0x48, 0xf7, 0xfe, 0xc3];
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xa000, Abi::SysV).expect("signed divide");
-        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rdi, Reg::Rsi]
+        );
         assert_eq!(rec.return_width_bits, 64);
         assert!(
             rec.source.contains("int64_t div_lhs = (int64_t)r_rax;"),
@@ -18945,7 +22468,7 @@ mod tests {
             recover_leaf_function_abi(&code, 0xb000, Abi::SysV).expect("addsd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
         assert_eq!(
-            rec.fp_params,
+            rec.signature.parameter_types(),
             vec![ScalarType::Double, ScalarType::Double],
             "addsd xmm0,xmm1 must take two double params: {}",
             rec.source
@@ -18975,7 +22498,7 @@ mod tests {
         let sysv: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb080, Abi::SysV)
             .expect("xmm4 is the fifth System V floating-point argument register");
         assert_eq!(
-            sysv.fp_params,
+            sysv.signature.parameter_types(),
             vec![ScalarType::Double, ScalarType::Double],
             "System V passes floating-point arguments in xmm0..xmm7: {}",
             sysv.source
@@ -19001,7 +22524,7 @@ mod tests {
         let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb090, Abi::MsX64)
             .expect("xmm0..xmm3 are the Microsoft x64 floating-point argument registers");
         assert_eq!(
-            rec.fp_params,
+            rec.signature.parameter_types(),
             vec![
                 ScalarType::Double,
                 ScalarType::Double,
@@ -19042,13 +22565,13 @@ mod tests {
                 panic!("a callee-saved xmm6 spill/restore must not block leaf recovery: {e}")
             });
         assert_eq!(
-            rec.params,
+            rec.signature.observed_integer_registers(),
             vec![Reg::Rcx],
             "the only real argument read is rcx; the xmm6 spill contributes nothing: {}",
             rec.source
         );
         assert_eq!(
-            rec.fp_params,
+            rec.signature.parameter_types(),
             vec![ScalarType::Int],
             "a callee-saved xmm6 spill/restore must never surface as a floating-point parameter: {}",
             rec.source
@@ -19060,9 +22583,9 @@ mod tests {
         const CODE: [u8; 8] = [0x48, 0x89, 0xc8, 0xf2, 0x0f, 0x10, 0xd1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb0c0, Abi::MsX64)
             .expect("rcx and xmm1 are a contiguous Microsoft x64 shared-index pair");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert_eq!(
-            rec.fp_params,
+            rec.signature.parameter_types(),
             vec![ScalarType::Int, ScalarType::Double],
             "the int argument at position 0 must declare before the double at position 1, \
              matching the shared Microsoft x64 argument index: {}",
@@ -19074,8 +22597,9 @@ mod tests {
     fn ms_x64_shared_argument_index_rejects_a_position_claimed_by_both_classes() {
         let params: Vec<Reg> = vec![Reg::Rcx];
         let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm0, FpWidth::F64)];
-        let err: Error = validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args)
-            .expect_err("rcx and xmm0 both claim position 0");
+        let err: Error =
+            validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args, false)
+                .expect_err("rcx and xmm0 both claim position 0");
         let Error::LlvmIr(message) = err else {
             panic!("expected a shared-index rejection");
         };
@@ -19089,8 +22613,9 @@ mod tests {
     fn ms_x64_shared_argument_index_rejects_a_gap_below_the_highest_observed_register() {
         let params: Vec<Reg> = Vec::new();
         let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm1, FpWidth::F64)];
-        let err: Error = validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args)
-            .expect_err("xmm1 alone leaves position 0 unaccounted for");
+        let err: Error =
+            validate_ms_x64_shared_argument_index(Abi::MsX64, &params, &fp_args, false)
+                .expect_err("xmm1 alone leaves position 0 unaccounted for");
         let Error::LlvmIr(message) = err else {
             panic!("expected a shared-index rejection");
         };
@@ -19101,10 +22626,222 @@ mod tests {
     }
 
     #[test]
+    fn ms_x64_sparse_integer_slots_preserve_the_unobserved_parameter_position() {
+        const CODE: [u8; 7] = [0x48, 0x89, 0xc8, 0x4c, 0x01, 0xc0, 0xc3];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb0d0, Abi::MsX64)
+            .expect("rcx and r8 occupy positions zero and two");
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::R8]
+        );
+        assert_eq!(
+            rec.signature.parameter_bindings(),
+            vec![
+                ParameterBinding::Integer {
+                    register: Reg::Rcx,
+                    width_bits: 64,
+                },
+                ParameterBinding::UnobservedMsX64 { slot: 1 },
+                ParameterBinding::Integer {
+                    register: Reg::R8,
+                    width_bits: 64,
+                },
+            ]
+        );
+        assert_eq!(callee_int_arity(&CODE, 0xb0d0, Abi::MsX64), Some(3));
+        let program: RecoveredProgram = recover_program(
+            &[],
+            &[ProgramFunction {
+                name: "sparse".to_owned(),
+                address: 0xb0d0,
+                code: CODE.to_vec(),
+            }],
+            Abi::MsX64,
+        );
+        assert_eq!(program.recovered.len(), 1);
+        assert_eq!(
+            program.recovered[0].signature.parameter_bindings(),
+            rec.signature.parameter_bindings()
+        );
+        assert_eq!(
+            rec.signature.parameter_types(),
+            vec![ScalarType::Int, ScalarType::Int, ScalarType::Int]
+        );
+        assert!(
+            rec.source
+                .contains("recovered(uint64_t a0, uint64_t a1, uint64_t a2)")
+                && rec.source.contains("uint64_t r_rcx = a0;")
+                && rec.source.contains("uint64_t r_r8 = a2;"),
+            "the unused position must stay explicit without changing either live register: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn recovered_signature_derives_every_parameter_view_from_bindings() {
+        let signature: super::RecoveredSignature = super::RecoveredSignature::from_bindings(
+            super::Abi::MsX64,
+            vec![
+                super::ParameterBinding::UnobservedMsX64 { slot: 0 },
+                super::ParameterBinding::Integer {
+                    register: super::Reg::Rdx,
+                    width_bits: 32,
+                },
+                super::ParameterBinding::FloatingPoint {
+                    register_index: 2,
+                    scalar_type: super::ScalarType::Double,
+                },
+            ],
+        )
+        .expect("canonical shared-slot signature");
+        assert_eq!(
+            signature.observed_integer_registers(),
+            vec![super::Reg::Rdx]
+        );
+        assert_eq!(signature.integer_width_bits(), vec![32]);
+        assert_eq!(
+            signature.parameter_types(),
+            vec![
+                super::ScalarType::Int,
+                super::ScalarType::Int,
+                super::ScalarType::Double,
+            ]
+        );
+    }
+
+    #[test]
+    fn recovered_signature_refuses_noncanonical_public_bindings() {
+        let unordered: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::MsX64,
+                vec![super::ParameterBinding::Integer {
+                    register: super::Reg::Rdx,
+                    width_bits: 64,
+                }],
+            );
+        let duplicate: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::SysV,
+                vec![
+                    super::ParameterBinding::Integer {
+                        register: super::Reg::Rdi,
+                        width_bits: 64,
+                    },
+                    super::ParameterBinding::Integer {
+                        register: super::Reg::Rdi,
+                        width_bits: 64,
+                    },
+                ],
+            );
+        let zero_width: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::SysV,
+                vec![super::ParameterBinding::Integer {
+                    register: super::Reg::Rdi,
+                    width_bits: 0,
+                }],
+            );
+        let duplicate_fp_vector: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::SysV,
+                vec![
+                    super::ParameterBinding::FloatingPoint {
+                        register_index: 0,
+                        scalar_type: super::ScalarType::Double,
+                    },
+                    super::ParameterBinding::Vector {
+                        register_index: 0,
+                        width_bits: 128,
+                    },
+                ],
+            );
+        let out_of_range_fp: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::Aapcs64,
+                vec![super::ParameterBinding::FloatingPoint {
+                    register_index: u8::MAX,
+                    scalar_type: super::ScalarType::Float,
+                }],
+            );
+        assert!(unordered.is_err());
+        assert!(duplicate.is_err());
+        assert!(zero_width.is_err());
+        assert!(duplicate_fp_vector.is_err());
+        assert!(out_of_range_fp.is_err());
+    }
+
+    #[test]
+    fn ms_x64_branch_complete_r8_initialization_does_not_create_a_sparse_parameter() {
+        const CODE: [u8; 68] = [
+            0x48, 0x85, 0xc9, 0x7e, 0x37, 0xba, 0x00, 0x00, 0x00, 0x00, 0x41, 0xb8, 0x00, 0x00,
+            0x00, 0x00, 0x0f, 0x1f, 0x44, 0x00, 0x00, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0xd0, 0x83, 0xe0, 0x01, 0x48, 0xf7, 0xd8, 0x48,
+            0x21, 0xd0, 0x49, 0x01, 0xc0, 0x48, 0x83, 0xc2, 0x01, 0x48, 0x39, 0xd1, 0x75, 0xe8,
+            0x4c, 0x89, 0xc0, 0xc3, 0x41, 0xb8, 0x00, 0x00, 0x00, 0x00, 0xeb, 0xf4,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0, Abi::MsX64)
+            .expect("both control-flow arms initialize r8 before the return reads it");
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
+        assert!(
+            rec.source.contains("recovered(uint64_t a0)")
+                && !rec.source.contains("uint64_t a1")
+                && !rec.source.contains("uint64_t a2"),
+            "a branch-complete accumulator initialization must keep the one-argument prototype: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn ms_x64_switch_complete_r8_initialization_does_not_create_a_sparse_parameter() {
+        let initialized_r8 = |value: i64| -> Node {
+            Node::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::R8,
+                    width: Width::W64,
+                },
+                src: Source::Imm(value),
+            })
+        };
+        let body: Block = vec![
+            Node::Switch {
+                disc: RegRef {
+                    reg: Reg::Rcx,
+                    width: Width::W64,
+                },
+                cases: vec![
+                    SwitchCase {
+                        values: vec![0],
+                        body: vec![initialized_r8(1)],
+                        fallthrough: false,
+                    },
+                    SwitchCase {
+                        values: vec![1],
+                        body: vec![initialized_r8(2)],
+                        fallthrough: false,
+                    },
+                ],
+                default: vec![initialized_r8(3)],
+            },
+            Node::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                src: Source::Reg(RegRef {
+                    reg: Reg::R8,
+                    width: Width::W64,
+                }),
+            }),
+        ];
+        let params: Vec<Reg> = infer_params(&body, Abi::MsX64).expect("switch parameter flow");
+        assert_eq!(params, vec![Reg::Rcx]);
+    }
+
+    #[test]
     fn ms_x64_shared_argument_index_rule_never_applies_outside_microsoft_x64() {
         let params: Vec<Reg> = vec![Reg::Rsi];
         let fp_args: Vec<(Xmm, FpWidth)> = vec![(Xmm::Xmm0, FpWidth::F64)];
-        validate_ms_x64_shared_argument_index(Abi::SysV, &params, &fp_args)
+        validate_ms_x64_shared_argument_index(Abi::SysV, &params, &fp_args, false)
             .expect("system v counts the integer and floating-point files independently");
     }
 
@@ -19119,7 +22856,9 @@ mod tests {
             abi: Abi::MsX64,
         };
         assert_eq!(
-            signature.ordered_param_types(),
+            RecoveredSignature::from_bindings(signature.abi, signature.parameter_bindings())
+                .expect("canonical microsoft x64 parameter bindings")
+                .parameter_types(),
             vec![ScalarType::Int, ScalarType::Double]
         );
     }
@@ -19135,7 +22874,9 @@ mod tests {
             abi: Abi::SysV,
         };
         assert_eq!(
-            signature.ordered_param_types(),
+            RecoveredSignature::from_bindings(signature.abi, signature.parameter_bindings())
+                .expect("canonical sysv parameter bindings")
+                .parameter_types(),
             vec![ScalarType::Double, ScalarType::Int]
         );
     }
@@ -19146,7 +22887,10 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xb100, Abi::SysV).expect("subss leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Float));
-        assert_eq!(rec.fp_params, vec![ScalarType::Float, ScalarType::Float]);
+        assert_eq!(
+            rec.signature.parameter_types(),
+            vec![ScalarType::Float, ScalarType::Float]
+        );
         assert!(
             rec.source.contains("float recovered(float a0, float a1)"),
             "float signature expected: {}",
@@ -19165,8 +22909,8 @@ mod tests {
         let code: [u8; 6] = [0xf2, 0x48, 0x0f, 0x2a, 0xc1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0xb200).expect("cvtsi2sd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
-        assert_eq!(rec.params, vec![Reg::Rcx]);
-        assert_eq!(rec.fp_params, vec![ScalarType::Int]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Int]);
         assert!(
             rec.source.contains("double recovered(uint64_t a0)"),
             "int-to-double takes an integer param and returns double: {}",
@@ -19187,7 +22931,7 @@ mod tests {
             recover_leaf_function_abi(&code, 0xb300, Abi::SysV).expect("cvttsd2si leaf");
         assert_eq!(rec.returns_fp, None);
         assert_eq!(rec.return_width_bits, 64);
-        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Double]);
         assert!(
             rec.source.contains("uint64_t recovered(double a0)"),
             "double-to-int returns an integer from a double param: {}",
@@ -19207,7 +22951,7 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xb400, Abi::SysV).expect("cvtss2sd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
-        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Float]);
         assert!(
             rec.source
                 .contains("x_xmm0 = fp_d_to_bits((double)(fp_f_from_bits((uint32_t)x_xmm0)));"),
@@ -19253,12 +22997,93 @@ mod tests {
     }
 
     #[test]
+    fn punpcklqdq_keeps_the_destructive_low_qword_and_takes_the_source_low_qword() {
+        const CODE: [u8; 20] = [
+            0x66, 0x48, 0x0f, 0x6e, 0xc7, 0x66, 0x48, 0x0f, 0x6e, 0xce, 0x66, 0x0f, 0x6c, 0xc1,
+            0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb610, Abi::SysV)
+            .expect("the exact legacy register form has complete two-qword semantics");
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rdi, Reg::Rsi]
+        );
+        assert!(
+            rec.source.contains("v0_lo = r_rdi;")
+                && rec.source.contains("v1_lo = r_rsi;")
+                && rec.source.contains("v0_hi = v1_lo;")
+                && rec.source.contains("r_rax = v0_lo;")
+                && rec.source.contains("return r_rax;"),
+            "the packed result must retain the old destination low lane and copy only the source low lane: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn punpcklqdq_entry_reads_stay_refused_without_vector_bindings() {
+        const CODE: [u8; 10] = [0x66, 0x0f, 0x6c, 0xc1, 0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3];
+        let result: Result<LeafRecovery> = recover_leaf_function_abi(&CODE, 0xb615, Abi::SysV);
+        assert!(
+            result.is_err(),
+            "entry XMM lanes have no callable bindings and must not become zero constants: {result:?}"
+        );
+    }
+
+    #[test]
+    fn psrldq_entry_reads_stay_refused_without_vector_bindings() {
+        const CODE: [u8; 11] = [
+            0x66, 0x0f, 0x73, 0xd8, 0x08, 0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3,
+        ];
+        let result: Result<LeafRecovery> = recover_leaf_function_abi(&CODE, 0xb618, Abi::SysV);
+        assert!(
+            result.is_err(),
+            "entry destination lanes have no callable binding and must not become zero constants: {result:?}"
+        );
+    }
+
+    #[test]
+    fn punpckhqdq_neighbor_stays_refused() {
+        const CODE: [u8; 20] = [
+            0x66, 0x48, 0x0f, 0x6e, 0xc7, 0x66, 0x48, 0x0f, 0x6e, 0xce, 0x66, 0x0f, 0x6d, 0xc1,
+            0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3,
+        ];
+        let err: Error = recover_leaf_function_abi(&CODE, 0xb620, Abi::SysV)
+            .expect_err("the high-qword unpack is outside the accepted copy shape");
+        assert!(matches!(err, Error::LlvmIr(_)));
+    }
+
+    #[test]
+    fn psrldq_neighbors_outside_the_exact_legacy_shift_by_eight_stay_refused() {
+        let wrong_immediate: Error = lift_packed(
+            "psrldq",
+            "xmm0,7",
+            &[0x66, 0x0f, 0x73, 0xd8, 0x07],
+            0xb630,
+            &[],
+        )
+        .expect_err("a right byte shift other than eight is outside the qword-copy shape");
+        let rex_extended: Error = lift_packed(
+            "psrldq",
+            "xmm8,8",
+            &[0x66, 0x41, 0x0f, 0x73, 0xd8, 0x08],
+            0xb630,
+            &[],
+        )
+        .expect_err("the legacy XMM0 through XMM7 register form is the only accepted encoding");
+        assert!(matches!(wrong_immediate, Error::LlvmIr(_)));
+        assert!(matches!(rex_extended, Error::LlvmIr(_)));
+    }
+
+    #[test]
     fn minsd_lifts_to_a_scalar_min_ternary() {
         let code: [u8; 5] = [0xf2, 0x0f, 0x5d, 0xc1, 0xc3];
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xb700, Abi::SysV).expect("minsd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
-        assert_eq!(rec.fp_params, vec![ScalarType::Double, ScalarType::Double]);
+        assert_eq!(
+            rec.signature.parameter_types(),
+            vec![ScalarType::Double, ScalarType::Double]
+        );
         assert!(
             rec.source.contains(
                 "fp_d_from_bits(x_xmm0) < fp_d_from_bits(x_xmm1) ? fp_d_from_bits(x_xmm0) : fp_d_from_bits(x_xmm1)"
@@ -19313,9 +23138,11 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code[..], 0x1000, Abi::SysV).expect("xor-zero leaf");
         assert!(
-            !rec.params.contains(&Reg::Rcx),
+            !rec.signature
+                .observed_integer_registers()
+                .contains(&Reg::Rcx),
             "xor ecx,ecx must not make rcx a parameter: {:?}",
-            rec.params
+            rec.signature.observed_integer_registers()
         );
         assert!(
             rec.source
@@ -19329,7 +23156,10 @@ mod tests {
     fn setl_after_cmp_recovers_signed_less_than_boolean() {
         let code: [u8; 10] = [0x48, 0x39, 0xd1, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0xc000).expect("setl leaf");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(
             rec.source.contains(
                 "r_rax = r_rax & 0xffffffffffffff00ULL | (uint64_t)(((int64_t)(int64_t)(r_rcx) < (int64_t)(int64_t)(r_rdx)) ? 1 : 0);"
@@ -19350,7 +23180,7 @@ mod tests {
         let code: [u8; 8] = [0x48, 0x85, 0xc9, 0x0f, 0x94, 0xc0, 0x90, 0xc3];
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xc100, Abi::SysV).expect("sete leaf");
-        assert_eq!(rec.params, vec![Reg::Rcx]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
         assert!(
             rec.source.contains(
                 "r_rax = r_rax & 0xffffffffffffff00ULL | (uint64_t)(((int64_t)(int64_t)(r_rcx) == 0) ? 1 : 0);"
@@ -19427,7 +23257,7 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xd000, Abi::SysV).expect("sqrtsd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
-        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Double]);
         assert!(
             rec.source.contains(
                 "x_xmm0 = fp_d_to_bits((double)(fpx_sqrt_x86_f64(fp_d_from_bits(x_xmm0))));"
@@ -19443,7 +23273,7 @@ mod tests {
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0xd100, Abi::SysV).expect("sqrtss leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Float));
-        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Float]);
         assert!(
             rec.source
                 .contains("fpx_sqrt_x86_f32(fp_f_from_bits((uint32_t)x_xmm0))"),
@@ -19459,9 +23289,9 @@ mod tests {
             recover_leaf_function_abi(&code, 0xd200, Abi::SysV).expect("xorps zero leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
         assert!(
-            rec.fp_params.is_empty(),
+            rec.signature.parameter_types().is_empty(),
             "self-xor zeroing reads no register and takes no fp param: {:?}",
-            rec.fp_params
+            rec.signature.parameter_types()
         );
         assert!(
             rec.source
@@ -19478,7 +23308,7 @@ mod tests {
             recover_leaf_function_abi(&code, 0xd300, Abi::SysV).expect("xorpd+addsd leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
         assert_eq!(
-            rec.fp_params,
+            rec.signature.parameter_types(),
             vec![ScalarType::Double],
             "only xmm0 is read before write; the zeroed xmm1 is not a param: {}",
             rec.source
@@ -19496,8 +23326,8 @@ mod tests {
         let code: [u8; 6] = [0x66, 0x48, 0x0f, 0x6e, 0xc1, 0xc3];
         let rec: LeafRecovery = recover_leaf_function(&code, 0xd400).expect("movq gpr->xmm leaf");
         assert_eq!(rec.returns_fp, Some(ScalarType::Double));
-        assert_eq!(rec.params, vec![Reg::Rcx]);
-        assert_eq!(rec.fp_params, vec![ScalarType::Int]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rcx]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Int]);
         assert!(
             rec.source.contains("x_xmm0 = r_rcx;")
                 && rec.source.contains("return fp_d_from_bits(x_xmm0);"),
@@ -19513,7 +23343,7 @@ mod tests {
             recover_leaf_function_abi(&code, 0xd500, Abi::SysV).expect("movq xmm->gpr leaf");
         assert_eq!(rec.returns_fp, None);
         assert_eq!(rec.return_width_bits, 64);
-        assert_eq!(rec.fp_params, vec![ScalarType::Double]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Double]);
         assert!(
             rec.source.contains("r_rax = x_xmm0;"),
             "movq rax,xmm0 must copy the low double bits into rax verbatim: {}",
@@ -19540,7 +23370,7 @@ mod tests {
             recover_leaf_function_abi(&code, 0xd700, Abi::SysV).expect("movd xmm->gpr leaf");
         assert_eq!(rec.returns_fp, None);
         assert_eq!(rec.return_width_bits, 32);
-        assert_eq!(rec.fp_params, vec![ScalarType::Float]);
+        assert_eq!(rec.signature.parameter_types(), vec![ScalarType::Float]);
         assert!(
             rec.source.contains("(uint32_t)x_xmm0"),
             "movd eax,xmm0 must copy the low 32 float bits into eax: {}",
@@ -19574,7 +23404,10 @@ mod tests {
         ];
         let rec: LeafRecovery =
             recover_leaf_function_abi(&code, 0x8000, Abi::SysV).expect("rbp-frame spill add");
-        assert_eq!(rec.params, vec![Reg::Rdi, Reg::Rsi]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rdi, Reg::Rsi]
+        );
         assert!(
             rec.source.contains("unsigned char stack_frame["),
             "expected a real local frame backing the spill slots: {}",
@@ -19596,7 +23429,10 @@ mod tests {
         ];
         let rec: LeafRecovery =
             recover_leaf_function(&code, 0x8100).expect("frameless rsp-frame spill add");
-        assert_eq!(rec.params, vec![Reg::Rcx, Reg::Rdx]);
+        assert_eq!(
+            rec.signature.observed_integer_registers(),
+            vec![Reg::Rcx, Reg::Rdx]
+        );
         assert!(
             rec.source
                 .contains("r_rsp = (uint64_t)(uintptr_t)(stack_frame +"),
@@ -20066,7 +23902,7 @@ mod tests {
     fn sysv_red_zone_slot_below_the_entry_stack_pointer_models_a_local_frame() {
         let rec: LeafRecovery = recover_leaf_function_abi(&RED_ZONE_SLOT, 0x8400, Abi::SysV)
             .expect("a leaf that spills into the System V red zone must lift");
-        assert_eq!(rec.params, vec![Reg::Rdi]);
+        assert_eq!(rec.signature.observed_integer_registers(), vec![Reg::Rdi]);
         assert!(
             rec.source.contains("unsigned char stack_frame[8];"),
             "the red zone must back exactly the eight bytes the slot occupies: {}",
@@ -21096,7 +24932,7 @@ mod tests {
         assert_eq!(sret.field_widths, vec![8, 8, 8]);
         assert_eq!(sret.size, 24);
         assert_eq!(
-            rec.params,
+            rec.signature.observed_integer_registers(),
             vec![Reg::Rsi, Reg::Rdx],
             "the hidden pointer in rdi must be dropped, leaving the two real args"
         );
@@ -21133,7 +24969,7 @@ mod tests {
         assert_eq!(sret.field_widths, vec![8, 8, 8]);
         assert_eq!(sret.size, 24);
         assert_eq!(
-            rec.params,
+            rec.signature.observed_integer_registers(),
             vec![Reg::Rdx, Reg::R8],
             "the hidden pointer copied out of rcx must be dropped for the win64 ABI"
         );
@@ -21701,8 +25537,12 @@ mod tests {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod structuring_corpus {
     use super::{
-        Abi, AggregatePlan, BlockTerm, CfgBlock, Item, LeafItems, Stmt, build_blocks,
-        build_leaf_items, structure_items,
+        Abi, AggregatePlan, Arch, BlockTerm, CfgBlock, DisasmInsn, Item, LeafItems, Reg, RegRef,
+        RipRelativeLeaPolicy, SinkLabel, Stmt, SwitchDispatch, ValueTableSwitch, Width,
+        block_has_continue_at, build_blocks, build_leaf_items, disassemble,
+        object_switch_case_targets, object_value_table, outer_resume_lowering_candidates,
+        render_cfg_blocks, resolve_lea_table, resolve_packed_constants, resolved_table_offset,
+        structure_items, unique_bound_text_section, verify_shared_table_lea,
     };
     use crate::structuring;
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
@@ -21806,6 +25646,545 @@ mod structuring_corpus {
             .expect("create scratch directory")
     }
 
+    fn compile_assembly(name: &str, source: &str) -> Vec<u8> {
+        let compiler: String = gcc().expect("object-test compiler");
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+        let src: PathBuf = scratch.path().join(format!("{name}.s"));
+        let obj: PathBuf = scratch.path().join(format!("{name}.o"));
+        std::fs::write(&src, source.as_bytes()).expect("write object-test assembly");
+        let compiled: std::process::Output = Command::new(&compiler)
+            .args(["-c", "-o"])
+            .arg(&obj)
+            .arg(&src)
+            .output()
+            .expect("invoke object-test compiler");
+        assert!(
+            compiled.status.success(),
+            "object-test assembly failed: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        std::fs::read(obj).expect("read object-test object")
+    }
+
+    fn compile_elf_assembly(name: &str, source: &str) -> Vec<u8> {
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+        let src: PathBuf = scratch.path().join(format!("{name}.s"));
+        let obj: PathBuf = scratch.path().join(format!("{name}.o"));
+        std::fs::write(&src, source.as_bytes()).expect("write ELF object-test assembly");
+        let compiled: std::process::Output = Command::new("clang")
+            .args(["--target=x86_64-unknown-linux-gnu", "-c", "-o"])
+            .arg(&obj)
+            .arg(&src)
+            .output()
+            .expect("invoke ELF object-test compiler");
+        assert!(
+            compiled.status.success(),
+            "ELF object-test assembly failed: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        std::fs::read(obj).expect("read ELF object-test object")
+    }
+
+    fn elf_section_header(object: &[u8], name: &str) -> usize {
+        let file: object::File<'_> = object::File::parse(object).expect("ELF object");
+        let section_index: usize = file
+            .section_by_name(name)
+            .expect("named ELF section")
+            .index()
+            .0;
+        let section_table: usize = usize::try_from(u64::from_le_bytes(
+            object[40..48].try_into().expect("ELF section-table offset"),
+        ))
+        .expect("ELF section-table offset range");
+        let section_header_size: usize = usize::from(u16::from_le_bytes(
+            object[58..60].try_into().expect("ELF section-header size"),
+        ));
+        section_table + section_index * section_header_size
+    }
+
+    fn duplicate_text_section_header(object: &[u8]) -> Vec<u8> {
+        let mut duplicated: Vec<u8> = object.to_vec();
+        let section_count: usize = u16::from_le_bytes([object[2], object[3]]) as usize;
+        let optional_header_size: usize = u16::from_le_bytes([object[16], object[17]]) as usize;
+        let section_table: usize = 20 + optional_header_size;
+        let text_header: usize = (0..section_count)
+            .map(|index: usize| section_table + index * 40)
+            .find(|offset: &usize| object[*offset..*offset + 5] == *b".text")
+            .expect("text section header");
+        let replacement_header: usize = (0..section_count)
+            .map(|index: usize| section_table + index * 40)
+            .find(|offset: &usize| {
+                *offset != text_header
+                    && object[*offset..*offset + 6] != *b".rdata"
+                    && object[*offset..*offset + 5] != *b".text"
+            })
+            .expect("replaceable section header");
+        let text: [u8; 40] = object[text_header..text_header + 40]
+            .try_into()
+            .expect("complete text section header");
+        duplicated[replacement_header..replacement_header + 40].copy_from_slice(&text);
+        duplicated
+    }
+
+    fn coff_section_header(object: &[u8], name: &[u8]) -> usize {
+        let section_count: usize = u16::from_le_bytes([object[2], object[3]]) as usize;
+        let optional_header_size: usize = u16::from_le_bytes([object[16], object[17]]) as usize;
+        let section_table: usize = 20 + optional_header_size;
+        (0..section_count)
+            .map(|index: usize| section_table + index * 40)
+            .find(|offset: &usize| object[*offset..*offset + name.len()] == *name)
+            .expect("named section header")
+    }
+
+    fn coff_text_header(object: &[u8]) -> usize {
+        coff_section_header(object, b".text")
+    }
+
+    fn table_relocation_fixture(name: &str) -> (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) {
+        let source: &str = ".intel_syntax noprefix\n.text\n.globl table_relocation\ntable_relocation:\nlea rax, table_value[rip]\nret\n.section .rdata,\"dr\"\n.p2align 2\ntable_value:\n.long 0\n";
+        let object: Vec<u8> = compile_assembly(name, source);
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "table_relocation").expect("table relocation function");
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).expect("table relocation disassembly");
+        (object, code, base, insns)
+    }
+
+    fn single_case_dispatch() -> SwitchDispatch {
+        SwitchDispatch {
+            disc: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W32,
+            },
+            bound: 0,
+            default_addr: 0,
+            table_va: 0,
+            bias: None,
+            entry_width: 4,
+            first_index: 0,
+            inter_start: 0,
+            inter_end: 0,
+        }
+    }
+
+    fn addressed_jump_table_fixture(name: &str) -> (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) {
+        let source: &str = ".intel_syntax noprefix\n.text\n.globl relocated_switch\nrelocated_switch:\nlea rax, jump_table[rip]\nret\n.globl relocated_case\nrelocated_case:\nret\n.section .rdata,\"dr\"\n.quad 0\njump_table:\n.long relocated_case - jump_table\n";
+        let mut object: Vec<u8> = compile_assembly(name, source);
+        let text_header: usize = coff_section_header(&object, b".text");
+        let table_header: usize = coff_section_header(&object, b".rdata");
+        object[text_header + 12..text_header + 16].copy_from_slice(&0x1000_u32.to_le_bytes());
+        object[table_header + 12..table_header + 16].copy_from_slice(&0x3000_u32.to_le_bytes());
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "relocated_switch").expect("relocated switch function");
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).expect("relocated switch disassembly");
+        (object, code, base, insns)
+    }
+
+    fn coff_relocation_record(object: &[u8], section_name: &[u8], slot: u32) -> usize {
+        let section_header: usize = coff_section_header(object, section_name);
+        let relocation_table: usize = u32::from_le_bytes(
+            object[section_header + 24..section_header + 28]
+                .try_into()
+                .expect("section relocation pointer"),
+        ) as usize;
+        let relocation_count: usize = usize::from(u16::from_le_bytes(
+            object[section_header + 32..section_header + 34]
+                .try_into()
+                .expect("section relocation count"),
+        ));
+        (0..relocation_count)
+            .map(|index: usize| relocation_table + index * 10)
+            .find(|offset: &usize| {
+                u32::from_le_bytes(
+                    object[*offset..*offset + 4]
+                        .try_into()
+                        .expect("relocation slot"),
+                ) == slot
+            })
+            .expect("named relocation record")
+    }
+
+    fn append_shifted_coff_relocation(
+        object: &mut Vec<u8>,
+        section_name: &[u8],
+        source_slot: u32,
+        shifted_slot: u32,
+    ) {
+        let section_header: usize = coff_section_header(object, section_name);
+        let relocation_table: usize = u32::from_le_bytes(
+            object[section_header + 24..section_header + 28]
+                .try_into()
+                .expect("section relocation pointer"),
+        ) as usize;
+        let relocation_count: usize = usize::from(u16::from_le_bytes(
+            object[section_header + 32..section_header + 34]
+                .try_into()
+                .expect("section relocation count"),
+        ));
+        let records: Vec<u8> =
+            object[relocation_table..relocation_table + relocation_count * 10].to_vec();
+        let mut shifted: [u8; 10] = records
+            .chunks_exact(10)
+            .find(|record: &&[u8]| {
+                u32::from_le_bytes(record[..4].try_into().expect("relocation offset"))
+                    == source_slot
+            })
+            .expect("source relocation record")
+            .try_into()
+            .expect("complete relocation record");
+        shifted[..4].copy_from_slice(&shifted_slot.to_le_bytes());
+        let replacement_table: u32 =
+            u32::try_from(object.len()).expect("replacement relocation pointer");
+        object.extend_from_slice(&records);
+        object.extend_from_slice(&shifted);
+        object[section_header + 24..section_header + 28]
+            .copy_from_slice(&replacement_table.to_le_bytes());
+        let replacement_count: u16 =
+            u16::try_from(relocation_count + 1).expect("replacement relocation count");
+        object[section_header + 32..section_header + 34]
+            .copy_from_slice(&replacement_count.to_le_bytes());
+    }
+
+    #[test]
+    fn shared_table_lea_refuses_overlapping_text_sections() {
+        if !cfg!(windows) {
+            return;
+        }
+        let source: &str = ".intel_syntax noprefix\n.text\n.globl shared_overlap\nshared_overlap:\nlea rdx, shared_table[rip]\nlea rax, shared_table[rip]\nret\n.section .rdata,\"dr\"\n.p2align 2\nshared_table:\n.long 0\n";
+        let object: Vec<u8> = compile_assembly("shared_overlap", source);
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "shared_overlap").expect("shared lea function");
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).expect("shared lea disassembly");
+        assert_eq!(
+            insns
+                .first()
+                .map(|insn: &DisasmInsn| insn.mnemonic.as_str()),
+            Some("lea")
+        );
+        assert_eq!(
+            insns.get(1).map(|insn: &DisasmInsn| insn.mnemonic.as_str()),
+            Some("lea")
+        );
+        verify_shared_table_lea(&object, base, &insns, 0, 1).expect("unambiguous shared table lea");
+        let overlapping: Vec<u8> = duplicate_text_section_header(&object);
+        let result: super::Result<()> = verify_shared_table_lea(&overlapping, base, &insns, 0, 1);
+        assert!(
+            result.is_err(),
+            "shared table lea must refuse ambiguous text-section identity: {result:?}"
+        );
+    }
+
+    #[test]
+    fn packed_constant_resolution_refuses_overlapping_text_sections() {
+        if !cfg!(windows) {
+            return;
+        }
+        let source: &str = ".intel_syntax noprefix\n.text\n.globl packed_overlap\npacked_overlap:\nmovdqa xmm0, XMMWORD PTR packed_value[rip]\nret\n.section .rdata,\"dr\"\n.p2align 4\npacked_value:\n.quad 0x1122334455667788\n.quad 0x8877665544332211\n";
+        let object: Vec<u8> = compile_assembly("packed_overlap", source);
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "packed_overlap").expect("packed constant function");
+        let resolved: Vec<super::PackedConstant> = resolve_packed_constants(&object, &code, base);
+        assert_eq!(resolved.len(), 1);
+        let overlapping: Vec<u8> = duplicate_text_section_header(&object);
+        let ambiguous: Vec<super::PackedConstant> =
+            resolve_packed_constants(&overlapping, &code, base);
+        assert!(
+            ambiguous.is_empty(),
+            "packed constants must refuse ambiguous text-section identity: {ambiguous:?}"
+        );
+    }
+
+    #[test]
+    fn jump_table_targets_refuse_overlapping_text_sections() {
+        if !cfg!(windows) {
+            return;
+        }
+        let source: &str = ".intel_syntax noprefix\n.text\n.globl switch_overlap\nswitch_overlap:\nlea rax, switch_table[rip]\nret\n.section .rdata,\"dr\"\n.p2align 2\nswitch_table:\n.long 0\n";
+        let object: Vec<u8> = compile_assembly("switch_overlap", source);
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "switch_overlap").expect("switch table function");
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).expect("switch table disassembly");
+        let dispatch: SwitchDispatch = single_case_dispatch();
+        let targets: Vec<u64> = object_switch_case_targets(&object, base, &insns, &dispatch)
+            .expect("unambiguous jump-table");
+        assert_eq!(targets.len(), 1);
+        let overlapping: Vec<u8> = duplicate_text_section_header(&object);
+        let result: super::Result<Vec<u64>> =
+            object_switch_case_targets(&overlapping, base, &insns, &dispatch);
+        assert!(
+            result.is_err(),
+            "jump-table targets must refuse ambiguous text-section identity: {result:?}"
+        );
+    }
+
+    #[test]
+    fn text_section_extent_overflow_is_refused() {
+        let source: &str =
+            ".intel_syntax noprefix\n.text\n.globl overflow_text\noverflow_text:\nret\n";
+        let mut object: Vec<u8> = compile_elf_assembly("overflow_text", source);
+        let text_header: usize = elf_section_header(&object, ".text");
+        let base: u64 = u64::MAX - 1;
+        object[text_header + 16..text_header + 24].copy_from_slice(&base.to_le_bytes());
+        object[text_header + 32..text_header + 40].copy_from_slice(&4_u64.to_le_bytes());
+        let mutated: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("overflowing ELF text");
+        let code: [u8; 1] = [0xc3];
+        let insns: Vec<DisasmInsn> =
+            disassemble(Arch::X86_64, base, &code).expect("overflow text disassembly");
+        let result: super::Result<object::Section<'_, '_>> =
+            unique_bound_text_section(&mutated, base, &insns);
+        assert!(
+            result.is_err(),
+            "an overflowing text-section extent must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn lea_table_resolution_refuses_wrong_relocation_kind() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            table_relocation_fixture("wrong_relocation_kind");
+        let text_header: usize = coff_text_header(&object);
+        let relocation_table: usize = u32::from_le_bytes(
+            object[text_header + 24..text_header + 28]
+                .try_into()
+                .expect("text relocation pointer"),
+        ) as usize;
+        let disp_offset: u32 =
+            u32::try_from(insns[0].address + insns[0].bytes.len() as u64 - 4 - base)
+                .expect("LEA displacement offset");
+        let relocation_count: usize = usize::from(u16::from_le_bytes(
+            object[text_header + 32..text_header + 34]
+                .try_into()
+                .expect("text relocation count"),
+        ));
+        let relocation: usize = (0..relocation_count)
+            .map(|index: usize| relocation_table + index * 10)
+            .find(|offset: &usize| {
+                u32::from_le_bytes(
+                    object[*offset..*offset + 4]
+                        .try_into()
+                        .expect("relocation offset"),
+                ) == disp_offset
+            })
+            .expect("LEA relocation record");
+        object[relocation + 8..relocation + 10].copy_from_slice(&2_u16.to_le_bytes());
+        let file: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("wrong-kind COFF object");
+        let code_section: object::Section<'_, '_> =
+            unique_bound_text_section(&file, base, &insns).expect("bound wrong-kind text");
+        let disp_field: u64 = insns[0].address + insns[0].bytes.len() as u64 - 4;
+        let result: super::Result<(object::SectionIndex, u64)> =
+            resolve_lea_table(&file, &code_section, disp_field);
+        assert!(
+            result.is_err(),
+            "a non-PC-relative LEA relocation must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn lea_table_resolution_refuses_duplicate_relocations() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            table_relocation_fixture("duplicate_relocations");
+        let text_header: usize = coff_text_header(&object);
+        let relocation_table: usize = u32::from_le_bytes(
+            object[text_header + 24..text_header + 28]
+                .try_into()
+                .expect("text relocation pointer"),
+        ) as usize;
+        let relocation_count: usize = usize::from(u16::from_le_bytes(
+            object[text_header + 32..text_header + 34]
+                .try_into()
+                .expect("text relocation count"),
+        ));
+        let records: Vec<u8> =
+            object[relocation_table..relocation_table + relocation_count * 10].to_vec();
+        let disp_offset: u32 =
+            u32::try_from(insns[0].address + insns[0].bytes.len() as u64 - 4 - base)
+                .expect("LEA displacement offset");
+        let matching: [u8; 10] = records
+            .chunks_exact(10)
+            .find(|record: &&[u8]| {
+                u32::from_le_bytes(record[..4].try_into().expect("relocation offset"))
+                    == disp_offset
+            })
+            .expect("LEA relocation record")
+            .try_into()
+            .expect("complete LEA relocation");
+        let replacement_table: u32 =
+            u32::try_from(object.len()).expect("replacement relocation pointer");
+        object.extend_from_slice(&records);
+        object.extend_from_slice(&matching);
+        object[text_header + 24..text_header + 28]
+            .copy_from_slice(&replacement_table.to_le_bytes());
+        let replacement_count: u16 =
+            u16::try_from(relocation_count + 1).expect("replacement relocation count");
+        object[text_header + 32..text_header + 34]
+            .copy_from_slice(&replacement_count.to_le_bytes());
+        let file: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("duplicate-relocation COFF object");
+        let code_section: object::Section<'_, '_> = unique_bound_text_section(&file, base, &insns)
+            .expect("bound duplicate-relocation text");
+        let disp_field: u64 = insns[0].address + insns[0].bytes.len() as u64 - 4;
+        let result: super::Result<(object::SectionIndex, u64)> =
+            resolve_lea_table(&file, &code_section, disp_field);
+        assert!(
+            result.is_err(),
+            "duplicate LEA relocations must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn lea_table_resolution_refuses_preceding_overlap_relocations() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            table_relocation_fixture("overlapping_lea_relocation");
+        let displacement_offset: u32 =
+            u32::try_from(insns[0].address + insns[0].bytes.len() as u64 - 4 - base)
+                .expect("LEA displacement offset");
+        append_shifted_coff_relocation(
+            &mut object,
+            b".text",
+            displacement_offset,
+            displacement_offset - 1,
+        );
+        let file: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("overlapping-relocation COFF object");
+        let code_section: object::Section<'_, '_> = unique_bound_text_section(&file, base, &insns)
+            .expect("bound overlapping-relocation text");
+        let displacement_field: u64 = insns[0].address + insns[0].bytes.len() as u64 - 4;
+        let result: super::Result<(object::SectionIndex, u64)> =
+            resolve_lea_table(&file, &code_section, displacement_field);
+        assert!(
+            result.is_err(),
+            "an additional relocation overlapping the LEA displacement must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn lea_table_offset_preserves_high_unsigned_addresses() {
+        let table_address: u64 = i64::MAX as u64 - 16;
+        let symbol_address: u64 = table_address + 32;
+        let table_offset: u64 = resolved_table_offset(symbol_address, -4, table_address)
+            .expect("high-address table offset");
+        assert_eq!(table_offset, 32);
+    }
+
+    #[test]
+    fn jump_table_relocations_use_section_relative_offsets() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            addressed_jump_table_fixture("relocated_jump_table");
+        let file: object::File<'_> =
+            object::File::parse(object.as_slice()).expect("addressed switch object");
+        let target: u64 = file
+            .symbols()
+            .find(|symbol: &object::Symbol<'_, '_>| {
+                symbol
+                    .name()
+                    .is_ok_and(|name: &str| name == "relocated_case")
+            })
+            .expect("relocated case symbol")
+            .address();
+        let dispatch: SwitchDispatch = single_case_dispatch();
+        let targets: Vec<u64> = object_switch_case_targets(&object, base, &insns, &dispatch)
+            .expect("relocated jump-table targets");
+        assert_eq!(targets, vec![target]);
+    }
+
+    #[test]
+    fn jump_table_targets_refuse_wrong_slot_relocation_shape() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            addressed_jump_table_fixture("wrong_jump_table_relocation");
+        let relocation: usize = coff_relocation_record(&object, b".rdata", 8);
+        object[relocation + 8..relocation + 10].copy_from_slice(&1_u16.to_le_bytes());
+        let dispatch: SwitchDispatch = single_case_dispatch();
+        let result: super::Result<Vec<u64>> =
+            object_switch_case_targets(&object, base, &insns, &dispatch);
+        assert!(
+            result.is_err(),
+            "a wrong-kind and wrong-width jump-table relocation must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn jump_table_targets_refuse_interior_relocations() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            addressed_jump_table_fixture("interior_jump_table_relocation");
+        let relocation: usize = coff_relocation_record(&object, b".rdata", 8);
+        object[relocation..relocation + 4].copy_from_slice(&9_u32.to_le_bytes());
+        let dispatch: SwitchDispatch = single_case_dispatch();
+        let result: super::Result<Vec<u64>> =
+            object_switch_case_targets(&object, base, &insns, &dispatch);
+        assert!(
+            result.is_err(),
+            "an interior jump-table relocation must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn value_table_refuses_relocations_overlapping_from_before_the_span() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            addressed_jump_table_fixture("preceding_value_table_relocation");
+        let relocation: usize = coff_relocation_record(&object, b".rdata", 8);
+        object[relocation..relocation + 4].copy_from_slice(&7_u32.to_le_bytes());
+        let switch: ValueTableSwitch = ValueTableSwitch {
+            disc: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W32,
+            },
+            count: 1,
+            default_value: 0,
+            lea_idx: 0,
+            entry_width: 4,
+            signed_load: true,
+        };
+        let result: super::Result<Vec<i64>> = object_value_table(&object, base, &insns, &switch);
+        assert!(
+            result.is_err(),
+            "a relocation overlapping the value-table from its preceding byte must refuse: {result:?}"
+        );
+    }
+
+    #[test]
+    fn jump_table_refuses_relocations_overlapping_from_before_the_span() {
+        if !cfg!(windows) {
+            return;
+        }
+        let (mut object, _code, base, insns): (Vec<u8>, Vec<u8>, u64, Vec<DisasmInsn>) =
+            addressed_jump_table_fixture("preceding_jump_table_relocation");
+        let relocation: usize = coff_relocation_record(&object, b".rdata", 8);
+        object[relocation..relocation + 4].copy_from_slice(&7_u32.to_le_bytes());
+        let dispatch: SwitchDispatch = single_case_dispatch();
+        let result: super::Result<Vec<u64>> =
+            object_switch_case_targets(&object, base, &insns, &dispatch);
+        assert!(
+            result.is_err(),
+            "a relocation overlapping the jump-table from its preceding byte must refuse: {result:?}"
+        );
+    }
+
     pub(super) fn compile_corpus(compiler: &str) -> Option<Vec<u8>> {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut source: String = String::from("#include <stdint.h>\n");
@@ -21884,7 +26263,7 @@ mod structuring_corpus {
 
     pub(super) fn lift(object_bytes: &[u8], name: &str) -> Option<Vec<Item>> {
         let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
-        build_leaf_items(&code, base, HOST_ABI, &[], &[])
+        build_leaf_items(&code, base, HOST_ABI, &[], &[], RipRelativeLeaPolicy::Allow)
             .ok()
             .map(|leaf: LeafItems| leaf.items)
     }
@@ -21948,6 +26327,637 @@ mod structuring_corpus {
         let blocks: Vec<CfgBlock> = build_blocks(items)?;
         let cfg: structuring::Cfg = cfg_from_blocks(&blocks)?;
         Some(structuring::structure(&cfg).is_complete())
+    }
+
+    fn region_contains_entry(
+        result: &structuring::StructureResult,
+        id: structuring::RegionId,
+        entry: u32,
+    ) -> bool {
+        let Some(region): Option<&structuring::Region> = result.regions.get(id as usize) else {
+            return false;
+        };
+        region.entry == entry
+            || region
+                .children
+                .iter()
+                .any(|child: &structuring::RegionId| region_contains_entry(result, *child, entry))
+    }
+
+    #[test]
+    fn host_o3_nested_loop_real_cfg_reaches_the_resume_renderer() {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        struct OriginalCoordinate(usize);
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        struct PermutedCoordinate(usize);
+
+        if !cfg!(windows) {
+            return;
+        }
+        let compiler: String = gcc().expect("host gcc");
+        let source: &str = "__attribute__((noinline,noclone)) long long wp_nested_loop_h(long long n, long long m){ long long s = 0; for (long long i = 0; i < n; i++) { for (long long j = 0; j < m; j++) { s += i + j; } } return s; }\nlong long wp_nested_loop_entry(long long n, long long m){ return wp_nested_loop_h(n, m) + 1; }";
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+        let src: PathBuf = scratch.path().join("wp_nested_loop_o3.c");
+        let obj: PathBuf = scratch.path().join("wp_nested_loop_o3.o");
+        std::fs::write(&src, source.as_bytes()).expect("write nested loop source");
+        let compiled: std::process::Output = Command::new(&compiler)
+            .args([
+                "-O3",
+                "-fno-stack-protector",
+                "-fno-optimize-sibling-calls",
+                "-fno-if-conversion",
+                "-fno-if-conversion2",
+                "-fno-tree-loop-if-convert",
+                "-c",
+                "-o",
+            ])
+            .arg(&obj)
+            .arg(&src)
+            .output()
+            .expect("invoke host gcc");
+        assert!(
+            compiled.status.success(),
+            "host gcc failed: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let object: Vec<u8> = std::fs::read(&obj).expect("read nested loop object");
+        let (code, base): (Vec<u8>, u64) =
+            function_code(&object, "wp_nested_loop_h").expect("nested loop function");
+        let packed_consts: Vec<super::PackedConstant> =
+            resolve_packed_constants(&object, &code, base);
+        let leaf: LeafItems = build_leaf_items(
+            &code,
+            base,
+            HOST_ABI,
+            &[],
+            &packed_consts,
+            RipRelativeLeaPolicy::Refuse,
+        )
+        .expect("lift nested loop function");
+        let structured: super::Structured =
+            structure_items(&leaf.items).expect("structure nested loop function");
+        super::infer_params(&structured.body, HOST_ABI)
+            .expect("terminating preheader arm must not erase packed writes on the live arm");
+        let blocks: Vec<CfgBlock> = build_blocks(&leaf.items).expect("nested loop blocks");
+        let labels: std::collections::BTreeMap<usize, SinkLabel> =
+            std::collections::BTreeMap::new();
+        let plans: Vec<super::OuterResumePlan> = outer_resume_lowering_candidates(&blocks, &labels);
+        assert_eq!(plans.len(), 1, "real nested loop plan count");
+        let plan: &super::OuterResumePlan = &plans[0];
+        assert_eq!(plan.predecessor.index(), 19);
+        assert_eq!(plan.resume.block, 4);
+        assert_eq!(plan.resume.inner.header, 10);
+        assert_eq!(plan.resume.outer.header, 3);
+        let plan_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            std::collections::BTreeMap::from([(
+                plan.resume.stub,
+                SinkLabel::ResumeAt(plan.resume),
+            )]);
+        let lowered_cfg: structuring::Cfg =
+            super::cfg_from_leaf_blocks(&plan.blocks).expect("lowered real cfg");
+        let boundaries: structuring::StructureBoundaries =
+            super::structure_boundaries(&plan.blocks, &plan_labels)
+                .expect("real structure boundaries");
+        let structural_cfg: structuring::Cfg = lowered_cfg.clone();
+        let structure: structuring::StructureResult =
+            structuring::structure_with_boundaries(&structural_cfg, &boundaries)
+                .expect("valid real structure boundaries");
+        assert!(
+            structure.is_complete(),
+            "real lowered structure: {structure:#?}"
+        );
+        assert!(super::region_structuring_is_sound(
+            &plan.blocks,
+            &structural_cfg,
+            &structure
+        ));
+        let original_cfg: structuring::Cfg =
+            super::cfg_from_leaf_blocks(&blocks).expect("original real cfg");
+        let residual: std::collections::BTreeMap<u32, u32> = plan
+            .residual
+            .iter()
+            .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
+            .collect();
+        assert!(structuring::relowered_matches_original(
+            &original_cfg,
+            &lowered_cfg,
+            &residual
+        ));
+        let semantic_forest: structuring::LoopForest = structuring::loop_forest(&lowered_cfg);
+        let forest: structuring::LoopForest = structuring::loop_forest(&structural_cfg);
+        assert!(super::loop_forests_match(&semantic_forest, &forest));
+        let (inner_region_id, _): (structuring::RegionId, &structuring::Region) = structure
+            .regions
+            .iter()
+            .enumerate()
+            .find(|(_, region): &(usize, &structuring::Region)| {
+                region.kind == structuring::RegionKind::NaturalLoop && region.entry == 10
+            })
+            .map(|(id, region): (usize, &structuring::Region)| (id as u32, region))
+            .expect("inner loop region");
+        assert!(
+            !region_contains_entry(&structure, inner_region_id, plan.resume.stub as u32),
+            "the resume stub must remain outside NaturalLoop(10)"
+        );
+        let root: structuring::RegionId = structure.root.expect("real root region");
+        assert_eq!(
+            super::region_leaf_entry_count(&structure, root, plan.resume.stub),
+            Some(1)
+        );
+        assert!(super::resume_boundaries_match_regions(
+            &structure,
+            &forest,
+            &plan_labels,
+            &plan.residual
+        ));
+        let outer: &structuring::NaturalLoop = forest
+            .loops
+            .iter()
+            .find(|natural: &&structuring::NaturalLoop| natural.header == 3)
+            .expect("real outer loop");
+        let outer_body: std::collections::BTreeSet<usize> =
+            outer.body.iter().map(|node: &u32| *node as usize).collect();
+        let boundary_renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &plan_labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &std::collections::BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let outer_extended: std::collections::BTreeSet<usize> = boundary_renderer
+            .loop_body_with_return_tails(3, &outer_body)
+            .expect("real outer loop must own its resume terminal");
+        assert!(outer_extended.contains(&plan.resume.stub));
+        let outer_exits: std::collections::BTreeSet<usize> = outer_extended
+            .iter()
+            .flat_map(|node: &usize| plan.blocks[*node].successors())
+            .filter(|target: &usize| !outer_extended.contains(target))
+            .collect();
+        assert!(outer_exits.len() <= 1, "real outer exits: {outer_exits:?}");
+        let mut order: Vec<usize> = vec![3];
+        order.extend(
+            outer_extended
+                .iter()
+                .copied()
+                .filter(|node: &usize| *node != 3),
+        );
+        let sub_of: std::collections::BTreeMap<usize, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(index, node): (usize, &usize)| (*node, index))
+            .collect();
+        let follow: Option<usize> = outer_exits.iter().copied().next();
+        let continue_index: usize = order.len();
+        let break_index: usize = order.len() + 1;
+        let remap = |target: usize| -> Option<usize> {
+            if target == 3 {
+                Some(continue_index)
+            } else if let Some(index) = sub_of.get(&target).copied() {
+                Some(index)
+            } else if Some(target) == follow {
+                Some(break_index)
+            } else {
+                None
+            }
+        };
+        let mut nested_blocks: Vec<CfgBlock> = Vec::with_capacity(order.len() + 2);
+        for node in &order {
+            let source: &CfgBlock = &plan.blocks[*node];
+            let term: BlockTerm = match &source.term {
+                BlockTerm::Ret => BlockTerm::Ret,
+                BlockTerm::Jump(target) | BlockTerm::Fall(target) => {
+                    BlockTerm::Jump(remap(*target).expect("real nested jump target"))
+                }
+                BlockTerm::Branch {
+                    kind,
+                    flags,
+                    taken,
+                    fallthrough,
+                } => BlockTerm::Branch {
+                    kind: *kind,
+                    flags: flags.clone(),
+                    taken: remap(*taken).expect("real nested taken target"),
+                    fallthrough: remap(*fallthrough).expect("real nested fallthrough target"),
+                },
+            };
+            nested_blocks.push(CfgBlock {
+                stmts: source.stmts.clone(),
+                term,
+            });
+        }
+        nested_blocks.push(CfgBlock {
+            stmts: Vec::new(),
+            term: BlockTerm::Ret,
+        });
+        nested_blocks.push(CfgBlock {
+            stmts: Vec::new(),
+            term: BlockTerm::Ret,
+        });
+        let mut nested_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            std::collections::BTreeMap::from([
+                (continue_index, SinkLabel::ContinueLoop(plan.resume.outer)),
+                (break_index, SinkLabel::BreakLoop(plan.resume.outer)),
+            ]);
+        for node in &order {
+            if matches!(plan.blocks[*node].term, BlockTerm::Ret)
+                && let Some(label) = plan_labels.get(node).copied()
+            {
+                nested_labels.insert(sub_of[node], label);
+            }
+        }
+        let nested_cfg: structuring::Cfg =
+            super::cfg_from_leaf_blocks(&nested_blocks).expect("real nested cfg");
+        let nested_boundaries: structuring::StructureBoundaries =
+            super::structure_boundaries(&nested_blocks, &nested_labels)
+                .expect("real nested boundaries");
+        let nested_structure: structuring::StructureResult =
+            structuring::structure_with_boundaries(&nested_cfg, &nested_boundaries)
+                .expect("valid real nested boundaries");
+        assert!(nested_structure.is_complete(), "{nested_structure:#?}");
+        assert!(super::local_resume_boundaries_match_regions(
+            &nested_structure,
+            &nested_labels
+        ));
+        assert!(super::region_structuring_is_sound(
+            &nested_blocks,
+            &nested_cfg,
+            &nested_structure
+        ));
+        let nested_forest: structuring::LoopForest = structuring::loop_forest(&nested_cfg);
+        let nested_root: structuring::RegionId = nested_structure.root.expect("real nested root");
+        let mut nested_renderer = super::RegionRenderer {
+            blocks: &nested_blocks,
+            original_blocks: &nested_blocks,
+            result: &nested_structure,
+            labels: &nested_labels,
+            forest: &nested_forest,
+            allow_loops: true,
+            label_targets: &std::collections::BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut nested_body: super::Block = Vec::new();
+        assert!(!nested_renderer.render(nested_root, &mut nested_body));
+        let render_nested = |candidate_blocks: &[CfgBlock],
+                             candidate_labels: &std::collections::BTreeMap<usize, SinkLabel>|
+         -> Option<super::Block> {
+            super::render_cfg_blocks_nested(
+                candidate_blocks,
+                candidate_labels,
+                true,
+                &std::collections::BTreeMap::new(),
+                plan.resume,
+            )
+        };
+        let resume_local: usize = nested_labels
+            .iter()
+            .find_map(|(block, label): (&usize, &SinkLabel)| {
+                (*label == SinkLabel::ResumeAt(plan.resume)).then_some(*block)
+            })
+            .expect("real nested resume role");
+        let mut wrong_owner_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            nested_labels.clone();
+        let mut wrong_owner: super::OuterBodyResume = plan.resume;
+        wrong_owner.outer = super::LoopId {
+            header: plan
+                .resume
+                .outer
+                .header
+                .checked_add(1)
+                .expect("wrong owner coordinate"),
+        };
+        wrong_owner_labels.insert(resume_local, SinkLabel::ResumeAt(wrong_owner));
+        assert!(render_nested(&nested_blocks, &wrong_owner_labels).is_none());
+        let mut wrong_target_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            nested_labels.clone();
+        let mut wrong_target: super::OuterBodyResume = plan.resume;
+        wrong_target.block = plan
+            .resume
+            .block
+            .checked_add(1)
+            .expect("wrong target coordinate");
+        wrong_target_labels.insert(resume_local, SinkLabel::ResumeAt(wrong_target));
+        assert!(render_nested(&nested_blocks, &wrong_target_labels).is_none());
+        let mut duplicate_resume_labels: std::collections::BTreeMap<usize, SinkLabel> =
+            nested_labels.clone();
+        duplicate_resume_labels.insert(break_index, SinkLabel::ResumeAt(plan.resume));
+        assert!(render_nested(&nested_blocks, &duplicate_resume_labels).is_none());
+        let mutation_block: usize = nested_blocks
+            .iter()
+            .enumerate()
+            .find_map(|(block, candidate): (usize, &CfgBlock)| {
+                (block != 0
+                    && !nested_labels.contains_key(&block)
+                    && matches!(candidate.term, BlockTerm::Jump(_) | BlockTerm::Fall(_)))
+                .then_some(block)
+            })
+            .expect("real nested mutation block");
+        let mut third_loop: Vec<CfgBlock> = nested_blocks.clone();
+        third_loop[mutation_block].term = BlockTerm::Jump(mutation_block);
+        assert!(render_nested(&third_loop, &nested_labels).is_none());
+        let mut extra_return: Vec<CfgBlock> = nested_blocks.clone();
+        extra_return[mutation_block].term = BlockTerm::Ret;
+        assert!(render_nested(&extra_return, &nested_labels).is_none());
+        let mut extra_role_predecessor: Vec<CfgBlock> = nested_blocks.clone();
+        extra_role_predecessor[mutation_block].term = BlockTerm::Jump(continue_index);
+        let extra_role_cfg: structuring::Cfg = super::cfg_from_leaf_blocks(&extra_role_predecessor)
+            .expect("unrelated proper mutation cfg");
+        let extra_role_boundaries: structuring::StructureBoundaries =
+            super::structure_boundaries(&extra_role_predecessor, &nested_labels)
+                .expect("unrelated proper mutation boundaries");
+        let extra_role_structure: structuring::StructureResult =
+            structuring::structure_with_boundaries(&extra_role_cfg, &extra_role_boundaries)
+                .expect("unrelated proper mutation structure");
+        assert!(
+            extra_role_structure
+                .regions
+                .iter()
+                .any(|region: &structuring::Region| region.kind == structuring::RegionKind::Proper)
+        );
+        assert!(render_nested(&extra_role_predecessor, &nested_labels).is_none());
+        let coordinate_count: usize = nested_blocks.len();
+        let coordinate_bijection: std::collections::BTreeMap<
+            OriginalCoordinate,
+            PermutedCoordinate,
+        > = (0..coordinate_count)
+            .map(|coordinate: usize| {
+                let permuted: usize = if coordinate == 0 {
+                    0
+                } else {
+                    coordinate_count - coordinate
+                };
+                (OriginalCoordinate(coordinate), PermutedCoordinate(permuted))
+            })
+            .collect();
+        let remap_coordinate = |coordinate: usize| -> usize {
+            coordinate_bijection[&OriginalCoordinate(coordinate)].0
+        };
+        let mut permuted_blocks: Vec<CfgBlock> = vec![
+            CfgBlock {
+                stmts: Vec::new(),
+                term: BlockTerm::Ret,
+            };
+            coordinate_count
+        ];
+        for (coordinate, source) in nested_blocks.iter().enumerate() {
+            let term: BlockTerm = match &source.term {
+                BlockTerm::Ret => BlockTerm::Ret,
+                BlockTerm::Jump(target) => BlockTerm::Jump(remap_coordinate(*target)),
+                BlockTerm::Fall(target) => BlockTerm::Fall(remap_coordinate(*target)),
+                BlockTerm::Branch {
+                    kind,
+                    flags,
+                    taken,
+                    fallthrough,
+                } => BlockTerm::Branch {
+                    kind: *kind,
+                    flags: flags.clone(),
+                    taken: remap_coordinate(*taken),
+                    fallthrough: remap_coordinate(*fallthrough),
+                },
+            };
+            permuted_blocks[remap_coordinate(coordinate)] = CfgBlock {
+                stmts: source.stmts.clone(),
+                term,
+            };
+        }
+        let permuted_labels: std::collections::BTreeMap<usize, SinkLabel> = nested_labels
+            .iter()
+            .map(|(coordinate, label): (&usize, &SinkLabel)| {
+                (remap_coordinate(*coordinate), *label)
+            })
+            .collect();
+        let proof: super::OuterResumeTree =
+            super::OuterResumeTree::checked(&nested_blocks, &nested_labels, plan.resume)
+                .expect("exact outer-body resume proof tree");
+        assert!(proof.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut parameter_read: super::OuterResumeTree = proof.clone();
+        parameter_read.blocks[0].stmts.insert(
+            0,
+            super::Stmt::Assign {
+                dest: super::RegRef {
+                    reg: super::Reg::R10,
+                    width: super::Width::W64,
+                },
+                src: super::Source::Reg(super::RegRef {
+                    reg: super::Reg::R8,
+                    width: super::Width::W64,
+                }),
+            },
+        );
+        assert!(
+            super::infer_params(
+                &vec![
+                    super::Node::Stmt(super::Stmt::Packed {
+                        dest: super::Xmm::Xmm4,
+                        op: super::PackedOp::Const { q0: 2, q1: 2 },
+                    }),
+                    super::Node::OuterResume(parameter_read),
+                ],
+                super::Abi::MsX64,
+            )
+            .expect("retained-tree parameter flow")
+            .contains(&super::Reg::R8)
+        );
+        let unsupported_statements: Vec<super::Stmt> = vec![
+            super::Stmt::Call {
+                target: 0x1234,
+                args: vec![super::Reg::Rcx],
+                name: Some("retained_call".to_owned()),
+            },
+            super::Stmt::Assign {
+                dest: super::RegRef {
+                    reg: super::Reg::R10,
+                    width: super::Width::W64,
+                },
+                src: super::Source::Mem(super::MemRef {
+                    base: Some(super::Reg::Rcx),
+                    index: None,
+                    disp: 0,
+                    width: super::Width::W64,
+                }),
+            },
+            super::Stmt::FpMov {
+                dest: super::Xmm::Xmm0,
+                src: super::FpOperand::Const {
+                    bits: 0,
+                    width: super::FpWidth::F64,
+                },
+                width: super::FpWidth::F64,
+            },
+            super::Stmt::Vector(super::VecStmt::MoveImm {
+                dest: 0,
+                imm: 0,
+                arr: super::VecArrangement::whole_register(super::VecElem::I64),
+            }),
+            super::Stmt::FlagSnapshot {
+                var: 0,
+                kind: super::CondKind::E,
+                flags: super::Flags::Snapshot { var: 0 },
+            },
+        ];
+        let analysis_refusals: Vec<bool> = unsupported_statements
+            .into_iter()
+            .map(|statement: super::Stmt| {
+                let mut candidate: Vec<CfgBlock> = nested_blocks.clone();
+                candidate[0].stmts.insert(0, statement);
+                super::OuterResumeTree::checked(&candidate, &nested_labels, plan.resume).is_none()
+            })
+            .collect();
+        assert_eq!(analysis_refusals, vec![true; 5]);
+        let mut statement_corruption: super::OuterResumeTree = proof.clone();
+        let statement_block: &mut super::OuterResumeTreeBlock = statement_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| !block.stmts.is_empty())
+            .expect("proof statement block");
+        statement_block.stmts.pop();
+        assert!(!statement_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut atom_corruption: super::OuterResumeTree = proof.clone();
+        let atom_block: &mut super::OuterResumeTreeBlock = atom_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| {
+                matches!(block.term, super::OuterResumeTreeTerm::Branch { .. })
+            })
+            .expect("proof atom block");
+        let super::OuterResumeTreeTerm::Branch { atom, .. } = &mut atom_block.term else {
+            unreachable!();
+        };
+        *atom = super::OriginalBlockId(
+            atom.index()
+                .checked_add(1)
+                .expect("corrupt atom coordinate"),
+        );
+        assert!(!atom_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut condition_corruption: super::OuterResumeTree = proof.clone();
+        let condition_block: &mut super::OuterResumeTreeBlock = condition_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| {
+                matches!(block.term, super::OuterResumeTreeTerm::Branch { .. })
+            })
+            .expect("proof condition block");
+        let super::OuterResumeTreeTerm::Branch { kind, flags, .. } = &mut condition_block.term
+        else {
+            unreachable!();
+        };
+        *kind = kind.negate();
+        *flags = super::Flags::Cmp {
+            lhs: super::RegRef {
+                reg: super::Reg::Rax,
+                width: super::Width::W64,
+            },
+            rhs: super::Source::Imm(91),
+        };
+        assert!(!condition_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut jump_kind_corruption: super::OuterResumeTree = proof.clone();
+        let jump_block: &mut super::OuterResumeTreeBlock = jump_kind_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| {
+                matches!(block.term, super::OuterResumeTreeTerm::Jump { .. })
+            })
+            .expect("proof jump block");
+        let super::OuterResumeTreeTerm::Jump { fallthrough, .. } = &mut jump_block.term else {
+            unreachable!();
+        };
+        *fallthrough = !*fallthrough;
+        assert!(!jump_kind_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut arm_corruption: super::OuterResumeTree = proof.clone();
+        let arm_block: &mut super::OuterResumeTreeBlock = arm_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| {
+                matches!(block.term, super::OuterResumeTreeTerm::Branch { .. })
+            })
+            .expect("proof arm block");
+        let super::OuterResumeTreeTerm::Branch {
+            taken, fallthrough, ..
+        } = &mut arm_block.term
+        else {
+            unreachable!();
+        };
+        std::mem::swap(taken, fallthrough);
+        assert!(!arm_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut coordinate_corruption: super::OuterResumeTree = proof.clone();
+        coordinate_corruption.bijection.plan_to_original.swap(0, 1);
+        assert!(!coordinate_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let mut role_corruption: super::OuterResumeTree = proof.clone();
+        let break_role: &mut super::OuterResumeTreeBlock = role_corruption
+            .blocks
+            .iter_mut()
+            .find(|block: &&mut super::OuterResumeTreeBlock| {
+                block.role == Some(super::OuterResumeRole::Break)
+            })
+            .expect("proof break role");
+        break_role.role = Some(super::OuterResumeRole::ResumeAt);
+        assert!(!role_corruption.audit(&nested_blocks, &nested_labels, plan.resume));
+        let lowered_proof_cfg: structuring::Cfg = proof.lower_cfg().expect("lowered proof cfg");
+        assert!(structuring::relowered_matches_original_modulo_clones(
+            &nested_cfg,
+            &lowered_proof_cfg,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        ));
+        let original_body: Option<super::Block> = render_nested(&nested_blocks, &nested_labels);
+        let permuted_body: Option<super::Block> = render_nested(&permuted_blocks, &permuted_labels);
+        assert!(
+            original_body.is_some(),
+            "exact outer-body resume topology refused"
+        );
+        assert!(
+            permuted_body.is_some(),
+            "coordinate-isomorphic outer-body resume topology refused"
+        );
+        let nested_body: super::Block = original_body.expect("checked real nested body");
+        let nested_expected: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::from([(plan.resume.stub, plan.resume.block)]);
+        assert!(super::nested_node_resume_relowering_matches(
+            &nested_body,
+            &nested_expected
+        ));
+        let mut outer_renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &plan_labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &std::collections::BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut outer_rendered: super::Block = Vec::new();
+        assert!(
+            outer_renderer.render_loop(3, &mut outer_rendered),
+            "real outer loop subgraph refused"
+        );
+        let mut renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &plan_labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &std::collections::BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut rendered: super::Block = Vec::new();
+        assert!(
+            renderer.render(root, &mut rendered),
+            "real region renderer refused: {structure:#?}"
+        );
+        assert_eq!(renderer.consumed, super::reachable_blocks(&plan.blocks));
+        assert!(super::node_resume_relowering_matches(
+            &rendered,
+            &plan.residual
+        ));
+        let targets: std::collections::BTreeMap<usize, u32> = std::collections::BTreeMap::new();
+        let body: super::Block = render_cfg_blocks(&blocks, &labels, true, &targets)
+            .expect("the real plan must reach the typed resume renderer");
+        assert!(block_has_continue_at(&body));
     }
 
     #[test]
@@ -22120,7 +27130,7 @@ mod structuring_corpus {
 mod forward_join_scope {
     use super::{
         BlockTerm, CfgBlock, CondKind, Flags, Reg, RegRef, SinkLabel, Source, Stmt, Width,
-        forward_join_lowering_candidates, render_cfg_blocks,
+        forward_join_lowering_candidates, outer_resume_lowering_candidates, render_cfg_blocks,
     };
     use std::collections::BTreeMap;
 
@@ -22176,7 +27186,12 @@ mod forward_join_scope {
 
     fn contains_goto(body: &[super::Node]) -> bool {
         body.iter().any(|node: &super::Node| match node {
-            super::Node::Goto(_) | super::Node::Label(_) => true,
+            super::Node::Goto(_)
+            | super::Node::Label(_)
+            | super::Node::BreakLoop(_)
+            | super::Node::ContinueLoop(_)
+            | super::Node::ResumeAt(_)
+            | super::Node::OuterResume(_) => true,
             super::Node::If {
                 then_body,
                 else_body,
@@ -22201,6 +27216,44 @@ mod forward_join_scope {
             | super::Node::Break
             | super::Node::Continue
             | super::Node::Return => false,
+        })
+    }
+
+    fn contains_node(body: &[super::Node], expected: &super::Node) -> bool {
+        body.iter().any(|node: &super::Node| {
+            node == expected
+                || match node {
+                    super::Node::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        contains_node(then_body, expected)
+                            || else_body
+                                .as_ref()
+                                .is_some_and(|arm: &Vec<super::Node>| contains_node(arm, expected))
+                    }
+                    super::Node::While { body, .. } | super::Node::DoWhile { body, .. } => {
+                        contains_node(body, expected)
+                    }
+                    super::Node::Switch { cases, default, .. } => {
+                        cases
+                            .iter()
+                            .any(|case: &super::SwitchCase| contains_node(&case.body, expected))
+                            || contains_node(default, expected)
+                    }
+                    super::Node::Stmt(_)
+                    | super::Node::CondSnapshot { .. }
+                    | super::Node::Break
+                    | super::Node::Continue
+                    | super::Node::BreakLoop(_)
+                    | super::Node::ContinueLoop(_)
+                    | super::Node::ResumeAt(_)
+                    | super::Node::OuterResume(_)
+                    | super::Node::Return
+                    | super::Node::Label(_)
+                    | super::Node::Goto(_) => false,
+                }
         })
     }
 
@@ -22363,6 +27416,462 @@ mod forward_join_scope {
             !crate::structuring::relowered_matches_original(&original, &corrupted_cfg, &residual),
             "misrouting a stub edge must fail the equivalence check"
         );
+    }
+
+    #[test]
+    fn one_inner_edge_to_an_outer_owned_target_has_an_exact_resume_plan() {
+        let blocks: Vec<CfgBlock> = vec![
+            jump(1),
+            branch(2, 6),
+            jump(3),
+            branch(4, 5),
+            branch(3, 2),
+            jump(7),
+            jump(3),
+            branch(1, 8),
+            ret(),
+        ];
+        let plans = outer_resume_lowering_candidates(&blocks, &no_labels());
+        assert_eq!(plans.len(), 1, "one exceptional inner edge is eligible");
+        let plan = &plans[0];
+        assert_eq!(plan.predecessor.index(), 4);
+        assert_eq!(plan.resume.block, 2);
+        assert_eq!(plan.resume.inner.header, 3);
+        assert_eq!(plan.resume.outer.header, 1);
+        assert_eq!(plan.blocks.len(), 10);
+        assert_eq!(plan.residual, BTreeMap::from([(9, 2)]));
+        let original = super::cfg_from_leaf_blocks(&blocks).expect("original cfg");
+        let lowered = super::cfg_from_leaf_blocks(&plan.blocks).expect("lowered cfg");
+        let residual = plan
+            .residual
+            .iter()
+            .map(|(stub, target): (&usize, &usize)| (*stub as u32, *target as u32))
+            .collect();
+        assert!(
+            crate::structuring::relowered_matches_original(&original, &lowered, &residual),
+            "the resume stub must preserve the exact edge to block 2"
+        );
+    }
+
+    #[test]
+    fn an_outer_resume_plan_rejects_stub_and_residual_corruption() {
+        let blocks: Vec<CfgBlock> = vec![
+            jump(1),
+            branch(2, 6),
+            jump(3),
+            branch(4, 5),
+            branch(3, 2),
+            jump(7),
+            jump(3),
+            branch(1, 8),
+            ret(),
+        ];
+        let plan: super::OuterResumePlan = outer_resume_lowering_candidates(&blocks, &no_labels())
+            .into_iter()
+            .next()
+            .expect("exact resume plan");
+        let mut nonempty_stub: Vec<CfgBlock> = plan.blocks.clone();
+        nonempty_stub[plan.resume.stub].stmts.push(effect(9));
+        assert!(
+            super::OuterResumePlan::checked(
+                &blocks,
+                plan.predecessor,
+                plan.resume,
+                nonempty_stub,
+                plan.residual.clone(),
+            )
+            .is_none()
+        );
+        let mut jumping_stub: Vec<CfgBlock> = plan.blocks.clone();
+        jumping_stub[plan.resume.stub].term = BlockTerm::Jump(plan.resume.block);
+        assert!(
+            super::OuterResumePlan::checked(
+                &blocks,
+                plan.predecessor,
+                plan.resume,
+                jumping_stub,
+                plan.residual.clone(),
+            )
+            .is_none()
+        );
+        let mut extra_stub: Vec<CfgBlock> = plan.blocks.clone();
+        extra_stub.push(ret());
+        assert!(
+            super::OuterResumePlan::checked(
+                &blocks,
+                plan.predecessor,
+                plan.resume,
+                extra_stub,
+                plan.residual.clone(),
+            )
+            .is_none()
+        );
+        let wrong_residual: BTreeMap<usize, usize> =
+            BTreeMap::from([(plan.resume.stub, plan.resume.block + 1)]);
+        assert!(
+            super::OuterResumePlan::checked(
+                &blocks,
+                plan.predecessor,
+                plan.resume,
+                plan.blocks.clone(),
+                wrong_residual,
+            )
+            .is_none()
+        );
+        assert!(
+            super::OuterResumePlan::checked(
+                &blocks,
+                super::OriginalBlockId(plan.predecessor.index() - 1),
+                plan.resume,
+                plan.blocks,
+                plan.residual,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_parent_resume_stays_separate_from_the_inner_loop_tail() {
+        let blocks: Vec<CfgBlock> = vec![
+            branch(1, 2),
+            branch(0, 3),
+            branch(4, 5),
+            ret(),
+            ret(),
+            ret(),
+        ];
+        let resume = super::OuterBodyResume {
+            inner: super::LoopId { header: 0 },
+            outer: super::LoopId { header: 6 },
+            block: 6,
+            stub: 3,
+        };
+        let labels: BTreeMap<usize, SinkLabel> = BTreeMap::from([
+            (3, SinkLabel::ResumeAt(resume)),
+            (4, SinkLabel::ContinueLoop(resume.outer)),
+            (5, SinkLabel::BreakLoop(resume.outer)),
+        ]);
+        let cfg = super::cfg_from_leaf_blocks(&blocks).expect("parent composition cfg");
+        let structure = crate::structuring::structure(&cfg);
+        assert!(
+            structure.is_complete(),
+            "parent composition structure: {structure:?}"
+        );
+        let forest = crate::structuring::loop_forest(&cfg);
+        let root = structure.root.expect("parent composition root");
+        let mut renderer = super::RegionRenderer {
+            blocks: &blocks,
+            original_blocks: &blocks,
+            result: &structure,
+            labels: &labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut body: Vec<super::Node> = Vec::new();
+        assert!(
+            renderer.render(root, &mut body),
+            "parent composition refused: {structure:?}"
+        );
+        assert_eq!(body.len(), 2, "parent composition: {body:#?}");
+        let Some(super::Node::While {
+            body: inner_body, ..
+        }): Option<&super::Node> = body.first()
+        else {
+            panic!("parent composition has no inner loop: {body:#?}");
+        };
+        assert!(contains_node(
+            inner_body,
+            &super::Node::ContinueLoop(resume.outer)
+        ));
+        assert!(contains_node(
+            inner_body,
+            &super::Node::BreakLoop(resume.outer)
+        ));
+        assert!(!contains_node(inner_body, &super::Node::ResumeAt(resume)));
+        assert!(matches!(
+            body.get(1),
+            Some(super::Node::ResumeAt(actual)) if *actual == resume
+        ));
+    }
+
+    #[test]
+    fn only_the_owning_loop_may_absorb_a_resume_terminal() {
+        let blocks: Vec<CfgBlock> = vec![
+            jump(1),
+            branch(2, 6),
+            jump(3),
+            branch(4, 5),
+            branch(3, 2),
+            jump(7),
+            jump(3),
+            branch(1, 8),
+            ret(),
+        ];
+        let plan = outer_resume_lowering_candidates(&blocks, &no_labels())
+            .into_iter()
+            .next()
+            .expect("exact resume plan");
+        let labels: BTreeMap<usize, SinkLabel> =
+            BTreeMap::from([(plan.resume.stub, SinkLabel::ResumeAt(plan.resume))]);
+        let cfg = super::cfg_from_leaf_blocks(&plan.blocks).expect("lowered cfg");
+        let structure = crate::structuring::structure(&cfg);
+        let forest = crate::structuring::loop_forest(&cfg);
+        let renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let outer = forest
+            .loops
+            .iter()
+            .find(|natural: &&crate::structuring::NaturalLoop| natural.header == 1)
+            .expect("outer loop");
+        let outer_body: std::collections::BTreeSet<usize> =
+            outer.body.iter().map(|node: &u32| *node as usize).collect();
+        let outer_extended = renderer
+            .loop_body_with_return_tails(1, &outer_body)
+            .expect("the owner must admit its resume terminal");
+        assert!(outer_extended.contains(&plan.resume.stub));
+        let inner = forest
+            .loops
+            .iter()
+            .find(|natural: &&crate::structuring::NaturalLoop| natural.header == 3)
+            .expect("inner loop");
+        let inner_body: std::collections::BTreeSet<usize> =
+            inner.body.iter().map(|node: &u32| *node as usize).collect();
+        assert!(
+            renderer
+                .loop_body_with_return_tails(3, &inner_body)
+                .is_none(),
+            "the inner loop must not absorb its parent's resume terminal"
+        );
+    }
+
+    #[test]
+    fn the_exact_outer_resume_plan_renders_a_typed_continue_node() {
+        let blocks: Vec<CfgBlock> = vec![
+            jump(1),
+            branch(2, 6),
+            jump(3),
+            branch(4, 5),
+            branch(3, 2),
+            jump(7),
+            jump(3),
+            branch(1, 8),
+            ret(),
+        ];
+        let plan = outer_resume_lowering_candidates(&blocks, &no_labels())
+            .into_iter()
+            .next()
+            .expect("exact resume plan");
+        let mut labels: BTreeMap<usize, SinkLabel> = BTreeMap::new();
+        labels.insert(plan.resume.stub, SinkLabel::ResumeAt(plan.resume));
+        assert!(
+            super::structure_boundaries(&plan.blocks, &labels).is_some(),
+            "the global resume stub must name a protected terminal"
+        );
+        let lowered_cfg = super::cfg_from_leaf_blocks(&plan.blocks).expect("lowered cfg");
+        let global_boundaries: crate::structuring::StructureBoundaries =
+            super::structure_boundaries(&plan.blocks, &labels).expect("global boundaries");
+        let structure: crate::structuring::StructureResult =
+            crate::structuring::structure_with_boundaries(&lowered_cfg, &global_boundaries)
+                .expect("valid global boundaries");
+        assert!(
+            structure.is_complete(),
+            "lowered cfg structure: {structure:?}"
+        );
+        assert!(super::region_structuring_is_sound(
+            &plan.blocks,
+            &lowered_cfg,
+            &structure
+        ));
+        let forest = crate::structuring::loop_forest(&lowered_cfg);
+        assert!(
+            super::resume_boundaries_match_regions(&structure, &forest, &labels, &plan.residual),
+            "resume structure: {structure:#?}"
+        );
+        let root = structure.root.expect("root region");
+        let mut inner_renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut inner_body: Vec<super::Node> = Vec::new();
+        assert!(
+            !inner_renderer.render_loop(3, &mut inner_body),
+            "an inner loop without typed parent roles must refuse resume absorption"
+        );
+        let outer_sub_blocks: Vec<CfgBlock> = vec![
+            branch(1, 5),
+            jump(2),
+            branch(3, 4),
+            branch(2, 7),
+            jump(6),
+            jump(2),
+            branch(8, 9),
+            ret(),
+            ret(),
+            ret(),
+        ];
+        let outer_sub_cfg =
+            super::cfg_from_leaf_blocks(&outer_sub_blocks).expect("outer subgraph cfg");
+        let outer_sub_structure = crate::structuring::structure(&outer_sub_cfg);
+        assert!(
+            outer_sub_structure.is_complete(),
+            "outer subgraph structure: {outer_sub_structure:?}"
+        );
+        assert!(super::region_structuring_is_sound(
+            &outer_sub_blocks,
+            &outer_sub_cfg,
+            &outer_sub_structure
+        ));
+        let outer_sub_forest = crate::structuring::loop_forest(&outer_sub_cfg);
+        let outer_sub_root = outer_sub_structure.root.expect("outer subgraph root");
+        let outer_sub_labels: BTreeMap<usize, SinkLabel> = BTreeMap::from([
+            (7, SinkLabel::ResumeAt(plan.resume)),
+            (8, SinkLabel::ContinueLoop(plan.resume.outer)),
+            (9, SinkLabel::BreakLoop(plan.resume.outer)),
+        ]);
+        assert!(
+            super::structure_boundaries(&outer_sub_blocks, &outer_sub_labels).is_some(),
+            "the remapped resume stub must preserve its protected terminal role"
+        );
+        let nested_boundaries: crate::structuring::StructureBoundaries =
+            super::structure_boundaries(&outer_sub_blocks, &outer_sub_labels)
+                .expect("nested boundaries");
+        let nested_structure: crate::structuring::StructureResult =
+            crate::structuring::structure_with_boundaries(&outer_sub_cfg, &nested_boundaries)
+                .expect("valid nested boundaries");
+        assert!(nested_structure.is_complete(), "{nested_structure:?}");
+        assert!(super::local_resume_boundaries_match_regions(
+            &nested_structure,
+            &outer_sub_labels
+        ));
+        assert!(super::region_structuring_is_sound(
+            &outer_sub_blocks,
+            &outer_sub_cfg,
+            &nested_structure
+        ));
+        let nested_forest: crate::structuring::LoopForest =
+            crate::structuring::loop_forest(&outer_sub_cfg);
+        let nested_root: crate::structuring::RegionId = nested_structure.root.expect("nested root");
+        let mut nested_renderer = super::RegionRenderer {
+            blocks: &outer_sub_blocks,
+            original_blocks: &outer_sub_blocks,
+            result: &nested_structure,
+            labels: &outer_sub_labels,
+            forest: &nested_forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut nested_direct_body: Vec<super::Node> = Vec::new();
+        assert!(
+            nested_renderer.render(nested_root, &mut nested_direct_body),
+            "protected nested renderer refused: {nested_structure:?}"
+        );
+        let nested_expected: BTreeMap<usize, usize> =
+            BTreeMap::from([(plan.resume.stub, plan.resume.block)]);
+        assert!(
+            super::nested_node_resume_relowering_matches(&nested_direct_body, &nested_expected),
+            "nested nodes: {nested_direct_body:#?}"
+        );
+        let mut outer_sub_renderer = super::RegionRenderer {
+            blocks: &outer_sub_blocks,
+            original_blocks: &outer_sub_blocks,
+            result: &outer_sub_structure,
+            labels: &outer_sub_labels,
+            forest: &outer_sub_forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut outer_sub_body: Vec<super::Node> = Vec::new();
+        assert!(
+            outer_sub_renderer.render(outer_sub_root, &mut outer_sub_body),
+            "outer subgraph renderer refused: {outer_sub_structure:?}"
+        );
+        let nested_body: Vec<super::Node> = super::render_cfg_blocks_nested(
+            &outer_sub_blocks,
+            &outer_sub_labels,
+            true,
+            &BTreeMap::new(),
+            plan.resume,
+        )
+        .expect("the nested proof must admit the remapped resume terminal");
+        assert!(contains_node(
+            &nested_body,
+            &super::Node::ResumeAt(plan.resume)
+        ));
+        assert!(contains_node(
+            &nested_body,
+            &super::Node::ContinueLoop(plan.resume.outer)
+        ));
+        assert!(contains_node(
+            &nested_body,
+            &super::Node::BreakLoop(plan.resume.outer)
+        ));
+        let mut outer_renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut outer_body: Vec<super::Node> = Vec::new();
+        assert!(
+            outer_renderer.render_loop(1, &mut outer_body),
+            "outer-body resume loop refused: {structure:?}"
+        );
+        let mut renderer = super::RegionRenderer {
+            blocks: &plan.blocks,
+            original_blocks: &plan.blocks,
+            result: &structure,
+            labels: &labels,
+            forest: &forest,
+            allow_loops: true,
+            label_targets: &BTreeMap::new(),
+            consumed: std::collections::BTreeSet::new(),
+        };
+        let mut rendered_body: Vec<super::Node> = Vec::new();
+        assert!(
+            renderer.render(root, &mut rendered_body),
+            "region renderer refused: {structure:?}"
+        );
+        assert_eq!(
+            renderer.consumed,
+            super::reachable_blocks(&plan.blocks),
+            "region renderer left blocks unconsumed"
+        );
+        let body = super::render_cfg_blocks_once(
+            &plan.blocks,
+            &labels,
+            true,
+            &BTreeMap::new(),
+            super::ResumeProof::Original {
+                source: &blocks,
+                residual: &plan.residual,
+                resume: Some(plan.resume),
+            },
+        )
+        .expect("the proven resume stub must render inside its inner loop");
+        assert!(super::block_has_continue_at(&body));
+        assert!(super::node_resume_relowering_matches(&body, &plan.residual));
     }
 
     #[test]

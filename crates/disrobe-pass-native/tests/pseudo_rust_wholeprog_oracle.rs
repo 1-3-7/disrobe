@@ -14,8 +14,9 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
-    ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
-    RecoveredProgram as LibRecoveredProgram, recover_program as lib_recover_program,
+    ProgramFunction, PseudoAbi, PseudoParameterBinding, PseudoReg,
+    RecoveredFunction as LibRecoveredFunction, RecoveredProgram as LibRecoveredProgram,
+    RecoveredSignature, recover_program as lib_recover_program,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -64,6 +65,30 @@ const SMALL_INPUTS: &[[i64; 3]] = &[
 ];
 
 const ENTRY_RETURN_WIDTH: u32 = 64;
+
+fn generated_invocation_arity(signature: &RecoveredSignature) -> usize {
+    signature.callable_arity()
+}
+
+#[test]
+fn sparse_signature_invocation_uses_every_ordered_binding() {
+    let signature: RecoveredSignature = RecoveredSignature::from_bindings(
+        PseudoAbi::MsX64,
+        vec![
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::Rcx,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 1 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+        ],
+    )
+    .expect("canonical sparse signature");
+    assert_eq!(generated_invocation_arity(&signature), 3);
+}
 
 const CC_FLAGS: [&str; 6] = [
     "-fno-stack-protector",
@@ -398,7 +423,7 @@ fn recover_program(
         module.push_str(rust);
         module.push('\n');
         if fname == program.entry {
-            entry_params = rec.params.len();
+            entry_params = generated_invocation_arity(&rec.signature);
             entry_return_width = rec.return_width_bits;
         }
     }
@@ -708,6 +733,40 @@ fn measure(
         eprintln!("MISMATCH {tag}: c={golden:?} rust={got:?}");
         Outcome::Mismatch
     }
+}
+
+#[test]
+fn host_o3_nested_loop_recompiles_to_rust_equivalence() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let rustc_bin: String = rustc().expect("host rustc");
+    let program: &WholeProgram = SHAPE_PROGRAMS
+        .iter()
+        .find(|program: &&WholeProgram| program.name == "wp_nested_loop")
+        .expect("nested-loop fixture");
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let object_path: PathBuf = dir.join("wp_nested_loop_o3_rust.o");
+    let object: Vec<u8> =
+        compile_object_opt(&host_cc, "-O3", &CC_FLAGS, program.c_source, &object_path)
+            .expect("host O3 nested-loop object");
+    let env: Env = Env { host_cc, rustc_bin };
+    let mut frame_seen: bool = false;
+    assert!(matches!(
+        measure(
+            &env,
+            &object,
+            program,
+            HOST_ABI,
+            "-O3",
+            &dir,
+            "wp_nested_loop_o3_rust",
+            &mut frame_seen,
+        ),
+        Outcome::Equivalent
+    ));
 }
 
 #[test]

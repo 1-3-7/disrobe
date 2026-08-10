@@ -14,9 +14,12 @@ use std::path::{Path, PathBuf};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
-    Arch, DisasmInsn, ProgramFunction, PseudoAbi, RecoveredFunction as LibRecoveredFunction,
-    RecoveredProgram as LibRecoveredProgram, disassemble, recover_program as lib_recover_program,
+    Arch, DisasmInsn, LeafRecovery, ProgramFunction, PseudoAbi,
+    RecoveredFunction as LibRecoveredFunction, RecoveredProgram as LibRecoveredProgram,
+    disassemble, recover_leaf_function_abi, recover_leaf_function_in_object,
+    recover_program as lib_recover_program,
 };
+use object::{Object as _, ObjectSection as _};
 
 use common::{
     HOST_ABI, cc, clang, compile_object, compile_object_opt, function_code, gcc, link_and_run,
@@ -324,7 +327,7 @@ fn recover_program(
         tu.push_str(&strip_includes(&rec.source));
         tu.push('\n');
         if fname == program.entry {
-            entry_params = rec.params.len();
+            entry_params = rec.signature.callable_arity();
             entry_return_width = rec.return_width_bits;
         }
     }
@@ -475,6 +478,413 @@ fn compile_dual(program: &WholeProgram) -> Option<(String, Vec<u8>, Vec<u8>)> {
         return None;
     };
     Some((host_cc, host_obj, sysv_obj))
+}
+
+#[test]
+fn object_backed_value_switches_keep_the_proven_switch_route() {
+    for name in ["wp_vswitch", "wp_vswitch_neg"] {
+        let program: &WholeProgram = PROGRAMS
+            .iter()
+            .find(|program: &&WholeProgram| program.name == name)
+            .expect("named value-switch fixture");
+        let (_, host_object, sysv_object): (String, Vec<u8>, Vec<u8>) =
+            compile_dual(program).expect("host and sysv compilers");
+        for (object, abi) in [(&host_object, HOST_ABI), (&sysv_object, PseudoAbi::SysV)] {
+            let recovered: RecoveredProgram = recover_program(object, program, abi)
+                .expect("the object-backed value switch must recover");
+            assert!(
+                recovered.tu.contains("switch ("),
+                "{name} under {abi:?} must use the object-proven switch route: {}",
+                recovered.tu
+            );
+        }
+    }
+}
+
+#[test]
+fn object_backed_size_optimized_value_switches_never_use_generic_rip_lea() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let clang_cc: String = clang().expect("sysv clang");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let sysv_flags: [&str; 5] = [
+        "--target=x86_64-unknown-linux-gnu",
+        "-fno-stack-protector",
+        "-fno-optimize-sibling-calls",
+        "-fcf-protection=none",
+        "-c",
+    ];
+    let mut generic_recoveries: Vec<&str> = Vec::new();
+    for name in ["wp_vswitch", "wp_vswitch_neg"] {
+        let program: &WholeProgram = PROGRAMS
+            .iter()
+            .find(|program: &&WholeProgram| program.name == name)
+            .expect("named value-switch fixture");
+        let host_path: PathBuf = dir.join(format!("{name}_os_host.o"));
+        let host_object: Vec<u8> =
+            compile_object_opt(&host_cc, "-Os", &CC_FLAGS, program.c_source, &host_path)
+                .expect("size-optimized host object");
+        if let Some(host_recovered) = recover_program(&host_object, program, HOST_ABI)
+            && !host_recovered.tu.contains("switch (")
+        {
+            generic_recoveries.push(name);
+        }
+        let sysv_path: PathBuf = dir.join(format!("{name}_os_sysv.o"));
+        let sysv_object: Vec<u8> =
+            compile_object_opt(&clang_cc, "-Os", &sysv_flags, program.c_source, &sysv_path)
+                .expect("size-optimized sysv object");
+        let sysv_recovered: RecoveredProgram =
+            recover_program(&sysv_object, program, PseudoAbi::SysV)
+                .expect("the sysv value switch must recover");
+        assert!(
+            sysv_recovered.tu.contains("switch ("),
+            "{name} under SysV must keep the proven value-switch route: {}",
+            sysv_recovered.tu
+        );
+    }
+    assert!(
+        generic_recoveries.is_empty(),
+        "size-optimized host value-tables must not use generic RIP lea: {generic_recoveries:?}"
+    );
+}
+
+#[test]
+fn object_backed_size_optimized_host_value_switches_recover_relocated_tables() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-wp");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    for name in ["wp_vswitch", "wp_vswitch_neg"] {
+        let program: &WholeProgram = PROGRAMS
+            .iter()
+            .find(|program: &&WholeProgram| program.name == name)
+            .expect("named value-switch fixture");
+        let host_path: PathBuf = dir.join(format!("{name}_os_relocated.o"));
+        let host_object: Vec<u8> =
+            compile_object_opt(&host_cc, "-Os", &CC_FLAGS, program.c_source, &host_path)
+                .expect("size-optimized host object");
+        let recovered: RecoveredProgram = recover_program(&host_object, program, HOST_ABI)
+            .expect("the relocated host value switch must recover");
+        assert!(
+            recovered.tu.contains("switch ("),
+            "{name} must recover through the object-backed value-table: {}",
+            recovered.tu
+        );
+        let driver: String = build_program_driver(program, &recovered);
+        let stdout: String = link_and_run(&host_cc, &driver, &host_object, name, 10);
+        assert!(
+            stdout.contains("OK") && !stdout.contains("MISMATCH"),
+            "{name} relocated value-table recovery diverged: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn object_backed_value_switch_normalizes_nonzero_section_addresses() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let program: &WholeProgram = PROGRAMS
+        .iter()
+        .find(|program: &&WholeProgram| program.name == "wp_vswitch_neg")
+        .expect("negative value-switch fixture");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-value-table-addresses");
+    let object_path: PathBuf = scratch.path().join("value_table_addresses.o");
+    let mut object: Vec<u8> =
+        compile_object_opt(&host_cc, "-Os", &CC_FLAGS, program.c_source, &object_path)
+            .expect("size-optimized host object");
+    let section_count: usize = u16::from_le_bytes([object[2], object[3]]) as usize;
+    let optional_header_size: usize = u16::from_le_bytes([object[16], object[17]]) as usize;
+    let section_table: usize = 20 + optional_header_size;
+    let section_header = |name: &[u8]| -> usize {
+        (0..section_count)
+            .map(|index: usize| section_table + index * 40)
+            .find(|offset: &usize| object[*offset..*offset + name.len()] == *name)
+            .expect("named COFF section")
+    };
+    let text_header: usize = section_header(b".text");
+    let table_header: usize = section_header(b".rdata");
+    object[text_header + 12..text_header + 16].copy_from_slice(&0x1000_u32.to_le_bytes());
+    object[table_header + 12..table_header + 16].copy_from_slice(&0x3000_u32.to_le_bytes());
+    let file: object::File<'_> =
+        object::File::parse(object.as_slice()).expect("addressed COFF object");
+    let text: object::Section<'_, '_> = file
+        .section_by_name(".text")
+        .expect("addressed text section");
+    let table: object::Section<'_, '_> = file
+        .section_by_name(".rdata")
+        .expect("addressed value-table section");
+    assert_eq!(text.address(), 0x1000);
+    assert_eq!(table.address(), 0x3000);
+    let recovered: RecoveredProgram = recover_program(&object, program, HOST_ABI)
+        .expect("nonzero section addresses must preserve value-table recovery");
+    assert!(recovered.tu.contains("switch ("));
+    let text_raw_data: usize = u32::from_le_bytes(
+        object[text_header + 20..text_header + 24]
+            .try_into()
+            .expect("text raw-data pointer"),
+    ) as usize;
+    let text_relocation_table: usize = u32::from_le_bytes(
+        object[text_header + 24..text_header + 28]
+            .try_into()
+            .expect("text relocation pointer"),
+    ) as usize;
+    let text_relocation_count: u16 = u16::from_le_bytes(
+        object[text_header + 32..text_header + 34]
+            .try_into()
+            .expect("text relocation count"),
+    );
+    assert!(text_relocation_count > 0);
+    let mut table_relocated: Vec<u8> = object.clone();
+    let mut table_relocation: [u8; 10] = table_relocated
+        [text_relocation_table..text_relocation_table + 10]
+        .try_into()
+        .expect("table relocation record");
+    let displacement_offset: usize = u32::from_le_bytes(
+        table_relocation[..4]
+            .try_into()
+            .expect("displacement offset"),
+    ) as usize;
+    table_relocated[text_raw_data + displacement_offset..text_raw_data + displacement_offset + 4]
+        .copy_from_slice(&8_i32.to_le_bytes());
+    table_relocation[..4].copy_from_slice(&8_u32.to_le_bytes());
+    let table_relocation_pointer: u32 =
+        u32::try_from(table_relocated.len()).expect("table relocation pointer range");
+    table_relocated.extend_from_slice(&table_relocation);
+    table_relocated[table_header + 24..table_header + 28]
+        .copy_from_slice(&table_relocation_pointer.to_le_bytes());
+    table_relocated[table_header + 32..table_header + 34].copy_from_slice(&1_u16.to_le_bytes());
+    let (picker_code, picker_base): (Vec<u8>, u64) =
+        function_code(&table_relocated, "wp_vswitch_neg_pick").expect("relocated table picker");
+    let table_relocation_result =
+        recover_leaf_function_in_object(&table_relocated, &picker_code, picker_base, HOST_ABI, &[]);
+    assert!(
+        table_relocation_result.is_err(),
+        "a relocation inside the nonzero-address value-table must refuse: {table_relocation_result:?}"
+    );
+    let first_header: usize = section_table;
+    let real_text_header: usize = if text_header == first_header {
+        first_header + 40
+    } else {
+        text_header
+    };
+    let text_header_bytes: [u8; 40] = object[text_header..text_header + 40]
+        .try_into()
+        .expect("value-table text header");
+    let mut overlapping_text: Vec<u8> = object.clone();
+    overlapping_text[real_text_header..real_text_header + 40].copy_from_slice(&text_header_bytes);
+    overlapping_text[first_header..first_header + 40].copy_from_slice(&text_header_bytes);
+    let (overlap_code, overlap_base): (Vec<u8>, u64) =
+        function_code(&overlapping_text, "wp_vswitch_neg_pick").expect("overlapping table picker");
+    let overlap_result = recover_leaf_function_in_object(
+        &overlapping_text,
+        &overlap_code,
+        overlap_base,
+        HOST_ABI,
+        &[],
+    );
+    assert!(
+        overlap_result.is_err(),
+        "overlapping text sections must not choose a value-table relocation source: {overlap_result:?}"
+    );
+}
+
+#[test]
+fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-rip-reloc");
+    let object_path: PathBuf = scratch.path().join("relocated_leaf.o");
+    let source: &str = "static long long relocated_value;\n\
+        __attribute__((noinline,noclone)) long long *relocated_leaf(void){ return &relocated_value; }";
+    let mut object: Vec<u8> = compile_object_opt(&host_cc, "-Os", &CC_FLAGS, source, &object_path)
+        .expect("size-optimized host object");
+    let section_count: usize = u16::from_le_bytes([object[2], object[3]]) as usize;
+    let optional_header_size: usize = u16::from_le_bytes([object[16], object[17]]) as usize;
+    let section_table: usize = 20 + optional_header_size;
+    let text_header: usize = (0..section_count)
+        .map(|index: usize| section_table + index * 40)
+        .find(|offset: &usize| object[*offset..*offset + 5] == *b".text")
+        .expect("COFF text section header");
+    let text_address: u32 = 0x1000;
+    object[text_header + 12..text_header + 16].copy_from_slice(&text_address.to_le_bytes());
+    let file: object::File<'_> =
+        object::File::parse(object.as_slice()).expect("patched COFF object");
+    let text: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| section.kind() == object::SectionKind::Text)
+        .expect("patched text section");
+    assert_eq!(text.address(), u64::from(text_address));
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object, "relocated_leaf").expect("relocated leaf code");
+    let lea: DisasmInsn = disassemble(Arch::X86_64, base, &code)
+        .expect("disassemble relocated leaf")
+        .into_iter()
+        .find(|insn: &DisasmInsn| insn.mnemonic == "lea")
+        .expect("RIP-relative lea");
+    let displacement_field: u64 = lea.address + lea.bytes.len() as u64 - 4;
+    assert!(
+        text.relocations()
+            .any(|(offset, _)| { text.address().checked_add(offset) == Some(displacement_field) })
+    );
+    let result = recover_leaf_function_in_object(&object, &code, base, HOST_ABI, &[]);
+    assert!(
+        result.is_err(),
+        "an unresolved object relocation must not be interpreted as its raw displacement: {result:?}"
+    );
+    let relocation_table: usize = u32::from_le_bytes(
+        object[text_header + 24..text_header + 28]
+            .try_into()
+            .expect("text relocation pointer"),
+    ) as usize;
+    let relocation_count: usize = usize::from(u16::from_le_bytes(
+        object[text_header + 32..text_header + 34]
+            .try_into()
+            .expect("text relocation count"),
+    ));
+    let displacement_offset: u32 =
+        u32::try_from(displacement_field - text.address()).expect("displacement offset");
+    let relocation: usize = (0..relocation_count)
+        .map(|index: usize| relocation_table + index * 10)
+        .find(|record: &usize| {
+            u32::from_le_bytes(
+                object[*record..*record + 4]
+                    .try_into()
+                    .expect("relocation offset"),
+            ) == displacement_offset
+        })
+        .expect("LEA relocation");
+    let mut preceding_overlap: Vec<u8> = object.clone();
+    preceding_overlap[relocation..relocation + 4]
+        .copy_from_slice(&(displacement_offset - 1).to_le_bytes());
+    let preceding_overlap_result =
+        recover_leaf_function_in_object(&preceding_overlap, &code, base, HOST_ABI, &[]);
+    assert!(
+        preceding_overlap_result.is_err(),
+        "a relocation overlapping the LEA displacement from its preceding byte must refuse: {preceding_overlap_result:?}"
+    );
+    assert!(section_count >= 2);
+    let first_header: usize = section_table;
+    let relocated_header: [u8; 40] = object[text_header..text_header + 40]
+        .try_into()
+        .expect("relocated text header");
+    let real_header: usize = if text_header == first_header {
+        first_header + 40
+    } else {
+        text_header
+    };
+    let mut ambiguous: Vec<u8> = object.clone();
+    ambiguous[real_header..real_header + 40].copy_from_slice(&relocated_header);
+    ambiguous[first_header..first_header + 40].copy_from_slice(&relocated_header);
+    ambiguous[first_header + 24..first_header + 28].fill(0);
+    ambiguous[first_header + 32..first_header + 34].fill(0);
+    let ambiguous_file: object::File<'_> =
+        object::File::parse(ambiguous.as_slice()).expect("overlapping COFF text sections");
+    let matching_text_sections: usize = ambiguous_file
+        .sections()
+        .filter(|section: &object::Section<'_, '_>| {
+            section.kind() == object::SectionKind::Text
+                && (section.address()..section.address() + section.size()).contains(&base)
+        })
+        .count();
+    assert_eq!(matching_text_sections, 2);
+    let ambiguous_result = recover_leaf_function_in_object(&ambiguous, &code, base, HOST_ABI, &[]);
+    assert!(
+        ambiguous_result.is_err(),
+        "ambiguous text-section identity must retain relocation refusal: {ambiguous_result:?}"
+    );
+    let mut truncated: Vec<u8> = object.clone();
+    truncated[text_header + 16..text_header + 20].copy_from_slice(&1_u32.to_le_bytes());
+    truncated[text_header + 32..text_header + 34].fill(0);
+    let truncated_result = recover_leaf_function_in_object(&truncated, &code, base, HOST_ABI, &[]);
+    assert!(
+        truncated_result.is_err(),
+        "object recovery must bind the complete instruction span to its text section: {truncated_result:?}"
+    );
+}
+
+#[test]
+fn punpcklqdq_assigned_high_qword_is_observable_after_a_lane_shuffle() {
+    const CODE: [u8; 25] = [
+        0x66, 0x48, 0x0f, 0x6e, 0xc7, 0x66, 0x48, 0x0f, 0x6e, 0xce, 0x66, 0x0f, 0x6c, 0xc1, 0x66,
+        0x0f, 0x73, 0xd8, 0x08, 0x66, 0x48, 0x0f, 0x7e, 0xc0, 0xc3,
+    ];
+    let recovery: LeafRecovery = recover_leaf_function_abi(&CODE, 0xb630, PseudoAbi::SysV)
+        .expect("the unpacked high qword must remain observable through a lane shuffle");
+    let compiler: String = cc().expect("host C compiler");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-punpcklqdq");
+    let object_path: PathBuf = scratch.path().join("anchor.o");
+    let anchor: Vec<u8> = compile_object(
+        &compiler,
+        &CC_FLAGS,
+        "int punpcklqdq_oracle_anchor;",
+        &object_path,
+    )
+    .expect("oracle anchor object");
+    let driver: String = format!(
+        "{}\n#include <stdio.h>\nint main(void) {{\n\
+             const uint64_t inputs[][2] = {{{{1, 9}}, {{0x1122334455667788ULL, 0x8877665544332211ULL}}, {{~0ULL, 7}}}};\n\
+             for (size_t i = 0; i < sizeof(inputs) / sizeof(inputs[0]); i++) {{\n\
+                 if (recovered(inputs[i][0], inputs[i][1]) != inputs[i][1]) return 1;\n\
+             }}\n\
+             puts(\"OK\");\n\
+             return 0;\n\
+         }}\n",
+        recovery.source
+    );
+    let stdout: String = link_and_run(&compiler, &driver, &anchor, "punpcklqdq_high", 10);
+    assert!(
+        stdout.contains("OK"),
+        "the returned qword must be the assigned source low lane, not the preserved destination high lane: {stdout}"
+    );
+}
+
+#[test]
+fn host_o3_nested_loop_recovers_after_vector_lane_reduction() {
+    if !cfg!(windows) {
+        return;
+    }
+    let host_cc: String = gcc().expect("host gcc");
+    let program: &WholeProgram = SHAPE_PROGRAMS
+        .iter()
+        .find(|program: &&WholeProgram| program.name == "wp_nested_loop")
+        .expect("nested-loop fixture");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-nested-loop-o3");
+    let object_path: PathBuf = scratch.path().join("wp_nested_loop_o3.o");
+    let object: Vec<u8> =
+        compile_object_opt(&host_cc, "-O3", &CC_FLAGS, program.c_source, &object_path)
+            .expect("host O3 nested-loop object");
+    let recovered: RecoveredProgram = recover_program(&object, program, HOST_ABI)
+        .expect("the host O3 nested loop must recover after its vector lane reduction");
+    for declaration in [
+        "uint64_t r_r10",
+        "uint64_t v0_lo",
+        "uint64_t v1_lo",
+        "uint64_t v2_lo",
+        "uint64_t v3_lo",
+    ] {
+        assert!(
+            recovered.tu.contains(declaration),
+            "the exact outer-body resume tree must retain {declaration}: {}",
+            recovered.tu
+        );
+    }
+    assert_eq!(recovered.tu.matches("recover_L4:").count(), 1);
+    assert_eq!(recovered.tu.matches("goto recover_L4;").count(), 1);
+    let driver: String = build_program_driver(program, &recovered);
+    let stdout: String = link_and_run(&host_cc, &driver, &object, program.name, 20);
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "host O3 nested-loop recovery diverged: {stdout}"
+    );
 }
 
 #[test]

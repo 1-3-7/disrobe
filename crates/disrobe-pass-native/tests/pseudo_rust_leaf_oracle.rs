@@ -15,10 +15,10 @@ use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
-    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType, ResolvedCall,
-    callee_int_arity, disassemble, recover_leaf_function_abi, recover_leaf_function_const_abi,
-    recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
-    recover_leaf_function_with_calls,
+    Arch, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoScalarType, RecoveredSignature,
+    ResolvedCall, callee_int_arity, disassemble, recover_leaf_function_abi,
+    recover_leaf_function_const_abi, recover_leaf_function_switch_abi,
+    recover_leaf_function_switch_const_abi, recover_leaf_function_with_calls,
 };
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
@@ -199,6 +199,57 @@ fn scratch_dir() -> ScratchDir {
     ScratchDir::create("disrobe-pseudo-rust").expect("create scratch directory")
 }
 
+fn integer_invocation_arity(signature: &RecoveredSignature) -> usize {
+    signature.callable_arity()
+}
+
+#[test]
+fn sparse_ms_x64_rust_invocation_uses_physical_slot_arity() {
+    let code: [u8; 7] = [0x48, 0x89, 0xc8, 0x4c, 0x01, 0xc0, 0xc3];
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, PseudoAbi::MsX64)
+        .expect("recover sparse MS x64 leaf");
+    let invocation_arity: usize = integer_invocation_arity(&recovery.signature);
+    assert_eq!(
+        invocation_arity, 3,
+        "a callable RCX, gap, R8 Rust signature must receive all three physical slots"
+    );
+    let Some(rustc_bin): Option<String> = rustc() else {
+        eprintln!("skipping sparse MS x64 Rust compile check: rustc not on PATH");
+        return;
+    };
+    let recovered: String = recovery.rust_source.expect("sparse MS x64 Rust source");
+    let driver: String =
+        format!("{recovered}\nfn main() {{ assert_eq!(recovered(11, 0x12345678, 31), 42); }}\n");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("sparse_ms_x64.rs");
+    std::fs::write(&source_path, driver.as_bytes()).expect("write sparse MS x64 Rust driver");
+    let executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "sparse_ms_x64_rust.exe"
+    } else {
+        "sparse_ms_x64_rust"
+    });
+    let compile: std::process::Output = Command::new(&rustc_bin)
+        .args(["--edition", "2021", "-o"])
+        .arg(&executable_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile sparse MS x64 Rust driver");
+    assert!(
+        compile.status.success(),
+        "sparse MS x64 Rust driver compile failed: {}\n{driver}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run: std::process::Output = Command::new(&executable_path)
+        .output()
+        .expect("run sparse MS x64 Rust driver");
+    assert!(
+        run.status.success(),
+        "sparse MS x64 Rust driver returned {}: {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 fn function_code(object_bytes: &[u8], name: &str) -> Option<(Vec<u8>, u64)> {
     let file: object::File<'_> = object::File::parse(object_bytes).ok()?;
     let candidates: [String; 2] = [name.to_owned(), format!("_{name}")];
@@ -255,7 +306,7 @@ fn prepare(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<Prepared>
         }
     };
     let rw_bits: u32 = rec.return_width_bits;
-    let params: usize = rec.params.len();
+    let params: usize = integer_invocation_arity(&rec.signature);
     if params > 3 {
         eprintln!("skip {}: arity {params} beyond driver support", case.name);
         return None;
@@ -775,6 +826,9 @@ fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall
         let arity: usize = callee_int_arity(&callee_code, callee_base, HOST_ABI)?;
         let callee_rec: LeafRecovery =
             recover_leaf_function_abi(&callee_code, callee_base, HOST_ABI).ok()?;
+        if callee_rec.signature.callable_arity() != arity {
+            return None;
+        }
         let callee_rust: String = callee_rec.rust_source?;
         let def: String = callee_rust.replacen(
             "pub fn recovered(",
@@ -785,12 +839,12 @@ fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall
         resolved.push(ResolvedCall {
             target,
             name: Some(name),
-            arg_count: arity,
+            signature: callee_rec.signature,
         });
     }
     let rec: LeafRecovery =
         recover_leaf_function_with_calls(&code, base, HOST_ABI, &resolved).ok()?;
-    if rec.params.len() > 2 {
+    if integer_invocation_arity(&rec.signature) > 2 {
         eprintln!(
             "skip {}: recovered arity beyond 2-input driver",
             case.caller
@@ -806,7 +860,7 @@ fn prepare_call(case: &RustCallCase, object_bytes: &[u8]) -> Option<PreparedCall
     Some(PreparedCall {
         caller: case.caller.to_owned(),
         arity: case.arity,
-        params: rec.params.len(),
+        params: integer_invocation_arity(&rec.signature),
         rw_bits: rec.return_width_bits,
         caller_rust: renamed,
         callee_defs,
@@ -1497,7 +1551,7 @@ fn prepare_switch(case: &Case, object_bytes: &[u8]) -> Option<Prepared> {
     if !rec.lifted_switch {
         return None;
     }
-    let params: usize = rec.params.len();
+    let params: usize = integer_invocation_arity(&rec.signature);
     if params > 3 {
         eprintln!("skip {}: arity {params} beyond driver support", case.name);
         return None;
@@ -1947,7 +2001,7 @@ fn prepare_fp(case: &FpCase, object_bytes: &[u8], abi: PseudoAbi) -> Option<Prep
         );
         return None;
     };
-    let total_params: usize = rec.fp_params.len();
+    let total_params: usize = rec.signature.parameter_types().len();
     if total_params != case.args.len() {
         eprintln!(
             "skip {}: recovered {total_params} params but source declares {}",

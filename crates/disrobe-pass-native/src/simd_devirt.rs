@@ -3,7 +3,18 @@ use std::fmt::Write as _;
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
-use crate::pseudo_c::{Abi, LeafRecovery, Reg};
+use crate::pseudo_c::{Abi, LeafRecovery, ParameterBinding, RecoveredSignature, Reg};
+
+fn integer_parameter_bindings(params: &[Reg]) -> Vec<ParameterBinding> {
+    params
+        .iter()
+        .copied()
+        .map(|register: Reg| ParameterBinding::Integer {
+            register,
+            width_bits: 64,
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ElemWidth {
@@ -1297,9 +1308,10 @@ fn emit_reduction(form: ReductionForm, abi: Abi, base_pos: usize, len_pos: usize
         source,
         rust_source: None,
         return_width_bits: u32::from(form.ret_bytes) * 8,
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params: Vec::new(),
+        signature: RecoveredSignature::from_canonical_bindings(
+            abi,
+            integer_parameter_bindings(&params),
+        ),
         returns_fp: None,
         lifted_split_return: false,
         lifted_loop: true,
@@ -2909,9 +2921,10 @@ fn emit_map(
         source,
         rust_source: None,
         return_width_bits: 64,
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params: Vec::new(),
+        signature: RecoveredSignature::from_canonical_bindings(
+            abi,
+            integer_parameter_bindings(&params),
+        ),
         returns_fp: None,
         lifted_split_return: false,
         lifted_loop: true,
@@ -3680,9 +3693,10 @@ fn emit_minmax(form: MinMaxForm, abi: Abi, base_pos: usize, len_pos: usize) -> L
         source,
         rust_source: None,
         return_width_bits: u32::from(form.ret_bytes) * 8,
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params: Vec::new(),
+        signature: RecoveredSignature::from_canonical_bindings(
+            abi,
+            integer_parameter_bindings(&params),
+        ),
         returns_fp: None,
         lifted_split_return: false,
         lifted_loop: true,

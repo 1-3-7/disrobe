@@ -281,7 +281,7 @@ fn c_and_rust_renderings_agree_bit_for_bit() {
                 .or_default() += 1;
             continue;
         };
-        if recovery.fp_params.as_slice() != expectation.params
+        if recovery.signature.parameter_types().as_slice() != expectation.params
             || recovery.returns_fp != expectation.returns
             || recovery.return_width_bits != expectation.return_width_bits
         {

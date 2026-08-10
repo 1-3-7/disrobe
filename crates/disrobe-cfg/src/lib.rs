@@ -358,6 +358,7 @@ trait FlowView {
 struct CfgFlow<'a> {
     cfg: &'a Cfg,
     live: Vec<bool>,
+    protected_terminals: Vec<bool>,
 }
 
 impl FlowView for CfgFlow<'_> {
@@ -374,10 +375,15 @@ impl FlowView for CfgFlow<'_> {
     }
 
     fn flow_returns(&self, node: NodeId) -> bool {
-        matches!(
-            self.cfg.nodes.get(node as usize).map(|n: &CfgNode| &n.term),
-            Some(Terminator::Return)
-        )
+        !self
+            .protected_terminals
+            .get(node as usize)
+            .copied()
+            .unwrap_or(false)
+            && matches!(
+                self.cfg.nodes.get(node as usize).map(|n: &CfgNode| &n.term),
+                Some(Terminator::Return)
+            )
     }
 }
 
@@ -552,6 +558,22 @@ pub fn loop_body_absorbing_return_tails(
     let view: CfgFlow<'_> = CfgFlow {
         cfg,
         live: reachable(cfg),
+        protected_terminals: vec![false; cfg.len()],
+    };
+    body_absorbing_return_tails(&view, header, body)
+}
+
+pub fn loop_body_absorbing_return_tails_with_boundaries(
+    cfg: &Cfg,
+    header: NodeId,
+    body: &BTreeSet<NodeId>,
+    boundaries: &StructureBoundaries,
+) -> Option<BTreeSet<NodeId>> {
+    let protected_terminals: Vec<bool> = boundaries.terminal_mask(cfg)?;
+    let view: CfgFlow<'_> = CfgFlow {
+        cfg,
+        live: reachable(cfg),
+        protected_terminals,
     };
     body_absorbing_return_tails(&view, header, body)
 }
@@ -1268,6 +1290,36 @@ pub struct CnsOutcome {
     pub result: StructureResult,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StructureBoundaries {
+    protected_terminals: BTreeSet<NodeId>,
+}
+
+impl StructureBoundaries {
+    pub fn new(protected_terminals: impl IntoIterator<Item = NodeId>) -> Self {
+        let protected_terminals: BTreeSet<NodeId> = protected_terminals.into_iter().collect();
+        Self {
+            protected_terminals,
+        }
+    }
+
+    fn terminal_mask(&self, cfg: &Cfg) -> Option<Vec<bool>> {
+        let reachable_nodes: Vec<bool> = reachable(cfg);
+        let mut mask: Vec<bool> = vec![false; cfg.len()];
+        for terminal in &self.protected_terminals {
+            let index: usize = usize::try_from(*terminal).ok()?;
+            let node: &CfgNode = cfg.nodes.get(index)?;
+            if !reachable_nodes.get(index).copied().unwrap_or(false)
+                || !matches!(node.term, Terminator::Return | Terminator::Unreachable)
+            {
+                return None;
+            }
+            mask[index] = true;
+        }
+        Some(mask)
+    }
+}
+
 #[derive(Debug, Clone)]
 enum AbFlow {
     Seq(Option<NodeId>),
@@ -1289,6 +1341,8 @@ struct Collapse {
     flow: Vec<AbFlow>,
     pure: Vec<bool>,
     returns: Vec<bool>,
+    protected_terminals: Vec<bool>,
+    parent_owned_terminals: Vec<bool>,
     alive: Vec<bool>,
     entry: NodeId,
     regions: Vec<Region>,
@@ -1310,19 +1364,41 @@ impl FlowView for Collapse {
     }
 
     fn flow_returns(&self, node: NodeId) -> bool {
-        self.is_exit_sink(node) && self.returns.get(node as usize).copied().unwrap_or(false)
+        self.is_exit_sink(node)
+            && self.returns.get(node as usize).copied().unwrap_or(false)
+            && !self
+                .protected_terminals
+                .get(node as usize)
+                .copied()
+                .unwrap_or(false)
     }
 }
 
 pub fn structure(cfg: &Cfg) -> StructureResult {
     let forest: LoopForest = loop_forest(cfg);
-    let mut collapse: Collapse = Collapse::new(cfg);
+    let protected_terminals: Vec<bool> = vec![false; cfg.len()];
+    let mut collapse: Collapse = Collapse::new(cfg, protected_terminals);
     collapse.run();
     let mut result: StructureResult = collapse.finish();
     if forest.irreducible {
         result.irreducible = true;
     }
     result
+}
+
+pub fn structure_with_boundaries(
+    cfg: &Cfg,
+    boundaries: &StructureBoundaries,
+) -> Option<StructureResult> {
+    let protected_terminals: Vec<bool> = boundaries.terminal_mask(cfg)?;
+    let forest: LoopForest = loop_forest(cfg);
+    let mut collapse: Collapse = Collapse::new(cfg, protected_terminals);
+    collapse.run();
+    let mut result: StructureResult = collapse.finish();
+    if forest.irreducible {
+        result.irreducible = true;
+    }
+    Some(result)
 }
 
 pub fn structure_with_cns(cfg: &Cfg, budget: CnsBudget) -> Option<CnsOutcome> {
@@ -1353,7 +1429,7 @@ pub fn structure_with_cns(cfg: &Cfg, budget: CnsBudget) -> Option<CnsOutcome> {
 }
 
 impl Collapse {
-    fn new(cfg: &Cfg) -> Self {
+    fn new(cfg: &Cfg, protected_terminals: Vec<bool>) -> Self {
         let count: usize = cfg.len();
         let reach: Vec<bool> = reachable(cfg);
         let mut conds: CondPool = CondPool::default();
@@ -1415,6 +1491,8 @@ impl Collapse {
             flow,
             pure,
             returns,
+            protected_terminals,
+            parent_owned_terminals: vec![false; count],
             alive: reach,
             entry: cfg.entry,
             regions,
@@ -1469,6 +1547,22 @@ impl Collapse {
 
     fn absorb_returns(&mut self, node: NodeId, folded: NodeId) {
         self.returns[node as usize] = self.returns[node as usize] && self.returns[folded as usize];
+        self.protected_terminals[node as usize] =
+            self.protected_terminals[node as usize] || self.protected_terminals[folded as usize];
+        self.parent_owned_terminals[node as usize] = self.parent_owned_terminals[node as usize]
+            || self.parent_owned_terminals[folded as usize];
+    }
+
+    fn has_boundary(&self, node: NodeId) -> bool {
+        self.protected_terminals
+            .get(node as usize)
+            .copied()
+            .unwrap_or(false)
+            || self
+                .parent_owned_terminals
+                .get(node as usize)
+                .copied()
+                .unwrap_or(false)
     }
 
     fn alive_nodes(&self) -> Vec<NodeId> {
@@ -1596,6 +1690,10 @@ impl Collapse {
         self.flow[node as usize] = self.flow[succ as usize].clone();
         self.pure[node as usize] = self.pure[node as usize] && self.pure[succ as usize];
         self.returns[node as usize] = self.returns[succ as usize];
+        self.protected_terminals[node as usize] =
+            self.protected_terminals[node as usize] || self.protected_terminals[succ as usize];
+        self.parent_owned_terminals[node as usize] = self.parent_owned_terminals[node as usize]
+            || self.parent_owned_terminals[succ as usize];
         self.region_of[node as usize] = region;
         self.alive[succ as usize] = false;
         true
@@ -1632,6 +1730,9 @@ impl Collapse {
             return false;
         }
         if headers.contains(&taken) || headers.contains(&not_taken) {
+            return false;
+        }
+        if self.has_boundary(taken) || self.has_boundary(not_taken) {
             return false;
         }
         if preds[taken as usize].as_slice() != [node]
@@ -1729,6 +1830,9 @@ impl Collapse {
         preds: &[Vec<NodeId>],
         headers: &BTreeSet<NodeId>,
     ) -> Option<RegionId> {
+        if self.has_boundary(arm) {
+            return None;
+        }
         if headers.contains(&arm) {
             return None;
         }
@@ -1783,6 +1887,7 @@ impl Collapse {
             not_taken: fa,
         } = self.flow[not_taken as usize]
             && !headers.contains(&not_taken)
+            && !self.has_boundary(not_taken)
             && preds[not_taken as usize].as_slice() == [node]
             && self.pure[not_taken as usize]
             && ta == taken
@@ -1798,6 +1903,7 @@ impl Collapse {
             not_taken: fa,
         } = self.flow[taken as usize]
             && !headers.contains(&taken)
+            && !self.has_boundary(taken)
             && preds[taken as usize].as_slice() == [node]
             && self.pure[taken as usize]
             && fa == not_taken
@@ -1876,6 +1982,7 @@ impl Collapse {
             if preds[t as usize].as_slice() == [node]
                 && self.is_simple_branchless(t)
                 && !headers.contains(&t)
+                && !self.has_boundary(t)
             {
                 bodies.push(t);
                 if let Some(exit) = self.single_succ(t) {
@@ -2026,12 +2133,35 @@ impl Collapse {
 
     fn collapse_loop(&mut self, component: &[NodeId], header: NodeId) {
         let member: BTreeSet<NodeId> = component.iter().copied().collect();
+        let predecessors: Vec<Vec<NodeId>> = self.preds();
         let mut exits: Vec<NodeId> = Vec::new();
         for &node in component {
             for s in self.successors(node) {
                 if !member.contains(&s) && !exits.contains(&s) {
                     exits.push(s);
                 }
+            }
+        }
+        for exit in &exits {
+            let index: usize = *exit as usize;
+            let privately_owned: bool =
+                predecessors
+                    .get(index)
+                    .is_some_and(|incoming: &Vec<NodeId>| {
+                        !incoming.is_empty()
+                            && incoming
+                                .iter()
+                                .all(|predecessor: &NodeId| member.contains(predecessor))
+                    });
+            if privately_owned
+                && self
+                    .protected_terminals
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                self.protected_terminals[index] = false;
+                self.parent_owned_terminals[index] = true;
             }
         }
         let (kind, cond): (RegionKind, Option<CondId>) = self.classify_loop(component, header);
@@ -2429,6 +2559,122 @@ mod tests {
             })
             .count();
         assert!(loop_regions >= 2, "expected two nested loops: {result:?}");
+    }
+
+    #[test]
+    fn protected_terminal_stays_outside_its_predecessor_loop() {
+        fn entry_count(result: &StructureResult, region: RegionId, entry: NodeId) -> usize {
+            let current: &Region = &result.regions[region as usize];
+            let own: usize = usize::from(current.children.is_empty() && current.entry == entry);
+            own + current
+                .children
+                .iter()
+                .map(|child: &RegionId| entry_count(result, *child, entry))
+                .sum::<usize>()
+        }
+
+        let cfg: Cfg = Cfg::new(
+            0,
+            vec![goto(1), br(0, 2, 5), br(1, 4, 3), goto(1), ret(), ret()],
+        )
+        .unwrap();
+        let unchanged: StructureResult = structure(&cfg);
+        let boundaries: StructureBoundaries = StructureBoundaries::new([4]);
+        let loop_body: BTreeSet<NodeId> = BTreeSet::from([1, 2, 3]);
+        let default_tail: BTreeSet<NodeId> =
+            loop_body_absorbing_return_tails(&cfg, 1, &loop_body).expect("default return tail");
+        let protected_tail: BTreeSet<NodeId> =
+            loop_body_absorbing_return_tails_with_boundaries(&cfg, 1, &loop_body, &boundaries)
+                .expect("protected return tail");
+        let protected: StructureResult =
+            structure_with_boundaries(&cfg, &boundaries).expect("valid protected terminal");
+        let unchanged_loop: RegionId = unchanged
+            .regions
+            .iter()
+            .position(|region: &Region| {
+                region.entry == 1
+                    && matches!(
+                        region.kind,
+                        RegionKind::While | RegionKind::DoWhile | RegionKind::NaturalLoop
+                    )
+            })
+            .expect("default loop region") as RegionId;
+        let protected_loop: RegionId = protected
+            .regions
+            .iter()
+            .position(|region: &Region| {
+                region.entry == 1
+                    && matches!(
+                        region.kind,
+                        RegionKind::While | RegionKind::DoWhile | RegionKind::NaturalLoop
+                    )
+            })
+            .expect("protected loop region") as RegionId;
+        let protected_root: RegionId = protected.root.expect("protected root");
+
+        assert!(unchanged.is_complete(), "{unchanged:?}");
+        assert!(protected.is_complete(), "{protected:?}");
+        assert!(default_tail.contains(&4));
+        assert!(!default_tail.contains(&5));
+        assert!(!protected_tail.contains(&4));
+        assert!(protected_tail.contains(&5));
+        assert_eq!(entry_count(&unchanged, unchanged_loop, 4), 1);
+        assert_eq!(entry_count(&protected, protected_loop, 4), 0);
+        assert_eq!(entry_count(&protected, protected_root, 4), 1);
+    }
+
+    #[test]
+    fn protected_terminal_survives_aggregate_reductions() {
+        fn entry_count(result: &StructureResult, region: RegionId, entry: NodeId) -> usize {
+            let current: &Region = &result.regions[region as usize];
+            let own: usize = usize::from(current.children.is_empty() && current.entry == entry);
+            own + current
+                .children
+                .iter()
+                .map(|child: &RegionId| entry_count(result, *child, entry))
+                .sum::<usize>()
+        }
+
+        fn absorbing_region_exists(result: &StructureResult, entry: NodeId) -> bool {
+            result
+                .regions
+                .iter()
+                .enumerate()
+                .any(|(id, region): (usize, &Region)| {
+                    matches!(
+                        region.kind,
+                        RegionKind::IfThen | RegionKind::IfThenElse | RegionKind::Switch
+                    ) && entry_count(result, id as RegionId, entry) != 0
+                })
+        }
+
+        let branch_cfg: Cfg = Cfg::new(0, vec![br(0, 1, 2), goto(3), ret(), ret()]).unwrap();
+        let branch_boundaries: StructureBoundaries = StructureBoundaries::new([3]);
+        let branch_result: StructureResult =
+            structure_with_boundaries(&branch_cfg, &branch_boundaries)
+                .expect("valid protected branch terminal");
+        let branch_root: RegionId = branch_result.root.expect("branch root");
+        assert!(branch_result.is_complete(), "{branch_result:?}");
+        assert_eq!(entry_count(&branch_result, branch_root, 3), 1);
+        assert!(!absorbing_region_exists(&branch_result, 3));
+
+        let switch: CfgNode = CfgNode {
+            term: Terminator::Switch {
+                atom: 0,
+                cases: vec![(0, 1)],
+                default: Some(2),
+            },
+            pure: true,
+        };
+        let switch_cfg: Cfg = Cfg::new(0, vec![switch, goto(3), ret(), ret()]).unwrap();
+        let switch_boundaries: StructureBoundaries = StructureBoundaries::new([3]);
+        let switch_result: StructureResult =
+            structure_with_boundaries(&switch_cfg, &switch_boundaries)
+                .expect("valid protected switch terminal");
+        let switch_root: RegionId = switch_result.root.expect("switch root");
+        assert!(switch_result.is_complete(), "{switch_result:?}");
+        assert_eq!(entry_count(&switch_result, switch_root, 3), 1);
+        assert!(!absorbing_region_exists(&switch_result, 3));
     }
 
     #[test]

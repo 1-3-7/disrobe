@@ -3,11 +3,11 @@ use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
     FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp,
     FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery,
-    MemRef, Node, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source,
-    SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp,
-    VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_order, collect_call_targets,
-    condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan, infer_fp_params,
-    infer_params, plan_frame, stmt_writes_rax_int, structure_items,
+    MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode,
+    ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
+    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi,
+    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
+    infer_fp_params, infer_params, plan_frame, stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -403,10 +403,10 @@ fn recover_with_calls_and_image<'image>(
     image: &dyn Fn(u64) -> Option<&'image [u8]>,
     relocations: &dyn Fn(u64) -> Option<u64>,
 ) -> Result<LeafRecovery> {
-    if calls
-        .iter()
-        .any(|call: &ResolvedCall| call.arg_count > Abi::Aapcs64.arg_order().len())
-    {
+    if calls.iter().any(|call: &ResolvedCall| {
+        call.signature.abi() != Abi::Aapcs64
+            || call.signature.callable_arity() > Abi::Aapcs64.arg_order().len()
+    }) {
         return Err(reject(
             "resolved call argument count exceeds the bounded aapcs64 stack slots",
         ));
@@ -2485,6 +2485,10 @@ fn block_contains_switch(body: &[Node]) -> bool {
         | Node::CondSnapshot { .. }
         | Node::Break
         | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
         | Node::Return
         | Node::Label(_)
         | Node::Goto(_) => false,
@@ -2538,7 +2542,7 @@ fn finish(
             .iter()
             .map(|call: &ResolvedCall| (call.target, call))
             .collect();
-        annotate_calls_block_with_order(&mut structured.body, &call_map, &CALL_ARG_ORDER);
+        annotate_calls_block_with_abi(&mut structured.body, &call_map, Abi::Aapcs64)?;
     }
     let lifted_switch: bool = block_contains_switch(&structured.body);
     let fp_args: Vec<(Xmm, FpWidth)> = if has_scalar_fp {
@@ -2559,7 +2563,7 @@ fn finish(
         FnReturn::Int(_) => detect_sret(&structured.body, Abi::Aapcs64),
         FnReturn::Fp(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
-    let mut params: Vec<Reg> = infer_params(&structured.body, Abi::Aapcs64);
+    let mut params: Vec<Reg> = infer_params(&structured.body, Abi::Aapcs64)?;
     if let Some(plan) = &sret_plan {
         params.retain(|reg: &Reg| *reg != plan.ptr);
     }
@@ -2571,11 +2575,6 @@ fn finish(
         exact_integer_types: false,
         abi: Abi::Aapcs64,
     };
-    let fp_params: Vec<ScalarType> = if has_scalar_fp {
-        signature.ordered_param_types()
-    } else {
-        Vec::new()
-    };
     let frame_shape: FrameShape = classify_frame(insns, context.frame_info)?;
     let frame = plan_frame(&structured.body, frame_shape)?;
     let aggregate_plan: AggregatePlan =
@@ -2586,7 +2585,7 @@ fn finish(
         frame.as_ref(),
         sret_plan.as_ref(),
         &aggregate_plan,
-    );
+    )?;
     let rust_source: Option<String> = emit_rust(
         &structured.body,
         &signature,
@@ -2613,9 +2612,10 @@ fn finish(
         source,
         rust_source,
         return_width_bits,
-        param_width_bits: vec![64; params.len()],
-        params,
-        fp_params,
+        signature: RecoveredSignature::from_canonical_bindings(
+            signature.abi,
+            signature.parameter_bindings(),
+        ),
         returns_fp,
         lifted_split_return: structured.lifted_split_return,
         lifted_loop: structured.lifted_loop,
@@ -4393,10 +4393,11 @@ fn outgoing_stores(
         else {
             continue;
         };
-        if call.arg_count <= 8 {
+        let argument_count: usize = call.signature.callable_arity();
+        if argument_count <= 8 {
             continue;
         }
-        let expected: usize = call.arg_count - 8;
+        let expected: usize = argument_count - 8;
         let mut found: BTreeMap<usize, (usize, OutgoingSlot)> = BTreeMap::new();
         for candidate_index in (0..call_index).rev() {
             let candidate: &DisasmInsn = &insns[candidate_index];

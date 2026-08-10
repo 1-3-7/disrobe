@@ -43,7 +43,7 @@ fn clang_o2_integer_add_lifts_through_shared_ir() {
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("aarch64 add");
     assert_eq!(
-        recovered.params,
+        recovered.signature.observed_integer_registers(),
         vec![PseudoReg::Rax, PseudoReg::A64X1, PseudoReg::A64X2]
     );
     assert!(recovered.source.contains("r_rax = r_a64_tmp"));
@@ -59,7 +59,7 @@ fn clang_o2_shifted_integer_alu_lifts() {
         0xaa, 0x08, 0x09, 0x80, 0x8b, 0x00, 0x0d, 0x09, 0x8b, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("aarch64 alu");
-    assert_eq!(recovered.params.len(), 3);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 3);
     assert!(recovered.source.contains(" & "));
     assert!(recovered.source.contains(" | "));
     assert!(recovered.source.contains(" ^ "));
@@ -75,8 +75,8 @@ fn clang_o2_madd_and_msub_lift() {
     let subtracted: LeafRecovery = recover_aarch64_function(&msub, 0).expect("aarch64 msub");
     assert!(added.source.contains(" * ") && added.source.contains(" + "));
     assert!(subtracted.source.contains(" * ") && subtracted.source.contains(" - "));
-    assert_eq!(added.params.len(), 3);
-    assert_eq!(subtracted.params.len(), 3);
+    assert_eq!(added.signature.observed_integer_registers().len(), 3);
+    assert_eq!(subtracted.signature.observed_integer_registers().len(), 3);
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn clang_mov_wide_constant_materialization_lifts() {
     let recovered_inverted: LeafRecovery =
         recover_aarch64_function(&inverted, 0).expect("mov inverted");
     let recovered_zero: LeafRecovery = recover_aarch64_function(&zero, 0).expect("mov zero");
-    assert!(recovered.params.is_empty());
+    assert!(recovered.signature.observed_integer_registers().is_empty());
     assert!(recovered.source.contains("57072"));
     assert!(recovered.source.matches(" | ").count() >= 3);
     assert!(recovered_inverted.source.contains("4661"));
@@ -106,7 +106,7 @@ fn clang_o0_spill_frame_lifts_stack_slots() {
         0x40, 0xf9, 0x00, 0x01, 0x09, 0x8b, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("aarch64 frame");
-    assert_eq!(recovered.params.len(), 3);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 3);
     assert!(recovered.source.contains("stack_frame[32]"));
     assert!(recovered.source.contains("r_rsp"));
     assert!(
@@ -307,9 +307,12 @@ fn clang_o2_pair_load_and_store_lift() {
     let store_pair: [u8; 8] = [0x01, 0x08, 0x00, 0xa9, 0xc0, 0x03, 0x5f, 0xd6];
     let loaded: LeafRecovery = recover_aarch64_function(&load_pair, 0).expect("aarch64 ldp");
     let stored: LeafRecovery = recover_aarch64_function(&store_pair, 0).expect("aarch64 stp");
-    assert_eq!(loaded.params, vec![PseudoReg::Rax]);
+    assert_eq!(
+        loaded.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax]
+    );
     assert_eq!(loaded.source.matches("*(uint64_t*)").count(), 2);
-    assert_eq!(stored.params.len(), 3);
+    assert_eq!(stored.signature.observed_integer_registers().len(), 3);
     assert!(stored.source.contains("recovered_struct_0_t"));
     assert!(stored.source.contains("recovered_struct_0->field_0"));
     assert!(stored.source.contains("recovered_struct_0->field_8"));
@@ -329,7 +332,10 @@ fn clang_o0_cbnz_diamond_structures_if_else() {
     ];
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0x2c).expect("aarch64 cbnz diamond");
-    assert_eq!(recovered.params, vec![PseudoReg::Rax]);
+    assert_eq!(
+        recovered.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax]
+    );
     assert!(recovered.source.contains("if ("));
     assert!(recovered.source.contains("else"));
     assert!(recovered.source.contains("== 0") || recovered.source.contains("!= 0"));
@@ -397,14 +403,22 @@ fn clang_o2_direct_call_tracks_aapcs64_and_callee_saved_register() {
         0x8b, 0x00, 0x00, 0x00, 0x94, 0x60, 0x02, 0x00, 0x8b, 0xf3, 0x0b, 0x40, 0xf9, 0xfd, 0x7b,
         0xc2, 0xa8, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let calls: [ResolvedCall; 1] = [ResolvedCall {
-        target: 0x10,
-        name: Some("helper".to_owned()),
-        arg_count: 1,
-    }];
+    let calls: [ResolvedCall; 1] =
+        [
+            ResolvedCall::from_integer_arity(
+                0x10,
+                Some("helper".to_owned()),
+                PseudoAbi::Aapcs64,
+                1,
+            )
+            .expect("canonical aapcs64 call"),
+        ];
     let recovered: LeafRecovery =
         recover_aarch64_function_with_calls(&bytes, 0, &calls).expect("aarch64 direct call");
-    assert_eq!(recovered.params, vec![PseudoReg::Rax, PseudoReg::A64X1]);
+    assert_eq!(
+        recovered.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax, PseudoReg::A64X1]
+    );
     assert_eq!(recovered.call_targets, vec![0x10]);
     assert!(recovered.source.contains("helper(r_rax)"));
     assert!(recovered.source.contains("r_a64_x19"));
@@ -418,7 +432,10 @@ fn callee_saved_pair_writeback_lifts() {
     ];
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("aarch64 callee-save pair");
-    assert_eq!(recovered.params, vec![PseudoReg::Rax]);
+    assert_eq!(
+        recovered.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax]
+    );
     assert!(recovered.source.contains("r_a64_x19 = r_rax"));
 }
 
@@ -428,14 +445,14 @@ fn frame_pointer_omitted_link_register_frame_lifts() {
         0xfe, 0x0f, 0x1f, 0xf8, 0x00, 0x00, 0x00, 0x94, 0xfe, 0x07, 0x41, 0xf8, 0xc0, 0x03, 0x5f,
         0xd6,
     ];
-    let calls: [ResolvedCall; 1] = [ResolvedCall {
-        target: 4,
-        name: Some("helper".to_owned()),
-        arg_count: 0,
-    }];
+    let calls: [ResolvedCall; 1] =
+        [
+            ResolvedCall::from_integer_arity(4, Some("helper".to_owned()), PseudoAbi::Aapcs64, 0)
+                .expect("canonical zero-argument aapcs64 call"),
+        ];
     let recovered: LeafRecovery =
         recover_aarch64_function_with_calls(&bytes, 0, &calls).expect("aarch64 lr frame");
-    assert!(recovered.params.is_empty());
+    assert!(recovered.signature.observed_integer_registers().is_empty());
     assert!(recovered.source.contains("helper()"));
     assert_eq!(recovered.call_targets, vec![4]);
 }
@@ -446,7 +463,7 @@ fn clang_o2_aapcs64_sret_uses_x8() {
         0x00, 0x05, 0x00, 0xa9, 0x02, 0x09, 0x00, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0x84).expect("aarch64 sret");
-    assert_eq!(recovered.params.len(), 3);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 3);
     assert_eq!(recovered.sret.as_ref().map(|sret| sret.size), Some(24));
     assert!(recovered.source.contains("recovered_sret_t"));
     assert!(recovered.source.contains("r_a64_x8"));
@@ -460,9 +477,19 @@ fn clang_o1_aapcs64_stack_arguments_lift() {
         0x8b, 0xc0, 0x03, 0x5f, 0xd6,
     ];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("aarch64 stack args");
-    assert_eq!(recovered.params.len(), 4);
-    assert!(recovered.params.contains(&PseudoReg::A64Stack0));
-    assert!(recovered.params.contains(&PseudoReg::A64Stack1));
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 4);
+    assert!(
+        recovered
+            .signature
+            .observed_integer_registers()
+            .contains(&PseudoReg::A64Stack0)
+    );
+    assert!(
+        recovered
+            .signature
+            .observed_integer_registers()
+            .contains(&PseudoReg::A64Stack1)
+    );
     assert!(recovered.source.contains("r_a64_stack0 = a2"));
     assert!(recovered.source.contains("r_a64_stack1 = a3"));
 }
@@ -481,7 +508,10 @@ fn clang_frame_pointer_and_split_stack_arguments_lift() {
     for bytes in [&frame_pointer[..], &split_stack[..]] {
         let recovered: LeafRecovery =
             recover_aarch64_function(bytes, 0).expect("aarch64 framed stack argument");
-        assert_eq!(recovered.params, vec![PseudoReg::A64Stack0]);
+        assert_eq!(
+            recovered.signature.observed_integer_registers(),
+            vec![PseudoReg::A64Stack0]
+        );
         assert!(recovered.source.contains("r_a64_stack0 = a0"));
     }
 }
@@ -494,14 +524,17 @@ fn clang_o1_outgoing_stack_argument_lifts() {
         0x80, 0x52, 0xe6, 0x00, 0x80, 0x52, 0x07, 0x01, 0x80, 0x52, 0xe8, 0x03, 0x00, 0xf9, 0x00,
         0x00, 0x00, 0x94, 0xfd, 0x7b, 0x41, 0xa9, 0xff, 0x83, 0x00, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let calls: [ResolvedCall; 1] = [ResolvedCall {
-        target: 44,
-        name: Some("helper".to_owned()),
-        arg_count: 9,
-    }];
+    let calls: [ResolvedCall; 1] =
+        [
+            ResolvedCall::from_integer_arity(44, Some("helper".to_owned()), PseudoAbi::Aapcs64, 9)
+                .expect("canonical nine-argument aapcs64 call"),
+        ];
     let recovered: LeafRecovery =
         recover_aarch64_function_with_calls(&bytes, 0, &calls).expect("aarch64 call9");
-    assert_eq!(recovered.params, vec![PseudoReg::Rax, PseudoReg::A64X1]);
+    assert_eq!(
+        recovered.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax, PseudoReg::A64X1]
+    );
     assert!(recovered.source.contains("r_a64_outgoing0 = r_a64_x8"));
     assert!(recovered.source.contains("helper("));
     assert!(recovered.source.contains("r_a64_outgoing0)"));
@@ -515,7 +548,7 @@ fn clang_assembler_pre_and_post_index_writeback_lift() {
     ];
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("aarch64 indexed memory");
-    assert_eq!(recovered.params.len(), 4);
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 4);
     assert!(recovered.source.matches("r_rax = r_rax +").count() >= 4);
     assert!(recovered.source.matches("*(uint64_t*)").count() >= 4);
 }
@@ -634,7 +667,7 @@ fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_helpers() {
         "single-precision fmaxnm must recover as the ieee maxnum helper: {}",
         single.source
     );
-    assert_eq!(single.fp_params.len(), 2);
+    assert_eq!(single.signature.parameter_types().len(), 2);
     assert_eq!(single.return_width_bits, 32);
     let double: LeafRecovery =
         recover_aarch64_function(&min_double, 0).expect("aarch64 fminnm double");
@@ -643,7 +676,7 @@ fn aarch64_scalar_fmaxnm_and_fminnm_recover_as_ieee_num_helpers() {
         "double-precision fminnm must recover as the ieee minnum helper: {}",
         double.source
     );
-    assert_eq!(double.fp_params.len(), 2);
+    assert_eq!(double.signature.parameter_types().len(), 2);
     assert_eq!(double.return_width_bits, 64);
 }
 
@@ -662,7 +695,7 @@ fn aarch64_scalar_fma_recovers_with_correct_input_negations() {
         bytes.extend_from_slice(&ret);
         let recovered: LeafRecovery =
             recover_aarch64_function(&bytes, 0).expect("aarch64 fused multiply-add");
-        assert_eq!(recovered.fp_params.len(), 3, "{builtin}");
+        assert_eq!(recovered.signature.parameter_types().len(), 3, "{builtin}");
         let call: &str = recovered.source.rsplit_once(builtin).map_or_else(
             || panic!("missing {builtin} in {}", recovered.source),
             |(_, rest): (&str, &str)| rest,
@@ -749,7 +782,7 @@ fn aarch64_scalar_fp_compare_recovers_ordered_unordered_and_select() {
         "fcmp + fcsel mi must recover a conditional select on an ordered less-than: {}",
         sel.source
     );
-    assert_eq!(sel.fp_params.len(), 2);
+    assert_eq!(sel.signature.parameter_types().len(), 2);
     assert!(sel.returns_fp.is_some());
     assert_eq!(sel.return_width_bits, 32);
 }
@@ -892,7 +925,10 @@ fn neon_vector_load_store_and_dup_lift() {
 
     let splat: [u8; 8] = [0x00, 0x0c, 0x04, 0x4e, 0xc0, 0x03, 0x5f, 0xd6];
     let broadcast: LeafRecovery = recover_aarch64_function(&splat, 0).expect("neon dup");
-    assert_eq!(broadcast.params, vec![PseudoReg::Rax]);
+    assert_eq!(
+        broadcast.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax]
+    );
     assert!(
         broadcast.source.contains(
             "(recovered_i32x4){(int32_t)r_rax, (int32_t)r_rax, (int32_t)r_rax, (int32_t)r_rax}"
@@ -1142,8 +1178,13 @@ fn intervening_write_never_compares_the_overwritten_nzcv_operand() {
 fn unresolved_call_infers_only_register_arguments() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x00, 0x94, 0xc0, 0x03, 0x5f, 0xd6];
     let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("unresolved bl");
-    assert_eq!(recovered.params.len(), 8);
-    assert!(!recovered.params.contains(&PseudoReg::A64Stack0));
+    assert_eq!(recovered.signature.observed_integer_registers().len(), 8);
+    assert!(
+        !recovered
+            .signature
+            .observed_integer_registers()
+            .contains(&PseudoReg::A64Stack0)
+    );
 }
 
 #[test]
@@ -1162,13 +1203,7 @@ fn legacy_x86_object_entry_rejects_aapcs64_before_probing() {
 
 #[test]
 fn resolved_call_rejects_arguments_beyond_bounded_stack_slots() {
-    let bytes: [u8; 8] = [0x00, 0x00, 0x00, 0x94, 0xc0, 0x03, 0x5f, 0xd6];
-    let calls: [ResolvedCall; 1] = [ResolvedCall {
-        target: 0,
-        name: None,
-        arg_count: 17,
-    }];
-    let error = recover_aarch64_function_with_calls(&bytes, 0, &calls)
+    let error = ResolvedCall::from_integer_arity(0, None, PseudoAbi::Aapcs64, 17)
         .expect_err("too many resolved aapcs64 arguments");
     assert!(
         format!("{error:?}").contains("resolved call argument count exceeds"),
@@ -1180,16 +1215,10 @@ fn resolved_call_rejects_arguments_beyond_bounded_stack_slots() {
 fn duplicate_resolved_call_targets_reject() {
     let bytes: [u8; 8] = [0x00, 0x00, 0x00, 0x94, 0xc0, 0x03, 0x5f, 0xd6];
     let calls: [ResolvedCall; 2] = [
-        ResolvedCall {
-            target: 0,
-            name: None,
-            arg_count: 1,
-        },
-        ResolvedCall {
-            target: 0,
-            name: None,
-            arg_count: 9,
-        },
+        ResolvedCall::from_integer_arity(0, None, PseudoAbi::Aapcs64, 1)
+            .expect("one-argument aapcs64 call"),
+        ResolvedCall::from_integer_arity(0, None, PseudoAbi::Aapcs64, 9)
+            .expect("nine-argument aapcs64 call"),
     ];
     let error = recover_aarch64_function_with_calls(&bytes, 0, &calls)
         .expect_err("duplicate resolved call target");
