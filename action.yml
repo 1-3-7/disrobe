@@ -10,7 +10,7 @@ inputs:
     description: File, directory, or glob to analyze. Passed verbatim to the disrobe command.
     required: true
   command:
-    description: disrobe subcommand to run (for example `auto`, `scan`, `behavior`).
+    description: Top-level disrobe subcommand to run. Put any nested subcommand and its flags in args.
     required: false
     default: auto
   args:
@@ -30,7 +30,7 @@ inputs:
     required: false
     default: disrobe.sarif
   out-dir:
-    description: Directory disrobe writes its recovered artifacts into.
+    description: Output path passed to apk, auto, bug-report, chain, context, extract, man, report, and webview.
     required: false
     default: disrobe-out
   upload-sarif:
@@ -201,21 +201,41 @@ runs:
           *) echo "::error::fail-on must be one of never, incomplete, failed, any"; exit 1 ;;
         esac
 
-        mkdir -p "${DR_OUT}"
+        case "${DR_COMMAND}" in
+          bug-report) mkdir -p "$(dirname -- "${DR_OUT}")" ;;
+          *) mkdir -p "${DR_OUT}" ;;
+        esac
 
         declare -a extra=()
         if [ -n "${DR_ARGS}" ]; then
           read -r -a extra <<< "${DR_ARGS}"
         fi
 
+        declare -a patharg=("${DR_PATH}")
+        case "${DR_COMMAND}" in
+          bug-report|context|man)
+            patharg=() ;;
+        esac
+
         declare -a outflag=()
-        if [ "${DR_COMMAND}" = "auto" ]; then
-          outflag=(--out "${DR_OUT}")
+        case "${DR_COMMAND}" in
+          apk|auto|bug-report|chain|context|extract|man|report|webview)
+            outflag=(--out "${DR_OUT}") ;;
+        esac
+
+        if [ "${#outflag[@]}" -ne 0 ]; then
+          for arg in "${extra[@]}"; do
+            case "${arg}" in
+              --out|--out=*|-o|-o?*)
+                echo "::error::extra arguments must not repeat the action-managed --out flag"
+                exit 1 ;;
+            esac
+          done
         fi
 
         status=0
-        "${DR_BIN}" "${DR_COMMAND}" "${DR_PATH}" \
-          "${extra[@]}" \
+        "${DR_BIN}" "${DR_COMMAND}" \
+          "${extra[@]}" "${patharg[@]}" \
           --sarif \
           "${outflag[@]}" > "${DR_SARIF}" 2> disrobe.log || status=$?
 

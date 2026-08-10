@@ -217,6 +217,116 @@ fn action_run_script() -> String {
         .join("\n")
 }
 
+fn disrobe_output(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_disrobe"))
+        .args(args)
+        .output()
+        .unwrap_or_else(|error: std::io::Error| panic!("run disrobe {args:?}: {error}"))
+}
+
+fn top_level_commands() -> BTreeSet<String> {
+    let output: std::process::Output = disrobe_output(&["subcommand-tree"]);
+    assert!(
+        output.status.success(),
+        "subcommand-tree failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("subcommand tree is utf-8")
+        .lines()
+        .filter_map(|path: &str| path.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn commands_accepting_out() -> BTreeSet<String> {
+    top_level_commands()
+        .into_iter()
+        .filter(|command: &String| {
+            let output: std::process::Output = disrobe_output(&[command, "--help"]);
+            assert!(
+                output.status.success(),
+                "{command} --help failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("command help is utf-8")
+                .lines()
+                .any(|line: &str| {
+                    let trimmed: &str = line.trim_start();
+                    trimmed.starts_with("-o, --out ") || trimmed.starts_with("--out ")
+                })
+        })
+        .collect()
+}
+
+fn out_commands_without_positional_path() -> BTreeSet<String> {
+    commands_accepting_out()
+        .into_iter()
+        .filter(|command: &String| {
+            let output: std::process::Output = disrobe_output(&[command, "--help"]);
+            assert!(output.status.success(), "{command} --help failed");
+            String::from_utf8(output.stdout)
+                .expect("command help is utf-8")
+                .lines()
+                .find(|line: &&str| line.starts_with("Usage:"))
+                .is_some_and(|usage: &str| !usage.contains('<'))
+        })
+        .collect()
+}
+
+#[test]
+fn action_out_and_path_pairing_matches_the_built_cli() {
+    let script: String = action_run_script();
+    let out_commands: BTreeSet<String> = commands_accepting_out();
+    let out_pattern: String = out_commands.into_iter().collect::<Vec<String>>().join("|");
+    assert!(
+        script.contains(&format!(
+            "{out_pattern})\n    outflag=(--out \"${{DR_OUT}}\")"
+        )),
+        "action.yml must pass --out to exactly the subcommands whose clap help declares it"
+    );
+    assert!(
+        script.contains(&format!(
+            "{})\n    patharg=()",
+            out_commands_without_positional_path()
+                .into_iter()
+                .collect::<Vec<String>>()
+                .join("|")
+        )),
+        "--out commands with no positional path must not receive inputs.path"
+    );
+    assert!(
+        script.contains("\"${DR_BIN}\" \"${DR_COMMAND}\"")
+            && script.contains("\"${extra[@]}\" \"${patharg[@]}\""),
+        "the invocation must use the command-specific positional array"
+    );
+    assert!(
+        script.contains("extra arguments must not repeat the action-managed --out flag"),
+        "a user-supplied --out must be rejected before clap sees a duplicate"
+    );
+    assert!(
+        script.contains("--out|--out=*|-o|-o?*)"),
+        "both long and short user-supplied out forms must be rejected"
+    );
+    let rejection: usize = script
+        .find("extra arguments must not repeat the action-managed --out flag")
+        .expect("duplicate-out rejection");
+    let invocation: usize = script
+        .find("\"${DR_BIN}\" \"${DR_COMMAND}\"")
+        .expect("disrobe invocation");
+    let runtime_rejection: usize = script
+        .find("if grep -qiE '^error: (unexpected argument")
+        .expect("runtime argument-rejection guard");
+    let fallback: usize = script
+        .find("if [ ! -s \"${DR_SARIF}\" ]")
+        .expect("SARIF fallback");
+    assert!(
+        rejection < invocation && invocation < runtime_rejection && runtime_rejection < fallback,
+        "argument rejection must precede invocation, and the runtime rejection guard must precede the SARIF fallback"
+    );
+}
+
 #[test]
 fn every_chain_verdict_grades_to_a_fail_on_rung() {
     let cases: [(VerdictDoc, VerdictGrade); 10] = [
