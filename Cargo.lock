@@ -1998,6 +1998,7 @@ dependencies = [
  "divan",
  "flate2",
  "gix",
+ "goblin",
  "hmac",
  "iced-x86",
  "liblzma",
