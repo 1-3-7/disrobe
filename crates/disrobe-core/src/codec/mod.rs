@@ -504,7 +504,8 @@ mod tests {
             payload
         );
 
-        let pct: String = web_escape::percent_encode(payload);
+        let pct: String =
+            web_escape::percent_encode(payload, web_escape::PercentEncodeSet::RFC3986);
         assert_eq!(decode(pct.as_bytes(), Scheme::PercentUrl).unwrap(), payload);
     }
 
@@ -545,7 +546,8 @@ mod tests {
     #[test]
     fn cascade_recovers_percent_url() {
         let payload: &[u8] = b"https://evil.example.com/c2?token=abcd config import";
-        let encoded: String = web_escape::percent_encode(payload);
+        let encoded: String =
+            web_escape::percent_encode(payload, web_escape::PercentEncodeSet::RFC3986);
         let hits: Vec<CascadeHit> = blind_cascade(encoded.as_bytes());
         assert!(
             hits.iter()

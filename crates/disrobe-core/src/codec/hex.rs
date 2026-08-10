@@ -122,6 +122,11 @@ pub fn push_byte(out: &mut String, byte: u8) {
     out.push(LOWER[usize::from(byte & 0x0f)] as char);
 }
 
+pub fn push_byte_upper(out: &mut String, byte: u8) {
+    out.push((LOWER[usize::from(byte >> 4)] as char).to_ascii_uppercase());
+    out.push((LOWER[usize::from(byte & 0x0f)] as char).to_ascii_uppercase());
+}
+
 pub fn push_fixed(out: &mut String, value: u32, digits: usize) {
     for nibble_index in (0..digits).rev() {
         let shift: u32 = (nibble_index as u32).saturating_mul(4);

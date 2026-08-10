@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
 use serde_json::Value;
 
 use crate::filter::Filter;
@@ -7,38 +8,6 @@ use crate::provider::{Provider, Request, Yield};
 
 pub const OTX_MAX_PAGES: u32 = 50;
 const OTX_PAGE_SIZE: u32 = 500;
-const HEX_UPPER: [char; 16] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
-];
-
-#[must_use]
-pub fn urlencode(raw: &str) -> String {
-    let mut out: String = String::with_capacity(urlencode_prealloc(raw.len()));
-    for byte in raw.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => {
-                push_percent_encoded(&mut out, byte);
-            }
-        }
-    }
-    out
-}
-
-fn push_percent_encoded(out: &mut String, byte: u8) {
-    let high: usize = usize::from(byte >> 4);
-    let low: usize = usize::from(byte & 0x0f);
-    out.push('%');
-    out.push(HEX_UPPER[high]);
-    out.push(HEX_UPPER[low]);
-}
-
-const fn urlencode_prealloc(raw_len: usize) -> usize {
-    raw_len.saturating_mul(3)
-}
-
 #[must_use]
 fn host_pattern(target: &str, subs: bool) -> String {
     let host: String = target.trim().trim_end_matches('/').to_owned();
@@ -67,7 +36,7 @@ impl Provider for Wayback {
         let pattern: String = host_pattern(target, filter.subs);
         let mut url: String = format!(
             "https://web.archive.org/cdx/search/cdx?url={}&output=json&collapse=urlkey&fl=original,timestamp,statuscode,mimetype",
-            urlencode(&pattern)
+            percent_encode_str(&pattern, PercentEncodeSet::RFC3986)
         );
         if let Some(from) = &filter.from {
             url.push_str("&from=");
@@ -154,7 +123,7 @@ impl Provider for CommonCrawl {
         vec![Request::get(format!(
             "https://index.commoncrawl.org/{}-index?url={}&output=json",
             self.index,
-            urlencode(&pattern)
+            percent_encode_str(&pattern, PercentEncodeSet::RFC3986)
         ))]
     }
 
@@ -312,7 +281,7 @@ impl Provider for Urlscan {
         };
         let request: Request = Request::get(format!(
             "https://urlscan.io/api/v1/search/?q={}&size=10000",
-            urlencode(&q)
+            percent_encode_str(&q, PercentEncodeSet::RFC3986)
         ));
         let request: Request = match &self.api_key {
             Some(key) => request.with_header("API-Key", key),
@@ -378,10 +347,10 @@ impl Virustotal {
         let host: String = target.trim().trim_end_matches('/').to_owned();
         let mut url: String = format!(
             "https://www.virustotal.com/api/v3/domains/{}/urls?limit={VT_PAGE_SIZE}",
-            urlencode(&host)
+            percent_encode_str(&host, PercentEncodeSet::RFC3986)
         );
         if let Some(cursor) = cursor {
-            let encoded: String = urlencode(cursor);
+            let encoded: String = percent_encode_str(cursor, PercentEncodeSet::RFC3986);
             url.push_str("&cursor=");
             url.push_str(&encoded);
         }
@@ -479,14 +448,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urlencode_escapes_reserved_bytes() {
-        let encoded: String = urlencode("a b/?#%");
-        assert_eq!(encoded, "a%20b%2F%3F%23%25");
-    }
-
-    #[test]
-    fn urlencode_prealloc_saturates() {
-        let capped: usize = urlencode_prealloc(usize::MAX);
-        assert_eq!(capped, usize::MAX);
+    fn shared_percent_encoder_escapes_reserved_bytes() {
+        let encoded: String = percent_encode_str("a b/?#%\u{00e9}", PercentEncodeSet::RFC3986);
+        assert_eq!(encoded, "a%20b%2F%3F%23%25%C3%A9");
     }
 }

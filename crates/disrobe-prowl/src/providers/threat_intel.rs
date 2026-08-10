@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
 use serde_json::Value;
 
 use crate::filter::Filter;
 use crate::model::{HarvestedUrl, Ioc, IocKind, Source};
 use crate::provider::{Provider, Request, Yield};
-use crate::providers::url_archive::urlencode;
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 
@@ -32,7 +32,7 @@ impl Provider for Crtsh {
         let host: String = target.trim().trim_end_matches('/').to_owned();
         vec![Request::get(format!(
             "https://crt.sh/?q={}&output=json",
-            urlencode(&format!("%.{host}"))
+            percent_encode_str(&format!("%.{host}"), PercentEncodeSet::RFC3986)
         ))]
     }
 
@@ -112,7 +112,10 @@ impl Provider for Urlhaus {
         let host: String = host_of_target(target);
         let request: Request = Request::post(
             "https://urlhaus-api.abuse.ch/v1/host/".to_owned(),
-            format!("host={}", urlencode(&host)),
+            format!(
+                "host={}",
+                percent_encode_str(&host, PercentEncodeSet::RFC3986)
+            ),
             "application/x-www-form-urlencoded",
         );
         let request: Request = match &self.api_key {

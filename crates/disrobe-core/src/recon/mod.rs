@@ -2732,7 +2732,7 @@ mod tests {
             base92_encode,
         };
         use codec::framed::{ascii85_encode, uuencode, xxencode};
-        use codec::web_escape::percent_encode;
+        use codec::web_escape::{PercentEncodeSet, percent_encode};
         match scheme {
             codec::Scheme::Base58Bitcoin => base58_encode(plain, Base58Variant::Bitcoin),
             codec::Scheme::Base58Ripple => base58_encode(plain, Base58Variant::Ripple),
@@ -2743,7 +2743,7 @@ mod tests {
             codec::Scheme::Ascii85 => ascii85_encode(plain),
             codec::Scheme::UuEncode => uuencode(plain, "p.bin"),
             codec::Scheme::XxEncode => xxencode(plain, "p.bin"),
-            codec::Scheme::PercentUrl => percent_encode(plain),
+            codec::Scheme::PercentUrl => percent_encode(plain, PercentEncodeSet::RFC3986),
             other => panic!("no encoder fixture for {other:?}"),
         }
     }

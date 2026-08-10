@@ -1,5 +1,5 @@
+use super::DecodeError;
 use super::hex::nibble as hex_value;
-use super::{DecodeError, bytes_to_string};
 
 const PUNY_BASE: u32 = 36;
 const PUNY_TMIN: u32 = 1;
@@ -16,6 +16,71 @@ const MAX_ENTITY_NAME: usize = 32;
 pub enum PlusPolicy {
     Literal,
     Space,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PercentEncodeSet {
+    additional_ascii: [u64; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PercentEncodeSetError {
+    #[error("the additional unreserved set cannot contain percent")]
+    Percent,
+    #[error("the additional unreserved byte {byte:#04x} is not ASCII")]
+    NonAscii { byte: u8 },
+}
+
+impl PercentEncodeSet {
+    pub const RFC3986: Self = Self::from_additional_unchecked(b"");
+    pub const SARIF_ARTIFACT_URI: Self = Self::from_additional_unchecked(b"/:");
+    pub const URI: Self = Self::from_additional_unchecked(b":/?#[]@!$&'()*+,;=");
+    pub const PATH_SEGMENT: Self = Self::from_additional_unchecked(b"!$&'()*+,;=:@");
+    pub const QUERY_VALUE: Self = Self::from_additional_unchecked(b"!$'()*+,;:@/?");
+    pub const FRAGMENT: Self = Self::from_additional_unchecked(b"!$&'()*+,;=:@/?");
+
+    pub const fn with_additional(additional: &[u8]) -> Result<Self, PercentEncodeSetError> {
+        let mut set: Self = Self::RFC3986;
+        let mut index: usize = 0;
+        while index < additional.len() {
+            let byte: u8 = additional[index];
+            if byte == b'%' {
+                return Err(PercentEncodeSetError::Percent);
+            }
+            if byte > 0x7f {
+                return Err(PercentEncodeSetError::NonAscii { byte });
+            }
+            set.additional_ascii[(byte >> 6) as usize] |= 1u64 << (byte & 0x3f);
+            index += 1;
+        }
+        Ok(set)
+    }
+
+    const fn from_additional_unchecked(additional: &[u8]) -> Self {
+        let mut set: Self = Self {
+            additional_ascii: [0; 2],
+        };
+        let mut index: usize = 0;
+        while index < additional.len() {
+            let byte: u8 = additional[index];
+            set.additional_ascii[(byte >> 6) as usize] |= 1u64 << (byte & 0x3f);
+            index += 1;
+        }
+        set
+    }
+
+    const fn permits(self, byte: u8) -> bool {
+        byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~')
+            || (byte <= 0x7f
+                && self.additional_ascii[(byte >> 6) as usize] & (1u64 << (byte & 0x3f)) != 0)
+    }
+}
+
+impl Default for PercentEncodeSet {
+    fn default() -> Self {
+        Self::RFC3986
+    }
 }
 
 pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
@@ -74,19 +139,26 @@ pub fn percent_decode_lenient(input: &[u8], plus_policy: PlusPolicy) -> Vec<u8> 
 }
 
 #[must_use]
-pub fn percent_encode(input: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3);
-    for &byte in input {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(byte);
+pub fn percent_encode(input: &[u8], set: PercentEncodeSet) -> String {
+    let mut out: String = String::with_capacity(percent_encode_capacity(input.len()));
+    for byte in input {
+        if set.permits(*byte) {
+            out.push(char::from(*byte));
         } else {
-            out.push(b'%');
-            out.push(HEX[(byte >> 4) as usize]);
-            out.push(HEX[(byte & 0x0f) as usize]);
+            out.push('%');
+            super::hex::push_byte_upper(&mut out, *byte);
         }
     }
-    bytes_to_string(out)
+    out
+}
+
+#[must_use]
+pub fn percent_encode_str(input: &str, set: PercentEncodeSet) -> String {
+    percent_encode(input.as_bytes(), set)
+}
+
+const fn percent_encode_capacity(input_len: usize) -> usize {
+    input_len.saturating_mul(3)
 }
 
 pub fn html_entity_decode(input: &str) -> Result<String, DecodeError> {
@@ -263,11 +335,92 @@ const fn puny_decode_digit(byte: u8) -> Option<u32> {
 mod tests {
     use super::*;
 
+    fn percent_encode_reference(input: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut output: String = String::new();
+        for byte in input {
+            if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b'~') {
+                output.push(char::from(*byte));
+            } else {
+                write!(&mut output, "%{byte:02X}").expect("write to String");
+            }
+        }
+        output
+    }
+
     #[test]
     fn percent_roundtrip() {
         let plain: &[u8] = b"a b/c?d=e&f%g+h";
-        let encoded: String = percent_encode(plain);
+        let encoded: String = percent_encode(plain, PercentEncodeSet::RFC3986);
         assert_eq!(percent_decode(encoded.as_bytes()).unwrap(), plain);
+    }
+
+    #[test]
+    fn percent_encode_supports_named_and_custom_unreserved_sets() {
+        let input: &[u8] = b"file:///C:/Program Files/a#b?c=%\xff";
+        assert_eq!(
+            percent_encode(input, PercentEncodeSet::RFC3986),
+            "file%3A%2F%2F%2FC%3A%2FProgram%20Files%2Fa%23b%3Fc%3D%25%FF"
+        );
+        assert_eq!(
+            percent_encode(input, PercentEncodeSet::SARIF_ARTIFACT_URI),
+            "file:///C:/Program%20Files/a%23b%3Fc%3D%25%FF"
+        );
+        let custom: PercentEncodeSet = PercentEncodeSet::with_additional(b"@").unwrap();
+        assert_eq!(percent_encode_str("a@b c", custom), "a@b%20c");
+    }
+
+    #[test]
+    fn percent_encode_component_sets_preserve_only_their_delimiters() {
+        assert_eq!(
+            percent_encode_str("https://a/b?c=d#e%", PercentEncodeSet::URI),
+            "https://a/b?c=d#e%25"
+        );
+        assert_eq!(
+            percent_encode_str("a/b:c@d?e#f", PercentEncodeSet::PATH_SEGMENT),
+            "a%2Fb:c@d%3Fe%23f"
+        );
+        assert_eq!(
+            percent_encode_str("a/b?c&d=e#f", PercentEncodeSet::QUERY_VALUE),
+            "a/b?c%26d%3De%23f"
+        );
+        assert_eq!(
+            percent_encode_str("a/b?c#d", PercentEncodeSet::FRAGMENT),
+            "a/b?c%23d"
+        );
+    }
+
+    #[test]
+    fn percent_encode_rejects_unsafe_custom_unreserved_bytes() {
+        assert_eq!(
+            PercentEncodeSet::with_additional(b"%"),
+            Err(PercentEncodeSetError::Percent)
+        );
+        assert_eq!(
+            PercentEncodeSet::with_additional(b"\x80"),
+            Err(PercentEncodeSetError::NonAscii { byte: 0x80 })
+        );
+    }
+
+    #[test]
+    fn percent_encode_capacity_saturates() {
+        assert_eq!(percent_encode_capacity(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn percent_encode_matches_reference_over_deterministic_random_bytes() {
+        let mut input: Vec<u8> = Vec::with_capacity(4_096);
+        let mut state: u32 = 0xa341_316c;
+        for length in 0usize..=4_096 {
+            assert_eq!(
+                percent_encode(&input, PercentEncodeSet::RFC3986),
+                percent_encode_reference(&input),
+                "length {length}"
+            );
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            input.push((state >> 24) as u8);
+        }
     }
 
     #[test]

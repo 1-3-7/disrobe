@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
 use disrobe_nir::{NirModule, decode_nir};
@@ -227,7 +228,7 @@ fn witness_path(path: Option<&PathWitness>) -> String {
 
 fn artifact_uri(input: &Path) -> String {
     let path: String = input.display().to_string().replace('\\', "/");
-    let encoded: String = percent_encode(&path);
+    let encoded: String = percent_encode_str(&path, PercentEncodeSet::SARIF_ARTIFACT_URI);
     if path.starts_with('/') {
         return format!("file://{encoded}");
     }
@@ -237,22 +238,6 @@ fn artifact_uri(input: &Path) -> String {
         .is_some_and(|byte: &u8| *byte == b':')
     {
         return format!("file:///{encoded}");
-    }
-    encoded
-}
-
-fn percent_encode(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-
-    let mut encoded: String = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'.' | b'-' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
     }
     encoded
 }
@@ -272,5 +257,30 @@ const fn sarif_level(severity: Severity) -> SarifLevel {
         Severity::Low => SarifLevel::Note,
         Severity::Medium => SarifLevel::Warning,
         Severity::High | Severity::Critical => SarifLevel::Error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_uri_preserves_structure_and_encodes_reserved_path_bytes() {
+        assert_eq!(
+            artifact_uri(Path::new(r"C:\Program Files\a#b?.dll")),
+            "file:///C:/Program%20Files/a%23b%3F.dll"
+        );
+        assert_eq!(
+            artifact_uri(Path::new(r"\\server\share\a b")),
+            "file:////server/share/a%20b"
+        );
+        assert_eq!(
+            artifact_uri(Path::new("relative/a b/%")),
+            "relative/a%20b/%25"
+        );
+        assert_eq!(
+            artifact_uri(Path::new("relative/\u{00e9}")),
+            "relative/%C3%A9"
+        );
     }
 }

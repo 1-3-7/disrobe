@@ -10,7 +10,7 @@ use disrobe_core::codec::alphabets::{
     base45_encode, base58_encode, base62_encode, base91_encode, base92_encode,
 };
 use disrobe_core::codec::framed::{ascii85_encode, uuencode, xxencode, yenc_encode, z85_encode};
-use disrobe_core::codec::web_escape::percent_encode;
+use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode};
 use disrobe_core::codec::{Base58Variant, CascadeHit, Scheme, blind_cascade, decode};
 
 #[derive(Debug, Clone)]
@@ -45,7 +45,9 @@ fn encode_for(scheme: Scheme, plaintext: &[u8]) -> Option<Vec<u8>> {
         Scheme::UuEncode => Some(uuencode(plaintext, "payload.bin").into_bytes()),
         Scheme::XxEncode => Some(xxencode(plaintext, "payload.bin").into_bytes()),
         Scheme::YEnc => Some(yenc_encode(plaintext, "payload.bin")),
-        Scheme::PercentUrl => Some(percent_encode(plaintext).into_bytes()),
+        Scheme::PercentUrl => {
+            Some(percent_encode(plaintext, PercentEncodeSet::RFC3986).into_bytes())
+        }
         Scheme::Base122
         | Scheme::HtmlEntity
         | Scheme::Punycode
