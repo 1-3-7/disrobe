@@ -69,7 +69,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.4"
+version = "0.10.5"
 edition = "2024"
 rust-version = "1.95"
 license = "Elastic-2.0"
@@ -160,57 +160,57 @@ crc32fast = "1.5.0"
 ctr = "0.9.2"
 delharc = "0.6.1"
 des = "0.8.1"
-disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.4" }
-disrobe-bytes = { path = "crates/disrobe-bytes", version = "0.10.4" }
-disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.4" }
-disrobe-cfg = { path = "crates/disrobe-cfg", version = "0.10.4" }
-disrobe-core = { path = "crates/disrobe-core", version = "0.10.4" }
-disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.4" }
-disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.4" }
-disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.4" }
-disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.4" }
-disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.4", default-features = false }
-disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.4" }
-disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.4" }
-disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.4" }
-disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.4" }
-disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.4" }
-disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.4" }
-disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.4" }
-disrobe-vulnmatch = { path = "crates/disrobe-vulnmatch", version = "0.10.4" }
-disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.4" }
-disrobe-pass-as3 = { path = "crates/disrobe-pass-as3", version = "0.10.4" }
-disrobe-pass-beam = { path = "crates/disrobe-pass-beam", version = "0.10.4" }
-disrobe-pass-dotnet = { path = "crates/disrobe-pass-dotnet", version = "0.10.4" }
-disrobe-pass-go = { path = "crates/disrobe-pass-go", version = "0.10.4" }
-disrobe-pass-js-deob = { path = "crates/disrobe-pass-js-deob", version = "0.10.4" }
-disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.4" }
-disrobe-pass-lua = { path = "crates/disrobe-pass-lua", version = "0.10.4" }
-disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.4" }
-disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.4" }
-disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "0.10.4" }
-disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.4" }
-disrobe-pass-php = { path = "crates/disrobe-pass-php", version = "0.10.4" }
-disrobe-pass-pickle = { path = "crates/disrobe-pass-pickle", version = "0.10.4" }
-disrobe-passes = { path = "crates/disrobe-passes", version = "0.10.4", default-features = false }
-disrobe-pass-py-decompile = { path = "crates/disrobe-pass-py-decompile", version = "0.10.4" }
-disrobe-pass-py-deob = { path = "crates/disrobe-pass-py-deob", version = "0.10.4" }
-disrobe-pass-py-disasm = { path = "crates/disrobe-pass-py-disasm", version = "0.10.4" }
-disrobe-pass-pyarmor = { path = "crates/disrobe-pass-pyarmor", version = "0.10.4" }
-disrobe-pass-pyfreeze = { path = "crates/disrobe-pass-pyfreeze", version = "0.10.4" }
-disrobe-pass-pyinstaller = { path = "crates/disrobe-pass-pyinstaller", version = "0.10.4" }
-disrobe-pass-ruby = { path = "crates/disrobe-pass-ruby", version = "0.10.4" }
-disrobe-pass-scriptlang = { path = "crates/disrobe-pass-scriptlang", version = "0.10.4" }
-disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.10.4" }
-disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.10.4" }
-disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.10.4" }
-disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.4" }
-disrobe-pass-webview = { path = "crates/disrobe-pass-webview", version = "0.10.4" }
-disrobe-playground = { path = "crates/disrobe-playground", version = "0.10.4" }
-disrobe-plugin-host = { path = "crates/disrobe-plugin-host", version = "0.10.4" }
-disrobe-prowl = { path = "crates/disrobe-prowl", version = "0.10.4" }
-disrobe-py-marshal = { path = "crates/disrobe-py-marshal", version = "0.10.4" }
-disrobe-query = { path = "crates/disrobe-query", version = "0.10.4" }
+disrobe-binfmt = { path = "crates/disrobe-binfmt", version = "0.10.5" }
+disrobe-bytes = { path = "crates/disrobe-bytes", version = "0.10.5" }
+disrobe-capabilities = { path = "crates/disrobe-capabilities", version = "0.10.5" }
+disrobe-cfg = { path = "crates/disrobe-cfg", version = "0.10.5" }
+disrobe-core = { path = "crates/disrobe-core", version = "0.10.5" }
+disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.5" }
+disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.5" }
+disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.5" }
+disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.5" }
+disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.5", default-features = false }
+disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.5" }
+disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.5" }
+disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.5" }
+disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.5" }
+disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.5" }
+disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.5" }
+disrobe-typerec = { path = "crates/disrobe-typerec", version = "0.10.5" }
+disrobe-vulnmatch = { path = "crates/disrobe-vulnmatch", version = "0.10.5" }
+disrobe-irsummary = { path = "crates/disrobe-irsummary", version = "0.10.5" }
+disrobe-pass-as3 = { path = "crates/disrobe-pass-as3", version = "0.10.5" }
+disrobe-pass-beam = { path = "crates/disrobe-pass-beam", version = "0.10.5" }
+disrobe-pass-dotnet = { path = "crates/disrobe-pass-dotnet", version = "0.10.5" }
+disrobe-pass-go = { path = "crates/disrobe-pass-go", version = "0.10.5" }
+disrobe-pass-js-deob = { path = "crates/disrobe-pass-js-deob", version = "0.10.5" }
+disrobe-pass-jvm = { path = "crates/disrobe-pass-jvm", version = "0.10.5" }
+disrobe-pass-lua = { path = "crates/disrobe-pass-lua", version = "0.10.5" }
+disrobe-pass-mobile = { path = "crates/disrobe-pass-mobile", version = "0.10.5" }
+disrobe-pass-native = { path = "crates/disrobe-pass-native", version = "0.10.5" }
+disrobe-pass-nativelang = { path = "crates/disrobe-pass-nativelang", version = "0.10.5" }
+disrobe-pass-nuitka = { path = "crates/disrobe-pass-nuitka", version = "0.10.5" }
+disrobe-pass-php = { path = "crates/disrobe-pass-php", version = "0.10.5" }
+disrobe-pass-pickle = { path = "crates/disrobe-pass-pickle", version = "0.10.5" }
+disrobe-passes = { path = "crates/disrobe-passes", version = "0.10.5", default-features = false }
+disrobe-pass-py-decompile = { path = "crates/disrobe-pass-py-decompile", version = "0.10.5" }
+disrobe-pass-py-deob = { path = "crates/disrobe-pass-py-deob", version = "0.10.5" }
+disrobe-pass-py-disasm = { path = "crates/disrobe-pass-py-disasm", version = "0.10.5" }
+disrobe-pass-pyarmor = { path = "crates/disrobe-pass-pyarmor", version = "0.10.5" }
+disrobe-pass-pyfreeze = { path = "crates/disrobe-pass-pyfreeze", version = "0.10.5" }
+disrobe-pass-pyinstaller = { path = "crates/disrobe-pass-pyinstaller", version = "0.10.5" }
+disrobe-pass-ruby = { path = "crates/disrobe-pass-ruby", version = "0.10.5" }
+disrobe-pass-scriptlang = { path = "crates/disrobe-pass-scriptlang", version = "0.10.5" }
+disrobe-pass-shell = { path = "crates/disrobe-pass-shell", version = "0.10.5" }
+disrobe-pass-sourcedefender = { path = "crates/disrobe-pass-sourcedefender", version = "0.10.5" }
+disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "0.10.5" }
+disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.5" }
+disrobe-pass-webview = { path = "crates/disrobe-pass-webview", version = "0.10.5" }
+disrobe-playground = { path = "crates/disrobe-playground", version = "0.10.5" }
+disrobe-plugin-host = { path = "crates/disrobe-plugin-host", version = "0.10.5" }
+disrobe-prowl = { path = "crates/disrobe-prowl", version = "0.10.5" }
+disrobe-py-marshal = { path = "crates/disrobe-py-marshal", version = "0.10.5" }
+disrobe-query = { path = "crates/disrobe-query", version = "0.10.5" }
 divan = "0.1.21"
 eyre = "0.6.12"
 flate2 = "1.1.9"

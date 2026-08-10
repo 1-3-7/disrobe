@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-bench-head-to-head"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-pass-jvm",
@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-bench-native-unpack"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-pass-native",
  "eyre",
@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-binfmt"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "ar",
@@ -1852,14 +1852,14 @@ dependencies = [
 
 [[package]]
 name = "disrobe-bytes"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "disrobe-capabilities"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-binfmt",
  "disrobe-core",
@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-cfg"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "rand 0.10.1",
@@ -1885,7 +1885,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-cli"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "axum",
  "base64",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-core"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "aho-corasick",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-emit"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "pretty",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-evidence-mba"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2044,7 +2044,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-ir"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "bytecheck",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-irsummary"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-cfg",
  "disrobe-core",
@@ -2081,7 +2081,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-lift-x86"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-sleigh",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-llm-metadata"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "base64",
  "ciborium",
@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-mba"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-nir",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-mcp"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "base64",
  "blake3",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-nir"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-cfg",
  "disrobe-core",
@@ -2159,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-nir-lift"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-core",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-as3"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-bytes",
  "disrobe-core",
@@ -2198,7 +2198,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-beam"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-bytes",
  "disrobe-core",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-dotnet"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "cbc",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-go"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-llm-metadata",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-js-deob"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "base64",
  "boa_engine",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-jvm"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-binfmt",
  "disrobe-bytes",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-lua"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "brotli-decompressor",
  "disrobe-binfmt",
@@ -2316,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-mobile"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "boa_engine",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-native"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "cab",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-nativelang"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-core",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-nuitka"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "bytes",
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-php"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "base64",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-pickle"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "base64",
  "disrobe-bytes",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-py-decompile"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-llm-metadata",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-py-deob"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "base64",
@@ -2521,7 +2521,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-py-disasm"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-llm-metadata",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-pyarmor"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "base64",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-pyfreeze"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "bytes",
  "disrobe-binfmt",
@@ -2591,7 +2591,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-pyinstaller"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "brotli",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-ruby"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-bytes",
@@ -2629,7 +2629,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-scriptlang"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "bzip2-rs",
  "disrobe-bytes",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-shell"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "base64",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-sourcedefender"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes",
  "blake2",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-swift-objc"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-bytes",
@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-wasm-deob"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-bytes",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pass-webview"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "brotli",
  "disrobe-binfmt",
@@ -2753,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-passes"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-binfmt",
  "disrobe-core",
@@ -2787,7 +2787,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-playground"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-binfmt",
@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-plugin-host"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-plugin-loader",
  "minisign",
@@ -2837,7 +2837,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-plugin-loader"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "base64",
  "minisign",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-prowl"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2866,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-py-marshal"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-bytes",
  "disrobe-core",
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pyarmor-cextract"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-core",
@@ -2891,14 +2891,14 @@ dependencies = [
 
 [[package]]
 name = "disrobe-pyarmor-pytrace"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "pyo3",
 ]
 
 [[package]]
 name = "disrobe-python"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-binfmt",
@@ -2936,7 +2936,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-query"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-binfmt",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-semdiff"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-nir",
@@ -2967,18 +2967,18 @@ dependencies = [
 
 [[package]]
 name = "disrobe-similarity"
-version = "0.10.4"
+version = "0.10.5"
 
 [[package]]
 name = "disrobe-sleigh"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
 ]
 
 [[package]]
 name = "disrobe-taint"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-ir",
@@ -2996,11 +2996,11 @@ dependencies = [
 
 [[package]]
 name = "disrobe-testkit"
-version = "0.10.4"
+version = "0.10.5"
 
 [[package]]
 name = "disrobe-transcode"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-core",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-typerec"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "gimli 0.32.3",
@@ -3021,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-validator"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "blake3",
  "disrobe-core",
@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-vulnmatch"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-nir",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "disrobe-wasm"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "disrobe-core",
  "disrobe-pass-as3",

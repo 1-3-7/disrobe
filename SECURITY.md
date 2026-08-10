@@ -143,10 +143,10 @@ Release artifacts published via the `release.yml` workflow are signed with cosig
 
 ```sh
 cosign verify-blob \
-  --bundle disrobe-v0.10.4-<target>.tar.zst.cosign.bundle \
+  --bundle disrobe-v0.10.5-<target>.tar.zst.cosign.bundle \
   --certificate-identity-regexp '^https://github.com/1-3-7/disrobe/' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  disrobe-v0.10.4-<target>.tar.zst
+  disrobe-v0.10.5-<target>.tar.zst
 ```
 
 ## Build provenance and SBOM
@@ -156,7 +156,7 @@ Every release ships three additional pieces of supply-chain evidence beyond the 
 - **GitHub-native build provenance.** `release.yml`'s `release` job calls [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance) once, over every platform archive, after the build matrix aggregates them. That call produces a signed [SLSA](https://slsa.dev/) provenance predicate (source commit, builder identity, workflow ref) recorded through GitHub's Artifact Attestations API. The predicate is distinct from the cosign signature. Cosign proves the bytes were signed by this repository's GitHub Actions OIDC identity. The attestation additionally proves which workflow run, commit, and trigger produced them. Verify with:
 
   ```sh
-  gh attestation verify disrobe-v0.10.4-<target>.tar.zst --repo 1-3-7/disrobe
+  gh attestation verify disrobe-v0.10.5-<target>.tar.zst --repo 1-3-7/disrobe
   ```
 
 - **SBOM (dependency manifest embedded in the binary).** Every platform binary is built with `cargo auditable build` instead of a plain `cargo build`. That embeds a compact JSON dependency manifest into a linker section of the compiled executable. The manifest survives even if the binary is separated from any release page. Read it back with [`cargo-audit`](https://github.com/rustsec/rustsec):
