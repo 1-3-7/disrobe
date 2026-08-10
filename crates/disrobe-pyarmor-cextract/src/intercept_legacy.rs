@@ -54,11 +54,14 @@ unsafe extern "C" fn profile_callback(
     let buffer_ref: Option<&'static CaptureBuffer> = *g;
     drop(g);
     if let Some(buffer) = buffer_ref {
-        let _: Result<()> = Python::attach(|py: Python<'_>| {
+        let result: Result<()> = Python::attach(|py: Python<'_>| {
             let frame_bound: Bound<'_, PyAny> = unsafe { Bound::from_borrowed_ptr(py, frame) };
             let code_obj: Bound<'_, PyAny> = frame_bound.getattr("f_code")?;
             capture_code_object(py, &code_obj, buffer)
         });
+        if let Err(error) = result {
+            buffer.record_error(error);
+        }
     }
     LEGACY_GUARD.with(|g: &Cell<bool>| g.set(false));
     0

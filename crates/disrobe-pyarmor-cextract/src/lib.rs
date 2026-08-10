@@ -11,7 +11,8 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use pyo3::exceptions::PyRuntimeError;
+use disrobe_core::scratch::ScratchDir;
+use pyo3::exceptions::{PyOSError, PyRuntimeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyCFunction, PyDict, PyList, PyModule};
 
@@ -32,7 +33,10 @@ const LIMITATION_MESSAGE: &str = "disrobe-pyarmor-cextract intercepts PyEval_Eva
     (2) PyArmor builds that don't call PyEval_EvalCode at all (e.g. directly emit native \
     machine code - would require BCC native lift in pyarmor crate), (3) hardened Linux \
     distributions with kernel.exec_writes=0 or W^X enforcement that disable mprotect-to-executable \
-    (very rare in development environments).";
+    (very rare in development environments). PyO3 installs no module-free callback for this \
+    extension. Call uninstall_intercept to release an owned scratch directory immediately. If the \
+    interpreter exits while interception remains installed, the directory remains under the \
+    operating system temporary directory for later cleanup.";
 
 static ACTIVE_BUFFER: OnceLock<&'static CaptureBuffer> = OnceLock::new();
 static MODERN_INSTALL: Mutex<Option<ModernInstallInfo>> = Mutex::new(None);
@@ -93,6 +97,42 @@ pub mod test_support {
         let buffer: &'static super::CaptureBuffer = super::active_buffer();
         buffer.reconfigure(out_dir, wrapper_stem, magic).ok()?;
         buffer.count().ok()
+    }
+
+    #[must_use]
+    pub fn reconfigure_with_new_scratch() -> Option<PathBuf> {
+        let scratch_dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-cextract-test").ok()?;
+        let path: PathBuf = scratch_dir.path().to_path_buf();
+        let buffer: &'static super::CaptureBuffer = super::active_buffer();
+        buffer
+            .reconfigure_with_scratch(scratch_dir, "lifecycle".to_owned(), [0u8; 4])
+            .ok()?;
+        Some(path)
+    }
+
+    pub fn release_scratch() -> Option<()> {
+        let buffer: &'static super::CaptureBuffer = super::active_buffer();
+        buffer.release_scratch().ok()
+    }
+
+    #[must_use]
+    pub fn scratch_write_failure(make_unusable: bool) -> Option<String> {
+        let path: PathBuf = reconfigure_with_new_scratch()?;
+        std::fs::remove_dir_all(&path).ok()?;
+        if make_unusable {
+            std::fs::write(&path, b"not-a-directory").ok()?;
+        }
+        let error: crate::error::CextractError =
+            crate::marshal_writer::write_pyc(&path, "failure", 0, b"body", [0u8; 4]).err()?;
+        let buffer: &'static super::CaptureBuffer = super::active_buffer();
+        buffer.record_error(error);
+        let surfaced: String = buffer.count().err()?.to_string();
+        if make_unusable {
+            std::fs::remove_file(&path).ok()?;
+        }
+        buffer.release_scratch().ok()?;
+        Some(surfaced)
     }
 }
 
@@ -227,13 +267,22 @@ fn inner_modern_py_start(py: Python<'_>, code: &Bound<'_, PyAny>) -> Py<PyAny> {
     let Ok(buffer): Result<&'static CaptureBuffer> = buffer_or_err() else {
         return py.None();
     };
-    let _: Result<()> = capture_code_object(py, code, buffer);
+    if let Err(error) = capture_code_object(py, code, buffer) {
+        buffer.record_error(error);
+    }
     py.None()
 }
 
 #[pyfunction]
 fn uninstall_intercept(py: Python<'_>) -> PyResult<usize> {
-    let count: usize = match current_backend()? {
+    let backend: InstalledBackend = current_backend()?;
+    if matches!(backend, InstalledBackend::None) {
+        if let Some(buffer) = ACTIVE_BUFFER.get() {
+            buffer.release_scratch()?;
+        }
+        return Ok(0);
+    }
+    match backend {
         InstalledBackend::Modern => {
             let info: ModernInstallInfo = MODERN_INSTALL
                 .lock()
@@ -241,14 +290,12 @@ fn uninstall_intercept(py: Python<'_>) -> PyResult<usize> {
                 .take()
                 .ok_or(CextractError::NotInstalled)?;
             intercept_modern::uninstall(py, info)?;
-            captured_count_or_zero()
         }
         InstalledBackend::Legacy => {
             intercept_legacy::uninstall()?;
             *LEGACY_INSTALLED
                 .lock()
                 .map_err(|_| CextractError::LockPoisoned("legacy-install"))? = false;
-            captured_count_or_zero()
         }
         InstalledBackend::Hotpatch => {
             let handle: HotpatchHandle = HOTPATCH_INSTALL
@@ -257,17 +304,13 @@ fn uninstall_intercept(py: Python<'_>) -> PyResult<usize> {
                 .take()
                 .ok_or(CextractError::NotInstalled)?;
             hotpatch::uninstall_hotpatch(handle)?;
-            captured_count_or_zero()
         }
-        InstalledBackend::None => 0,
-    };
-    Ok(count)
-}
-
-fn captured_count_or_zero() -> usize {
-    buffer_or_err().map_or(0, |buffer: &'static CaptureBuffer| {
-        buffer.count().map_or(0, |value: usize| value)
-    })
+        InstalledBackend::None => return Ok(0),
+    }
+    let buffer: &'static CaptureBuffer = buffer_or_err()?;
+    let count: Result<usize> = buffer.count();
+    buffer.release_scratch()?;
+    Ok(count?)
 }
 
 #[pyfunction]
@@ -331,10 +374,12 @@ const fn limitation_notice() -> &'static str {
 fn _hotpatch_selftest(py: Python<'_>) -> PyResult<Py<PyAny>> {
     use pyo3::types::PyTuple;
 
-    let tmp_dir: PathBuf = std::env::temp_dir().join(format!(
-        "disrobe_cextract_hotpatch_selftest_{}",
-        std::process::id()
-    ));
+    let scratch_dir: ScratchDir = ScratchDir::create("disrobe-cextract-hotpatch-selftest")
+        .map_err(|source: std::io::Error| CextractError::ScratchCreate {
+            purpose: "hotpatch selftest",
+            source,
+        })?;
+    let tmp_dir: PathBuf = scratch_dir.path().to_path_buf();
     ensure_writable(&tmp_dir)?;
     preload_python_handles(py)?;
 
@@ -350,24 +395,61 @@ fn _hotpatch_selftest(py: Python<'_>) -> PyResult<Py<PyAny>> {
         [raw[0], raw[1], raw[2], raw[3]]
     };
     let buffer_ref: &'static CaptureBuffer = active_buffer();
-    buffer_ref.reconfigure(tmp_dir, "hotpatch_selftest".to_owned(), mn)?;
+    buffer_ref.reconfigure_with_scratch(scratch_dir, "hotpatch_selftest".to_owned(), mn)?;
 
-    let handle: HotpatchHandle = hotpatch::install_hotpatch(buffer_ref)
-        .map_err(|e: CextractError| PyRuntimeError::new_err(e.to_string()))?;
-    *HOTPATCH_INSTALL
-        .lock()
-        .map_err(|_| CextractError::LockPoisoned("hotpatch-install"))? = Some(handle);
+    let handle: HotpatchHandle = match hotpatch::install_hotpatch(buffer_ref) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Err(merge_install_failure(error, buffer_ref.release_scratch()));
+        }
+    };
+
+    let capture_result: PyResult<(usize, i64)> = (|| {
+        let builtins: Bound<'_, PyModule> = py.import("builtins")?;
+        let code_obj: Bound<'_, PyAny> = builtins.call_method1(
+            "compile",
+            (
+                "DISROBE_HOTPATCH_SELFTEST_SENTINEL = 0xC0FFEE\n",
+                "<hotpatch_selftest>",
+                "exec",
+            ),
+        )?;
+
+        let ctypes_mod: Bound<'_, PyModule> = py.import("ctypes")?;
+        let pyapi: Bound<'_, PyAny> = ctypes_mod.getattr("pythonapi")?;
+        let eval_code_attr: Bound<'_, PyAny> = pyapi.getattr("PyEval_EvalCode")?;
+        let py_object: Bound<'_, PyAny> = ctypes_mod.getattr("py_object")?;
+        let argtypes: Bound<'_, PyTuple> = PyTuple::new(
+            py,
+            [py_object.clone(), py_object.clone(), py_object.clone()],
+        )?;
+        eval_code_attr.setattr("argtypes", argtypes)?;
+        eval_code_attr.setattr("restype", &py_object)?;
+
+        let globals: Bound<'_, PyDict> = PyDict::new(py);
+        globals.set_item("__name__", "__hotpatch_selftest__")?;
+        eval_code_attr.call1((&code_obj, &globals, &globals))?;
+        let sentinel_value: i64 = globals
+            .get_item("DISROBE_HOTPATCH_SELFTEST_SENTINEL")?
+            .ok_or_else(|| PyRuntimeError::new_err("sentinel was not set"))?
+            .extract::<i64>()?;
+        if sentinel_value != 0x00C0_FFEE {
+            return Err(PyRuntimeError::new_err(format!(
+                "sentinel mismatch: 0x{sentinel_value:x}"
+            )));
+        }
+        let captured_before: usize = buffer_ref.count()?;
+        Ok((captured_before, sentinel_value))
+    })();
+
+    let cleanup_result: PyResult<()> = match hotpatch::uninstall_hotpatch(handle) {
+        Ok(()) => buffer_ref.release_scratch().map_err(PyErr::from),
+        Err(error) => Err(PyRuntimeError::new_err(error.to_string())),
+    };
+    let (captured_before, sentinel_value): (usize, i64) =
+        merge_selftest_result(capture_result, cleanup_result)?;
 
     let builtins: Bound<'_, PyModule> = py.import("builtins")?;
-    let code_obj: Bound<'_, PyAny> = builtins.call_method1(
-        "compile",
-        (
-            "DISROBE_HOTPATCH_SELFTEST_SENTINEL = 0xC0FFEE\n",
-            "<hotpatch_selftest>",
-            "exec",
-        ),
-    )?;
-
     let ctypes_mod: Bound<'_, PyModule> = py.import("ctypes")?;
     let pyapi: Bound<'_, PyAny> = ctypes_mod.getattr("pythonapi")?;
     let eval_code_attr: Bound<'_, PyAny> = pyapi.getattr("PyEval_EvalCode")?;
@@ -378,29 +460,6 @@ fn _hotpatch_selftest(py: Python<'_>) -> PyResult<Py<PyAny>> {
     )?;
     eval_code_attr.setattr("argtypes", argtypes)?;
     eval_code_attr.setattr("restype", &py_object)?;
-
-    let globals: Bound<'_, PyDict> = PyDict::new(py);
-    globals.set_item("__name__", "__hotpatch_selftest__")?;
-    eval_code_attr.call1((&code_obj, &globals, &globals))?;
-    let sentinel_value: i64 = globals
-        .get_item("DISROBE_HOTPATCH_SELFTEST_SENTINEL")?
-        .ok_or_else(|| PyRuntimeError::new_err("sentinel was not set"))?
-        .extract::<i64>()?;
-    if sentinel_value != 0x00C0_FFEE {
-        return Err(PyRuntimeError::new_err(format!(
-            "sentinel mismatch: 0x{sentinel_value:x}"
-        )));
-    }
-    let captured_before: usize = buffer_ref.count()?;
-
-    let handle2: HotpatchHandle = HOTPATCH_INSTALL
-        .lock()
-        .map_err(|_| CextractError::LockPoisoned("hotpatch-install"))?
-        .take()
-        .ok_or(CextractError::NotInstalled)?;
-    hotpatch::uninstall_hotpatch(handle2)
-        .map_err(|e: CextractError| PyRuntimeError::new_err(e.to_string()))?;
-
     let post_globals: Bound<'_, PyDict> = PyDict::new(py);
     post_globals.set_item("__name__", "__hotpatch_postcheck__")?;
     let post_code: Bound<'_, PyAny> = builtins.call_method1(
@@ -414,6 +473,129 @@ fn _hotpatch_selftest(py: Python<'_>) -> PyResult<Py<PyAny>> {
     result.set_item("captured", captured_before)?;
     result.set_item("post_uninstall_eval_works", post_ok)?;
     result.set_item("sentinel_value", sentinel_value)?;
+    result.set_item("scratch_released", !tmp_dir.exists())?;
+    Ok(result.into_any().unbind())
+}
+
+fn merge_selftest_result<T>(primary: PyResult<T>, cleanup: PyResult<()>) -> PyResult<T> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary_error), Ok(())) => Err(primary_error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(primary_error), Err(cleanup_error)) => Err(PyRuntimeError::new_err(format!(
+            "{primary_error}; hotpatch cleanup also failed: {cleanup_error}"
+        ))),
+    }
+}
+
+fn merge_install_failure(error: CextractError, cleanup: Result<()>) -> PyErr {
+    match cleanup {
+        Ok(()) => PyRuntimeError::new_err(error.to_string()),
+        Err(cleanup_error) => PyRuntimeError::new_err(format!(
+            "{error}; scratch cleanup also failed: {cleanup_error}"
+        )),
+    }
+}
+
+#[pyfunction]
+fn _hotpatch_scratch_failure_selftest(py: Python<'_>, make_unusable: bool) -> PyResult<Py<PyAny>> {
+    use pyo3::types::PyTuple;
+
+    let scratch_dir: ScratchDir = ScratchDir::create("disrobe-cextract-hotpatch-failure").map_err(
+        |source: std::io::Error| CextractError::ScratchCreate {
+            purpose: "hotpatch failure selftest",
+            source,
+        },
+    )?;
+    let scratch_path: PathBuf = scratch_dir.path().to_path_buf();
+    let mn_obj: Bound<'_, PyAny> = py.import("importlib.util")?.getattr("MAGIC_NUMBER")?;
+    let mn_bytes: Bound<'_, PyBytes> = mn_obj
+        .cast_into::<PyBytes>()
+        .map_err(|error: pyo3::CastIntoError<'_>| PyRuntimeError::new_err(error.to_string()))?;
+    let raw_magic: &[u8] = mn_bytes.as_bytes();
+    if raw_magic.len() < 4 {
+        return Err(PyRuntimeError::new_err("MAGIC_NUMBER too short"));
+    }
+    let magic_number: [u8; 4] = [raw_magic[0], raw_magic[1], raw_magic[2], raw_magic[3]];
+    preload_python_handles(py)?;
+    let buffer: &'static CaptureBuffer = active_buffer();
+    buffer.reconfigure_with_scratch(scratch_dir, "hotpatch_failure".to_owned(), magic_number)?;
+    let handle: HotpatchHandle = match hotpatch::install_hotpatch(buffer) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Err(merge_install_failure(error, buffer.release_scratch()));
+        }
+    };
+
+    let primary: PyResult<bool> = (|| {
+        std::fs::remove_dir_all(&scratch_path).map_err(|source: std::io::Error| {
+            PyOSError::new_err(format!(
+                "cannot remove scratch directory {}: {source}",
+                scratch_path.display()
+            ))
+        })?;
+        if make_unusable {
+            std::fs::write(&scratch_path, b"not-a-directory").map_err(
+                |source: std::io::Error| {
+                    PyOSError::new_err(format!(
+                        "cannot obstruct scratch directory {}: {source}",
+                        scratch_path.display()
+                    ))
+                },
+            )?;
+        }
+
+        let builtins: Bound<'_, PyModule> = py.import("builtins")?;
+        let code_obj: Bound<'_, PyAny> = builtins.call_method1(
+            "compile",
+            (
+                "DISROBE_FAILURE_SENTINEL = 1\n",
+                "<scratch_failure>",
+                "exec",
+            ),
+        )?;
+        let ctypes_mod: Bound<'_, PyModule> = py.import("ctypes")?;
+        let pyapi: Bound<'_, PyAny> = ctypes_mod.getattr("pythonapi")?;
+        let eval_code_attr: Bound<'_, PyAny> = pyapi.getattr("PyEval_EvalCode")?;
+        let py_object: Bound<'_, PyAny> = ctypes_mod.getattr("py_object")?;
+        let argtypes: Bound<'_, PyTuple> = PyTuple::new(
+            py,
+            [py_object.clone(), py_object.clone(), py_object.clone()],
+        )?;
+        eval_code_attr.setattr("argtypes", argtypes)?;
+        eval_code_attr.setattr("restype", &py_object)?;
+        let globals: Bound<'_, PyDict> = PyDict::new(py);
+        globals.set_item("__name__", "__scratch_failure__")?;
+        eval_code_attr.call1((&code_obj, &globals, &globals))?;
+        let capture_error: PyErr = buffer
+            .count()
+            .err()
+            .map(PyErr::from)
+            .ok_or_else(|| PyRuntimeError::new_err("capture write unexpectedly succeeded"))?;
+        Ok(capture_error.is_instance_of::<PyOSError>(py))
+    })();
+
+    let cleanup: PyResult<()> = match hotpatch::uninstall_hotpatch(handle) {
+        Ok(()) => {
+            let obstruction_cleanup: PyResult<()> = if make_unusable && scratch_path.is_file() {
+                std::fs::remove_file(&scratch_path).map_err(|source: std::io::Error| {
+                    PyOSError::new_err(format!(
+                        "cannot remove scratch obstruction {}: {source}",
+                        scratch_path.display()
+                    ))
+                })
+            } else {
+                Ok(())
+            };
+            let scratch_cleanup: PyResult<()> = buffer.release_scratch().map_err(PyErr::from);
+            merge_selftest_result(obstruction_cleanup, scratch_cleanup)
+        }
+        Err(error) => Err(PyRuntimeError::new_err(error.to_string())),
+    };
+    let error_is_os_error: bool = merge_selftest_result(primary, cleanup)?;
+    let result: Bound<'_, PyDict> = PyDict::new(py);
+    result.set_item("error_is_os_error", error_is_os_error)?;
+    result.set_item("scratch_released", !scratch_path.exists())?;
     Ok(result.into_any().unbind())
 }
 
@@ -441,6 +623,7 @@ fn disrobe_cextract(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_modern_py_start, m)?)?;
     m.add_function(wrap_pyfunction!(_selftest_marshal_roundtrip, m)?)?;
     m.add_function(wrap_pyfunction!(_hotpatch_selftest, m)?)?;
+    m.add_function(wrap_pyfunction!(_hotpatch_scratch_failure_selftest, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("__limitation__", LIMITATION_MESSAGE)?;
     Ok(())

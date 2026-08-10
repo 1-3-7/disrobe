@@ -86,11 +86,14 @@ pub(crate) extern "C" fn evaluate_intercept(
             && let Some(buffer) = *buf_guard
         {
             drop(buf_guard);
-            let _: Result<()> = pyo3::Python::attach(|py: pyo3::Python<'_>| {
+            let result: Result<()> = pyo3::Python::attach(|py: pyo3::Python<'_>| {
                 let bound: pyo3::Bound<'_, pyo3::PyAny> =
                     unsafe { pyo3::Bound::from_borrowed_ptr(py, code) };
                 capture_code_object(py, &bound, buffer)
             });
+            if let Err(error) = result {
+                buffer.record_error(error);
+            }
         }
         REENTRY_GUARD.with(|g: &core::cell::Cell<bool>| g.set(false));
     }

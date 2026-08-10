@@ -18,6 +18,14 @@ pub(crate) enum CextractError {
         path: String,
         source: std::io::Error,
     },
+    ScratchCreate {
+        purpose: &'static str,
+        source: std::io::Error,
+    },
+    ScratchRelease {
+        path: String,
+        source: std::io::Error,
+    },
     PycWrite {
         path: String,
         source: std::io::Error,
@@ -52,6 +60,18 @@ impl fmt::Display for CextractError {
             }
             Self::OutDirNotWritable { path, source } => {
                 write!(f, "CEXT-0005: out_dir {path} not writable: {source}")
+            }
+            Self::ScratchCreate { purpose, source } => {
+                write!(
+                    f,
+                    "CEXT-0017: cannot create scratch directory for {purpose}: {source}"
+                )
+            }
+            Self::ScratchRelease { path, source } => {
+                write!(
+                    f,
+                    "CEXT-0018: cannot release scratch directory {path}: {source}"
+                )
             }
             Self::PycWrite { path, source } => {
                 write!(f, "CEXT-0006: cannot write pyc {path}: {source}")
@@ -92,6 +112,8 @@ impl From<CextractError> for PyErr {
         match value {
             CextractError::OutDirCreate { .. }
             | CextractError::OutDirNotWritable { .. }
+            | CextractError::ScratchCreate { .. }
+            | CextractError::ScratchRelease { .. }
             | CextractError::PycWrite { .. } => PyOSError::new_err(value.to_string()),
             other => PyRuntimeError::new_err(other.to_string()),
         }

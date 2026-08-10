@@ -20,6 +20,7 @@ doctest = false
 [dependencies]
 pyo3 = { workspace = true }
 blake3 = { version = "1", default-features = false, features = ["std"] }
+disrobe-core = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -33,9 +34,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
 ] }
-
-[dev-dependencies]
-disrobe-core = { workspace = true }
 
 [lints]
 workspace = true

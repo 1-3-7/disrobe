@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use disrobe_core::scratch::ScratchDir;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 
@@ -43,11 +44,13 @@ pub(crate) struct CaptureBuffer {
 #[derive(Debug, Default)]
 pub(crate) struct CaptureState {
     pub out_dir: PathBuf,
+    pub scratch_dir: Option<ScratchDir>,
     pub wrapper_stem: String,
     pub magic_number: [u8; 4],
     pub written: Vec<WrittenPyc>,
     pub seen: BTreeSet<String>,
     pub total_written_bytes: usize,
+    pub pending_error: Option<CextractError>,
 }
 
 impl CaptureBuffer {
@@ -55,11 +58,13 @@ impl CaptureBuffer {
         Self {
             state: Mutex::new(CaptureState {
                 out_dir: PathBuf::new(),
+                scratch_dir: None,
                 wrapper_stem: String::new(),
                 magic_number: [0u8; 4],
                 written: Vec::new(),
                 seen: BTreeSet::new(),
                 total_written_bytes: 0,
+                pending_error: None,
             }),
         }
     }
@@ -70,26 +75,83 @@ impl CaptureBuffer {
         wrapper_stem: String,
         magic_number: [u8; 4],
     ) -> Result<()> {
+        self.replace_configuration(None, out_dir, wrapper_stem, magic_number)
+    }
+
+    pub(crate) fn reconfigure_with_scratch(
+        &self,
+        scratch_dir: ScratchDir,
+        wrapper_stem: String,
+        magic_number: [u8; 4],
+    ) -> Result<()> {
+        let out_dir: PathBuf = scratch_dir.path().to_path_buf();
+        self.replace_configuration(Some(scratch_dir), out_dir, wrapper_stem, magic_number)
+    }
+
+    fn replace_configuration(
+        &self,
+        scratch_dir: Option<ScratchDir>,
+        out_dir: PathBuf,
+        wrapper_stem: String,
+        magic_number: [u8; 4],
+    ) -> Result<()> {
         let mut g: std::sync::MutexGuard<'_, CaptureState> = self
             .state
             .lock()
             .map_err(|_| CextractError::LockPoisoned("capture-state"))?;
+        Self::release_locked(&mut g)?;
         g.out_dir = out_dir;
+        g.scratch_dir = scratch_dir;
         g.wrapper_stem = wrapper_stem;
         g.magic_number = magic_number;
         g.written.clear();
         g.seen.clear();
         g.total_written_bytes = 0;
+        g.pending_error = None;
         drop(g);
         Ok(())
     }
 
-    pub(crate) fn count(&self) -> Result<usize> {
-        let g: std::sync::MutexGuard<'_, CaptureState> = self
+    pub(crate) fn release_scratch(&self) -> Result<()> {
+        let mut g: std::sync::MutexGuard<'_, CaptureState> = self
             .state
             .lock()
             .map_err(|_| CextractError::LockPoisoned("capture-state"))?;
+        Self::release_locked(&mut g)
+    }
+
+    fn release_locked(state: &mut CaptureState) -> Result<()> {
+        state.out_dir.clear();
+        let Some(scratch_dir): Option<ScratchDir> = state.scratch_dir.take() else {
+            return Ok(());
+        };
+        let path: String = scratch_dir.path().display().to_string();
+        scratch_dir
+            .close()
+            .map_err(|source: std::io::Error| CextractError::ScratchRelease { path, source })
+    }
+
+    pub(crate) fn count(&self) -> Result<usize> {
+        let mut g: std::sync::MutexGuard<'_, CaptureState> = self
+            .state
+            .lock()
+            .map_err(|_| CextractError::LockPoisoned("capture-state"))?;
+        if let Some(error) = g.pending_error.take() {
+            return Err(error);
+        }
         Ok(g.written.len())
+    }
+
+    pub(crate) fn record_error(&self, error: CextractError) {
+        let Ok(mut g): std::result::Result<
+            std::sync::MutexGuard<'_, CaptureState>,
+            std::sync::PoisonError<std::sync::MutexGuard<'_, CaptureState>>,
+        > = self.state.lock() else {
+            return;
+        };
+        if g.pending_error.is_none() {
+            g.pending_error = Some(error);
+        }
     }
 
     pub(crate) fn drain(&self) -> Result<Vec<WrittenPyc>> {
@@ -97,6 +159,9 @@ impl CaptureBuffer {
             .state
             .lock()
             .map_err(|_| CextractError::LockPoisoned("capture-state"))?;
+        if let Some(error) = g.pending_error.take() {
+            return Err(error);
+        }
         g.seen.clear();
         g.total_written_bytes = 0;
         Ok(core::mem::take(&mut g.written))
@@ -171,7 +236,16 @@ pub(crate) fn capture_code_object(
     let out_dir: PathBuf = state.out_dir.clone();
     let wrapper_stem: String = state.wrapper_stem.clone();
     let magic_number: [u8; 4] = state.magic_number;
-    let written: WrittenPyc = write_pyc(&out_dir, &wrapper_stem, next_index, body, magic_number)?;
+    let written: WrittenPyc =
+        match write_pyc(&out_dir, &wrapper_stem, next_index, body, magic_number) {
+            Ok(written) => written,
+            Err(error) => {
+                if state.pending_error.is_none() {
+                    state.pending_error = Some(error);
+                }
+                return Ok(());
+            }
+        };
     state.seen.insert(body_hash);
     state.total_written_bytes = next_total;
     state.written.push(written);
