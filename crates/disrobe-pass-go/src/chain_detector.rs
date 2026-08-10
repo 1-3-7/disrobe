@@ -23,17 +23,11 @@ const TAG_GO12: &str = "go-pclntab-1.2";
 const TAG_GO116: &str = "go-pclntab-1.16";
 const TAG_GO118: &str = "go-pclntab-1.18";
 const TAG_GO120: &str = "go-pclntab-1.20+";
-const TAG_GO_SYMBOL: &str = "go-runtime-symbol";
-
 const GO_REPORT_BANNER: &str = "// go pclntab symbol recovery";
 const MAX_LISTED_FUNCS: usize = 4_096;
 
 const GO_ANALYSIS_SIDECAR: &str = "go-analysis.json";
 const EMBED_CARVE_ROOT: &str = "embed";
-
-const FIRSTMODULEDATA_MARKER: &[u8] = b"runtime.firstmoduledata";
-const PCLNTAB_SECTION_MARKER: &[u8] = b"runtime.pclntab";
-const SCAN_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct GoDetector;
@@ -53,16 +47,6 @@ impl Detector for GoDetector {
             && let Ok(located) = locate_pclntab(&image)
         {
             return Some(verdict_for_version(located.header.version));
-        }
-        let scan: &[u8] = if bytes.len() > SCAN_LIMIT {
-            &bytes[..SCAN_LIMIT]
-        } else {
-            bytes
-        };
-        if window_contains(scan, FIRSTMODULEDATA_MARKER)
-            || window_contains(scan, PCLNTAB_SECTION_MARKER)
-        {
-            return Some(verdict_runtime_symbol());
         }
         None
     }
@@ -140,7 +124,8 @@ fn analyze_artifact(artifact: &Artifact) -> CoreResult<GoAnalysis> {
     };
     if Detector::detect(&GoDetector, &ctx).is_none() {
         return Err(CoreError::PassFailure(
-            "DR-GO-0902: go.classify: input has no pclntab/runtime markers".to_string(),
+            "DR-GO-0902: go.classify: input has no parsed container with a structural pclntab"
+                .to_string(),
         ));
     }
     crate::analyze(bytes).map_err(|e: crate::error::Error| {
@@ -277,26 +262,6 @@ fn verdict_for_version(version: PclntabVersion) -> DetectVerdict {
             version.label()
         ),
     )
-}
-
-fn verdict_runtime_symbol() -> DetectVerdict {
-    DetectVerdict::new(
-        PASS_ID,
-        TAG_GO_SYMBOL,
-        FAMILY_NATIVE_FORMAT,
-        0.78,
-        38,
-        vec!["runtime.firstmoduledata"],
-        "go runtime symbol marker".to_string(),
-    )
-}
-
-#[inline]
-fn window_contains(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w: &[u8]| w == needle)
 }
 
 const GARBLE_ID: &str = "go-garble";
@@ -524,12 +489,11 @@ mod tests {
     }
 
     #[test]
-    fn detect_runtime_symbol_marker() {
+    fn marker_without_a_parsed_container_does_not_schedule_go_recovery() {
         let mut bytes: Vec<u8> = vec![0u8; 64];
-        bytes.extend_from_slice(FIRSTMODULEDATA_MARKER);
+        bytes.extend_from_slice(b"runtime.firstmoduledata");
         bytes.extend(std::iter::repeat_n(0u8, 32));
-        let v: DetectVerdict = Detector::detect(&GoDetector, &ctx(&bytes)).expect("must detect");
-        assert_eq!(v.format_tag, TAG_GO_SYMBOL);
+        assert!(Detector::detect(&GoDetector, &ctx(&bytes)).is_none());
     }
 
     #[test]
@@ -679,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_children_carves_embed_from_headerless_unpacked_image() {
+    fn extract_children_refuses_headerless_unpacked_image() {
         let Some(pe): Option<Vec<u8>> = embed_fixture() else {
             eprintln!("SKIP: go embed fixture missing");
             return;
@@ -687,27 +651,17 @@ mod tests {
         let flat: Vec<u8> = carve_in_memory_image(&pe);
         assert!(
             object::read::FileKind::parse(flat.as_slice()).is_err(),
-            "carved image must be headerless so the chain exercises the flat-image fallback",
+            "carved image must be headerless",
         );
         let a: Artifact = Artifact::new(Rung::Raw, flat, [0u8; 32]);
-        assert!(
-            Detector::detect(&GoDetector, &ctx_from(&a)).is_some(),
-            "the go detector must still fire on a headerless upx-unpacked image",
-        );
-        let children: Vec<ChildArtifact> = GO_PASS
+        assert!(Detector::detect(&GoDetector, &ctx_from(&a)).is_none());
+        let error: CoreError = GO_PASS
             .extract_children(&a)
-            .expect("go children extraction from a headerless image");
-        let note: &ChildArtifact = children
-            .iter()
-            .find(|c: &&ChildArtifact| c.handle.relative_path == "embed/assets/note.txt")
-            .expect(
-                "after upx unwrap the chain must still carve the embed.FS member from the \
-                 sectionless image, not just from the container build",
-            );
-        assert_eq!(
-            note.bytes, b"disrobe embed fixture payload alpha\n",
-            "embed member carved from the headerless image must be byte-exact",
-        );
+            .expect_err("headerless bytes must not produce Go children");
+        let message: String = error.to_string();
+        assert!(message.contains(
+            "DR-GO-0902: go.classify: input has no parsed container with a structural pclntab"
+        ));
     }
 
     fn ctx_from(a: &Artifact) -> DetectContext<'_> {
@@ -728,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_surfaces_garble_undo_on_headerless_unpacked_image() {
+    fn chain_rejects_headerless_garble_image_without_children() {
         let Some(pe): Option<Vec<u8>> = garble_fixture() else {
             eprintln!("SKIP: go garble fixture missing");
             return;
@@ -736,35 +690,16 @@ mod tests {
         let flat: Vec<u8> = carve_in_memory_image(&pe);
         assert!(
             object::read::FileKind::parse(flat.as_slice()).is_err(),
-            "carved garble image must be headerless so the chain exercises the flat-image path",
+            "carved garble image must be headerless",
         );
         let a: Artifact = Artifact::new(Rung::Raw, flat, [0u8; 32]);
-        let children: Vec<ChildArtifact> = GO_PASS
+        let error: CoreError = GO_PASS
             .extract_children(&a)
-            .expect("go children extraction from a headerless garble image");
-        let sidecar: &ChildArtifact = children
-            .iter()
-            .find(|c: &&ChildArtifact| c.handle.relative_path == GO_ANALYSIS_SIDECAR)
-            .expect("the chain must surface go-analysis.json for the unpacked garble image");
-        let parsed: serde_json::Value =
-            serde_json::from_slice(&sidecar.bytes).expect("analysis sidecar is valid json");
-        let garble: &serde_json::Value = parsed.get("garble").expect("garble report present");
-        assert_eq!(
-            garble.get("quality").and_then(serde_json::Value::as_str),
-            Some("Full"),
-            "the chain's garble-undo on the unpacked image must classify Full, not silently \
-             degrade because the unpacked image is sectionless",
-        );
-        let thunk: u64 = garble
-            .get("literal_recovery")
-            .and_then(|l: &serde_json::Value| l.get("garble_thunk"))
-            .and_then(serde_json::Value::as_u64)
-            .expect("garble_thunk count present");
-        assert!(
-            thunk > 50,
-            "the -literals decrypt-thunk emulation must run on the unpacked image and recover a \
-             real body of plaintexts, got {thunk}",
-        );
+            .expect_err("headerless bytes must not produce Go children");
+        let message: String = error.to_string();
+        assert!(message.contains(
+            "DR-GO-0902: go.classify: input has no parsed container with a structural pclntab"
+        ));
     }
 
     #[test]

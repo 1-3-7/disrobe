@@ -84,11 +84,11 @@ fn big_endian_s390x_reports_big_endian_and_go120_version() {
 
     let image: GoImage<'_> = GoImage::parse(&bytes).expect("parse s390x elf");
     assert_eq!(
-        image.endian,
+        image.endian(),
         Endian::Big,
         "a linux/s390x go binary is a big-endian ELF image"
     );
-    assert_eq!(image.ptr_size, 8, "s390x is a 64-bit target");
+    assert_eq!(image.ptr_size(), 8, "s390x is a 64-bit target");
 
     let located = locate_pclntab(&image).expect("locate pclntab on big-endian image");
     assert_eq!(

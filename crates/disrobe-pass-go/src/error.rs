@@ -36,4 +36,7 @@ pub enum Error {
         declared: u64,
         available: usize,
     },
+
+    #[error("DR-GO-0010: Go pointer recovery requires a parsed container image")]
+    HeaderlessEpochUnproven,
 }
