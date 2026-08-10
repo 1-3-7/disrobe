@@ -43,7 +43,7 @@ fn go_pclntab(binary_bytes: &[u8]) -> PyResult<GoPclntab> {
         version: located.header.version.label().to_owned(),
         ptr_size: located.header.ptr_size,
         func_count: located.header.n_funcs,
-        image_kind: image_kind_label(image.kind),
+        image_kind: image_kind_label(image.kind()),
     };
     Ok(GoPclntab::from_value(null_bundled_value(&report)?))
 }

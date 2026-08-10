@@ -16,7 +16,7 @@ fn run() -> Result<(), String> {
         GoImage::parse(&bytes).map_err(|e: disrobe_pass_go::Error| e.to_string())?;
     let mut rodata_total: usize = 0;
     let mut hits: Vec<(String, String, usize)> = Vec::new();
-    for sec in &image.sections {
+    for sec in image.sections() {
         if !matches!(
             sec.name.as_str(),
             ".rdata" | ".rodata" | "__rodata" | "__const" | ".data.rel.ro"

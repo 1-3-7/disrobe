@@ -13,9 +13,9 @@ use std::process::Command;
 #[cfg(windows)]
 use std::sync::OnceLock;
 
-use disrobe_core::anti_analysis::{
-    AntiAnalysisReport, Confidence, FindingSeverity, Technique, scan,
-};
+use disrobe_core::anti_analysis::{AntiAnalysisReport, Technique, scan};
+#[cfg(windows)]
+use disrobe_core::anti_analysis::{Confidence, FindingSeverity};
 use disrobe_core::scratch::ScratchDir;
 #[cfg(windows)]
 use goblin::pe::PE;

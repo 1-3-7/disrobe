@@ -4,7 +4,8 @@ use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::{File as ObjFile, FileKind};
 
-use crate::debug::{dbg_kv, dbg_line, dbg_section};
+#[cfg(test)]
+use crate::debug::{dbg_kv, dbg_line};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,35 +31,70 @@ pub struct Section<'a> {
 
 #[derive(Debug, Clone)]
 pub struct GoImage<'a> {
-    pub kind: ImageKind,
-    pub endian: Endian,
-    pub ptr_size: u8,
-    pub sections: Vec<Section<'a>>,
-    pub raw: &'a [u8],
-    pub symbol_addrs: Vec<(String, u64, u64)>,
-    pub flat: bool,
+    pub(crate) kind: ImageKind,
+    pub(crate) endian: Endian,
+    pub(crate) ptr_size: u8,
+    pub(crate) sections: Vec<Section<'a>>,
+    pub(crate) raw: &'a [u8],
+    pub(crate) symbol_addrs: Vec<(String, u64, u64)>,
+    pub(crate) flat: bool,
 }
 
-const FLAT_IMAGE_BASE: u64 = 0x1000;
 const GO_RUNTIME_MARKERS: [&[u8]; 4] = [
     b"runtime.morestack",
     b"\xff Go buildinf:",
     b"runtime.firstmoduledata",
     b"runtime.pclntab",
 ];
+
 impl<'a> GoImage<'a> {
+    #[must_use]
+    pub const fn kind(&self) -> ImageKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn endian(&self) -> Endian {
+        self.endian
+    }
+
+    #[must_use]
+    pub const fn ptr_size(&self) -> u8 {
+        self.ptr_size
+    }
+
+    #[must_use]
+    pub fn sections(&self) -> &[Section<'a>] {
+        &self.sections
+    }
+
+    #[must_use]
+    pub const fn raw(&self) -> &'a [u8] {
+        self.raw
+    }
+
+    #[must_use]
+    pub fn symbol_addrs(&self) -> &[(String, u64, u64)] {
+        &self.symbol_addrs
+    }
+
+    #[must_use]
+    pub const fn is_flat(&self) -> bool {
+        self.flat
+    }
+
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
         if bytes.len() < 64 {
             return Err(Error::InputTooSmall(bytes.len()));
         }
         let Ok(kind_raw): core::result::Result<FileKind, _> = FileKind::parse(bytes) else {
-            return Self::parse_flat(bytes);
+            return Err(headerless_container_error(bytes));
         };
         let kind: ImageKind = match kind_raw {
             FileKind::Pe32 | FileKind::Pe64 => ImageKind::Pe,
             FileKind::Elf32 | FileKind::Elf64 => ImageKind::Elf,
             FileKind::MachO32 | FileKind::MachO64 => ImageKind::MachO,
-            _ => return Self::parse_flat(bytes),
+            _ => return Err(headerless_container_error(bytes)),
         };
         let file: ObjFile<'a, &'a [u8]> =
             ObjFile::parse(bytes).map_err(|e| Error::ContainerParse(e.to_string()))?;
@@ -99,62 +135,6 @@ impl<'a> GoImage<'a> {
             raw: bytes,
             symbol_addrs,
             flat: false,
-        })
-    }
-
-    fn parse_flat(bytes: &'a [u8]) -> Result<Self> {
-        dbg_section("go.flat-image");
-        dbg_line(|| "no container header (MZ/PE/ELF/MachO): trying headerless go image".to_owned());
-        let provisional: Self = Self::flat_with_base(bytes, FLAT_IMAGE_BASE, 8)?;
-        let located: Option<(usize, crate::pclntab::PclntabHeader)> =
-            locate_flat_pclntab(&provisional);
-        let ptr_size: u8 = if let Some((off, header)) = &located {
-            dbg_line(|| {
-                format!(
-                    "flat pclntab at file-offset {off:#x} ptr_size={}",
-                    header.ptr_size
-                )
-            });
-            header.ptr_size
-        } else {
-            let hits: usize = marker_hits(bytes);
-            dbg_kv("flat_marker_hits", || hits.to_string());
-            if hits < 2 {
-                dbg_line(|| {
-                    "no pclntab and <2 go runtime markers: not a headerless go image".to_owned()
-                });
-                return Err(Error::UnrecognizedContainer);
-            }
-            8
-        };
-        let address: u64 = located
-            .as_ref()
-            .and_then(|(off, header): &(usize, crate::pclntab::PclntabHeader)| {
-                infer_flat_base(bytes, *off, header)
-            })
-            .unwrap_or(FLAT_IMAGE_BASE);
-        dbg_kv("flat_base", || format!("{address:#x}"));
-        Self::flat_with_base(bytes, address, ptr_size)
-    }
-
-    fn flat_with_base(bytes: &'a [u8], address: u64, ptr_size: u8) -> Result<Self> {
-        let mapped_len: u64 = u64::try_from(bytes.len()).map_err(|_| {
-            Error::ContainerParse("flat image exceeds virtual address range".to_owned())
-        })?;
-        let section: Section<'a> = Section {
-            name: ".rdata".to_owned(),
-            address,
-            data: bytes,
-            mapped_len,
-        };
-        Ok(Self {
-            kind: ImageKind::Pe,
-            endian: Endian::Little,
-            ptr_size,
-            sections: vec![section],
-            raw: bytes,
-            symbol_addrs: Vec::new(),
-            flat: true,
         })
     }
 
@@ -323,38 +303,61 @@ fn normalize_symbol_name(kind: ImageKind, raw: &str) -> String {
     raw.to_owned()
 }
 
-fn locate_flat_pclntab(
-    provisional: &GoImage<'_>,
-) -> Option<(usize, crate::pclntab::PclntabHeader)> {
-    let located: crate::pclntab::LocatedPclntab<'_> =
-        crate::pclntab::locate_pclntab(provisional).ok()?;
-    let base: u64 = provisional
-        .sections
-        .first()
-        .map(|s: &Section<'_>| s.address)?;
-    let off: usize = usize::try_from(located.header.section_addr.checked_sub(base)?).ok()?;
-    Some((off, located.header))
+fn headerless_container_error(bytes: &[u8]) -> Error {
+    if go_runtime_marker_count(bytes) >= 2 {
+        Error::HeaderlessEpochUnproven
+    } else {
+        Error::UnrecognizedContainer
+    }
 }
 
+fn go_runtime_marker_count(bytes: &[u8]) -> usize {
+    GO_RUNTIME_MARKERS
+        .iter()
+        .filter(|needle: &&&[u8]| {
+            let needle: &[u8] = needle;
+            bytes.len() >= needle.len() && bytes.windows(needle.len()).any(|w: &[u8]| w == needle)
+        })
+        .count()
+}
+
+#[cfg(test)]
 const FLAT_PAGE_MASK: u64 = 0xfff;
+#[cfg(test)]
 const FLAT_MIN_BASE: u64 = 0x1_0000;
+#[cfg(test)]
 const FLAT_MAX_BASE: u64 = 1 << 48;
+#[cfg(test)]
 const FLAT_32_ADDRESS_LIMIT: u64 = 1 << 32;
 
+#[cfg(test)]
 const MD_WORD_FUNCNAMETAB_PTR: usize = 1;
+#[cfg(test)]
 const MD_WORD_FUNCNAMETAB_LEN: usize = 2;
+#[cfg(test)]
 const MD_WORD_FUNCNAMETAB_CAP: usize = 3;
+#[cfg(test)]
 const MD_WORD_PCLNTABLE_PTR: usize = 13;
+#[cfg(test)]
 const MD_WORD_PCLNTABLE_LEN: usize = 14;
+#[cfg(test)]
 const MD_WORD_PCLNTABLE_CAP: usize = 15;
+#[cfg(test)]
 const MD_WORD_FTAB_PTR: usize = 16;
+#[cfg(test)]
 const MD_WORD_FTAB_LEN: usize = 17;
+#[cfg(test)]
 const MD_WORD_FTAB_CAP: usize = 18;
+#[cfg(test)]
 const MD_WORD_MIN_PC: usize = 20;
+#[cfg(test)]
 const MD_WORD_MAX_PC: usize = 21;
+#[cfg(test)]
 const MD_WORD_TEXT: usize = 22;
+#[cfg(test)]
 const MD_WORD_ETEXT: usize = 23;
 
+#[cfg(test)]
 fn infer_flat_base(
     bytes: &[u8],
     pclntab_off: usize,
@@ -419,6 +422,7 @@ fn infer_flat_base(
     None
 }
 
+#[cfg(test)]
 fn moduledata_is_consistent(
     bytes: &[u8],
     md_off: usize,
@@ -513,6 +517,7 @@ fn moduledata_is_consistent(
         && (header.text_start == 0 || header.text_start == text_va)
 }
 
+#[cfg(test)]
 const fn flat_slice_is_consistent(
     ptr: u64,
     len: u64,
@@ -536,6 +541,7 @@ const fn flat_slice_is_consistent(
     base <= ptr && ptr < hi && end <= hi
 }
 
+#[cfg(test)]
 fn read_flat_word(bytes: &[u8], off: usize, ptr_size: u8) -> Option<u64> {
     match ptr_size {
         4 => crate::pclntab::read_u32(bytes, off, Endian::Little)
@@ -544,16 +550,6 @@ fn read_flat_word(bytes: &[u8], off: usize, ptr_size: u8) -> Option<u64> {
         8 => crate::pclntab::read_u64(bytes, off, Endian::Little).ok(),
         _ => None,
     }
-}
-
-fn marker_hits(bytes: &[u8]) -> usize {
-    GO_RUNTIME_MARKERS
-        .iter()
-        .filter(|needle: &&&[u8]| {
-            let needle: &[u8] = needle;
-            bytes.len() >= needle.len() && bytes.windows(needle.len()).any(|w: &[u8]| w == needle)
-        })
-        .count()
 }
 
 #[cfg(test)]
