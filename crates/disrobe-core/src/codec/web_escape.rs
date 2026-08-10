@@ -12,6 +12,12 @@ const MAX_WEB_INPUT: usize = 1 << 24;
 const MAX_PUNYCODE_LABEL_OUTPUT: usize = 1024;
 const MAX_ENTITY_NAME: usize = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlusPolicy {
+    Literal,
+    Space,
+}
+
 pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
     if input.len() > MAX_WEB_INPUT {
         return Err(DecodeError::TooLarge { len: input.len() });
@@ -43,20 +49,21 @@ pub fn percent_decode(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
 }
 
 #[must_use]
-pub fn percent_decode_lenient(input: &[u8], plus_is_space: bool) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len());
+pub fn percent_decode_lenient(input: &[u8], plus_policy: PlusPolicy) -> Vec<u8> {
+    let bounded: &[u8] = &input[..input.len().min(MAX_WEB_INPUT)];
+    let mut out: Vec<u8> = Vec::with_capacity(bounded.len());
     let mut i: usize = 0;
-    while i < input.len() {
-        let byte: u8 = input[i];
+    while i < bounded.len() {
+        let byte: u8 = bounded[i];
         if byte == b'%'
-            && i + 2 < input.len()
-            && let (Some(hi), Some(lo)) = (hex_value(input[i + 1]), hex_value(input[i + 2]))
+            && i + 2 < bounded.len()
+            && let (Some(hi), Some(lo)) = (hex_value(bounded[i + 1]), hex_value(bounded[i + 2]))
         {
             out.push((hi << 4) | lo);
             i += 3;
             continue;
         }
-        if plus_is_space && byte == b'+' {
+        if matches!(plus_policy, PlusPolicy::Space) && byte == b'+' {
             out.push(b' ');
         } else {
             out.push(byte);
@@ -271,11 +278,52 @@ mod tests {
 
     #[test]
     fn percent_lenient_toggle_and_passthrough() {
-        assert_eq!(percent_decode_lenient(b"%2Fa+b", true), b"/a b");
-        assert_eq!(percent_decode_lenient(b"%2Fa+b", false), b"/a+b");
-        assert_eq!(percent_decode_lenient(b"1e+5", false), b"1e+5");
-        assert_eq!(percent_decode_lenient(b"%zz%2", false), b"%zz%2");
-        assert_eq!(percent_decode_lenient(b"tail%2", false), b"tail%2");
+        assert_eq!(
+            percent_decode_lenient(b"%2Fa+b", PlusPolicy::Space),
+            b"/a b"
+        );
+        assert_eq!(
+            percent_decode_lenient(b"%2Fa+b", PlusPolicy::Literal),
+            b"/a+b"
+        );
+        assert_eq!(
+            percent_decode_lenient(b"1e+5", PlusPolicy::Literal),
+            b"1e+5"
+        );
+        assert_eq!(
+            percent_decode_lenient(b"%zz%2", PlusPolicy::Literal),
+            b"%zz%2"
+        );
+        assert_eq!(
+            percent_decode_lenient(b"tail%2", PlusPolicy::Literal),
+            b"tail%2"
+        );
+    }
+
+    #[test]
+    fn percent_lenient_caps_oversized_input() {
+        let oversized: Vec<u8> = vec![b'+'; MAX_WEB_INPUT + 1];
+        let decoded: Vec<u8> = percent_decode_lenient(&oversized, PlusPolicy::Literal);
+        assert_eq!(decoded.len(), MAX_WEB_INPUT);
+        assert!(decoded.iter().all(|byte: &u8| *byte == b'+'));
+    }
+
+    #[test]
+    fn percent_lenient_pins_malformed_unicode_and_binary_escapes() {
+        let cases: [(&[u8], &[u8]); 6] = [
+            (b"%", b"%"),
+            (b"%X", b"%X"),
+            (b"%ZZ", b"%ZZ"),
+            (b"%2X", b"%2X"),
+            (b"%u0041%u{0042}", b"%u0041%u{0042}"),
+            (b"%00%ff", b"\0\xff"),
+        ];
+        for (encoded, expected) in cases {
+            assert_eq!(
+                percent_decode_lenient(encoded, PlusPolicy::Literal),
+                expected
+            );
+        }
     }
 
     #[test]

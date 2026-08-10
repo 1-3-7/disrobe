@@ -831,8 +831,10 @@ pub fn decode_data_url_json(url: &str) -> Result<String> {
             .map_err(|e: base64::DecodeError| Error::OxcParse(e.to_string()))?;
         String::from_utf8(bytes).map_err(|_| Error::Utf8)
     } else {
-        let decoded: Vec<u8> =
-            disrobe_core::codec::web_escape::percent_decode_lenient(payload.as_bytes(), false);
+        let decoded: Vec<u8> = disrobe_core::codec::web_escape::percent_decode_lenient(
+            payload.as_bytes(),
+            disrobe_core::codec::web_escape::PlusPolicy::Literal,
+        );
         Ok(String::from_utf8_lossy(&decoded).into_owned())
     }
 }
@@ -969,6 +971,17 @@ mod tests {
         let report: RecoveryReport =
             recover_from_inline_data_url(&url, RecoverOptions::default()).expect("recover inline");
         assert_eq!(report.with_content, 2);
+    }
+
+    #[test]
+    fn decodes_inline_percent_data_url_with_literal_plus() {
+        let json: &str =
+            r#"{"version":3,"sources":["a.js"],"sourcesContent":["+w=="],"names":[],"mappings":""}"#;
+        let encoded: String = json.replace('"', "%22");
+        let url: String = format!("data:application/json,{encoded}");
+        let report: RecoveryReport =
+            recover_from_inline_data_url(&url, RecoverOptions::default()).expect("recover inline");
+        assert_eq!(report.files[0].bytes, b"+w==");
     }
 
     #[test]

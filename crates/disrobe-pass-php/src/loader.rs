@@ -1302,10 +1302,16 @@ fn apply_string_fn(fname: &[u8], args: &[Expr], env: &Env, depth: u32) -> Option
         b"strrev" => Some(Value::Str(first?.iter().copied().rev().collect())),
         b"convert_uudecode" => Some(Value::Str(uudecode(&first?))),
         b"urldecode" => Some(Value::Str(
-            disrobe_core::codec::web_escape::percent_decode_lenient(&first?, true),
+            disrobe_core::codec::web_escape::percent_decode_lenient(
+                &first?,
+                disrobe_core::codec::web_escape::PlusPolicy::Space,
+            ),
         )),
         b"rawurldecode" => Some(Value::Str(
-            disrobe_core::codec::web_escape::percent_decode_lenient(&first?, false),
+            disrobe_core::codec::web_escape::percent_decode_lenient(
+                &first?,
+                disrobe_core::codec::web_escape::PlusPolicy::Literal,
+            ),
         )),
         b"hex2bin" => decode_hex_stream_skip_ws(&first?).map(Value::Str),
         b"bin2hex" => Some(Value::Str(bin2hex(&first?))),

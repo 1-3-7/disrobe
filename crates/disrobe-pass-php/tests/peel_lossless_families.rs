@@ -89,6 +89,20 @@ fn rawurldecode_family_recovers_original() {
 }
 
 #[test]
+fn url_and_raw_url_decode_keep_distinct_plus_policies() {
+    assert_cleartext(
+        b"<?php eval(urldecode('echo+1%3B'));",
+        "echo 1;",
+        PeelLayer::UrlDecode,
+    );
+    assert_cleartext(
+        b"<?php eval(rawurldecode('echo+1%3B'));",
+        "echo+1;",
+        PeelLayer::RawUrlDecode,
+    );
+}
+
+#[test]
 fn hex_escape_family_recovers_original() {
     let escaped: String = ORIGINAL
         .bytes()

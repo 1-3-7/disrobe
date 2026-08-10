@@ -190,11 +190,17 @@ fn peel_eval_chain(buf: &[u8], depth: u32) -> Result<Option<(PeelLayer, Vec<u8>)
         }
         EvalKind::UrlDecode => Ok(Some((
             PeelLayer::UrlDecode,
-            disrobe_core::codec::web_escape::percent_decode_lenient(&body, true),
+            disrobe_core::codec::web_escape::percent_decode_lenient(
+                &body,
+                disrobe_core::codec::web_escape::PlusPolicy::Space,
+            ),
         ))),
         EvalKind::RawUrlDecode => Ok(Some((
             PeelLayer::RawUrlDecode,
-            disrobe_core::codec::web_escape::percent_decode_lenient(&body, false),
+            disrobe_core::codec::web_escape::percent_decode_lenient(
+                &body,
+                disrobe_core::codec::web_escape::PlusPolicy::Literal,
+            ),
         ))),
         EvalKind::HexEscape => Ok(Some((PeelLayer::HexEscape, decode_hex_escapes(&body)))),
         EvalKind::PackHex => {
@@ -539,10 +545,12 @@ fn apply_transform(kind: EvalKind, body: Vec<u8>, depth: u32) -> Option<Vec<u8>>
         EvalKind::StrReplace { from, to } => str_replace_bytes(&body, &from, &to).ok(),
         EvalKind::Strtr { from, to } => Some(strtr_bytes(&body, &from, &to)),
         EvalKind::UrlDecode => Some(disrobe_core::codec::web_escape::percent_decode_lenient(
-            &body, true,
+            &body,
+            disrobe_core::codec::web_escape::PlusPolicy::Space,
         )),
         EvalKind::RawUrlDecode => Some(disrobe_core::codec::web_escape::percent_decode_lenient(
-            &body, false,
+            &body,
+            disrobe_core::codec::web_escape::PlusPolicy::Literal,
         )),
         EvalKind::HexEscape => Some(decode_hex_escapes(&body)),
         EvalKind::PackHex | EvalKind::Hex2Bin => decode_hex_stream_strict(&body),

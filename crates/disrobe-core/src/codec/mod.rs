@@ -129,7 +129,10 @@ pub fn decode(input: &[u8], scheme: Scheme) -> Result<Vec<u8>, DecodeError> {
         Scheme::UuEncode => framed::uudecode(input),
         Scheme::XxEncode => framed::xxdecode(input),
         Scheme::YEnc => framed::yenc_decode(input),
-        Scheme::PercentUrl => web_escape::percent_decode(input),
+        Scheme::PercentUrl => Ok(web_escape::percent_decode_lenient(
+            input,
+            web_escape::PlusPolicy::Literal,
+        )),
         Scheme::HtmlEntity => decode_text(input, web_escape::html_entity_decode),
         Scheme::Punycode => decode_text(input, |s: &str| {
             web_escape::punycode_decode(s).map(String::into_bytes)
@@ -425,6 +428,15 @@ mod tests {
 
         let pct: String = web_escape::percent_encode(payload);
         assert_eq!(decode(pct.as_bytes(), Scheme::PercentUrl).unwrap(), payload);
+    }
+
+    #[test]
+    fn percent_scheme_is_lenient_and_preserves_literal_plus() {
+        let encoded: &[u8] = b"https%3A%2F%2Fexample.com%2G?q=a+b";
+        assert_eq!(
+            decode(encoded, Scheme::PercentUrl).unwrap(),
+            b"https://example.com%2G?q=a+b"
+        );
     }
 
     #[test]

@@ -1694,10 +1694,16 @@ impl Interp {
             }
             b"convert_uudecode" => Ok(Val::Str(uudecode(&to_bytes(arg0?)?))),
             b"urldecode" => Ok(Val::Str(
-                disrobe_core::codec::web_escape::percent_decode_lenient(&to_bytes(arg0?)?, true),
+                disrobe_core::codec::web_escape::percent_decode_lenient(
+                    &to_bytes(arg0?)?,
+                    disrobe_core::codec::web_escape::PlusPolicy::Space,
+                ),
             )),
             b"rawurldecode" => Ok(Val::Str(
-                disrobe_core::codec::web_escape::percent_decode_lenient(&to_bytes(arg0?)?, false),
+                disrobe_core::codec::web_escape::percent_decode_lenient(
+                    &to_bytes(arg0?)?,
+                    disrobe_core::codec::web_escape::PlusPolicy::Literal,
+                ),
             )),
             b"hex2bin" => decode_hex_stream_skip_ws(&to_bytes(arg0?)?)
                 .map(Val::Str)
