@@ -9,7 +9,7 @@ Add the hook to a consuming project's `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/1-3-7/disrobe
-    rev: v0.10.4
+    rev: v0.10.5
     hooks:
       - id: disrobe
 ```
@@ -52,7 +52,7 @@ The family override is broader but noisier. `disrobe`'s source-level obfuscation
 ```yaml
 repos:
   - repo: https://github.com/1-3-7/disrobe
-    rev: v0.10.4
+    rev: v0.10.5
     hooks:
       - id: disrobe
         files: '\.(exe|dll|so|dylib|pyc|pyz|bin)$'

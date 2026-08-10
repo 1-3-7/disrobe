@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: 1-3-7/disrobe@v0.10.4
+      - uses: 1-3-7/disrobe@v0.10.5
         with:
           path: dist/
           command: auto
@@ -44,7 +44,7 @@ The `security-events: write` permission is what lets the action publish SARIF to
 | `path` | *(required)* | File, directory, or glob to analyze. Passed verbatim to the command. |
 | `command` | `auto` | `disrobe` subcommand (`auto`, `scan`, `behavior`, ...). |
 | `args` | `""` | Extra arguments inserted after the command and before the path (for example `--max-depth 12`). |
-| `version` | action ref, then `latest` | Release tag to download (`v0.10.4`, `latest`). |
+| `version` | action ref, then `latest` | Release tag to download (`v0.10.5`, `latest`). |
 | `fail-on` | `never` | Fail the step at or above a verdict: `never`, `incomplete`, `failed`, `any`. |
 | `sarif-file` | `disrobe.sarif` | Path the action writes the SARIF to. |
 | `out-dir` | `disrobe-out` | Directory `disrobe` writes recovered artifacts into. |
@@ -65,10 +65,10 @@ The `security-events: write` permission is what lets the action publish SARIF to
 Pin a tag for reproducible CI:
 
 ```yaml
-      - uses: 1-3-7/disrobe@v0.10.4
+      - uses: 1-3-7/disrobe@v0.10.5
         with:
           path: suspect.bin
-          version: v0.10.4
+          version: v0.10.5
 ```
 
 Leaving `version` unset downloads the release matching the action ref, falling back to the rolling `latest` release. Pin a tag in production so a new release cannot change your scan results silently.
@@ -78,7 +78,7 @@ Leaving `version` unset downloads the release matching the action ref, falling b
 Block a merge when a packed or obfuscated artifact slips into the tree:
 
 ```yaml
-      - uses: 1-3-7/disrobe@v0.10.4
+      - uses: 1-3-7/disrobe@v0.10.5
         with:
           path: "build/**/*"
           command: auto
