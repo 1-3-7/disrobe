@@ -638,7 +638,7 @@ fn recover_shape(object: &[u8], shape: &ShapeCase, abi: PseudoAbi) -> RecoverOut
         tu.push_str(&strip_includes(&rec.source));
         tu.push('\n');
         if fname == shape.entry {
-            entry_params = rec.params.len();
+            entry_params = rec.signature.callable_arity();
             entry_return_width = rec.return_width_bits;
         }
     }

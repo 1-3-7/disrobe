@@ -379,7 +379,7 @@ fn corpus_rust_grade_report() {
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
         if let Some(expectation) = expected_fp {
-            if recovery.fp_params.as_slice() != expectation.params
+            if recovery.signature.parameter_types().as_slice() != expectation.params
                 || recovery.returns_fp != expectation.returns
                 || recovery.return_width_bits != expectation.return_width_bits
             {
@@ -399,7 +399,7 @@ fn corpus_rust_grade_report() {
                 ));
                 continue;
             };
-            if recovery.returns_fp.is_some() || !recovery.fp_params.is_empty() {
+            if recovery.returns_fp.is_some() || !recovery.signature.parameter_types().is_empty() {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
@@ -407,7 +407,7 @@ fn corpus_rust_grade_report() {
                 ));
                 continue;
             }
-            if recovery.params.len() != expected {
+            if recovery.signature.observed_integer_registers().len() != expected {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),

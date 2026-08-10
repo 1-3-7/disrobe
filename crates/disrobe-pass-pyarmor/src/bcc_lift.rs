@@ -197,12 +197,7 @@ fn render_function(
     let name: String = format!("sub_{entry_va:x}");
     match recover_leaf_function_abi(slice, entry_va, abi) {
         Ok(recovery) => {
-            let parameter_count: u32 = saturating_u32_len(
-                recovery
-                    .params
-                    .len()
-                    .saturating_add(recovery.fp_params.len()),
-            );
+            let parameter_count: u32 = saturating_u32_len(recovery.signature.callable_arity());
             let pseudo_c: String = rename_recovered(&recovery, &name);
             let signature: String = extract_signature(&pseudo_c, &name);
             PseudoCFunction {

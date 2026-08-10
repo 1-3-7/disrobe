@@ -175,6 +175,10 @@ fn scratch_dir() -> ScratchDir {
     ScratchDir::create("disrobe-pseudo-c").expect("create scratch directory")
 }
 
+fn integer_invocation_arity(recovery: &LeafRecovery) -> usize {
+    recovery.signature.callable_arity()
+}
+
 struct Lifted {
     decls: String,
     driver_snippet: String,
@@ -220,7 +224,7 @@ fn process_case(case: &Case, object_bytes: &[u8], abi: PseudoAbi) -> Option<Lift
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..recovery.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(&recovery))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
 
@@ -260,6 +264,54 @@ fn build_driver(recovered_decls: &str, driver_body: &str) -> String {
          \x20   return 0;\n\
          }}\n"
     )
+}
+
+#[test]
+fn sparse_ms_x64_c_invocation_uses_physical_slot_arity() {
+    let code: [u8; 7] = [0x48, 0x89, 0xc8, 0x4c, 0x01, 0xc0, 0xc3];
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, PseudoAbi::MsX64)
+        .expect("recover sparse MS x64 leaf");
+    let invocation_arity: usize = integer_invocation_arity(&recovery);
+    assert_eq!(
+        invocation_arity, 3,
+        "a callable RCX, gap, R8 signature must receive all three physical slots"
+    );
+    let Some(compiler): Option<String> = cc() else {
+        eprintln!("skipping sparse MS x64 compile check: no C compiler on PATH");
+        return;
+    };
+    let driver: String = format!(
+        "{}\nint main(void) {{ return recovered(11, 0x12345678, 31) == 42 ? 0 : 1; }}\n",
+        recovery.source
+    );
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("sparse_ms_x64.c");
+    std::fs::write(&source_path, driver.as_bytes()).expect("write sparse MS x64 driver");
+    let executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "sparse_ms_x64.exe"
+    } else {
+        "sparse_ms_x64"
+    });
+    let compile: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&executable_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile sparse MS x64 driver");
+    assert!(
+        compile.status.success(),
+        "sparse MS x64 driver compile failed: {}\n{driver}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run: std::process::Output = Command::new(&executable_path)
+        .output()
+        .expect("run sparse MS x64 driver");
+    assert!(
+        run.status.success(),
+        "sparse MS x64 driver returned {}: {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
 
 #[test]
@@ -688,7 +740,7 @@ fn mem_driver_snippet(case: &MemCase, recovery: &LeafRecovery) -> Option<String>
         .collect::<Vec<String>>()
         .join(", ");
 
-    let rec_arg_count: usize = recovery.params.len();
+    let rec_arg_count: usize = integer_invocation_arity(recovery);
     if rec_arg_count == 0 || rec_arg_count > 1 + case.n_scalars {
         return None;
     }
@@ -2005,7 +2057,7 @@ fn loop_driver_snippet(case: &LoopCase, recovery: &LeafRecovery, recovered_name:
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..recovery.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(recovery))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
     let mut snippet: String = String::new();
@@ -2997,7 +3049,7 @@ fn lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, Strin
         eprintln!("skip {}: no call lifted", case.caller);
         return None;
     }
-    let full_arity: usize = recovery.params.len();
+    let full_arity: usize = integer_invocation_arity(&recovery);
     let mut decls: String = String::new();
     let mut seen: Vec<u64> = Vec::new();
     for target in &recovery.call_targets {
@@ -3294,10 +3346,14 @@ fn resolve_calls(
                 Some((code, base, resolved))
             })?;
         let arg_count: usize = callee_int_arity(&code, base, abi)?;
+        let callee: LeafRecovery = recover_leaf_function_abi(&code, base, abi).ok()?;
+        if callee.signature.callable_arity() != arg_count {
+            return None;
+        }
         out.push(ResolvedCall {
             target,
             name: Some(name),
-            arg_count,
+            signature: callee.signature,
         });
     }
     Some(out)
@@ -3323,7 +3379,7 @@ fn lift_precise_call_case(
     let resolved: Vec<ResolvedCall> =
         resolve_calls(object_bytes, case.caller, &base_rec.call_targets, abi)?;
     let rec: LeafRecovery = recover_leaf_function_with_calls(&code, base, abi, &resolved).ok()?;
-    if rec.params.len() > 3 {
+    if integer_invocation_arity(&rec) > 3 {
         eprintln!(
             "skip {}: recovered arity beyond 3-input driver",
             case.caller
@@ -3343,7 +3399,7 @@ fn lift_precise_call_case(
     );
 
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..rec.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(&rec))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
     let mut snippet: String = String::new();
@@ -3869,7 +3925,7 @@ fn pointer_walk_if_in_loop_recompiles_to_behavioral_equivalence() {
             eprintln!("note {}: no structured loop this build", case.name);
             continue;
         }
-        let rec_arg_count: usize = recovery.params.len();
+        let rec_arg_count: usize = integer_invocation_arity(&recovery);
         if rec_arg_count == 0 || rec_arg_count > 1 + case.n_scalars {
             eprintln!("skip {}: arg mapping unsupported", case.name);
             continue;
@@ -4069,7 +4125,7 @@ fn nested_loop_lift(
         );
         return None;
     }
-    if recovery.params.is_empty() || recovery.params.len() > 3 {
+    if integer_invocation_arity(&recovery) == 0 || integer_invocation_arity(&recovery) > 3 {
         eprintln!("skip {}: arg mapping unsupported", case.name);
         return None;
     }
@@ -4099,7 +4155,7 @@ fn nested_loop_snippet(
     } else {
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
-    let rec_arg_count: usize = recovery.params.len();
+    let rec_arg_count: usize = integer_invocation_arity(recovery);
     let mut rec_args: Vec<String> = vec!["(uint64_t)(uintptr_t)buf".to_owned()];
     for s in 0..(rec_arg_count - 1) {
         rec_args.push(format!("(uint64_t)scalars[{s}]"));
@@ -5262,7 +5318,7 @@ fn operand_is_memory(first: &str) -> bool {
 
 fn rmw_driver_snippet(case: &RmwCase, recovery: &LeafRecovery) -> Option<String> {
     let recovered_name: String = format!("rec_{}", case.name);
-    let rec_arg_count: usize = recovery.params.len();
+    let rec_arg_count: usize = integer_invocation_arity(recovery);
     let expected: usize = if case.takes_value { 2 } else { 1 };
     if rec_arg_count != expected {
         return None;
@@ -5842,7 +5898,7 @@ fn sysv_lift_call_case(case: &CallCase, object_bytes: &[u8]) -> Option<(String, 
         eprintln!("skip {}: no call lifted", case.caller);
         return None;
     }
-    let full_arity: usize = recovery.params.len();
+    let full_arity: usize = integer_invocation_arity(&recovery);
     let mut decls: String = String::new();
     let mut seen: Vec<u64> = Vec::new();
     for target in &recovery.call_targets {
@@ -6150,7 +6206,7 @@ fn div_driver_snippet(case: &Case, recovery: &LeafRecovery, recovered_name: &str
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..recovery.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(recovery))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
     let mut snippet: String = String::new();
@@ -7161,7 +7217,7 @@ fn ms_x64_four_double_parameters_recompile_with_mutation_control() {
         recovery.source
     );
     assert_eq!(
-        recovery.fp_params,
+        recovery.signature.parameter_types(),
         vec![
             ScalarType::Double,
             ScalarType::Double,
@@ -7288,7 +7344,7 @@ fn ms_x64_shared_argument_index_places_a_leading_ints_double_in_xmm1_not_xmm0() 
         fp_lift(&case, &object_bytes, PseudoAbi::MsX64)
             .expect("MS x64 int-then-double function must recover");
     assert_eq!(
-        recovery.fp_params,
+        recovery.signature.parameter_types(),
         vec![ScalarType::Int, ScalarType::Double],
         "the int argument at shared position 0 must declare before the double at position 1: {}",
         recovery.source
@@ -9842,7 +9898,7 @@ fn nested_switch_driver_snippet(case: &Case, recovery: &LeafRecovery) -> String 
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..recovery.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(recovery))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
     let mut snippet: String = String::new();
@@ -10303,7 +10359,7 @@ fn switch_driver_snippet(case: &Case, recovery: &LeafRecovery) -> String {
         format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
     };
     let args: Vec<String> = (0..case.arity).map(|i: usize| format!("in[{i}]")).collect();
-    let rec_args: Vec<String> = (0..recovery.params.len())
+    let rec_args: Vec<String> = (0..integer_invocation_arity(recovery))
         .map(|i: usize| format!("(uint64_t)in[{i}]"))
         .collect();
     let mut snippet: String = String::new();
@@ -12170,7 +12226,7 @@ fn stack_spill_oracle_has_teeth_corrupting_a_slot_offset_diverges() {
     let recovery: LeafRecovery = recover_leaf_function_abi(&probe, 0x1000, PseudoAbi::SysV)
         .expect("the rbp-frame spill/reload subtract probe must lift");
     assert_eq!(
-        recovery.params.len(),
+        integer_invocation_arity(&recovery),
         2,
         "the two spilled arguments must be recovered as parameters"
     );
@@ -13204,7 +13260,8 @@ fn sret_recovered_decl(recovery: &LeafRecovery, recovered_name: &str) -> String 
 
 fn sret_case_snippet(case: &SretCase, recovery: &LeafRecovery) -> Option<String> {
     let sret: &disrobe_pass_native::SretReturn = recovery.sret.as_ref()?;
-    if recovery.params.len() != case.arity || sret.field_widths.len() != case.field_accessors.len()
+    if integer_invocation_arity(recovery) != case.arity
+        || sret.field_widths.len() != case.field_accessors.len()
     {
         return None;
     }
@@ -13447,7 +13504,7 @@ fn struct_return_oracle_has_teeth_corrupting_a_field_store_diverges() {
         "the probe must be recognized as a 24-byte memory-class sret"
     );
     assert_eq!(
-        recovery.params.len(),
+        integer_invocation_arity(&recovery),
         2,
         "the hidden pointer must be dropped, leaving the two scalar args"
     );
@@ -13991,11 +14048,11 @@ fn sel_recovered_decls(object_bytes: &[u8], abi: PseudoAbi, clang_flavor: bool) 
             }
         };
         assert_eq!(
-            recovery.params.len(),
+            integer_invocation_arity(&recovery),
             case.arity,
             "sel case {} inferred arity {} != {}",
             case.name,
-            recovery.params.len(),
+            integer_invocation_arity(&recovery),
             case.arity
         );
         if recovery.source.contains(" ? ") {
@@ -14221,7 +14278,7 @@ fn object_switch_snippet(case: &Case, recovery: &LeafRecovery) -> String {
         1 => "k".to_owned(),
         _ => "k, a".to_owned(),
     };
-    let rec_args: String = (0..recovery.params.len())
+    let rec_args: String = (0..integer_invocation_arity(recovery))
         .map(|i: usize| if i == 0 { "(uint64_t)k" } else { "(uint64_t)a" }.to_owned())
         .collect::<Vec<String>>()
         .join(", ");
@@ -14615,11 +14672,11 @@ fn narrow_variable_count_shift_matches_x86_masking() {
             }
         };
         assert_eq!(
-            recovery.params.len(),
+            integer_invocation_arity(&recovery),
             2,
             "{} recovered with unexpected arity {}: {}",
             stub.name,
-            recovery.params.len(),
+            integer_invocation_arity(&recovery),
             recovery.source
         );
         let recovered_name: String = format!("rec_{}", stub.name);

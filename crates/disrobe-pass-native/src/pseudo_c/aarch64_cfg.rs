@@ -1048,6 +1048,10 @@ fn block_contains_goto(body: &[Node]) -> bool {
         | Node::Switch { .. }
         | Node::Break
         | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
         | Node::Return
         | Node::Label(_) => false,
     })

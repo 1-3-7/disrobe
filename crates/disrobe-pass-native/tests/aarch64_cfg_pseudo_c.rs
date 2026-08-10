@@ -1214,7 +1214,12 @@ fn pre_tested_loop_header_operands_remain_parameters_after_body_overwrite() {
     let recovered: LeafRecovery =
         recover_aarch64_function(&bytes, 0).expect("header parameter ordering");
 
-    assert_eq!(recovered.params.len(), 2, "{:?}", recovered.params);
+    assert_eq!(
+        recovered.signature.observed_integer_registers().len(),
+        2,
+        "{:?}",
+        recovered.signature.observed_integer_registers()
+    );
     assert!(
         recovered
             .source

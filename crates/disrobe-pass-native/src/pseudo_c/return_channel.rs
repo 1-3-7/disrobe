@@ -82,7 +82,15 @@ pub(super) fn block_has_scalar_fp(body: &[Node]) -> bool {
                 || block_has_scalar_fp(default)
         }
         Node::CondSnapshot { flags, .. } => flags_read_fp_compare(flags),
-        Node::Return | Node::Break | Node::Continue | Node::Label(_) | Node::Goto(_) => false,
+        Node::Return
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Label(_)
+        | Node::Goto(_) => false,
     })
 }
 
@@ -143,11 +151,12 @@ fn stmt_xmm_data_reads(stmt: &Stmt, acc: &mut Vec<Xmm>) {
             PackedOp::AddQ(src)
             | PackedOp::And(src)
             | PackedOp::AndN(src)
-            | PackedOp::CmpEqD(src) => {
+            | PackedOp::CmpEqD(src)
+            | PackedOp::UnpackLowQ(src) => {
                 acc.push(*dest);
                 acc.push(*src);
             }
-            PackedOp::ShlQ(_) | PackedOp::ShlDq(_) => acc.push(*dest),
+            PackedOp::ShlQ(_) | PackedOp::ShlDq(_) | PackedOp::ShrDq8 => acc.push(*dest),
             PackedOp::Const { .. } | PackedOp::Zero | PackedOp::FromGpr { .. } => {}
         },
         Stmt::Assign { .. }
@@ -540,11 +549,16 @@ fn scan_block(body: &[Node], incoming: Vec<ReturnPath>, budget: &mut usize) -> R
             Node::Return => {
                 extend_unique_paths(&mut result.returns, core::mem::take(&mut active));
             }
-            Node::Break => {
+            Node::Break | Node::BreakLoop(_) => {
                 extend_unique_paths(&mut result.breaks, core::mem::take(&mut active));
             }
-            Node::Continue => {
+            Node::Continue | Node::ContinueLoop(_) | Node::ResumeAt(_) => {
                 extend_unique_paths(&mut result.continues, core::mem::take(&mut active));
+            }
+            Node::OuterResume(_) => {
+                return Err(reject(
+                    "return typing does not accept an outer-body resume tree",
+                ));
             }
             Node::CondSnapshot { var, flags, .. } => {
                 if flags_read_fp_compare(flags) {

@@ -62,20 +62,23 @@ fn scalar_fp_increment_one_forms_recover() {
     let move_out: [u8; 8] = [0x00, 0x00, 0x66, 0x9e, 0xc0, 0x03, 0x5f, 0xd6];
     let move_out_recovery: LeafRecovery =
         recover_aarch64_function(&move_out, 0).expect("fmov x0, d0");
-    assert_eq!(move_out_recovery.fp_params, vec![ScalarType::Double]);
+    assert_eq!(
+        move_out_recovery.signature.parameter_types(),
+        vec![ScalarType::Double]
+    );
     assert_eq!(move_out_recovery.returns_fp, None);
     assert_eq!(move_out_recovery.return_width_bits, 64);
 
     let immediate_d: [u8; 8] = [0x00, 0x10, 0x6e, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
     let immediate_d_recovery: LeafRecovery =
         recover_aarch64_function(&immediate_d, 0).expect("fmov d0, #1.0");
-    assert!(immediate_d_recovery.fp_params.is_empty());
+    assert!(immediate_d_recovery.signature.parameter_types().is_empty());
     assert_eq!(immediate_d_recovery.returns_fp, Some(ScalarType::Double));
 
     let immediate_s: [u8; 8] = [0x00, 0x10, 0x2e, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
     let immediate_s_recovery: LeafRecovery =
         recover_aarch64_function(&immediate_s, 0).expect("fmov s0, #1.0");
-    assert!(immediate_s_recovery.fp_params.is_empty());
+    assert!(immediate_s_recovery.signature.parameter_types().is_empty());
     assert_eq!(immediate_s_recovery.returns_fp, Some(ScalarType::Float));
 
     let unscaled: [u8; 12] = [
@@ -95,7 +98,7 @@ fn scalar_fp_increment_one_forms_recover() {
     let pair_store_recovery: LeafRecovery =
         recover_aarch64_function(&pair_store, 0).expect("stp s0, s1 pre-indexed");
     assert_eq!(
-        pair_store_recovery.fp_params,
+        pair_store_recovery.signature.parameter_types(),
         vec![ScalarType::Float, ScalarType::Float, ScalarType::Int]
     );
     assert_eq!(pair_store_recovery.return_width_bits, 0);
@@ -248,7 +251,7 @@ fn scalar_fp_increment_two_arithmetic_recovers_three_operands() {
         let recovery: LeafRecovery =
             recover_aarch64_function(&code, 0).expect("scalar fp arithmetic");
         assert_eq!(
-            recovery.fp_params,
+            recovery.signature.parameter_types(),
             vec![scalar_type, scalar_type],
             "{expression}: {}",
             recovery.source
@@ -341,7 +344,12 @@ fn scalar_fp_increment_two_conversions_recover_signedness_and_widths() {
         code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
         let recovery: LeafRecovery =
             recover_aarch64_function(&code, 0).expect("scalar fp conversion");
-        assert_eq!(recovery.fp_params, params, "{}", recovery.source);
+        assert_eq!(
+            recovery.signature.parameter_types(),
+            params,
+            "{}",
+            recovery.source
+        );
         assert_eq!(recovery.returns_fp, returns_fp, "{}", recovery.source);
         assert_eq!(
             recovery.return_width_bits, return_width_bits,
