@@ -3,11 +3,12 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]*']
   schedule:
     - cron: '0 6 * * 1'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'schedule' || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -87,6 +88,8 @@ jobs:
       - name: test graph renderer contracts
         working-directory: xtask/graphgen
         run: pnpm test
+      - name: verify CI routing contract
+        run: cargo test -p xtask --no-default-features --test ci_routing
       - name: export PYO3_PYTHON
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, metric markers, README stat cross-check)
@@ -95,6 +98,7 @@ jobs:
         run: cargo run -p xtask -- health
 
   test:
+    if: github.event_name == 'schedule' || github.ref_type == 'tag'
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -506,6 +510,7 @@ jobs:
           cargo test -p disrobe-cli --test native_aarch64_dense_switch -- --nocapture
 
   beam-otp28-long-atu8:
+    if: github.event_name == 'schedule' || github.ref_type == 'tag'
     name: beam OTP 28 long AtU8
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -541,6 +546,7 @@ jobs:
         run: cargo test -p disrobe-pass-beam --test otp28_long_atu8 -- --ignored --nocapture
 
   determinism-cross-platform:
+    if: github.event_name == 'schedule' || github.ref_type == 'tag'
     name: determinism cross-platform proof
     needs: [test]
     runs-on: ubuntu-latest
@@ -601,6 +607,7 @@ jobs:
           PY
 
   py-recompile-gate:
+    if: github.event_name == 'schedule' || github.ref_type == 'tag'
     name: py recompile-equivalence gate
     runs-on: ubuntu-latest
     steps:
@@ -630,6 +637,7 @@ jobs:
         run: cargo test -p disrobe-pass-py-decompile --test arbitrary_recompile_gate -- --nocapture
 
   execution-differentials:
+    if: github.event_name == 'schedule' || github.ref_type == 'tag'
     name: execution differentials
     runs-on: ubuntu-latest
     env:
