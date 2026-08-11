@@ -33,6 +33,7 @@ const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(2);
 pub struct CommandSpec {
     program: PathBuf,
     args: Vec<OsString>,
+    environment: Vec<(OsString, OsString)>,
     stdin: StdinSpec,
     timeout: Duration,
     stdout_limit: usize,
@@ -51,6 +52,7 @@ impl CommandSpec {
         Self {
             program: program.into(),
             args: Vec::new(),
+            environment: Vec::new(),
             stdin: StdinSpec::Closed,
             timeout,
             stdout_limit: 4 * 1024 * 1024,
@@ -71,6 +73,12 @@ impl CommandSpec {
         S: Into<OsString>,
     {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.environment.push((key.into(), value.into()));
         self
     }
 
@@ -622,6 +630,10 @@ fn executable_candidates(directory: &Path, program: &Path) -> Vec<PathBuf> {
 
 pub(crate) fn arguments(spec: &CommandSpec) -> &[OsString] {
     &spec.args
+}
+
+pub(crate) fn environment(spec: &CommandSpec) -> &[(OsString, OsString)] {
+    &spec.environment
 }
 
 pub(crate) fn program(spec: &CommandSpec) -> &Path {

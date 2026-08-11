@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, program,
+    canonical_program, environment, program,
 };
 
 const OBSERVATION_INTERVAL: Duration = Duration::from_millis(2);
@@ -22,6 +22,11 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
     let mut command: Command = Command::new(executable);
     command
         .args(arguments(spec))
+        .envs(
+            environment(spec)
+                .iter()
+                .map(|(key, value): &(std::ffi::OsString, std::ffi::OsString)| (key, value)),
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

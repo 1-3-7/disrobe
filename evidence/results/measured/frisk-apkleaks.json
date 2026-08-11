@@ -69,7 +69,7 @@
       "version": "n/a (in-process)"
     },
     {
-      "detail": "apkleaks CLI",
+      "detail": "apkleaks 2.6.3 planted-secret membership; the committed capture is the host-independent baseline, with live CLI or pinned-rule execution used when available",
       "display": "5/8 (62.5%)",
       "found": 5,
       "metric": "recall %",

@@ -28,10 +28,46 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
+  measured-regeneration:
+    name: re-derive every measured result
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DISROBE_REQUIRE_APKLEAKS: "1"
+      DISROBE_REQUIRE_CFR: "1"
+      DISROBE_REQUIRE_JADX: "1"
+      DISROBE_REQUIRE_JAVAC: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: install every measured competitor
+        run: |
+          bash evidence/competitors/install-linux.sh --only all
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: verify every committed measured result
+        run: cargo run --locked -p disrobe-bench-head-to-head -- --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-all-measured
+          path: evidence/results/measured/*.json
+          if-no-files-found: error
+
   apk-jadx-cfr:
     name: head-to-head (apk vs jadx + cfr)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DISROBE_REQUIRE_CFR: "1"
+      DISROBE_REQUIRE_JADX: "1"
+      DISROBE_REQUIRE_JAVAC: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -60,6 +96,9 @@ jobs:
     name: head-to-head (frisk vs apkleaks)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DISROBE_REQUIRE_APKLEAKS: "1"
+      DISROBE_REQUIRE_JADX: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -80,7 +119,7 @@ jobs:
           command -v jadx
           python3 -m pip show apkleaks
       - name: run frisk head-to-head
-        run: cargo run -p disrobe-bench-head-to-head
+        run: cargo run -p disrobe-bench-head-to-head -- --only frisk-apkleaks
       - name: assert apkleaks was scored and disrobe leads (no silent skip)
         run: |
           python3 - <<'PY'
@@ -109,7 +148,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: run gate harvest (committed corpora only)
-        run: cargo run -p disrobe-bench-head-to-head
+        run: cargo run -p disrobe-bench-head-to-head -- --only gate-harvest
       - name: assert committed-corpus gates are scored (no silent skip)
         run: |
           python3 - <<'PY'
@@ -129,57 +168,43 @@ jobs:
 
   rollup:
     name: rollup + drift gate
-    needs: [apk-jadx-cfr, frisk-apkleaks, gate-harvest]
+    needs: [measured-regeneration, apk-jadx-cfr, frisk-apkleaks, gate-harvest]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: stage producer artifacts for validation
+      - name: download the complete measured result set
         uses: actions/download-artifact@v4
         with:
-          pattern: evidence-*
-          merge-multiple: false
-          path: ci-measured-staging
-      - name: require exactly the three producer payloads
+          name: evidence-all-measured
+          path: ci-measured
+      - name: require every registered measured payload
         shell: bash
         run: |
           set -euo pipefail
-          expected=(
-            ci-measured-staging/evidence-apk-jadx-cfr/apk-jadx-cfr.json
-            ci-measured-staging/evidence-frisk-apkleaks/frisk-apkleaks.json
-            ci-measured-staging/evidence-gate-harvest/gate-harvest.json
-          )
-          mapfile -t actual < <(find ci-measured-staging -type f -print | sort)
-          if [ "${#actual[@]}" -ne "${#expected[@]}" ]; then
-            printf 'expected exactly three producer payloads, found %s\n' "${#actual[@]}"
-            printf 'found: %s\n' "${actual[@]}"
+          mapfile -t expected < <(find evidence/results/measured -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)
+          mapfile -t actual < <(find ci-measured -maxdepth 1 -type f -name '*.json' -printf '%f\n' | sort)
+          if [ "${#expected[@]}" -eq 0 ] || [ "${#actual[@]}" -ne "${#expected[@]}" ]; then
+            printf 'expected %s registered payloads, found %s\n' "${#expected[@]}" "${#actual[@]}"
             exit 1
           fi
-          for index in "${!expected[@]}"; do
+          for index in "${!actual[@]}"; do
             if [ "${actual[$index]}" != "${expected[$index]}" ]; then
               printf 'expected payload %s, found %s\n' "${expected[$index]}" "${actual[$index]}"
               exit 1
             fi
-          done
-          mkdir -p ci-measured
-          for source in "${expected[@]}"; do
+            source="ci-measured/${actual[$index]}"
             if [ ! -s "$source" ]; then
-              printf 'producer payload is empty: %s\n' "$source"
+              printf 'registered payload is empty: %s\n' "$source"
               exit 1
             fi
             python3 -m json.tool "$source" >/dev/null
-            name="${source##*/}"
-            cp -- "$source" "ci-measured/$name"
-            cp -- "$source" "evidence/results/measured/$name"
+            cmp -- "$source" "evidence/results/measured/${actual[$index]}"
           done
-      - name: reject measured-data drift from producer jobs
-        run: |
-          git diff --exit-code -- \
-            evidence/results/measured/apk-jadx-cfr.json \
-            evidence/results/measured/frisk-apkleaks.json \
-            evidence/results/measured/gate-harvest.json
+      - name: reject measured-data drift
+        run: git diff --exit-code -- evidence/results/measured
       - name: verify the committed report against measured data
         run: cargo run --locked -p xtask -- evidence --check
       - uses: actions/upload-artifact@v4

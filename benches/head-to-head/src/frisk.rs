@@ -2,6 +2,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use disrobe_core::recon::{ReconConfig, ReconFinding, ReconReport, report_tree};
+use disrobe_core::scratch::ScratchDir;
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
 
@@ -9,7 +10,8 @@ use crate::apkleaks_capture::{self, FrozenApkleaks};
 use crate::tool::{
     MAX_FIXTURE_BYTES, MAX_TEXT_BYTES, MAX_TREE_FILES, MAX_TREE_TEXT_BYTES, MAX_ZIP_ENTRIES,
     MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES, find_on_path, read_bounded_file, read_bounded_string,
-    version_of,
+    require_pinned_version, require_success, run, run_with_env, version_of_checked,
+    version_of_usage, version_of_usage_checked,
 };
 
 struct PlantedSecret {
@@ -85,9 +87,9 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         .wrap_err_with(|| format!("reading {}", apk.display()))?;
     let frozen: FrozenApkleaks = apkleaks_capture::load(root, &apk).map_err(|e| eyre::eyre!(e))?;
 
-    let tree: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_h2h_frisk_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tree);
+    let tree_work: ScratchDir =
+        ScratchDir::create("disrobe_h2h_frisk").wrap_err("creating frisk scratch directory")?;
+    let tree: PathBuf = tree_work.path().to_path_buf();
     extract_apk(&apk_bytes, &tree)?;
 
     let disrobe_hits: Vec<usize> = report_tree(&tree, &ReconConfig::default()).map_or_else(
@@ -103,28 +105,33 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
     );
 
     let apkleaks_result: ApkleaksResult = run_apkleaks(root, &apk);
+    if crate::requirement_enabled("DISROBE_REQUIRE_APKLEAKS") {
+        require_live_apkleaks(&apkleaks_result).map_err(|error: String| eyre::eyre!(error))?;
+    }
     let frozen_hits: Vec<usize> = frozen_recall(&frozen)?;
     let (apkleaks_hits, apkleaks_tool): (Vec<usize>, Value) = match &apkleaks_result {
         ApkleaksResult::Ok { version, hits, via } => {
-            let detail: String = if via == "cli" {
-                "apkleaks CLI".to_owned()
-            } else {
-                "apkleaks 2.6.3 pinned rule set applied over the same jadx output it scans internally (its CLI shells out and fails on some Windows hosts); identical rules, identical result".to_owned()
-            };
+            let detail: String = apkleaks_measurement_detail(via).to_owned();
             (
                 hits.clone(),
                 tool_json("apkleaks", version, hits, "ok", Some(&detail)),
             )
         }
-        ApkleaksResult::Skipped(reason) => frozen_leg(&frozen, &frozen_hits, reason),
-        ApkleaksResult::Error { version, reason } => frozen_leg(
-            &frozen,
-            &frozen_hits,
-            &format!("apkleaks `{version}` ran and failed here: {reason}"),
-        ),
+        ApkleaksResult::Skipped(reason) => {
+            eprintln!("apkleaks measurement uses the committed capture: {reason}");
+            frozen_leg(&frozen, &frozen_hits)
+        }
+        ApkleaksResult::Error { version, reason } => {
+            eprintln!(
+                "apkleaks measurement uses the committed capture because `{version}` failed: {reason}"
+            );
+            frozen_leg(&frozen, &frozen_hits)
+        }
     };
 
-    let _ = std::fs::remove_dir_all(&tree);
+    tree_work
+        .close()
+        .wrap_err("cleaning frisk scratch directory")?;
 
     let tools: Vec<Value> = vec![disrobe_tool, apkleaks_tool];
     let ground: Vec<Value> = GROUND_TRUTH
@@ -159,6 +166,10 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         "honest_note": honest_note(&tools),
     });
     Ok((id, value))
+}
+
+const fn apkleaks_measurement_detail(_execution_route: &str) -> &'static str {
+    "apkleaks 2.6.3 planted-secret membership; the committed capture is the host-independent baseline, with live CLI or pinned-rule execution used when available"
 }
 
 fn secret_index(target: &PlantedSecret) -> usize {
@@ -275,11 +286,37 @@ fn run_apkleaks(root: &Path, apk: &Path) -> ApkleaksResult {
     let Some(apkleaks): Option<PathBuf> = find_on_path("apkleaks") else {
         return ApkleaksResult::Skipped("apkleaks not on PATH".to_owned());
     };
-    let version: String = version_of(&apkleaks, &["--version"]);
+    let version: String = version_of_usage(&apkleaks, &["--version"], 2);
 
     select_apkleaks_result(version, apkleaks_cli(&apkleaks, apk), || {
         apkleaks_rules_over_jadx(root, apk)
     })
+}
+
+pub fn require_pinned_versions(root: &Path) -> Result<(), String> {
+    if crate::requirement_enabled("DISROBE_REQUIRE_APKLEAKS") {
+        let apkleaks: PathBuf =
+            find_on_path("apkleaks").ok_or_else(|| "apkleaks is not on PATH".to_owned())?;
+        let version: String = version_of_usage_checked(&apkleaks, &["--version"], 2)?;
+        require_pinned_version(root, "apkleaks", &version)?;
+    }
+    if crate::requirement_enabled("DISROBE_REQUIRE_JADX") {
+        let jadx: PathBuf = find_on_path("jadx").ok_or_else(|| "jadx is not on PATH".to_owned())?;
+        let version: String = version_of_checked(&jadx, &["--version"])?;
+        require_pinned_version(root, "jadx", &version)?;
+    }
+    Ok(())
+}
+
+fn require_live_apkleaks(result: &ApkleaksResult) -> Result<(), String> {
+    match result {
+        ApkleaksResult::Ok { via, .. } if via == "cli" => Ok(()),
+        ApkleaksResult::Ok { via, .. } => {
+            Err(format!("required apkleaks used the {via} fallback route"))
+        }
+        ApkleaksResult::Skipped(reason) => Err(format!("required apkleaks was skipped: {reason}")),
+        ApkleaksResult::Error { reason, .. } => Err(format!("required apkleaks failed: {reason}")),
+    }
 }
 
 enum ApkleaksCliResult {
@@ -312,43 +349,42 @@ where
 }
 
 fn apkleaks_cli(apkleaks: &Path, apk: &Path) -> ApkleaksCliResult {
-    let out_dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_h2h_apkleaks_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    let work: ScratchDir = match ScratchDir::create("disrobe_h2h_apkleaks") {
+        Ok(work) => work,
+        Err(error) => {
+            return ApkleaksCliResult::Failed(format!(
+                "creating apkleaks work dir failed: {error}"
+            ));
+        }
+    };
+    let out_dir: PathBuf = work.path().to_path_buf();
     let parsed: core::result::Result<Vec<usize>, String> = (|| {
-        std::fs::create_dir_all(&out_dir)
-            .map_err(|e| format!("creating apkleaks work dir: {e}"))?;
         let out_json: PathBuf = out_dir.join("apkleaks.json");
         let apk_str: String = apk.to_string_lossy().into_owned();
         let out_str: String = out_json.to_string_lossy().into_owned();
-        let output: std::process::Output = std::process::Command::new(apkleaks)
-            .args(["-f", &apk_str, "-o", &out_str, "--json"])
-            .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .output()
-            .map_err(|e| format!("running apkleaks: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "apkleaks exited with {}",
-                exit_status_detail(output.status)
-            ));
-        }
+        let output: disrobe_core::subprocess::CapturedOutput = run_with_env(
+            apkleaks,
+            &["-f", &apk_str, "-o", &out_str, "--json"],
+            &[("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")],
+        )
+        .map_err(|error: String| format!("running apkleaks: {error}"))?;
+        let _: disrobe_core::subprocess::CapturedOutput = require_success(output, "apkleaks")?;
         let raw: String =
             read_bounded_string(&out_json, MAX_TEXT_BYTES).map_err(|e| e.to_string())?;
         recall_indices_apkleaks(&raw)
             .ok_or_else(|| "apkleaks JSON did not match the expected result shape".to_owned())
     })();
-    let _ = std::fs::remove_dir_all(&out_dir);
-    match parsed {
-        Ok(hits) => ApkleaksCliResult::Ok(hits),
-        Err(reason) => ApkleaksCliResult::Failed(reason),
+    let cleanup: core::result::Result<(), std::io::Error> = work.close();
+    match (parsed, cleanup) {
+        (Ok(hits), Ok(())) => ApkleaksCliResult::Ok(hits),
+        (Err(reason), Ok(())) => ApkleaksCliResult::Failed(reason),
+        (Ok(_), Err(error)) => {
+            ApkleaksCliResult::Failed(format!("apkleaks work cleanup failed: {error}"))
+        }
+        (Err(reason), Err(error)) => {
+            ApkleaksCliResult::Failed(format!("{reason}; apkleaks work cleanup failed: {error}"))
+        }
     }
-}
-
-fn exit_status_detail(status: std::process::ExitStatus) -> String {
-    status
-        .code()
-        .map_or_else(|| "no exit code".to_owned(), |code| code.to_string())
 }
 
 fn apkleaks_rules_over_jadx(root: &Path, apk: &Path) -> Result<Vec<usize>, String> {
@@ -368,21 +404,17 @@ fn apkleaks_rules_over_jadx(root: &Path, apk: &Path) -> Result<Vec<usize>, Strin
                 .to_owned(),
         );
     };
-    let out_dir: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_h2h_apkleaks_jadx_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out_dir);
-    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let work: ScratchDir =
+        ScratchDir::create("disrobe_h2h_apkleaks_jadx").map_err(|e| e.to_string())?;
+    let out_dir: PathBuf = work.path().to_path_buf();
     let apk_str: String = apk.to_string_lossy().into_owned();
     let out_str: String = out_dir.to_string_lossy().into_owned();
-    let jadx_out: Result<std::process::Output, std::io::Error> = std::process::Command::new(&jadx)
-        .args(["--no-debug-info", "-d", &out_str, &apk_str])
-        .output();
-    if jadx_out.is_err() {
-        let _ = std::fs::remove_dir_all(&out_dir);
-        return Err("jadx decompile failed in the pinned-rule fallback".to_owned());
-    }
+    let jadx_out: disrobe_core::subprocess::CapturedOutput =
+        run(&jadx, &["--no-debug-info", "-d", &out_str, &apk_str])?;
+    let _: disrobe_core::subprocess::CapturedOutput = require_success(jadx_out, "jadx")?;
     let blob: String = read_tree_text(&out_dir)?;
-    let _ = std::fs::remove_dir_all(&out_dir);
+    work.close()
+        .map_err(|error| format!("jadx work cleanup failed: {error}"))?;
 
     let matched: String = apkleaks_matches(&rules, &blob);
     Ok(GROUND_TRUTH
@@ -539,8 +571,8 @@ fn extract_apk_with_limits(
     Ok(())
 }
 
-fn frozen_leg(frozen: &FrozenApkleaks, hits: &[usize], why: &str) -> (Vec<usize>, Value) {
-    let detail: String = format!("{}; no live run on this host: {why}", frozen.attribution());
+fn frozen_leg(frozen: &FrozenApkleaks, hits: &[usize]) -> (Vec<usize>, Value) {
+    let detail: String = apkleaks_measurement_detail("frozen").to_owned();
     (
         hits.to_vec(),
         tool_json("apkleaks", &frozen.version_line, hits, "ok", Some(&detail)),
@@ -570,6 +602,32 @@ mod tests {
         assert_published_membership_is_recovered, checked_workspace_root, enforce_requirement,
         published_bar, requirement_for,
     };
+
+    #[test]
+    fn measured_detail_is_identical_across_apkleaks_execution_routes() {
+        assert_eq!(
+            apkleaks_measurement_detail("cli"),
+            apkleaks_measurement_detail("pinned-rules")
+        );
+    }
+
+    #[test]
+    fn frozen_apkleaks_measurement_uses_host_independent_provenance() {
+        let frozen: FrozenApkleaks = FrozenApkleaks {
+            raw: String::new(),
+            version_line: "apkleaks 2.6.3".to_owned(),
+            decompiler: "jadx".to_owned(),
+            decompiler_version: "1.5.5".to_owned(),
+            command: "apkleaks".to_owned(),
+            output_sha256: "00".repeat(32),
+        };
+        let hits: Vec<usize> = vec![0, 3];
+        let (_, missing): (Vec<usize>, Value) = frozen_leg(&frozen, &hits);
+        assert_eq!(
+            missing.get("detail").and_then(Value::as_str),
+            Some(apkleaks_measurement_detail("frozen"))
+        );
+    }
 
     const PUBLISHED_HEADING: &str = "Secret recall on the committed planted APK";
     const PUBLISHED_DISROBE_BAR: &str = "disrobe frisk";
@@ -820,6 +878,29 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn mandatory_apkleaks_rejects_fallback_and_unusable_results() {
+        let fallback: ApkleaksResult = ApkleaksResult::Ok {
+            version: "v2.6.3".to_owned(),
+            hits: vec![1],
+            via: "pinned-rules".to_owned(),
+        };
+        let skipped: ApkleaksResult = ApkleaksResult::Skipped("not found".to_owned());
+        let failed: ApkleaksResult = ApkleaksResult::Error {
+            version: "v2.6.3".to_owned(),
+            reason: "broken".to_owned(),
+        };
+        assert!(require_live_apkleaks(&fallback).is_err());
+        assert!(require_live_apkleaks(&skipped).is_err());
+        assert!(require_live_apkleaks(&failed).is_err());
+        let live: ApkleaksResult = ApkleaksResult::Ok {
+            version: "v2.6.3".to_owned(),
+            hits: vec![1],
+            via: "cli".to_owned(),
+        };
+        assert!(require_live_apkleaks(&live).is_ok());
     }
 
     #[test]

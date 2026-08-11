@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
@@ -121,11 +121,38 @@ pub fn run_captured<S: AsRef<OsStr>>(
     timeout: Duration,
     max_capture_bytes: usize,
 ) -> std::io::Result<Option<CapturedOutput>> {
-    let execution: Execution = CommandSpec::new(program, timeout)
-        .args(args.iter().map(|arg: &S| arg.as_ref().to_os_string()))
-        .capture_limits(max_capture_bytes, max_capture_bytes)
-        .run()
-        .map_err(std::io::Error::other)?;
+    capture_command(
+        CommandSpec::new(program, timeout)
+            .args(args.iter().map(|arg: &S| arg.as_ref().to_os_string()))
+            .capture_limits(max_capture_bytes, max_capture_bytes),
+    )
+}
+
+pub fn run_captured_with_env<S, I, K, V>(
+    program: &Path,
+    args: &[S],
+    environment: I,
+    timeout: Duration,
+    max_capture_bytes: usize,
+) -> std::io::Result<Option<CapturedOutput>>
+where
+    S: AsRef<OsStr>,
+    I: IntoIterator<Item = (K, V)>,
+    K: Into<OsString>,
+    V: Into<OsString>,
+{
+    let spec: CommandSpec = environment.into_iter().fold(
+        CommandSpec::new(program, timeout),
+        |spec: CommandSpec, (key, value): (K, V)| spec.env(key, value),
+    );
+    capture_command(
+        spec.args(args.iter().map(|arg: &S| arg.as_ref().to_os_string()))
+            .capture_limits(max_capture_bytes, max_capture_bytes),
+    )
+}
+
+fn capture_command(spec: CommandSpec) -> std::io::Result<Option<CapturedOutput>> {
+    let execution: Execution = spec.run().map_err(std::io::Error::other)?;
     let status: ExitStatus = match execution.completion {
         Completion::Exited(status) => status,
         Completion::TimedOut(_) => return Ok(None),
@@ -482,6 +509,76 @@ mod tests {
         )
         .expect_err("legacy capture must not hide truncation");
         assert!(error.to_string().contains("stdout capture exceeded"));
+    }
+
+    #[test]
+    fn run_captured_with_env_preserves_process_tree_containment() {
+        let _guard: std::sync::MutexGuard<'_, ()> = PROCESS_TIMING_TEST_LOCK
+            .lock()
+            .expect("lock process timing test");
+        let scratch: crate::scratch::ScratchDir =
+            crate::scratch::ScratchDir::create("disrobe-core-env-descendant")
+                .expect("mkdir env descendant dir");
+        let marker: PathBuf = scratch.path().join("env-descendant-marker");
+        let marker_arg: String = marker.to_string_lossy().into_owned();
+        let started: std::time::Instant = std::time::Instant::now();
+        let result: Option<CapturedOutput> = run_captured_with_env(
+            &mock_bin_path(),
+            &["spawn-marker-pipe", &marker_arg, "1500"],
+            [("DISROBE_TEST_ENV", "present")],
+            Duration::from_millis(100),
+            TEST_CAPTURE_CAP,
+        )
+        .expect("spawn env-capable process");
+        let elapsed: Duration = started.elapsed();
+        let marker_existed_at_return: bool = marker.exists();
+        let _: std::io::Result<()> = std::fs::remove_file(&marker);
+        assert!(result.is_none(), "the process tree must time out");
+        assert!(
+            !marker_existed_at_return,
+            "the descendant must be terminated"
+        );
+        assert!(elapsed < Duration::from_secs(1), "timeout took {elapsed:?}");
+    }
+
+    #[test]
+    fn run_captured_with_env_replaces_duplicate_child_variables() {
+        #[cfg(unix)]
+        let program: PathBuf = PathBuf::from("/usr/bin/env");
+        #[cfg(windows)]
+        let program: PathBuf = std::env::var_os("ComSpec").map_or_else(
+            || PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            PathBuf::from,
+        );
+        #[cfg(unix)]
+        let args: &[&str] = &[];
+        #[cfg(windows)]
+        let args: &[&str] = &["/D", "/C", "set", "DISROBE_TEST_ENV"];
+        let output: CapturedOutput = run_captured_with_env(
+            &program,
+            args,
+            [
+                ("DISROBE_TEST_ENV", "first"),
+                ("DISROBE_TEST_ENV", "second"),
+            ],
+            Duration::from_secs(5),
+            64 * 1024,
+        )
+        .expect("environment probe must spawn")
+        .expect("environment probe must finish");
+        let rendered: String = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        assert!(
+            rendered
+                .lines()
+                .any(|line: &str| line.trim() == "disrobe_test_env=second"),
+            "child environment did not receive the final override: {rendered}"
+        );
+        assert!(
+            !rendered
+                .lines()
+                .any(|line: &str| line.trim() == "disrobe_test_env=first"),
+            "child environment retained an earlier override: {rendered}"
+        );
     }
 
     #[test]

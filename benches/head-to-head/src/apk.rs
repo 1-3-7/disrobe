@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_jvm::{
@@ -14,8 +13,10 @@ use serde_json::{Value, json};
 
 use crate::apkleaks_capture::sha256_hex;
 use crate::tool::{
-    MAX_FIXTURE_BYTES, MAX_TEXT_BYTES, MAX_ZIP_ENTRIES, MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES,
-    find_on_path, read_bounded_file, read_bounded_string, run, version_of,
+    MAX_FIXTURE_BYTES, MAX_TEXT_BYTES, MAX_TREE_FILES, MAX_TREE_TEXT_BYTES, MAX_ZIP_ENTRIES,
+    MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES, bounded_error_text, find_on_path, read_bounded_file,
+    read_bounded_string, require_pinned_version, require_success, run, version_of,
+    version_of_checked,
 };
 
 pub fn measure(root: &Path) -> Result<(String, Value)> {
@@ -74,6 +75,15 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         competitor: cfr_outcome(root, &javac, &jar_path, denominator),
     };
 
+    if crate::requirement_enabled("DISROBE_REQUIRE_JADX") {
+        require_competitor_result("jadx", &dex_leg.competitor)
+            .map_err(|error: String| eyre::eyre!(error))?;
+    }
+    if crate::requirement_enabled("DISROBE_REQUIRE_CFR") {
+        require_competitor_result("cfr", &jar_leg.competitor)
+            .map_err(|error: String| eyre::eyre!(error))?;
+    }
+
     let legs: [Leg; 2] = [dex_leg, jar_leg];
     let tools: Vec<Value> = legs.iter().flat_map(Leg::to_json_rows).collect();
 
@@ -98,6 +108,22 @@ pub fn measure(root: &Path) -> Result<(String, Value)> {
         "honest_note": measured_summary(&legs),
     });
     Ok((id, value))
+}
+
+fn require_competitor_result(
+    tool: &str,
+    outcome: &CompetitorOutcome,
+) -> std::result::Result<(), String> {
+    match outcome {
+        CompetitorOutcome::Absent { reason } => {
+            Err(format!("required {tool} measurement was skipped: {reason}"))
+        }
+        CompetitorOutcome::Scored {
+            score: ToolScore::Missing { detail, .. },
+            ..
+        } => Err(format!("required {tool} measurement failed: {detail}")),
+        CompetitorOutcome::Scored { .. } => Ok(()),
+    }
 }
 
 const IN_PROCESS_VERSION: &str = "n/a (in-process)";
@@ -456,13 +482,14 @@ fn disrobe_jar_source(jar_bytes: &[u8]) -> std::result::Result<String, String> {
 }
 
 fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
-    let Ok(out): disrobe_pass_jvm::Result<AndroidDecompileOutput> =
-        run_jadx_on_bytes(dex_bytes, "EdgeCases.dex")
-    else {
-        return ToolScore::miss(
-            denominator,
-            "jadx crashed or produced no .java on EdgeCases.dex".to_owned(),
-        );
+    let out: AndroidDecompileOutput = match run_jadx_on_bytes(dex_bytes, "EdgeCases.dex") {
+        Ok(out) => out,
+        Err(error) => {
+            return ToolScore::miss(
+                denominator,
+                format!("jadx failed: {}", bounded_error_text(&error.to_string())),
+            );
+        }
     };
     if main_class_file(&out.sources).is_none() {
         return ToolScore::miss(denominator, "jadx produced no EdgeCases source".to_owned());
@@ -471,20 +498,25 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
 }
 
 fn score_cfr(javac: &Path, jar_path: &Path, cfr: &CfrInvoke, denominator: usize) -> ToolScore {
-    let work: PathBuf =
-        std::env::temp_dir().join(format!("disrobe_h2h_cfr_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&work);
-    if std::fs::create_dir_all(&work).is_err() {
-        return ToolScore::miss(denominator, "could not create cfr work dir".to_owned());
-    }
-    let out_dir: PathBuf = work.join("out");
+    let work: ScratchDir = match ScratchDir::create("disrobe_h2h_cfr") {
+        Ok(work) => work,
+        Err(error) => {
+            return ToolScore::miss(
+                denominator,
+                format!("could not create cfr work dir: {error}"),
+            );
+        }
+    };
+    let out_dir: PathBuf = work.path().join("out");
     let result: Result<String, String> = cfr.run(jar_path, &out_dir);
     let score: ToolScore = match result {
         Ok(source) if !source.is_empty() => score_source(javac, &source, denominator),
         Ok(_) => ToolScore::miss(denominator, "cfr produced no EdgeCases source".to_owned()),
         Err(e) => ToolScore::miss(denominator, format!("cfr failed: {e}")),
     };
-    let _ = std::fs::remove_dir_all(&work);
+    if let Err(error) = work.close() {
+        return ToolScore::miss(denominator, format!("cfr work cleanup failed: {error}"));
+    }
     score
 }
 
@@ -692,8 +724,9 @@ fn javac_verdict_over_set(
     std::fs::create_dir(&stub)
         .map_err(|error: std::io::Error| format!("could not create javac classpath: {error}"))?;
     let borrowed: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
-    let out: std::process::Output = compile(javac, &stub, &dir.join("out"), &borrowed)?;
-    if out.status.success() {
+    let out: disrobe_core::subprocess::CapturedOutput =
+        compile(javac, &stub, &dir.join("out"), &borrowed)?;
+    if out.exit_code == Some(0) {
         require_emitted_edgecases_class(dir)?;
         return Ok(OracleVerdict {
             error_lines: Vec::new(),
@@ -701,8 +734,14 @@ fn javac_verdict_over_set(
         });
     }
     let diagnostics: String = combined_output(&out);
-    let error_lines: Vec<usize> = failed_javac_error_lines(&diagnostics)
-        .map_err(|error: String| format!("javac exited with {}: {error}", out.status))?;
+    let error_lines: Vec<usize> =
+        failed_javac_error_lines(&diagnostics).map_err(|error: String| {
+            format!(
+                "javac exited with {}: {error}",
+                out.exit_code
+                    .map_or_else(|| "no exit code".to_owned(), |code: i32| code.to_string())
+            )
+        })?;
     let type_checked: bool = type_check_was_reached(javac, dir, &stub, &borrowed)?;
     Ok(OracleVerdict {
         error_lines,
@@ -722,8 +761,9 @@ fn type_check_was_reached(
     })?;
     let mut with_probe: Vec<&Path> = source_paths.to_vec();
     with_probe.push(&probe_path);
-    let out: std::process::Output = compile(javac, stub, &dir.join("probe-out"), &with_probe)?;
-    if out.status.success() {
+    let out: disrobe_core::subprocess::CapturedOutput =
+        compile(javac, stub, &dir.join("probe-out"), &with_probe)?;
+    if out.exit_code == Some(0) {
         return Err(
             "the type-check probe compiled without reporting its unresolvable symbol, so it can no \
              longer tell a parsed file from an unparsed one"
@@ -738,29 +778,27 @@ fn compile(
     stub: &Path,
     out_dir: &Path,
     sources: &[&Path],
-) -> std::result::Result<std::process::Output, String> {
+) -> std::result::Result<disrobe_core::subprocess::CapturedOutput, String> {
     std::fs::create_dir_all(out_dir).map_err(|error: std::io::Error| {
         format!("could not create the javac output directory: {error}")
     })?;
-    let mut command: Command = Command::new(javac);
-    command
-        .arg("-nowarn")
-        .arg("-proc:none")
-        .arg("-Xmaxerrs")
-        .arg(DIAGNOSTIC_LIMIT)
-        .arg("-cp")
-        .arg(stub)
-        .arg("-d")
-        .arg(out_dir);
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "-nowarn".into(),
+        "-proc:none".into(),
+        "-Xmaxerrs".into(),
+        DIAGNOSTIC_LIMIT.into(),
+        "-cp".into(),
+        stub.as_os_str().to_owned(),
+        "-d".into(),
+        out_dir.as_os_str().to_owned(),
+    ];
     for source in sources {
-        command.arg(source);
+        args.push(source.as_os_str().to_owned());
     }
-    command
-        .output()
-        .map_err(|error: std::io::Error| format!("could not start javac: {error}"))
+    run(javac, &args).map_err(|error: String| format!("could not start javac: {error}"))
 }
 
-fn combined_output(out: &std::process::Output) -> String {
+fn combined_output(out: &disrobe_core::subprocess::CapturedOutput) -> String {
     let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stderr);
     let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&out.stdout);
     format!("{stderr}\n{stdout}")
@@ -883,32 +921,74 @@ impl CfrInvoke {
     fn run(&self, jar_path: &Path, out_dir: &Path) -> Result<String, String> {
         let out_str: String = out_dir.to_string_lossy().into_owned();
         let jar_str: String = jar_path.to_string_lossy().into_owned();
-        let output: std::process::Output = match self {
+        let output: disrobe_core::subprocess::CapturedOutput = match self {
             Self::Binary(bin) => run(bin, &[&jar_str, "--outputdir", &out_str])?,
             Self::Jar { java, jar } => {
                 let jar_arg: String = jar.to_string_lossy().into_owned();
                 run(java, &["-jar", &jar_arg, &jar_str, "--outputdir", &out_str])?
             }
         };
-        let _ = output;
-        Ok(collect_edgecases_java(out_dir))
+        let _: disrobe_core::subprocess::CapturedOutput = require_success(output, "cfr")?;
+        collect_edgecases_java(out_dir)
     }
 }
 
-fn collect_edgecases_java(out_dir: &Path) -> String {
-    for entry in walkdir::WalkDir::new(out_dir).into_iter().flatten() {
-        let path: &Path = entry.path();
-        if path.is_file()
-            && path.file_name().and_then(|n| n.to_str()) == Some("EdgeCases.java")
-            && let Ok(content) = read_bounded_string(path, MAX_TEXT_BYTES)
-        {
-            return content;
+fn collect_edgecases_java(out_dir: &Path) -> Result<String, String> {
+    collect_edgecases_java_with_limits(out_dir, MAX_TREE_FILES, MAX_TREE_TEXT_BYTES)
+}
+
+fn collect_edgecases_java_with_limits(
+    out_dir: &Path,
+    max_files: usize,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let max_bytes_u64: u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let mut file_count: usize = 0;
+    let mut total_bytes: u64 = 0;
+    let mut source: Option<String> = None;
+    for entry in walkdir::WalkDir::new(out_dir).sort_by_file_name() {
+        let entry: walkdir::DirEntry = entry
+            .map_err(|error: walkdir::Error| format!("could not inspect cfr output: {error}"))?;
+        if !entry.file_type().is_file() {
+            continue;
         }
+        if file_count >= max_files {
+            return Err(format!("cfr output file count exceeds {max_files}"));
+        }
+        file_count += 1;
+        let size: u64 = entry
+            .metadata()
+            .map_err(|error: walkdir::Error| format!("could not stat cfr output: {error}"))?
+            .len();
+        total_bytes = total_bytes
+            .checked_add(size)
+            .ok_or_else(|| "cfr output byte count overflowed".to_owned())?;
+        if total_bytes > max_bytes_u64 {
+            return Err(format!("cfr output exceeds {max_bytes} bytes"));
+        }
+        let path: &Path = entry.path();
+        if path.file_name().and_then(|name| name.to_str()) != Some("EdgeCases.java") {
+            continue;
+        }
+        if source.is_some() {
+            return Err("cfr output contains multiple EdgeCases.java files".to_owned());
+        }
+        source =
+            Some(read_bounded_string(path, MAX_TEXT_BYTES).map_err(|error| error.to_string())?);
     }
-    String::new()
+    source.ok_or_else(|| "cfr produced no EdgeCases.java source".to_owned())
 }
 
 fn resolve_cfr(root: &Path) -> Option<CfrInvoke> {
+    if crate::requirement_enabled("DISROBE_REQUIRE_CFR") {
+        let jar: PathBuf = root
+            .join("evidence")
+            .join("competitors")
+            .join("jars")
+            .join("cfr.jar");
+        let java: PathBuf = find_on_path("java")?;
+        return jar.is_file().then_some(CfrInvoke::Jar { java, jar });
+    }
     if let Some(bin) = find_on_path("cfr") {
         return Some(CfrInvoke::Binary(bin));
     }
@@ -933,6 +1013,31 @@ fn cfr_version(cfr: &CfrInvoke) -> String {
             version_of(java, &["-jar", &jar_arg, "--version"])
         }
     }
+}
+
+fn cfr_version_checked(cfr: &CfrInvoke) -> std::result::Result<String, String> {
+    match cfr {
+        CfrInvoke::Binary(bin) => version_of_checked(bin, &["--version"]),
+        CfrInvoke::Jar { java, jar } => {
+            let jar_arg: String = jar.to_string_lossy().into_owned();
+            version_of_checked(java, &["-jar", &jar_arg, "--version"])
+        }
+    }
+}
+
+pub fn require_pinned_versions(root: &Path) -> Result<(), String> {
+    if crate::requirement_enabled("DISROBE_REQUIRE_JADX") {
+        let jadx: PathBuf = find_on_path("jadx").ok_or_else(|| "jadx is not on PATH".to_owned())?;
+        let version: String = version_of_checked(&jadx, &["--version"])?;
+        require_pinned_version(root, "jadx", &version)?;
+    }
+    if crate::requirement_enabled("DISROBE_REQUIRE_CFR") {
+        let cfr: CfrInvoke = resolve_cfr(root)
+            .ok_or_else(|| "pinned CFR jar and java are unavailable".to_owned())?;
+        let version: String = cfr_version_checked(&cfr)?;
+        require_pinned_version(root, "cfr", &version)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1122,6 +1227,32 @@ mod tests {
             ),
             "one bad method leaves the other scored: {partial:?}"
         );
+    }
+
+    #[test]
+    fn required_competitor_rejects_skipped_or_missing_results() {
+        let absent: CompetitorOutcome = CompetitorOutcome::Absent {
+            reason: "not installed".to_owned(),
+        };
+        assert!(require_competitor_result("cfr", &absent).is_err());
+        let missing: CompetitorOutcome = CompetitorOutcome::Scored {
+            version: "0.152".to_owned(),
+            score: ToolScore::Missing {
+                original: 1,
+                detail: "no EdgeCases source".to_owned(),
+            },
+        };
+        assert!(require_competitor_result("cfr", &missing).is_err());
+        let uncertified: CompetitorOutcome = CompetitorOutcome::Scored {
+            version: "0.152".to_owned(),
+            score: ToolScore::Uncertified {
+                emitted: 1,
+                first_defect_line: 1,
+                original: 1,
+                detail: "compiler stopped before type checking".to_owned(),
+            },
+        };
+        assert!(require_competitor_result("cfr", &uncertified).is_ok());
     }
 
     #[test]
@@ -1570,6 +1701,60 @@ mod tests {
         let classes: Option<Vec<(String, Vec<u8>)>> =
             classes_from_jar_with_limits(&jar, 1, 64, 128);
         assert!(classes.is_none(), "two entries must exceed a one-entry cap");
+        Ok(())
+    }
+
+    #[test]
+    fn cfr_collector_rejects_output_file_count_cap() -> core::result::Result<(), String> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe-h2h-cfr-output-cap")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        std::fs::write(scratch.path().join("first.txt"), b"first")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        std::fs::write(scratch.path().join("second.txt"), b"second")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        let result: std::result::Result<String, String> =
+            collect_edgecases_java_with_limits(scratch.path(), 1, 64);
+        assert!(
+            result.is_err(),
+            "two CFR output files must exceed one-file cap"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cfr_collector_rejects_duplicate_main_sources() -> core::result::Result<(), String> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe-h2h-cfr-duplicate")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        for directory in ["a", "b"] {
+            let path: PathBuf = scratch.path().join(directory);
+            std::fs::create_dir_all(&path).map_err(|error: std::io::Error| error.to_string())?;
+            std::fs::write(path.join("EdgeCases.java"), SAMPLE_MAIN_CLASS)
+                .map_err(|error: std::io::Error| error.to_string())?;
+        }
+        let result: std::result::Result<String, String> =
+            collect_edgecases_java_with_limits(scratch.path(), 8, 4096);
+        assert!(
+            result.is_err(),
+            "duplicate main sources must not be selected by traversal order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cfr_collector_rejects_aggregate_byte_cap() -> core::result::Result<(), String> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe-h2h-cfr-byte-cap")
+            .map_err(|error: std::io::Error| error.to_string())?;
+        std::fs::write(
+            scratch.path().join("EdgeCases.java"),
+            b"class EdgeCases { int value; }\n",
+        )
+        .map_err(|error: std::io::Error| error.to_string())?;
+        let result: std::result::Result<String, String> =
+            collect_edgecases_java_with_limits(scratch.path(), 8, 8);
+        assert!(
+            result.is_err(),
+            "CFR output must enforce the aggregate byte cap"
+        );
         Ok(())
     }
 

@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -35,7 +36,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
-    canonical_program, program,
+    canonical_program, environment, program,
 };
 
 const OBSERVATION_INTERVAL: Duration = Duration::from_millis(10);
@@ -43,6 +44,26 @@ const TEARDOWN_GRACE: Duration = Duration::from_secs(5);
 const TERMINATION_EXIT_CODE: u32 = 0xffff_fffe;
 const MAX_COMMAND_LINE_UNITS: usize = 32_767;
 const MAX_NORMAL_PROGRAM_PATH_UNITS: usize = 259;
+const MAX_ENVIRONMENT_STRING_UNITS: usize = 32_767;
+const MAX_ENVIRONMENT_BLOCK_UNITS: usize = 1_048_576;
+const MAX_ENVIRONMENT_INPUT_ENTRIES: usize = 1_048_576;
+const MAX_RETAINED_ENVIRONMENT_BYTES: usize = 32 * 1024 * 1024;
+const ENVIRONMENT_VARIABLE_RESERVATION_CHUNK: usize = 1_024;
+const COMPARE_STRING_LESS_THAN: i32 = 1;
+const COMPARE_STRING_EQUAL: i32 = 2;
+const COMPARE_STRING_GREATER_THAN: i32 = 3;
+const COMPARE_STRING_IGNORE_CASE: i32 = 1;
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CompareStringOrdinal(
+        left: *const u16,
+        left_length: i32,
+        right: *const u16,
+        right_length: i32,
+        ignore_case: i32,
+    ) -> i32;
+}
 
 pub(crate) struct ContainedProcess {
     job: OwnedHandle,
@@ -72,7 +93,8 @@ struct InheritanceWindow<'a> {
 
 pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), LaunchError> {
     let executable: PathBuf = canonical_program(program(spec))?;
-    let prepared: PreparedCommand = prepare_command(&executable, arguments(spec))?;
+    let prepared: PreparedCommand =
+        prepare_command(&executable, arguments(spec), environment(spec))?;
     let job: OwnedHandle = create_job()?;
     let completion_port: OwnedHandle = create_completion_port()?;
     let completion_key: usize = job.as_raw_handle() as usize;
@@ -105,7 +127,10 @@ pub(crate) fn spawn(spec: &CommandSpec) -> Result<(ContainedProcess, PipeSet), L
                 null(),
                 1,
                 CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                null(),
+                prepared
+                    .environment
+                    .as_ref()
+                    .map_or_else(null, |block: &Vec<u16>| block.as_ptr().cast()),
                 null(),
                 &raw const startup.StartupInfo,
                 &raw mut process_info,
@@ -424,11 +449,13 @@ impl Drop for InheritanceWindow<'_> {
 struct PreparedCommand {
     application: Vec<u16>,
     command_line: Vec<u16>,
+    environment: Option<Vec<u16>>,
 }
 
 fn prepare_command(
     executable: &Path,
     args: &[std::ffi::OsString],
+    environment: &[(OsString, OsString)],
 ) -> Result<PreparedCommand, LaunchError> {
     let extension: Option<String> = executable
         .extension()
@@ -459,7 +486,383 @@ fn prepare_command(
     Ok(PreparedCommand {
         application,
         command_line,
+        environment: if environment.is_empty() {
+            None
+        } else {
+            Some(environment_block(environment)?)
+        },
     })
+}
+
+fn environment_block(overrides: &[(OsString, OsString)]) -> Result<Vec<u16>, LaunchError> {
+    let mut builder: EnvironmentBlockBuilder = EnvironmentBlockBuilder::new();
+    for (key, value) in std::env::vars_os() {
+        builder.push(&key, &value)?;
+    }
+    for (key, value) in overrides {
+        builder.push(key, value)?;
+    }
+    builder.finish()
+}
+
+struct EnvironmentVariable {
+    key: Vec<u16>,
+    value: Vec<u16>,
+    order: usize,
+}
+
+#[cfg(test)]
+fn environment_block_from_variables(
+    inherited: &[(OsString, OsString)],
+    overrides: &[(OsString, OsString)],
+) -> Result<Vec<u16>, LaunchError> {
+    let mut builder: EnvironmentBlockBuilder = EnvironmentBlockBuilder::new();
+    for (key, value) in inherited.iter().chain(overrides.iter()) {
+        builder.push(key, value)?;
+    }
+    builder.finish()
+}
+
+struct EnvironmentBlockBuilder {
+    variables: Vec<EnvironmentVariable>,
+    retained_bytes: usize,
+}
+
+impl EnvironmentBlockBuilder {
+    const fn new() -> Self {
+        Self {
+            variables: Vec::new(),
+            retained_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, key: &OsStr, value: &OsStr) -> Result<(), LaunchError> {
+        if self.variables.len() == MAX_ENVIRONMENT_INPUT_ENTRIES {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment block exceeds the UTF-16 unit limit",
+            ));
+        }
+        let incoming: EnvironmentVariable =
+            EnvironmentVariable::new(key, value, self.variables.len())?;
+        let incoming_payload_bytes: usize = incoming.payload_bytes()?;
+        let previous_length: usize = self.variables.len();
+        let previous_capacity: usize = self.variables.capacity();
+        let available_slots: usize = MAX_ENVIRONMENT_INPUT_ENTRIES
+            .checked_sub(previous_length)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment variable count cannot be represented",
+            ))?;
+        let requested_slots: usize = if previous_capacity == previous_length {
+            ENVIRONMENT_VARIABLE_RESERVATION_CHUNK.min(available_slots)
+        } else {
+            0
+        };
+        let requested_storage_bytes: usize = requested_slots
+            .checked_mul(size_of::<EnvironmentVariable>())
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment variable allocation size cannot be represented",
+            ))?;
+        let additional_bytes: usize = incoming_payload_bytes
+            .checked_add(requested_storage_bytes)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment retained memory cannot be represented",
+            ))?;
+        let retained_bytes: usize =
+            self.retained_bytes
+                .checked_add(additional_bytes)
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment retained memory cannot be represented",
+                ))?;
+        if retained_bytes > MAX_RETAINED_ENVIRONMENT_BYTES {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment retained memory exceeds the configured limit",
+            ));
+        }
+        if requested_slots != 0 {
+            self.variables
+                .try_reserve_exact(requested_slots)
+                .map_err(|_| {
+                    LaunchError::InvalidInput("Windows environment variable allocation failed")
+                })?;
+        }
+        let actual_capacity_growth: usize = self
+            .variables
+            .capacity()
+            .checked_sub(previous_capacity)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment variable capacity cannot be represented",
+            ))?;
+        let actual_storage_bytes: usize = actual_capacity_growth
+            .checked_mul(size_of::<EnvironmentVariable>())
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment variable allocation size cannot be represented",
+            ))?;
+        let actual_additional_bytes: usize = incoming_payload_bytes
+            .checked_add(actual_storage_bytes)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment retained memory cannot be represented",
+            ))?;
+        let actual_retained_bytes: usize = self
+            .retained_bytes
+            .checked_add(actual_additional_bytes)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment retained memory cannot be represented",
+            ))?;
+        if actual_retained_bytes > MAX_RETAINED_ENVIRONMENT_BYTES {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment retained memory exceeds the configured limit",
+            ));
+        }
+        self.retained_bytes = actual_retained_bytes;
+        self.variables.push(incoming);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<u16>, LaunchError> {
+        let mut comparison_error: Option<LaunchError> = None;
+        self.variables.sort_unstable_by(
+            |left: &EnvironmentVariable, right: &EnvironmentVariable| {
+                if comparison_error.is_some() {
+                    return Ordering::Equal;
+                }
+                match compare_environment_key_units(&left.key, &right.key) {
+                    Ok(Ordering::Equal) => left.order.cmp(&right.order),
+                    Ok(ordering) => ordering,
+                    Err(error) => {
+                        comparison_error = Some(error);
+                        Ordering::Equal
+                    }
+                }
+            },
+        );
+        if let Some(error) = comparison_error {
+            return Err(error);
+        }
+        let mut deduplication_error: Option<LaunchError> = None;
+        self.variables.dedup_by(
+            |current: &mut EnvironmentVariable, previous: &mut EnvironmentVariable| {
+                if deduplication_error.is_some() {
+                    return false;
+                }
+                match compare_environment_key_units(&previous.key, &current.key) {
+                    Ok(Ordering::Equal) => {
+                        previous.value = std::mem::take(&mut current.value);
+                        true
+                    }
+                    Ok(_) => false,
+                    Err(error) => {
+                        deduplication_error = Some(error);
+                        false
+                    }
+                }
+            },
+        );
+        if let Some(error) = deduplication_error {
+            return Err(error);
+        }
+        self.retained_bytes = retained_environment_bytes(&self.variables)?;
+        let block_capacity: usize = self
+            .variables
+            .iter()
+            .try_fold(2usize, |capacity: usize, variable: &EnvironmentVariable| {
+                capacity
+                    .checked_add(variable.key.len())
+                    .and_then(|next: usize| next.checked_add(1))
+                    .and_then(|next: usize| next.checked_add(variable.value.len()))
+                    .and_then(|next: usize| next.checked_add(1))
+            })
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment block size cannot be represented",
+            ))?;
+        if block_capacity > MAX_ENVIRONMENT_BLOCK_UNITS {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment block exceeds the UTF-16 unit limit",
+            ));
+        }
+        let block_bytes: usize =
+            block_capacity
+                .checked_mul(size_of::<u16>())
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment block size cannot be represented",
+                ))?;
+        let retained_bytes: usize =
+            self.retained_bytes
+                .checked_add(block_bytes)
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment retained memory cannot be represented",
+                ))?;
+        if retained_bytes > MAX_RETAINED_ENVIRONMENT_BYTES {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment retained memory exceeds the configured limit",
+            ));
+        }
+        let mut block: Vec<u16> = Vec::new();
+        block.try_reserve_exact(block_capacity).map_err(|_| {
+            LaunchError::InvalidInput("Windows environment block allocation failed")
+        })?;
+        let actual_block_bytes: usize =
+            block
+                .capacity()
+                .checked_mul(size_of::<u16>())
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment block size cannot be represented",
+                ))?;
+        let actual_retained_bytes: usize = self
+            .retained_bytes
+            .checked_add(actual_block_bytes)
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment retained memory cannot be represented",
+            ))?;
+        if actual_retained_bytes > MAX_RETAINED_ENVIRONMENT_BYTES {
+            return Err(LaunchError::InvalidInput(
+                "Windows environment retained memory exceeds the configured limit",
+            ));
+        }
+        for variable in self.variables {
+            block.extend(variable.key);
+            block.push(u16::from(b'='));
+            block.extend(variable.value);
+            block.push(0);
+        }
+        if block.is_empty() {
+            block.extend([0, 0]);
+        } else {
+            block.push(0);
+        }
+        Ok(block)
+    }
+}
+
+impl EnvironmentVariable {
+    fn new(key: &OsStr, value: &OsStr, order: usize) -> Result<Self, LaunchError> {
+        let key_units: Vec<u16> = bounded_environment_units(
+            key,
+            "Windows environment key exceeds the UTF-16 unit limit",
+        )?;
+        ensure_environment_key(&key_units)?;
+        let value_units: Vec<u16> = bounded_environment_units(
+            value,
+            "Windows environment value exceeds the UTF-16 unit limit",
+        )?;
+        ensure_environment_value(&value_units)?;
+        Ok(Self {
+            key: key_units,
+            value: value_units,
+            order,
+        })
+    }
+
+    fn payload_bytes(&self) -> Result<usize, LaunchError> {
+        let payload_units: usize = self
+            .key
+            .capacity()
+            .checked_add(self.value.capacity())
+            .ok_or(LaunchError::InvalidInput(
+                "Windows environment payload size cannot be represented",
+            ))?;
+        let payload_bytes: usize =
+            payload_units
+                .checked_mul(size_of::<u16>())
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment payload size cannot be represented",
+                ))?;
+        Ok(payload_bytes)
+    }
+}
+
+fn retained_environment_bytes(variables: &Vec<EnvironmentVariable>) -> Result<usize, LaunchError> {
+    let variable_storage_bytes: usize = variables
+        .capacity()
+        .checked_mul(size_of::<EnvironmentVariable>())
+        .ok_or(LaunchError::InvalidInput(
+            "Windows environment variable allocation size cannot be represented",
+        ))?;
+    variables.iter().try_fold(
+        variable_storage_bytes,
+        |retained_bytes: usize, variable: &EnvironmentVariable| {
+            retained_bytes
+                .checked_add(variable.payload_bytes()?)
+                .ok_or(LaunchError::InvalidInput(
+                    "Windows environment retained memory cannot be represented",
+                ))
+        },
+    )
+}
+
+fn bounded_environment_units(value: &OsStr, error: &'static str) -> Result<Vec<u16>, LaunchError> {
+    let mut bounded: Vec<u16> = Vec::new();
+    for unit in value.encode_wide().take(MAX_ENVIRONMENT_STRING_UNITS + 1) {
+        bounded.try_reserve(1).map_err(|_| {
+            LaunchError::InvalidInput("Windows environment string allocation failed")
+        })?;
+        bounded.push(unit);
+    }
+    if bounded.len() > MAX_ENVIRONMENT_STRING_UNITS {
+        return Err(LaunchError::InvalidInput(error));
+    }
+    Ok(bounded)
+}
+
+fn ensure_environment_key(units: &[u16]) -> Result<(), LaunchError> {
+    if units.is_empty() || units.contains(&0) {
+        return Err(LaunchError::InvalidInput(
+            "Windows environment keys cannot be empty or contain a NUL code unit",
+        ));
+    }
+    if units.first() == Some(&u16::from(b'=')) {
+        if units.len() != 3 || !is_ascii_drive_letter(units[1]) || units[2] != u16::from(b':') {
+            return Err(LaunchError::InvalidInput(
+                "Windows hidden environment keys must name a drive current directory",
+            ));
+        }
+        return Ok(());
+    }
+    if units.contains(&u16::from(b'=')) {
+        return Err(LaunchError::InvalidInput(
+            "Windows environment keys cannot contain an equals sign",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_environment_value(units: &[u16]) -> Result<(), LaunchError> {
+    if units.contains(&0) {
+        return Err(LaunchError::InvalidInput(
+            "Windows environment values cannot contain a NUL code unit",
+        ));
+    }
+    Ok(())
+}
+
+fn is_ascii_drive_letter(unit: u16) -> bool {
+    (u16::from(b'A')..=u16::from(b'Z')).contains(&unit)
+        || (u16::from(b'a')..=u16::from(b'z')).contains(&unit)
+}
+
+fn compare_environment_key_units(left: &[u16], right: &[u16]) -> Result<Ordering, LaunchError> {
+    let left_length: i32 = i32::try_from(left.len()).map_err(|_| {
+        LaunchError::InvalidInput("Windows environment key length cannot be represented")
+    })?;
+    let right_length: i32 = i32::try_from(right.len()).map_err(|_| {
+        LaunchError::InvalidInput("Windows environment key length cannot be represented")
+    })?;
+    let comparison: i32 = unsafe {
+        CompareStringOrdinal(
+            left.as_ptr(),
+            left_length,
+            right.as_ptr(),
+            right_length,
+            COMPARE_STRING_IGNORE_CASE,
+        )
+    };
+    match comparison {
+        COMPARE_STRING_LESS_THAN => Ok(Ordering::Less),
+        COMPARE_STRING_EQUAL => Ok(Ordering::Equal),
+        COMPARE_STRING_GREATER_THAN => Ok(Ordering::Greater),
+        _ => Err(LaunchError::InvalidInput(
+            "Windows environment key comparison failed",
+        )),
+    }
 }
 
 fn child_visible_program_path(path: &Path) -> Result<OsString, LaunchError> {
@@ -802,5 +1205,305 @@ mod tests {
         let visible: OsString = child_visible_program_path(Path::new(&path))?;
         assert_eq!(visible, path);
         Ok(())
+    }
+
+    #[test]
+    fn environment_block_uses_windows_unicode_case_insensitive_order() -> Result<(), LaunchError> {
+        let lower: OsString = OsString::from("__DISROBE_ENV_é_ORDER__");
+        let upper: OsString = OsString::from("__DISROBE_ENV_Ê_ORDER__");
+        let overrides: [(OsString, OsString); 2] = [
+            (lower.clone(), OsString::from("lower")),
+            (upper.clone(), OsString::from("upper")),
+        ];
+        let block: Vec<u16> = environment_block_from_variables(&[], &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        let lower_position: usize = entries
+            .iter()
+            .position(|(key, _): &(OsString, OsString)| key == &lower)
+            .unwrap_or(entries.len());
+        let upper_position: usize = entries
+            .iter()
+            .position(|(key, _): &(OsString, OsString)| key == &upper)
+            .unwrap_or(entries.len());
+        assert!(lower_position < entries.len());
+        assert!(upper_position < entries.len());
+        assert!(
+            lower_position < upper_position,
+            "Windows Unicode ordinal order must compare é before Ê"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_collapses_non_ascii_case_insensitive_duplicates() -> Result<(), LaunchError>
+    {
+        let first: OsString = OsString::from("__DISROBE_ENV_É_DUPLICATE__");
+        let second: OsString = OsString::from("__DISROBE_ENV_é_DUPLICATE__");
+        let overrides: [(OsString, OsString); 2] = [
+            (first.clone(), OsString::from("first")),
+            (second.clone(), OsString::from("second")),
+        ];
+        let block: Vec<u16> = environment_block_from_variables(&[], &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        let matching: Vec<&(OsString, OsString)> = entries
+            .iter()
+            .filter(|(key, _): &&(OsString, OsString)| key == &first || key == &second)
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].1, OsString::from("second"));
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_preserves_hidden_drive_current_directory_variables()
+    -> Result<(), LaunchError> {
+        let uppercase: OsString = OsString::from("=C:");
+        let lowercase: OsString = OsString::from("=c:");
+        let inherited: [(OsString, OsString); 1] =
+            [(uppercase.clone(), OsString::from(r"C:\inherited"))];
+        let overrides: [(OsString, OsString); 1] =
+            [(lowercase.clone(), OsString::from(r"C:\second"))];
+        let block: Vec<u16> = environment_block_from_variables(&inherited, &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        let matching: Vec<&(OsString, OsString)> = entries
+            .iter()
+            .filter(|(key, _): &&(OsString, OsString)| key == &uppercase || key == &lowercase)
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].0, uppercase);
+        assert_eq!(matching[0].1, OsString::from(r"C:\second"));
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_rejects_embedded_nul_in_values() {
+        let key: OsString = OsString::from("__DISROBE_ENV_NUL_VALUE__");
+        let overrides: [(OsString, OsString); 1] = [(key, OsString::from("left\0right"))];
+        let result: Result<Vec<u16>, LaunchError> =
+            environment_block_from_variables(&[], &overrides);
+        assert!(matches!(
+            result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("NUL")
+        ));
+    }
+
+    #[test]
+    fn environment_block_has_exact_utf16_double_nul_termination() -> Result<(), LaunchError> {
+        let key: OsString = OsString::from("__DISROBE_ENV_🦀_TERMINATION__");
+        let value: OsString = OsString::from("value-🧪");
+        let overrides: [(OsString, OsString); 1] = [(key.clone(), value.clone())];
+        let block: Vec<u16> = environment_block_from_variables(&[], &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        let expected: Vec<u16> = key
+            .encode_wide()
+            .chain([u16::from(b'=')])
+            .chain(value.encode_wide())
+            .chain([0, 0])
+            .collect();
+        assert!(block.len() >= 2);
+        assert_eq!(block, expected);
+        assert_eq!(
+            entries.iter().find(|(candidate, _)| candidate == &key),
+            Some(&(key, value))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_environment_block_has_exact_utf16_double_nul_termination() -> Result<(), LaunchError> {
+        let block: Vec<u16> = environment_block_from_variables(&[], &[])?;
+        assert_eq!(block, vec![0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_rejects_oversized_key_and_value() {
+        let oversized_key: OsString = OsString::from("K".repeat(MAX_ENVIRONMENT_STRING_UNITS + 1));
+        let key_result: Result<Vec<u16>, LaunchError> =
+            environment_block_from_variables(&[], &[(oversized_key, OsString::from("value"))]);
+        assert!(matches!(
+            key_result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("key")
+        ));
+
+        let oversized_value: OsString =
+            OsString::from("V".repeat(MAX_ENVIRONMENT_STRING_UNITS + 1));
+        let value_result: Result<Vec<u16>, LaunchError> =
+            environment_block_from_variables(&[], &[(OsString::from("key"), oversized_value)]);
+        assert!(matches!(
+            value_result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("value")
+        ));
+    }
+
+    #[test]
+    fn environment_block_rejects_oversized_aggregate() {
+        let entry_count: usize = MAX_ENVIRONMENT_BLOCK_UNITS / 32_000 + 1;
+        let inherited: Vec<(OsString, OsString)> = (0..entry_count)
+            .map(|index: usize| {
+                (
+                    OsString::from(format!("K{index}")),
+                    OsString::from("V".repeat(31_990)),
+                )
+            })
+            .collect();
+        let result: Result<Vec<u16>, LaunchError> =
+            environment_block_from_variables(&inherited, &[]);
+        assert!(matches!(
+            result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("block")
+        ));
+    }
+
+    #[test]
+    fn environment_block_replaces_bounded_duplicate_input_by_delta() -> Result<(), LaunchError> {
+        let overrides: Vec<(OsString, OsString)> = (0..100_000usize)
+            .map(|index: usize| {
+                (
+                    OsString::from("__DISROBE_ENV_REPEATED__"),
+                    OsString::from(index.to_string()),
+                )
+            })
+            .collect();
+        let block: Vec<u16> = environment_block_from_variables(&[], &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        assert_eq!(
+            entries,
+            [(
+                OsString::from("__DISROBE_ENV_REPEATED__"),
+                OsString::from("99999")
+            )]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_rejects_pre_dedup_payload_retention_amplification() {
+        let repeated_value: OsString = OsString::from("V".repeat(2_048));
+        let overrides: Vec<(OsString, OsString)> = (0..8_000usize)
+            .map(|_| {
+                (
+                    OsString::from("__DISROBE_ENV_RETAINED_PAYLOAD__"),
+                    repeated_value.clone(),
+                )
+            })
+            .collect();
+        let result: Result<Vec<u16>, LaunchError> =
+            environment_block_from_variables(&[], &overrides);
+        assert!(matches!(
+            result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("retained")
+        ));
+    }
+
+    #[test]
+    fn environment_block_rejects_pre_dedup_entry_structure_amplification() -> Result<(), LaunchError>
+    {
+        let key: OsString = OsString::from("K");
+        let value: OsString = OsString::from("V");
+        let entry_count: usize = MAX_RETAINED_ENVIRONMENT_BYTES
+            .div_ceil(size_of::<EnvironmentVariable>())
+            .checked_add(1)
+            .ok_or(LaunchError::InvalidInput(
+                "test entry count cannot be represented",
+            ))?;
+        let mut builder: EnvironmentBlockBuilder = EnvironmentBlockBuilder::new();
+        let mut result: Result<(), LaunchError> = Ok(());
+        for _ in 0..entry_count {
+            result = builder.push(&key, &value);
+            if result.is_err() {
+                break;
+            }
+        }
+        assert!(matches!(
+            result,
+            Err(LaunchError::InvalidInput(message)) if message.contains("retained")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn environment_retained_memory_matches_owned_allocations() -> Result<(), LaunchError> {
+        let mut builder: EnvironmentBlockBuilder = EnvironmentBlockBuilder::new();
+        for index in 0..17usize {
+            builder.push(
+                &OsString::from(format!("KEY_{index}")),
+                &OsString::from("value".repeat(index + 1)),
+            )?;
+            let variable_storage_bytes: usize = builder
+                .variables
+                .capacity()
+                .checked_mul(size_of::<EnvironmentVariable>())
+                .ok_or(LaunchError::InvalidInput(
+                    "test variable storage size cannot be represented",
+                ))?;
+            let payload_bytes: usize = builder.variables.iter().try_fold(
+                0usize,
+                |payload_bytes: usize, variable: &EnvironmentVariable| {
+                    let variable_bytes: usize = variable
+                        .key
+                        .capacity()
+                        .checked_add(variable.value.capacity())
+                        .and_then(|units: usize| units.checked_mul(size_of::<u16>()))
+                        .ok_or(LaunchError::InvalidInput(
+                            "test payload size cannot be represented",
+                        ))?;
+                    payload_bytes
+                        .checked_add(variable_bytes)
+                        .ok_or(LaunchError::InvalidInput(
+                            "test aggregate payload size cannot be represented",
+                        ))
+                },
+            )?;
+            let expected: usize = variable_storage_bytes.checked_add(payload_bytes).ok_or(
+                LaunchError::InvalidInput("test retained size cannot be represented"),
+            )?;
+            assert_eq!(builder.retained_bytes, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn environment_block_preserves_first_key_spelling_and_latest_duplicate_value()
+    -> Result<(), LaunchError> {
+        let first: OsString = OsString::from("__DISROBE_ENV_MiXeD_DUPLICATE__");
+        let second: OsString = OsString::from("__DISROBE_ENV_mixed_duplicate__");
+        let inherited: [(OsString, OsString); 1] = [(first.clone(), OsString::from("inherited"))];
+        let overrides: [(OsString, OsString); 1] = [(second, OsString::from("latest"))];
+        let block: Vec<u16> = environment_block_from_variables(&inherited, &overrides)?;
+        let entries: Vec<(OsString, OsString)> = decode_environment_block(&block);
+        assert_eq!(entries, [(first, OsString::from("latest"))]);
+        Ok(())
+    }
+
+    fn decode_environment_block(block: &[u16]) -> Vec<(OsString, OsString)> {
+        let mut entries: Vec<(OsString, OsString)> = Vec::new();
+        let mut offset: usize = 0;
+        while offset < block.len() {
+            let remaining: &[u16] = &block[offset..];
+            let Some(length): Option<usize> = remaining.iter().position(|unit: &u16| *unit == 0)
+            else {
+                return entries;
+            };
+            if length == 0 {
+                assert!(remaining == [0] || remaining == [0, 0]);
+                break;
+            }
+            let entry: &[u16] = &remaining[..length];
+            let separator_start: usize = usize::from(entry.first() == Some(&u16::from(b'=')));
+            let Some(separator): Option<usize> = entry[separator_start..]
+                .iter()
+                .position(|unit: &u16| *unit == u16::from(b'='))
+                .map(|position: usize| position + separator_start)
+            else {
+                return entries;
+            };
+            entries.push((
+                OsString::from_wide(&entry[..separator]),
+                OsString::from_wide(&entry[separator + 1..]),
+            ));
+            offset += length + 1;
+        }
+        entries
     }
 }
