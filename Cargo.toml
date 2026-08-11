@@ -169,12 +169,14 @@ disrobe-core = { path = "crates/disrobe-core", version = "0.10.5" }
 disrobe-emit = { path = "crates/disrobe-emit", version = "0.10.5" }
 disrobe-ir = { path = "crates/disrobe-ir", version = "0.10.5" }
 disrobe-llm-metadata = { path = "crates/disrobe-llm-metadata", version = "0.10.5" }
+disrobe-lift-x86 = { path = "crates/disrobe-lift-x86", version = "0.10.5" }
 disrobe-mba = { path = "crates/disrobe-mba", version = "0.10.5" }
 disrobe-mcp = { path = "crates/disrobe-mcp", version = "0.10.5", default-features = false }
 disrobe-nir = { path = "crates/disrobe-nir", version = "0.10.5" }
 disrobe-nir-lift = { path = "crates/disrobe-nir-lift", version = "0.10.5" }
 disrobe-semdiff = { path = "crates/disrobe-semdiff", version = "0.10.5" }
 disrobe-similarity = { path = "crates/disrobe-similarity", version = "0.10.5" }
+disrobe-sleigh = { path = "crates/disrobe-sleigh", version = "0.10.5" }
 disrobe-taint = { path = "crates/disrobe-taint", version = "0.10.5" }
 disrobe-testkit = { path = "crates/disrobe-testkit", version = "0.10.5" }
 disrobe-tool-process = { path = "crates/disrobe-tool-process", version = "0.10.5" }
@@ -209,6 +211,7 @@ disrobe-pass-swift-objc = { path = "crates/disrobe-pass-swift-objc", version = "
 disrobe-pass-wasm-deob = { path = "crates/disrobe-pass-wasm-deob", version = "0.10.5" }
 disrobe-pass-webview = { path = "crates/disrobe-pass-webview", version = "0.10.5" }
 disrobe-playground = { path = "crates/disrobe-playground", version = "0.10.5" }
+disrobe-plugin-loader = { path = "crates/disrobe-plugin-loader", version = "0.10.5" }
 disrobe-plugin-host = { path = "crates/disrobe-plugin-host", version = "0.10.5" }
 disrobe-prowl = { path = "crates/disrobe-prowl", version = "0.10.5" }
 disrobe-py-marshal = { path = "crates/disrobe-py-marshal", version = "0.10.5" }

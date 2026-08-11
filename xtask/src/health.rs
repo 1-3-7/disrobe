@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
@@ -325,6 +325,19 @@ fn check_internal_versions(
         }
     }
 
+    let workspace_default_enabled_dirs: BTreeSet<String> = deps
+        .values()
+        .filter_map(|specification: &toml::Value| {
+            let table: &toml::map::Map<String, toml::Value> = specification.as_table()?;
+            let path: &str = table.get("path")?.as_str()?;
+            let default_features_enabled: bool = table
+                .get("default-features")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(true);
+            default_features_enabled.then(|| path.replace('\\', "/"))
+        })
+        .collect();
+
     for (name, spec) in deps {
         let Some(table) = spec.as_table() else {
             continue;
@@ -355,6 +368,113 @@ fn check_internal_versions(
                 ),
             );
         }
+    }
+
+    for (member_dir, doc) in member_manifests {
+        check_member_internal_version_pins(
+            member_dir,
+            doc,
+            &by_dir,
+            &workspace_default_enabled_dirs,
+            report,
+        );
+    }
+}
+
+fn normalized_dependency_dir(member_dir: &str, dependency_path: &str) -> Option<String> {
+    let joined: PathBuf = Path::new(member_dir).join(dependency_path);
+    let mut components: Vec<String> = Vec::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(value) => components.push(value.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                components.pop()?;
+            }
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some(components.join("/"))
+}
+
+fn check_member_internal_version_pins(
+    member_dir: &str,
+    doc: &toml::Value,
+    internal_dirs: &BTreeMap<String, String>,
+    workspace_default_enabled_dirs: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    for section_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        check_dependency_table_for_internal_version_pins(
+            member_dir,
+            section_name,
+            doc.get(section_name),
+            internal_dirs,
+            workspace_default_enabled_dirs,
+            report,
+        );
+    }
+    let Some(targets) = doc.get("target").and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (target_name, target_doc) in targets {
+        for section_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let location: String = format!("target.{target_name}.{section_name}");
+            check_dependency_table_for_internal_version_pins(
+                member_dir,
+                &location,
+                target_doc.get(section_name),
+                internal_dirs,
+                workspace_default_enabled_dirs,
+                report,
+            );
+        }
+    }
+}
+
+fn check_dependency_table_for_internal_version_pins(
+    member_dir: &str,
+    location: &str,
+    section: Option<&toml::Value>,
+    internal_dirs: &BTreeMap<String, String>,
+    workspace_default_enabled_dirs: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    let Some(dependencies) = section.and_then(toml::Value::as_table) else {
+        return;
+    };
+    for (dependency_name, specification) in dependencies {
+        let Some(table) = specification.as_table() else {
+            continue;
+        };
+        let Some(path) = table.get("path").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let Some(dependency_dir) = normalized_dependency_dir(member_dir, path) else {
+            continue;
+        };
+        if !internal_dirs.contains_key(&dependency_dir) {
+            continue;
+        }
+        let disables_workspace_defaults: bool = table
+            .get("default-features")
+            .and_then(toml::Value::as_bool)
+            .is_some_and(|enabled: bool| !enabled)
+            && workspace_default_enabled_dirs.contains(&dependency_dir);
+        if table.get("version").is_none() && disables_workspace_defaults {
+            continue;
+        }
+        let check: &'static str = if table.get("version").and_then(toml::Value::as_str).is_some() {
+            "internal-version-pin"
+        } else {
+            "internal-workspace-bypass"
+        };
+        report.fail(
+            check,
+            format!(
+                "{member_dir}/Cargo.toml [{location}] {dependency_name} declares an internal path dependency outside [workspace.dependencies]; use `workspace = true`, except when a local path is required to disable workspace defaults"
+            ),
+        );
     }
 }
 
@@ -592,5 +712,142 @@ fn collect_workspace_refs(section: Option<&toml::Value>, out: &mut BTreeSet<Stri
             collect_workspace_refs(spec.get("dev-dependencies"), out);
             collect_workspace_refs(spec.get("build-dependencies"), out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn internal_version_report(member_manifest: &str) -> Result<Report, toml::de::Error> {
+        let root_doc: toml::Value = toml::from_str(
+            r#"
+                [workspace.dependencies]
+                disrobe-a = { path = "crates/disrobe-a", version = "0.10.5" }
+                disrobe-b = { path = "crates/disrobe-b", version = "0.10.5" }
+            "#,
+        )?;
+        let mut member_manifests: BTreeMap<String, toml::Value> = BTreeMap::new();
+        member_manifests.insert(
+            "crates/disrobe-a".to_owned(),
+            toml::from_str(
+                r#"
+                    [package]
+                    name = "disrobe-a"
+                    version = "0.10.5"
+                "#,
+            )?,
+        );
+        member_manifests.insert(
+            "crates/disrobe-b".to_owned(),
+            toml::from_str(member_manifest)?,
+        );
+        let mut report: Report = Report::default();
+        check_internal_versions(
+            &root_doc,
+            &member_manifests,
+            "0.10.5",
+            Path::new("."),
+            &mut report,
+        );
+        Ok(report)
+    }
+
+    #[test]
+    fn internal_literal_path_dependency_fails_health() -> Result<(), toml::de::Error> {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [dev-dependencies.disrobe-a]
+                path = "../disrobe-a"
+                version = "0.10.4"
+            "#,
+        )?;
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding: &Finding| finding.check == "internal-version-pin")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn target_specific_internal_literal_path_dependency_fails_health() -> Result<(), toml::de::Error>
+    {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [target.'cfg(windows)'.build-dependencies]
+                disrobe-a = { path = "../disrobe-a", version = "0.10.4" }
+            "#,
+        )?;
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding: &Finding| finding.check == "internal-version-pin")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_internal_dependency_passes_health() -> Result<(), toml::de::Error> {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [dependencies]
+                disrobe-a = { workspace = true }
+            "#,
+        )?;
+        assert!(report.findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn internal_path_without_a_version_still_fails_health() -> Result<(), toml::de::Error> {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [dependencies]
+                disrobe-a = { path = "../disrobe-a" }
+            "#,
+        )?;
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding: &Finding| finding.check == "internal-workspace-bypass")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_path_can_disable_workspace_defaults_without_a_version() -> Result<(), toml::de::Error>
+    {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [dependencies]
+                disrobe-a = { path = "../disrobe-a", default-features = false }
+            "#,
+        )?;
+        assert!(report.findings.is_empty());
+        Ok(())
     }
 }

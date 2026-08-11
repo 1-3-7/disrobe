@@ -16,8 +16,8 @@ workspace = true
 
 [dependencies]
 disrobe-nir = { workspace = true }
-disrobe-lift-x86 = { path = "../disrobe-lift-x86", version = "0.10.3" }
-disrobe-sleigh = { path = "../disrobe-sleigh", version = "0.10.3" }
+disrobe-lift-x86 = { workspace = true }
+disrobe-sleigh = { workspace = true }
 disrobe-pass-as3 = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true, optional = true }
 disrobe-pass-jvm = { workspace = true }

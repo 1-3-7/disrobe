@@ -21,8 +21,8 @@ crate-type = ["cdylib", "rlib"]
 disrobe-core = { workspace = true }
 disrobe-py-marshal = { workspace = true }
 disrobe-pass-wasm-deob = { workspace = true }
-disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", version = "0.10.0", default-features = false }
-disrobe-pass-pickle = { path = "../disrobe-pass-pickle", version = "0.10.0", default-features = false }
+disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", default-features = false }
+disrobe-pass-pickle = { path = "../disrobe-pass-pickle", default-features = false }
 disrobe-pass-py-decompile = { workspace = true }
 disrobe-pass-pyarmor = { workspace = true }
 disrobe-pass-ruby = { workspace = true }

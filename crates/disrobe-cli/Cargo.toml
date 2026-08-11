@@ -165,7 +165,7 @@ disrobe-pass-pickle = { workspace = true, optional = true }
 disrobe-pass-scriptlang = { workspace = true, optional = true }
 disrobe-pass-nativelang = { workspace = true, optional = true }
 disrobe-passes = { workspace = true, optional = true }
-disrobe-pass-webview = { path = "../disrobe-pass-webview", version = "0.10.3" }
+disrobe-pass-webview = { workspace = true }
 disrobe-plugin-host = { workspace = true, optional = true }
 wasmtime = { workspace = true, features = ["component-model", "cranelift", "runtime", "std"], optional = true }
 thiserror = { workspace = true, optional = true }
