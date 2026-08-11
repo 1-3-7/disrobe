@@ -1,7 +1,5 @@
 use crate::decompile::luau_lift::{LStmt, LiftedStmt};
-use crate::decompile::luau_structure::StructuredBlock;
-
-const MAX_STRUCTURE_DEPTH: usize = 256;
+use crate::decompile::luau_structure::{StructureWorkBudget, StructuredBlock};
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -37,13 +35,14 @@ struct PcNode {
 struct Ctx<'a> {
     nodes: &'a [PcNode],
     end_pc: usize,
-    depth: usize,
-    repeats: Vec<RepeatEdge>,
-    active_repeats: Vec<usize>,
+    repeats: std::collections::BTreeMap<usize, RepeatEdge>,
+    active_repeats: std::collections::BTreeSet<usize>,
     label_candidates: std::collections::BTreeSet<usize>,
     placed_labels: std::collections::BTreeSet<usize>,
     edges: EdgeLedger,
+    non_block_prefix: Vec<usize>,
     truncated_regions: usize,
+    work: StructureWorkBudget,
 }
 
 #[derive(Debug)]
@@ -101,7 +100,7 @@ struct RepeatEdge {
 #[must_use]
 pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> StructureResult {
     let nodes: Vec<PcNode> = build_nodes(stmts);
-    let repeats: Vec<RepeatEdge> = detect_repeats(&nodes);
+    let repeats: std::collections::BTreeMap<usize, RepeatEdge> = detect_repeats(&nodes);
     let label_candidates: std::collections::BTreeSet<usize> = nodes
         .iter()
         .filter_map(|n: &PcNode| match n.node {
@@ -112,13 +111,14 @@ pub(super) fn structure_standard(stmts: &[LiftedStmt], code_len: usize) -> Struc
     let mut ctx: Ctx<'_> = Ctx {
         nodes: &nodes,
         end_pc: code_len + 1,
-        depth: 0,
         repeats,
-        active_repeats: Vec::new(),
+        active_repeats: std::collections::BTreeSet::new(),
         label_candidates,
         placed_labels: std::collections::BTreeSet::new(),
         edges: EdgeLedger::build(&nodes),
+        non_block_prefix: non_block_prefix(&nodes),
         truncated_regions: 0,
+        work: StructureWorkBudget::for_nodes(nodes.len()),
     };
     let mut pos: usize = 0;
     let mut blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, code_len + 1, None);
@@ -146,32 +146,35 @@ fn convert_dangling_gotos(
     surviving: &mut std::collections::BTreeSet<usize>,
 ) -> usize {
     let mut carried: usize = 0;
-    for b in blocks.iter_mut() {
-        match b {
-            StructuredBlock::Goto { pc } => {
-                carried += 1;
-                if placed.contains(pc) {
-                    surviving.insert(*pc);
-                } else {
-                    let target: usize = *pc;
-                    *b = StructuredBlock::Raw(format!("-- unresolved jump to pc {target}"));
+    let mut pending: Vec<&mut [StructuredBlock]> = vec![blocks];
+    while let Some(current) = pending.pop() {
+        for block in current {
+            match block {
+                StructuredBlock::Goto { pc } => {
+                    carried += 1;
+                    if placed.contains(pc) {
+                        surviving.insert(*pc);
+                    } else {
+                        let target: usize = *pc;
+                        *block = StructuredBlock::Raw(format!("-- unresolved jump to pc {target}"));
+                    }
                 }
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    pending.push(then_body.as_mut_slice());
+                    pending.push(else_body.as_mut_slice());
+                }
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => {
+                    pending.push(body.as_mut_slice());
+                }
+                _ => {}
             }
-            StructuredBlock::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                carried += convert_dangling_gotos(then_body, placed, surviving);
-                carried += convert_dangling_gotos(else_body, placed, surviving);
-            }
-            StructuredBlock::While { body, .. }
-            | StructuredBlock::Repeat { body, .. }
-            | StructuredBlock::NumericFor { body, .. }
-            | StructuredBlock::GenericFor { body, .. } => {
-                carried += convert_dangling_gotos(body, placed, surviving);
-            }
-            _ => {}
         }
     }
     carried
@@ -181,54 +184,55 @@ fn prune_unreferenced_labels(
     blocks: &mut Vec<StructuredBlock>,
     surviving: &std::collections::BTreeSet<usize>,
 ) {
-    blocks.retain(|b: &StructuredBlock| {
-        !matches!(b, StructuredBlock::Label { pc } if !surviving.contains(pc))
-    });
-    for b in blocks.iter_mut() {
-        match b {
-            StructuredBlock::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                prune_unreferenced_labels(then_body, surviving);
-                prune_unreferenced_labels(else_body, surviving);
+    let mut pending: Vec<&mut Vec<StructuredBlock>> = vec![blocks];
+    while let Some(current) = pending.pop() {
+        current.retain(|block: &StructuredBlock| {
+            !matches!(block, StructuredBlock::Label { pc } if !surviving.contains(pc))
+        });
+        for block in current.iter_mut() {
+            match block {
+                StructuredBlock::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    pending.push(then_body);
+                    pending.push(else_body);
+                }
+                StructuredBlock::While { body, .. }
+                | StructuredBlock::Repeat { body, .. }
+                | StructuredBlock::NumericFor { body, .. }
+                | StructuredBlock::GenericFor { body, .. } => {
+                    pending.push(body);
+                }
+                _ => {}
             }
-            StructuredBlock::While { body, .. }
-            | StructuredBlock::Repeat { body, .. }
-            | StructuredBlock::NumericFor { body, .. }
-            | StructuredBlock::GenericFor { body, .. } => {
-                prune_unreferenced_labels(body, surviving);
-            }
-            _ => {}
         }
     }
 }
 
 #[must_use]
-fn detect_repeats(nodes: &[PcNode]) -> Vec<RepeatEdge> {
-    let mut out: Vec<RepeatEdge> = Vec::new();
+fn detect_repeats(nodes: &[PcNode]) -> std::collections::BTreeMap<usize, RepeatEdge> {
+    let mut out: std::collections::BTreeMap<usize, RepeatEdge> = std::collections::BTreeMap::new();
     for n in nodes {
         if let Node::Cond { cond, target } = &n.node
             && *target <= n.pc
         {
-            out.push(RepeatEdge {
+            let candidate: RepeatEdge = RepeatEdge {
                 head: *target,
                 cond_pc: n.pc,
                 cond: cond.clone(),
-            });
+            };
+            out.entry(*target)
+                .and_modify(|edge: &mut RepeatEdge| {
+                    if candidate.cond_pc > edge.cond_pc {
+                        *edge = candidate.clone();
+                    }
+                })
+                .or_insert(candidate);
         }
     }
     out
-}
-
-#[must_use]
-fn repeat_at(repeats: &[RepeatEdge], pc: usize) -> Option<RepeatEdge> {
-    repeats
-        .iter()
-        .filter(|e: &&RepeatEdge| e.head == pc)
-        .max_by_key(|e: &&RepeatEdge| e.cond_pc)
-        .cloned()
 }
 
 fn build_nodes(stmts: &[LiftedStmt]) -> Vec<PcNode> {
@@ -307,55 +311,201 @@ struct LoopCtx {
     exit: usize,
 }
 
+#[derive(Debug)]
+enum SequenceState {
+    Scan,
+    AfterRepeat {
+        edge: RepeatEdge,
+    },
+    AfterNumericFor {
+        var: String,
+        init: String,
+        limit: String,
+        step: String,
+    },
+    AfterGenericFor {
+        vars: Vec<String>,
+        iter: String,
+    },
+    AfterWhile {
+        cond: String,
+        head: usize,
+    },
+    AfterThen {
+        cond: String,
+        target: usize,
+        cur_loop: Option<LoopCtx>,
+    },
+    AfterElse {
+        cond: String,
+        then_body: Vec<StructuredBlock>,
+    },
+}
+
+enum Budgeted<T> {
+    Complete(T),
+    Exhausted,
+}
+
+#[derive(Debug)]
+struct SequenceFrame {
+    stop_pc: usize,
+    cur_loop: Option<LoopCtx>,
+    state: SequenceState,
+    out: Vec<StructuredBlock>,
+}
+
+impl SequenceFrame {
+    fn new(stop_pc: usize, cur_loop: Option<LoopCtx>) -> Self {
+        Self {
+            stop_pc,
+            cur_loop,
+            state: SequenceState::Scan,
+            out: Vec::new(),
+        }
+    }
+}
+
 fn structure_seq(
     ctx: &mut Ctx<'_>,
     pos: &mut usize,
     stop_pc: usize,
     cur_loop: Option<LoopCtx>,
 ) -> Vec<StructuredBlock> {
-    let mut out: Vec<StructuredBlock> = Vec::new();
-    if ctx.depth >= MAX_STRUCTURE_DEPTH {
-        ctx.truncated_regions = ctx.truncated_regions.saturating_add(1);
-        out.push(StructuredBlock::Raw(format!(
-            "-- nesting deeper than {MAX_STRUCTURE_DEPTH} left this region unstructured"
-        )));
-        return out;
-    }
-    ctx.depth += 1;
-    while *pos < ctx.nodes.len() {
+    let mut frames: Vec<SequenceFrame> = vec![SequenceFrame::new(stop_pc, cur_loop)];
+    let mut completed: Option<Vec<StructuredBlock>> = None;
+    loop {
+        if let Some(body) = completed.take() {
+            let Some(frame) = frames.last_mut() else {
+                return body;
+            };
+            let state: SequenceState = std::mem::replace(&mut frame.state, SequenceState::Scan);
+            match state {
+                SequenceState::AfterRepeat { edge } => {
+                    ctx.active_repeats.remove(&edge.head);
+                    consume_cond(ctx, pos);
+                    frame.out.push(StructuredBlock::Repeat {
+                        cond: edge.cond,
+                        body,
+                    });
+                }
+                SequenceState::AfterNumericFor {
+                    var,
+                    init,
+                    limit,
+                    step,
+                } => {
+                    skip_block_end(ctx.nodes, pos);
+                    frame.out.push(StructuredBlock::NumericFor {
+                        var,
+                        init,
+                        limit,
+                        step,
+                        body,
+                    });
+                }
+                SequenceState::AfterGenericFor { vars, iter } => {
+                    skip_block_end(ctx.nodes, pos);
+                    frame
+                        .out
+                        .push(StructuredBlock::GenericFor { vars, iter, body });
+                }
+                SequenceState::AfterWhile { cond, head } => {
+                    let mut while_body: Vec<StructuredBlock> = body;
+                    pop_trailing_goto(&mut while_body, head);
+                    frame.out.push(StructuredBlock::While {
+                        cond,
+                        body: while_body,
+                    });
+                }
+                SequenceState::AfterThen {
+                    cond,
+                    target,
+                    cur_loop,
+                } => {
+                    let else_jump: Option<usize> =
+                        preceding_forward_jump(ctx.nodes, *pos, target, cur_loop, ctx.end_pc);
+                    match else_jump {
+                        Some(else_end)
+                            if else_end > target && else_end <= frame.stop_pc.min(ctx.end_pc) =>
+                        {
+                            let mut then_body: Vec<StructuredBlock> = body;
+                            pop_trailing_goto(&mut then_body, else_end);
+                            frame.state = SequenceState::AfterElse { cond, then_body };
+                            frames.push(SequenceFrame::new(else_end, cur_loop));
+                        }
+                        _ => frame.out.push(StructuredBlock::If {
+                            cond,
+                            then_body: body,
+                            else_body: Vec::new(),
+                        }),
+                    }
+                }
+                SequenceState::AfterElse { cond, then_body } => {
+                    frame.out.push(StructuredBlock::If {
+                        cond,
+                        then_body,
+                        else_body: body,
+                    });
+                }
+                SequenceState::Scan => frame.out.extend(body),
+            }
+            continue;
+        }
+
+        let Some(frame) = frames.last_mut() else {
+            return Vec::new();
+        };
+        if *pos >= ctx.nodes.len()
+            || ctx
+                .nodes
+                .get(*pos)
+                .is_some_and(|node: &PcNode| node.pc >= frame.stop_pc)
+        {
+            if let Some(finished) = frames.pop() {
+                completed = Some(finished.out);
+            } else {
+                return Vec::new();
+            }
+            continue;
+        }
+        if !ctx.work.take() {
+            skip_to_stop(ctx.nodes, pos, frame.stop_pc);
+            ctx.truncated_regions = ctx.truncated_regions.saturating_add(1);
+            frame.out.push(StructuredBlock::Raw(
+                "-- structure work budget exhausted".to_owned(),
+            ));
+            if let Some(finished) = frames.pop() {
+                completed = Some(finished.out);
+            } else {
+                return Vec::new();
+            }
+            continue;
+        }
+
         let cur: PcNode = ctx.nodes[*pos].clone();
         let cur_index: usize = *pos;
-        if cur.pc >= stop_pc {
-            break;
-        }
         if ctx.label_candidates.contains(&cur.pc) && !ctx.placed_labels.contains(&cur.pc) {
             ctx.placed_labels.insert(cur.pc);
-            out.push(StructuredBlock::Label { pc: cur.pc });
+            frame.out.push(StructuredBlock::Label { pc: cur.pc });
         }
-        if let Some(edge) = repeat_at(&ctx.repeats, cur.pc)
+        if let Some(edge) = ctx.repeats.get(&cur.pc).cloned()
             && !ctx.active_repeats.contains(&cur.pc)
             && !matches!(cur.node, Node::ForNum { .. } | Node::ForGen { .. })
         {
-            ctx.active_repeats.push(edge.head);
-            let body: Vec<StructuredBlock> = structure_seq(
-                ctx,
-                pos,
+            ctx.active_repeats.insert(edge.head);
+            frame.state = SequenceState::AfterRepeat { edge: edge.clone() };
+            frames.push(SequenceFrame::new(
                 edge.cond_pc,
                 Some(LoopCtx {
                     exit: edge.cond_pc + 2,
                 }),
-            );
-            ctx.active_repeats.pop();
-            consume_cond(ctx, pos);
-            out.push(StructuredBlock::Repeat {
-                cond: edge.cond.clone(),
-                body,
-            });
+            ));
             continue;
         }
         match cur.node {
             Node::Raw(s) => {
-                out.push(StructuredBlock::Raw(s));
+                frame.out.push(StructuredBlock::Raw(s));
                 *pos += 1;
             }
             Node::BlockEnd => {
@@ -369,39 +519,34 @@ fn structure_seq(
                 exit,
             } => {
                 *pos += 1;
-                if exit <= stop_pc {
+                if exit <= frame.stop_pc {
                     ctx.edges.carry(cur_index);
                 }
-                let body: Vec<StructuredBlock> =
-                    structure_seq(ctx, pos, exit, Some(LoopCtx { exit }));
-                skip_block_end(ctx.nodes, pos);
-                out.push(StructuredBlock::NumericFor {
+                frame.state = SequenceState::AfterNumericFor {
                     var,
                     init,
                     limit,
                     step,
-                    body,
-                });
+                };
+                frames.push(SequenceFrame::new(exit, Some(LoopCtx { exit })));
             }
             Node::ForGen { vars, iter, exit } => {
                 *pos += 1;
-                if exit <= stop_pc {
+                if exit <= frame.stop_pc {
                     ctx.edges.carry(cur_index);
                 }
-                let body: Vec<StructuredBlock> =
-                    structure_seq(ctx, pos, exit, Some(LoopCtx { exit }));
-                skip_block_end(ctx.nodes, pos);
-                out.push(StructuredBlock::GenericFor { vars, iter, body });
+                frame.state = SequenceState::AfterGenericFor { vars, iter };
+                frames.push(SequenceFrame::new(exit, Some(LoopCtx { exit })));
             }
             Node::Jump { target } => {
                 *pos += 1;
                 ctx.edges.carry(cur_index);
-                let is_break: bool =
-                    target == usize::MAX || cur_loop.is_some_and(|l: LoopCtx| target == l.exit);
+                let is_break: bool = target == usize::MAX
+                    || frame.cur_loop.is_some_and(|l: LoopCtx| target == l.exit);
                 if is_break {
-                    out.push(StructuredBlock::Break);
+                    frame.out.push(StructuredBlock::Break);
                 } else {
-                    out.push(StructuredBlock::Goto { pc: target });
+                    frame.out.push(StructuredBlock::Goto { pc: target });
                 }
             }
             Node::Cond { cond, target } => {
@@ -409,103 +554,109 @@ fn structure_seq(
                     *pos += 1;
                     continue;
                 }
-                if cur_loop.is_some_and(|l: LoopCtx| l.exit == target) {
+                if frame.cur_loop.is_some_and(|l: LoopCtx| l.exit == target) {
                     *pos += 1;
                     ctx.edges.carry(cur_index);
-                    out.push(StructuredBlock::If {
+                    frame.out.push(StructuredBlock::If {
                         cond: crate::decompile::luau_structure::negate_cond(&cond),
                         then_body: vec![StructuredBlock::Break],
                         else_body: Vec::new(),
                     });
                     continue;
                 }
-                emit_branch(
-                    ctx, pos, &mut out, &cond, target, stop_pc, cur.pc, cur_index, cur_loop,
-                );
+                let back_jump: Option<usize> =
+                    match jump_before(ctx.nodes, target, cur.pc, &mut ctx.work) {
+                        Budgeted::Complete(back_jump) => back_jump,
+                        Budgeted::Exhausted => continue,
+                    };
+                let while_head: Option<usize> = if let Some(head) = back_jump
+                    && head <= cur.pc
+                    && target <= frame.stop_pc
+                {
+                    while_test_covers_back_edge(ctx.nodes, &ctx.non_block_prefix, head, cur.pc)
+                        .then_some(head)
+                } else {
+                    None
+                };
+                if let Some(head) = while_head {
+                    let child_loop: LoopCtx = LoopCtx { exit: target };
+                    *pos += 1;
+                    ctx.edges.carry(cur_index);
+                    frame.state = SequenceState::AfterWhile { cond, head };
+                    frames.push(SequenceFrame::new(target, Some(child_loop)));
+                    continue;
+                }
+                *pos += 1;
+                if target <= frame.stop_pc {
+                    ctx.edges.carry(cur_index);
+                }
+                let effective_then_stop: usize = target.min(frame.stop_pc);
+                let child_loop: Option<LoopCtx> = frame.cur_loop;
+                frame.state = SequenceState::AfterThen {
+                    cond,
+                    target,
+                    cur_loop: child_loop,
+                };
+                frames.push(SequenceFrame::new(effective_then_stop, child_loop));
             }
         }
     }
-    ctx.depth -= 1;
-    out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_branch(
-    ctx: &mut Ctx<'_>,
-    pos: &mut usize,
-    out: &mut Vec<StructuredBlock>,
-    cond: &str,
-    target: usize,
-    stop_pc: usize,
-    cur_pc: usize,
-    cur_index: usize,
-    cur_loop: Option<LoopCtx>,
-) {
-    let back_jump: Option<usize> = jump_before(ctx.nodes, target, cur_pc);
-    if let Some(head) = back_jump
-        && head <= cur_pc
-        && target <= stop_pc
-        && while_test_covers_back_edge(ctx.nodes, head, cur_pc)
-    {
-        let exit: usize = target;
+fn skip_to_stop(nodes: &[PcNode], pos: &mut usize, stop_pc: usize) {
+    while *pos < nodes.len() && nodes[*pos].pc < stop_pc {
         *pos += 1;
-        ctx.edges.carry(cur_index);
-        let mut body: Vec<StructuredBlock> =
-            structure_seq(ctx, pos, target, Some(LoopCtx { exit }));
-        pop_trailing_goto(&mut body, head);
-        out.push(StructuredBlock::While {
-            cond: cond.to_owned(),
-            body,
-        });
-        return;
     }
+}
 
-    *pos += 1;
-    if target <= stop_pc {
-        ctx.edges.carry(cur_index);
-    }
-    let effective_then_stop: usize = target.min(stop_pc);
-    let then_body: Vec<StructuredBlock> = structure_seq(ctx, pos, effective_then_stop, cur_loop);
-    let else_jump: Option<usize> =
-        preceding_forward_jump(ctx.nodes, *pos, target, cur_loop, ctx.end_pc);
-    match else_jump {
-        Some(else_end) if else_end > target && else_end <= stop_pc.min(ctx.end_pc) => {
-            let mut then_trim: Vec<StructuredBlock> = then_body;
-            pop_trailing_goto(&mut then_trim, else_end);
-            let else_body: Vec<StructuredBlock> = structure_seq(ctx, pos, else_end, cur_loop);
-            out.push(StructuredBlock::If {
-                cond: cond.to_owned(),
-                then_body: then_trim,
-                else_body,
-            });
+#[must_use]
+fn while_test_covers_back_edge(
+    nodes: &[PcNode],
+    non_block_prefix: &[usize],
+    head: usize,
+    test_pc: usize,
+) -> bool {
+    let start: usize = nodes.partition_point(|node: &PcNode| node.pc < head);
+    let end: usize = nodes.partition_point(|node: &PcNode| node.pc < test_pc);
+    non_block_prefix[end].saturating_sub(non_block_prefix[start]) == 0
+}
+
+#[must_use]
+fn jump_before(
+    nodes: &[PcNode],
+    target: usize,
+    cond_pc: usize,
+    work: &mut StructureWorkBudget,
+) -> Budgeted<Option<usize>> {
+    let Some(preceding_pc): Option<usize> = target.checked_sub(1) else {
+        return Budgeted::Complete(None);
+    };
+    let mut index: usize = nodes.partition_point(|node: &PcNode| node.pc < preceding_pc);
+    while let Some(n) = nodes.get(index)
+        && n.pc == preceding_pc
+    {
+        if !work.take() {
+            return Budgeted::Exhausted;
         }
-        _ => out.push(StructuredBlock::If {
-            cond: cond.to_owned(),
-            then_body,
-            else_body: Vec::new(),
-        }),
-    }
-}
-
-#[must_use]
-fn while_test_covers_back_edge(nodes: &[PcNode], head: usize, test_pc: usize) -> bool {
-    !nodes
-        .iter()
-        .any(|n: &PcNode| n.pc >= head && n.pc < test_pc && !matches!(n.node, Node::BlockEnd))
-}
-
-#[must_use]
-fn jump_before(nodes: &[PcNode], target: usize, cond_pc: usize) -> Option<usize> {
-    for n in nodes {
-        if n.pc + 1 == target
-            && let Node::Jump { target: jt } = n.node
+        if let Node::Jump { target: jt } = n.node
             && jt != usize::MAX
             && jt <= cond_pc
         {
-            return Some(jt);
+            return Budgeted::Complete(Some(jt));
         }
+        index += 1;
     }
-    None
+    Budgeted::Complete(None)
+}
+
+fn non_block_prefix(nodes: &[PcNode]) -> Vec<usize> {
+    let mut prefix: Vec<usize> = Vec::with_capacity(nodes.len().saturating_add(1));
+    prefix.push(0);
+    for node in nodes {
+        let previous: usize = prefix.last().copied().unwrap_or(0);
+        prefix.push(previous + usize::from(!matches!(node.node, Node::BlockEnd)));
+    }
+    prefix
 }
 
 #[must_use]
@@ -558,6 +709,10 @@ fn skip_block_end(nodes: &[PcNode], pos: &mut usize) {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const PREVIOUS_STRUCTURE_DEPTH_LIMIT: usize = 256;
 
     fn lifted(pc: usize, stmt: LStmt) -> LiftedStmt {
         LiftedStmt { pc, stmt }
@@ -635,44 +790,237 @@ mod tests {
         stmts
     }
 
+    fn nested_guarded_conditionals(depth: usize) -> Vec<LiftedStmt> {
+        let span: usize = depth * 2;
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth + 1);
+        for level in 0..depth {
+            stmts.push(lifted(
+                level,
+                LStmt::Cond {
+                    cond: "enabled".to_owned(),
+                    target: span - level,
+                },
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("result = result + 1".to_owned())));
+        stmts
+    }
+
+    fn execute_source(interpreter: &str, source: &str) -> Option<std::process::Output> {
+        let mut child: std::process::Child = Command::new(interpreter)
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut stdin: std::process::ChildStdin = child.stdin.take()?;
+        let write_result: std::io::Result<()> = stdin.write_all(source.as_bytes());
+        drop(stdin);
+        let output: std::process::Output = child.wait_with_output().ok()?;
+        if write_result.is_err() && output.status.success() {
+            return None;
+        }
+        Some(output)
+    }
+
+    fn nested_else_conditionals(depth: usize) -> (Vec<LiftedStmt>, usize) {
+        let end_pc: usize = depth * 3 + 1;
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth * 3 + 1);
+        for level in 0..depth {
+            let pc: usize = level * 3;
+            stmts.push(lifted(
+                pc,
+                LStmt::Cond {
+                    cond: "enabled".to_owned(),
+                    target: pc + 3,
+                },
+            ));
+            stmts.push(lifted(pc + 1, LStmt::Raw(format!("then_{level} = true"))));
+            stmts.push(lifted(pc + 2, LStmt::Jump { target: end_pc }));
+        }
+        stmts.push(lifted(depth * 3, LStmt::Raw("guarded_leaf()".to_owned())));
+        (stmts, end_pc)
+    }
+
+    fn nested_numeric_fors(depth: usize) -> (Vec<LiftedStmt>, usize) {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth * 2 + 1);
+        for level in 0..depth {
+            stmts.push(lifted(
+                level,
+                LStmt::ForNum {
+                    var: format!("i{level}"),
+                    init: "1".to_owned(),
+                    limit: "1".to_owned(),
+                    step: "1".to_owned(),
+                    end: depth * 2 - level,
+                },
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("guarded_leaf()".to_owned())));
+        for pc in depth + 1..=depth * 2 {
+            stmts.push(lifted(pc, LStmt::BlockEnd));
+        }
+        (stmts, depth * 2 + 1)
+    }
+
+    fn nested_generic_fors(depth: usize) -> (Vec<LiftedStmt>, usize) {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth * 3 + 1);
+        for level in 0..depth {
+            stmts.push(lifted(
+                level,
+                LStmt::ForGen {
+                    iter: "pairs(values)".to_owned(),
+                    end: depth * 2 - level,
+                },
+            ));
+            stmts.push(lifted(
+                level,
+                LStmt::Raw(format!("--FORGLOOP_VARS k{level},v{level}")),
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("guarded_leaf()".to_owned())));
+        for pc in depth + 1..=depth * 2 {
+            stmts.push(lifted(pc, LStmt::BlockEnd));
+        }
+        (stmts, depth * 2 + 1)
+    }
+
+    fn nested_whiles(depth: usize) -> (Vec<LiftedStmt>, usize) {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth * 2 + 1);
+        for level in 0..depth {
+            stmts.push(lifted(
+                level,
+                LStmt::Cond {
+                    cond: "enabled".to_owned(),
+                    target: depth * 2 + 1 - level,
+                },
+            ));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("guarded_leaf()".to_owned())));
+        for offset in 0..depth {
+            stmts.push(lifted(
+                depth + 1 + offset,
+                LStmt::Jump {
+                    target: depth - 1 - offset,
+                },
+            ));
+        }
+        (stmts, depth * 2 + 1)
+    }
+
+    fn nested_repeats(depth: usize) -> (Vec<LiftedStmt>, usize) {
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(depth * 2 + 1);
+        for level in 0..depth {
+            stmts.push(lifted(level, LStmt::Raw(format!("enter_{level}()"))));
+        }
+        stmts.push(lifted(depth, LStmt::Raw("guarded_leaf()".to_owned())));
+        for offset in 0..depth {
+            stmts.push(lifted(
+                depth + 1 + offset,
+                LStmt::Cond {
+                    cond: "finished".to_owned(),
+                    target: depth - 1 - offset,
+                },
+            ));
+        }
+        (stmts, depth * 2 + 1)
+    }
+
     fn nesting_of(blocks: &[StructuredBlock]) -> usize {
-        blocks
-            .iter()
-            .map(|b: &StructuredBlock| match b {
-                StructuredBlock::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => 1 + nesting_of(then_body).max(nesting_of(else_body)),
-                StructuredBlock::While { body, .. }
-                | StructuredBlock::Repeat { body, .. }
-                | StructuredBlock::NumericFor { body, .. }
-                | StructuredBlock::GenericFor { body, .. } => 1 + nesting_of(body),
-                _ => 0,
-            })
-            .max()
-            .unwrap_or(0)
+        let mut maximum: usize = 0;
+        let mut pending: Vec<(&[StructuredBlock], usize)> = vec![(blocks, 0)];
+        while let Some((current, depth)) = pending.pop() {
+            maximum = maximum.max(depth);
+            for block in current {
+                match block {
+                    StructuredBlock::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        pending.push((then_body, depth + 1));
+                        pending.push((else_body, depth + 1));
+                    }
+                    StructuredBlock::While { body, .. }
+                    | StructuredBlock::Repeat { body, .. }
+                    | StructuredBlock::NumericFor { body, .. }
+                    | StructuredBlock::GenericFor { body, .. } => {
+                        pending.push((body, depth + 1));
+                    }
+                    StructuredBlock::Raw(_)
+                    | StructuredBlock::Break
+                    | StructuredBlock::Goto { .. }
+                    | StructuredBlock::Label { .. } => {}
+                }
+            }
+        }
+        maximum
     }
 
     fn carries_depth_marker(blocks: &[StructuredBlock]) -> bool {
-        blocks.iter().any(|b: &StructuredBlock| match b {
-            StructuredBlock::Raw(text) => text.contains("nesting deeper than"),
-            StructuredBlock::If {
-                then_body,
-                else_body,
-                ..
-            } => carries_depth_marker(then_body) || carries_depth_marker(else_body),
-            StructuredBlock::While { body, .. }
-            | StructuredBlock::Repeat { body, .. }
-            | StructuredBlock::NumericFor { body, .. }
-            | StructuredBlock::GenericFor { body, .. } => carries_depth_marker(body),
-            _ => false,
-        })
+        let mut pending: Vec<&[StructuredBlock]> = vec![blocks];
+        while let Some(current) = pending.pop() {
+            for block in current {
+                match block {
+                    StructuredBlock::Raw(text) if text.contains("nesting deeper than") => {
+                        return true;
+                    }
+                    StructuredBlock::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        pending.push(then_body);
+                        pending.push(else_body);
+                    }
+                    StructuredBlock::While { body, .. }
+                    | StructuredBlock::Repeat { body, .. }
+                    | StructuredBlock::NumericFor { body, .. }
+                    | StructuredBlock::GenericFor { body, .. } => pending.push(body),
+                    StructuredBlock::Raw(_)
+                    | StructuredBlock::Break
+                    | StructuredBlock::Goto { .. }
+                    | StructuredBlock::Label { .. } => {}
+                }
+            }
+        }
+        false
+    }
+
+    fn leaf_depth(blocks: &[StructuredBlock], statement: &str) -> Option<usize> {
+        let mut pending: Vec<(&[StructuredBlock], usize)> = vec![(blocks, 0)];
+        while let Some((current, depth)) = pending.pop() {
+            for block in current {
+                match block {
+                    StructuredBlock::Raw(text) if text == statement => return Some(depth),
+                    StructuredBlock::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        pending.push((then_body, depth + 1));
+                        pending.push((else_body, depth + 1));
+                    }
+                    StructuredBlock::While { body, .. }
+                    | StructuredBlock::Repeat { body, .. }
+                    | StructuredBlock::NumericFor { body, .. }
+                    | StructuredBlock::GenericFor { body, .. } => {
+                        pending.push((body, depth + 1));
+                    }
+                    StructuredBlock::Raw(_)
+                    | StructuredBlock::Break
+                    | StructuredBlock::Goto { .. }
+                    | StructuredBlock::Label { .. } => {}
+                }
+            }
+        }
+        None
     }
 
     #[test]
-    fn nesting_far_past_the_limit_returns_instead_of_exhausting_the_stack() {
-        let depth: usize = MAX_STRUCTURE_DEPTH * 8;
+    fn nesting_far_past_the_previous_limit_returns_without_exhausting_the_stack() {
+        let depth: usize = PREVIOUS_STRUCTURE_DEPTH_LIMIT * 8;
         let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
 
         let worker: std::thread::JoinHandle<StructureResult> = std::thread::Builder::new()
@@ -681,20 +1029,267 @@ mod tests {
             .expect("spawn a thread whose stack this walk overflowed before the limit existed");
         let result: StructureResult = worker.join().expect("the walk must return, never overflow");
 
-        assert!(
-            result.truncated_regions > 0,
-            "nesting {depth} deep is past the limit, so the walk must refuse and count it"
+        assert_eq!(result.truncated_regions, 0);
+        assert_eq!(nesting_of(&result.blocks), depth);
+        assert_eq!(leaf_depth(&result.blocks, "r1 = 1"), Some(depth));
+        assert!(!carries_depth_marker(&result.blocks));
+    }
+
+    #[test]
+    fn every_standard_region_kind_structures_renders_and_drops_on_a_small_stack() {
+        let depth: usize = PREVIOUS_STRUCTURE_DEPTH_LIMIT * 2;
+        let then_case: (Vec<LiftedStmt>, usize) = (nested_conditionals(depth), depth * 2);
+        let else_case: (Vec<LiftedStmt>, usize) = nested_else_conditionals(depth);
+        let numeric_case: (Vec<LiftedStmt>, usize) = nested_numeric_fors(depth);
+        let generic_case: (Vec<LiftedStmt>, usize) = nested_generic_fors(depth);
+        let while_case: (Vec<LiftedStmt>, usize) = nested_whiles(depth);
+        let repeat_case: (Vec<LiftedStmt>, usize) = nested_repeats(depth);
+        let cases: Vec<(&str, Vec<LiftedStmt>, usize, &str)> = vec![
+            ("conditional then", then_case.0, then_case.1, "r1 = 1"),
+            (
+                "conditional else",
+                else_case.0,
+                else_case.1,
+                "guarded_leaf()",
+            ),
+            (
+                "numeric for",
+                numeric_case.0,
+                numeric_case.1,
+                "guarded_leaf()",
+            ),
+            (
+                "generic for",
+                generic_case.0,
+                generic_case.1,
+                "guarded_leaf()",
+            ),
+            ("while", while_case.0, while_case.1, "guarded_leaf()"),
+            ("repeat", repeat_case.0, repeat_case.1, "guarded_leaf()"),
+        ];
+        for (name, stmts, code_len, leaf) in cases {
+            let worker: std::thread::JoinHandle<(usize, Option<usize>, usize, usize, usize)> =
+                std::thread::Builder::new()
+                    .stack_size(256 * 1024)
+                    .spawn(move || {
+                        let result: StructureResult = structure_standard(&stmts, code_len);
+                        let tree_depth: usize = nesting_of(&result.blocks);
+                        let guarded_depth: Option<usize> = leaf_depth(&result.blocks, leaf);
+                        let rendered: crate::decompile::luau_lift::RenderedBlocks =
+                            crate::decompile::luau_lift::render_blocks(&result.blocks, 0);
+                        let outcome: (usize, Option<usize>, usize, usize, usize) = (
+                            tree_depth,
+                            guarded_depth,
+                            result.unresolved_jumps,
+                            result.truncated_regions,
+                            rendered.source.len(),
+                        );
+                        drop(result);
+                        outcome
+                    })
+                    .unwrap_or_else(|error: std::io::Error| {
+                        panic!("{name}: cannot create the small-stack worker: {error}")
+                    });
+            let (tree_depth, guarded_depth, unresolved, truncated, rendered_len): (
+                usize,
+                Option<usize>,
+                usize,
+                usize,
+                usize,
+            ) = worker
+                .join()
+                .unwrap_or_else(|_| panic!("{name}: the iterative pipeline exhausted its stack"));
+            assert_eq!(tree_depth, depth, "{name}");
+            assert_eq!(guarded_depth, Some(depth), "{name}");
+            assert_eq!(unresolved, 0, "{name}");
+            assert_eq!(truncated, 0, "{name}");
+            assert!(rendered_len > 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn guarded_body_past_the_previous_limit_reexecutes_after_both_structurers() {
+        let depth: usize = PREVIOUS_STRUCTURE_DEPTH_LIMIT + 1;
+        let stmts: Vec<LiftedStmt> = nested_guarded_conditionals(depth);
+        let standard: StructureResult = structure_standard(&stmts, depth * 2);
+        let luau: crate::decompile::luau_structure::StructureResult =
+            crate::decompile::luau_structure::structure_blocks(&stmts, depth * 2);
+        assert_eq!(standard.truncated_regions, 0);
+        assert_eq!(standard.unresolved_jumps, 0);
+        assert_eq!(luau.refused_regions, 0);
+        assert_eq!(luau.unresolved_jumps, 0);
+        assert_eq!(
+            leaf_depth(&standard.blocks, "result = result + 1"),
+            Some(depth)
         );
-        assert!(
-            nesting_of(&result.blocks) <= MAX_STRUCTURE_DEPTH,
-            "the recovered tree must not nest past the limit that bounds the walk building it, \
-             because every consumer of that tree walks it to the same depth; got {}",
-            nesting_of(&result.blocks)
+        assert_eq!(leaf_depth(&luau.blocks, "result = result + 1"), Some(depth));
+        let recovered_bodies: [String; 2] = [
+            crate::decompile::luau_lift::render_blocks(&standard.blocks, 0).source,
+            crate::decompile::luau_lift::render_blocks(&luau.blocks, 0).source,
+        ];
+        let original: &str =
+            "local result = 0\nif enabled then result = result + 1 end\nprint(result)\n";
+        let mut exercised: usize = 0;
+        for (interpreter, installed) in [
+            ("lua5.1", "C:/msys64/ucrt64/bin/lua5.1.exe"),
+            ("lua5.3", "C:/msys64/ucrt64/bin/lua5.3.exe"),
+            ("lua5.4", "C:/msys64/ucrt64/bin/lua5.4.exe"),
+        ] {
+            let program: &str = if std::path::Path::new(installed).is_file() {
+                installed
+            } else {
+                interpreter
+            };
+            let Some(version): Option<std::process::Output> =
+                Command::new(program).arg("-v").output().ok()
+            else {
+                continue;
+            };
+            if !version.status.success() {
+                continue;
+            }
+            exercised += 1;
+            for enabled in [true, false] {
+                let expected_source: String = format!("local enabled = {enabled}\n{original}");
+                let expected: std::process::Output = execute_source(program, &expected_source)
+                    .unwrap_or_else(|| panic!("{interpreter} must execute the original source"));
+                assert!(
+                    expected.status.success(),
+                    "{interpreter} rejected the original source with enabled={enabled}: {}",
+                    String::from_utf8_lossy(&expected.stderr)
+                );
+                for (index, body) in recovered_bodies.iter().enumerate() {
+                    let source: String = format!(
+                        "local enabled = {enabled}\nlocal result = 0\n{body}print(result)\n"
+                    );
+                    let actual: std::process::Output = execute_source(program, &source)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{interpreter} must execute recovered body {index} with enabled={enabled}"
+                            )
+                        });
+                    assert!(
+                        actual.status.success(),
+                        "{interpreter} rejected recovered body {index} with enabled={enabled}: {}\n{source}",
+                        String::from_utf8_lossy(&actual.stderr)
+                    );
+                    assert_eq!(
+                        actual.stdout, expected.stdout,
+                        "{interpreter} with enabled={enabled}: {source}"
+                    );
+                }
+            }
+        }
+        if std::env::var_os("DISROBE_REQUIRE_LUA").is_some() {
+            assert_eq!(exercised, 3, "lua5.1, lua5.3 and lua5.4 must be on PATH");
+        }
+    }
+
+    #[test]
+    fn exhausted_work_budget_refuses_inside_the_guarded_region() {
+        let stmts: Vec<LiftedStmt> = vec![
+            lifted(
+                0,
+                LStmt::Cond {
+                    cond: "enabled".to_owned(),
+                    target: 3,
+                },
+            ),
+            lifted(1, LStmt::Raw("guarded_leaf()".to_owned())),
+            lifted(2, LStmt::Raw("guarded_tail()".to_owned())),
+        ];
+        let nodes: Vec<PcNode> = build_nodes(&stmts);
+        let repeats: std::collections::BTreeMap<usize, RepeatEdge> = detect_repeats(&nodes);
+        let mut ctx: Ctx<'_> = Ctx {
+            nodes: &nodes,
+            end_pc: 4,
+            repeats,
+            active_repeats: std::collections::BTreeSet::new(),
+            label_candidates: std::collections::BTreeSet::new(),
+            placed_labels: std::collections::BTreeSet::new(),
+            edges: EdgeLedger::build(&nodes),
+            non_block_prefix: non_block_prefix(&nodes),
+            truncated_regions: 0,
+            work: StructureWorkBudget::for_nodes(0),
+        };
+        let mut pos: usize = 0;
+
+        let blocks: Vec<StructuredBlock> = structure_seq(&mut ctx, &mut pos, 4, None);
+
+        assert_eq!(ctx.truncated_regions, 1);
+        assert_eq!(
+            leaf_depth(&blocks, "-- structure work budget exhausted"),
+            Some(0)
         );
-        assert!(
-            carries_depth_marker(&result.blocks),
-            "a reader of the recovered source has to see where structure stopped"
+        assert_eq!(leaf_depth(&blocks, "guarded_leaf()"), None);
+        assert_eq!(leaf_depth(&blocks, "guarded_tail()"), None);
+    }
+
+    #[test]
+    fn public_structurers_refuse_inputs_past_the_total_work_ceiling() {
+        let statement_count: usize = 70_000;
+        let stmts: Vec<LiftedStmt> = (0..statement_count)
+            .map(|pc: usize| lifted(pc, LStmt::Raw("statement()".to_owned())))
+            .collect();
+
+        let standard: StructureResult = structure_standard(&stmts, statement_count);
+        let luau: crate::decompile::luau_structure::StructureResult =
+            crate::decompile::luau_structure::structure_blocks(&stmts, statement_count);
+
+        assert_eq!(standard.truncated_regions, 1);
+        assert_eq!(
+            leaf_depth(&standard.blocks, "-- structure work budget exhausted"),
+            Some(0)
         );
+        assert_eq!(luau.refused_regions, 1);
+        assert_eq!(
+            leaf_depth(
+                &luau.blocks,
+                "error(\"disrobe: structure work budget exhausted\")"
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn dense_nested_back_edges_complete_without_hidden_scan_work() {
+        let depth: usize = 8_192;
+        let (stmts, code_len): (Vec<LiftedStmt>, usize) = nested_whiles(depth);
+
+        let standard: StructureResult = structure_standard(&stmts, code_len);
+        let luau: crate::decompile::luau_structure::StructureResult =
+            crate::decompile::luau_structure::structure_blocks(&stmts, code_len);
+
+        assert_eq!(standard.truncated_regions, 0);
+        assert_eq!(luau.refused_regions, 0);
+        assert_eq!(nesting_of(&standard.blocks), depth);
+        assert_eq!(nesting_of(&luau.blocks), depth);
+    }
+
+    #[test]
+    fn dense_overlapping_malformed_back_edges_remain_within_the_work_ceiling() {
+        let edge_count: usize = 4_096;
+        let mut stmts: Vec<LiftedStmt> = Vec::with_capacity(edge_count * 2);
+        for index in 0..edge_count {
+            let pc: usize = index * 2;
+            stmts.push(lifted(
+                pc,
+                LStmt::Cond {
+                    cond: format!("repeat_{index}"),
+                    target: 0,
+                },
+            ));
+            stmts.push(lifted(pc + 1, LStmt::Jump { target: 0 }));
+        }
+
+        let standard: StructureResult = structure_standard(&stmts, edge_count * 2);
+        let luau: crate::decompile::luau_structure::StructureResult =
+            crate::decompile::luau_structure::structure_blocks(&stmts, edge_count * 2);
+
+        assert_eq!(standard.truncated_regions, 0);
+        assert_eq!(luau.refused_regions, 0);
+        assert!(standard.unresolved_jumps > 0);
+        assert!(luau.unresolved_jumps > 0);
     }
 
     #[test]
@@ -1116,7 +1711,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ladder_of_siblings_costs_nothing_against_a_limit_that_counts_nesting() {
+    fn the_work_budget_accepts_many_shallow_sibling_regions() {
         let branches: usize = 5000;
         let stmts: Vec<LiftedStmt> = branch_ladder(branches);
 
@@ -1124,8 +1719,8 @@ mod tests {
 
         assert_eq!(
             result.truncated_regions, 0,
-            "{branches} sibling branches nest one deep, so a limit on nesting must refuse none of \
-             them; a counter that never released would refuse every branch past its value"
+            "{branches} sibling branches require linear work, so the node-derived budget must \
+             accept all of them"
         );
         assert_eq!(
             count_conditionals(&result.blocks),
@@ -1135,30 +1730,28 @@ mod tests {
         assert_eq!(
             empty_conditionals(&result.blocks),
             0,
-            "and every one of them keeps the statement it guards, which is the defect this limit \
-             shape removes"
+            "every branch must keep the statement it guards"
         );
         assert_eq!(nesting_of(&result.blocks), 1, "the ladder is flat");
     }
 
     #[test]
-    fn a_chain_deeper_than_the_limit_is_still_refused_and_counted() {
-        let depth: usize = MAX_STRUCTURE_DEPTH + 40;
+    fn a_chain_deeper_than_the_previous_limit_keeps_its_guarded_body() {
+        let depth: usize = PREVIOUS_STRUCTURE_DEPTH_LIMIT + 40;
         let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
 
         let result: StructureResult = structure_standard(&stmts, depth * 2);
 
-        assert!(
-            result.truncated_regions > 0,
-            "trading a total budget for a nesting limit moves where the refusal happens; it must \
-             not remove it"
-        );
-        assert!(carries_depth_marker(&result.blocks));
+        assert_eq!(result.truncated_regions, 0);
+        assert_eq!(result.unresolved_jumps, 0);
+        assert_eq!(nesting_of(&result.blocks), depth);
+        assert_eq!(leaf_depth(&result.blocks, "r1 = 1"), Some(depth));
+        assert!(!carries_depth_marker(&result.blocks));
     }
 
     #[test]
-    fn nesting_inside_the_limit_is_recovered_at_its_real_depth() {
-        let depth: usize = MAX_STRUCTURE_DEPTH - 8;
+    fn nesting_inside_the_previous_limit_is_recovered_at_its_real_depth() {
+        let depth: usize = PREVIOUS_STRUCTURE_DEPTH_LIMIT - 8;
         let stmts: Vec<LiftedStmt> = nested_conditionals(depth);
 
         let result: StructureResult = structure_standard(&stmts, depth * 2);

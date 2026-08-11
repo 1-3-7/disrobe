@@ -1,9 +1,14 @@
-use crate::decompile::luau_structure::{StructureResult, StructuredBlock, structure_blocks};
+use crate::decompile::luau_structure::{
+    MAX_STRUCTURE_WORK, StructureResult, StructuredBlock, structure_blocks,
+};
 use crate::decompile::{DecompiledChunk, Fidelity};
 use crate::error::Result;
 use crate::reader::common::{LuaChunk, LuaConstant, LuaProto};
 
 const MAX_LIFT_DEPTH: usize = 200;
+const MAX_DIRECT_RENDER_NESTING: usize = 256;
+pub(crate) const MAX_RENDERED_STRUCTURE_BYTES: usize = 16 * 1024 * 1024;
+const RENDER_LIMIT_MARKER: &str = "error(\"disrobe: rendered structure exceeds output limit\")";
 
 const LOP_NOP: u8 = 0;
 const LOP_BREAK: u8 = 1;
@@ -501,18 +506,24 @@ fn lift_proto(
     }
     if structured.refused_regions > 0 {
         warnings.push(format!(
-            "{} region(s) nested deeper than the structuring limit, so their statements stand \
-             outside the block that held them",
-            structured.refused_regions
+            "{} region(s) exceeded the {MAX_STRUCTURE_WORK}-operation structuring work budget, so \
+             recovery stopped inside the affected blocks",
+            structured.refused_regions,
         ));
         *fully_structured = false;
     }
-    let body: String = render_blocks(&structured.blocks, 1);
+    let rendered: RenderedBlocks = render_blocks(&structured.blocks, 1);
+    if rendered.refused {
+        warnings.push(format!(
+            "rendered structure exceeded the {MAX_RENDERED_STRUCTURE_BYTES}-byte output limit"
+        ));
+        *fully_structured = false;
+    }
 
     let mut out: String = String::new();
     out.push_str(&header);
     out.push('\n');
-    out.push_str(&body);
+    out.push_str(&rendered.source);
     out.push_str("end\n");
     out
 }
@@ -545,85 +556,294 @@ fn proto_header(proto: &LuaProto, depth: usize, scope_id: usize) -> String {
     }
 }
 
-pub(crate) fn render_blocks(blocks: &[StructuredBlock], indent: usize) -> String {
-    let pad: String = "  ".repeat(indent);
-    let mut out: String = String::new();
-    for block in blocks {
-        match block {
-            StructuredBlock::Raw(s) => {
-                out.push_str(&pad);
-                out.push_str(s);
-                out.push('\n');
-            }
-            StructuredBlock::Break => {
-                out.push_str(&pad);
-                out.push_str("break\n");
-            }
-            StructuredBlock::Goto { pc } => {
-                out.push_str(&pad);
-                out.push_str(&format!("goto lbl_{pc}\n"));
-            }
-            StructuredBlock::Label { pc } => {
-                out.push_str(&pad);
-                out.push_str(&format!("::lbl_{pc}::\n"));
-            }
-            StructuredBlock::If {
-                cond,
-                then_body,
-                else_body,
-            } => {
-                out.push_str(&pad);
-                out.push_str(&format!("if {cond} then\n"));
-                out.push_str(&render_blocks(then_body, indent + 1));
-                if !else_body.is_empty() {
-                    out.push_str(&pad);
-                    out.push_str("else\n");
-                    out.push_str(&render_blocks(else_body, indent + 1));
-                }
-                out.push_str(&pad);
-                out.push_str("end\n");
-            }
-            StructuredBlock::While { cond, body } => {
-                out.push_str(&pad);
-                out.push_str(&format!("while {cond} do\n"));
-                out.push_str(&render_blocks(body, indent + 1));
-                out.push_str(&pad);
-                out.push_str("end\n");
-            }
-            StructuredBlock::Repeat { cond, body } => {
-                out.push_str(&pad);
-                out.push_str("repeat\n");
-                out.push_str(&render_blocks(body, indent + 1));
-                out.push_str(&pad);
-                out.push_str(&format!("until {cond}\n"));
-            }
-            StructuredBlock::NumericFor {
-                var,
-                init,
-                limit,
-                step,
-                body,
-            } => {
-                out.push_str(&pad);
-                if step == "1" {
-                    out.push_str(&format!("for {var} = {init}, {limit} do\n"));
-                } else {
-                    out.push_str(&format!("for {var} = {init}, {limit}, {step} do\n"));
-                }
-                out.push_str(&render_blocks(body, indent + 1));
-                out.push_str(&pad);
-                out.push_str("end\n");
-            }
-            StructuredBlock::GenericFor { vars, iter, body } => {
-                out.push_str(&pad);
-                out.push_str(&format!("for {} in {iter} do\n", vars.join(", ")));
-                out.push_str(&render_blocks(body, indent + 1));
-                out.push_str(&pad);
-                out.push_str("end\n");
-            }
+enum RenderTask<'a> {
+    Blocks {
+        blocks: &'a [StructuredBlock],
+        indent: usize,
+    },
+    Block {
+        block: &'a StructuredBlock,
+        indent: usize,
+    },
+    Line {
+        indent: usize,
+        text: &'static str,
+    },
+    Until {
+        indent: usize,
+        cond: &'a str,
+    },
+}
+
+pub(crate) struct RenderedBlocks {
+    pub(crate) source: String,
+    pub(crate) refused: bool,
+}
+
+struct BoundedRenderBuffer {
+    source: String,
+    limit: usize,
+}
+
+impl BoundedRenderBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            source: String::with_capacity(limit.min(64 * 1024)),
+            limit,
         }
     }
-    out
+
+    fn push_str(&mut self, value: &str) -> bool {
+        let Some(next_len): Option<usize> = self.source.len().checked_add(value.len()) else {
+            return false;
+        };
+        if next_len > self.limit {
+            return false;
+        }
+        self.source.push_str(value);
+        true
+    }
+
+    fn push_char(&mut self, value: char) -> bool {
+        let mut encoded: [u8; 4] = [0; 4];
+        self.push_str(value.encode_utf8(&mut encoded))
+    }
+
+    fn push_indent(&mut self, indent: usize) -> bool {
+        let Some(width): Option<usize> = indent.checked_mul(2) else {
+            return false;
+        };
+        let Some(next_len): Option<usize> = self.source.len().checked_add(width) else {
+            return false;
+        };
+        if next_len > self.limit {
+            return false;
+        }
+        self.source.extend(std::iter::repeat_n(' ', width));
+        true
+    }
+
+    fn into_source(self) -> String {
+        self.source
+    }
+}
+
+pub(crate) fn render_blocks(blocks: &[StructuredBlock], indent: usize) -> RenderedBlocks {
+    let mut out: BoundedRenderBuffer = BoundedRenderBuffer::new(MAX_RENDERED_STRUCTURE_BYTES);
+    let mut pending: Vec<RenderTask<'_>> = vec![RenderTask::Blocks { blocks, indent }];
+    let mut refused: bool = false;
+    while let Some(task) = pending.pop() {
+        let accepted: bool = match task {
+            RenderTask::Blocks { blocks, indent } => {
+                for block in blocks.iter().rev() {
+                    pending.push(RenderTask::Block { block, indent });
+                }
+                true
+            }
+            RenderTask::Block { block, indent } => {
+                if out.push_indent(indent) {
+                    match block {
+                        StructuredBlock::Raw(s) => out.push_str(s) && out.push_char('\n'),
+                        StructuredBlock::Break => out.push_str("break\n"),
+                        StructuredBlock::Goto { pc } => {
+                            out.push_str("goto lbl_")
+                                && out.push_str(&pc.to_string())
+                                && out.push_char('\n')
+                        }
+                        StructuredBlock::Label { pc } => {
+                            out.push_str("::lbl_")
+                                && out.push_str(&pc.to_string())
+                                && out.push_str("::\n")
+                        }
+                        StructuredBlock::If {
+                            cond,
+                            then_body,
+                            else_body,
+                        } => {
+                            if let Some((conditions, guarded_body)) = guard_chain(block) {
+                                let mut accepted: bool = out.push_str("if ");
+                                for (index, condition) in conditions.iter().enumerate() {
+                                    if index > 0 {
+                                        accepted = accepted && out.push_str(" and ");
+                                    }
+                                    accepted = accepted
+                                        && out.push_char('(')
+                                        && out.push_str(condition)
+                                        && out.push_char(')');
+                                }
+                                accepted = accepted && out.push_str(" then\n");
+                                pending.push(RenderTask::Line {
+                                    indent,
+                                    text: "end\n",
+                                });
+                                pending.push(RenderTask::Blocks {
+                                    blocks: guarded_body,
+                                    indent: indent + 1,
+                                });
+                                accepted
+                            } else {
+                                let accepted: bool = out.push_str("if ")
+                                    && out.push_str(cond)
+                                    && out.push_str(" then\n");
+                                pending.push(RenderTask::Line {
+                                    indent,
+                                    text: "end\n",
+                                });
+                                if !else_body.is_empty() {
+                                    pending.push(RenderTask::Blocks {
+                                        blocks: else_body,
+                                        indent: indent + 1,
+                                    });
+                                    pending.push(RenderTask::Line {
+                                        indent,
+                                        text: "else\n",
+                                    });
+                                }
+                                pending.push(RenderTask::Blocks {
+                                    blocks: then_body,
+                                    indent: indent + 1,
+                                });
+                                accepted
+                            }
+                        }
+                        StructuredBlock::While { cond, body } => {
+                            let accepted: bool = out.push_str("while ")
+                                && out.push_str(cond)
+                                && out.push_str(" do\n");
+                            pending.push(RenderTask::Line {
+                                indent,
+                                text: "end\n",
+                            });
+                            pending.push(RenderTask::Blocks {
+                                blocks: body,
+                                indent: indent + 1,
+                            });
+                            accepted
+                        }
+                        StructuredBlock::Repeat { cond, body } => {
+                            let accepted: bool = out.push_str("repeat\n");
+                            pending.push(RenderTask::Until { indent, cond });
+                            pending.push(RenderTask::Blocks {
+                                blocks: body,
+                                indent: indent + 1,
+                            });
+                            accepted
+                        }
+                        StructuredBlock::NumericFor {
+                            var,
+                            init,
+                            limit,
+                            step,
+                            body,
+                        } => {
+                            let mut accepted: bool = out.push_str("for ")
+                                && out.push_str(var)
+                                && out.push_str(" = ")
+                                && out.push_str(init)
+                                && out.push_str(", ")
+                                && out.push_str(limit);
+                            if step != "1" {
+                                accepted = accepted && out.push_str(", ") && out.push_str(step);
+                            }
+                            accepted = accepted && out.push_str(" do\n");
+                            pending.push(RenderTask::Line {
+                                indent,
+                                text: "end\n",
+                            });
+                            pending.push(RenderTask::Blocks {
+                                blocks: body,
+                                indent: indent + 1,
+                            });
+                            accepted
+                        }
+                        StructuredBlock::GenericFor { vars, iter, body } => {
+                            let mut accepted: bool = out.push_str("for ");
+                            for (index, var) in vars.iter().enumerate() {
+                                if index > 0 {
+                                    accepted = accepted && out.push_str(", ");
+                                }
+                                accepted = accepted && out.push_str(var);
+                            }
+                            accepted = accepted
+                                && out.push_str(" in ")
+                                && out.push_str(iter)
+                                && out.push_str(" do\n");
+                            pending.push(RenderTask::Line {
+                                indent,
+                                text: "end\n",
+                            });
+                            pending.push(RenderTask::Blocks {
+                                blocks: body,
+                                indent: indent + 1,
+                            });
+                            accepted
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
+            RenderTask::Line { indent, text } => out.push_indent(indent) && out.push_str(text),
+            RenderTask::Until { indent, cond } => {
+                out.push_indent(indent)
+                    && out.push_str("until ")
+                    && out.push_str(cond)
+                    && out.push_char('\n')
+            }
+        };
+        if !accepted {
+            refused = true;
+            break;
+        }
+    }
+    if refused {
+        let mut marker: BoundedRenderBuffer = BoundedRenderBuffer::new(256);
+        let marker_written: bool = marker.push_indent(indent)
+            && marker.push_str(RENDER_LIMIT_MARKER)
+            && marker.push_char('\n');
+        return RenderedBlocks {
+            source: if marker_written {
+                marker.into_source()
+            } else {
+                format!("{RENDER_LIMIT_MARKER}\n")
+            },
+            refused: true,
+        };
+    }
+    RenderedBlocks {
+        source: out.into_source(),
+        refused: false,
+    }
+}
+
+fn guard_chain(block: &StructuredBlock) -> Option<(Vec<&str>, &[StructuredBlock])> {
+    let mut conditions: Vec<&str> = Vec::new();
+    let mut current: &StructuredBlock = block;
+    loop {
+        let StructuredBlock::If {
+            cond,
+            then_body,
+            else_body,
+        } = current
+        else {
+            return None;
+        };
+        if !else_body.is_empty() {
+            return None;
+        }
+        conditions.push(cond);
+        let next: Option<&StructuredBlock> = match then_body.as_slice() {
+            [nested @ StructuredBlock::If { else_body, .. }] if else_body.is_empty() => {
+                Some(nested)
+            }
+            _ => None,
+        };
+        if let Some(nested) = next {
+            current = nested;
+            continue;
+        }
+        return (conditions.len() > MAX_DIRECT_RENDER_NESTING).then_some((conditions, then_body));
+    }
 }
 
 #[inline]
@@ -1532,6 +1752,8 @@ fn bump(counts: &mut [u32], slot: usize) {
 mod tests {
     use super::*;
 
+    const PREVIOUS_STRUCTURE_DEPTH_LIMIT: usize = 256;
+
     fn luau_proto(code: Vec<u32>, stack: u8) -> LuaProto {
         LuaProto {
             source: None,
@@ -1581,23 +1803,162 @@ mod tests {
         (body, warnings, fully_structured)
     }
 
+    fn nested_guarded_assignment(depth: usize) -> Vec<StructuredBlock> {
+        let mut body: Vec<StructuredBlock> =
+            vec![StructuredBlock::Raw("result = result + 1".to_owned())];
+        for _ in 0..depth {
+            body = vec![StructuredBlock::If {
+                cond: "enabled".to_owned(),
+                then_body: body,
+                else_body: Vec::new(),
+            }];
+        }
+        body
+    }
+
     #[test]
-    fn a_proto_nested_past_the_structuring_limit_refuses_to_claim_a_complete_structure() {
+    fn iterative_render_preserves_the_existing_surface_for_each_region_kind() {
+        let blocks: Vec<StructuredBlock> = vec![
+            StructuredBlock::Raw("local x = 0".to_owned()),
+            StructuredBlock::Break,
+            StructuredBlock::Goto { pc: 7 },
+            StructuredBlock::Label { pc: 7 },
+            StructuredBlock::If {
+                cond: "x == 0".to_owned(),
+                then_body: vec![StructuredBlock::Raw("x = 1".to_owned())],
+                else_body: vec![StructuredBlock::Raw("x = 2".to_owned())],
+            },
+            StructuredBlock::While {
+                cond: "x < 4".to_owned(),
+                body: vec![StructuredBlock::Raw("x = x + 1".to_owned())],
+            },
+            StructuredBlock::Repeat {
+                cond: "x == 0".to_owned(),
+                body: vec![StructuredBlock::Raw("x = x - 1".to_owned())],
+            },
+            StructuredBlock::NumericFor {
+                var: "i".to_owned(),
+                init: "1".to_owned(),
+                limit: "3".to_owned(),
+                step: "1".to_owned(),
+                body: vec![StructuredBlock::Raw("x = x + i".to_owned())],
+            },
+            StructuredBlock::NumericFor {
+                var: "i".to_owned(),
+                init: "3".to_owned(),
+                limit: "1".to_owned(),
+                step: "-1".to_owned(),
+                body: vec![StructuredBlock::Raw("x = x + i".to_owned())],
+            },
+            StructuredBlock::GenericFor {
+                vars: vec!["k".to_owned(), "v".to_owned()],
+                iter: "pairs(t)".to_owned(),
+                body: vec![StructuredBlock::Raw("x = x + v".to_owned())],
+            },
+        ];
+
+        let rendered: RenderedBlocks = render_blocks(&blocks, 1);
+
+        assert_eq!(
+            rendered.source,
+            "  local x = 0\n  break\n  goto lbl_7\n  ::lbl_7::\n  if x == 0 then\n    x = 1\n  else\n    x = 2\n  end\n  while x < 4 do\n    x = x + 1\n  end\n  repeat\n    x = x - 1\n  until x == 0\n  for i = 1, 3 do\n    x = x + i\n  end\n  for i = 3, 1, -1 do\n    x = x + i\n  end\n  for k, v in pairs(t) do\n    x = x + v\n  end\n"
+        );
+    }
+
+    #[test]
+    fn rendering_at_the_previous_limit_remains_byte_identical() {
+        let blocks: Vec<StructuredBlock> =
+            nested_guarded_assignment(PREVIOUS_STRUCTURE_DEPTH_LIMIT);
+        let mut expected: String = String::new();
+        for indent in 0..PREVIOUS_STRUCTURE_DEPTH_LIMIT {
+            expected.push_str(&"  ".repeat(indent));
+            expected.push_str("if enabled then\n");
+        }
+        expected.push_str(&"  ".repeat(PREVIOUS_STRUCTURE_DEPTH_LIMIT));
+        expected.push_str("result = result + 1\n");
+        for indent in (0..PREVIOUS_STRUCTURE_DEPTH_LIMIT).rev() {
+            expected.push_str(&"  ".repeat(indent));
+            expected.push_str("end\n");
+        }
+
+        let rendered: RenderedBlocks = render_blocks(&blocks, 0);
+        assert!(!rendered.refused);
+        assert_eq!(rendered.source, expected);
+    }
+
+    #[test]
+    fn every_region_kind_refuses_before_rendered_output_exceeds_the_byte_ceiling() {
+        let depth: usize = 3_000;
+        let maximum_bytes: usize = 16 * 1024 * 1024;
+        let mut body: Vec<StructuredBlock> =
+            vec![StructuredBlock::Raw("guarded_leaf()".to_owned())];
+        for level in 0..depth {
+            body = vec![match level % 6 {
+                0 => StructuredBlock::If {
+                    cond: "enabled".to_owned(),
+                    then_body: body,
+                    else_body: vec![StructuredBlock::Raw("fallback()".to_owned())],
+                },
+                1 => StructuredBlock::While {
+                    cond: "enabled".to_owned(),
+                    body,
+                },
+                2 => StructuredBlock::Repeat {
+                    cond: "finished".to_owned(),
+                    body,
+                },
+                3 => StructuredBlock::NumericFor {
+                    var: format!("i{level}"),
+                    init: "1".to_owned(),
+                    limit: "2".to_owned(),
+                    step: "1".to_owned(),
+                    body,
+                },
+                4 => StructuredBlock::GenericFor {
+                    vars: vec![format!("k{level}"), format!("v{level}")],
+                    iter: "pairs(values)".to_owned(),
+                    body,
+                },
+                _ => StructuredBlock::If {
+                    cond: "ready".to_owned(),
+                    then_body: body,
+                    else_body: Vec::new(),
+                },
+            }];
+        }
+
+        let rendered: RenderedBlocks = render_blocks(&body, 0);
+
+        assert!(rendered.refused);
+        assert_eq!(
+            rendered.source,
+            "error(\"disrobe: rendered structure exceeds output limit\")\n"
+        );
+        assert!(
+            rendered.source.len() <= maximum_bytes,
+            "{}",
+            rendered.source.len()
+        );
+    }
+
+    #[test]
+    fn a_proto_nested_past_the_previous_limit_reports_a_complete_structure() {
         let proto: LuaProto = luau_proto(nested_conditional_code(400), 4);
 
         let (body, warnings, fully_structured): (String, Vec<String>, bool) = lift_once(&proto);
 
         assert!(
-            !fully_structured,
-            "nesting past the structuring limit leaves statements outside the block that held \
-             them, so the body must never report a complete structure; body:\n{body}"
+            fully_structured,
+            "the iterative structurer retains every guarded statement at this depth; warnings: \
+             {warnings:?}; body:\n{body}"
         );
         assert!(
-            warnings
+            !warnings
                 .iter()
-                .any(|w: &String| w.contains("nested deeper than the structuring limit")),
-            "the refusal has to name what happened rather than leave a bare flag, got {warnings:?}"
+                .any(|warning: &String| warning.contains("structuring work budget")),
+            "nesting alone must not consume the work budget: {warnings:?}"
         );
+        assert!(body.contains("r1 = 400"), "body:\n{body}");
     }
 
     #[test]

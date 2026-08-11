@@ -1,7 +1,10 @@
 mod structurer;
 
 use crate::decompile::lift::{LiftedProto, fmt_number, kconst, kstr};
-use crate::decompile::luau_lift::{LStmt, LiftedStmt, render_blocks};
+use crate::decompile::luau_lift::{
+    LStmt, LiftedStmt, MAX_RENDERED_STRUCTURE_BYTES, RenderedBlocks, render_blocks,
+};
+use crate::decompile::luau_structure::MAX_STRUCTURE_WORK;
 use crate::decompile::opcode::{Decoded, Op, decode, is_k, rk_index};
 use crate::reader::common::{LuaConstant, LuaDialect, LuaLocal, LuaProto};
 use structurer::structure_standard;
@@ -177,7 +180,7 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
     fold_table_constructors(&mut state.stmts);
     promote_local_functions(&mut state.stmts);
     let structured: structurer::StructureResult = structure_standard(&state.stmts, p.code.len());
-    let body: String = render_blocks(&structured.blocks, 1);
+    let rendered: RenderedBlocks = render_blocks(&structured.blocks, 1);
     if structured.unresolved_jumps > 0 {
         state.fully_structured = false;
         state.warnings.push(format!(
@@ -188,13 +191,19 @@ pub fn lift_structured(p: &LuaProto, dialect: LuaDialect, depth: usize) -> Optio
     if structured.truncated_regions > 0 {
         state.fully_structured = false;
         state.warnings.push(format!(
-            "{} region(s) nested deeper than the structuring limit, so their statements stand \
-             outside the block that held them",
-            structured.truncated_regions
+            "{} region(s) exceeded the {MAX_STRUCTURE_WORK}-operation structuring work budget, so \
+             recovery stopped inside the affected blocks",
+            structured.truncated_regions,
+        ));
+    }
+    if rendered.refused {
+        state.fully_structured = false;
+        state.warnings.push(format!(
+            "rendered structure exceeded the {MAX_RENDERED_STRUCTURE_BYTES}-byte output limit"
         ));
     }
     Some(LiftedProto {
-        source: body,
+        source: rendered.source,
         warnings: state.warnings,
         fully_structured: state.fully_structured,
     })
@@ -2429,7 +2438,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_nested_past_the_structuring_limit_refuses_to_claim_a_complete_structure() {
+    fn a_body_nested_past_the_previous_limit_keeps_its_complete_structure_report() {
         let depth: usize = 300;
         let p: LuaProto = proto(nested_branch_code(depth), 2, 4);
 
@@ -2437,21 +2446,21 @@ mod tests {
             lift_structured(&p, LuaDialect::Lua51, 0).expect("structured lift succeeds");
 
         assert!(
-            !out.fully_structured,
-            "a body whose regions ran past the structuring budget has statements standing outside \
-             the branch that held them, so it must never report a complete structure"
+            out.fully_structured,
+            "the iterative structurer retains every guarded statement at this depth; source:\n{}",
+            out.source
         );
         assert!(
-            out.warnings
+            !out.warnings
                 .iter()
-                .any(|warning: &String| warning.contains("structuring limit")),
-            "the refusal must name the limit so a reader can act on it, got {:?}",
+                .any(|warning: &String| warning.contains("structuring work budget")),
+            "nesting alone must not consume the work budget: {:?}",
             out.warnings
         );
     }
 
     #[test]
-    fn a_child_nested_past_the_limit_lowers_the_flag_of_the_function_holding_it() {
+    fn a_child_nested_past_the_previous_limit_keeps_the_parent_flag() {
         let depth: usize = 300;
         let mut child: LuaProto = proto(nested_branch_code(depth), 2, 4);
         child.num_params = 2;
@@ -2466,17 +2475,15 @@ mod tests {
             lift_structured(&parent, LuaDialect::Lua51, 0).expect("structured lift succeeds");
 
         assert!(
-            !out.fully_structured,
-            "the parent body itself structures cleanly, so this flag can only be honest if a \
-             child that lost structure carries its refusal outward; source:\n{}",
+            out.fully_structured,
+            "the child and parent both retain their complete structures; source:\n{}",
             out.source
         );
         assert!(
-            out.warnings
+            !out.warnings
                 .iter()
-                .any(|warning: &String| warning.contains("structuring limit")),
-            "the child's reason must reach the parent rather than being dropped at the boundary, \
-             got {:?}",
+                .any(|warning: &String| warning.contains("structuring work budget")),
+            "nesting alone must not create a child refusal: {:?}",
             out.warnings
         );
     }
