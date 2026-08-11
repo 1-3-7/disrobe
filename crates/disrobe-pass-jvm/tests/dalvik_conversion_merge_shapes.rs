@@ -9,10 +9,12 @@
 pub mod common;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
-use std::process::Command;
+use std::time::Duration;
 
 use common::find_on_path;
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_jvm::dex_builder::{
     CatchHandler, ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef,
     Reloc, TryItem, insn,
@@ -21,6 +23,8 @@ use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 use disrobe_pass_jvm::{ClassFile, ConstantPoolEntry, parse_classfile};
 
 const REQUIRE_JVM: &str = "DISROBE_REQUIRE_JVM";
+const JVM_TIMEOUT: Duration = Duration::from_secs(30);
+const JVM_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
 
 const CONVERSIONS: &[Conversion] = &[
     Conversion::new(0x81, "i2l", "I", "J"),
@@ -969,7 +973,13 @@ fn cp_utf8(cf: &ClassFile, idx: u16) -> Option<&str> {
     }
 }
 
-fn stack_map_local_tags(cf: &ClassFile) -> Vec<Vec<u8>> {
+#[derive(Debug, PartialEq, Eq)]
+struct FrameTags {
+    locals: Vec<u8>,
+    stack: Vec<u8>,
+}
+
+fn stack_map_tags(cf: &ClassFile) -> Vec<FrameTags> {
     let method = cf
         .methods
         .iter()
@@ -1002,7 +1012,7 @@ fn stack_map_local_tags(cf: &ClassFile) -> Vec<Vec<u8>> {
     let Some(body): Option<&[u8]> = body else {
         return Vec::new();
     };
-    let mut frames: Vec<Vec<u8>> = Vec::new();
+    let mut frames: Vec<FrameTags> = Vec::new();
     let mut p: usize = 0;
     let entries: usize = u16::from_be_bytes([body[p], body[p + 1]]) as usize;
     p += 2;
@@ -1011,10 +1021,10 @@ fn stack_map_local_tags(cf: &ClassFile) -> Vec<Vec<u8>> {
         p += 1 + 2;
         let num_locals: usize = u16::from_be_bytes([body[p], body[p + 1]]) as usize;
         p += 2;
-        let mut tags: Vec<u8> = Vec::with_capacity(num_locals);
+        let mut locals: Vec<u8> = Vec::with_capacity(num_locals);
         for _ in 0..num_locals {
             let tag: u8 = body[p];
-            tags.push(tag);
+            locals.push(tag);
             p += 1;
             if tag == 7 || tag == 8 {
                 p += 2;
@@ -1022,14 +1032,16 @@ fn stack_map_local_tags(cf: &ClassFile) -> Vec<Vec<u8>> {
         }
         let num_stack: usize = u16::from_be_bytes([body[p], body[p + 1]]) as usize;
         p += 2;
+        let mut stack: Vec<u8> = Vec::with_capacity(num_stack);
         for _ in 0..num_stack {
             let tag: u8 = body[p];
+            stack.push(tag);
             p += 1;
             if tag == 7 || tag == 8 {
                 p += 2;
             }
         }
-        frames.push(tags);
+        frames.push(FrameTags { locals, stack });
     }
     frames
 }
@@ -1097,10 +1109,13 @@ fn no_conversion_control_keeps_precise_non_top_frame_tags() {
     let result: Dex2JarResult =
         translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
     let cf: ClassFile = parsed_class(&result, NO_CONVERSION);
-    let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+    let frames: Vec<FrameTags> = stack_map_tags(&cf);
     assert_eq!(
         frames,
-        vec![vec![1, 1]],
+        vec![FrameTags {
+            locals: vec![1, 1],
+            stack: Vec::new(),
+        }],
         "the no-conversion control must keep its scratch and parameter typed as int"
     );
 }
@@ -1112,11 +1127,15 @@ fn a_conversion_whose_destination_aliases_its_source_frames_the_result_type() {
     for conv in CONVERSIONS {
         let name: String = class_name(Shape::AliasSource, conv);
         let cf: ClassFile = parsed_class(&result, &name);
-        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
-        let frame: &Vec<u8> = frames.first().unwrap_or_else(|| {
+        let frames: Vec<FrameTags> = stack_map_tags(&cf);
+        let frame: &FrameTags = frames.first().unwrap_or_else(|| {
             panic!("{name} branches after the conversion, so it carries a frame")
         });
-        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(frame);
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(&frame.locals);
+        assert!(
+            frame.stack.is_empty(),
+            "{name} must have an empty operand stack"
+        );
         let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
         *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
         *expected.entry(1).or_insert(0) += 1;
@@ -1141,11 +1160,15 @@ fn a_conversion_over_a_live_wide_pair_invalidates_the_half_it_overwrites() {
         }
         let name: String = class_name(Shape::OverwriteWideHigh, conv);
         let cf: ClassFile = parsed_class(&result, &name);
-        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
-        let frame: &Vec<u8> = frames.first().unwrap_or_else(|| {
+        let frames: Vec<FrameTags> = stack_map_tags(&cf);
+        let frame: &FrameTags = frames.first().unwrap_or_else(|| {
             panic!("{name} branches after the conversion, so it carries a frame")
         });
-        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(frame);
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(&frame.locals);
+        assert!(
+            frame.stack.is_empty(),
+            "{name} must have an empty operand stack"
+        );
         let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
         *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
         *expected.entry(1).or_insert(0) += 1;
@@ -1168,13 +1191,17 @@ fn a_conversion_in_one_arm_of_a_branch_merges_to_top_at_the_join() {
     for conv in CONVERSIONS {
         let name: String = class_name(Shape::BranchMergeToTop, conv);
         let cf: ClassFile = parsed_class(&result, &name);
-        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+        let frames: Vec<FrameTags> = stack_map_tags(&cf);
         assert!(
             !frames.is_empty(),
             "{name} branches, so it must carry a StackMapTable"
         );
-        let joined: &Vec<u8> = frames.last().expect("the join frame is the last one");
-        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(joined);
+        let joined: &FrameTags = frames.last().expect("the join frame is the last one");
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(&joined.locals);
+        assert!(
+            joined.stack.is_empty(),
+            "{name} must have an empty operand stack"
+        );
         let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
         *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
         *expected.entry(1).or_insert(0) += 1;
@@ -1207,9 +1234,13 @@ fn zero_or_null_merges_with_each_numeric_conversion_result_without_retaining_a_s
     for conv in CONVERSIONS {
         let name: String = class_name(Shape::ZeroMergeToTop, conv);
         let cf: ClassFile = parsed_class(&result, &name);
-        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
-        let joined: &Vec<u8> = frames.last().expect("the zero merge frame");
-        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(joined);
+        let frames: Vec<FrameTags> = stack_map_tags(&cf);
+        let joined: &FrameTags = frames.last().expect("the zero merge frame");
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(&joined.locals);
+        assert!(
+            joined.stack.is_empty(),
+            "{name} must have an empty operand stack"
+        );
         let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
         *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
         *expected.entry(1).or_insert(0) += 1;
@@ -1231,13 +1262,17 @@ fn a_conversion_inside_a_loop_body_keeps_its_result_type_across_the_back_edge() 
     for conv in CONVERSIONS {
         let name: String = class_name(Shape::LoopBackEdge, conv);
         let cf: ClassFile = parsed_class(&result, &name);
-        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+        let frames: Vec<FrameTags> = stack_map_tags(&cf);
         assert!(
             !frames.is_empty(),
             "{name} carries a back edge, so it must carry a StackMapTable"
         );
-        let entry: &Vec<u8> = frames.first().expect("the loop header frame");
-        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(entry);
+        let entry: &FrameTags = frames.first().expect("the loop header frame");
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(&entry.locals);
+        assert!(
+            entry.stack.is_empty(),
+            "{name} must have an empty operand stack"
+        );
         assert!(
             observed.contains_key(&tag_for_desc(conv.src)),
             "{name} ({} to {}) must still describe its {} source at the loop header, but the \
@@ -1293,15 +1328,39 @@ fn every_typed_use_observes_the_exact_conversion_result_tag() {
         for conv in CONVERSIONS {
             let name: String = class_name(*shape, conv);
             let cf: ClassFile = parsed_class(&result, &name);
-            let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
-            let frame: &Vec<u8> = if *shape == Shape::PostThrowTarget {
+            let frames: Vec<FrameTags> = stack_map_tags(&cf);
+            let frame: &FrameTags = if *shape == Shape::PostThrowTarget {
                 frames.last()
             } else {
                 frames.first()
             }
             .unwrap_or_else(|| panic!("{name} must carry a typed-use frame"));
+            let result_from_end: usize = match shape {
+                Shape::VirtualUse => 1,
+                Shape::ArrayStore => 3,
+                Shape::ArithmeticUse
+                | Shape::ArgumentUse
+                | Shape::RangeUse
+                | Shape::FieldStore
+                | Shape::PostThrowTarget => 0,
+                _ => panic!("{shape:?} is not a typed-use shape"),
+            };
+            let result_index: usize = frame
+                .locals
+                .len()
+                .checked_sub(result_from_end + 1)
+                .unwrap_or_else(|| panic!("{name} result local is present"));
             assert_eq!(
-                nonzero_tag_multiset(frame),
+                frame.locals.get(result_index),
+                Some(&tag_for_desc(conv.dest)),
+                "{name} must place the conversion result in its exact scratch local"
+            );
+            assert!(
+                frame.stack.is_empty(),
+                "{name} must have an empty operand stack"
+            );
+            assert_eq!(
+                nonzero_tag_multiset(&frame.locals),
                 expected_typed_use_tags(*shape, conv),
                 "{name} emitted the wrong exact local tags: {frame:?}"
             );
@@ -1438,6 +1497,32 @@ fn frame_tag_offsets(body: &[u8]) -> Vec<usize> {
     offsets
 }
 
+fn frame_local_tag_offsets(body: &[u8]) -> Vec<Vec<usize>> {
+    let mut frames: Vec<Vec<usize>> = Vec::new();
+    let mut p: usize = 2;
+    let entries: usize = usize::from(u16::from_be_bytes([body[0], body[1]]));
+    for _ in 0..entries {
+        assert_eq!(body[p], 255, "the lifter emits full_frame entries only");
+        p += 3;
+        let locals: usize = usize::from(u16::from_be_bytes([body[p], body[p + 1]]));
+        p += 2;
+        let mut offsets: Vec<usize> = Vec::with_capacity(locals);
+        for _ in 0..locals {
+            offsets.push(p);
+            let tag: u8 = body[p];
+            p += if tag == 7 || tag == 8 { 3 } else { 1 };
+        }
+        let stack: usize = usize::from(u16::from_be_bytes([body[p], body[p + 1]]));
+        p += 2;
+        for _ in 0..stack {
+            let tag: u8 = body[p];
+            p += if tag == 7 || tag == 8 { 3 } else { 1 };
+        }
+        frames.push(offsets);
+    }
+    frames
+}
+
 const fn swapped_tag(tag: u8) -> u8 {
     match tag {
         1 => 2,
@@ -1461,6 +1546,50 @@ fn conv_code_info(cf: &ClassFile) -> Vec<u8> {
         .expect("conv has Code")
         .info
         .clone()
+}
+
+#[derive(Clone, Copy)]
+enum FrameSelection {
+    First,
+    Last,
+}
+
+fn replace_local_tag(
+    name: &str,
+    bytes: &[u8],
+    selection: FrameSelection,
+    local_from_end: usize,
+    replacement: u8,
+) -> Vec<u8> {
+    let cf: ClassFile = parse_classfile(bytes).expect("parse a lifted conversion-shape class");
+    let info: Vec<u8> = conv_code_info(&cf);
+    let code_at: usize = bytes
+        .windows(info.len())
+        .position(|window: &[u8]| window == info.as_slice())
+        .unwrap_or_else(|| panic!("{name} conv Code attribute is present"));
+    let (body_at, body_len): (usize, usize) = stack_map_body_range(&cf, &info)
+        .unwrap_or_else(|| panic!("{name} carries a StackMapTable"));
+    let frames: Vec<Vec<usize>> = frame_local_tag_offsets(&info[body_at..body_at + body_len]);
+    let frame_index: usize = match selection {
+        FrameSelection::First => 0,
+        FrameSelection::Last => frames
+            .len()
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("{name} frame index is present")),
+    };
+    let local_index: usize = frames[frame_index]
+        .len()
+        .checked_sub(local_from_end + 1)
+        .unwrap_or_else(|| panic!("{name} local from end {local_from_end} is present"));
+    let offset: usize = frames[frame_index][local_index];
+    let at: usize = code_at + body_at + offset;
+    assert_ne!(
+        bytes[at], replacement,
+        "{name} perturbation must change a tag"
+    );
+    let mut out: Vec<u8> = bytes.to_vec();
+    out[at] = replacement;
+    out
 }
 
 fn swap_frame_tags(name: &str, bytes: &[u8]) -> Vec<u8> {
@@ -1532,35 +1661,41 @@ fn run_probe(
 
     let probe_path: PathBuf = dir.join("Probe.java");
     std::fs::write(&probe_path, probe_source(graded)).expect("write probe");
-    let compiled: std::process::Output = Command::new(&javac)
-        .arg("-d")
-        .arg(&dir)
-        .arg(&probe_path)
-        .output()
-        .expect("javac probe");
+    let compiled_args: [OsString; 3] = [
+        OsString::from("-d"),
+        dir.as_os_str().to_os_string(),
+        probe_path.as_os_str().to_os_string(),
+    ];
+    let compiled: CapturedOutput =
+        run_captured(&javac, &compiled_args, JVM_TIMEOUT, JVM_CAPTURE_LIMIT)
+            .expect("launch javac probe")
+            .expect("javac probe exceeded its wall-clock bound");
     assert!(
-        compiled.status.success(),
+        compiled.exit_code == Some(0),
         "the conversion-shape probe did not compile: {}",
         String::from_utf8_lossy(&compiled.stderr)
     );
 
-    let run: std::process::Output = Command::new(&java)
-        .arg("-Xverify:all")
-        .arg("-cp")
-        .arg(&dir)
-        .arg("Probe")
-        .output()
-        .expect("run the java probe");
+    let run_args: [OsString; 4] = [
+        OsString::from("-Xverify:all"),
+        OsString::from("-cp"),
+        dir.as_os_str().to_os_string(),
+        OsString::from("Probe"),
+    ];
+    let run: CapturedOutput = run_captured(&java, &run_args, JVM_TIMEOUT, JVM_CAPTURE_LIMIT)
+        .expect("launch the java probe")
+        .expect("java probe exceeded its wall-clock bound");
     let out: String = String::from_utf8_lossy(&run.stdout).into_owned();
     eprintln!(
         "CONVERSION SHAPE {label}: graded={} status={} stdout={} stderr={}",
         graded.len(),
-        run.status,
+        run.exit_code
+            .map_or_else(|| "signal".to_owned(), |code: i32| code.to_string()),
         out.trim(),
         String::from_utf8_lossy(&run.stderr).trim()
     );
     assert!(
-        run.status.success() && out.contains("shape_clean="),
+        run.exit_code == Some(0) && out.contains("shape_clean="),
         "the conversion-shape probe did not run to completion under -Xverify:all"
     );
     let metric = |key: &str| -> usize {
@@ -1697,6 +1832,79 @@ fn swapping_the_frame_tags_of_every_conversion_shape_is_rejected() {
         graded.len(),
         outcome.detail
     );
+}
+
+fn classes_with_local_tag_replacements(
+    replacements: &BTreeMap<String, (FrameSelection, usize, u8)>,
+) -> Vec<(String, Vec<u8>)> {
+    translated_classes(None)
+        .into_iter()
+        .map(|(name, bytes): (String, Vec<u8>)| {
+            let Some((selection, local_from_end, replacement)): Option<&(
+                FrameSelection,
+                usize,
+                u8,
+            )> = replacements.get(&name) else {
+                return (name, bytes);
+            };
+            let patched: Vec<u8> =
+                replace_local_tag(&name, &bytes, *selection, *local_from_end, *replacement);
+            (name, patched)
+        })
+        .collect()
+}
+
+fn assert_targeted_perturbations_fail(
+    label: &str,
+    replacements: BTreeMap<String, (FrameSelection, usize, u8)>,
+) {
+    let graded: Vec<String> = replacements.keys().cloned().collect();
+    let classes: Vec<(String, Vec<u8>)> = classes_with_local_tag_replacements(&replacements);
+    let Some(outcome): Option<ProbeOutcome> = run_probe(label, &classes, &graded) else {
+        return;
+    };
+    assert_eq!(outcome.clean, 0, "{}", outcome.detail);
+    assert_eq!(outcome.other, 0, "{}", outcome.detail);
+    assert_eq!(outcome.fail, graded.len(), "{}", outcome.detail);
+}
+
+#[test]
+fn each_conversion_result_tag_is_individually_required_by_the_verifier() {
+    let replacements: BTreeMap<String, (FrameSelection, usize, u8)> = CONVERSIONS
+        .iter()
+        .map(|conv: &Conversion| {
+            let name: String = class_name(Shape::ArithmeticUse, conv);
+            let replacement: u8 = swapped_tag(tag_for_desc(conv.dest));
+            (name, (FrameSelection::First, 0, replacement))
+        })
+        .collect();
+    assert_targeted_perturbations_fail("result-tag", replacements);
+}
+
+#[test]
+fn branch_merges_reject_a_tag_from_only_the_converted_arm() {
+    let replacements: BTreeMap<String, (FrameSelection, usize, u8)> = CONVERSIONS
+        .iter()
+        .filter(|conv: &&Conversion| tag_for_desc(conv.dest) != 1)
+        .map(|conv: &Conversion| {
+            let name: String = class_name(Shape::BranchMergeToTop, conv);
+            (name, (FrameSelection::Last, 0, tag_for_desc(conv.dest)))
+        })
+        .collect();
+    assert_targeted_perturbations_fail("branch-one-side", replacements);
+}
+
+#[test]
+fn overwritten_wide_pairs_reject_a_live_low_half() {
+    let replacements: BTreeMap<String, (FrameSelection, usize, u8)> = CONVERSIONS
+        .iter()
+        .filter(|conv: &&Conversion| Shape::OverwriteWideHigh.applies(conv))
+        .map(|conv: &Conversion| {
+            let name: String = class_name(Shape::OverwriteWideHigh, conv);
+            (name, (FrameSelection::First, 1, tag_for_desc(conv.src)))
+        })
+        .collect();
+    assert_targeted_perturbations_fail("wide-pair-live", replacements);
 }
 
 const PROBE_SRC: &str = r#"
