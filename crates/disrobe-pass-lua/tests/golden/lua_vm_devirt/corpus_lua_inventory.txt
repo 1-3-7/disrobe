@@ -30,3 +30,9 @@ obfuscators/luaobfuscator_com/sample_default_obf_v1.lua
 obfuscators/wearedevs/real_sample.lua
 prometheus/gauntlet/gauntlet_clean.lua
 prometheus/gauntlet/gauntlet_weak_obfuscated.lua
+prometheus/vmify/clean.lua
+prometheus/vmify/obfuscated.lua
+prometheus/vmify_nested/clean.lua
+prometheus/vmify_nested/obfuscated.lua
+prometheus/vmify_simple/clean.lua
+prometheus/vmify_simple/obfuscated.lua
