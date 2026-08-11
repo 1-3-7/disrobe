@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use disrobe_core::recon::{
@@ -53,6 +53,14 @@ fn paths_for(report: &ReconReport, rule_id: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn rule_breakdown(report: &ReconReport) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for finding in &report.findings {
+        *counts.entry(finding.rule_id.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 #[test]
 fn scans_decompiled_tree_for_every_category_with_file_and_line() {
     let fx: Fixture = Fixture::new("tree");
@@ -94,11 +102,19 @@ fn scans_decompiled_tree_for_every_category_with_file_and_line() {
     let report: ReconReport =
         report_tree(&fx.root, &ReconConfig::default()).expect("scan tree succeeds");
 
-    assert!(
-        report.files_scanned >= 3,
-        "expected >=3 files, got {}",
-        report.files_scanned
-    );
+    assert_eq!(report.files_scanned, 3);
+    let breakdown: BTreeMap<String, usize> = rule_breakdown(&report);
+    let expected_breakdown: BTreeMap<String, usize> = BTreeMap::from([
+        ("DR-RECON-EMAIL".to_owned(), 1),
+        ("DR-RECON-FIREBASE".to_owned(), 1),
+        ("DR-RECON-SLACK-WEBHOOK".to_owned(), 1),
+        ("DR-RECON-URI-PATH".to_owned(), 1),
+        ("DR-RECON-URL".to_owned(), 2),
+        ("DR-SEC-AWS-AKID".to_owned(), 1),
+        ("DR-SEC-GH-PAT".to_owned(), 1),
+    ]);
+    assert_eq!(report.total, 8, "unexpected findings: {breakdown:#?}");
+    assert_eq!(breakdown, expected_breakdown);
     let cats: BTreeSet<ReconCategory> = disrobe_core::recon::categories(&report);
     for required in [
         ReconCategory::Secret,
