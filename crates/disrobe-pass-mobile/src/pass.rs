@@ -101,7 +101,7 @@ pub struct HermesSummary {
     pub raw_bytecode_size: usize,
 }
 
-#[cfg(any(test, feature = "chain"))]
+#[cfg(feature = "chain")]
 pub(crate) fn run_inner(bytes: &[u8]) -> crate::error::Result<MobilePassOutput> {
     use crate::apk_recon::analyze as analyze_apk_recon;
     use crate::cordova::{WebviewBundleKind, extract_webview_bundle};
@@ -783,6 +783,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "chain")]
     fn run_inner_rejects_unrecognized_input() {
         let bytes: Vec<u8> = vec![0u8; 32];
         let err: crate::error::Error = run_inner(&bytes).expect_err("must fail");
