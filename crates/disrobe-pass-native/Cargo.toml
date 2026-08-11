@@ -31,6 +31,7 @@ goblin = { workspace = true }
 gimli = { workspace = true }
 pdb = { workspace = true }
 iced-x86 = { workspace = true }
+indexmap = { workspace = true }
 yaxpeax-arch = { workspace = true }
 yaxpeax-arch-avr = { workspace = true }
 yaxpeax-arm = { workspace = true }
@@ -62,6 +63,7 @@ chain = ["disrobe-core/chain"]
 llm-metadata = ["dep:disrobe-llm-metadata"]
 stub-emulation = []
 smt-solver = ["disrobe-mba/smt-solver"]
+benchmarks = []
 
 [dev-dependencies]
 disrobe-query = { workspace = true }
@@ -79,3 +81,9 @@ crc32fast = { workspace = true }
 tempfile = "3"
 rbpf = "0.4"
 toml = { workspace = true }
+divan = { workspace = true }
+
+[[bench]]
+name = "snapshot_declarations"
+harness = false
+required-features = ["benchmarks"]

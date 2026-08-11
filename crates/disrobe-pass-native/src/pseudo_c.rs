@@ -12,6 +12,7 @@ use disrobe_emit::rust::{
     parse_expr, path_expr, ptr_type, render_expr as render_rust_expr, signed_int,
     type_path as rtype_path, unary as runary, unsafe_block, var as rvar,
 };
+use indexmap::{IndexMap, IndexSet};
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
@@ -1865,12 +1866,11 @@ fn resolved_signature(
         return Some(probe.signature);
     }
     let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
-    let mut seen: Vec<u64> = Vec::new();
+    let mut seen: IndexSet<u64> = IndexSet::new();
     for target in probe.call_targets {
-        if seen.contains(&target) {
+        if !seen.insert(target) {
             continue;
         }
-        seen.push(target);
         let Some((nested_code, nested_base)): Option<(Vec<u8>, u64)> =
             callee_code_by_target(object, target)
         else {
@@ -2015,12 +2015,11 @@ fn recover_program_function(
     let probe: LeafRecovery = recover_leaf_function_in_object(object, &f.code, f.address, abi, &[])
         .map_err(|e: Error| e.to_string())?;
     let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
-    let mut seen: Vec<u64> = Vec::with_capacity(probe.call_targets.len());
+    let mut seen: IndexSet<u64> = IndexSet::with_capacity(probe.call_targets.len());
     for target in probe.call_targets {
-        if seen.contains(&target) {
+        if !seen.insert(target) {
             continue;
         }
-        seen.push(target);
         let sibling_addr: u64 = if by_addr.contains_key(&target) {
             target
         } else if let Some(relocated) = resolve_relocated_call_target(object, f, target) {
@@ -2119,6 +2118,7 @@ fn rename_recovered_rust_symbol(source: &str, name: &str, resolved_names: &[Stri
 
 fn drop_resolved_sibling_externs(source: &str, resolved_names: &[String]) -> String {
     let trailing_newline: bool = source.ends_with('\n');
+    let resolved_names: BTreeSet<&str> = resolved_names.iter().map(String::as_str).collect();
     let mut out: Vec<String> = Vec::new();
     let mut in_extern_block: bool = false;
     let mut kept_decls: Vec<String> = Vec::new();
@@ -2143,7 +2143,7 @@ fn drop_resolved_sibling_externs(source: &str, resolved_names: &[String]) -> Str
                 .strip_prefix("fn ")
                 .and_then(|rest: &str| rest.split('(').next());
             let is_resolved_sibling: bool =
-                callee_name.is_some_and(|n: &str| resolved_names.iter().any(|r: &String| r == n));
+                callee_name.is_some_and(|name: &str| resolved_names.contains(name));
             if !is_resolved_sibling {
                 kept_decls.push(line.to_owned());
             }
@@ -5206,14 +5206,13 @@ fn chain_terminal_fp(
 ) -> Result<Option<FpWidth>> {
     let mut state: Option<FpWidth> = None;
     let mut addr: u64 = start;
-    let mut visited: Vec<u64> = Vec::new();
+    let mut visited: IndexSet<u64> = IndexSet::new();
     loop {
-        if visited.contains(&addr) {
+        if !visited.insert(addr) {
             return Err(Error::LlvmIr(
                 "switch body chain loops; cannot type return".to_owned(),
             ));
         }
-        visited.push(addr);
         let SwitchBody { stmts, term, .. } = bodies
             .get(&addr)
             .ok_or_else(|| Error::LlvmIr("switch body chain hit an unlifted block".to_owned()))?;
@@ -5322,12 +5321,11 @@ fn chain_terminal_int_width(
 ) -> Option<Width> {
     let mut width: Option<Width> = None;
     let mut addr: u64 = start;
-    let mut visited: Vec<u64> = Vec::new();
+    let mut visited: IndexSet<u64> = IndexSet::new();
     loop {
-        if visited.contains(&addr) {
+        if !visited.insert(addr) {
             return width;
         }
-        visited.push(addr);
         let SwitchBody { stmts, term, .. } = bodies.get(&addr)?;
         for stmt in stmts {
             if let Some(w) = rax_write_width(stmt) {
@@ -9648,15 +9646,19 @@ fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
 }
 
 fn block_predecessors(blocks: &[CfgBlock]) -> Vec<Vec<usize>> {
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
+    let mut predecessors: Vec<IndexSet<usize>> =
+        (0..blocks.len()).map(|_: usize| IndexSet::new()).collect();
     for (from, block) in blocks.iter().enumerate() {
         for succ in block.successors() {
-            if succ < blocks.len() && !preds[succ].contains(&from) {
-                preds[succ].push(from);
+            if succ < blocks.len() {
+                predecessors[succ].insert(from);
             }
         }
     }
-    preds
+    predecessors
+        .into_iter()
+        .map(|items: IndexSet<usize>| items.into_iter().collect())
+        .collect()
 }
 
 fn block_flow(blocks: &[CfgBlock]) -> Option<structuring::FlowGraph<usize>> {
@@ -13330,33 +13332,62 @@ fn sel_var(var: u32) -> String {
     format!("sel_cc_{var}")
 }
 
-fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
+const VARIABLE_COLLECTION_MAX_DEPTH: usize = 256;
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CollectedVariables {
+    snapshots: IndexSet<u32>,
+    selections: IndexSet<u32>,
+}
+
+fn collect_variables(body: &Block) -> Option<CollectedVariables> {
+    let mut collected: CollectedVariables = CollectedVariables::default();
+    collect_variables_at(body, 0, &mut collected).then_some(collected)
+}
+
+fn collect_variables_at(body: &Block, depth: usize, collected: &mut CollectedVariables) -> bool {
+    if depth > VARIABLE_COLLECTION_MAX_DEPTH {
+        return false;
+    }
+    let next_depth: usize = depth.saturating_add(1);
     for node in body {
         match node {
             Node::Stmt(Stmt::FlagSnapshot { var, .. }) => {
-                if !acc.contains(var) {
-                    acc.push(*var);
-                }
+                collected.selections.insert(*var);
             }
             Node::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                collect_sel_vars(then_body, acc);
-                if let Some(else_b) = else_body {
-                    collect_sel_vars(else_b, acc);
+                if !collect_variables_at(then_body, next_depth, collected) {
+                    return false;
+                }
+                if let Some(else_body) = else_body
+                    && !collect_variables_at(else_body, next_depth, collected)
+                {
+                    return false;
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body, .. } => collect_sel_vars(body, acc),
+            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+                if !collect_variables_at(body, next_depth, collected) {
+                    return false;
+                }
+            }
             Node::Switch { cases, default, .. } => {
                 for case in cases {
-                    collect_sel_vars(&case.body, acc);
+                    if !collect_variables_at(&case.body, next_depth, collected) {
+                        return false;
+                    }
                 }
-                collect_sel_vars(default, acc);
+                if !collect_variables_at(default, next_depth, collected) {
+                    return false;
+                }
+            }
+            Node::CondSnapshot { var, .. } => {
+                collected.snapshots.insert(*var);
             }
             Node::Stmt(_)
-            | Node::CondSnapshot { .. }
             | Node::Break
             | Node::Continue
             | Node::BreakLoop(_)
@@ -13368,46 +13399,47 @@ fn collect_sel_vars(body: &Block, acc: &mut Vec<u32>) {
             | Node::Goto(_) => {}
         }
     }
+    true
 }
 
-fn collect_snapshot_vars(body: &Block, acc: &mut Vec<u32>) {
-    for node in body {
-        match node {
-            Node::CondSnapshot { var, .. } => {
-                if !acc.contains(var) {
-                    acc.push(*var);
-                }
-            }
-            Node::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                collect_snapshot_vars(then_body, acc);
-                if let Some(else_b) = else_body {
-                    collect_snapshot_vars(else_b, acc);
-                }
-            }
-            Node::DoWhile { body, .. } | Node::While { body, .. } => {
-                collect_snapshot_vars(body, acc);
-            }
-            Node::Switch { cases, default, .. } => {
-                for case in cases {
-                    collect_snapshot_vars(&case.body, acc);
-                }
-                collect_snapshot_vars(default, acc);
-            }
-            Node::Stmt(_)
-            | Node::Break
-            | Node::Continue
-            | Node::BreakLoop(_)
-            | Node::ContinueLoop(_)
-            | Node::ResumeAt(_)
-            | Node::OuterResume(_)
-            | Node::Return
-            | Node::Label(_)
-            | Node::Goto(_) => {}
+#[cfg(feature = "benchmarks")]
+#[derive(Debug)]
+pub struct VariableCollectionBenchmark {
+    body: Block,
+}
+
+#[cfg(feature = "benchmarks")]
+impl VariableCollectionBenchmark {
+    #[must_use]
+    pub fn new(count: u32) -> Self {
+        let mut body: Block = Vec::with_capacity(
+            usize::try_from(count)
+                .map_or(usize::MAX, |value: usize| value)
+                .saturating_mul(2),
+        );
+        for var in 0..count {
+            body.push(Node::CondSnapshot {
+                var,
+                cond: CondKind::E,
+                flags: Flags::Snapshot { var },
+            });
+            body.push(Node::Stmt(Stmt::FlagSnapshot {
+                var,
+                kind: CondKind::E,
+                flags: Flags::Snapshot { var },
+            }));
         }
+        Self { body }
+    }
+
+    #[must_use]
+    pub fn collect(&self) -> Option<usize> {
+        collect_variables(&self.body).map(|collected: CollectedVariables| {
+            collected
+                .snapshots
+                .len()
+                .saturating_add(collected.selections.len())
+        })
     }
 }
 
@@ -13773,26 +13805,12 @@ fn call_display_name(target: u64, name: Option<&str>) -> String {
     name.map_or_else(|| format!("sub_{target:x}"), str::to_owned)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CallDecl {
-    display_name: String,
-    arg_count: usize,
-}
-
-fn collect_call_decls(body: &Block, acc: &mut Vec<CallDecl>) {
+fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, usize>) {
     for node in body {
         match node {
             Node::Stmt(Stmt::Call { target, args, name }) => {
                 let display_name: String = call_display_name(*target, name.as_deref());
-                if !acc
-                    .iter()
-                    .any(|d: &CallDecl| d.display_name == display_name)
-                {
-                    acc.push(CallDecl {
-                        display_name,
-                        arg_count: args.len(),
-                    });
-                }
+                acc.entry(display_name).or_insert(args.len());
             }
             Node::Stmt(_) => {}
             Node::If {
@@ -15910,6 +15928,11 @@ fn emit_c(
     sret: Option<&SretPlan>,
     aggregates: &AggregatePlan,
 ) -> Result<String> {
+    let collected_variables: CollectedVariables = collect_variables(body).ok_or_else(|| {
+        Error::LlvmIr(format!(
+            "structured variable nesting exceeds {VARIABLE_COLLECTION_MAX_DEPTH}"
+        ))
+    })?;
     if block_has_unresolved_resume(body) {
         return Err(Error::LlvmIr(
             "C emitter does not support an outer-body resume role".to_owned(),
@@ -15932,15 +15955,15 @@ fn emit_c(
     } else if block_string_ops_present(body) {
         let _ = writeln!(out, "#include <string.h>");
     }
-    let mut call_decls: Vec<CallDecl> = Vec::new();
+    let mut call_decls: IndexMap<String, usize> = IndexMap::new();
     collect_call_decls(body, &mut call_decls);
-    for decl in &call_decls {
-        let params: String = if decl.arg_count == 0 {
+    for (display_name, arg_count) in &call_decls {
+        let params: String = if *arg_count == 0 {
             "void".to_owned()
         } else {
-            vec!["uint64_t"; decl.arg_count].join(", ")
+            vec!["uint64_t"; *arg_count].join(", ")
         };
-        let _ = writeln!(out, "extern uint64_t {}({params});", decl.display_name);
+        let _ = writeln!(out, "extern uint64_t {display_name}({params});");
     }
 
     let scalar_params: Vec<ScalarParam> = signature.ordered_params();
@@ -16095,14 +16118,10 @@ fn emit_c(
         let _ = writeln!(out, "    uint64_t {} = 0;", packed_lane(*xmm, false));
         let _ = writeln!(out, "    uint64_t {} = 0;", packed_lane(*xmm, true));
     }
-    let mut snapshot_vars: Vec<u32> = Vec::new();
-    collect_snapshot_vars(body, &mut snapshot_vars);
-    for var in &snapshot_vars {
+    for var in &collected_variables.snapshots {
         let _ = writeln!(out, "    uint64_t {} = 0;", loop_cond_var(*var));
     }
-    let mut sel_vars: Vec<u32> = Vec::new();
-    collect_sel_vars(body, &mut sel_vars);
-    for var in &sel_vars {
+    for var in &collected_variables.selections {
         let _ = writeln!(out, "    uint64_t {} = 0;", sel_var(*var));
     }
     let vec_type_map: BTreeMap<u8, VecArrangement> = resolve_block_vec_types(body);
@@ -19049,6 +19068,7 @@ fn emit_rust(
     sret: Option<&SretPlan>,
     aggregates: &AggregatePlan,
 ) -> Option<String> {
+    let collected_variables: CollectedVariables = collect_variables(body)?;
     if sret.is_some() {
         return None;
     }
@@ -19060,16 +19080,16 @@ fn emit_rust(
     }
 
     let mut out: String = String::new();
-    let mut call_decls: Vec<CallDecl> = Vec::new();
+    let mut call_decls: IndexMap<String, usize> = IndexMap::new();
     collect_call_decls(body, &mut call_decls);
     if !call_decls.is_empty() {
         let _ = writeln!(out, "extern \"C\" {{");
-        for decl in &call_decls {
-            let params: String = (0..decl.arg_count)
+        for (display_name, arg_count) in &call_decls {
+            let params: String = (0..*arg_count)
                 .map(|i: usize| format!("a{i}: u64"))
                 .collect::<Vec<String>>()
                 .join(", ");
-            let _ = writeln!(out, "    fn {}({params}) -> u64;", decl.display_name);
+            let _ = writeln!(out, "    fn {display_name}({params}) -> u64;");
         }
         let _ = writeln!(out, "}}");
     }
@@ -19191,14 +19211,10 @@ fn emit_rust(
         let _ = writeln!(out, "    let mut {}: u64 = 0;", packed_lane(*xmm, false));
         let _ = writeln!(out, "    let mut {}: u64 = 0;", packed_lane(*xmm, true));
     }
-    let mut snapshot_vars: Vec<u32> = Vec::new();
-    collect_snapshot_vars(body, &mut snapshot_vars);
-    for var in &snapshot_vars {
+    for var in &collected_variables.snapshots {
         let _ = writeln!(out, "    let mut {}: u64 = 0;", loop_cond_var(*var));
     }
-    let mut sel_vars: Vec<u32> = Vec::new();
-    collect_sel_vars(body, &mut sel_vars);
-    for var in &sel_vars {
+    for var in &collected_variables.selections {
         let _ = writeln!(out, "    let mut {}: u64 = 0;", sel_var(*var));
     }
 
@@ -20958,6 +20974,272 @@ fn rs_cond_expr(kind: CondKind, flags: &Flags, aggregates: &AggregatePlan) -> Op
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn condition_snapshot(var: u32) -> Node {
+        Node::CondSnapshot {
+            var,
+            cond: CondKind::E,
+            flags: Flags::Snapshot { var },
+        }
+    }
+
+    fn selection_snapshot(var: u32) -> Node {
+        Node::Stmt(Stmt::FlagSnapshot {
+            var,
+            kind: CondKind::E,
+            flags: Flags::Snapshot { var },
+        })
+    }
+
+    fn composed_variable_body() -> Block {
+        vec![
+            condition_snapshot(0),
+            Node::If {
+                cond: Cond::leaf(CondKind::E, Flags::Snapshot { var: 90 }),
+                then_body: vec![selection_snapshot(u32::MAX), condition_snapshot(2)],
+                else_body: Some(vec![selection_snapshot(0), condition_snapshot(1)]),
+            },
+            Node::If {
+                cond: Cond::leaf(CondKind::E, Flags::Snapshot { var: 91 }),
+                then_body: vec![selection_snapshot(9), selection_snapshot(0)],
+                else_body: None,
+            },
+            Node::Switch {
+                disc: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                cases: vec![SwitchCase {
+                    values: vec![0],
+                    body: vec![Node::While {
+                        body: vec![Node::DoWhile {
+                            body: vec![condition_snapshot(6), selection_snapshot(7)],
+                            cond: LoopCond::Snapshot { var: 6 },
+                        }],
+                        cond: None,
+                    }],
+                    fallthrough: false,
+                }],
+                default: vec![condition_snapshot(u32::MAX), selection_snapshot(3)],
+            },
+            Node::DoWhile {
+                body: vec![condition_snapshot(4)],
+                cond: LoopCond::Snapshot { var: 4 },
+            },
+            Node::While {
+                body: vec![selection_snapshot(5)],
+                cond: None,
+            },
+            Node::Switch {
+                disc: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                cases: Vec::new(),
+                default: vec![selection_snapshot(8)],
+            },
+        ]
+    }
+
+    fn empty_signature() -> FnSignature {
+        FnSignature {
+            fp: Vec::new(),
+            int: Vec::new(),
+            vec: Vec::new(),
+            ret: FnReturn::Void,
+            exact_integer_types: false,
+            abi: Abi::MsX64,
+        }
+    }
+
+    fn variable_declarations(source: &str) -> String {
+        source
+            .lines()
+            .filter(|line: &&str| {
+                let declaration: &str = line.trim_start();
+                (declaration.starts_with("uint64_t loop_cond_")
+                    || declaration.starts_with("uint64_t sel_cc_")
+                    || declaration.starts_with("let mut loop_cond_")
+                    || declaration.starts_with("let mut sel_cc_"))
+                    && declaration.ends_with(" = 0;")
+            })
+            .collect::<Vec<&str>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn variable_collection_preserves_first_occurrence_across_every_recursive_arm() {
+        let body: Block = composed_variable_body();
+        let collected: CollectedVariables =
+            collect_variables(&body).expect("bounded variable collection");
+        assert_eq!(
+            collected.snapshots.into_iter().collect::<Vec<u32>>(),
+            vec![0, 2, 1, 6, u32::MAX, 4]
+        );
+        assert_eq!(
+            collected.selections.into_iter().collect::<Vec<u32>>(),
+            vec![u32::MAX, 0, 9, 7, 3, 5, 8]
+        );
+    }
+
+    #[test]
+    fn variable_collection_handles_empty_single_and_wide_blocks() {
+        let empty: CollectedVariables =
+            collect_variables(&Vec::new()).expect("empty block is bounded");
+        assert!(empty.snapshots.is_empty() && empty.selections.is_empty());
+
+        let single: CollectedVariables = collect_variables(&vec![condition_snapshot(u32::MAX)])
+            .expect("single block is bounded");
+        assert_eq!(
+            single.snapshots.into_iter().collect::<Vec<u32>>(),
+            vec![u32::MAX]
+        );
+
+        let wide: Block = (0..4_096_u32).map(condition_snapshot).collect();
+        let collected: CollectedVariables =
+            collect_variables(&wide).expect("wide flat block is bounded");
+        assert_eq!(collected.snapshots.len(), wide.len());
+        assert_eq!(collected.snapshots.first(), Some(&0));
+        assert_eq!(collected.snapshots.last(), Some(&4_095));
+    }
+
+    #[test]
+    fn variable_declaration_bytes_preserve_first_occurrence_order() {
+        let body: Block = composed_variable_body();
+        let signature: FnSignature = empty_signature();
+        let aggregates: AggregatePlan = AggregatePlan::default();
+        let emitted_c: String =
+            emit_c(&body, &signature, None, None, &aggregates).expect("C emission");
+        let emitted_rust: String =
+            emit_rust(&body, &signature, None, None, &aggregates).expect("Rust emission");
+        let expected_c: String = [
+            "    uint64_t loop_cond_0 = 0;",
+            "    uint64_t loop_cond_2 = 0;",
+            "    uint64_t loop_cond_1 = 0;",
+            "    uint64_t loop_cond_6 = 0;",
+            "    uint64_t loop_cond_4294967295 = 0;",
+            "    uint64_t loop_cond_4 = 0;",
+            "    uint64_t sel_cc_4294967295 = 0;",
+            "    uint64_t sel_cc_0 = 0;",
+            "    uint64_t sel_cc_9 = 0;",
+            "    uint64_t sel_cc_7 = 0;",
+            "    uint64_t sel_cc_3 = 0;",
+            "    uint64_t sel_cc_5 = 0;",
+            "    uint64_t sel_cc_8 = 0;",
+        ]
+        .join("\n");
+        let expected_rust: String = [
+            "    let mut loop_cond_0: u64 = 0;",
+            "    let mut loop_cond_2: u64 = 0;",
+            "    let mut loop_cond_1: u64 = 0;",
+            "    let mut loop_cond_6: u64 = 0;",
+            "    let mut loop_cond_4294967295: u64 = 0;",
+            "    let mut loop_cond_4: u64 = 0;",
+            "    let mut sel_cc_4294967295: u64 = 0;",
+            "    let mut sel_cc_0: u64 = 0;",
+            "    let mut sel_cc_9: u64 = 0;",
+            "    let mut sel_cc_7: u64 = 0;",
+            "    let mut sel_cc_3: u64 = 0;",
+            "    let mut sel_cc_5: u64 = 0;",
+            "    let mut sel_cc_8: u64 = 0;",
+        ]
+        .join("\n");
+        assert_eq!(variable_declarations(&emitted_c), expected_c);
+        assert_eq!(variable_declarations(&emitted_rust), expected_rust);
+
+        let empty_c: String = emit_c(
+            &Vec::new(),
+            &signature,
+            None,
+            None,
+            &AggregatePlan::default(),
+        )
+        .expect("empty C emission");
+        assert!(variable_declarations(&empty_c).is_empty());
+        let single_body: Block = vec![condition_snapshot(u32::MAX)];
+        let single_c: String = emit_c(
+            &single_body,
+            &signature,
+            None,
+            None,
+            &AggregatePlan::default(),
+        )
+        .expect("single C emission");
+        assert_eq!(
+            variable_declarations(&single_c),
+            "    uint64_t loop_cond_4294967295 = 0;"
+        );
+
+        let wide_body: Block = (0..4_096_u32).map(condition_snapshot).collect();
+        let wide_c: String = emit_c(
+            &wide_body,
+            &signature,
+            None,
+            None,
+            &AggregatePlan::default(),
+        )
+        .expect("wide C emission");
+        let expected_wide: String = (0..4_096_u32)
+            .map(|var: u32| format!("    uint64_t loop_cond_{var} = 0;"))
+            .collect::<Vec<String>>()
+            .join("\n");
+        assert_eq!(variable_declarations(&wide_c), expected_wide);
+    }
+
+    #[test]
+    fn variable_collection_refuses_excessive_nesting() {
+        let mut at_limit: Block = vec![condition_snapshot(7)];
+        for _ in 0..VARIABLE_COLLECTION_MAX_DEPTH {
+            at_limit = vec![Node::While {
+                body: at_limit,
+                cond: None,
+            }];
+        }
+        assert!(collect_variables(&at_limit).is_some());
+        let signature: FnSignature = empty_signature();
+        assert!(emit_c(&at_limit, &signature, None, None, &AggregatePlan::default(),).is_ok());
+        assert!(emit_rust(&at_limit, &signature, None, None, &AggregatePlan::default(),).is_some());
+        let over_limit: Block = vec![Node::While {
+            body: at_limit,
+            cond: None,
+        }];
+        assert!(collect_variables(&over_limit).is_none());
+        let c_error: Error = emit_c(
+            &over_limit,
+            &signature,
+            None,
+            None,
+            &AggregatePlan::default(),
+        )
+        .expect_err("C emitter must reject excessive nesting");
+        assert!(c_error.to_string().contains("nesting exceeds 256"));
+        assert!(
+            emit_rust(
+                &over_limit,
+                &signature,
+                None,
+                None,
+                &AggregatePlan::default(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn wide_snapshot_emission_declares_each_variable_once() {
+        const SNAPSHOTS: usize = 512;
+        let mut code: Vec<u8> = Vec::with_capacity(SNAPSHOTS.saturating_mul(14).saturating_add(1));
+        for _ in 0..SNAPSHOTS {
+            code.extend_from_slice(&[
+                0x48, 0x39, 0xd1, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x48, 0x0f, 0x4d, 0xd1,
+            ]);
+        }
+        code.push(0xc3);
+        let recovered: LeafRecovery =
+            recover_leaf_function(&code, 0x1000).expect("wide snapshot recovery");
+        let declarations: usize = recovered.source.matches("uint64_t sel_cc_").count();
+        assert_eq!(declarations, SNAPSHOTS);
+    }
 
     #[test]
     fn oversized_switch_table_span_is_rejected_before_allocation() {
