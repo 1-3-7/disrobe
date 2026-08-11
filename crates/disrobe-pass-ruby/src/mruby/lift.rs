@@ -145,6 +145,7 @@ impl Regs {
 }
 
 struct Frame<'a> {
+    irep_index: u32,
     rec: &'a IrepRecord,
     ins: &'a [MrubyInstruction],
     dests: &'a [Option<u32>],
@@ -153,6 +154,41 @@ struct Frame<'a> {
     nargs: u32,
     depth: u32,
     is_block: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoopTargets {
+    irep_index: u32,
+    condition: usize,
+    body: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LoopContext {
+    Active(LoopTargets),
+    Inactive { irep_index: u32 },
+}
+
+impl LoopContext {
+    const fn irep_index(&self) -> u32 {
+        match self {
+            Self::Active(targets) => targets.irep_index,
+            Self::Inactive { irep_index } => *irep_index,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopControl {
+    Next,
+    Redo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallAttachment {
+    Value,
+    Block(u32),
+    UnresolvedBlock,
 }
 
 #[derive(Debug)]
@@ -170,6 +206,8 @@ enum Region {
         tail_return: Option<u32>,
     },
     While {
+        condition: usize,
+        body: usize,
         exit_branch: usize,
         back_jmp: usize,
         cond_reg: u32,
@@ -184,6 +222,7 @@ struct Lifter<'a> {
     stats: LiftStats,
     scopes: Vec<u32>,
     branch_value_reg: Option<u32>,
+    loop_contexts: Vec<LoopContext>,
     covered_ireps: BTreeSet<u32>,
     coverage_complete: bool,
 }
@@ -197,6 +236,7 @@ pub(crate) fn lift_tree(tree: &IrepTree) -> Result<LiftOutput> {
         stats: LiftStats::default(),
         scopes: Vec::new(),
         branch_value_reg: None,
+        loop_contexts: Vec::new(),
         covered_ireps: BTreeSet::new(),
         coverage_complete: true,
     };
@@ -447,6 +487,7 @@ impl Lifter<'_> {
         }
         let mut pending: PendingDefs = PendingDefs::new(rec.nregs);
         let frame: Frame<'_> = Frame {
+            irep_index: index,
             rec,
             ins: &ins,
             dests: &dests,
@@ -618,6 +659,8 @@ impl Lifter<'_> {
         out: &mut String,
     ) -> Result<()> {
         let Region::While {
+            condition,
+            body,
             exit_branch,
             back_jmp,
             cond_reg,
@@ -632,14 +675,28 @@ impl Lifter<'_> {
         let mut scratch: String = String::new();
         let prev: Option<u32> = self.branch_value_reg;
         self.branch_value_reg = Some(*cond_reg);
-        self.lift_regions(frame, cond_regions, regs, pending, inner, &mut scratch)?;
+        self.loop_contexts.push(LoopContext::Inactive {
+            irep_index: frame.irep_index,
+        });
+        let condition_result: Result<()> =
+            self.lift_regions(frame, cond_regions, regs, pending, inner, &mut scratch);
+        self.loop_contexts.pop();
         self.branch_value_reg = prev;
+        condition_result?;
         let pad: String = pad_for(indent);
         if scratch.trim().is_empty() {
             let cond: String = regs.get(*cond_reg).render();
             let keyword: &str = if *until { "until" } else { "while" };
             push_line(out, format_args!("{pad}{keyword} {cond}"));
-            self.lift_regions(frame, body_regions, regs, pending, inner, out)?;
+            self.loop_contexts.push(LoopContext::Active(LoopTargets {
+                irep_index: frame.irep_index,
+                condition: *condition,
+                body: *body,
+            }));
+            let body_result: Result<()> =
+                self.lift_regions(frame, body_regions, regs, pending, inner, out);
+            self.loop_contexts.pop();
+            body_result?;
             push_line(out, format_args!("{pad}end"));
             self.stats.total = self.stats.total.saturating_add(2);
         } else {
@@ -887,38 +944,32 @@ impl Lifter<'_> {
                     out,
                 );
             }
-            MrubyOp::Send | MrubyOp::SSend => {
-                let is_self: bool = matches!(instr.op, MrubyOp::SSend);
+            MrubyOp::Send | MrubyOp::SSend | MrubyOp::SendB | MrubyOp::SSendB => {
+                let is_self: bool = matches!(instr.op, MrubyOp::SSend | MrubyOp::SSendB);
                 let argc: u32 = c & 0x0f;
                 let kwargc: u32 = (c >> 4) & 0x0f;
-                let call: String = render_call(rec, regs, a, b, argc, kwargc, is_self, true);
-                self.place(regs, frame, i, a, RegVal::Expr(call), true, indent, out);
-            }
-            MrubyOp::SendB | MrubyOp::SSendB => {
-                let is_self: bool = matches!(instr.op, MrubyOp::SSendB);
-                let argc: u32 = c & 0x0f;
-                let kwargc: u32 = (c >> 4) & 0x0f;
-                let head: String = render_call(rec, regs, a, b, argc, kwargc, is_self, false);
                 let block_reg: u32 = a
                     .saturating_add(argc)
                     .saturating_add(kwargc.saturating_mul(2))
                     .saturating_add(1);
-                let Some(child): Option<u32> = static_block_child(&regs.get(block_reg)) else {
-                    self.mark(instr, &pad, out);
-                    regs.set(a, RegVal::Unknown);
-                    return Ok(());
+                let has_block: bool = matches!(instr.op, MrubyOp::SendB | MrubyOp::SSendB);
+                let attachment: CallAttachment =
+                    split_call_attachment(has_block, &regs.get(block_reg));
+                let allow_yield: bool = attachment == CallAttachment::Value;
+                let head: String = render_call(rec, regs, a, b, argc, kwargc, is_self, allow_yield);
+                let call: String = match attachment {
+                    CallAttachment::Value => head,
+                    CallAttachment::Block(child) => {
+                        let block: String = self.render_block(child, frame.depth);
+                        format!("{head}{block}")
+                    }
+                    CallAttachment::UnresolvedBlock => {
+                        self.mark(instr, &pad, out);
+                        regs.set(a, RegVal::Unknown);
+                        return Ok(());
+                    }
                 };
-                let block: String = self.render_block(child, frame.depth);
-                self.place(
-                    regs,
-                    frame,
-                    i,
-                    a,
-                    RegVal::Expr(format!("{head}{block}")),
-                    true,
-                    indent,
-                    out,
-                );
+                self.place(regs, frame, i, a, RegVal::Expr(call), true, indent, out);
             }
             MrubyOp::Array => {
                 let elems: String = render_consecutive(regs, a, b);
@@ -1180,6 +1231,11 @@ impl Lifter<'_> {
                 }
                 _ => self.mark(instr, &pad, out),
             },
+            MrubyOp::JmpUw => match self.loop_control(frame, i) {
+                Some(LoopControl::Next) => push_line(out, format_args!("{pad}next")),
+                Some(LoopControl::Redo) => push_line(out, format_args!("{pad}redo")),
+                None => self.mark(instr, &pad, out),
+            },
             MrubyOp::Karg => regs.set(a, RegVal::Local(symbol(rec, b))),
             MrubyOp::Apost => {
                 let pre: u32 = b;
@@ -1280,6 +1336,23 @@ impl Lifter<'_> {
         );
         self.stats.unmodeled = self.stats.unmodeled.saturating_add(1);
         self.stats.unmodeled_ops.insert(instr.mnemonic.clone());
+    }
+
+    fn loop_control(&self, frame: &Frame<'_>, index: usize) -> Option<LoopControl> {
+        let target: usize = jump_target_index(frame.ins, index)?;
+        let context: &LoopContext = self
+            .loop_contexts
+            .iter()
+            .rev()
+            .find(|context: &&LoopContext| context.irep_index() == frame.irep_index)?;
+        let LoopContext::Active(current) = context else {
+            return None;
+        };
+        match target {
+            target if target == current.condition => Some(LoopControl::Next),
+            target if target == current.body => Some(LoopControl::Redo),
+            _ => None,
+        }
     }
 
     fn render_block(&mut self, child: u32, depth: u32) -> String {
@@ -1416,12 +1489,9 @@ fn required_kwarg_names(ins: &[MrubyInstruction], rec: &IrepRecord) -> Vec<Strin
 
 fn structurable(rec: &IrepRecord, ins: &[MrubyInstruction]) -> bool {
     rec.catch_count == 0
-        && !ins.iter().any(|i| {
-            matches!(
-                i.op,
-                MrubyOp::Except | MrubyOp::Rescue | MrubyOp::RaiseIf | MrubyOp::JmpUw
-            )
-        })
+        && !ins
+            .iter()
+            .any(|i| matches!(i.op, MrubyOp::Except | MrubyOp::Rescue | MrubyOp::RaiseIf))
 }
 
 fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
@@ -1437,10 +1507,13 @@ fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
     ins.binary_search_by_key(&target, |instr| instr.pc).ok()
 }
 
-const fn static_block_child(value: &RegVal) -> Option<u32> {
+const fn split_call_attachment(has_block: bool, value: &RegVal) -> CallAttachment {
+    if !has_block {
+        return CallAttachment::Value;
+    }
     match value {
-        RegVal::BlockProc(child) | RegVal::MethodProc(child) => Some(*child),
-        _ => None,
+        RegVal::BlockProc(child) => CallAttachment::Block(*child),
+        _ => CallAttachment::UnresolvedBlock,
     }
 }
 
@@ -1508,6 +1581,8 @@ fn try_structure_at(
                 let cond_regions: Vec<Region> = structure_range(ins, head, i);
                 let body_regions: Vec<Region> = structure_range(ins, i + 1, back_jmp);
                 let region: Region = Region::While {
+                    condition: head,
+                    body: i.saturating_add(1),
                     exit_branch: i,
                     back_jmp,
                     cond_reg,
@@ -2552,12 +2627,235 @@ mod tests {
         }
     }
 
+    #[test]
+    fn jmpuw_to_the_current_while_body_renders_redo() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 6]),
+            ("JMPUW", &[65_533]),
+            ("JMP", &[65_524]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 0, "got: {}", output.source);
+        assert!(
+            output.source.contains("while true"),
+            "got: {}",
+            output.source
+        );
+        assert!(output.source.contains("  redo"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn jmpuw_to_the_current_while_condition_renders_next() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 6]),
+            ("JMPUW", &[65_527]),
+            ("JMP", &[65_524]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 0, "got: {}", output.source);
+        assert!(
+            output.source.contains("while true"),
+            "got: {}",
+            output.source
+        );
+        assert!(output.source.contains("  next"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn send_with_a_hash_argument_keeps_the_braces_as_a_value() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADSELF", &[1]),
+            ("LOADSYM", &[2, 0]),
+            ("LOADI_1", &[3]),
+            ("HASH", &[2, 1]),
+            ("SEND", &[1, 1, 1]),
+            ("RETURN", &[1]),
+        ]);
+        let source: String =
+            lift_single(iseq, vec![], vec!["key".to_owned(), "consume".to_owned()]);
+
+        assert!(source.contains("consume({:\"key\" => 1})"), "got: {source}");
+    }
+
+    #[test]
+    fn sendb_with_a_child_irep_attaches_braces_as_a_block() {
+        let parent_iseq: Vec<u8> = asm(&[
+            ("LOADSELF", &[1]),
+            ("BLOCK", &[2, 0]),
+            ("SENDB", &[1, 0, 0]),
+            ("RETURN", &[1]),
+        ]);
+        let child_iseq: Vec<u8> = asm(&[("LOADI_1", &[1]), ("RETURN", &[1])]);
+        let parent: IrepRecord = rec(parent_iseq, vec![], vec!["consume".to_owned()], vec![1]);
+        let mut child: IrepRecord = rec(child_iseq, vec![], vec![], vec![]);
+        child.index = 1;
+        child.depth = 1;
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(parent.iseq.len().saturating_add(child.iseq.len()))
+                .unwrap_or(0),
+            total_symbols: 1,
+            total_pool_entries: 0,
+            records: vec![parent, child],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 0, "got: {}", output.source);
+        assert!(
+            output.source.contains("consume { 1 }"),
+            "got: {}",
+            output.source
+        );
+        assert!(
+            !output.source.contains("consume({"),
+            "got: {}",
+            output.source
+        );
+    }
+
+    #[test]
+    fn parent_loop_targets_do_not_classify_a_child_irep_jump() {
+        let parent_iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 12]),
+            ("LOADSELF", &[1]),
+            ("BLOCK", &[2, 0]),
+            ("SENDB", &[1, 0, 0]),
+            ("JMP", &[65_518]),
+            ("RETURN", &[0]),
+        ]);
+        let child_iseq: Vec<u8> = asm(&[("JMPUW", &[1]), ("NOP", &[]), ("RETURN", &[0])]);
+        let parent: IrepRecord = rec(parent_iseq, vec![], vec!["consume".to_owned()], vec![1]);
+        let mut child: IrepRecord = rec(child_iseq, vec![], vec![], vec![]);
+        child.index = 1;
+        child.depth = 1;
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(parent.iseq.len().saturating_add(child.iseq.len()))
+                .unwrap_or(0),
+            total_symbols: 1,
+            total_pool_entries: 0,
+            records: vec![parent, child],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_mnemonics, vec!["JMPUW"]);
+        assert!(!output.source.contains("redo"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn jmpuw_in_a_while_condition_stays_unmodeled_without_a_loop_wrapper() {
+        let iseq: Vec<u8> = asm(&[
+            ("NOP", &[]),
+            ("JMPUW", &[65_532]),
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 4]),
+            ("NOP", &[]),
+            ("JMP", &[65_522]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert!(!output.source.contains("next"), "got: {}", output.source);
+        assert!(
+            output.unmodeled_mnemonics.contains(&"JMPUW".to_owned()),
+            "got: {}",
+            output.source
+        );
+    }
+
+    #[test]
+    fn child_loop_control_remains_active_during_an_outer_irep_condition() {
+        let parent_iseq: Vec<u8> = asm(&[
+            ("JMPUW", &[65_533]),
+            ("LOADSELF", &[1]),
+            ("BLOCK", &[2, 0]),
+            ("SENDB", &[1, 0, 0]),
+            ("JMPNOT", &[1, 4]),
+            ("NOP", &[]),
+            ("JMP", &[65_516]),
+            ("RETURN", &[0]),
+        ]);
+        let child_iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 6]),
+            ("JMPUW", &[65_533]),
+            ("JMP", &[65_524]),
+            ("RETURN", &[0]),
+        ]);
+        let parent: IrepRecord = rec(parent_iseq, vec![], vec!["consume".to_owned()], vec![1]);
+        let mut child: IrepRecord = rec(child_iseq, vec![], vec![], vec![]);
+        child.index = 1;
+        child.depth = 1;
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(parent.iseq.len().saturating_add(child.iseq.len()))
+                .unwrap_or(0),
+            total_symbols: 1,
+            total_pool_entries: 0,
+            records: vec![parent, child],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 3, "got: {}", output.source);
+        assert_eq!(output.unmodeled_mnemonics, vec!["JMP", "JMPNOT", "JMPUW"]);
+    }
+
+    #[test]
+    fn nested_loop_condition_does_not_inherit_same_irep_outer_targets() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 17]),
+            ("NOP", &[]),
+            ("JMPUW", &[65_532]),
+            ("LOADT", &[2]),
+            ("JMPNOT", &[2, 4]),
+            ("NOP", &[]),
+            ("JMP", &[65_522]),
+            ("JMP", &[65_513]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 3, "got: {}", output.source);
+        assert_eq!(output.unmodeled_mnemonics, vec!["JMP", "JMPNOT", "JMPUW"]);
+        assert!(!output.source.contains("redo"), "got: {}", output.source);
+    }
+
     fn render_block_for_test(tree: &IrepTree, child: u32) -> String {
         let mut lifter: Lifter<'_> = Lifter {
             tree,
             stats: LiftStats::default(),
             scopes: vec![0],
             branch_value_reg: None,
+            loop_contexts: Vec::new(),
             covered_ireps: BTreeSet::new(),
             coverage_complete: true,
         };

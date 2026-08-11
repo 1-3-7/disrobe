@@ -52,7 +52,7 @@ const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
     ("exceptions", 22, 27),
     ("advanced", 138, 138),
     ("jumps", 63, 63),
-    ("loopbreak", 31, 35),
+    ("loopbreak", 34, 35),
     ("kwargs", 30, 31),
     ("ensurecase", 29, 33),
 ];
@@ -60,9 +60,8 @@ const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
 const UNMODELED_REASONS: &[(&str, &str)] = &[
     (
         "JMP",
-        "an unconditional jump inside an irep whose catch_count is nonzero (rescue/else/ensure), \
-         or inside a while loop that also contains a JMPUW-based break; structurable() withholds \
-         structuring for both shapes",
+        "an unconditional jump inside an irep whose catch_count is nonzero; rescue, else, and \
+         ensure control flow is not structurally recovered",
     ),
     (
         "JMPIF",
@@ -70,15 +69,10 @@ const UNMODELED_REASONS: &[(&str, &str)] = &[
          control flow is not structurally recovered",
     ),
     (
-        "JMPNOT",
-        "a conditional jump that guards a JMPUW-based break inside a native while or until loop; \
-         the guarded break never reaches the dedicated BREAK opcode",
-    ),
-    (
         "JMPUW",
-        "break with a value inside a native while or until loop compiles through JMPUW, not the \
-         dedicated BREAK opcode; JMPUW also marks a rescue/ensure unwind edge, so a JMPUW is never \
-         assumed to be a loop break",
+        "inside a structurally wrapped loop body, condition and body targets encode operand-free next \
+         and redo; condition-region jumps remain unmodeled because no loop wrapper has been emitted, \
+         while an exit-target break remains unmodeled until its preceding result flow is proven",
     ),
     (
         "RAISEIF",
