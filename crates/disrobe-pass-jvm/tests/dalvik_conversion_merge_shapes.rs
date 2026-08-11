@@ -14,7 +14,8 @@ use std::process::Command;
 
 use common::find_on_path;
 use disrobe_pass_jvm::dex_builder::{
-    CatchHandler, ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef, Reloc, TryItem, insn,
+    CatchHandler, ClassDef, DexBuilder, EncodedField, EncodedMethod, FieldRef, MethodRef, ProtoRef,
+    Reloc, TryItem, insn,
 };
 use disrobe_pass_jvm::dex2jar::{Dex2JarResult, translate_dex_bytes};
 use disrobe_pass_jvm::{ClassFile, ConstantPoolEntry, parse_classfile};
@@ -83,8 +84,15 @@ enum Shape {
     AliasSource,
     OverwriteWideHigh,
     BranchMergeToTop,
+    ZeroMergeToTop,
     LoopBackEdge,
+    ArithmeticUse,
     ArgumentUse,
+    VirtualUse,
+    RangeUse,
+    FieldStore,
+    ArrayStore,
+    PostThrowTarget,
     WideRegisterFile,
     TryBody,
     HandlerEntry,
@@ -96,8 +104,15 @@ impl Shape {
             Self::AliasSource => "Alias",
             Self::OverwriteWideHigh => "High",
             Self::BranchMergeToTop => "Merge",
+            Self::ZeroMergeToTop => "ZeroMerge",
             Self::LoopBackEdge => "Loop",
+            Self::ArithmeticUse => "Arithmetic",
             Self::ArgumentUse => "Arg",
+            Self::VirtualUse => "Virtual",
+            Self::RangeUse => "Range",
+            Self::FieldStore => "Field",
+            Self::ArrayStore => "Array",
+            Self::PostThrowTarget => "PostThrow",
             Self::WideRegisterFile => "Wide",
             Self::TryBody => "Try",
             Self::HandlerEntry => "Handler",
@@ -199,6 +214,28 @@ fn sink_method(desc: &'static str) -> EncodedMethod {
     }
 }
 
+fn sink_virtual_method(desc: &'static str) -> EncodedMethod {
+    let slots: u16 = if is_wide(desc) { 2 } else { 1 };
+    EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: format!("L{SINK};"),
+            proto: ProtoRef {
+                return_type: "V".to_owned(),
+                params: vec![desc.to_owned()],
+            },
+            name: "takeVirtual".to_owned(),
+        },
+        access_flags: 0x1,
+        is_direct: false,
+        registers_size: slots + 1,
+        ins_size: slots + 1,
+        outs_size: 0,
+        insns: insn::fmt10x(0x0E),
+        relocations: Vec::new(),
+    }
+}
+
 fn sink_class() -> ClassDef {
     ClassDef {
         class: format!("L{SINK};"),
@@ -213,7 +250,12 @@ fn sink_class() -> ClassDef {
             sink_method("F"),
             sink_method("D"),
         ],
-        virtual_methods: Vec::new(),
+        virtual_methods: vec![
+            sink_virtual_method("I"),
+            sink_virtual_method("J"),
+            sink_virtual_method("F"),
+            sink_virtual_method("D"),
+        ],
     }
 }
 
@@ -300,6 +342,34 @@ fn branch_merge_body(conv: &Conversion) -> Body {
     }
 }
 
+fn zero_merge_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = dest_slots + ins_size;
+    let dest: u8 = 0;
+    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let cond: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+    let mut units: Vec<u16> = Vec::new();
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(4);
+    units.extend(insn::fmt12x(conv.op, dest, src));
+    units.push(0x28 | (3u16 << 8));
+    units.extend(insn::fmt11n(0x12, dest, 0));
+    units.extend(insn::fmt10x(0x00));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
+        tries: Vec::new(),
+    }
+}
+
 fn loop_back_edge_body(conv: &Conversion) -> Body {
     let dest_slots: u16 = conv.dest_slots();
     let src_slots: u16 = conv.src_slots();
@@ -315,6 +385,41 @@ fn loop_back_edge_body(conv: &Conversion) -> Body {
     units.push(0x3C | (u16::from(counter) << 8));
     units.push((-3i16) as u16);
     units.extend(insn::fmt11x(return_op(conv.dest), dest));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: conv.dest,
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: Vec::new(),
+        tries: Vec::new(),
+    }
+}
+
+const fn arithmetic_op(desc: &str) -> u8 {
+    match desc.as_bytes() {
+        [b'J'] => 0xBB,
+        [b'F'] => 0xC6,
+        [b'D'] => 0xCB,
+        _ => 0xB0,
+    }
+}
+
+fn arithmetic_use_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = dest_slots + ins_size;
+    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let cond: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt12x(conv.op, 0, src));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    units.extend(insn::fmt12x(arithmetic_op(conv.dest), 0, 0));
+    units.extend(insn::fmt11x(return_op(conv.dest), 0));
     Body {
         registers_size,
         ins_size,
@@ -359,6 +464,220 @@ fn argument_use_body(conv: &Conversion) -> Body {
             unit: call_at + 1,
             method: sink_ref(conv.dest),
         }],
+        tries: Vec::new(),
+    }
+}
+
+fn virtual_use_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let receiver: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let scratch: u16 = dest_slots + 1;
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = scratch + ins_size;
+    let src: u8 = u8::try_from(scratch).expect("register index fits u8");
+    let cond: u8 = u8::try_from(scratch + src_slots).expect("register index fits u8");
+    let mut units: Vec<u16> = Vec::new();
+    let mut relocations: Vec<Reloc> = Vec::new();
+    let new_at: usize = units.len();
+    units.extend(insn::fmt21c(0x22, receiver, 0));
+    relocations.push(Reloc::TypeIndex {
+        unit: new_at + 1,
+        descriptor: format!("L{SINK};"),
+    });
+    let ctor_at: usize = units.len();
+    units.extend(insn::fmt35c_one(0x70, receiver, 0));
+    relocations.push(Reloc::MethodIndex {
+        unit: ctor_at + 1,
+        method: object_init_for(SINK),
+    });
+    units.extend(insn::fmt12x(conv.op, 0, src));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    let call_at: usize = units.len();
+    if dest_slots == 2 {
+        units.extend(insn::fmt35c_three(0x6E, receiver, 0, 1, 0));
+    } else {
+        units.extend(insn::fmt35c_two(0x6E, receiver, 0, 0));
+    }
+    relocations.push(Reloc::MethodIndex {
+        unit: call_at + 1,
+        method: MethodRef {
+            class: format!("L{SINK};"),
+            proto: ProtoRef {
+                return_type: "V".to_owned(),
+                params: vec![conv.dest.to_owned()],
+            },
+            name: "takeVirtual".to_owned(),
+        },
+    });
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: dest_slots + 1,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations,
+        tries: Vec::new(),
+    }
+}
+
+fn object_init_for(class: &str) -> MethodRef {
+    MethodRef {
+        class: format!("L{class};"),
+        proto: ProtoRef {
+            return_type: "V".to_owned(),
+            params: Vec::new(),
+        },
+        name: "<init>".to_owned(),
+    }
+}
+
+fn range_use_body(conv: &Conversion) -> Body {
+    const RANGE_START: u16 = 16;
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = WIDE_SCRATCH + ins_size;
+    let source: u16 = WIDE_SCRATCH;
+    let cond: u8 = u8::try_from(WIDE_SCRATCH + src_slots).expect("register index fits u8");
+    let source_move: u8 = if is_wide(conv.src) { 0x06 } else { 0x03 };
+    let dest_move: u8 = if is_wide(conv.dest) { 0x06 } else { 0x03 };
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt32x(source_move, 0, source));
+    units.extend(insn::fmt12x(conv.op, 0, 0));
+    units.extend(insn::fmt32x(dest_move, RANGE_START, 0));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    let call_at: usize = units.len();
+    units.push(0x77 | (conv.dest_slots() << 8));
+    units.push(0);
+    units.push(RANGE_START);
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: conv.dest_slots(),
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: vec![Reloc::MethodIndex {
+            unit: call_at + 1,
+            method: sink_ref(conv.dest),
+        }],
+        tries: Vec::new(),
+    }
+}
+
+fn value_field(class: &str, desc: &str) -> FieldRef {
+    FieldRef {
+        class: format!("L{class};"),
+        type_desc: desc.to_owned(),
+        name: "value".to_owned(),
+    }
+}
+
+fn field_store_body(conv: &Conversion, class: &str) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = dest_slots + ins_size;
+    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let cond: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt12x(conv.op, 0, src));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    let field_at: usize = units.len();
+    let op: u8 = if is_wide(conv.dest) { 0x68 } else { 0x67 };
+    units.extend(insn::fmt21c(op, 0, 0));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: vec![Reloc::FieldIndex {
+            unit: field_at + 1,
+            field: value_field(class, conv.dest),
+        }],
+        tries: Vec::new(),
+    }
+}
+
+fn array_store_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let array: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let size: u8 = array + 1;
+    let index: u8 = size + 1;
+    let scratch: u16 = dest_slots + 3;
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 1;
+    let registers_size: u16 = scratch + ins_size;
+    let src: u8 = u8::try_from(scratch).expect("register index fits u8");
+    let cond: u8 = u8::try_from(scratch + src_slots).expect("register index fits u8");
+    let mut units: Vec<u16> = Vec::new();
+    units.extend(insn::fmt12x(conv.op, 0, src));
+    units.extend(insn::fmt11n(0x12, size, 1));
+    let array_at: usize = units.len();
+    units.extend(insn::fmt22c(0x23, array, size, 0));
+    units.extend(insn::fmt11n(0x12, index, 0));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt10x(0x00));
+    let store_op: u8 = if is_wide(conv.dest) { 0x4C } else { 0x4B };
+    units.extend(insn::fmt23x(store_op, 0, array, index));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: "V",
+        params: vec![conv.src.to_owned(), "I".to_owned()],
+        relocations: vec![Reloc::TypeIndex {
+            unit: array_at + 1,
+            descriptor: format!("[{}", conv.dest),
+        }],
+        tries: Vec::new(),
+    }
+}
+
+fn post_throw_target_body(conv: &Conversion) -> Body {
+    let dest_slots: u16 = conv.dest_slots();
+    let src_slots: u16 = conv.src_slots();
+    let ins_size: u16 = src_slots + 2;
+    let registers_size: u16 = dest_slots + ins_size;
+    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let exception: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+    let cond: u8 = exception + 1;
+    let mut units: Vec<u16> = Vec::new();
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(3);
+    units.extend(insn::fmt11x(0x27, exception));
+    units.extend(insn::fmt12x(conv.op, 0, src));
+    units.push(0x38 | (u16::from(cond) << 8));
+    units.push(2);
+    units.extend(insn::fmt10x(0x00));
+    units.extend(insn::fmt10x(0x0E));
+    Body {
+        registers_size,
+        ins_size,
+        outs_size: 0,
+        insns: units,
+        return_type: "V",
+        params: vec![
+            conv.src.to_owned(),
+            "Ljava/lang/RuntimeException;".to_owned(),
+            "I".to_owned(),
+        ],
+        relocations: Vec::new(),
         tries: Vec::new(),
     }
 }
@@ -493,13 +812,20 @@ fn handler_entry_body(conv: &Conversion) -> Body {
     }
 }
 
-fn body_for(shape: Shape, conv: &Conversion) -> Body {
+fn body_for(shape: Shape, conv: &Conversion, class: &str) -> Body {
     match shape {
         Shape::AliasSource => alias_source_body(conv),
         Shape::OverwriteWideHigh => overwrite_wide_high_body(conv),
         Shape::BranchMergeToTop => branch_merge_body(conv),
+        Shape::ZeroMergeToTop => zero_merge_body(conv),
         Shape::LoopBackEdge => loop_back_edge_body(conv),
+        Shape::ArithmeticUse => arithmetic_use_body(conv),
         Shape::ArgumentUse => argument_use_body(conv),
+        Shape::VirtualUse => virtual_use_body(conv),
+        Shape::RangeUse => range_use_body(conv),
+        Shape::FieldStore => field_store_body(conv, class),
+        Shape::ArrayStore => array_store_body(conv),
+        Shape::PostThrowTarget => post_throw_target_body(conv),
         Shape::WideRegisterFile => wide_register_file_body(conv),
         Shape::TryBody => try_body_body(conv),
         Shape::HandlerEntry => handler_entry_body(conv),
@@ -508,7 +834,7 @@ fn body_for(shape: Shape, conv: &Conversion) -> Body {
 
 fn shape_class(shape: Shape, conv: &Conversion) -> ClassDef {
     let name: String = class_name(shape, conv);
-    let body: Body = body_for(shape, conv);
+    let body: Body = body_for(shape, conv, &name);
     let method: EncodedMethod = EncodedMethod {
         method: MethodRef {
             class: format!("L{name};"),
@@ -531,7 +857,14 @@ fn shape_class(shape: Shape, conv: &Conversion) -> ClassDef {
         class: format!("L{name};"),
         super_class: "Ljava/lang/Object;".to_owned(),
         access_flags: 0x1,
-        static_fields: Vec::new(),
+        static_fields: if shape == Shape::FieldStore {
+            vec![EncodedField {
+                field: value_field(&name, conv.dest),
+                access_flags: 0x9,
+            }]
+        } else {
+            Vec::new()
+        },
         static_values: Vec::new(),
         direct_methods: vec![ctor(&name), method],
         virtual_methods: Vec::new(),
@@ -542,12 +875,60 @@ const SHAPES: &[Shape] = &[
     Shape::AliasSource,
     Shape::OverwriteWideHigh,
     Shape::BranchMergeToTop,
+    Shape::ZeroMergeToTop,
     Shape::LoopBackEdge,
+    Shape::ArithmeticUse,
     Shape::ArgumentUse,
+    Shape::VirtualUse,
+    Shape::RangeUse,
+    Shape::FieldStore,
+    Shape::ArrayStore,
+    Shape::PostThrowTarget,
     Shape::WideRegisterFile,
     Shape::TryBody,
     Shape::HandlerEntry,
 ];
+
+const NO_CONVERSION: &str = "CNoConversion";
+
+fn no_conversion_class() -> ClassDef {
+    let units: Vec<u16> = [
+        insn::fmt12x(0x01, 0, 1),
+        vec![0x38, 2],
+        insn::fmt10x(0x00),
+        insn::fmt10x(0x0E),
+    ]
+    .concat();
+    ClassDef {
+        class: format!("L{NO_CONVERSION};"),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x1,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![
+            ctor(NO_CONVERSION),
+            EncodedMethod {
+                method: MethodRef {
+                    class: format!("L{NO_CONVERSION};"),
+                    proto: ProtoRef {
+                        return_type: "V".to_owned(),
+                        params: vec!["I".to_owned()],
+                    },
+                    name: "conv".to_owned(),
+                },
+                access_flags: 0x9,
+                is_direct: true,
+                registers_size: 2,
+                ins_size: 1,
+                outs_size: 0,
+                insns: units,
+                relocations: Vec::new(),
+                tries: Vec::new(),
+            },
+        ],
+        virtual_methods: Vec::new(),
+    }
+}
 
 fn emitted_classes() -> Vec<(Shape, &'static Conversion, String)> {
     let mut out: Vec<(Shape, &'static Conversion, String)> = Vec::new();
@@ -564,6 +945,7 @@ fn emitted_classes() -> Vec<(Shape, &'static Conversion, String)> {
 fn shapes_dex() -> Vec<u8> {
     let mut builder: DexBuilder = DexBuilder::new();
     builder.add_class(sink_class());
+    builder.add_class(no_conversion_class());
     for (shape, conv, _name) in emitted_classes() {
         builder.add_class(shape_class(shape, conv));
     }
@@ -571,7 +953,7 @@ fn shapes_dex() -> Vec<u8> {
 }
 
 fn all_class_names() -> Vec<String> {
-    let mut names: Vec<String> = vec![SINK.to_owned()];
+    let mut names: Vec<String> = vec![SINK.to_owned(), NO_CONVERSION.to_owned()];
     names.extend(
         emitted_classes()
             .into_iter()
@@ -711,6 +1093,19 @@ fn every_conversion_shape_lifts_to_a_recovered_body() {
 }
 
 #[test]
+fn no_conversion_control_keeps_precise_non_top_frame_tags() {
+    let result: Dex2JarResult =
+        translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
+    let cf: ClassFile = parsed_class(&result, NO_CONVERSION);
+    let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+    assert_eq!(
+        frames,
+        vec![vec![1, 1]],
+        "the no-conversion control must keep its scratch and parameter typed as int"
+    );
+}
+
+#[test]
 fn a_conversion_whose_destination_aliases_its_source_frames_the_result_type() {
     let result: Dex2JarResult =
         translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
@@ -806,6 +1201,30 @@ fn a_conversion_in_one_arm_of_a_branch_merges_to_top_at_the_join() {
 }
 
 #[test]
+fn zero_or_null_merges_with_each_numeric_conversion_result_without_retaining_a_stale_type() {
+    let result: Dex2JarResult =
+        translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
+    for conv in CONVERSIONS {
+        let name: String = class_name(Shape::ZeroMergeToTop, conv);
+        let cf: ClassFile = parsed_class(&result, &name);
+        let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+        let joined: &Vec<u8> = frames.last().expect("the zero merge frame");
+        let observed: BTreeMap<u8, usize> = nonzero_tag_multiset(joined);
+        let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
+        *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
+        *expected.entry(1).or_insert(0) += 1;
+        if tag_for_desc(conv.dest) == 1 {
+            *expected.entry(1).or_insert(0) += 1;
+        }
+        assert_eq!(
+            observed, expected,
+            "{name} merges ZeroOrNull with the {} result; the exact join tags are {joined:?}",
+            conv.dest
+        );
+    }
+}
+
+#[test]
 fn a_conversion_inside_a_loop_body_keeps_its_result_type_across_the_back_edge() {
     let result: Dex2JarResult =
         translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
@@ -832,6 +1251,61 @@ fn a_conversion_inside_a_loop_body_keeps_its_result_type_across_the_back_edge() 
             "{name} must still describe its int loop counter at the header, but the frame holds \
              {observed:?}"
         );
+    }
+}
+
+fn expected_typed_use_tags(shape: Shape, conv: &Conversion) -> BTreeMap<u8, usize> {
+    let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
+    *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
+    *expected.entry(tag_for_desc(conv.dest)).or_insert(0) += 1;
+    *expected.entry(1).or_insert(0) += 1;
+    match shape {
+        Shape::VirtualUse | Shape::PostThrowTarget => {
+            *expected.entry(7).or_insert(0) += 1;
+        }
+        Shape::RangeUse => {
+            *expected.entry(tag_for_desc(conv.dest)).or_insert(0) += 1;
+        }
+        Shape::ArrayStore => {
+            *expected.entry(7).or_insert(0) += 1;
+            *expected.entry(1).or_insert(0) += 2;
+        }
+        Shape::ArithmeticUse | Shape::ArgumentUse | Shape::FieldStore => {}
+        _ => panic!("{shape:?} is not a typed-use shape"),
+    }
+    expected
+}
+
+#[test]
+fn every_typed_use_observes_the_exact_conversion_result_tag() {
+    const TYPED_USE_SHAPES: &[Shape] = &[
+        Shape::ArithmeticUse,
+        Shape::ArgumentUse,
+        Shape::VirtualUse,
+        Shape::RangeUse,
+        Shape::FieldStore,
+        Shape::ArrayStore,
+        Shape::PostThrowTarget,
+    ];
+    let result: Dex2JarResult =
+        translate_dex_bytes(&shapes_dex()).expect("translate the conversion-shape dex");
+    for shape in TYPED_USE_SHAPES {
+        for conv in CONVERSIONS {
+            let name: String = class_name(*shape, conv);
+            let cf: ClassFile = parsed_class(&result, &name);
+            let frames: Vec<Vec<u8>> = stack_map_local_tags(&cf);
+            let frame: &Vec<u8> = if *shape == Shape::PostThrowTarget {
+                frames.last()
+            } else {
+                frames.first()
+            }
+            .unwrap_or_else(|| panic!("{name} must carry a typed-use frame"));
+            assert_eq!(
+                nonzero_tag_multiset(frame),
+                expected_typed_use_tags(*shape, conv),
+                "{name} emitted the wrong exact local tags: {frame:?}"
+            );
+        }
     }
 }
 
@@ -1148,6 +1622,19 @@ fn every_conversion_shape_passes_xverify_all() {
         graded.len(),
         outcome.detail
     );
+}
+
+#[test]
+fn no_conversion_control_passes_xverify_all() {
+    let graded: Vec<String> = vec![NO_CONVERSION.to_owned()];
+    let Some(outcome): Option<ProbeOutcome> =
+        run_probe("no-conversion", &translated_classes(None), &graded)
+    else {
+        return;
+    };
+    assert_eq!(outcome.clean, 1, "{}", outcome.detail);
+    assert_eq!(outcome.fail, 0, "{}", outcome.detail);
+    assert_eq!(outcome.other, 0, "{}", outcome.detail);
 }
 
 #[test]

@@ -175,6 +175,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "25"
+      - name: require the JVM conversion-frame verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          javac -version
+          echo "DISROBE_REQUIRE_JVM=1" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: provision Go 1.26.3 for graded Go fixtures

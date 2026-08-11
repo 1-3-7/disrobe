@@ -126,6 +126,35 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
             Value::String("windows-latest".to_owned())
         ]
     );
+    let test_steps: &Vec<Value> = jobs
+        .get("test")
+        .and_then(|value: &Value| value.get("steps"))
+        .and_then(Value::as_sequence)
+        .expect("ci.yml test steps");
+    let java_setup_index: usize = test_steps
+        .iter()
+        .position(|step: &Value| {
+            step.get("uses").and_then(Value::as_str) == Some("actions/setup-java@v4")
+        })
+        .expect("ci.yml Java setup step");
+    let jvm_requirement_index: usize = test_steps
+        .iter()
+        .position(|step: &Value| {
+            step.get("name").and_then(Value::as_str)
+                == Some("require the JVM conversion-frame verifier")
+        })
+        .expect("ci.yml JVM requirement step");
+    assert!(
+        java_setup_index < jvm_requirement_index,
+        "ci.yml must provision Java before requiring the JVM conversion-frame gate"
+    );
+    assert!(
+        test_steps[jvm_requirement_index]
+            .get("run")
+            .and_then(Value::as_str)
+            .is_some_and(|run: &str| run.contains("DISROBE_REQUIRE_JVM=1")),
+        "ci.yml must fail the JVM conversion-frame gate instead of skipping when Java is absent"
+    );
     let differential_steps: &Vec<Value> = jobs
         .get("execution-differentials")
         .and_then(|value: &Value| value.get("steps"))
