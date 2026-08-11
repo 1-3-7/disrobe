@@ -321,17 +321,21 @@ fn branch_merge_body(conv: &Conversion) -> Body {
     let dest_slots: u16 = conv.dest_slots();
     let src_slots: u16 = conv.src_slots();
     let ins_size: u16 = src_slots + 1;
-    let registers_size: u16 = dest_slots + ins_size;
+    let scratch: u16 = dest_slots + 1;
+    let registers_size: u16 = scratch + ins_size;
     let dest: u8 = 0;
-    let src: u8 = u8::try_from(dest_slots).expect("register index fits u8");
-    let cond: u8 = u8::try_from(dest_slots + src_slots).expect("register index fits u8");
+    let tail: u8 = u8::try_from(dest_slots).expect("register index fits u8");
+    let src: u8 = u8::try_from(scratch).expect("register index fits u8");
+    let cond: u8 = u8::try_from(scratch + src_slots).expect("register index fits u8");
 
     let mut units: Vec<u16> = Vec::new();
     units.push(0x38 | (u16::from(cond) << 8));
-    units.push(4);
+    units.push(5);
     units.extend(insn::fmt12x(conv.op, dest, src));
-    units.push(0x28 | (3u16 << 8));
+    units.extend(insn::fmt11n(0x12, tail, 0));
+    units.push(0x28 | (4u16 << 8));
     units.extend(insn::fmt11n(0x12, dest, 1));
+    units.extend(insn::fmt11n(0x12, tail, 0));
     units.extend(insn::fmt10x(0x00));
     units.extend(insn::fmt10x(0x0E));
     Body {
@@ -1205,6 +1209,7 @@ fn a_conversion_in_one_arm_of_a_branch_merges_to_top_at_the_join() {
         let mut expected: BTreeMap<u8, usize> = BTreeMap::new();
         *expected.entry(tag_for_desc(conv.src)).or_insert(0) += 1;
         *expected.entry(1).or_insert(0) += 1;
+        *expected.entry(1).or_insert(0) += 1;
         if tag_for_desc(conv.dest) == 1 {
             *expected.entry(1).or_insert(0) += 1;
         }
@@ -1888,7 +1893,15 @@ fn branch_merges_reject_a_tag_from_only_the_converted_arm() {
         .filter(|conv: &&Conversion| tag_for_desc(conv.dest) != 1)
         .map(|conv: &Conversion| {
             let name: String = class_name(Shape::BranchMergeToTop, conv);
-            (name, (FrameSelection::Last, 0, tag_for_desc(conv.dest)))
+            let destination_from_end: usize = if conv.dest_slots() == 2 { 2 } else { 1 };
+            (
+                name,
+                (
+                    FrameSelection::Last,
+                    destination_from_end,
+                    tag_for_desc(conv.dest),
+                ),
+            )
         })
         .collect();
     assert_targeted_perturbations_fail("branch-one-side", replacements);
