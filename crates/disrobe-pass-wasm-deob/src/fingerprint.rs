@@ -472,6 +472,13 @@ fn section_is_named(payload: &[u8]) -> bool {
 }
 
 fn read_leb_u32(bytes: &[u8], start: usize) -> Result<(u32, usize)> {
+    if bytes
+        .get(start..)
+        .and_then(|remaining: &[u8]| remaining.get(..5))
+        .is_some_and(|prefix: &[u8]| prefix.iter().all(|byte: &u8| byte & 0x80 != 0))
+    {
+        return Err(Error::Parse("leb128 too long".to_owned()));
+    }
     let (value, consumed): (u64, usize) =
         read_uleb128_at(bytes, start).map_err(|error: LebError| match error {
             LebError::OutOfBounds(_) => Error::Parse("truncated leb128".to_owned()),
@@ -506,6 +513,12 @@ mod tests {
     fn section_leb_rejects_fifth_group_overflow() {
         let overflow: [u8; 5] = [0xFF, 0xFF, 0xFF, 0xFF, 0x1F];
         assert!(read_leb_u32(&overflow, 0).is_err());
+    }
+
+    #[test]
+    fn section_leb_preserves_the_five_continuation_error() {
+        let error: Error = read_leb_u32(&[0x80; 5], 0).expect_err("five groups are too long");
+        assert!(matches!(error, Error::Parse(message) if message == "leb128 too long"));
     }
 
     #[test]

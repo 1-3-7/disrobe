@@ -547,11 +547,100 @@ mod tests {
 
     use super::*;
 
+    fn reference_rar5_vint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
+        let tail: &[u8] = bytes.get(at..)?;
+        let mut value: u64 = 0;
+        for (index, byte) in tail.iter().copied().take(10).enumerate() {
+            let shift: u32 = u32::try_from(index).ok()?.checked_mul(7)?;
+            if shift == 63 && !matches!(byte, 0x00 | 0x01) {
+                return None;
+            }
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some((value, at.checked_add(index + 1)?));
+            }
+        }
+        None
+    }
+
     #[test]
     fn rar5_vint_rejects_terminal_payload_overflow() {
         let encoded: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
         assert_eq!(rar5_vint(&encoded, 0), None);
         assert_eq!(rar5_vint(&[0xAA, 0xE5, 0x8E, 0x26], 1), Some((624_485, 4)));
+    }
+
+    #[test]
+    fn rar5_vint_matches_an_independent_bounded_reference() {
+        assert_eq!(rar5_vint(&[], 0), None);
+        assert_eq!(rar5_vint(&[0x81, 0x00], 0), Some((1, 2)));
+        let redundant_zero: [u8; 11] = [
+            0xAA, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00,
+        ];
+        let redundant_actual: Option<(u64, usize)> = rar5_vint(&redundant_zero, 1);
+        let redundant_expected: Option<(u64, usize)> = reference_rar5_vint(&redundant_zero, 1);
+        assert_eq!(
+            redundant_actual.map(|(value, _): (u64, usize)| value),
+            Some(0)
+        );
+        assert_eq!(
+            redundant_expected.map(|(value, _): (u64, usize)| value),
+            Some(0)
+        );
+        assert_eq!(
+            redundant_actual.map(|(_, next): (u64, usize)| next),
+            Some(11)
+        );
+        assert_eq!(
+            redundant_expected.map(|(_, next): (u64, usize)| next),
+            Some(11)
+        );
+        let maximum: [u8; 11] = [
+            0xAA, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+        let maximum_actual: Option<(u64, usize)> = rar5_vint(&maximum, 1);
+        let maximum_expected: Option<(u64, usize)> = reference_rar5_vint(&maximum, 1);
+        assert_eq!(
+            maximum_actual.map(|(value, _): (u64, usize)| value),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            maximum_expected.map(|(value, _): (u64, usize)| value),
+            Some(u64::MAX)
+        );
+        assert_eq!(maximum_actual.map(|(_, next): (u64, usize)| next), Some(11));
+        assert_eq!(
+            maximum_expected.map(|(_, next): (u64, usize)| next),
+            Some(11)
+        );
+        for length in 1..=10usize {
+            let truncated: Vec<u8> = vec![0x80; length];
+            assert_eq!(rar5_vint(&truncated, 0), None);
+        }
+
+        let mut state: u64 = 0xd134_2543_de82_ef95;
+        for length in 0..=32usize {
+            for offset in 0..=length + 1 {
+                let bytes: Vec<u8> = (0..length)
+                    .map(|_: usize| {
+                        state = state
+                            .wrapping_mul(2_862_933_555_777_941_757)
+                            .wrapping_add(3_037_000_493);
+                        (state >> 56) as u8
+                    })
+                    .collect();
+                let actual: Option<(u64, usize)> = rar5_vint(&bytes, offset);
+                let expected: Option<(u64, usize)> = reference_rar5_vint(&bytes, offset);
+                assert_eq!(
+                    actual.map(|(value, _): (u64, usize)| value),
+                    expected.map(|(value, _): (u64, usize)| value)
+                );
+                assert_eq!(
+                    actual.map(|(_, next): (u64, usize)| next),
+                    expected.map(|(_, next): (u64, usize)| next)
+                );
+            }
+        }
     }
 
     const PADDING: [u8; 257] = [0x5A; 257];

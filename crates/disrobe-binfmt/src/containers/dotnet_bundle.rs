@@ -136,15 +136,36 @@ fn read_u8(reader: &mut ByteReader<'_>, field: &str) -> Result<u8> {
 
 fn read_7bit_prefixed_string(reader: &mut ByteReader<'_>, field: &str) -> Result<String> {
     let start: usize = reader.position();
-    let encoded_length: u64 = reader
-        .read_uleb128()
-        .map_err(|error: LebError| match error {
-            LebError::OutOfBounds(_) => bundle_err(&format!("truncated reading {field}")),
-            LebError::Overflow { .. } => bundle_err(&format!("{field} length prefix overflow")),
-        })?;
+    let available: usize = reader.remaining();
+    if reader
+        .peek_bytes(5)
+        .is_ok_and(|prefix: &[u8]| prefix.iter().all(|byte: &u8| byte & 0x80 != 0))
+    {
+        reader
+            .skip(5)
+            .map_err(|_| bundle_err(&format!("truncated reading {field}")))?;
+        return Err(bundle_err(&format!("{field} length prefix too long")));
+    }
+    let encoded_length: u64 = match reader.read_uleb128() {
+        Ok(value) => value,
+        Err(LebError::OutOfBounds(_)) => {
+            reader
+                .skip(available)
+                .map_err(|_| bundle_err(&format!("truncated reading {field}")))?;
+            return Err(bundle_err(&format!("truncated reading {field}")));
+        }
+        Err(LebError::Overflow { .. }) => {
+            return Err(bundle_err(&format!("{field} length prefix overflow")));
+        }
+    };
     let consumed: usize = reader.position().saturating_sub(start);
     if consumed > 5 {
         return Err(bundle_err(&format!("{field} length prefix too long")));
+    }
+    if encoded_length > u64::from(u32::MAX) {
+        return Err(bundle_err(&format!(
+            "{field} length {encoded_length} out of range"
+        )));
     }
     let length_u32: u32 = u32::try_from(encoded_length)
         .map_err(|_| bundle_err(&format!("{field} length prefix overflow")))?;
@@ -644,6 +665,55 @@ mod tests {
         let mut overflow: ByteReader<'_> =
             ByteReader::new(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02]);
         assert!(read_7bit_prefixed_string(&mut overflow, "path").is_err());
+    }
+
+    #[test]
+    fn seven_bit_string_preserves_the_five_continuation_error() {
+        let mut reader: ByteReader<'_> = ByteReader::new(&[0x80; 5]);
+        let error: Error =
+            read_7bit_prefixed_string(&mut reader, "path").expect_err("five groups are too long");
+        assert!(
+            matches!(error, Error::DotnetBundle(message) if message == "path length prefix too long")
+        );
+        assert_eq!(reader.position(), 5);
+    }
+
+    #[test]
+    fn seven_bit_string_truncation_preserves_legacy_cursor_and_message() {
+        let cases: [(usize, &[u8]); 4] = [
+            (1, &[0xAA, 0x80]),
+            (2, &[0xAA, 0x80, 0x80]),
+            (3, &[0xAA, 0x80, 0x80, 0x80]),
+            (4, &[0xAA, 0x80, 0x80, 0x80, 0x80]),
+        ];
+        for (continuations, bytes) in cases {
+            let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+            reader.seek(1).expect("nonzero prefix offset");
+            let error: Error = read_7bit_prefixed_string(&mut reader, "path")
+                .expect_err("unterminated prefix must fail");
+            assert!(
+                matches!(error, Error::DotnetBundle(message) if message == "truncated reading path")
+            );
+            assert_eq!(reader.position(), 1 + continuations);
+        }
+    }
+
+    #[test]
+    fn seven_bit_string_preserves_legacy_fifth_group_range_errors() {
+        let cases: [(u8, &str); 3] = [
+            (0x0F, "path length 4026531840 out of range"),
+            (0x10, "path length 4294967296 out of range"),
+            (0x7F, "path length 34091302912 out of range"),
+        ];
+        for (terminal, expected_message) in cases {
+            let bytes: [u8; 6] = [0xAA, 0x80, 0x80, 0x80, 0x80, terminal];
+            let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+            reader.seek(1).expect("nonzero prefix offset");
+            let error: Error = read_7bit_prefixed_string(&mut reader, "path")
+                .expect_err("decoded length must exceed the path limit");
+            assert!(matches!(error, Error::DotnetBundle(message) if message == expected_message));
+            assert_eq!(reader.position(), 6);
+        }
     }
 
     struct FileSpec {
