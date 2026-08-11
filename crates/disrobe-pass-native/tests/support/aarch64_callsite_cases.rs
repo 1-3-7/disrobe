@@ -362,7 +362,7 @@ fn assert_fp_signature(
 
 fn assert_int_signature(function: &RecoveredFunction, width: u32, rule: CallSiteReturnProof) {
     assert_eq!(function.returns_fp, None);
-    assert!(function.signature.parameter_types().is_empty());
+    assert_eq!(function.signature.parameter_types(), vec![ScalarType::Int]);
     assert_eq!(
         function.signature.observed_integer_registers(),
         vec![Reg::Rax]

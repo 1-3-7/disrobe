@@ -139,26 +139,25 @@ fn every_scalar_vfp_expand_immediate_decodes_exactly() {
 }
 
 #[test]
-fn scalar_fp_increment_one_boundaries_reject() {
-    let cases: [(&[u8], &str); 6] = [
-        (&[0x00, 0x41, 0x60, 0x1e, 0xc0, 0x03, 0x5f, 0xd6], "v8..v15"),
+fn scalar_fp_increment_one_boundaries_are_classified() {
+    let cases: [(&[u8], &str); 5] = [
+        (
+            &[0x00, 0x41, 0x60, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
+            "volatile scratch rather than an argument register",
+        ),
         (
             &[0x00, 0x42, 0x60, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
-            "outside v0..v15",
+            "volatile scratch rather than an argument register",
         ),
         (
             &[0xe0, 0x03, 0x40, 0xfd, 0xc0, 0x03, 0x5f, 0xd6],
-            "incoming stack argument",
+            "stack floating parameters require a complete v0-v7 argument prefix",
         ),
         (
             &[
                 0x00, 0x00, 0x00, 0xbd, 0x20, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f, 0xd6,
             ],
             "conflicting widths",
-        ),
-        (
-            &[0x00, 0x48, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6],
-            "unsupported instruction",
         ),
         (
             &[0xe0, 0x07, 0xbf, 0xad, 0xc0, 0x03, 0x5f, 0xd6],
@@ -175,6 +174,15 @@ fn scalar_fp_increment_one_boundaries_reject() {
             "unexpected rejection for {bytes:02x?}: {error}"
         );
     }
+
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&[0x00, 0x48, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6], 0)
+            .expect("scalar fmax must recover");
+    assert_eq!(
+        recovery.signature.parameter_types(),
+        vec![ScalarType::Double, ScalarType::Double]
+    );
+    assert_eq!(recovery.returns_fp, Some(ScalarType::Double));
 }
 
 #[test]
