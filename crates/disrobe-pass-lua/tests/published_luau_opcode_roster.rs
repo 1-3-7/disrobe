@@ -24,7 +24,8 @@ const UNKNOWN_WARNING: &str = "unknown luau opcode";
 const DEBUGGER_BREAK_WARNING: &str = "unresolved luau debugger breakpoint";
 
 const DIALECT_DOC: &str = "docs/src/languages/lua.md";
-const DIALECT_PHRASE: &str = "Luau (<!-- m:luau_opcode_lift_count -->86 of 88<!-- /m --> opcodes in disrobe's declared table are lifted";
+const DIALECT_ROW_LABEL: &str = "Luau opcode coverage";
+const DIALECT_CLAIM: &str = "opcodes in disrobe's declared table are lifted";
 const RECOVERY_DATA: &str = "xtask/data/recovery.json";
 const RECOVERY_HEADING: &str = "Luau opcode lifting";
 const RECOVERY_BAR: &str = "Luau declared-table opcodes lifted";
@@ -233,6 +234,29 @@ fn published_doc() -> String {
     })
 }
 
+fn dialect_claim(doc: &str) -> &str {
+    let matching_rows: Vec<&str> = doc
+        .lines()
+        .filter(|line: &&str| {
+            line.strip_prefix('|')
+                .and_then(|row: &str| row.split('|').next())
+                .map(str::trim)
+                == Some(DIALECT_ROW_LABEL)
+        })
+        .collect();
+    assert_eq!(
+        matching_rows.len(),
+        1,
+        "{DIALECT_DOC} must carry exactly one `{DIALECT_ROW_LABEL}` table row"
+    );
+    let cells: Vec<&str> = matching_rows[0].split('|').map(str::trim).collect();
+    assert!(
+        cells.len() >= 3,
+        "the `{DIALECT_ROW_LABEL}` row in {DIALECT_DOC} must carry a claim cell"
+    );
+    cells[2]
+}
+
 fn published_recovery_bar() -> serde_json::Value {
     let path: PathBuf = repo_root().join(RECOVERY_DATA);
     let raw: String = fs::read_to_string(&path).unwrap_or_else(|error: std::io::Error| {
@@ -437,16 +461,20 @@ fn the_unknown_opcode_check_fires_on_a_value_the_table_does_not_declare() {
 #[test]
 fn the_dialect_row_states_the_table_size_this_crate_carries() {
     let doc: String = published_doc();
+    let claim: &str = dialect_claim(&doc);
+    let marker: String = format!(
+        "<!-- m:luau_opcode_lift_count -->{LIFTED_OPCODES} of {DECLARED_OPCODES}<!-- /m -->"
+    );
     assert!(
-        doc.contains(DIALECT_PHRASE),
-        "{DIALECT_DOC} must state `{DIALECT_PHRASE}`; the lifter declares {DECLARED_OPCODES} \
+        claim.contains(&marker) && claim.contains(DIALECT_CLAIM),
+        "the `{DIALECT_ROW_LABEL}` row in {DIALECT_DOC} must state `{marker} {DIALECT_CLAIM}`; the lifter declares {DECLARED_OPCODES} \
          opcodes and lifts {LIFTED_OPCODES} of them, so a dialect row naming a different number \
          describes a table this crate does not carry"
     );
     for (name, _) in DECODED_NOT_LIFTED {
         assert!(
-            doc.contains(name),
-            "{DIALECT_DOC} states the lifted figure but never names `{name}`, the opcode it \
+            claim.contains(name),
+            "the `{DIALECT_ROW_LABEL}` row in {DIALECT_DOC} states the lifted figure but never names `{name}`, the opcode it \
              excludes; a reader given only the number cannot tell which instruction is missing"
         );
     }
