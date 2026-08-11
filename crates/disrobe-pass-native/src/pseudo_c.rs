@@ -194,6 +194,7 @@ fn parse_xmm(token: &str) -> Option<Xmm> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpWidth {
+    F16,
     F32,
     F64,
 }
@@ -201,14 +202,30 @@ enum FpWidth {
 impl FpWidth {
     const fn c_type(self) -> &'static str {
         match self {
+            Self::F16 => "_Float16",
             Self::F32 => "float",
+            Self::F64 => "double",
+        }
+    }
+
+    const fn c_value_type(self) -> &'static str {
+        match self {
+            Self::F16 | Self::F32 => "float",
             Self::F64 => "double",
         }
     }
 
     const fn rust_type(self) -> &'static str {
         match self {
+            Self::F16 => "u16",
             Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+
+    const fn rust_value_type(self) -> &'static str {
+        match self {
+            Self::F16 | Self::F32 => "f32",
             Self::F64 => "f64",
         }
     }
@@ -216,14 +233,14 @@ impl FpWidth {
     fn c_power_of_two(self, exponent: NonZeroU8) -> String {
         let magnitude: u8 = exponent.get();
         match self {
-            Self::F32 => format!("0x1p{magnitude}f"),
+            Self::F16 | Self::F32 => format!("0x1p{magnitude}f"),
             Self::F64 => format!("0x1p{magnitude}"),
         }
     }
 
     fn rust_power_of_two(self, exponent: NonZeroU8) -> Option<String> {
         let scale: u128 = 1u128.checked_shl(u32::from(exponent.get()))?;
-        Some(format!("{scale}{}", self.rust_type()))
+        Some(format!("{scale}{}", self.rust_value_type()))
     }
 }
 
@@ -312,6 +329,7 @@ enum FpUnaryOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpToIntRound {
     Zero,
+    Nearest,
     Floor,
     Ceil,
     Away,
@@ -1216,6 +1234,7 @@ type Block = Vec<Node>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarType {
     Int,
+    Half,
     Double,
     Float,
 }
@@ -1437,6 +1456,7 @@ pub struct SretReturn {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallSiteReturnProof {
+    FloatingPoint16,
     FloatingPoint32,
     FloatingPoint64,
     Integer64,
@@ -2764,6 +2784,7 @@ fn scalar_fp_return_channel(body: &Block) -> Result<Option<FpWidth>> {
 
 const fn scalar_of_fp(width: FpWidth) -> ScalarType {
     match width {
+        FpWidth::F16 => ScalarType::Half,
         FpWidth::F32 => ScalarType::Float,
         FpWidth::F64 => ScalarType::Double,
     }
@@ -3046,6 +3067,7 @@ fn recover_call_site_identity(
     let (return_width_bits, returns_fp): (u32, Option<ScalarType>) =
         match recovered_signature.return_type {
             CallSiteScalar::Integer(width) => (width.bits(), None),
+            CallSiteScalar::FloatingPoint(FpWidth::F16) => (16, Some(ScalarType::Half)),
             CallSiteScalar::FloatingPoint(FpWidth::F32) => (32, Some(ScalarType::Float)),
             CallSiteScalar::FloatingPoint(FpWidth::F64) => (64, Some(ScalarType::Double)),
         };
@@ -12240,6 +12262,7 @@ fn is_rip_relative_mem(token: &str) -> bool {
 fn resolve_fp_const(site: u64, width: FpWidth, consts: &[FpConstant]) -> Option<FpOperand> {
     let entry: &FpConstant = consts.iter().find(|c: &&FpConstant| c.site == site)?;
     let bits: u64 = match width {
+        FpWidth::F16 => u64::from(entry.bits as u16),
         FpWidth::F32 => u64::from(entry.bits as u32),
         FpWidth::F64 => entry.bits,
     };
@@ -12264,6 +12287,7 @@ fn parse_fp_operand(
     }
     if is_mem_token(token) {
         let fallback: Width = match width {
+            FpWidth::F16 => Width::W16,
             FpWidth::F32 => Width::W32,
             FpWidth::F64 => Width::W64,
         };
@@ -12726,6 +12750,7 @@ fn lift_fp(
                     Error::LlvmIr(format!("`{mnemonic}` store source not an xmm register"))
                 })?;
                 let fallback: Width = match width {
+                    FpWidth::F16 => Width::W16,
                     FpWidth::F32 => Width::W32,
                     FpWidth::F64 => Width::W64,
                 };
@@ -13338,6 +13363,82 @@ const VARIABLE_COLLECTION_MAX_DEPTH: usize = 256;
 struct CollectedVariables {
     snapshots: IndexSet<u32>,
     selections: IndexSet<u32>,
+    uses_half: bool,
+}
+
+fn flags_use_half(flags: &Flags) -> bool {
+    let mut pending: Vec<&Flags> = vec![flags];
+    while let Some(current) = pending.pop() {
+        match current {
+            Flags::FpCmp { width, .. } if *width == FpWidth::F16 => return true,
+            Flags::CondCmp { prior, taken, .. } => {
+                pending.push(prior);
+                pending.push(taken);
+            }
+            Flags::Cmp { .. }
+            | Flags::Add { .. }
+            | Flags::CmpMem { .. }
+            | Flags::Test { .. }
+            | Flags::TestImm { .. }
+            | Flags::Sign { .. }
+            | Flags::FpCmp { .. }
+            | Flags::Snapshot { .. } => {}
+        }
+    }
+    false
+}
+
+fn cond_uses_half(cond: &Cond) -> bool {
+    let mut pending: Vec<&Cond> = vec![cond];
+    while let Some(current) = pending.pop() {
+        match current {
+            Cond::Leaf { flags, .. } if flags_use_half(flags) => return true,
+            Cond::Leaf { .. } => {}
+            Cond::And(left, right) | Cond::Or(left, right) => {
+                pending.push(left);
+                pending.push(right);
+            }
+        }
+    }
+    false
+}
+
+fn stmt_uses_half(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::FpBin { width, .. }
+        | Stmt::FpMov { width, .. }
+        | Stmt::FpStore { width, .. }
+        | Stmt::IntToFp { width, .. }
+        | Stmt::FpToInt { width, .. }
+        | Stmt::FpMinMax { width, .. }
+        | Stmt::FpFma { width, .. }
+        | Stmt::FpSqrt { width, .. }
+        | Stmt::FpUnary { width, .. }
+        | Stmt::FpRound { width, .. }
+        | Stmt::GprToXmm { width, .. }
+        | Stmt::XmmToGpr { width, .. } => *width == FpWidth::F16,
+        Stmt::FpCsel { width, flags, .. } => *width == FpWidth::F16 || flags_use_half(flags),
+        Stmt::FpConvert { from, to, .. } => *from == FpWidth::F16 || *to == FpWidth::F16,
+        Stmt::Cond { flags, .. } | Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
+            flags_use_half(flags)
+        }
+        Stmt::Assign { .. }
+        | Stmt::BinAssign { .. }
+        | Stmt::UnAssign { .. }
+        | Stmt::Store { .. }
+        | Stmt::MemRmw { .. }
+        | Stmt::Extend { .. }
+        | Stmt::MulImm { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. }
+        | Stmt::Vector(_) => false,
+    }
 }
 
 fn collect_variables(body: &Block) -> Option<CollectedVariables> {
@@ -13352,14 +13453,20 @@ fn collect_variables_at(body: &Block, depth: usize, collected: &mut CollectedVar
     let next_depth: usize = depth.saturating_add(1);
     for node in body {
         match node {
-            Node::Stmt(Stmt::FlagSnapshot { var, .. }) => {
+            Node::Stmt(stmt @ Stmt::FlagSnapshot { var, .. }) => {
+                collected.uses_half |= stmt_uses_half(stmt);
                 collected.selections.insert(*var);
             }
+            Node::Stmt(stmt) => {
+                collected.uses_half |= stmt_uses_half(stmt);
+            }
             Node::If {
+                cond,
                 then_body,
                 else_body,
                 ..
             } => {
+                collected.uses_half |= cond_uses_half(cond);
                 if !collect_variables_at(then_body, next_depth, collected) {
                     return false;
                 }
@@ -13369,7 +13476,18 @@ fn collect_variables_at(body: &Block, depth: usize, collected: &mut CollectedVar
                     return false;
                 }
             }
-            Node::DoWhile { body, .. } | Node::While { body, .. } => {
+            Node::DoWhile { body, cond } => {
+                if let LoopCond::Direct { flags, .. } = cond {
+                    collected.uses_half |= flags_use_half(flags);
+                }
+                if !collect_variables_at(body, next_depth, collected) {
+                    return false;
+                }
+            }
+            Node::While { body, cond } => {
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    collected.uses_half |= flags_use_half(flags);
+                }
                 if !collect_variables_at(body, next_depth, collected) {
                     return false;
                 }
@@ -13384,11 +13502,11 @@ fn collect_variables_at(body: &Block, depth: usize, collected: &mut CollectedVar
                     return false;
                 }
             }
-            Node::CondSnapshot { var, .. } => {
+            Node::CondSnapshot { var, flags, .. } => {
+                collected.uses_half |= flags_use_half(flags);
                 collected.snapshots.insert(*var);
             }
-            Node::Stmt(_)
-            | Node::Break
+            Node::Break
             | Node::Continue
             | Node::BreakLoop(_)
             | Node::ContinueLoop(_)
@@ -13684,6 +13802,7 @@ fn aggregate_member_name(scalar: AggregateScalar) -> String {
         AggregateScalar::Integer(Width::W16) => "u16",
         AggregateScalar::Integer(Width::W32) => "u32",
         AggregateScalar::Integer(Width::W64) => "u64",
+        AggregateScalar::Float(FpWidth::F16) => "f16",
         AggregateScalar::Float(FpWidth::F32) => "f32",
         AggregateScalar::Float(FpWidth::F64) => "f64",
     };
@@ -13917,6 +14036,9 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
                 } => {
                     match round {
                         FpToIntRound::Zero => {}
+                        FpToIntRound::Nearest => {
+                            acc.insert(fp_semantics::rint_helper(RoundMode::Nearest, *width));
+                        }
                         FpToIntRound::Floor => {
                             acc.insert(fp_semantics::rint_helper(RoundMode::Floor, *width));
                         }
@@ -13968,7 +14090,7 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
     }
 }
 
-fn emit_fp_helpers(out: &mut String) {
+fn emit_fp_helpers(out: &mut String, uses_half: bool) {
     let _ = writeln!(out, "#include <string.h>");
     let _ = writeln!(
         out,
@@ -13986,7 +14108,71 @@ fn emit_fp_helpers(out: &mut String) {
         out,
         "static inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}"
     );
+    if uses_half {
+        let _ = writeln!(
+            out,
+            "static inline _Float16 fp_h_from_bits(uint16_t b){{ _Float16 v; memcpy(&v,&b,2); return v; }}"
+        );
+        let _ = writeln!(
+            out,
+            "static inline uint16_t fp_h_to_bits(_Float16 v){{ uint16_t b; memcpy(&b,&v,2); return b; }}"
+        );
+        let _ = writeln!(out, "{C_HALF_HELPERS}");
+    }
 }
+
+const C_HALF_HELPERS: &str = r"static inline uint64_t fp_h_round_scaled_u64(uint64_t value, unsigned shift) {
+    uint64_t quotient = value >> shift;
+    uint64_t remainder_mask = ((uint64_t)1 << shift) - 1u;
+    uint64_t remainder = value & remainder_mask;
+    uint64_t halfway = (uint64_t)1 << (shift - 1u);
+    return quotient + (uint64_t)(remainder > halfway || (remainder == halfway && (quotient & 1u) != 0u));
+}
+static inline uint16_t fp_h_bits_from_scaled_u64(uint64_t magnitude, unsigned fraction) {
+    unsigned top = 0u;
+    int exponent;
+    uint64_t significand;
+    uint64_t probe;
+    int subnormal_shift;
+    if (magnitude == 0u) return 0u;
+    probe = magnitude;
+    while ((probe >>= 1u) != 0u) top++;
+    exponent = (int)top - (int)fraction;
+    if (exponent < -14) {
+        subnormal_shift = (int)fraction - 24;
+        significand = subnormal_shift > 0 ? fp_h_round_scaled_u64(magnitude, (unsigned)subnormal_shift) : magnitude << (unsigned)-subnormal_shift;
+        return significand >= 1024u ? 0x0400u : (uint16_t)significand;
+    }
+    significand = top > 10u ? fp_h_round_scaled_u64(magnitude, top - 10u) : magnitude << (10u - top);
+    if (significand == 2048u) { significand = 1024u; exponent++; }
+    if (exponent > 15) return 0x7c00u;
+    return (uint16_t)(((unsigned)(exponent + 15) << 10u) | (unsigned)(significand - 1024u));
+}
+static inline uint16_t fp_h_bits_from_scaled_i64(int64_t value, unsigned fraction) {
+    uint64_t magnitude = value < 0 ? (uint64_t)(-(value + 1)) + 1u : (uint64_t)value;
+    return (uint16_t)((value < 0 ? 0x8000u : 0u) | fp_h_bits_from_scaled_u64(magnitude, fraction));
+}
+static inline _Float16 fp_h_bin(_Float16 left, _Float16 right, unsigned op) {
+    uint16_t a = fp_h_to_bits(left), b = fp_h_to_bits(right);
+    uint16_t am = a & 0x7fffu, bm = b & 0x7fffu;
+    int an = am > 0x7c00u, bn = bm > 0x7c00u;
+    int ai = am == 0x7c00u, bi = bm == 0x7c00u;
+    int az = am == 0u, bz = bm == 0u;
+    float result;
+    if (an && (a & 0x0200u) == 0u) return fp_h_from_bits((uint16_t)(a | 0x0200u));
+    if (bn && (b & 0x0200u) == 0u) return fp_h_from_bits((uint16_t)(b | 0x0200u));
+    if (an) return fp_h_from_bits(a);
+    if (bn) return fp_h_from_bits(b);
+    if ((op == 0u && ai && bi && ((a ^ b) & 0x8000u) != 0u)
+        || (op == 1u && ai && bi && ((a ^ b) & 0x8000u) == 0u)
+        || (op == 2u && ((ai && bz) || (az && bi)))
+        || (op == 3u && ((az && bz) || (ai && bi)))) return fp_h_from_bits(0x7e00u);
+    if (op == 0u) result = (float)left + (float)right;
+    else if (op == 1u) result = (float)left - (float)right;
+    else if (op == 2u) result = (float)left * (float)right;
+    else result = (float)left / (float)right;
+    return (_Float16)result;
+}";
 
 const AGGREGATE_MAX_ROOTS: usize = 8;
 const AGGREGATE_MAX_FIELDS: usize = 32;
@@ -14014,6 +14200,7 @@ impl AggregateScalar {
     const fn width(self) -> Width {
         match self {
             Self::Integer(width) => width,
+            Self::Float(FpWidth::F16) => Width::W16,
             Self::Float(FpWidth::F32) => Width::W32,
             Self::Float(FpWidth::F64) => Width::W64,
         }
@@ -15485,6 +15672,7 @@ const fn width_c_uint(width: Width) -> &'static str {
 const fn aggregate_scalar_c_type(scalar: AggregateScalar) -> &'static str {
     match scalar {
         AggregateScalar::Integer(width) => width_c_uint(width),
+        AggregateScalar::Float(FpWidth::F16) => "_Float16",
         AggregateScalar::Float(FpWidth::F32) => "float",
         AggregateScalar::Float(FpWidth::F64) => "double",
     }
@@ -15946,7 +16134,13 @@ fn emit_c(
         !probe.is_empty()
     };
     if uses_fp {
-        emit_fp_helpers(&mut out);
+        let uses_half: bool = collected_variables.uses_half
+            || signature
+                .fp
+                .iter()
+                .any(|(_, width): &(Xmm, FpWidth)| *width == FpWidth::F16)
+            || matches!(signature.ret, FnReturn::Fp(FpWidth::F16));
+        emit_fp_helpers(&mut out, uses_half);
         let mut requested: BTreeSet<&'static str> = BTreeSet::new();
         collect_fp_semantics_helpers(body, &mut requested);
         for source in fp_semantics::resolved_sources(&requested) {
@@ -15980,6 +16174,10 @@ fn emit_c(
                 };
                 format!("{c_type} a{i}")
             }
+            ScalarParam::FloatingPoint {
+                width: FpWidth::F16,
+                ..
+            } => format!("_Float16 a{i}"),
             ScalarParam::FloatingPoint {
                 width: FpWidth::F64,
                 ..
@@ -17549,11 +17747,24 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         } => {
             let lhs_val: String = fp_load(lhs, *width, aggregates);
             let rhs_val: String = fp_load(rhs, *width, aggregates);
+            if *width == FpWidth::F16 {
+                let operation: u32 = match op {
+                    FpOp::Add => 0,
+                    FpOp::Sub => 1,
+                    FpOp::Mul => 2,
+                    FpOp::Div => 3,
+                };
+                let computed: String = format!("fp_h_bin({lhs_val}, {rhs_val}, {operation}u)");
+                return assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width));
+            }
             let bin_op: BinaryOp = fp_binary_op(*op);
             let computed: String = c_render(|cx| c_bin(bin_op, cx.var(&lhs_val), cx.var(&rhs_val)));
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&computed, *width))
         }
         Stmt::FpMov { dest, src, width } => {
+            if *width == FpWidth::F16 {
+                return assign_cstmt(cx, xmm_var(*dest), &fp_half_bits(src, aggregates));
+            }
             let value: String = fp_load(src, *width, aggregates);
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
         }
@@ -17588,8 +17799,19 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 let converted: CExpr = c_cast(cx, &ty, inner);
                 match fbits {
                     None => converted,
+                    Some(fraction) if *width == FpWidth::F16 => {
+                        let helper: &str = if *signed {
+                            "fp_h_bits_from_scaled_i64"
+                        } else {
+                            "fp_h_bits_from_scaled_u64"
+                        };
+                        let fraction_text: String = fraction.get().to_string();
+                        let fraction_expr: CExpr = cx.var(&fraction_text);
+                        let bits: CExpr = cx.call(helper, vec![converted, fraction_expr]);
+                        cx.call("fp_h_from_bits", vec![bits])
+                    }
                     Some(fraction) => {
-                        let widened: CExpr = c_cast(cx, width.c_type(), converted);
+                        let widened: CExpr = c_cast(cx, width.c_value_type(), converted);
                         let scale: CExpr = cx.var(&width.c_power_of_two(*fraction));
                         c_bin(BinaryOp::Div, widened, scale)
                     }
@@ -17609,6 +17831,22 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let loaded: String = fp_load(&FpOperand::Xmm(*src), *width, aggregates);
             let value: String = match fbits {
                 None => loaded,
+                Some(fraction) if *width == FpWidth::F16 => {
+                    let bits: String = format!("fp_h_to_bits({loaded})");
+                    let core: String = format!(
+                        "fpx_cvt_scaled_core((uint64_t){bits}, 11u, 5u, {}, {}u, {}, {}u)",
+                        i32::from(*signed),
+                        dest.width.bits(),
+                        i32::from(*saturating),
+                        fraction.get()
+                    );
+                    match (*signed, dest.width) {
+                        (true, Width::W32) => format!("fpx_i32_of((uint32_t){core})"),
+                        (true, Width::W64) => format!("fpx_i64_of({core})"),
+                        (false, Width::W32) => format!("(uint32_t){core}"),
+                        _ => core,
+                    }
+                }
                 Some(fraction) => c_render(|cx| {
                     let lhs: CExpr = cx.var(&loaded);
                     let scale: CExpr = cx.var(&width.c_power_of_two(*fraction));
@@ -17617,13 +17855,17 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             };
             let rounded: String = match round {
                 FpToIntRound::Zero => value,
+                FpToIntRound::Nearest => c_fp_rint(RoundMode::Nearest, &value, *width),
                 FpToIntRound::Floor => c_fp_rint(RoundMode::Floor, &value, *width),
                 FpToIntRound::Ceil => c_fp_rint(RoundMode::Ceil, &value, *width),
                 FpToIntRound::Away => c_fp_rint(RoundMode::TiesAway, &value, *width),
             };
             let bits: u32 = dest.width.bits();
-            let convert: Option<&'static str> =
-                fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width);
+            let convert: Option<&'static str> = if fbits.is_some() && *width == FpWidth::F16 {
+                None
+            } else {
+                fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width)
+            };
             let truncated: String = c_render(|cx| {
                 let opaque: CExpr = c_opaque(cx, &rounded);
                 let converted: CExpr = if let Some(helper) = convert {
@@ -17731,6 +17973,16 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             width,
         } => {
             let cond: String = cond_expr(*kind, flags, aggregates);
+            if *width == FpWidth::F16 {
+                let taken: String = fp_half_bits(if_true, aggregates);
+                let untaken: String = fp_half_bits(if_false, aggregates);
+                let computed: String = c_render(|cx| CExpr::Ternary {
+                    cond: Box::new(c_opaque(cx, &cond)),
+                    then: Box::new(c_opaque(cx, &taken)),
+                    els: Box::new(c_opaque(cx, &untaken)),
+                });
+                return assign_cstmt(cx, xmm_var(*dest), &computed);
+            }
             let taken: String = fp_load(if_true, *width, aggregates);
             let untaken: String = fp_load(if_false, *width, aggregates);
             let computed: String = c_render(|cx| CExpr::Ternary {
@@ -17760,6 +18012,14 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             op,
             width,
         } => {
+            if *width == FpWidth::F16 {
+                let bits: String = fp_half_bits(src, aggregates);
+                let computed: String = match op {
+                    FpUnaryOp::Neg => format!("(({bits}) ^ 0x8000u)"),
+                    FpUnaryOp::Abs => format!("(({bits}) & 0x7fffu)"),
+                };
+                return assign_cstmt(cx, xmm_var(*dest), &computed);
+            }
             let value: String = fp_load(src, *width, aggregates);
             let computed: String = match op {
                 FpUnaryOp::Neg => c_render(|cx| CExpr::Unary {
@@ -17768,6 +18028,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 }),
                 FpUnaryOp::Abs => {
                     let name: &str = match width {
+                        FpWidth::F16 => "__builtin_fabsf16",
                         FpWidth::F64 => "__builtin_fabs",
                         FpWidth::F32 => "__builtin_fabsf",
                     };
@@ -17791,6 +18052,13 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         }
         Stmt::GprToXmm { dest, src, width } => {
             let bits: String = match width {
+                FpWidth::F16 => {
+                    let rv: &'static str = reg_var(src.reg);
+                    c_render(|cx| {
+                        let inner: CExpr = cx.var(rv);
+                        c_cast(cx, "uint16_t", inner)
+                    })
+                }
                 FpWidth::F64 => reg_var(src.reg).to_string(),
                 FpWidth::F32 => {
                     let rv: &'static str = reg_var(src.reg);
@@ -18397,6 +18665,11 @@ fn fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> S
         FpOperand::Xmm(x) => {
             let xv: &'static str = xmm_var(*x);
             match width {
+                FpWidth::F16 => c_render(|cx| {
+                    let inner: CExpr = cx.var(xv);
+                    let arg: CExpr = c_cast(cx, "uint16_t", inner);
+                    cx.call("fp_h_from_bits", vec![arg])
+                }),
                 FpWidth::F64 => c_render(|cx| {
                     let arg: CExpr = cx.var(xv);
                     cx.call("fp_d_from_bits", vec![arg])
@@ -18416,6 +18689,7 @@ fn fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> S
             }
             let addr: String = addr_expr(mem.base, mem.index, mem.disp);
             let ty: &str = match width {
+                FpWidth::F16 => "_Float16",
                 FpWidth::F64 => "double",
                 FpWidth::F32 => "float",
             };
@@ -18426,8 +18700,30 @@ fn fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> S
     }
 }
 
+fn fp_half_bits(operand: &FpOperand, aggregates: &AggregatePlan) -> String {
+    match operand {
+        FpOperand::Xmm(xmm) => format!("((uint16_t){})", xmm_var(*xmm)),
+        FpOperand::Mem(_) => format!(
+            "fp_h_to_bits({})",
+            fp_load(operand, FpWidth::F16, aggregates)
+        ),
+        FpOperand::Const { bits, .. } => format!("0x{:x}u", *bits as u16),
+    }
+}
+
 fn fp_const_literal(bits: u64, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => c_render(|cx| {
+            let arg: CExpr = CExpr::Int {
+                value: u64::from(bits as u16),
+                radix: Radix::Hex,
+                suffix: IntSuffix {
+                    unsigned: true,
+                    long: LongSuffix::None,
+                },
+            };
+            cx.call("fp_h_from_bits", vec![arg])
+        }),
         FpWidth::F64 => c_render(|cx| {
             let arg: CExpr = c_hex_mask(u128::from(bits));
             cx.call("fp_d_from_bits", vec![arg])
@@ -18448,6 +18744,12 @@ fn fp_const_literal(bits: u64, width: FpWidth) -> String {
 
 fn fp_store_expr(value: &str, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => c_render(|cx| {
+            let opaque: CExpr = c_opaque(cx, value);
+            let cast: CExpr = c_cast(cx, "_Float16", opaque);
+            let call: CExpr = cx.call("fp_h_to_bits", vec![cast]);
+            c_cast(cx, "uint64_t", call)
+        }),
         FpWidth::F64 => c_render(|cx| {
             let opaque: CExpr = c_opaque(cx, value);
             let arg: CExpr = c_cast(cx, "double", opaque);
@@ -18464,6 +18766,13 @@ fn fp_store_expr(value: &str, width: FpWidth) -> String {
 
 fn xmm_bits(xmm: Xmm, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => {
+            let xv: &'static str = xmm_var(xmm);
+            c_render(|cx| {
+                let inner: CExpr = cx.var(xv);
+                c_cast(cx, "uint16_t", inner)
+            })
+        }
         FpWidth::F64 => xmm_var(xmm).to_string(),
         FpWidth::F32 => {
             let xv: &'static str = xmm_var(xmm);
@@ -19021,6 +19330,7 @@ fn emit_rust_aggregate_types(out: &mut String, plan: &AggregatePlan) {
                     let member: String = aggregate_member_name(scalar);
                     let ty: &str = match scalar {
                         AggregateScalar::Integer(width) => rs_uint_ty(width),
+                        AggregateScalar::Float(FpWidth::F16) => "u16",
                         AggregateScalar::Float(FpWidth::F32) => "f32",
                         AggregateScalar::Float(FpWidth::F64) => "f64",
                     };
@@ -19061,6 +19371,278 @@ fn emit_rust_aggregate_locals(out: &mut String, plan: &AggregatePlan) {
     }
 }
 
+const RUST_HALF_HELPERS: &str = r"#[allow(dead_code)]
+#[inline]
+fn fp_h_from_bits(bits: u16) -> f32 {
+    let sign: u32 = u32::from(bits & 0x8000) << 16;
+    let exponent: u16 = (bits >> 10) & 0x1f;
+    let mut fraction: u32 = u32::from(bits & 0x03ff);
+    let expanded: u32 = match (exponent, fraction) {
+        (0, 0) => sign,
+        (0, _) => {
+            let mut unbiased: i32 = -14;
+            while fraction & 0x0400 == 0 {
+                fraction <<= 1;
+                unbiased -= 1;
+            }
+            fraction &= 0x03ff;
+            sign | ((unbiased + 127) as u32) << 23 | fraction << 13
+        }
+        (0x1f, _) => sign | 0x7f80_0000 | fraction << 13,
+        _ => sign | (u32::from(exponent) + 112) << 23 | fraction << 13,
+    };
+    f32::from_bits(expanded)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_round_shift(value: u32, shift: u32) -> u32 {
+    let quotient: u32 = value >> shift;
+    let remainder_mask: u32 = (1_u32 << shift) - 1;
+    let remainder: u32 = value & remainder_mask;
+    let halfway: u32 = 1_u32 << (shift - 1);
+    quotient + u32::from(remainder > halfway || remainder == halfway && quotient & 1 != 0)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_round_shift_u64(value: u64, shift: u32) -> u64 {
+    let quotient: u64 = value >> shift;
+    let remainder_mask: u64 = (1_u64 << shift) - 1;
+    let remainder: u64 = value & remainder_mask;
+    let halfway: u64 = 1_u64 << (shift - 1);
+    quotient + u64::from(remainder > halfway || remainder == halfway && quotient & 1 != 0)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bits_from_scaled_u64(magnitude: u64, fraction: u32) -> u16 {
+    if magnitude == 0 {
+        return 0;
+    }
+    let top: u32 = 63 - magnitude.leading_zeros();
+    let mut exponent: i32 = top as i32 - fraction as i32;
+    if exponent < -14 {
+        let shift: i32 = fraction as i32 - 24;
+        let significand: u64 = if shift > 0 {
+            fp_h_round_shift_u64(magnitude, shift as u32)
+        } else {
+            magnitude << ((-shift) as u32)
+        };
+        return if significand >= 1024 {
+            0x0400
+        } else {
+            significand as u16
+        };
+    }
+    let mut significand: u64 = if top > 10 {
+        fp_h_round_shift_u64(magnitude, top - 10)
+    } else {
+        magnitude << (10 - top)
+    };
+    if significand == 2048 {
+        significand = 1024;
+        exponent += 1;
+    }
+    if exponent > 15 {
+        0x7c00
+    } else {
+        (((exponent + 15) as u16) << 10) | (significand as u16 - 1024)
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bits_from_scaled_i64(value: i64, fraction: u32) -> u16 {
+    let sign: u16 = if value < 0 { 0x8000 } else { 0 };
+    sign | fp_h_bits_from_scaled_u64(value.unsigned_abs(), fraction)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bits_from_f64(value: f64) -> u16 {
+    let bits: u64 = value.to_bits();
+    let sign: u16 = ((bits >> 48) & 0x8000) as u16;
+    let exponent: u32 = ((bits >> 52) & 0x07ff) as u32;
+    let fraction: u64 = bits & 0x000f_ffff_ffff_ffff;
+    if exponent == 0x07ff {
+        if fraction == 0 {
+            return sign | 0x7c00;
+        }
+        let narrowed: u16 = (fraction >> 42) as u16;
+        let payload: u16 = if narrowed == 0 { 1 } else { narrowed };
+        return sign | 0x7c00 | payload;
+    }
+    if exponent < 998 {
+        return sign;
+    }
+    let significand: u64 = fraction | 0x0010_0000_0000_0000;
+    if exponent < 1009 {
+        let shift: u32 = 1051 - exponent;
+        return sign | fp_h_round_shift_u64(significand, shift) as u16;
+    }
+    if exponent > 1038 {
+        return sign | 0x7c00;
+    }
+    let rounded: u64 = fp_h_round_shift_u64(fraction, 42);
+    let mut half_exponent: u32 = exponent - 1008;
+    let half_fraction: u64 = if rounded == 0x0400 {
+        half_exponent += 1;
+        0
+    } else {
+        rounded
+    };
+    if half_exponent >= 0x1f {
+        sign | 0x7c00
+    } else {
+        sign | ((half_exponent as u16) << 10) | half_fraction as u16
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bits_from_f64_quiet(value: f64) -> u16 {
+    let source: u64 = value.to_bits();
+    let converted: u16 = fp_h_bits_from_f64(value);
+    if source & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000
+        && source & 0x000f_ffff_ffff_ffff != 0
+    {
+        converted | 0x0200
+    } else {
+        converted
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_to_f32_quiet(bits: u16) -> f32 {
+    let value: f32 = fp_h_from_bits(bits);
+    if bits & 0x7c00 == 0x7c00 && bits & 0x03ff != 0 {
+        f32::from_bits(value.to_bits() | 0x0040_0000)
+    } else {
+        value
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_to_f64_quiet(bits: u16) -> f64 {
+    let sign: u64 = u64::from(bits & 0x8000) << 48;
+    let exponent: u16 = (bits >> 10) & 0x1f;
+    let mut fraction: u64 = u64::from(bits & 0x03ff);
+    let expanded: u64 = match (exponent, fraction) {
+        (0, 0) => sign,
+        (0, _) => {
+            let mut unbiased: i32 = -14;
+            while fraction & 0x0400 == 0 {
+                fraction <<= 1;
+                unbiased -= 1;
+            }
+            fraction &= 0x03ff;
+            sign | ((unbiased + 1023) as u64) << 52 | fraction << 42
+        }
+        (0x1f, _) => sign | 0x7ff0_0000_0000_0000 | (fraction | 0x0200) << 42,
+        _ => sign | (u64::from(exponent) + 1008) << 52 | fraction << 42,
+    };
+    f64::from_bits(expanded)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_to_bits(value: f32) -> u16 {
+    let bits: u32 = value.to_bits();
+    let sign: u16 = ((bits >> 16) & 0x8000) as u16;
+    let exponent: u32 = (bits >> 23) & 0xff;
+    let fraction: u32 = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        if fraction == 0 {
+            return sign | 0x7c00;
+        }
+        let narrowed: u16 = (fraction >> 13) as u16;
+        let payload: u16 = if narrowed == 0 { 1 } else { narrowed };
+        return sign | 0x7c00 | payload;
+    }
+    if exponent < 102 {
+        return sign;
+    }
+    let significand: u32 = fraction | 0x0080_0000;
+    if exponent < 113 {
+        let shift: u32 = 126 - exponent;
+        return sign | fp_h_round_shift(significand, shift) as u16;
+    }
+    if exponent > 142 {
+        return sign | 0x7c00;
+    }
+    let rounded: u32 = fp_h_round_shift(fraction, 13);
+    let mut half_exponent: u32 = exponent - 112;
+    let half_fraction: u32 = if rounded == 0x0400 {
+        half_exponent += 1;
+        0
+    } else {
+        rounded
+    };
+    if half_exponent >= 0x1f {
+        sign | 0x7c00
+    } else {
+        sign | ((half_exponent as u16) << 10) | half_fraction as u16
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bits_from_f32_quiet(value: f32) -> u16 {
+    let source: u32 = value.to_bits();
+    let converted: u16 = fp_h_to_bits(value);
+    if source & 0x7f80_0000 == 0x7f80_0000 && source & 0x007f_ffff != 0 {
+        converted | 0x0200
+    } else {
+        converted
+    }
+}
+
+#[allow(dead_code)]
+#[inline]
+fn fp_h_bin(left: u16, right: u16, op: u32) -> u16 {
+    let left_magnitude: u16 = left & 0x7fff;
+    let right_magnitude: u16 = right & 0x7fff;
+    let left_nan: bool = left_magnitude > 0x7c00;
+    let right_nan: bool = right_magnitude > 0x7c00;
+    let left_infinite: bool = left_magnitude == 0x7c00;
+    let right_infinite: bool = right_magnitude == 0x7c00;
+    let left_zero: bool = left_magnitude == 0;
+    let right_zero: bool = right_magnitude == 0;
+    if left_nan && left & 0x0200 == 0 {
+        return left | 0x0200;
+    }
+    if right_nan && right & 0x0200 == 0 {
+        return right | 0x0200;
+    }
+    if left_nan {
+        return left;
+    }
+    if right_nan {
+        return right;
+    }
+    let invalid: bool = match op {
+        0 => left_infinite && right_infinite && (left ^ right) & 0x8000 != 0,
+        1 => left_infinite && right_infinite && (left ^ right) & 0x8000 == 0,
+        2 => left_infinite && right_zero || left_zero && right_infinite,
+        _ => left_zero && right_zero || left_infinite && right_infinite,
+    };
+    if invalid {
+        return 0x7e00;
+    }
+    let left_value: f32 = fp_h_from_bits(left);
+    let right_value: f32 = fp_h_from_bits(right);
+    let result: f32 = match op {
+        0 => left_value + right_value,
+        1 => left_value - right_value,
+        2 => left_value * right_value,
+        _ => left_value / right_value,
+    };
+    fp_h_to_bits(result)
+}";
+
 fn emit_rust(
     body: &Block,
     signature: &FnSignature,
@@ -19080,6 +19662,15 @@ fn emit_rust(
     }
 
     let mut out: String = String::new();
+    if collected_variables.uses_half
+        || signature
+            .fp
+            .iter()
+            .any(|(_, width): &(Xmm, FpWidth)| *width == FpWidth::F16)
+        || matches!(signature.ret, FnReturn::Fp(FpWidth::F16))
+    {
+        let _ = writeln!(out, "{RUST_HALF_HELPERS}");
+    }
     let mut call_decls: IndexMap<String, usize> = IndexMap::new();
     collect_call_decls(body, &mut call_decls);
     if !call_decls.is_empty() {
@@ -19114,6 +19705,10 @@ fn emit_rust(
                 format!("a{i}: {rust_type}")
             }
             ScalarParam::FloatingPoint {
+                width: FpWidth::F16,
+                ..
+            } => format!("a{i}: u16"),
+            ScalarParam::FloatingPoint {
                 width: FpWidth::F64,
                 ..
             } => format!("a{i}: f64"),
@@ -19128,6 +19723,7 @@ fn emit_rust(
     let return_type: &str = match signature.ret {
         FnReturn::Int(width) if signature.exact_integer_types => rs_uint_ty(width),
         FnReturn::Int(_) => "u64",
+        FnReturn::Fp(FpWidth::F16) => "u16",
         FnReturn::Fp(FpWidth::F64) => "f64",
         FnReturn::Fp(FpWidth::F32) => "f32",
         FnReturn::Void | FnReturn::Vec(_) => "()",
@@ -19175,12 +19771,12 @@ fn emit_rust(
                 declared_gp.push(*reg);
             }
             ScalarParam::FloatingPoint { xmm, width } => {
-                let _ = writeln!(
-                    out,
-                    "    let mut {}: u64 = {};",
-                    xmm_var(*xmm),
+                let init: String = if *width == FpWidth::F16 {
+                    format!("u64::from(a{i})")
+                } else {
                     rs_fp_store_expr(&format!("a{i}"), *width)
-                );
+                };
+                let _ = writeln!(out, "    let mut {}: u64 = {};", xmm_var(*xmm), init);
                 declared_xmm.push(*xmm);
             }
             ScalarParam::UnobservedMsX64 { .. } => {}
@@ -19225,6 +19821,7 @@ fn emit_rust(
             rs_uint_ty(return_width)
         ),
         FnReturn::Int(return_width) => rs_width_mask(return_width, reg_var(Reg::Rax)),
+        FnReturn::Fp(FpWidth::F16) => format!("{} as u16", xmm_var(Xmm::Xmm0)),
         FnReturn::Fp(width) => rs_fp_load_xmm(Xmm::Xmm0, width),
         FnReturn::Void | FnReturn::Vec(_) => String::new(),
     };
@@ -19588,6 +20185,22 @@ fn rs_fp_bin_stmt(
     indent: &str,
     aggregates: &AggregatePlan,
 ) {
+    if width == FpWidth::F16 {
+        let lhs_bits: String = rs_fp_half_bits(lhs, aggregates);
+        let rhs_bits: String = rs_fp_half_bits(rhs, aggregates);
+        let operation: u32 = match op {
+            FpOp::Add => 0,
+            FpOp::Sub => 1,
+            FpOp::Mul => 2,
+            FpOp::Div => 3,
+        };
+        let _ = writeln!(
+            out,
+            "{indent}{} = fp_h_bin({lhs_bits}, {rhs_bits}, {operation}u32) as u64;",
+            xmm_var(dest)
+        );
+        return;
+    }
     let lhs_val: String = rs_fp_load(lhs, width, aggregates);
     let rhs_val: String = rs_fp_load(rhs, width, aggregates);
     let opstr: &str = match op {
@@ -19608,6 +20221,11 @@ fn rs_fp_mov_stmt(
     indent: &str,
     aggregates: &AggregatePlan,
 ) {
+    if width == FpWidth::F16 {
+        let bits: String = rs_fp_half_bits(src, aggregates);
+        let _ = writeln!(out, "{indent}{} = ({bits}) as u64;", xmm_var(dest));
+        return;
+    }
     let value: String = rs_fp_load(src, width, aggregates);
     rs_emit_xmm_store(out, dest, &value, width, indent);
 }
@@ -19627,11 +20245,28 @@ fn rs_int_to_fp_stmt(
     } else {
         format!("({} as u{bits})", reg_var(src.reg))
     };
+    if width == FpWidth::F16
+        && let Some(fraction) = fbits
+    {
+        let helper: &str = if signed {
+            "fp_h_bits_from_scaled_i64"
+        } else {
+            "fp_h_bits_from_scaled_u64"
+        };
+        let argument_type: &str = if signed { "i64" } else { "u64" };
+        let _ = writeln!(
+            out,
+            "{indent}{} = {helper}({int_expr} as {argument_type}, {}u32) as u64;",
+            xmm_var(dest),
+            fraction.get()
+        );
+        return Some(());
+    }
     let value: String = match fbits {
         None => int_expr,
         Some(fraction) => {
             let scale: String = width.rust_power_of_two(fraction)?;
-            format!("({int_expr} as {} / {scale})", width.rust_type())
+            format!("({int_expr} as {} / {scale})", width.rust_value_type())
         }
     };
     rs_emit_xmm_store(out, dest, &value, width, indent);
@@ -19660,6 +20295,7 @@ fn rs_fp_to_int_stmt(out: &mut String, plan: RsFpToIntPlan, indent: &str) -> Opt
     };
     let rounded: String = match plan.round {
         FpToIntRound::Zero => value,
+        FpToIntRound::Nearest => rs_fp_rint(RoundMode::Nearest, &value, plan.width),
         FpToIntRound::Floor => rs_fp_rint(RoundMode::Floor, &value, plan.width),
         FpToIntRound::Ceil => rs_fp_rint(RoundMode::Ceil, &value, plan.width),
         FpToIntRound::Away => rs_fp_rint(RoundMode::TiesAway, &value, plan.width),
@@ -19667,7 +20303,7 @@ fn rs_fp_to_int_stmt(out: &mut String, plan: RsFpToIntPlan, indent: &str) -> Opt
     let ity: &str = rs_int_ty(plan.dest.width);
     let uty: &str = rs_uint_ty(plan.dest.width);
     let truncated: String = if !plan.saturating && plan.signed {
-        let ty: &str = plan.width.rust_type();
+        let ty: &str = plan.width.rust_value_type();
         let bound: String = format!("2{ty}.powi({})", plan.dest.width.bits() - 1);
         format!(
             "({{ let t: {ty} = {rounded}; (if t >= -({bound}) && t < {bound} {{ t as {ity} }} else {{ {ity}::MIN }}) as {uty} as u64 }})"
@@ -19689,7 +20325,27 @@ fn rs_fp_convert_stmt(
     to: FpWidth,
     indent: &str,
 ) {
-    let value: String = rs_fp_load_xmm(src, from);
+    if to == FpWidth::F16 {
+        let converted: String = match from {
+            FpWidth::F16 => format!("{} as u16", xmm_var(src)),
+            FpWidth::F32 => format!(
+                "fp_h_bits_from_f32_quiet(f32::from_bits({} as u32))",
+                xmm_var(src)
+            ),
+            FpWidth::F64 => format!("fp_h_bits_from_f64_quiet(f64::from_bits({}))", xmm_var(src)),
+        };
+        let _ = writeln!(out, "{indent}{} = {converted} as u64;", xmm_var(dest));
+        return;
+    }
+    let value: String = if from == FpWidth::F16 {
+        if to == FpWidth::F64 {
+            format!("fp_h_to_f64_quiet({} as u16)", xmm_var(src))
+        } else {
+            format!("fp_h_to_f32_quiet({} as u16)", xmm_var(src))
+        }
+    } else {
+        rs_fp_load_xmm(src, from)
+    };
     rs_emit_xmm_store(out, dest, &value, to, indent);
 }
 
@@ -19752,6 +20408,7 @@ fn rs_fp_round_stmt(
 
 fn rs_gpr_to_xmm_stmt(out: &mut String, dest: Xmm, src: RegRef, width: FpWidth, indent: &str) {
     let bits: String = match width {
+        FpWidth::F16 => format!("(({} as u16) as u64)", reg_var(src.reg)),
         FpWidth::F64 => reg_var(src.reg).to_string(),
         FpWidth::F32 => format!("(({} as u32) as u64)", reg_var(src.reg)),
     };
@@ -19938,6 +20595,16 @@ fn rs_emit_stmt(
             width,
         } => {
             let cond: String = rs_cond_expr(*kind, flags, aggregates)?;
+            if *width == FpWidth::F16 {
+                let taken: String = rs_fp_half_bits(if_true, aggregates);
+                let untaken: String = rs_fp_half_bits(if_false, aggregates);
+                let _ = writeln!(
+                    out,
+                    "{indent}{} = (if {cond} {{ {taken} }} else {{ {untaken} }}) as u64;",
+                    xmm_var(*dest)
+                );
+                return Some(());
+            }
             let taken: String = rs_fp_load(if_true, *width, aggregates);
             let untaken: String = rs_fp_load(if_false, *width, aggregates);
             let computed: String = format!("(if {cond} {{ {taken} }} else {{ {untaken} }})");
@@ -19957,6 +20624,19 @@ fn rs_emit_stmt(
             op,
             width,
         } => {
+            if *width == FpWidth::F16 {
+                let bits: String = rs_fp_half_bits(src, aggregates);
+                let mask: &str = match op {
+                    FpUnaryOp::Neg => "^ 0x8000u16",
+                    FpUnaryOp::Abs => "& 0x7fffu16",
+                };
+                let _ = writeln!(
+                    out,
+                    "{indent}{} = (({bits}) {mask}) as u64;",
+                    xmm_var(*dest)
+                );
+                return Some(());
+            }
             let value: String = rs_fp_load(src, *width, aggregates);
             let computed: String = match op {
                 FpUnaryOp::Neg => format!("(-({value}))"),
@@ -20141,7 +20821,11 @@ fn rs_emit_fp_store(
     indent: &str,
     aggregates: &AggregatePlan,
 ) {
-    let value: String = rs_fp_load_xmm(src, width);
+    let value: String = if width == FpWidth::F16 {
+        format!("{} as u16", xmm_var(src))
+    } else {
+        rs_fp_load_xmm(src, width)
+    };
     if let Some(ptr_expr) = rs_fp_aggregate_slot(addr, width, true, aggregates)
         && let Some(value_expr) = parse_expr(&value)
     {
@@ -20209,6 +20893,7 @@ fn rs_emit_packed_stmt(out: &mut String, dest: Xmm, op: &PackedOp, indent: &str)
 
 const fn rs_fp_bits_ty(width: FpWidth) -> &'static str {
     match width {
+        FpWidth::F16 => "u16",
         FpWidth::F32 => "u32",
         FpWidth::F64 => "u64",
     }
@@ -20221,7 +20906,12 @@ fn rs_fp_mem_read(mem: &MemRef, width: FpWidth, aggregates: &AggregatePlan) -> S
             path_expr(&["core", "ptr", "read_unaligned"]),
             vec![ptr_expr],
         );
-        return render_rust_expr(&unsafe_block(read));
+        let value: String = render_rust_expr(&unsafe_block(read));
+        return if width == FpWidth::F16 {
+            format!("fp_h_from_bits({value})")
+        } else {
+            value
+        };
     }
     let bits_ty: &'static str = rs_fp_bits_ty(width);
     let float_ty: &'static str = width.rust_type();
@@ -20234,14 +20924,52 @@ fn rs_fp_mem_read(mem: &MemRef, width: FpWidth, aggregates: &AggregatePlan) -> S
                 path_expr(&["core", "ptr", "read_unaligned"]),
                 vec![as_const_ptr],
             );
-            render_rust_expr(&rcall(
-                path_expr(&[float_ty, "from_bits"]),
-                vec![unsafe_block(read)],
-            ))
+            if width == FpWidth::F16 {
+                format!("fp_h_from_bits({})", render_rust_expr(&unsafe_block(read)))
+            } else {
+                render_rust_expr(&rcall(
+                    path_expr(&[float_ty, "from_bits"]),
+                    vec![unsafe_block(read)],
+                ))
+            }
         }
+        None if width == FpWidth::F16 => format!(
+            "fp_h_from_bits(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {bits_ty}) }})"
+        ),
         None => format!(
             "{float_ty}::from_bits(unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const {bits_ty}) }})"
         ),
+    }
+}
+
+fn rs_fp_half_mem_bits(mem: &MemRef, aggregates: &AggregatePlan) -> String {
+    if let Some(ptr_expr) = rs_fp_aggregate_slot(mem, FpWidth::F16, false, aggregates) {
+        let read: RustExpr = rcall(
+            path_expr(&["core", "ptr", "read_unaligned"]),
+            vec![ptr_expr],
+        );
+        return render_rust_expr(&unsafe_block(read));
+    }
+    let ptr: String = rs_addr_expr(mem.base, mem.index, mem.disp);
+    parse_expr(&ptr).map_or_else(
+        || format!("unsafe {{ core::ptr::read_unaligned((({ptr}) as usize) as *const u16) }}"),
+        |ptr_expr: RustExpr| {
+            let as_usize: RustExpr = rcast(ptr_expr, rtype_path("usize"));
+            let as_const_ptr: RustExpr = rcast(as_usize, ptr_type(false, rtype_path("u16")));
+            let read: RustExpr = rcall(
+                path_expr(&["core", "ptr", "read_unaligned"]),
+                vec![as_const_ptr],
+            );
+            render_rust_expr(&unsafe_block(read))
+        },
+    )
+}
+
+fn rs_fp_half_bits(operand: &FpOperand, aggregates: &AggregatePlan) -> String {
+    match operand {
+        FpOperand::Xmm(xmm) => format!("{} as u16", xmm_var(*xmm)),
+        FpOperand::Mem(mem) => rs_fp_half_mem_bits(mem, aggregates),
+        FpOperand::Const { bits, .. } => format!("0x{:x}u16", *bits as u16),
     }
 }
 
@@ -20255,6 +20983,7 @@ fn rs_fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -
 
 fn rs_fp_load_xmm(xmm: Xmm, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => format!("fp_h_from_bits({} as u16)", xmm_var(xmm)),
         FpWidth::F64 => render_rust_expr(&rcall(
             path_expr(&["f64", "from_bits"]),
             vec![rvar(xmm_var(xmm))],
@@ -20268,6 +20997,7 @@ fn rs_fp_load_xmm(xmm: Xmm, width: FpWidth) -> String {
 
 fn rs_fp_const_literal(bits: u64, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => format!("fp_h_from_bits(0x{:x}u16)", bits as u16),
         FpWidth::F64 => render_rust_expr(&rcall(
             path_expr(&["f64", "from_bits"]),
             vec![int_hex(u128::from(bits), "u64")],
@@ -20282,19 +21012,28 @@ fn rs_fp_const_literal(bits: u64, width: FpWidth) -> String {
 #[allow(clippy::option_if_let_else)]
 fn rs_fp_store_expr(value: &str, width: FpWidth) -> String {
     let rust_ty: &str = match width {
+        FpWidth::F16 | FpWidth::F32 => "f32",
         FpWidth::F64 => "f64",
-        FpWidth::F32 => "f32",
     };
     match parse_expr(value) {
         Some(opaque) => {
             let as_float: RustExpr = rcast(opaque, rtype_path(rust_ty));
-            let bits: RustExpr = method_call(as_float, "to_bits", Vec::new());
             match width {
-                FpWidth::F64 => render_rust_expr(&bits),
-                FpWidth::F32 => render_rust_expr(&rcast(bits, rtype_path("u64"))),
+                FpWidth::F16 => {
+                    format!("fp_h_to_bits({}) as u64", render_rust_expr(&as_float))
+                }
+                FpWidth::F64 => {
+                    let bits: RustExpr = method_call(as_float, "to_bits", Vec::new());
+                    render_rust_expr(&bits)
+                }
+                FpWidth::F32 => {
+                    let bits: RustExpr = method_call(as_float, "to_bits", Vec::new());
+                    render_rust_expr(&rcast(bits, rtype_path("u64")))
+                }
             }
         }
         None => match width {
+            FpWidth::F16 => format!("(fp_h_to_bits(({value}) as f32) as u64)"),
             FpWidth::F64 => format!("(({value}) as f64).to_bits()"),
             FpWidth::F32 => format!("((({value}) as f32).to_bits() as u64)"),
         },
@@ -20303,6 +21042,7 @@ fn rs_fp_store_expr(value: &str, width: FpWidth) -> String {
 
 fn rs_xmm_bits(xmm: Xmm, width: FpWidth) -> String {
     match width {
+        FpWidth::F16 => format!("(({} as u16) as u64)", xmm_var(xmm)),
         FpWidth::F64 => xmm_var(xmm).to_string(),
         FpWidth::F32 => render_rust_expr(&rcast(
             rcast(rvar(xmm_var(xmm)), rtype_path("u32")),

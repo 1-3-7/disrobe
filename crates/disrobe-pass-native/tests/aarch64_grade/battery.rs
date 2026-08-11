@@ -1211,6 +1211,8 @@ static inline double fp_d_from_bits(uint64_t b) { double v; __builtin_memcpy(&v,
 static inline uint64_t fp_d_to_bits(double v) { uint64_t b; __builtin_memcpy(&b, &v, 8); return b; }
 static inline float fp_f_from_bits(uint32_t b) { float v; __builtin_memcpy(&v, &b, 4); return v; }
 static inline uint32_t fp_f_to_bits(float v) { uint32_t b; __builtin_memcpy(&b, &v, 4); return b; }
+static inline _Float16 fp_h_from_bits(uint16_t b) { _Float16 v; __builtin_memcpy(&v, &b, 2); return v; }
+static inline uint16_t fp_h_to_bits(_Float16 v) { uint16_t b; __builtin_memcpy(&b, &v, 2); return b; }
 static const uint32_t fp32_specials[] = {
     0x00000000U, 0x80000000U, 0x7f800000U, 0xff800000U,
     0x7fc00001U, 0xffc00001U, 0x7f800001U, 0xff800001U,
@@ -2501,6 +2503,8 @@ pub(crate) fn rename_recovered(source: &str, rec: &str) -> String {
             || line.starts_with("static inline uint64_t fp_d_to_bits")
             || line.starts_with("static inline float fp_f_from_bits")
             || line.starts_with("static inline uint32_t fp_f_to_bits")
+            || line.starts_with("static inline _Float16 fp_h_from_bits")
+            || line.starts_with("static inline uint16_t fp_h_to_bits")
             || prelude.contains(*line);
         if !shared {
             break;

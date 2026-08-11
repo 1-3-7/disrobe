@@ -497,6 +497,39 @@ call_alias_d:
 }
 
 #[test]
+#[ignore = "requires clang and ld.lld"]
+fn half_precision_call_site_evidence_reaches_the_public_signature_proof() {
+    let callee: &str = r"
+.text
+.arch armv8.2-a+fp16
+.globl half_target
+.type half_target,%function
+half_target:
+    ret
+.size half_target, .-half_target
+";
+    let caller: &str = r"
+.text
+.arch armv8.2-a+fp16
+.globl half_caller
+.type half_caller,%function
+half_caller:
+    ldr h0, [x0]
+    bl half_target
+    fadd h0, h0, h1
+    ret
+.size half_caller, .-half_caller
+";
+    let object: Vec<u8> = compile_asm_units(&[("half_callee", callee), ("half_caller", caller)]);
+    let program: RecoveredProgram = recover_aarch64_program(&object);
+    assert_fp_signature(
+        recovered(&program, "half_target"),
+        ScalarType::Half,
+        CallSiteReturnProof::FloatingPoint16,
+    );
+}
+
+#[test]
 #[ignore = "requires clang"]
 fn unique_direct_branch_without_relocation_is_attributed() {
     let source: &str = r"

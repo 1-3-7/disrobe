@@ -185,6 +185,8 @@ const FMA_CORE: &str = r"static inline uint64_t fpx_fma_core(uint64_t ba, uint64
 
 const FMA_F32: &str = "static inline float fpx_fma_f32(float a, float b, float c) { return fp_f_from_bits((uint32_t)fpx_fma_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), (uint64_t)fp_f_to_bits(c), 24u, 8u)); }";
 
+const FMA_F16: &str = "static inline _Float16 fpx_fma_f16(_Float16 a, _Float16 b, _Float16 c) { return fp_h_from_bits((uint16_t)fpx_fma_core((uint64_t)fp_h_to_bits(a), (uint64_t)fp_h_to_bits(b), (uint64_t)fp_h_to_bits(c), 11u, 5u)); }";
+
 const FMA_F64: &str = "static inline double fpx_fma_f64(double a, double b, double c) { return fp_d_from_bits(fpx_fma_core(fp_d_to_bits(a), fp_d_to_bits(b), fp_d_to_bits(c), 53u, 11u)); }";
 
 const RINT_CORE: &str = r"static inline uint64_t fpx_rint_core(uint64_t b, unsigned prec, unsigned ebits, unsigned mode) {
@@ -257,7 +259,7 @@ const MINMAX_CORE: &str = r"static inline uint64_t fpx_minmax_core(uint64_t a, u
     return ka < kb ? a : b;
 }";
 
-const CVT_CORE: &str = r"static inline uint64_t fpx_cvt_core(uint64_t b, unsigned prec, unsigned ebits, int is_signed, unsigned dbits, int saturate) {
+const CVT_CORE: &str = r"static inline uint64_t fpx_cvt_scaled_core(uint64_t b, unsigned prec, unsigned ebits, int is_signed, unsigned dbits, int saturate, unsigned scale) {
     unsigned mbits = prec - 1u;
     int bias = (int)((1u << (ebits - 1u)) - 1u);
     unsigned emax = (1u << ebits) - 1u;
@@ -272,8 +274,19 @@ const CVT_CORE: &str = r"static inline uint64_t fpx_cvt_core(uint64_t b, unsigne
     uint64_t sig, mag;
     int unbiased;
     if (exp == emax && frac != 0ull) return saturate ? (uint64_t)0 : indefinite;
-    unbiased = (int)exp - bias;
-    if (exp == 0u || unbiased < 0) return 0;
+    if (exp == 0u) {
+        if (frac == 0ull) return 0;
+        unbiased = 1 - bias + (int)scale;
+        sig = frac;
+    } else {
+        unbiased = (int)exp - bias + (int)scale;
+        sig = ((uint64_t)1 << mbits) | frac;
+    }
+    while (sig < ((uint64_t)1 << mbits)) {
+        sig <<= 1u;
+        unbiased--;
+    }
+    if (unbiased < 0) return 0;
     limit = is_signed ? dbits - 1u : dbits;
     if ((unsigned)unbiased >= limit) {
         if (is_signed && sign != 0u && frac == 0ull && (unsigned)unbiased == limit) return indefinite;
@@ -281,10 +294,12 @@ const CVT_CORE: &str = r"static inline uint64_t fpx_cvt_core(uint64_t b, unsigne
         if (!is_signed) return sign != 0u ? (uint64_t)0 : dmask;
         return sign != 0u ? indefinite : (dmask >> 1);
     }
-    sig = ((uint64_t)1 << mbits) | frac;
     mag = ((unsigned)unbiased >= mbits) ? (sig << ((unsigned)unbiased - mbits)) : (sig >> (mbits - (unsigned)unbiased));
     if (!is_signed) return sign != 0u ? (uint64_t)0 : mag;
     return sign != 0u ? (((uint64_t)0 - mag) & dmask) : mag;
+}
+static inline uint64_t fpx_cvt_core(uint64_t b, unsigned prec, unsigned ebits, int is_signed, unsigned dbits, int saturate) {
+    return fpx_cvt_scaled_core(b, prec, ebits, is_signed, dbits, saturate, 0u);
 }";
 
 const SQRT_F32: &str = r"static inline float fpx_sqrt_f32(float x) {
@@ -295,6 +310,16 @@ const SQRT_F32: &str = r"static inline float fpx_sqrt_f32(float x) {
     if ((b & 0x80000000u) != 0u) return fp_f_from_bits(0x7fc00000u);
     if (magnitude == 0x7f800000u) return x;
     return __builtin_sqrtf(x);
+}";
+
+const SQRT_F16: &str = r"static inline _Float16 fpx_sqrt_f16(_Float16 x) {
+    uint16_t b = fp_h_to_bits(x);
+    uint16_t magnitude = b & 0x7fffu;
+    if (magnitude > 0x7c00u) return fp_h_from_bits(b | 0x0200u);
+    if (magnitude == 0u) return x;
+    if ((b & 0x8000u) != 0u) return fp_h_from_bits(0x7e00u);
+    if (magnitude == 0x7c00u) return x;
+    return (_Float16)__builtin_sqrtf((float)x);
 }";
 
 const SQRT_F64: &str = r"static inline double fpx_sqrt_f64(double x) {
@@ -328,6 +353,26 @@ const SQRT_X86_F64: &str = r"static inline double fpx_sqrt_x86_f64(double x) {
 }";
 
 const RINT_WRAPPERS: &[(&str, &str)] = &[
+    (
+        "fpx_rintn_f16",
+        "static inline _Float16 fpx_rintn_f16(_Float16 x) { return fp_h_from_bits((uint16_t)fpx_rint_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 0u)); }",
+    ),
+    (
+        "fpx_rintm_f16",
+        "static inline _Float16 fpx_rintm_f16(_Float16 x) { return fp_h_from_bits((uint16_t)fpx_rint_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 1u)); }",
+    ),
+    (
+        "fpx_rintp_f16",
+        "static inline _Float16 fpx_rintp_f16(_Float16 x) { return fp_h_from_bits((uint16_t)fpx_rint_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 2u)); }",
+    ),
+    (
+        "fpx_rintz_f16",
+        "static inline _Float16 fpx_rintz_f16(_Float16 x) { return fp_h_from_bits((uint16_t)fpx_rint_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 3u)); }",
+    ),
+    (
+        "fpx_rinta_f16",
+        "static inline _Float16 fpx_rinta_f16(_Float16 x) { return fp_h_from_bits((uint16_t)fpx_rint_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 4u)); }",
+    ),
     (
         "fpx_rintn_f32",
         "static inline float fpx_rintn_f32(float x) { return fp_f_from_bits((uint32_t)fpx_rint_core((uint64_t)fp_f_to_bits(x), 24u, 8u, 0u)); }",
@@ -372,6 +417,22 @@ const RINT_WRAPPERS: &[(&str, &str)] = &[
 
 const MINMAX_WRAPPERS: &[(&str, &str)] = &[
     (
+        "fpx_maxnum_f16",
+        "static inline _Float16 fpx_maxnum_f16(_Float16 a, _Float16 b) { return fp_h_from_bits((uint16_t)fpx_minmax_core((uint64_t)fp_h_to_bits(a), (uint64_t)fp_h_to_bits(b), 11u, 5u, 1, 0)); }",
+    ),
+    (
+        "fpx_minnum_f16",
+        "static inline _Float16 fpx_minnum_f16(_Float16 a, _Float16 b) { return fp_h_from_bits((uint16_t)fpx_minmax_core((uint64_t)fp_h_to_bits(a), (uint64_t)fp_h_to_bits(b), 11u, 5u, 0, 0)); }",
+    ),
+    (
+        "fpx_max_f16",
+        "static inline _Float16 fpx_max_f16(_Float16 a, _Float16 b) { return fp_h_from_bits((uint16_t)fpx_minmax_core((uint64_t)fp_h_to_bits(a), (uint64_t)fp_h_to_bits(b), 11u, 5u, 1, 1)); }",
+    ),
+    (
+        "fpx_min_f16",
+        "static inline _Float16 fpx_min_f16(_Float16 a, _Float16 b) { return fp_h_from_bits((uint16_t)fpx_minmax_core((uint64_t)fp_h_to_bits(a), (uint64_t)fp_h_to_bits(b), 11u, 5u, 0, 1)); }",
+    ),
+    (
         "fpx_maxnum_f32",
         "static inline float fpx_maxnum_f32(float a, float b) { return fp_f_from_bits((uint32_t)fpx_minmax_core((uint64_t)fp_f_to_bits(a), (uint64_t)fp_f_to_bits(b), 24u, 8u, 1, 0)); }",
     ),
@@ -406,6 +467,30 @@ const MINMAX_WRAPPERS: &[(&str, &str)] = &[
 ];
 
 const CVT_WRAPPERS: &[(&str, &str)] = &[
+    (
+        "fpx_cvtsat_i32_f16",
+        "static inline int32_t fpx_cvtsat_i32_f16(_Float16 x) { return fpx_i32_of((uint32_t)fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 1, 32u, 1)); }",
+    ),
+    (
+        "fpx_cvtsat_i64_f16",
+        "static inline int64_t fpx_cvtsat_i64_f16(_Float16 x) { return fpx_i64_of(fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 1, 64u, 1)); }",
+    ),
+    (
+        "fpx_cvtsat_u32_f16",
+        "static inline uint32_t fpx_cvtsat_u32_f16(_Float16 x) { return (uint32_t)fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 0, 32u, 1); }",
+    ),
+    (
+        "fpx_cvtsat_u64_f16",
+        "static inline uint64_t fpx_cvtsat_u64_f16(_Float16 x) { return fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 0, 64u, 1); }",
+    ),
+    (
+        "fpx_cvtind_i32_f16",
+        "static inline int32_t fpx_cvtind_i32_f16(_Float16 x) { return fpx_i32_of((uint32_t)fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 1, 32u, 0)); }",
+    ),
+    (
+        "fpx_cvtind_i64_f16",
+        "static inline int64_t fpx_cvtind_i64_f16(_Float16 x) { return fpx_i64_of(fpx_cvt_core((uint64_t)fp_h_to_bits(x), 11u, 5u, 1, 64u, 0)); }",
+    ),
     (
         "fpx_cvtsat_i32_f32",
         "static inline int32_t fpx_cvtsat_i32_f32(float x) { return fpx_i32_of((uint32_t)fpx_cvt_core((uint64_t)fp_f_to_bits(x), 24u, 8u, 1, 32u, 1)); }",
@@ -512,6 +597,11 @@ pub fn helpers() -> Vec<FpHelper> {
         &["fpx_cvt_core", "fpx_signed_wrap"],
     ));
     out.push(FpHelper {
+        name: "fpx_fma_f16",
+        deps: &["fpx_fma_core"],
+        source: FMA_F16,
+    });
+    out.push(FpHelper {
         name: "fpx_fma_f32",
         deps: &["fpx_fma_core"],
         source: FMA_F32,
@@ -520,6 +610,11 @@ pub fn helpers() -> Vec<FpHelper> {
         name: "fpx_fma_f64",
         deps: &["fpx_fma_core"],
         source: FMA_F64,
+    });
+    out.push(FpHelper {
+        name: "fpx_sqrt_f16",
+        deps: &[],
+        source: SQRT_F16,
     });
     out.push(FpHelper {
         name: "fpx_sqrt_f32",
@@ -556,6 +651,22 @@ fn fpx_rint_f32(x: f32, mode: u32) -> f32 {
         4 => x.round(),
         _ => x.round_ties_even(),
     }
+}";
+
+const RS_RINT_F16: &str = r"#[allow(dead_code)]
+fn fpx_rint_f16(x: f32, mode: u32) -> f32 {
+    let bits: u16 = fp_h_to_bits(x);
+    if bits & 0x7c00 == 0x7c00 && bits & 0x03ff != 0 {
+        return fp_h_from_bits(bits | 0x0200);
+    }
+    let rounded: f32 = match mode {
+        1 => x.floor(),
+        2 => x.ceil(),
+        3 => x.trunc(),
+        4 => x.round(),
+        _ => x.round_ties_even(),
+    };
+    fp_h_from_bits(fp_h_to_bits(rounded))
 }";
 
 const RS_RINT_F64: &str = r"#[allow(dead_code)]
@@ -604,6 +715,42 @@ fn fpx_minmax_f32(a: f32, b: f32, is_max: bool, propagate: bool) -> f32 {
     if a == 0.0 && b == 0.0 {
         let merged: u32 = if is_max { left & right } else { left | right };
         return f32::from_bits(merged & 0x8000_0000);
+    }
+    if is_max { a.max(b) } else { a.min(b) }
+}";
+
+const RS_MINMAX_F16: &str = r"#[allow(dead_code)]
+fn fpx_minmax_f16(a: f32, b: f32, is_max: bool, propagate: bool) -> f32 {
+    let left: u16 = fp_h_to_bits(a);
+    let right: u16 = fp_h_to_bits(b);
+    let left_nan: bool = left & 0x7c00 == 0x7c00 && left & 0x03ff != 0;
+    let right_nan: bool = right & 0x7c00 == 0x7c00 && right & 0x03ff != 0;
+    if left_nan && left & 0x0200 == 0 {
+        return fp_h_from_bits(left | 0x0200);
+    }
+    if right_nan && right & 0x0200 == 0 {
+        return fp_h_from_bits(right | 0x0200);
+    }
+    if propagate {
+        if left_nan {
+            return fp_h_from_bits(left);
+        }
+        if right_nan {
+            return fp_h_from_bits(right);
+        }
+    } else {
+        if left_nan && right_nan {
+            return fp_h_from_bits(left);
+        }
+        if left_nan {
+            return fp_h_from_bits(right);
+        }
+        if right_nan {
+            return fp_h_from_bits(left);
+        }
+    }
+    if a == 0.0 && b == 0.0 {
+        return fp_h_from_bits(if is_max { left & right } else { left | right });
     }
     if is_max { a.max(b) } else { a.min(b) }
 }";
@@ -683,6 +830,47 @@ fn fpx_fma_f32(a: f32, b: f32, c: f32) -> f32 {
     a.mul_add(b, c)
 }";
 
+const RS_FMA_F16: &str = r"#[allow(dead_code)]
+fn fpx_fma_f16(a: f32, b: f32, c: f32) -> f32 {
+    let left: u16 = fp_h_to_bits(a);
+    let right: u16 = fp_h_to_bits(b);
+    let addend: u16 = fp_h_to_bits(c);
+    let left_nan: bool = left & 0x7c00 == 0x7c00 && left & 0x03ff != 0;
+    let right_nan: bool = right & 0x7c00 == 0x7c00 && right & 0x03ff != 0;
+    let addend_nan: bool = addend & 0x7c00 == 0x7c00 && addend & 0x03ff != 0;
+    let invalid: bool = (a.is_infinite() && b == 0.0) || (a == 0.0 && b.is_infinite());
+    if addend_nan && addend & 0x0200 == 0 {
+        return fp_h_from_bits(addend | 0x0200);
+    }
+    if left_nan && left & 0x0200 == 0 {
+        return fp_h_from_bits(left | 0x0200);
+    }
+    if right_nan && right & 0x0200 == 0 {
+        return fp_h_from_bits(right | 0x0200);
+    }
+    if addend_nan {
+        return if invalid { fp_h_from_bits(0x7e00) } else { fp_h_from_bits(addend) };
+    }
+    if left_nan {
+        return fp_h_from_bits(left);
+    }
+    if right_nan {
+        return fp_h_from_bits(right);
+    }
+    if invalid {
+        return fp_h_from_bits(0x7e00);
+    }
+    let product_negative: bool = a.is_sign_negative() != b.is_sign_negative();
+    if c.is_infinite()
+        && (a.is_infinite() || b.is_infinite())
+        && c.is_sign_negative() != product_negative
+    {
+        return fp_h_from_bits(0x7e00);
+    }
+    let result: f64 = (a as f64).mul_add(b as f64, c as f64);
+    fp_h_from_bits(fp_h_bits_from_f64(result))
+}";
+
 const RS_FMA_F64: &str = r"#[allow(dead_code)]
 fn fpx_fma_f64(a: f64, b: f64, c: f64) -> f64 {
     let quiet: u64 = 0x0008_0000_0000_0000;
@@ -736,6 +924,25 @@ fn fpx_sqrt_f32(x: f32) -> f32 {
     x.sqrt()
 }";
 
+const RS_SQRT_F16: &str = r"#[allow(dead_code)]
+fn fpx_sqrt_f16(x: f32) -> f32 {
+    let bits: u16 = fp_h_to_bits(x);
+    let magnitude: u16 = bits & 0x7fff;
+    if magnitude > 0x7c00 {
+        return fp_h_from_bits(bits | 0x0200);
+    }
+    if magnitude == 0 {
+        return x;
+    }
+    if bits & 0x8000 != 0 {
+        return fp_h_from_bits(0x7e00);
+    }
+    if magnitude == 0x7c00 {
+        return x;
+    }
+    fp_h_from_bits(fp_h_bits_from_f64((x as f64).sqrt()))
+}";
+
 const RS_SQRT_F64: &str = r"#[allow(dead_code)]
 fn fpx_sqrt_f64(x: f64) -> f64 {
     if x.is_nan() {
@@ -779,6 +986,51 @@ fn fpx_sqrt_x86_f64(x: f64) -> f64 {
 }";
 
 const RS_WRAPPERS: &[(&str, &str, &str)] = &[
+    (
+        "fpx_rintn_f16",
+        "fpx_rint_f16",
+        "#[allow(dead_code)]\nfn fpx_rintn_f16(x: f32) -> f32 { fpx_rint_f16(x, 0) }",
+    ),
+    (
+        "fpx_rintm_f16",
+        "fpx_rint_f16",
+        "#[allow(dead_code)]\nfn fpx_rintm_f16(x: f32) -> f32 { fpx_rint_f16(x, 1) }",
+    ),
+    (
+        "fpx_rintp_f16",
+        "fpx_rint_f16",
+        "#[allow(dead_code)]\nfn fpx_rintp_f16(x: f32) -> f32 { fpx_rint_f16(x, 2) }",
+    ),
+    (
+        "fpx_rintz_f16",
+        "fpx_rint_f16",
+        "#[allow(dead_code)]\nfn fpx_rintz_f16(x: f32) -> f32 { fpx_rint_f16(x, 3) }",
+    ),
+    (
+        "fpx_rinta_f16",
+        "fpx_rint_f16",
+        "#[allow(dead_code)]\nfn fpx_rinta_f16(x: f32) -> f32 { fpx_rint_f16(x, 4) }",
+    ),
+    (
+        "fpx_maxnum_f16",
+        "fpx_minmax_f16",
+        "#[allow(dead_code)]\nfn fpx_maxnum_f16(a: f32, b: f32) -> f32 { fpx_minmax_f16(a, b, true, false) }",
+    ),
+    (
+        "fpx_minnum_f16",
+        "fpx_minmax_f16",
+        "#[allow(dead_code)]\nfn fpx_minnum_f16(a: f32, b: f32) -> f32 { fpx_minmax_f16(a, b, false, false) }",
+    ),
+    (
+        "fpx_max_f16",
+        "fpx_minmax_f16",
+        "#[allow(dead_code)]\nfn fpx_max_f16(a: f32, b: f32) -> f32 { fpx_minmax_f16(a, b, true, true) }",
+    ),
+    (
+        "fpx_min_f16",
+        "fpx_minmax_f16",
+        "#[allow(dead_code)]\nfn fpx_min_f16(a: f32, b: f32) -> f32 { fpx_minmax_f16(a, b, false, true) }",
+    ),
     (
         "fpx_rintn_f32",
         "fpx_rint_f32",
@@ -874,6 +1126,11 @@ const RS_WRAPPERS: &[(&str, &str, &str)] = &[
 fn rust_helpers() -> Vec<FpHelper> {
     let mut out: Vec<FpHelper> = vec![
         FpHelper {
+            name: "fpx_rint_f16",
+            deps: &[],
+            source: RS_RINT_F16,
+        },
+        FpHelper {
             name: "fpx_rint_f32",
             deps: &[],
             source: RS_RINT_F32,
@@ -882,6 +1139,11 @@ fn rust_helpers() -> Vec<FpHelper> {
             name: "fpx_rint_f64",
             deps: &[],
             source: RS_RINT_F64,
+        },
+        FpHelper {
+            name: "fpx_minmax_f16",
+            deps: &[],
+            source: RS_MINMAX_F16,
         },
         FpHelper {
             name: "fpx_minmax_f32",
@@ -902,6 +1164,11 @@ fn rust_helpers() -> Vec<FpHelper> {
         });
     }
     out.push(FpHelper {
+        name: "fpx_fma_f16",
+        deps: &[],
+        source: RS_FMA_F16,
+    });
+    out.push(FpHelper {
         name: "fpx_fma_f32",
         deps: &[],
         source: RS_FMA_F32,
@@ -910,6 +1177,11 @@ fn rust_helpers() -> Vec<FpHelper> {
         name: "fpx_fma_f64",
         deps: &[],
         source: RS_FMA_F64,
+    });
+    out.push(FpHelper {
+        name: "fpx_sqrt_f16",
+        deps: &[],
+        source: RS_SQRT_F16,
     });
     out.push(FpHelper {
         name: "fpx_sqrt_f32",
@@ -989,6 +1261,11 @@ pub(super) fn resolved_sources(requested: &BTreeSet<&'static str>) -> Vec<&'stat
 
 pub(super) const fn rint_helper(mode: RoundMode, width: FpWidth) -> &'static str {
     match (mode, width) {
+        (RoundMode::Nearest, FpWidth::F16) => "fpx_rintn_f16",
+        (RoundMode::Floor, FpWidth::F16) => "fpx_rintm_f16",
+        (RoundMode::Ceil, FpWidth::F16) => "fpx_rintp_f16",
+        (RoundMode::Trunc, FpWidth::F16) => "fpx_rintz_f16",
+        (RoundMode::TiesAway, FpWidth::F16) => "fpx_rinta_f16",
         (RoundMode::Nearest, FpWidth::F32) => "fpx_rintn_f32",
         (RoundMode::Floor, FpWidth::F32) => "fpx_rintm_f32",
         (RoundMode::Ceil, FpWidth::F32) => "fpx_rintp_f32",
@@ -1004,6 +1281,10 @@ pub(super) const fn rint_helper(mode: RoundMode, width: FpWidth) -> &'static str
 
 pub(super) const fn minmax_helper(is_max: bool, propagating: bool, width: FpWidth) -> &'static str {
     match (is_max, propagating, width) {
+        (true, false, FpWidth::F16) => "fpx_maxnum_f16",
+        (false, false, FpWidth::F16) => "fpx_minnum_f16",
+        (true, true, FpWidth::F16) => "fpx_max_f16",
+        (false, true, FpWidth::F16) => "fpx_min_f16",
         (true, false, FpWidth::F32) => "fpx_maxnum_f32",
         (false, false, FpWidth::F32) => "fpx_minnum_f32",
         (true, false, FpWidth::F64) => "fpx_maxnum_f64",
@@ -1017,6 +1298,7 @@ pub(super) const fn minmax_helper(is_max: bool, propagating: bool, width: FpWidt
 
 pub(super) const fn fma_helper(width: FpWidth) -> &'static str {
     match width {
+        FpWidth::F16 => "fpx_fma_f16",
         FpWidth::F32 => "fpx_fma_f32",
         FpWidth::F64 => "fpx_fma_f64",
     }
@@ -1024,6 +1306,8 @@ pub(super) const fn fma_helper(width: FpWidth) -> &'static str {
 
 pub(super) const fn sqrt_helper(saturating: bool, width: FpWidth) -> &'static str {
     match (saturating, width) {
+        (true, FpWidth::F16) => "fpx_sqrt_f16",
+        (false, FpWidth::F16) => "fpx_sqrt_f16",
         (true, FpWidth::F32) => "fpx_sqrt_f32",
         (true, FpWidth::F64) => "fpx_sqrt_f64",
         (false, FpWidth::F32) => "fpx_sqrt_x86_f32",
@@ -1045,6 +1329,7 @@ pub(super) fn cvt_helper(
         _ => return None,
     };
     let source_tag: &str = match width {
+        FpWidth::F16 => "f16",
         FpWidth::F32 => "f32",
         FpWidth::F64 => "f64",
     };

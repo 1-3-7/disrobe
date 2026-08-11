@@ -2600,10 +2600,12 @@ fn finish(
         FnReturn::Vec(arr) => arr.total_bits(),
         FnReturn::Void => 0,
         FnReturn::Int(width) => width.bits(),
+        FnReturn::Fp(FpWidth::F16) => 16,
         FnReturn::Fp(FpWidth::F32) => 32,
         FnReturn::Fp(FpWidth::F64) => 64,
     };
     let returns_fp: Option<ScalarType> = match ret {
+        FnReturn::Fp(FpWidth::F16) => Some(ScalarType::Half),
         FnReturn::Fp(FpWidth::F32) => Some(ScalarType::Float),
         FnReturn::Fp(FpWidth::F64) => Some(ScalarType::Double),
         FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => None,
@@ -3048,8 +3050,12 @@ fn lower_move(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
 fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
     let name: &str = token.trim();
     let parsed: Option<(&str, FpWidth)> = name
-        .strip_prefix('s')
-        .map(|digits: &str| (digits, FpWidth::F32))
+        .strip_prefix('h')
+        .map(|digits: &str| (digits, FpWidth::F16))
+        .or_else(|| {
+            name.strip_prefix('s')
+                .map(|digits: &str| (digits, FpWidth::F32))
+        })
         .or_else(|| {
             name.strip_prefix('d')
                 .map(|digits: &str| (digits, FpWidth::F64))
@@ -3062,14 +3068,6 @@ fn parse_fp_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
             .get(usize::from(index))
             .ok_or_else(|| reject("scalar floating-point register is outside v0..v31"))?;
         return Ok(Some((register, width)));
-    }
-    let half_precision: bool = name
-        .strip_prefix('h')
-        .is_some_and(|suffix: &str| suffix.starts_with(|ch: char| ch.is_ascii_digit()));
-    if half_precision {
-        return Err(reject(
-            "F16 scalar floating-point registers are unsupported",
-        ));
     }
     let unsupported: bool = ['q', 'v'].iter().any(|prefix: &char| {
         name.strip_prefix(*prefix)
@@ -3155,13 +3153,22 @@ fn fp_memory_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
 
 const fn fp_storage_width(width: FpWidth) -> Width {
     match width {
+        FpWidth::F16 => Width::W16,
         FpWidth::F32 => Width::W32,
+        FpWidth::F64 => Width::W64,
+    }
+}
+
+const fn fp_gpr_transfer_width(width: FpWidth) -> Width {
+    match width {
+        FpWidth::F16 | FpWidth::F32 => Width::W32,
         FpWidth::F64 => Width::W64,
     }
 }
 
 fn vfp_expand_imm_bits(imm8: u8, width: FpWidth) -> u64 {
     let (exponent_bits, fraction_bits): (u32, u32) = match width {
+        FpWidth::F16 => (5, 10),
         FpWidth::F32 => (8, 23),
         FpWidth::F64 => (11, 52),
     };
@@ -3192,6 +3199,17 @@ fn fp_immediate_operand(insn: &DisasmInsn, token: &str, width: FpWidth) -> Resul
         return Err(reject_at(insn, "floating-point immediate is not finite"));
     }
     let parsed_bits: u64 = match width {
+        FpWidth::F16 => {
+            let narrowed: f32 = parsed as f32;
+            let narrowed_bits: u16 = binary16_from_f32(narrowed);
+            if f64::from(binary16_to_f32(narrowed_bits)).to_bits() != parsed.to_bits() {
+                return Err(reject_at(
+                    insn,
+                    "half-precision immediate is not exactly representable",
+                ));
+            }
+            u64::from(narrowed_bits)
+        }
         FpWidth::F32 => {
             let narrowed: f32 = parsed as f32;
             if f64::from(narrowed).to_bits() != parsed.to_bits() {
@@ -3221,6 +3239,74 @@ fn fp_immediate_operand(insn: &DisasmInsn, token: &str, width: FpWidth) -> Resul
     })
 }
 
+fn binary16_to_f32(bits: u16) -> f32 {
+    let sign: u32 = u32::from(bits & 0x8000) << 16;
+    let exponent: u16 = (bits >> 10) & 0x1f;
+    let mut fraction: u32 = u32::from(bits & 0x03ff);
+    let expanded: u32 = match (exponent, fraction) {
+        (0, 0) => sign,
+        (0, _) => {
+            let mut unbiased: i32 = -14;
+            while fraction & 0x0400 == 0 {
+                fraction <<= 1;
+                unbiased -= 1;
+            }
+            fraction &= 0x03ff;
+            sign | ((unbiased + 127) as u32) << 23 | fraction << 13
+        }
+        (0x1f, _) => sign | 0x7f80_0000 | fraction << 13,
+        _ => sign | (u32::from(exponent) + 112) << 23 | fraction << 13,
+    };
+    f32::from_bits(expanded)
+}
+
+fn binary16_from_f32(value: f32) -> u16 {
+    let bits: u32 = value.to_bits();
+    let sign: u16 = ((bits >> 16) & 0x8000) as u16;
+    let exponent: u32 = (bits >> 23) & 0xff;
+    let fraction: u32 = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        if fraction == 0 {
+            return sign | 0x7c00;
+        }
+        let narrowed: u16 = (fraction >> 13) as u16;
+        let payload: u16 = if narrowed == 0 { 1 } else { narrowed };
+        return sign | 0x7c00 | payload;
+    }
+    if exponent < 102 {
+        return sign;
+    }
+    let significand: u32 = fraction | 0x0080_0000;
+    if exponent < 113 {
+        let shift: u32 = 126 - exponent;
+        return sign | binary16_round_shift(significand, shift) as u16;
+    }
+    if exponent > 142 {
+        return sign | 0x7c00;
+    }
+    let rounded: u32 = binary16_round_shift(fraction, 13);
+    let mut half_exponent: u32 = exponent - 112;
+    let half_fraction: u32 = if rounded == 0x0400 {
+        half_exponent += 1;
+        0
+    } else {
+        rounded
+    };
+    if half_exponent >= 0x1f {
+        sign | 0x7c00
+    } else {
+        sign | ((half_exponent as u16) << 10) | half_fraction as u16
+    }
+}
+
+fn binary16_round_shift(value: u32, shift: u32) -> u32 {
+    let quotient: u32 = value >> shift;
+    let remainder_mask: u32 = (1_u32 << shift) - 1;
+    let remainder: u32 = value & remainder_mask;
+    let halfway: u32 = 1_u32 << (shift - 1);
+    quotient + u32::from(remainder > halfway || remainder == halfway && quotient & 1 != 0)
+}
+
 fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     if operands.len() != 2 {
         return Err(reject_at(insn, "malformed scalar floating-point move"));
@@ -3246,7 +3332,7 @@ fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             Ok(vec![Stmt::FpMov { dest, src, width }])
         }
         (Some((dest, width)), None) => {
-            let expected: Width = fp_storage_width(width);
+            let expected: Width = fp_gpr_transfer_width(width);
             let src: RegRef = parse_reg(operands[1]).map_err(|_| {
                 reject_at(insn, "fmov source is not a width-matched general register")
             })?;
@@ -3259,7 +3345,7 @@ fn lower_fp_fmov(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
             Ok(vec![Stmt::GprToXmm { dest, src, width }])
         }
         (None, Some((src, width))) => {
-            let expected: Width = fp_storage_width(width);
+            let expected: Width = fp_gpr_transfer_width(width);
             let dest: RegRef = parse_reg(operands[0]).map_err(|_| {
                 reject_at(
                     insn,
@@ -3581,6 +3667,8 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     let (signed, round): (bool, FpToIntRound) = match insn.mnemonic.as_str() {
         "fcvtzs" => (true, FpToIntRound::Zero),
         "fcvtzu" => (false, FpToIntRound::Zero),
+        "fcvtns" => (true, FpToIntRound::Nearest),
+        "fcvtnu" => (false, FpToIntRound::Nearest),
         "fcvtms" => (true, FpToIntRound::Floor),
         "fcvtmu" => (false, FpToIntRound::Floor),
         "fcvtps" => (true, FpToIntRound::Ceil),
@@ -3948,7 +4036,8 @@ fn try_lower_scalar_fp(
         "ucvtf" if has_scalar_fp_destination(&operands) => {
             lower_int_to_fp(insn, &operands, false).map(Some)
         }
-        "fcvtzs" | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas" | "fcvtau"
+        "fcvtzs" | "fcvtzu" | "fcvtns" | "fcvtnu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu"
+        | "fcvtas" | "fcvtau"
             if has_scalar_gpr_destination(&operands) =>
         {
             lower_fp_to_int(insn, &operands).map(Some)
@@ -3968,11 +4057,24 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, mode).map(Some)
         }
+        "frint32z" | "frint32x" if has_scalar_fp_destination(&operands) => Err(reject_at(
+            insn,
+            "32-bit integral rounding requires FPSR semantics",
+        )),
+        "frint64z" | "frint64x" if has_scalar_fp_destination(&operands) => Err(reject_at(
+            insn,
+            "64-bit integral rounding requires FPSR semantics",
+        )),
+        "fjcvtzs" if has_scalar_gpr_destination(&operands) => Err(reject_at(
+            insn,
+            "JavaScript conversion requires FJCVTZS semantics",
+        )),
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmax" | "fmin" | "fmadd"
         | "fmsub" | "fnmadd" | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf"
-        | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtms" | "fcvtmu" | "fcvtps" | "fcvtpu" | "fcvtas"
-        | "fcvtau" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx"
-        | "frinti" => Ok(None),
+        | "ucvtf" | "fcvtzs" | "fcvtzu" | "fcvtns" | "fcvtnu" | "fcvtms" | "fcvtmu" | "fcvtps"
+        | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn"
+        | "frinta" | "frintx" | "frinti" | "frint32z" | "frint32x" | "frint64z" | "frint64x"
+        | "fjcvtzs" => Ok(None),
         "movi" if !vector_context => lower_movi_scalar_zero(&operands),
         "fmov" if vector_context => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
@@ -6522,10 +6624,10 @@ fn reject_at(insn: &DisasmInsn, message: &str) -> Error {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        Aarch64DirectTransfer, DisasmInsn, ExtSource, IndexExtend, MemRef, Reg, RegRef, Stmt,
-        Width, aarch64_direct_transfer, encoded_extended_register, lower_alu, lower_fp_to_int,
-        lower_int_to_fp, parse_extend_modifier, parse_index_modifier, parse_memory, parse_reg,
-        split_operands,
+        Aarch64DirectTransfer, DisasmInsn, ExtSource, FpToIntRound, FpWidth, IndexExtend, MemRef,
+        Reg, RegRef, Stmt, Width, aarch64_direct_transfer, encoded_extended_register, lower_alu,
+        lower_fp_fmov, lower_fp_to_int, lower_int_to_fp, parse_extend_modifier,
+        parse_index_modifier, parse_memory, parse_reg, split_operands,
     };
     use crate::error::Result;
 
@@ -6724,15 +6826,79 @@ mod tests {
     }
 
     #[test]
-    fn half_precision_and_vector_fixed_point_forms_reject() {
-        let half_source: String = rejection("scvtf", "h0, w0, #0x10");
-        assert!(half_source.contains("F16"), "{half_source}");
-        let half_dest: String = rejection("fcvtzs", "w0, h0, #0x10");
-        assert!(half_dest.contains("F16"), "{half_dest}");
+    fn half_precision_fixed_point_forms_recover_while_vectors_reject() {
+        assert!(lower("scvtf", "h0, w0, #0x10").is_ok());
+        assert!(lower("fcvtzs", "w0, h0, #0x10").is_ok());
         let vector: String = rejection("scvtf", "v0.4s, v0.4s, #0x10");
         assert!(vector.contains("vector registers"), "{vector}");
         let scalar_simd: String = rejection("ucvtf", "s0, s0, #0x10");
         assert!(scalar_simd.contains("not w or x"), "{scalar_simd}");
+    }
+
+    #[test]
+    fn half_precision_moves_use_the_architectural_32_bit_general_register_carrier() {
+        let cases: [(&str, bool); 2] = [("h0, w0", true), ("w1, h2", false)];
+        for (operands, to_fp) in cases {
+            let insn: DisasmInsn = DisasmInsn {
+                address: 0,
+                bytes: vec![0, 0, 0, 0],
+                mnemonic: "fmov".to_owned(),
+                operands: operands.to_owned(),
+            };
+            let split: Vec<&str> = split_operands(&insn.operands);
+            let statements: Vec<Stmt> =
+                lower_fp_fmov(&insn, &split).expect("half-precision transfer");
+            let correct_direction: bool = match statements.as_slice() {
+                [
+                    Stmt::GprToXmm {
+                        src:
+                            RegRef {
+                                width: Width::W32, ..
+                            },
+                        width: FpWidth::F16,
+                        ..
+                    },
+                ] => to_fp,
+                [
+                    Stmt::XmmToGpr {
+                        dest:
+                            RegRef {
+                                width: Width::W32, ..
+                            },
+                        width: FpWidth::F16,
+                        ..
+                    },
+                ] => !to_fp,
+                _ => false,
+            };
+            assert!(correct_direction, "{operands}: {statements:?}");
+        }
+    }
+
+    #[test]
+    fn nearest_integer_conversions_recover_for_signed_and_unsigned_destinations() {
+        for (mnemonic, signed) in [("fcvtns", true), ("fcvtnu", false)] {
+            let statements: Vec<Stmt> = lower(mnemonic, "w0, h0").expect("nearest conversion");
+            assert!(matches!(
+                statements.as_slice(),
+                [Stmt::FpToInt {
+                    signed: actual_signed,
+                    round: FpToIntRound::Nearest,
+                    ..
+                }] if *actual_signed == signed
+            ));
+        }
+    }
+
+    #[test]
+    fn binary16_conversion_round_trip_preserves_every_bit_pattern() {
+        for bits in u16::MIN..=u16::MAX {
+            assert_eq!(
+                super::binary16_from_f32(super::binary16_to_f32(bits)),
+                bits,
+                "{bits:#06x}"
+            );
+        }
     }
 
     #[test]

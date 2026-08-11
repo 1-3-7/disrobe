@@ -5,6 +5,9 @@ use disrobe_pass_native::{
     recover_aarch64_function,
 };
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs;
+use std::process::Command;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
@@ -17,6 +20,19 @@ type ConversionCase = (
     u32,
     &'static str,
 );
+
+fn host_c_compiler() -> String {
+    ["gcc", "clang", "cc"]
+        .into_iter()
+        .find(|candidate: &&str| {
+            Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output: std::process::Output| output.status.success())
+        })
+        .map(str::to_owned)
+        .expect("F16 compiler grade requires clang, gcc, or cc")
+}
 
 #[test]
 fn aarch64_recovery_corpus_meets_the_floor() {
@@ -388,25 +404,536 @@ fn scalar_fp_increment_two_o0_cross_class_returns_recover() {
 }
 
 #[test]
-fn scalar_fp_half_precision_forms_reject() {
-    let cases: [(u32, &str); 2] = [(0x1e23_c000, "F16"), (0x1ee2_4000, "F16")];
-    for (word, reason) in cases {
+fn scalar_fp_half_precision_arithmetic_recovers() {
+    let mut code: Vec<u8> = 0x1e23_c000_u32.to_le_bytes().to_vec();
+    code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&code, 0).expect("F16 scalar arithmetic must recover");
+    assert!(recovery.source.contains("_Float16"), "{}", recovery.source);
+}
+
+#[test]
+fn scalar_fp_half_precision_conversion_recovers() {
+    let mut code: Vec<u8> = 0x1ee2_4000_u32.to_le_bytes().to_vec();
+    code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&code, 0).expect("F16 scalar conversion must recover");
+    assert!(
+        recovery
+            .source
+            .contains("fp_f_to_bits((float)(fp_h_from_bits((uint16_t)x_xmm0)))"),
+        "{}",
+        recovery.source
+    );
+    let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+    assert!(rust_source.contains("fp_h_from_bits"), "{rust_source}");
+}
+
+#[test]
+fn scalar_fp_half_precision_semantics_helpers_are_emitted() {
+    let cases: [(u32, &str, &str); 4] = [
+        (
+            0x1fc1_0800,
+            "static inline _Float16 fpx_fma_f16",
+            "fn fpx_fma_f16",
+        ),
+        (
+            0x1ee1_4800,
+            "static inline _Float16 fpx_max_f16",
+            "fn fpx_max_f16",
+        ),
+        (
+            0x1ee1_c000,
+            "static inline _Float16 fpx_sqrt_f16",
+            "fn fpx_sqrt_f16",
+        ),
+        (
+            0x1ee4_4000,
+            "static inline _Float16 fpx_rintn_f16",
+            "fn fpx_rintn_f16",
+        ),
+    ];
+    for (word, c_helper, rust_helper) in cases {
         let mut code: Vec<u8> = word.to_le_bytes().to_vec();
         code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
-        let error: String = format!(
-            "{:?}",
-            recover_aarch64_function(&code, 0).expect_err("form must sound-reject")
-        );
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("F16 scalar operation must recover");
         assert!(
-            error.contains(reason),
-            "missing `{reason}` in rejection: {error}"
+            recovery.source.contains(c_helper),
+            "{c_helper}: {}",
+            recovery.source
+        );
+        let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+        assert!(
+            rust_source.contains(rust_helper),
+            "{rust_helper}: {rust_source}"
+        );
+        if matches!(word, 0x1fc1_0800 | 0x1ee1_c000) {
+            assert!(rust_source.contains("fp_h_bits_from_f64"), "{rust_source}");
+        }
+    }
+}
+
+#[test]
+fn scalar_fp_half_precision_to_integer_uses_bounded_conversion() {
+    for (word, required_helper) in [
+        (0x1ef8_0000_u32, "static inline int32_t fpx_cvtsat_i32_f16"),
+        (0x1ee0_0000_u32, "static inline _Float16 fpx_rintn_f16"),
+        (0x1ee1_0000_u32, "static inline _Float16 fpx_rintn_f16"),
+    ] {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("F16 to integer conversion must recover");
+        assert!(
+            recovery.source.contains(required_helper),
+            "{required_helper}: {}",
+            recovery.source
         );
     }
 }
 
 #[test]
+fn fp_forms_requiring_unmodeled_architectural_state_reject_distinctly() {
+    let cases: [(u32, &str); 5] = [
+        (
+            0x1e28_4000,
+            "32-bit integral rounding requires FPSR semantics",
+        ),
+        (
+            0x1e28_c000,
+            "32-bit integral rounding requires FPSR semantics",
+        ),
+        (
+            0x1e69_4000,
+            "64-bit integral rounding requires FPSR semantics",
+        ),
+        (
+            0x1e69_c000,
+            "64-bit integral rounding requires FPSR semantics",
+        ),
+        (
+            0x1e7e_0000,
+            "JavaScript conversion requires FJCVTZS semantics",
+        ),
+    ];
+    for (word, reason) in cases {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let error: disrobe_pass_native::Error =
+            recover_aarch64_function(&code, 0).expect_err("unsupported stateful FP form");
+        assert!(
+            format!("{error:?}").contains(reason),
+            "{word:#010x}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn memory_only_half_precision_emits_boundary_helpers() {
+    let code: Vec<u8> = [0x7d40_0000_u32, 0x1ef8_0000_u32, 0xd65f_03c0_u32]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&code, 0).expect("memory-backed F16 conversion");
+    let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+    assert!(
+        rust_source.contains("fn fp_h_from_bits(bits: u16) -> f32"),
+        "{rust_source}"
+    );
+}
+
+#[test]
+fn non_half_rust_recovery_does_not_emit_binary16_helpers() {
+    let code: Vec<u8> = [0x1e21_2800_u32, 0xd65f_03c0_u32]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let recovery: LeafRecovery = recover_aarch64_function(&code, 0).expect("binary32 addition");
+    let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+    assert!(!rust_source.contains("fp_h_from_bits"), "{rust_source}");
+    assert!(!rust_source.contains("fp_h_bits_from_f64"), "{rust_source}");
+    assert!(!recovery.source.contains("_Float16"), "{}", recovery.source);
+    assert!(
+        !recovery.source.contains("fp_h_from_bits"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn scalar_fp_half_precision_rust_rendering_compiles() {
+    let words: [u32; 16] = [
+        0x1e23_c000,
+        0x1ee2_4000,
+        0x1fc1_0800,
+        0x1ee1_4800,
+        0x1ee1_c000,
+        0x1ef8_0000,
+        0x1ee0_c000,
+        0x1ee1_4000,
+        0x1ee0_0000,
+        0x1ee1_0000,
+        0x1ec2_c000,
+        0x1ed8_c000,
+        0x9ec3_0000,
+        0x9ed8_8000,
+        0x1ee7_0000,
+        0x1ee6_0000,
+    ];
+    let mut unit: String = String::new();
+    for (index, word) in words.into_iter().enumerate() {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("F16 scalar operation must recover");
+        let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+        let boundary_test: &str = if index == 0 {
+            r"
+#[test]
+fn direct_binary16_rounding_boundaries() {
+    assert_eq!(fp_h_bits_from_f64(2.0_f64.powi(-25)), 0x0000);
+    assert_eq!(fp_h_bits_from_f64(f64::from_bits(2.0_f64.powi(-25).to_bits() + 1)), 0x0001);
+    assert_eq!(fp_h_bits_from_f64(1.0 + 2.0_f64.powi(-11)), 0x3c00);
+    assert_eq!(fp_h_bits_from_f64(f64::from_bits((1.0 + 2.0_f64.powi(-11)).to_bits() + 1)), 0x3c01);
+    assert_eq!(fp_h_bits_from_f64(1.0 + 3.0 * 2.0_f64.powi(-11)), 0x3c02);
+    assert_eq!(fp_h_bits_from_f64(65_520.0), 0x7c00);
+}
+"
+        } else if word == 0x1ec2_c000 {
+            r"
+#[test]
+fn fixed_integer_to_half_uses_a_wide_intermediate() {
+    assert_eq!(recovered(65_536), 0x3c00);
+}
+"
+        } else if word == 0x1ed8_c000 {
+            r"
+#[test]
+fn fixed_half_to_integer_uses_a_wide_scale() {
+    assert_eq!(recovered(0x3c00), 65_536);
+}
+"
+        } else if word == 0x9ec3_0000 {
+            r"
+#[test]
+fn fixed_large_integer_to_half_rounds_from_exact_bits() {
+    assert_eq!(recovered(9_227_875_636_482_146_305), 0x3801);
+}
+"
+        } else if word == 0x9ed8_8000 {
+            r"
+#[test]
+fn fixed_half_to_wide_integer_does_not_narrow_the_scale() {
+    assert_eq!(recovered(0x3c00), 4_294_967_296);
+    assert_eq!(recovered(0x0001), 256);
+}
+"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            unit,
+            "mod case_{index} {{\n{rust_source}\n{boundary_test}\n}}"
+        );
+    }
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary Rust crate");
+    let source_path: std::path::PathBuf = directory.path().join("half.rs");
+    let output_path: std::path::PathBuf = directory.path().join("half_tests.exe");
+    fs::write(&source_path, unit).expect("write generated Rust");
+    let output: std::process::Output = Command::new("rustc")
+        .args(["--edition", "2021", "--test", "-D", "warnings"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("invoke rustc");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let execution: std::process::Output = Command::new(&output_path)
+        .output()
+        .expect("execute generated Rust tests");
+    assert!(
+        execution.status.success(),
+        "{}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+}
+
+#[test]
+fn scalar_fp_half_precision_c_rendering_compiles() {
+    let words: [u32; 17] = [
+        0x1e23_c000,
+        0x1ee2_4000,
+        0x1e63_c000,
+        0x1fc1_0800,
+        0x1ee1_4800,
+        0x1ee1_c000,
+        0x1ef8_0000,
+        0x1ee0_c000,
+        0x1ee1_4000,
+        0x1ee0_0000,
+        0x1ee1_0000,
+        0x1ec2_c000,
+        0x1ed8_c000,
+        0x9ec3_0000,
+        0x9ed8_8000,
+        0x1ee7_0000,
+        0x1ee6_0000,
+    ];
+    let compiler: String = host_c_compiler();
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary C sources");
+    for (index, word) in words.into_iter().enumerate() {
+        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
+        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("F16 scalar operation must recover");
+        let source_path: std::path::PathBuf = directory.path().join(format!("half_{index}.c"));
+        let boundary_main: &str = match word {
+            0x1ee2_4000 => {
+                "\nint main(void) { return fp_f_to_bits(recovered(fp_h_from_bits(0x7c01))) == 0x7fc02000 ? 0 : 1; }\n"
+            }
+            0x1e63_c000 => {
+                "\nint main(void) { return fp_h_to_bits(recovered(fp_d_from_bits(UINT64_C(0x7ff0040000000000)))) == 0x7e01 ? 0 : 1; }\n"
+            }
+            0x1ec2_c000 => {
+                "\nint main(void) { return fp_h_to_bits(recovered(65536)) == 0x3c00 ? 0 : 1; }\n"
+            }
+            0x1ed8_c000 => {
+                "\nint main(void) { return recovered(fp_h_from_bits(0x3c00)) == 65536 ? 0 : 1; }\n"
+            }
+            0x9ec3_0000 => {
+                "\nint main(void) { return fp_h_to_bits(recovered(UINT64_C(9227875636482146305))) == 0x3801 ? 0 : 1; }\n"
+            }
+            0x9ed8_8000 => {
+                "\nint main(void) { return recovered(fp_h_from_bits(0x3c00)) == UINT64_C(4294967296) && recovered(fp_h_from_bits(0x0001)) == 256 ? 0 : 1; }\n"
+            }
+            _ => "",
+        };
+        let source: String = format!("{}{boundary_main}", recovery.source);
+        fs::write(&source_path, source).expect("write generated C");
+        let executable_path: std::path::PathBuf =
+            directory.path().join(format!("half_{index}.exe"));
+        let mut command: Command = Command::new(&compiler);
+        command.args(["-std=c11", "-Werror"]);
+        if boundary_main.is_empty() {
+            command.arg("-fsyntax-only");
+        } else {
+            command.arg("-o").arg(&executable_path);
+        }
+        let output: std::process::Output = command
+            .arg(&source_path)
+            .output()
+            .expect("invoke C compiler");
+        assert!(
+            output.status.success(),
+            "case {index}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if !boundary_main.is_empty() {
+            let execution: std::process::Output = Command::new(&executable_path)
+                .output()
+                .expect("execute generated C boundary test");
+            assert!(
+                execution.status.success(),
+                "case {index} returned a mismatched value"
+            );
+        }
+    }
+}
+
+#[test]
+fn half_rust_paths_preserve_or_quiet_bits_as_required() {
+    let cases: [(Vec<u32>, &str); 12] = [
+        (
+            vec![0x1ee0_4000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(bits), bits); }",
+        ),
+        (
+            vec![0x7d40_0000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered((&bits as *const u16) as u64), bits); }",
+        ),
+        (
+            vec![0x1ee0_c000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(bits), bits & 0x7fff); }",
+        ),
+        (
+            vec![0x1ee1_4000],
+            "for bits in u16::MIN..=u16::MAX { assert_eq!(recovered(bits), bits ^ 0x8000); }",
+        ),
+        (
+            vec![0x1ee1_2000, 0x1ee1_0c00],
+            "assert_eq!(recovered(0x3c00, 0x7c01), 0x7c01);",
+        ),
+        (
+            vec![0x1e63_c000],
+            "assert_eq!(recovered(f64::from_bits(0x7ff0_0400_0000_0000)), 0x7e01); assert_eq!(recovered(f64::from_bits(0x7ff8_0400_0000_0000)), 0x7e01);",
+        ),
+        (
+            vec![0x1ee2_4000],
+            "assert_eq!(recovered(0x7c01).to_bits(), 0x7fc0_2000); assert_eq!(recovered(0x7e01).to_bits(), 0x7fc0_2000);",
+        ),
+        (
+            vec![0x1ee1_c000],
+            "assert_eq!(recovered(0xfc00), 0x7e00); assert_eq!(recovered(0x8000), 0x8000); assert_eq!(recovered(0x7c00), 0x7c00);",
+        ),
+        (
+            vec![0x1ee1_2800],
+            "assert_eq!(recovered(0x7c01, 0x3c00), 0x7e01); assert_eq!(recovered(0x3c00, 0x7c01), 0x7e01); assert_eq!(recovered(0x7e11, 0x7e22), 0x7e11); assert_eq!(recovered(0x7c00, 0xfc00), 0x7e00);",
+        ),
+        (
+            vec![0x1ee1_1800],
+            "assert_eq!(recovered(0x0000, 0x0000), 0x7e00); assert_eq!(recovered(0x7c00, 0x7c00), 0x7e00);",
+        ),
+        (
+            vec![0x1e23_c000],
+            "assert_eq!(recovered(f32::from_bits(0x7f80_2000)), 0x7e01); assert_eq!(recovered(f32::from_bits(0x7fc0_2000)), 0x7e01);",
+        ),
+        (
+            vec![0x1ee2_c000],
+            "assert_eq!(recovered(0x7c01).to_bits(), 0x7ff8_0400_0000_0000); assert_eq!(recovered(0x7e01).to_bits(), 0x7ff8_0400_0000_0000);",
+        ),
+    ];
+    let mut unit: String = String::new();
+    for (index, (mut words, assertion)) in cases.into_iter().enumerate() {
+        words.push(0xd65f_03c0);
+        let code: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+        let recovery: LeafRecovery =
+            recover_aarch64_function(&code, 0).expect("bit-preserving half operation");
+        let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+        let _ = writeln!(
+            unit,
+            "mod case_{index} {{\n{rust_source}\n#[test]\nfn preserves_bits() {{ {assertion} }}\n}}"
+        );
+    }
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary Rust crate");
+    let source_path: std::path::PathBuf = directory.path().join("half_bits.rs");
+    let output_path: std::path::PathBuf = directory.path().join("half_bits.exe");
+    fs::write(&source_path, unit).expect("write generated Rust");
+    let built: std::process::Output = Command::new("rustc")
+        .args(["--edition", "2021", "--test", "-D", "warnings"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("compile generated Rust");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let executed: std::process::Output = Command::new(&output_path)
+        .output()
+        .expect("execute generated Rust");
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+}
+
+#[test]
+fn half_c_sign_operations_preserve_every_payload_across_compilers() {
+    let cases: [(u32, &str); 2] = [
+        (0x1ee0_c000, "(bits & 0x7fffu)"),
+        (0x1ee1_4000, "(bits ^ 0x8000u)"),
+    ];
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary C sources");
+    let mut executions: usize = 0;
+    for compiler in ["gcc", "clang"] {
+        if !Command::new(compiler)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success())
+        {
+            continue;
+        }
+        for (index, (word, expected)) in cases.into_iter().enumerate() {
+            let code: Vec<u8> = [word, 0xd65f_03c0]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            let recovery: LeafRecovery =
+                recover_aarch64_function(&code, 0).expect("half sign operation");
+            let source: String = format!(
+                "{}\nint main(void) {{ for (uint32_t bits = 0; bits <= 0xffffu; bits++) {{ if (fp_h_to_bits(recovered(fp_h_from_bits((uint16_t)bits))) != {expected}) return 1; }} return 0; }}\n",
+                recovery.source
+            );
+            let source_path: std::path::PathBuf = directory
+                .path()
+                .join(format!("half_sign_{compiler}_{index}.c"));
+            let executable_path: std::path::PathBuf = directory
+                .path()
+                .join(format!("half_sign_{compiler}_{index}.exe"));
+            fs::write(&source_path, source).expect("write generated C");
+            let built: std::process::Output = Command::new(compiler)
+                .args(["-std=c11", "-O0", "-Werror", "-o"])
+                .arg(&executable_path)
+                .arg(&source_path)
+                .output()
+                .expect("compile generated C");
+            assert!(
+                built.status.success(),
+                "{compiler}: {}{}",
+                String::from_utf8_lossy(&built.stdout),
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let executed: std::process::Output = Command::new(&executable_path)
+                .output()
+                .expect("execute generated C");
+            assert!(executed.status.success(), "{compiler} case {index}");
+            executions += 1;
+        }
+    }
+    assert!(executions >= cases.len());
+}
+
+#[test]
+fn half_store_through_mixed_union_writes_raw_bits() {
+    let code: Vec<u8> = [0x7d00_0000_u32, 0x7940_0000, 0xd65f_03c0]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&code, 0).expect("mixed half and integer slot");
+    let rust_source: &str = recovery.rust_source.as_deref().expect("Rust recovery");
+    let unit: String = format!(
+        "{rust_source}\n#[test]\nfn stores_bits() {{ let mut slot: u16 = 0; let result: u64 = recovered(0x7c01, (&raw mut slot) as u64); assert_eq!(slot, 0x7c01); assert_eq!(result, 0x7c01); }}\n"
+    );
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("temporary Rust crate");
+    let source_path: std::path::PathBuf = directory.path().join("half_union.rs");
+    let output_path: std::path::PathBuf = directory.path().join("half_union.exe");
+    fs::write(&source_path, unit).expect("write generated Rust");
+    let built: std::process::Output = Command::new("rustc")
+        .args(["--edition", "2024", "--test", "-D", "warnings"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .expect("compile generated Rust");
+    assert!(
+        built.status.success(),
+        "{}\n{rust_source}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let executed: std::process::Output = Command::new(&output_path)
+        .output()
+        .expect("execute generated Rust");
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+}
+
+#[test]
 fn scalar_fp_fixed_point_forms_recover_with_their_scale() {
-    let cases: [(u32, &str); 4] = [
+    let cases: [(u32, &str); 5] = [
         (0x1e42_e400, "(double)((double)(int32_t)r_rax / 0x1p7)"),
         (0x1e03_ec00, "(float)((float)(uint32_t)r_rax / 0x1p5f)"),
         (
@@ -417,6 +944,7 @@ fn scalar_fp_fixed_point_forms_recover_with_their_scale() {
             0x9e59_dc00,
             "fpx_cvtsat_u64_f64((fp_d_from_bits(x_xmm0) * 0x1p9))",
         ),
+        (0x1ec2_c000, "fp_h_bits_from_scaled_i64((int32_t)r_rax, 16)"),
     ];
     for (word, expected) in cases {
         let mut code: Vec<u8> = word.to_le_bytes().to_vec();

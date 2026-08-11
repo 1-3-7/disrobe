@@ -57,6 +57,7 @@ struct AttributedSite {
 enum EvidenceWidth {
     Integer32,
     Integer64,
+    FloatingPoint16,
     FloatingPoint32,
     FloatingPoint64,
 }
@@ -631,6 +632,7 @@ fn recover_ambiguous_identity(
         .fp
         .iter()
         .map(|width: &EvidenceWidth| match width {
+            EvidenceWidth::FloatingPoint16 => Ok(FpWidth::F16),
             EvidenceWidth::FloatingPoint32 => Ok(FpWidth::F32),
             EvidenceWidth::FloatingPoint64 => Ok(FpWidth::F64),
             EvidenceWidth::Integer32 | EvidenceWidth::Integer64 => {
@@ -644,7 +646,9 @@ fn recover_ambiguous_identity(
         .map(|width: &EvidenceWidth| match width {
             EvidenceWidth::Integer32 => Ok(Width::W32),
             EvidenceWidth::Integer64 => Ok(Width::W64),
-            EvidenceWidth::FloatingPoint32 | EvidenceWidth::FloatingPoint64 => {
+            EvidenceWidth::FloatingPoint16
+            | EvidenceWidth::FloatingPoint32
+            | EvidenceWidth::FloatingPoint64 => {
                 Err("integer argument evidence contains a floating-point width".to_owned())
             }
         })
@@ -1258,9 +1262,9 @@ fn unify_returns(
         .iter()
         .map(|width: &EvidenceWidth| match width {
             EvidenceWidth::Integer32 | EvidenceWidth::Integer64 => RegisterFile::Integer,
-            EvidenceWidth::FloatingPoint32 | EvidenceWidth::FloatingPoint64 => {
-                RegisterFile::FloatingPoint
-            }
+            EvidenceWidth::FloatingPoint16
+            | EvidenceWidth::FloatingPoint32
+            | EvidenceWidth::FloatingPoint64 => RegisterFile::FloatingPoint,
         })
         .collect();
     if classes.len() != 1 {
@@ -1275,6 +1279,10 @@ fn unify_returns(
                 );
             }
             match widths.first() {
+                Some(EvidenceWidth::FloatingPoint16) => Ok(Some((
+                    CallSiteScalar::FloatingPoint(FpWidth::F16),
+                    CallSiteReturnProof::FloatingPoint16,
+                ))),
                 Some(EvidenceWidth::FloatingPoint32) => Ok(Some((
                     CallSiteScalar::FloatingPoint(FpWidth::F32),
                     CallSiteReturnProof::FloatingPoint32,
@@ -1317,6 +1325,7 @@ fn validate_identity_return(
     match return_type {
         CallSiteScalar::FloatingPoint(width) => {
             let expected: EvidenceWidth = match width {
+                FpWidth::F16 => EvidenceWidth::FloatingPoint16,
                 FpWidth::F32 => EvidenceWidth::FloatingPoint32,
                 FpWidth::F64 => EvidenceWidth::FloatingPoint64,
             };
@@ -1667,6 +1676,7 @@ fn token_width(token: &str, register: TrackedRegister) -> Option<EvidenceWidth> 
     match (register.file, token.as_bytes().first().copied()) {
         (RegisterFile::Integer, Some(b'w')) => Some(EvidenceWidth::Integer32),
         (RegisterFile::Integer, Some(b'x')) => Some(EvidenceWidth::Integer64),
+        (RegisterFile::FloatingPoint, Some(b'h')) => Some(EvidenceWidth::FloatingPoint16),
         (RegisterFile::FloatingPoint, Some(b's')) => Some(EvidenceWidth::FloatingPoint32),
         (RegisterFile::FloatingPoint, Some(b'd')) => Some(EvidenceWidth::FloatingPoint64),
         _ => None,

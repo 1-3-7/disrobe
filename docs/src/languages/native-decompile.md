@@ -15,6 +15,7 @@ For symbol recovery, disassembly, and identification see the [native guide](./na
 | Type recovery | x86-64 structs from fixed-offset access (`p->field_8`), arrays from scaled indexing (`a[i]`), unions from conflicting widths, integer width and signedness per frame slot |
 | API types | x86-64 resolved imports propagated backward into caller locals from a curated libc, kernel32, and ws2_32 prototype database, each tagged with `library!function` provenance |
 | Calling convention | x86-64 inferred per function, including `thiscall` and `vectorcall` |
+| AArch64 scalar floating point | `h0` to `h31`, `s0` to `s31`, and `d0` to `d31`; IEEE binary16, binary32, and binary64 arithmetic, conversion, comparison, rounding, and loads or stores |
 | Vectorized loops | x86-64 SSE/AVX reduction and pointer-walk map kernels lowered back to the equivalent scalar loop |
 | AArch64 devirtualizer | Symbolic, on by default in a full build, `--no-devirt` to disable; transactional, reverts on any proof miss |
 | Grading | C output is execution-differentially recompiled with real gcc or clang; x86-64 Rust output with rustc |
@@ -38,6 +39,10 @@ Output lands at `<out>/<stem>.c` or `<out>/<stem>.rs` alongside a `manifest.json
 ### Call resolution and structure
 
 `--backend native` (the default) is disrobe's own x86-64 and AArch64 decompiler: no external tool, no install step. It performs whole-program call resolution over every function the module discovers, not isolated per-function guessing. For linked AArch64 ELF inputs, a validated direct same-image call resolves its callee's real name and integer arity only when the sibling target is unambiguous. Indirect, external, malformed, unsupported, and ambiguous calls abstain. Relocatable AArch64 objects fail before output because section-qualified function identity is not yet carried through the CLI. Dense switch dispatch is recovered from the binary's own jump table rather than guessed. A function with no validated outgoing calls degrades to a plain leaf recovery, so stitching only ever improves recovery, never regresses it. AArch64 uses object-context recovery first, with the NIR lift and image-backed recovery available as narrower fallbacks.
+
+### AArch64 scalar floating point
+
+The AArch64 lifter recognizes all 32 scalar floating-point registers through their `h`, `s`, and `d` views. Half-precision values use IEEE binary16 bits in the shared register model. The C emitter uses `_Float16`; the internal Rust emitter uses `u16` at function boundaries because stable Rust does not provide an `f16` primitive, then converts those bits through bounded binary16 helpers. Arithmetic, fused multiply-add, minimum and maximum, square root, rounding, integer conversion, precision conversion, comparison, selection, base-register scalar loads, and scalar stores use the declared operand width. The scalar path models the default IEEE floating-point environment. It does not infer ambient FPCR rounding, flush-to-zero, default-NaN, or alternative-half controls, so output that depends on a nondefault FPCR state is not claimed as bit-exact. `q` and `v` operands remain vector operations and do not enter the scalar path.
 
 ### x86-64 type recovery
 
