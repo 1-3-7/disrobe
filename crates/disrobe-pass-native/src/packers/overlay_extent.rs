@@ -1,4 +1,4 @@
-use disrobe_bytes::align_up_usize as align_up;
+use disrobe_bytes::{align_up_usize as align_up, read_uleb128_at};
 use disrobe_core::codec::crc32_ieee;
 use flate2::{Decompress, FlushDecompress, Status};
 
@@ -450,21 +450,8 @@ fn cab_extent(window: &[u8]) -> Option<usize> {
 }
 
 fn rar5_vint(window: &[u8], at: usize) -> Option<(u64, usize)> {
-    let mut value: u64 = 0;
-    let mut shift: u32 = 0;
-    let mut pos: usize = at;
-    loop {
-        let byte: u8 = *window.get(pos)?;
-        pos += 1;
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some((value, pos));
-        }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
-    }
+    let (value, consumed): (u64, usize) = read_uleb128_at(window, at).ok()?;
+    Some((value, at.checked_add(consumed)?))
 }
 
 fn rar5_extent(window: &[u8]) -> Option<usize> {
@@ -559,6 +546,13 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::*;
+
+    #[test]
+    fn rar5_vint_rejects_terminal_payload_overflow() {
+        let encoded: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        assert_eq!(rar5_vint(&encoded, 0), None);
+        assert_eq!(rar5_vint(&[0xAA, 0xE5, 0x8E, 0x26], 1), Some((624_485, 4)));
+    }
 
     const PADDING: [u8; 257] = [0x5A; 257];
 

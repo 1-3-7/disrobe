@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 use crate::binary::GoImage;
@@ -416,20 +417,12 @@ const fn zigzag_decode(uvdelta: u32) -> i32 {
     }
 }
 
-const PCTAB_VARINT_MAX_BYTES: usize = 5;
-
 fn read_pctab_varint(buf: &[u8], at: usize) -> Option<(u32, usize)> {
-    let tail: &[u8] = buf.get(at..)?;
-    let mut value: u32 = 0;
-    let mut shift: u32 = 0;
-    for (i, &byte) in tail.iter().take(PCTAB_VARINT_MAX_BYTES).enumerate() {
-        value |= u32::from(byte & 0x7f).checked_shl(shift)?;
-        if byte & 0x80 == 0 {
-            return Some((value, i + 1));
-        }
-        shift += 7;
+    let (value, consumed): (u64, usize) = read_uleb128_at(buf, at).ok()?;
+    if consumed > 5 {
+        return None;
     }
-    None
+    Some((u32::try_from(value).ok()?, consumed))
 }
 
 fn read_cutab_entry(header: &PclntabHeader, body: &[u8], index: u32) -> Option<u32> {
@@ -862,6 +855,11 @@ mod tests {
         assert_eq!(read_pctab_varint(&[], 0), None);
         assert_eq!(read_pctab_varint(&[0x80; 5], 0), None);
         assert_eq!(read_pctab_varint(&[0x02], 5), None);
+    }
+
+    #[test]
+    fn pctab_varint_rejects_fifth_group_overflow() {
+        assert_eq!(read_pctab_varint(&[0xFF, 0xFF, 0xFF, 0xFF, 0x1F], 0), None);
     }
 
     fn file_layout_header() -> PclntabHeader {

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
+use disrobe_bytes::{LebError, read_uleb128_at};
 use serde::Serialize;
 use wasmparser::{BlockType, Operator, Parser, Payload};
 
@@ -471,27 +472,17 @@ fn section_is_named(payload: &[u8]) -> bool {
 }
 
 fn read_leb_u32(bytes: &[u8], start: usize) -> Result<(u32, usize)> {
-    let mut result: u32 = 0;
-    let mut shift: u32 = 0;
-    let mut index: usize = start;
-    loop {
-        let byte: u8 = *bytes
-            .get(index)
-            .ok_or_else(|| Error::Parse("truncated leb128".to_owned()))?;
-        index += 1;
-        let payload: u32 = u32::from(byte & 0x7f);
-        result |= payload
-            .checked_shl(shift)
-            .ok_or_else(|| Error::Parse("leb128 overflow".to_owned()))?;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        if shift >= 32 {
-            return Err(Error::Parse("leb128 too long".to_owned()));
-        }
+    let (value, consumed): (u64, usize) =
+        read_uleb128_at(bytes, start).map_err(|error: LebError| match error {
+            LebError::OutOfBounds(_) => Error::Parse("truncated leb128".to_owned()),
+            LebError::Overflow { .. } => Error::Parse("leb128 overflow".to_owned()),
+        })?;
+    if consumed > 5 {
+        return Err(Error::Parse("leb128 too long".to_owned()));
     }
-    Ok((result, index - start))
+    let result: u32 =
+        u32::try_from(value).map_err(|_| Error::Parse("leb128 overflow".to_owned()))?;
+    Ok((result, consumed))
 }
 
 #[cfg(test)]
@@ -509,6 +500,12 @@ mod tests {
             assert_eq!(fingerprint.defined_index, index as u32);
             assert!(fingerprint.opcode_len > 0);
         }
+    }
+
+    #[test]
+    fn section_leb_rejects_fifth_group_overflow() {
+        let overflow: [u8; 5] = [0xFF, 0xFF, 0xFF, 0xFF, 0x1F];
+        assert!(read_leb_u32(&overflow, 0).is_err());
     }
 
     #[test]

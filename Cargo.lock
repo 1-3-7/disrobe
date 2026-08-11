@@ -2243,6 +2243,7 @@ dependencies = [
 name = "disrobe-pass-go"
 version = "0.10.5"
 dependencies = [
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-llm-metadata",
  "flate2",

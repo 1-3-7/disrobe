@@ -1,5 +1,6 @@
 use std::io::Read as _;
 
+use disrobe_bytes::{LebError, read_uleb128_at};
 use serde::{Deserialize, Serialize};
 
 use crate::containers::ostree::{self, GType, GVariant, MemoryStore, OstreeFile, OstreeRepoLayout};
@@ -523,23 +524,18 @@ impl<'a> OpReader<'a> {
     }
 
     fn read_varuint(&mut self) -> Result<u64> {
-        let mut result: u64 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            let byte: u8 = *self
-                .data
-                .get(self.pos)
-                .ok_or_else(|| flatpak_err("varint runs past operation stream".to_owned()))?;
-            self.pos += 1;
-            if shift >= 64 {
-                return Err(flatpak_err("varint exceeds 64 bits".to_owned()));
-            }
-            result |= u64::from(byte & 0x7f) << shift;
-            if byte & 0x80 == 0 {
-                return Ok(result);
-            }
-            shift += 7;
-        }
+        let (value, consumed): (u64, usize) =
+            read_uleb128_at(self.data, self.pos).map_err(|error: LebError| match error {
+                LebError::OutOfBounds(_) => {
+                    flatpak_err("varint runs past operation stream".to_owned())
+                }
+                LebError::Overflow { .. } => flatpak_err("varint exceeds 64 bits".to_owned()),
+            })?;
+        self.pos = self
+            .pos
+            .checked_add(consumed)
+            .ok_or_else(|| flatpak_err("varint position overflow".to_owned()))?;
+        Ok(value)
     }
 }
 
@@ -601,6 +597,13 @@ mod tests {
     fn varint_decodes_single_byte() {
         let mut reader: OpReader<'_> = OpReader::new(&[0x7f]);
         assert_eq!(reader.read_varuint().unwrap(), 127);
+    }
+
+    #[test]
+    fn varint_rejects_tenth_group_overflow() {
+        let bytes: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        let mut reader: OpReader<'_> = OpReader::new(&bytes);
+        assert!(reader.read_varuint().is_err());
     }
 
     #[test]

@@ -3100,6 +3100,25 @@ mod tests {
     }
 
     #[test]
+    fn uleb128_writer_round_trips_random_u32_values_through_shared_decoder() {
+        let mut state: u64 = 0xD1B5_4A32_D192_ED03;
+        for expected in [0, 1, 0x7F, 0x80, 0x3FFF, 0x4000, u32::MAX]
+            .into_iter()
+            .chain((0..4096).map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u32
+            }))
+        {
+            let mut encoded: Vec<u8> = Vec::new();
+            write_uleb128(&mut encoded, expected);
+            let decoded: Option<(u64, usize)> = disrobe_bytes::read_uleb128_at(&encoded, 0).ok();
+            assert_eq!(decoded, Some((u64::from(expected), encoded.len())));
+        }
+    }
+
+    #[test]
     fn sample_parses_as_valid_dex() {
         let plaintexts: [&str; 2] = ["hello world", "secret"];
         let dex: Vec<u8> = dexguard_reflect_sample(&plaintexts, 0x66);

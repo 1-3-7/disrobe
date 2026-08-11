@@ -79,20 +79,7 @@ fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
 }
 
 fn read_uleb128(bytes: &[u8], off: usize) -> Option<(u32, usize)> {
-    let window_end: usize = off.saturating_add(5).min(bytes.len());
-    let window: &[u8] = bytes.get(off..window_end)?;
-    match disrobe_bytes::read_uleb128_at(window, 0) {
-        Ok((value, consumed)) => Some((value as u32, off + consumed)),
-        Err(_) if window.len() == 5 => {
-            let mut capped: [u8; 5] = [0u8; 5];
-            capped.copy_from_slice(window);
-            capped[4] &= 0x7F;
-            disrobe_bytes::read_uleb128_at(&capped, 0)
-                .ok()
-                .map(|(value, _consumed): (u64, usize)| (value as u32, off + 5))
-        }
-        Err(_) => None,
-    }
+    crate::dex::read_uleb128(bytes, off).ok()
 }
 
 fn dex_type_to_internal(descriptor: &str) -> String {
@@ -971,6 +958,13 @@ mod tests {
             has_code: true,
         };
         assert_eq!(method_local_slots(&m), 4);
+    }
+
+    #[test]
+    fn class_data_uleb128_rejects_values_wider_than_u32() {
+        let overflow: [u8; 5] = [0xFF, 0xFF, 0xFF, 0xFF, 0x1F];
+        assert_eq!(read_uleb128(&overflow, 0), None);
+        assert_eq!(read_uleb128(&[0x80], 0), None);
     }
 
     #[test]

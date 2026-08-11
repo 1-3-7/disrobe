@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_bytes::{ByteReadError, LebError, read_sleb128_at, read_uleb128_at};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -150,35 +151,53 @@ fn parse_header_inner(bytes: &[u8]) -> Result<DexHeader> {
     })
 }
 
-fn read_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
-    let mut value: u32 = 0;
-    for index in 0..5 {
-        let cursor: usize = off.checked_add(index).ok_or(Error::BadBytecode {
-            offset: off,
-            reason: "DEX uleb128 offset overflow",
-        })?;
-        let Some(byte): Option<u8> = bytes.get(cursor).copied() else {
-            return Err(Error::Truncated {
-                offset: cursor,
-                needed: 1,
-                had: 0,
-            });
-        };
-        if index == 4 && (byte & 0x80 != 0 || byte & 0xF0 != 0) {
-            return Err(Error::BadBytecode {
-                offset: cursor,
-                reason: "DEX uleb128 exceeds 32 bits",
-            });
-        }
-        value |= u32::from(byte & 0x7F) << (index * 7);
-        if byte & 0x80 == 0 {
-            return Ok((value, cursor + 1));
-        }
-    }
-    Err(Error::BadBytecode {
+fn dex_leb_window(bytes: &[u8], off: usize) -> Result<&[u8]> {
+    let tail: &[u8] = bytes.get(off..).ok_or(Error::Truncated {
         offset: off,
-        reason: "unterminated DEX uleb128",
-    })
+        needed: 1,
+        had: 0,
+    })?;
+    Ok(&tail[..tail.len().min(5)])
+}
+
+const fn map_dex_leb_error(
+    error: LebError,
+    off: usize,
+    window_len: usize,
+    overflow_reason: &'static str,
+) -> Error {
+    match error {
+        LebError::OutOfBounds(ByteReadError {
+            offset,
+            needed,
+            available,
+        }) if window_len < 5 => Error::Truncated {
+            offset: off.saturating_add(offset),
+            needed,
+            had: available,
+        },
+        LebError::OutOfBounds(_) | LebError::Overflow { .. } => Error::BadBytecode {
+            offset: off.saturating_add(window_len.saturating_sub(1)),
+            reason: overflow_reason,
+        },
+    }
+}
+
+pub(super) fn read_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
+    let window: &[u8] = dex_leb_window(bytes, off)?;
+    let (value, consumed): (u64, usize) =
+        read_uleb128_at(window, 0).map_err(|error: LebError| {
+            map_dex_leb_error(error, off, window.len(), "DEX uleb128 exceeds 32 bits")
+        })?;
+    let decoded: u32 = u32::try_from(value).map_err(|_| Error::BadBytecode {
+        offset: off.saturating_add(consumed.saturating_sub(1)),
+        reason: "DEX uleb128 exceeds 32 bits",
+    })?;
+    let end: usize = off.checked_add(consumed).ok_or(Error::BadBytecode {
+        offset: off,
+        reason: "DEX uleb128 offset overflow",
+    })?;
+    Ok((decoded, end))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -989,43 +1008,20 @@ impl CodeItemsReport {
 }
 
 fn read_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
-    let mut value: i64 = 0;
-    for index in 0..5 {
-        let cursor: usize = off.checked_add(index).ok_or(Error::BadBytecode {
-            offset: off,
-            reason: "DEX sleb128 offset overflow",
+    let window: &[u8] = dex_leb_window(bytes, off)?;
+    let (value, consumed): (i64, usize) =
+        read_sleb128_at(window, 0).map_err(|error: LebError| {
+            map_dex_leb_error(error, off, window.len(), "DEX sleb128 exceeds 32 bits")
         })?;
-        let Some(byte): Option<u8> = bytes.get(cursor).copied() else {
-            return Err(Error::Truncated {
-                offset: cursor,
-                needed: 1,
-                had: 0,
-            });
-        };
-        let payload: u8 = byte & 0x7F;
-        if index == 4 && (byte & 0x80 != 0 || !matches!(payload & 0x70, 0x00 | 0x70)) {
-            return Err(Error::BadBytecode {
-                offset: cursor,
-                reason: "DEX sleb128 exceeds 32 bits",
-            });
-        }
-        value |= i64::from(payload) << (index * 7);
-        if byte & 0x80 == 0 {
-            let used_bits: usize = (index + 1) * 7;
-            if byte & 0x40 != 0 {
-                value |= -1_i64 << used_bits;
-            }
-            let decoded: i32 = i32::try_from(value).map_err(|_| Error::BadBytecode {
-                offset: cursor,
-                reason: "DEX sleb128 exceeds 32 bits",
-            })?;
-            return Ok((decoded, cursor + 1));
-        }
-    }
-    Err(Error::BadBytecode {
+    let decoded: i32 = i32::try_from(value).map_err(|_| Error::BadBytecode {
+        offset: off.saturating_add(consumed.saturating_sub(1)),
+        reason: "DEX sleb128 exceeds 32 bits",
+    })?;
+    let end: usize = off.checked_add(consumed).ok_or(Error::BadBytecode {
         offset: off,
-        reason: "unterminated DEX sleb128",
-    })
+        reason: "DEX sleb128 offset overflow",
+    })?;
+    Ok((decoded, end))
 }
 
 type ParsedCode = (u16, u16, u16, Vec<u16>, Vec<TryItem>, Vec<Option<String>>);
@@ -2302,6 +2298,77 @@ pub(crate) fn partial_code_failure_fixture() -> (DexFile, Vec<u8>) {
 mod tests {
     use super::*;
 
+    fn legacy_uleb128(bytes: &[u8], off: usize) -> Result<(u32, usize)> {
+        let mut value: u32 = 0;
+        for index in 0..5 {
+            let cursor: usize = off.checked_add(index).ok_or(Error::BadBytecode {
+                offset: off,
+                reason: "DEX uleb128 offset overflow",
+            })?;
+            let Some(byte): Option<u8> = bytes.get(cursor).copied() else {
+                return Err(Error::Truncated {
+                    offset: cursor,
+                    needed: 1,
+                    had: 0,
+                });
+            };
+            if index == 4 && (byte & 0x80 != 0 || byte & 0xF0 != 0) {
+                return Err(Error::BadBytecode {
+                    offset: cursor,
+                    reason: "DEX uleb128 exceeds 32 bits",
+                });
+            }
+            value |= u32::from(byte & 0x7F) << (index * 7);
+            if byte & 0x80 == 0 {
+                return Ok((value, cursor + 1));
+            }
+        }
+        Err(Error::BadBytecode {
+            offset: off,
+            reason: "unterminated DEX uleb128",
+        })
+    }
+
+    fn legacy_sleb128(bytes: &[u8], off: usize) -> Result<(i32, usize)> {
+        let mut value: i64 = 0;
+        for index in 0..5 {
+            let cursor: usize = off.checked_add(index).ok_or(Error::BadBytecode {
+                offset: off,
+                reason: "DEX sleb128 offset overflow",
+            })?;
+            let Some(byte): Option<u8> = bytes.get(cursor).copied() else {
+                return Err(Error::Truncated {
+                    offset: cursor,
+                    needed: 1,
+                    had: 0,
+                });
+            };
+            let payload: u8 = byte & 0x7F;
+            if index == 4 && (byte & 0x80 != 0 || !matches!(payload & 0x70, 0x00 | 0x70)) {
+                return Err(Error::BadBytecode {
+                    offset: cursor,
+                    reason: "DEX sleb128 exceeds 32 bits",
+                });
+            }
+            value |= i64::from(payload) << (index * 7);
+            if byte & 0x80 == 0 {
+                let used_bits: usize = (index + 1) * 7;
+                if byte & 0x40 != 0 {
+                    value |= -1_i64 << used_bits;
+                }
+                let decoded: i32 = i32::try_from(value).map_err(|_| Error::BadBytecode {
+                    offset: cursor,
+                    reason: "DEX sleb128 exceeds 32 bits",
+                })?;
+                return Ok((decoded, cursor + 1));
+            }
+        }
+        Err(Error::BadBytecode {
+            offset: off,
+            reason: "unterminated DEX sleb128",
+        })
+    }
+
     fn code_item_with_tries(tries: &[(u32, u16, u16)]) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(&1u16.to_le_bytes());
@@ -2352,6 +2419,24 @@ mod tests {
     }
 
     #[test]
+    fn leb128_nonzero_offset_keeps_absolute_end_and_truncation_offset() {
+        let bytes: [u8; 5] = [0xAA, 0xE5, 0x8E, 0x26, 0xBB];
+        assert_eq!(read_uleb128(&bytes, 1).ok(), Some((624485, 4)));
+        let unsigned: Result<(u32, usize)> = read_uleb128(&[0xAA, 0x80], 1);
+        let signed: Result<(i32, usize)> = read_sleb128(&[0xAA, 0x80], 1);
+        for result in [unsigned.map(|_| ()), signed.map(|_| ())] {
+            assert!(matches!(
+                result,
+                Err(Error::Truncated {
+                    offset: 2,
+                    needed: 1,
+                    had: 0
+                })
+            ));
+        }
+    }
+
+    #[test]
     fn uleb128_refuses_five_byte_overflow_and_continuation() {
         for bytes in [
             [0xFF, 0xFF, 0xFF, 0xFF, 0x10],
@@ -2371,6 +2456,37 @@ mod tests {
             let parsed: Result<(i32, usize)> = read_sleb128(&bytes, 0);
             assert!(matches!(parsed, Err(Error::BadBytecode { .. })));
         }
+    }
+
+    #[test]
+    fn canonical_leb_decoders_match_deleted_bodies_on_random_byte_strings() {
+        let mut state: u64 = 0x4D59_5DF4_D0F3_3173;
+        for len in 0..=8 {
+            for _ in 0..4096 {
+                let mut bytes: [u8; 8] = [0u8; 8];
+                for byte in &mut bytes[..len] {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    *byte = state as u8;
+                }
+                let input: &[u8] = &bytes[..len];
+                let legacy_unsigned: Option<(u32, usize)> = legacy_uleb128(input, 0).ok();
+                let canonical_unsigned: Option<(u32, usize)> = read_uleb128(input, 0).ok();
+                assert_eq!(canonical_unsigned, legacy_unsigned);
+                let legacy_signed: Option<(i32, usize)> = legacy_sleb128(input, 0).ok();
+                let canonical_signed: Option<(i32, usize)> = read_sleb128(input, 0).ok();
+                assert_eq!(canonical_signed, legacy_signed);
+            }
+        }
+    }
+
+    #[test]
+    fn debug_uleb128p1_zero_remains_an_absent_index() {
+        let names: Vec<Option<String>> =
+            parse_debug_param_names(&[0xFF, 0x00, 0x01, 0x00, 0x00], 1, 1, 0, &[], &[])
+                .expect("debug stream");
+        assert_eq!(names, vec![None]);
     }
 
     #[test]

@@ -870,6 +870,21 @@ pub fn detect_blazor_bundle(files: &[BlazorFile<'_>]) -> bool {
 mod tests {
     use super::*;
 
+    fn uleb(value: usize, out: &mut Vec<u8>) {
+        let mut remaining: usize = value;
+        loop {
+            let mut byte: u8 = (remaining & 0x7F) as u8;
+            remaining >>= 7;
+            if remaining != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+
     fn cor20_header(metadata_rva: u32, metadata_size: u32) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(&(COR20_HEADER_LEN as u32).to_le_bytes());
@@ -981,20 +996,6 @@ mod tests {
     }
 
     fn wrap_in_wasm(payload: &[u8]) -> Vec<u8> {
-        fn uleb(value: usize, out: &mut Vec<u8>) {
-            let mut v: usize = value;
-            loop {
-                let mut byte: u8 = (v & 0x7f) as u8;
-                v >>= 7;
-                if v != 0 {
-                    byte |= 0x80;
-                }
-                out.push(byte);
-                if v == 0 {
-                    break;
-                }
-            }
-        }
         let mut segment_bytes: Vec<u8> = Vec::new();
         let first: &[u8] = b"LB\0\0";
         segment_bytes.push(0x01);
@@ -1015,6 +1016,25 @@ mod tests {
         uleb(data_section.len(), &mut out);
         out.extend_from_slice(&data_section);
         out
+    }
+
+    #[test]
+    fn wasm_test_uleb_writer_round_trips_through_shared_decoder() {
+        let mut state: u64 = 0x8CB9_2BA7_2F3D_8DD7;
+        for expected in [0, 1, 0x7F, 0x80, 0x3FFF, 0x4000, usize::MAX]
+            .into_iter()
+            .chain((0..4096).map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as usize
+            }))
+        {
+            let mut encoded: Vec<u8> = Vec::new();
+            uleb(expected, &mut encoded);
+            let decoded: Option<(u64, usize)> = read_uleb128_at(&encoded, 0).ok();
+            assert_eq!(decoded, Some((expected as u64, encoded.len())));
+        }
     }
 
     fn read_streams(image: &[u8]) -> BTreeMap<String, Vec<u8>> {

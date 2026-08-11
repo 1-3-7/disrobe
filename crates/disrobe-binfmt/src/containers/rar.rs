@@ -64,19 +64,7 @@ pub struct RarArchive {
 }
 
 fn read_rar5_vint(reader: &mut ByteReader<'_>) -> Option<u64> {
-    let mut value: u64 = 0;
-    let mut shift: u32 = 0;
-    loop {
-        let byte: u8 = reader.read_u8().ok()?;
-        value |= u64::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
-    }
+    reader.read_uleb128().ok()
 }
 
 #[must_use]
@@ -615,6 +603,13 @@ mod tests {
     fn rejects_non_rar() {
         assert!(!detect_rar(&[0u8; 16]));
         assert!(parse_rar(&[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn rar5_vint_rejects_tenth_group_overflow() {
+        let bytes: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        let mut reader: ByteReader<'_> = ByteReader::new(&bytes);
+        assert_eq!(read_rar5_vint(&mut reader), None);
     }
 
     #[test]

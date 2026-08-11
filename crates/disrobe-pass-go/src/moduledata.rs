@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use disrobe_bytes::read_uleb128_at;
 use serde::{Deserialize, Serialize};
 
 use crate::binary::{Endian, GoImage};
@@ -831,16 +832,7 @@ fn read_uvarint_string(data: &[u8], at: usize) -> Option<(&[u8], usize)> {
 }
 
 fn read_uvarint(buf: &[u8]) -> Option<(u64, usize)> {
-    let mut value: u64 = 0;
-    let mut shift: u32 = 0;
-    for (i, &byte) in buf.iter().take(10).enumerate() {
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some((value, i + 1));
-        }
-        shift += 7;
-    }
-    None
+    read_uleb128_at(buf, 0).ok()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -890,6 +882,13 @@ mod tests {
         assert_eq!(read_uvarint(&[0xd2, 0x02]), Some((0x152, 2)));
         assert_eq!(read_uvarint(&[]), None);
         assert_eq!(read_uvarint(&[0x80; 10]), None);
+    }
+
+    #[test]
+    fn uvarint_rejects_tenth_group_overflow_and_truncation() {
+        let overflow: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        assert_eq!(read_uvarint(&overflow), None);
+        assert_eq!(read_uvarint(&[0x80]), None);
     }
 
     #[test]

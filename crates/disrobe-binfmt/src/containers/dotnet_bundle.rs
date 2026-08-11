@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
-use disrobe_bytes::ByteReader;
+use disrobe_bytes::{ByteReader, LebError};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -24,7 +24,6 @@ const SUPPORTED_MAJOR_VERSIONS: [u32; 3] = [
 const MAX_PLAUSIBLE_MAJOR_VERSION: u32 = 64;
 const MAX_EMBEDDED_FILES: usize = 1_000_000;
 const MAX_PATH_LEN: usize = 64 * 1024;
-const MAX_VARINT_SHIFT: u32 = 28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BundleFileType {
@@ -136,21 +135,21 @@ fn read_u8(reader: &mut ByteReader<'_>, field: &str) -> Result<u8> {
 }
 
 fn read_7bit_prefixed_string(reader: &mut ByteReader<'_>, field: &str) -> Result<String> {
-    let mut length: usize = 0;
-    let mut shift: u32 = 0;
-    loop {
-        let byte: u8 = read_u8(reader, field)?;
-        length |= usize::from(byte & 0x7f)
-            .checked_shl(shift)
-            .ok_or_else(|| bundle_err(&format!("{field} length prefix overflow")))?;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        if shift > MAX_VARINT_SHIFT {
-            return Err(bundle_err(&format!("{field} length prefix too long")));
-        }
+    let start: usize = reader.position();
+    let encoded_length: u64 = reader
+        .read_uleb128()
+        .map_err(|error: LebError| match error {
+            LebError::OutOfBounds(_) => bundle_err(&format!("truncated reading {field}")),
+            LebError::Overflow { .. } => bundle_err(&format!("{field} length prefix overflow")),
+        })?;
+    let consumed: usize = reader.position().saturating_sub(start);
+    if consumed > 5 {
+        return Err(bundle_err(&format!("{field} length prefix too long")));
     }
+    let length_u32: u32 = u32::try_from(encoded_length)
+        .map_err(|_| bundle_err(&format!("{field} length prefix overflow")))?;
+    let length: usize = usize::try_from(length_u32)
+        .map_err(|_| bundle_err(&format!("{field} length prefix overflow")))?;
     if length == 0 || length > MAX_PATH_LEN {
         return Err(bundle_err(&format!("{field} length {length} out of range")));
     }
@@ -630,6 +629,22 @@ pub(crate) fn build_dotnet_bundle(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seven_bit_string_uses_bounded_shared_leb_decoder() {
+        let mut valid: ByteReader<'_> = ByteReader::new(&[0x03, b'a', b'b', b'c']);
+        assert_eq!(
+            read_7bit_prefixed_string(&mut valid, "path")
+                .ok()
+                .as_deref(),
+            Some("abc")
+        );
+        let mut overlong: ByteReader<'_> = ByteReader::new(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x00]);
+        assert!(read_7bit_prefixed_string(&mut overlong, "path").is_err());
+        let mut overflow: ByteReader<'_> =
+            ByteReader::new(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02]);
+        assert!(read_7bit_prefixed_string(&mut overflow, "path").is_err());
+    }
 
     struct FileSpec {
         path: &'static str,

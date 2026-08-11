@@ -237,21 +237,11 @@ pub fn scan_residual_encrypted_dex_strings(dex_bytes: &[u8]) -> usize {
         if data_pos >= dex_bytes.len() {
             continue;
         }
-        let mut p: usize = data_pos;
-        let mut size: u32 = 0;
-        let mut shift: u32 = 0;
-        while p < dex_bytes.len() {
-            let b: u8 = dex_bytes[p];
-            size |= u32::from(b & 0x7F) << shift;
-            p += 1;
-            if b & 0x80 == 0 {
-                break;
-            }
-            shift += 7;
-            if shift > 28 {
-                break;
-            }
-        }
+        let Ok((size, p)): crate::error::Result<(u32, usize)> =
+            crate::dex::read_uleb128(dex_bytes, data_pos)
+        else {
+            continue;
+        };
         let str_end: usize = p.saturating_add(size as usize).min(dex_bytes.len());
         if p >= str_end {
             continue;
@@ -275,6 +265,17 @@ mod tests {
     use crate::dex_builder::{ClassDef, DexBuilder, EncodedMethod, MethodRef, ProtoRef};
     use object::write::{Object, StandardSection, Symbol, SymbolSection};
     use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
+
+    #[test]
+    fn residual_string_scan_rejects_uleb128_wider_than_u32() {
+        let mut dex: Vec<u8> = vec![0u8; 0x90];
+        dex[0x38..0x3C].copy_from_slice(&1u32.to_le_bytes());
+        dex[0x3C..0x40].copy_from_slice(&0x70u32.to_le_bytes());
+        dex[0x70..0x74].copy_from_slice(&0x74u32.to_le_bytes());
+        dex[0x74..0x79].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0x1F]);
+        dex[0x79..0x80].fill(0x01);
+        assert_eq!(scan_residual_encrypted_dex_strings(&dex), 0);
+    }
 
     fn build_aarch64_key_so(symbol: &str, key: u16) -> Vec<u8> {
         let mut obj: Object =

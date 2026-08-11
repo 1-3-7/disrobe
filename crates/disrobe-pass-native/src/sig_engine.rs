@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use disrobe_bytes::read_uleb128_at;
 use disrobe_core::byte_search::find as byte_find;
 
 use crate::entropy::{ENTROPY_WINDOW_4K, EntropyBlock, windowed_entropy};
@@ -1701,21 +1702,8 @@ fn rich_compiler_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
 const GO_BUILDINFO_MAGIC: &[u8; 14] = b"\xff Go buildinf:";
 
 fn read_uvarint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
-    let mut value: u64 = 0;
-    let mut shift: u32 = 0;
-    let mut idx: usize = at;
-    loop {
-        let byte: u8 = *bytes.get(idx)?;
-        idx += 1;
-        if shift >= 64 {
-            return None;
-        }
-        value |= u64::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Some((value, idx));
-        }
-        shift += 7;
-    }
+    let (value, consumed): (u64, usize) = read_uleb128_at(bytes, at).ok()?;
+    Some((value, at.checked_add(consumed)?))
 }
 
 fn go_buildinfo_finding(bytes: &[u8], out: &mut Vec<StructFinding>) {
@@ -2433,6 +2421,16 @@ pub use chain_impl::{PASS_ID, SigEngineDetector};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn go_buildinfo_uvarint_rejects_terminal_payload_overflow() {
+        let encoded: [u8; 10] = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+        assert_eq!(read_uvarint(&encoded, 0), None);
+        assert_eq!(
+            read_uvarint(&[0xAA, 0xE5, 0x8E, 0x26], 1),
+            Some((624_485, 4))
+        );
+    }
 
     const UPX_PACKED: &[u8] =
         include_bytes!("../../../corpus/native/packers/upx/hello.packed.nrv2b.exe");
