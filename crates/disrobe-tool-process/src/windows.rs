@@ -1,8 +1,8 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::mem::{size_of, size_of_val};
-use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,7 @@ const OBSERVATION_INTERVAL: Duration = Duration::from_millis(10);
 const TEARDOWN_GRACE: Duration = Duration::from_secs(5);
 const TERMINATION_EXIT_CODE: u32 = 0xffff_fffe;
 const MAX_COMMAND_LINE_UNITS: usize = 32_767;
+const MAX_NORMAL_PROGRAM_PATH_UNITS: usize = 259;
 
 pub(crate) struct ContainedProcess {
     job: OwnedHandle,
@@ -440,9 +441,10 @@ fn prepare_command(
             batch_command_line(executable, args)?,
         )
     } else {
+        let visible_executable: OsString = child_visible_program_path(executable)?;
         (
-            nul_terminated(executable.as_os_str())?,
-            executable_command_line(executable.as_os_str(), args)?,
+            nul_terminated(&visible_executable)?,
+            executable_command_line(&visible_executable, args)?,
         )
     };
     if application.last() != Some(&0) {
@@ -458,6 +460,15 @@ fn prepare_command(
         application,
         command_line,
     })
+}
+
+fn child_visible_program_path(path: &Path) -> Result<OsString, LaunchError> {
+    let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    ensure_units_no_nul(&encoded)?;
+    if encoded.len() > MAX_NORMAL_PROGRAM_PATH_UNITS {
+        return Ok(path.as_os_str().to_os_string());
+    }
+    Ok(OsString::from_wide(&user_path(path)?))
 }
 
 fn executable_command_line(
@@ -767,5 +778,29 @@ fn platform_launch(stage: LaunchStage) -> LaunchError {
     LaunchError::Platform {
         stage,
         source: io::Error::last_os_error(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_program_paths_hide_verbatim_prefix_from_the_child() -> Result<(), LaunchError> {
+        let local: OsString =
+            child_visible_program_path(Path::new(r"\\?\C:\Users\tester\tools\dotnet.exe"))?;
+        let unc: OsString =
+            child_visible_program_path(Path::new(r"\\?\UNC\server\share\tools\dotnet.exe"))?;
+        assert_eq!(local, OsString::from(r"C:\Users\tester\tools\dotnet.exe"));
+        assert_eq!(unc, OsString::from(r"\\server\share\tools\dotnet.exe"));
+        Ok(())
+    }
+
+    #[test]
+    fn long_program_paths_keep_the_verbatim_prefix() -> Result<(), LaunchError> {
+        let path: OsString = OsString::from(format!(r"\\?\C:\{}\tool.exe", "a".repeat(260)));
+        let visible: OsString = child_visible_program_path(Path::new(&path))?;
+        assert_eq!(visible, path);
+        Ok(())
     }
 }
