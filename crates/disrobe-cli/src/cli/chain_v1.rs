@@ -10,6 +10,7 @@ use disrobe_core::anti_analysis::{
     AntiAnalysisFinding, AntiAnalysisReport, ChainEvidence, DefeatStatus,
     Technique as AntiTechnique, scan_with_chain as scan_anti_analysis,
 };
+use disrobe_core::chain::metadata_keys::{self, MetadataValueError, keys};
 use disrobe_core::chain::spec::PassToken;
 use disrobe_core::chain::state_machine::{PassRunner, Verdict};
 use disrobe_core::chain::{
@@ -21,8 +22,6 @@ use disrobe_core::pass::PassContext;
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
 use super::progress_ui::ChainProgress;
-
-use disrobe_core::chain::metadata_keys::keys::ANTI_RECOVERED_TECHNIQUES as ANTI_RECOVERED_TECHNIQUES_KEY;
 
 #[derive(Debug)]
 struct ChainPassRunner<'p> {
@@ -62,14 +61,16 @@ impl PassRunner for ChainPassRunner<'_> {
                 .pass
                 .extract_children_with_context(&artifact, context)
                 .map_err(|e: disrobe_core::error::CoreError| format!("{e}"))?;
-            extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata);
+            extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata)
+                .map_err(|error: MetadataValueError| error.to_string())?;
             OutputKind::mixed_from_children(extracted)
         } else {
             if pick.verdict.pass_id == "wasm.deob"
                 && out_artifact.rung == Rung::Surface
                 && let Ok(extracted) = pick.pass.extract_children_with_context(&artifact, context)
             {
-                extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata);
+                extend_anti_metadata(pick.verdict.pass_id, &extracted, &mut metadata)
+                    .map_err(|error: MetadataValueError| error.to_string())?;
             }
             (initial_kind, Vec::new())
         };
@@ -87,7 +88,11 @@ fn blake3_hash(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
-fn chain_evidence(plan: &ChainPlan) -> ChainEvidence {
+fn metadata_value_report(error: MetadataValueError) -> miette::Report {
+    miette::miette!("DR-CLI-0299: invalid chain metadata: {error}")
+}
+
+fn chain_evidence(plan: &ChainPlan) -> Result<ChainEvidence, MetadataValueError> {
     let mut executed_pass_ids: Vec<String> = Vec::new();
     let mut recovered_format_tags: Vec<String> = Vec::new();
     let mut recovered_techniques: Vec<AntiTechnique> = Vec::new();
@@ -104,7 +109,7 @@ fn chain_evidence(plan: &ChainPlan) -> ChainEvidence {
             if !executed_pass_ids.contains(&owned) {
                 executed_pass_ids.push(owned);
             }
-            for technique in recovered_techniques_for(pass_id, &node.metadata) {
+            for technique in recovered_techniques_for(pass_id, &node.metadata)? {
                 push_unique_technique(&mut recovered_techniques, technique);
             }
         }
@@ -126,34 +131,36 @@ fn chain_evidence(plan: &ChainPlan) -> ChainEvidence {
             }
         }
     }
-    ChainEvidence {
+    Ok(ChainEvidence {
         executed_pass_ids,
         recovered_format_tags,
         recovered_techniques,
-    }
+    })
 }
 
 fn recovered_techniques_for(
     _pass_id: &str,
     metadata: &BTreeMap<String, String>,
-) -> Vec<AntiTechnique> {
+) -> Result<Vec<AntiTechnique>, MetadataValueError> {
     let mut techniques: Vec<AntiTechnique> = Vec::new();
-    let Some(raw): Option<&String> = metadata.get(ANTI_RECOVERED_TECHNIQUES_KEY) else {
-        return techniques;
+    let Some(labels): Option<Vec<&str>> =
+        metadata_keys::get_comma_list(metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY)?
+    else {
+        return Ok(techniques);
     };
-    for label in raw.split(',') {
-        if let Some(technique) = anti_technique_from_label(label.trim()) {
+    for label in labels {
+        if let Some(technique) = anti_technique_from_label(label) {
             push_unique_technique(&mut techniques, technique);
         }
     }
-    techniques
+    Ok(techniques)
 }
 
 fn extend_anti_metadata(
     pass_id: &str,
     children: &[ChildArtifact],
     metadata: &mut BTreeMap<String, String>,
-) {
+) -> Result<(), MetadataValueError> {
     let mut techniques: Vec<AntiTechnique> = Vec::new();
     for child in children {
         match (pass_id, child.handle.relative_path.as_str()) {
@@ -167,15 +174,14 @@ fn extend_anti_metadata(
         }
     }
     if !techniques.is_empty() {
-        metadata.insert(
-            ANTI_RECOVERED_TECHNIQUES_KEY.to_string(),
-            techniques
-                .iter()
-                .map(|t: &AntiTechnique| t.label())
-                .collect::<Vec<&str>>()
-                .join(","),
-        );
+        let labels: Vec<&str> = techniques
+            .iter()
+            .map(|technique: &AntiTechnique| technique.label())
+            .collect();
+        let _previous: Option<String> =
+            metadata_keys::set_comma_list(metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY, &labels)?;
     }
+    Ok(())
 }
 
 fn extend_from_wasm_recovery(bytes: &[u8], techniques: &mut Vec<AntiTechnique>) {
@@ -463,10 +469,11 @@ pub(crate) fn run_with_disk(
         return Err(error);
     }
     progress.finish(&format!("{} pass(es) ran", progress.steps()));
+    let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
     let anti: AntiAnalysisReport = scan_anti_analysis(
         &seed_for_scan,
         Some(&input.display().to_string()),
-        &chain_evidence(&plan),
+        &evidence,
     );
     let delphi: Option<disrobe_pass_native::delphi::DelphiReport> =
         delphi_report_for(&seed_for_scan);
@@ -741,8 +748,8 @@ pub(crate) fn run_chain_to_dir(
     let driver: ChainDriver<'_, ChainPassRunner<'_>> = ChainDriver::new(&registry, &runner, config);
     let seed_for_scan: Vec<u8> = bytes.clone();
     let plan: ChainPlan = driver.run(bytes, &spec, Some(input_label.to_string()));
-    let anti: AntiAnalysisReport =
-        scan_anti_analysis(&seed_for_scan, Some(input_label), &chain_evidence(&plan));
+    let evidence: ChainEvidence = chain_evidence(&plan).map_err(metadata_value_report)?;
+    let anti: AntiAnalysisReport = scan_anti_analysis(&seed_for_scan, Some(input_label), &evidence);
     let doc: ChainDocument = ChainDocument::from_plan(
         &plan,
         &spec,
@@ -1229,8 +1236,9 @@ mod tests {
         let child: ChildArtifact =
             anti_child("wasm.recovery.json", serde_json::to_vec(&report).unwrap());
         let mut metadata: BTreeMap<String, String> = BTreeMap::new();
-        extend_anti_metadata("wasm.deob", &[child], &mut metadata);
-        let techniques: Vec<AntiTechnique> = recovered_techniques_for("wasm.deob", &metadata);
+        extend_anti_metadata("wasm.deob", &[child], &mut metadata).expect("metadata");
+        let techniques: Vec<AntiTechnique> =
+            recovered_techniques_for("wasm.deob", &metadata).expect("techniques");
         assert!(techniques.contains(&AntiTechnique::ControlFlowFlattening));
         assert!(techniques.contains(&AntiTechnique::OpaquePredicate));
         assert!(techniques.contains(&AntiTechnique::StringEncryption));
@@ -1248,9 +1256,9 @@ mod tests {
         });
         let child: ChildArtifact = anti_child("deobf.json", serde_json::to_vec(&report).unwrap());
         let mut metadata: BTreeMap<String, String> = BTreeMap::new();
-        extend_anti_metadata("native.packer-unpack", &[child], &mut metadata);
+        extend_anti_metadata("native.packer-unpack", &[child], &mut metadata).expect("metadata");
         let techniques: Vec<AntiTechnique> =
-            recovered_techniques_for("native.packer-unpack", &metadata);
+            recovered_techniques_for("native.packer-unpack", &metadata).expect("techniques");
         assert!(techniques.contains(&AntiTechnique::ControlFlowFlattening));
         assert!(techniques.contains(&AntiTechnique::OpaquePredicate));
         assert!(techniques.contains(&AntiTechnique::AntiDisassembly));
@@ -1264,12 +1272,18 @@ mod tests {
             language: disrobe_core::Language::Wat,
             formatted: true,
         });
-        node.metadata.insert(
-            ANTI_RECOVERED_TECHNIQUES_KEY.to_string(),
-            "control-flow-flattening,opaque-predicate,string-encryption".to_string(),
-        );
+        let _previous: Option<String> = metadata_keys::set_comma_list(
+            &mut node.metadata,
+            keys::ANTI_RECOVERED_TECHNIQUES_KEY,
+            &[
+                "control-flow-flattening",
+                "opaque-predicate",
+                "string-encryption",
+            ],
+        )
+        .expect("metadata");
         let plan: ChainPlan = linear_plan(vec![node]);
-        let evidence: ChainEvidence = chain_evidence(&plan);
+        let evidence: ChainEvidence = chain_evidence(&plan).expect("chain evidence");
         assert!(
             evidence
                 .recovered_techniques
@@ -1284,6 +1298,46 @@ mod tests {
             evidence
                 .recovered_techniques
                 .contains(&AntiTechnique::StringEncryption)
+        );
+    }
+
+    #[test]
+    fn malformed_metadata_uses_a_distinct_diagnostic_code() {
+        let mut node: Node = leaf_node(0, None, "wasm.deob", b"(module)");
+        node.metadata
+            .insert(keys::ANTI_RECOVERED_TECHNIQUES.to_string(), String::new());
+        let plan: ChainPlan = linear_plan(vec![node]);
+        let report: miette::Report = chain_evidence(&plan)
+            .map_err(metadata_value_report)
+            .expect_err("malformed metadata");
+        let rendered: String = report.to_string();
+        assert!(rendered.starts_with("DR-CLI-0299:"), "{rendered}");
+        assert!(!rendered.contains("DR-CLI-0294"), "{rendered}");
+    }
+
+    #[test]
+    fn chain_json_serializes_nonempty_registered_metadata() {
+        let mut node: Node = leaf_node(0, None, "wasm.deob", b"(module)");
+        let _previous: Option<String> = metadata_keys::set_comma_list(
+            &mut node.metadata,
+            keys::ANTI_RECOVERED_TECHNIQUES_KEY,
+            &["opaque-predicate", "string-encryption"],
+        )
+        .expect("metadata");
+        let plan: ChainPlan = linear_plan(vec![node]);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 8 };
+        let document: ChainDocument =
+            ChainDocument::from_plan(&plan, &spec, "auto:8", "0.10.5", None);
+        let serialized: serde_json::Value = serde_json::to_value(document).expect("chain document");
+        assert_eq!(
+            serialized["nodes"][0]["metadata"][keys::ANTI_RECOVERED_TECHNIQUES],
+            "opaque-predicate,string-encryption"
+        );
+        let encoded_metadata: String =
+            serde_json::to_string(&serialized["nodes"][0]["metadata"]).expect("metadata JSON");
+        assert_eq!(
+            encoded_metadata,
+            r#"{"anti.recovered_techniques":"opaque-predicate,string-encryption"}"#
         );
     }
 

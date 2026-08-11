@@ -68,6 +68,10 @@ The `final/` link prefers a symlink, falls back to an NTFS junction on Windows, 
 
 `chain.json` records the executed pipeline: each pass, its version, the input and output BLAKE3 hashes, the rung transition, byte sizes, and the per-stage verdict. It is the document `disrobe diff` and `disrobe guard verify` operate on (see [Diff and guard tooling](./cli/diff-guard.md)).
 
+Each node includes a `metadata` object whose keys and values are strings. The object is empty when the stage has no metadata. Registered keys use lowercase dotted namespaces. Serialized keys remain in deterministic lexical order.
+
+`anti.recovered_techniques` is a published metadata key. Its value is a nonempty comma-separated list of technique labels with no empty elements, embedded commas, or whitespace around delimiters. The encoded value is limited to 4,096 UTF-8 bytes. An absent key means that the stage reported no recovered technique metadata. An empty or malformed value is an error, not an absent value. The CLI reports malformed metadata as `DR-CLI-0299` before it derives anti-analysis evidence or writes the final chain output.
+
 ## recovery.json: the provenance sidecar
 
 `recovery.json` is the per-run report: each pass's status, a confidence-tier histogram, and timings. Summarize it without reading raw JSON:

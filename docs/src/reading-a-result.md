@@ -10,7 +10,7 @@ Two things before the symptoms. `disrobe` does not emit a recovery it cannot jus
 
 | File | Contents |
 |---|---|
-| `chain.json` | The executed topology, schema `disrobe.chain/v1`. One node per stage with its pass id, input and output BLAKE3, sizes, the detector pick that selected it, a per-stage verdict, and an `error` string when a stage failed. |
+| `chain.json` | The executed topology, schema `disrobe.chain/v1`. One node per stage with its pass id, input and output BLAKE3, sizes, the detector pick that selected it, a per-stage verdict, optional registered string metadata, and an `error` string when a stage failed. |
 | `recovery.json` | The per-run report, schema `disrobe.recovery/v1`. Each stage's status and confidence tier, a tier histogram, and timings. |
 | `anti-analysis.json` | Anti-analysis techniques observed across the run. See [anti-analysis defeat](./anti-analysis.md). |
 
