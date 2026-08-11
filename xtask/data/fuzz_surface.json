@@ -5,13 +5,13 @@
   "totals": {
     "entry_points": 1367,
     "parse_shaped": 569,
-    "coverage_guided_targets_in_tree": 11,
-    "targets_declaring_entry_points": 8,
-    "with_declared_coverage_guided_target": 119,
+    "coverage_guided_targets_in_tree": 12,
+    "targets_declaring_entry_points": 9,
+    "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 619,
     "named_by_a_suite_recording_seed_reach": 126,
-    "named_by_neither": 716
+    "named_by_neither": 715
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -125,7 +125,7 @@
       "crate": "disrobe-core",
       "entry_points": 99,
       "parse_shaped": 15,
-      "with_declared_coverage_guided_target": 11,
+      "with_declared_coverage_guided_target": 12,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 32,
       "named_by_a_suite_recording_seed_reach": 6,
@@ -166,7 +166,6 @@
         "disrobe-core/src/codec/hex.rs::decode_bytes",
         "disrobe-core/src/codec/mod.rs::blind_cascade",
         "disrobe-core/src/codec/mod.rs::cascade_or_wall",
-        "disrobe-core/src/codec/mod.rs::decode_with_custom_b64",
         "disrobe-core/src/codec/mod.rs::nested_container_magic",
         "disrobe-core/src/codec/mod.rs::try_known_custom_b64",
         "disrobe-core/src/codec/web_escape.rs::percent_decode",

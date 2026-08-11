@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::{
+    CustomBase64Alphabet, CustomBase64GroupPolicy, CustomBase64Input, decode_custom_base64,
+};
+
 use crate::error::{Error, Result};
 use crate::obfuscator::string_decode::{
-    apply_permutation, decode_base64_variant, eval_arith_expr, parse_alphabet_table,
-    parse_permutation_table,
+    apply_permutation, eval_arith_expr, parse_alphabet_table, parse_permutation_table,
 };
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
 
@@ -173,6 +176,8 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
 
 fn decode_wearedevs(text: &str) -> Option<PeelResult> {
     let alphabet: BTreeMap<char, u8> = find_alphabet(text)?;
+    let base64_alphabet: CustomBase64Alphabet<'_> =
+        CustomBase64Alphabet::from_character_map(&alphabet)?;
     let array_body: &str = find_string_array(text)?;
     let encoded: Vec<String> = parse_string_literals(array_body);
     if encoded.is_empty() {
@@ -181,7 +186,11 @@ fn decode_wearedevs(text: &str) -> Option<PeelResult> {
     let mut recovered: Vec<String> = Vec::with_capacity(encoded.len());
     let mut decoded_any: bool = false;
     for enc in &encoded {
-        match decode_base64_variant(enc, &alphabet) {
+        match decode_custom_base64(
+            CustomBase64Input::Text(enc),
+            &base64_alphabet,
+            CustomBase64GroupPolicy::DropPartial,
+        ) {
             Some(bytes) if !bytes.is_empty() => {
                 let s: String = String::from_utf8_lossy(&bytes).into_owned();
                 if s.chars()
@@ -849,6 +858,11 @@ fn quote(s: &str) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alphabet_recovery_rejects_duplicate_symbols_before_collapse() {
+        assert!(find_alphabet("local W={A=0;A=1}").is_none());
+    }
 
     #[test]
     fn parse_string_literals_reads_single_quoted_entries() {

@@ -1,6 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use disrobe_core::codec::{Base64Alphabet, Base64Padding, base64_decode};
+use disrobe_core::codec::{
+    Base64Alphabet, Base64Padding, CustomBase64Alphabet, CustomBase64GroupPolicy,
+    CustomBase64Input, base64_decode, decode_custom_base64,
+};
 
 struct ArithParser<'a> {
     bytes: &'a [u8],
@@ -388,6 +391,7 @@ pub fn parse_lua_string_literals(body: &str) -> Vec<String> {
 #[must_use]
 pub fn parse_alphabet_table(table_body: &str) -> Option<BTreeMap<char, u8>> {
     let mut map: BTreeMap<char, u8> = BTreeMap::new();
+    let mut seen: BTreeSet<char> = BTreeSet::new();
     for entry in split_top_level(table_body) {
         let entry: &str = entry.trim();
         if entry.is_empty() {
@@ -408,6 +412,9 @@ pub fn parse_alphabet_table(table_body: &str) -> Option<BTreeMap<char, u8>> {
                 continue;
             }
         };
+        if !seen.insert(key_char) {
+            return None;
+        }
         let value: i64 = eval_arith_expr(value_part)?;
         if (0..85).contains(&value) {
             map.insert(key_char, value as u8);
@@ -619,34 +626,12 @@ pub fn apply_permutation<T>(pool: &mut [T], pairs: &[(usize, usize)]) {
 
 #[must_use]
 pub fn decode_base64_variant(input: &str, alphabet: &BTreeMap<char, u8>) -> Option<Vec<u8>> {
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3 / 4 + 3);
-    let mut acc: u32 = 0;
-    let mut count: u32 = 0;
-    let mut pad: u32 = 0;
-    for ch in input.chars() {
-        if ch == '=' {
-            acc = acc.checked_shl(6)?;
-            count += 1;
-            pad += 1;
-        } else {
-            let v: u8 = *alphabet.get(&ch)?;
-            acc = (acc << 6) | u32::from(v);
-            count += 1;
-        }
-        if count == 4 {
-            out.push(((acc >> 16) & 0xFF) as u8);
-            if pad < 2 {
-                out.push(((acc >> 8) & 0xFF) as u8);
-            }
-            if pad < 1 {
-                out.push((acc & 0xFF) as u8);
-            }
-            acc = 0;
-            count = 0;
-            pad = 0;
-        }
-    }
-    Some(out)
+    let alphabet: CustomBase64Alphabet<'_> = CustomBase64Alphabet::from_character_map(alphabet)?;
+    decode_custom_base64(
+        CustomBase64Input::Text(input),
+        &alphabet,
+        CustomBase64GroupPolicy::DropPartial,
+    )
 }
 
 #[must_use]
@@ -1067,6 +1052,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_alphabet_table_rejects_duplicate_symbols_before_collapse() {
+        assert!(parse_alphabet_table("A=0;A=1").is_none());
+    }
+
+    #[test]
+    fn parse_alphabet_table_rejects_duplicate_symbols_before_value_filtering() {
+        assert!(parse_alphabet_table("A=0;A=100").is_none());
+        assert!(parse_alphabet_table("A=-1;A=1").is_none());
+    }
+
+    #[test]
+    fn prometheus_alphabet_discovery_rejects_a_duplicate_full_mapping() {
+        let symbols: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut entries: Vec<String> = symbols
+            .chars()
+            .enumerate()
+            .map(|(value, symbol): (usize, char)| format!("[\"{symbol}\"]={value}"))
+            .collect();
+        entries.push("[\"A\"]=0".to_owned());
+        let source: String = format!("local A={{{}}}", entries.join(";"));
+        assert!(discover_base64_alphabets(&source).is_empty());
+    }
+
+    #[test]
+    fn prometheus_alphabet_discovery_rejects_an_invalid_duplicate_full_mapping() {
+        let symbols: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut entries: Vec<String> = symbols
+            .chars()
+            .enumerate()
+            .map(|(value, symbol): (usize, char)| format!("[\"{symbol}\"]={value}"))
+            .collect();
+        entries.push("[\"A\"]=64".to_owned());
+        let source: String = format!("local A={{{}}}", entries.join(";"));
+        assert!(discover_base64_alphabets(&source).is_empty());
+    }
+
+    #[test]
     fn base64_variant_standard_alphabet_decodes() {
         let std_alpha: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut map: BTreeMap<char, u8> = BTreeMap::new();
@@ -1086,6 +1108,18 @@ mod tests {
         }
         let decoded: Vec<u8> = decode_base64_variant("TWE=", &map).expect("decode");
         assert_eq!(&decoded, b"Ma");
+    }
+
+    #[test]
+    fn base64_variant_public_wrapper_preserves_legacy_group_policy() {
+        let std_alpha: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut map: BTreeMap<char, u8> = BTreeMap::new();
+        for (i, ch) in std_alpha.chars().enumerate() {
+            map.insert(ch, i as u8);
+        }
+        assert_eq!(decode_base64_variant("AA=A", &map), Some(vec![0, 0]));
+        assert_eq!(decode_base64_variant("TWE", &map), Some(Vec::new()));
+        assert_eq!(decode_base64_variant("TW E=", &map), None);
     }
 
     #[test]

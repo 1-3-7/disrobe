@@ -8,6 +8,8 @@ pub mod framed;
 pub mod hex;
 pub mod web_escape;
 
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 pub use aes_cbc::{CbcPadding, aes_cbc_decrypt};
@@ -400,28 +402,288 @@ fn custom_b64_crib_sniff(data: &[u8]) -> Option<&'static str> {
     None
 }
 
-pub fn decode_with_custom_b64(input: &[u8], alphabet: &[u8; 64]) -> Option<Vec<u8>> {
-    let mut table: [Option<u8>; 256] = [None; 256];
-    for (i, &ch) in alphabet.iter().enumerate() {
-        table[ch as usize] = Some(i as u8);
-    }
-    let mut out: Vec<u8> = Vec::with_capacity(input.len() * 3 / 4 + 1);
-    let mut buf: u32 = 0;
-    let mut bits: u32 = 0;
-    for &ch in input {
-        if ch == b'=' || ch == b'\n' || ch == b'\r' {
-            continue;
+const CUSTOM_BASE64_UNMAPPED: u8 = u8::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomBase64GroupPolicy {
+    KeepPartial,
+    DropPartial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomBase64Input<'a> {
+    Bytes(&'a [u8]),
+    Text(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CustomBase64AlphabetKind<'a> {
+    ByteTable(Box<[u8; 256]>),
+    BorrowedCharacterMap(&'a BTreeMap<char, u8>),
+    OwnedCharacterMap(BTreeMap<char, u8>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomBase64Alphabet<'a> {
+    kind: CustomBase64AlphabetKind<'a>,
+}
+
+impl CustomBase64Alphabet<'static> {
+    fn from_legacy_byte_symbols(symbols: &[u8; 64]) -> Self {
+        let mut table: [u8; 256] = [CUSTOM_BASE64_UNMAPPED; 256];
+        for (value, symbol) in symbols.iter().copied().enumerate() {
+            table[usize::from(symbol)] = value as u8;
         }
-        let val: u32 = table[ch as usize]? as u32;
-        buf = (buf << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-            buf &= (1 << bits) - 1;
+        Self {
+            kind: CustomBase64AlphabetKind::ByteTable(Box::new(table)),
         }
     }
-    Some(out)
+
+    fn from_byte_entries(entries: impl IntoIterator<Item = (u8, u8)>) -> Option<Self> {
+        let mut table: [u8; 256] = [CUSTOM_BASE64_UNMAPPED; 256];
+        let mut count: usize = 0;
+        for (symbol, value) in entries {
+            if count >= 64 {
+                return None;
+            }
+            if symbol == b'=' || value >= 64 {
+                return None;
+            }
+            let slot: &mut u8 = &mut table[usize::from(symbol)];
+            if *slot != CUSTOM_BASE64_UNMAPPED {
+                return None;
+            }
+            *slot = value;
+            count = count.checked_add(1)?;
+        }
+        if count == 0 {
+            return None;
+        }
+        Some(Self {
+            kind: CustomBase64AlphabetKind::ByteTable(Box::new(table)),
+        })
+    }
+
+    #[must_use]
+    pub fn from_byte_symbols(symbols: &[u8; 64]) -> Option<Self> {
+        Self::from_byte_entries(
+            symbols
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(value, symbol): (usize, u8)| (symbol, value as u8)),
+        )
+    }
+
+    #[must_use]
+    pub fn from_byte_pairs(pairs: &[(u8, u8)]) -> Option<Self> {
+        Self::from_byte_entries(pairs.iter().copied())
+    }
+
+    #[must_use]
+    pub fn from_char_symbols(symbols: &[char]) -> Option<Self> {
+        if symbols.len() != 64 {
+            return None;
+        }
+        let mut map: BTreeMap<char, u8> = BTreeMap::new();
+        for (value, symbol) in symbols.iter().copied().enumerate() {
+            if symbol == '=' {
+                return None;
+            }
+            if map.insert(symbol, value as u8).is_some() {
+                return None;
+            }
+        }
+        Some(Self {
+            kind: CustomBase64AlphabetKind::OwnedCharacterMap(map),
+        })
+    }
+}
+
+impl<'a> CustomBase64Alphabet<'a> {
+    #[must_use]
+    pub fn from_character_map(map: &'a BTreeMap<char, u8>) -> Option<Self> {
+        if map.is_empty()
+            || map.len() > 64
+            || map.contains_key(&'=')
+            || map.values().any(|value: &u8| *value >= 64)
+        {
+            return None;
+        }
+        Some(Self {
+            kind: CustomBase64AlphabetKind::BorrowedCharacterMap(map),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomBase64Symbol {
+    Value(u8),
+    Padding,
+    Ignored,
+}
+
+struct CustomBase64Decoder {
+    policy: CustomBase64GroupPolicy,
+    output: Vec<u8>,
+    accumulator: u32,
+    symbols: u32,
+    padding: u32,
+}
+
+impl CustomBase64Decoder {
+    fn new(policy: CustomBase64GroupPolicy, input_bytes: usize) -> Option<Self> {
+        let complete_capacity: usize = (input_bytes / 4).checked_mul(3)?;
+        let partial_capacity: usize = (input_bytes % 4).checked_mul(6)? / 8;
+        let capacity: usize = complete_capacity.checked_add(partial_capacity)?;
+        let mut output: Vec<u8> = Vec::new();
+        output.try_reserve_exact(capacity).ok()?;
+        Some(Self {
+            policy,
+            output,
+            accumulator: 0,
+            symbols: 0,
+            padding: 0,
+        })
+    }
+
+    fn push(&mut self, symbol: CustomBase64Symbol) -> Option<()> {
+        match self.policy {
+            CustomBase64GroupPolicy::KeepPartial => self.push_partial(symbol),
+            CustomBase64GroupPolicy::DropPartial => self.push_group(symbol),
+        }
+    }
+
+    fn push_partial(&mut self, symbol: CustomBase64Symbol) -> Option<()> {
+        let CustomBase64Symbol::Value(value) = symbol else {
+            return Some(());
+        };
+        self.accumulator = self.accumulator.checked_shl(6)? | u32::from(value);
+        self.symbols += 6;
+        if self.symbols >= 8 {
+            self.symbols -= 8;
+            self.output.push((self.accumulator >> self.symbols) as u8);
+            self.accumulator &= (1u32 << self.symbols) - 1;
+        }
+        Some(())
+    }
+
+    fn push_group(&mut self, symbol: CustomBase64Symbol) -> Option<()> {
+        match symbol {
+            CustomBase64Symbol::Value(value) => {
+                self.accumulator = self.accumulator.checked_shl(6)? | u32::from(value);
+            }
+            CustomBase64Symbol::Padding => {
+                self.accumulator = self.accumulator.checked_shl(6)?;
+                self.padding += 1;
+            }
+            CustomBase64Symbol::Ignored => return None,
+        }
+        self.symbols += 1;
+        if self.symbols == 4 {
+            self.output.push((self.accumulator >> 16) as u8);
+            if self.padding < 2 {
+                self.output.push((self.accumulator >> 8) as u8);
+            }
+            if self.padding < 1 {
+                self.output.push(self.accumulator as u8);
+            }
+            self.accumulator = 0;
+            self.symbols = 0;
+            self.padding = 0;
+        }
+        Some(())
+    }
+}
+
+fn byte_symbol(
+    byte: u8,
+    table: &[u8; 256],
+    policy: CustomBase64GroupPolicy,
+) -> Option<CustomBase64Symbol> {
+    if byte == b'=' {
+        return Some(CustomBase64Symbol::Padding);
+    }
+    if matches!(policy, CustomBase64GroupPolicy::KeepPartial) && matches!(byte, b'\n' | b'\r') {
+        return Some(CustomBase64Symbol::Ignored);
+    }
+    let value: u8 = table[usize::from(byte)];
+    (value != CUSTOM_BASE64_UNMAPPED).then_some(CustomBase64Symbol::Value(value))
+}
+
+fn character_symbol(
+    character: char,
+    map: &BTreeMap<char, u8>,
+    policy: CustomBase64GroupPolicy,
+) -> Option<CustomBase64Symbol> {
+    if character == '=' {
+        return Some(CustomBase64Symbol::Padding);
+    }
+    if let Some(value) = map.get(&character) {
+        return Some(CustomBase64Symbol::Value(*value));
+    }
+    if matches!(policy, CustomBase64GroupPolicy::KeepPartial) && matches!(character, '\n' | '\r') {
+        return Some(CustomBase64Symbol::Ignored);
+    }
+    None
+}
+
+#[must_use]
+pub fn decode_custom_base64(
+    input: CustomBase64Input<'_>,
+    alphabet: &CustomBase64Alphabet<'_>,
+    policy: CustomBase64GroupPolicy,
+) -> Option<Vec<u8>> {
+    let input_bytes: usize = match input {
+        CustomBase64Input::Bytes(bytes) => bytes.len(),
+        CustomBase64Input::Text(text) => text.len(),
+    };
+    let mut decoder: CustomBase64Decoder = CustomBase64Decoder::new(policy, input_bytes)?;
+    match (&alphabet.kind, input) {
+        (CustomBase64AlphabetKind::ByteTable(table), CustomBase64Input::Bytes(bytes)) => {
+            for byte in bytes.iter().copied() {
+                decoder.push(byte_symbol(byte, table, policy)?)?;
+            }
+        }
+        (CustomBase64AlphabetKind::ByteTable(table), CustomBase64Input::Text(text)) => {
+            for byte in text.bytes() {
+                decoder.push(byte_symbol(byte, table, policy)?)?;
+            }
+        }
+        (CustomBase64AlphabetKind::BorrowedCharacterMap(map), CustomBase64Input::Text(text)) => {
+            for character in text.chars() {
+                decoder.push(character_symbol(character, map, policy)?)?;
+            }
+        }
+        (CustomBase64AlphabetKind::OwnedCharacterMap(map), CustomBase64Input::Text(text)) => {
+            for character in text.chars() {
+                decoder.push(character_symbol(character, map, policy)?)?;
+            }
+        }
+        (CustomBase64AlphabetKind::BorrowedCharacterMap(map), CustomBase64Input::Bytes(bytes)) => {
+            let text: &str = std::str::from_utf8(bytes).ok()?;
+            for character in text.chars() {
+                decoder.push(character_symbol(character, map, policy)?)?;
+            }
+        }
+        (CustomBase64AlphabetKind::OwnedCharacterMap(map), CustomBase64Input::Bytes(bytes)) => {
+            let text: &str = std::str::from_utf8(bytes).ok()?;
+            for character in text.chars() {
+                decoder.push(character_symbol(character, map, policy)?)?;
+            }
+        }
+    }
+    Some(decoder.output)
+}
+
+pub fn decode_with_custom_b64(input: &[u8], symbols: &[u8; 64]) -> Option<Vec<u8>> {
+    let alphabet: CustomBase64Alphabet<'static> =
+        CustomBase64Alphabet::from_legacy_byte_symbols(symbols);
+    decode_custom_base64(
+        CustomBase64Input::Bytes(input),
+        &alphabet,
+        CustomBase64GroupPolicy::KeepPartial,
+    )
 }
 
 #[must_use]
@@ -617,6 +879,412 @@ mod tests {
     fn custom_b64_decode_rejects_out_of_alphabet() {
         let result: Option<Vec<u8>> = decode_with_custom_b64(b"ABC!@#", DARKGATE_ALPHA_V1);
         assert!(result.is_none());
+    }
+
+    fn standard_custom_alphabet() -> CustomBase64Alphabet<'static> {
+        CustomBase64Alphabet::from_byte_symbols(
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+        )
+        .expect("unique alphabet")
+    }
+
+    #[test]
+    fn strict_custom_base64_defines_partial_and_padding_groups() {
+        let alphabet: CustomBase64Alphabet<'static> = standard_custom_alphabet();
+        for input in ["T", "TW", "TWE"] {
+            let decoded: Vec<u8> = decode_custom_base64(
+                CustomBase64Input::Text(input),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            )
+            .expect("mapped symbols");
+            assert!(decoded.is_empty(), "incomplete group {input:?}");
+        }
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("TWE="),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(b"Ma".to_vec())
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("AA=A"),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(vec![0, 0])
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("AAAA===="),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(vec![0, 0, 0, 0])
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("===="),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(vec![0])
+        );
+    }
+
+    #[test]
+    fn strict_custom_base64_rejects_unmapped_whitespace() {
+        let alphabet: CustomBase64Alphabet<'static> = standard_custom_alphabet();
+        for input in ["TW\nE=", "TW\rE=", "TW E="] {
+            assert_eq!(
+                decode_custom_base64(
+                    CustomBase64Input::Text(input),
+                    &alphabet,
+                    CustomBase64GroupPolicy::DropPartial,
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn strict_custom_base64_accepts_partial_maps_and_mapped_whitespace() {
+        let map: BTreeMap<char, u8> = [('A', 0), ('B', 1), (' ', 2), ('D', 3)]
+            .into_iter()
+            .collect();
+        let alphabet: CustomBase64Alphabet<'_> =
+            CustomBase64Alphabet::from_character_map(&map).expect("bounded map");
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("AB D"),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(vec![0, 16, 131])
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("ABCE"),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn keep_partial_preserves_mapped_newline_and_carriage_return() {
+        let map: BTreeMap<char, u8> = [('A', 0), ('\n', 63), ('\r', 1)].into_iter().collect();
+        let alphabet: CustomBase64Alphabet<'_> =
+            CustomBase64Alphabet::from_character_map(&map).expect("mapped whitespace alphabet");
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("\nA"),
+                &alphabet,
+                CustomBase64GroupPolicy::KeepPartial,
+            ),
+            Some(vec![252])
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text("\rA"),
+                &alphabet,
+                CustomBase64GroupPolicy::KeepPartial,
+            ),
+            Some(vec![4])
+        );
+    }
+
+    #[test]
+    fn strict_custom_base64_accepts_valid_partial_byte_pairs() {
+        let pairs: [(u8, u8); 4] = [(b'T', 19), (b'W', 22), (b'E', 4), (b'F', 5)];
+        let alphabet: CustomBase64Alphabet<'static> =
+            CustomBase64Alphabet::from_byte_pairs(&pairs).expect("partial byte alphabet");
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Bytes(b"TWE="),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(b"Ma".to_vec())
+        );
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Bytes(b"TWG="),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn partial_byte_pairs_reject_empty_duplicate_reserved_and_out_of_range_entries() {
+        assert!(CustomBase64Alphabet::from_byte_pairs(&[]).is_none());
+        assert!(CustomBase64Alphabet::from_byte_pairs(&[(b'A', 0), (b'A', 1)]).is_none());
+        assert!(CustomBase64Alphabet::from_byte_pairs(&[(b'=', 0)]).is_none());
+        assert!(CustomBase64Alphabet::from_byte_pairs(&[(b'A', 64)]).is_none());
+    }
+
+    #[test]
+    fn custom_base64_partial_alphabets_bound_each_constructor_at_sixty_four_symbols() {
+        let exact_byte_pairs: Vec<(u8, u8)> = (0u8..64)
+            .map(|value: u8| (value.wrapping_add(65), value))
+            .collect();
+        let exact_byte_alphabet: Option<CustomBase64Alphabet<'static>> =
+            CustomBase64Alphabet::from_byte_pairs(&exact_byte_pairs);
+        assert!(exact_byte_alphabet.is_some());
+        let mut oversized_byte_pairs: Vec<(u8, u8)> = exact_byte_pairs.clone();
+        oversized_byte_pairs.push((129, 0));
+        let oversized_byte_alphabet: Option<CustomBase64Alphabet<'static>> =
+            CustomBase64Alphabet::from_byte_pairs(&oversized_byte_pairs);
+        assert!(oversized_byte_alphabet.is_none());
+
+        let symbols: Vec<char> = (0..65u32)
+            .map(|offset: u32| char::from_u32(0x1000 + offset).expect("valid scalar"))
+            .collect();
+        let exact_char_alphabet: Option<CustomBase64Alphabet<'static>> =
+            CustomBase64Alphabet::from_char_symbols(&symbols[..64]);
+        assert!(exact_char_alphabet.is_some());
+        let oversized_char_alphabet: Option<CustomBase64Alphabet<'static>> =
+            CustomBase64Alphabet::from_char_symbols(&symbols);
+        assert!(oversized_char_alphabet.is_none());
+
+        let exact_map: BTreeMap<char, u8> = symbols[..64]
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(value, symbol): (usize, char)| (symbol, value as u8))
+            .collect();
+        let exact_map_alphabet: Option<CustomBase64Alphabet<'_>> =
+            CustomBase64Alphabet::from_character_map(&exact_map);
+        assert!(exact_map_alphabet.is_some());
+        let mut oversized_map: BTreeMap<char, u8> = exact_map.clone();
+        oversized_map.insert(symbols[64], 0);
+        let oversized_map_alphabet: Option<CustomBase64Alphabet<'_>> =
+            CustomBase64Alphabet::from_character_map(&oversized_map);
+        assert!(oversized_map_alphabet.is_none());
+    }
+
+    #[test]
+    fn custom_base64_alphabet_refuses_duplicate_symbols() {
+        let mut bytes: [u8; 64] =
+            *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        bytes[63] = bytes[0];
+        assert!(CustomBase64Alphabet::from_byte_symbols(&bytes).is_none());
+
+        let mut chars: Vec<char> = (0..64u32)
+            .map(|offset: u32| char::from_u32(0x1000 + offset).expect("valid scalar"))
+            .collect();
+        chars[63] = chars[0];
+        assert!(CustomBase64Alphabet::from_char_symbols(&chars).is_none());
+    }
+
+    #[test]
+    fn custom_base64_alphabet_refuses_the_reserved_padding_symbol() {
+        let mut bytes: [u8; 64] =
+            *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        bytes[63] = b'=';
+        assert!(CustomBase64Alphabet::from_byte_symbols(&bytes).is_none());
+
+        let map: BTreeMap<char, u8> = [('=', 0), ('A', 1)].into_iter().collect();
+        assert!(CustomBase64Alphabet::from_character_map(&map).is_none());
+    }
+
+    #[test]
+    fn custom_base64_character_alphabet_decodes_multibyte_symbols() {
+        let chars: Vec<char> = (0..64u32)
+            .map(|offset: u32| char::from_u32(0x1f300 + offset).expect("valid scalar"))
+            .collect();
+        let alphabet: CustomBase64Alphabet<'static> =
+            CustomBase64Alphabet::from_char_symbols(&chars).expect("unique alphabet");
+        let encoded: String = [chars[19], chars[22], chars[5], chars[46]]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            decode_custom_base64(
+                CustomBase64Input::Text(&encoded),
+                &alphabet,
+                CustomBase64GroupPolicy::DropPartial,
+            ),
+            Some(b"Man".to_vec())
+        );
+    }
+
+    #[test]
+    fn custom_base64_random_inputs_and_alphabets_never_panic() {
+        let standard: [u8; 64] =
+            *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        for length in 0..512usize {
+            let mut symbols: [u8; 64] = standard;
+            for index in (1..symbols.len()).rev() {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                symbols.swap(index, (state as usize) % (index + 1));
+            }
+            let alphabet: CustomBase64Alphabet<'static> =
+                CustomBase64Alphabet::from_byte_symbols(&symbols).expect("permutation");
+            let input: Vec<u8> = (0..length)
+                .map(|_: usize| {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    (state >> 56) as u8
+                })
+                .collect();
+            for policy in [
+                CustomBase64GroupPolicy::KeepPartial,
+                CustomBase64GroupPolicy::DropPartial,
+            ] {
+                let _: Option<Vec<u8>> =
+                    decode_custom_base64(CustomBase64Input::Bytes(&input), &alphabet, policy);
+            }
+        }
+    }
+
+    #[test]
+    fn custom_base64_decodes_multimegabyte_input_with_linear_output() {
+        let alphabet: CustomBase64Alphabet<'static> = standard_custom_alphabet();
+        let input: Vec<u8> = vec![b'A'; 2 * 1_024 * 1_024];
+        let decoded: Vec<u8> = decode_custom_base64(
+            CustomBase64Input::Bytes(&input),
+            &alphabet,
+            CustomBase64GroupPolicy::DropPartial,
+        )
+        .expect("bounded decode");
+        assert_eq!(decoded.len(), 3 * input.len() / 4);
+        assert!(decoded.iter().all(|byte: &u8| *byte == 0));
+    }
+
+    #[test]
+    fn keep_partial_matches_the_previous_byte_decoder() {
+        fn reference(input: &[u8], symbols: &[u8; 64]) -> Option<Vec<u8>> {
+            let mut table: [Option<u8>; 256] = [None; 256];
+            for (value, symbol) in symbols.iter().copied().enumerate() {
+                table[usize::from(symbol)] = Some(value as u8);
+            }
+            let mut output: Vec<u8> = Vec::new();
+            let mut accumulator: u32 = 0;
+            let mut bits: u32 = 0;
+            for byte in input.iter().copied() {
+                if matches!(byte, b'=' | b'\n' | b'\r') {
+                    continue;
+                }
+                accumulator = (accumulator << 6) | u32::from(table[usize::from(byte)]?);
+                bits += 6;
+                if bits >= 8 {
+                    bits -= 8;
+                    output.push((accumulator >> bits) as u8);
+                    accumulator &= (1u32 << bits) - 1;
+                }
+            }
+            Some(output)
+        }
+
+        let mut state: u64 = 0xd1b5_4a32_d192_ed03;
+        for case in 0..1_024usize {
+            let mut symbols: [u8; 64] = [0; 64];
+            for symbol in &mut symbols {
+                state = state
+                    .wrapping_mul(2_862_933_555_777_941_757)
+                    .wrapping_add(3_037_000_493);
+                *symbol = (state >> 56) as u8;
+            }
+            if case % 3 == 0 {
+                symbols[case % symbols.len()] = b'=';
+            }
+            if case % 5 == 0 {
+                symbols[63] = symbols[0];
+            }
+            let length: usize = case % 257;
+            let input: Vec<u8> = (0..length)
+                .map(|_: usize| {
+                    state = state
+                        .wrapping_mul(2_862_933_555_777_941_757)
+                        .wrapping_add(3_037_000_493);
+                    match state as usize % 67 {
+                        index @ 0..64 => symbols[index],
+                        64 => b'=',
+                        65 => b'\n',
+                        _ => b'\r',
+                    }
+                })
+                .collect();
+            assert_eq!(
+                decode_with_custom_b64(&input, &symbols),
+                reference(&input, &symbols),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_partial_matches_the_previous_character_decoder() {
+        fn reference(input: &str, alphabet: &BTreeMap<char, u8>) -> Option<Vec<u8>> {
+            let mut output: Vec<u8> = Vec::new();
+            let mut accumulator: u32 = 0;
+            let mut count: u32 = 0;
+            let mut padding: u32 = 0;
+            for character in input.chars() {
+                if character == '=' {
+                    accumulator = accumulator.checked_shl(6)?;
+                    padding += 1;
+                } else {
+                    accumulator =
+                        accumulator.checked_shl(6)? | u32::from(*alphabet.get(&character)?);
+                }
+                count += 1;
+                if count == 4 {
+                    output.push((accumulator >> 16) as u8);
+                    if padding < 2 {
+                        output.push((accumulator >> 8) as u8);
+                    }
+                    if padding < 1 {
+                        output.push(accumulator as u8);
+                    }
+                    accumulator = 0;
+                    count = 0;
+                    padding = 0;
+                }
+            }
+            Some(output)
+        }
+
+        let characters: Vec<char> = (0..64u32)
+            .map(|offset: u32| char::from_u32(0x1f300 + offset).expect("valid scalar"))
+            .collect();
+        let map: BTreeMap<char, u8> = characters
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(value, character): (usize, char)| (character, value as u8))
+            .collect();
+        let alphabet: CustomBase64Alphabet<'_> =
+            CustomBase64Alphabet::from_character_map(&map).expect("unique alphabet");
+        let choices: Vec<char> = characters.iter().copied().chain(['=']).collect();
+        let mut state: u64 = 0xa076_1d64_78bd_642f;
+        for length in 0..1_024usize {
+            let input: String = (0..length)
+                .map(|_: usize| {
+                    state = state
+                        .wrapping_mul(3_202_034_522_624_059_733)
+                        .wrapping_add(1);
+                    choices[(state as usize) % choices.len()]
+                })
+                .collect();
+            assert_eq!(
+                decode_custom_base64(
+                    CustomBase64Input::Text(&input),
+                    &alphabet,
+                    CustomBase64GroupPolicy::DropPartial,
+                ),
+                reference(&input, &map)
+            );
+        }
     }
 
     #[test]

@@ -56,6 +56,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "custom_base64"
+path = "fuzz_targets/custom_base64.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "container_dispatch"
 path = "fuzz_targets/container_dispatch.rs"
 test = false

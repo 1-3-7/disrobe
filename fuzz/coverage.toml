@@ -1,6 +1,12 @@
 declaration = "fuzz target to parse entry point mapping, validated by the parse-surface inventory"
 
 [[target]]
+name = "custom_base64.rs"
+entry_points = [
+  "disrobe-core/src/codec/mod.rs::decode_with_custom_b64",
+]
+
+[[target]]
 name = "cil_metadata.rs"
 entry_points = [
   "disrobe-nir-lift/src/cil.rs::lift_pe",

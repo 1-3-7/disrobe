@@ -1,10 +1,14 @@
 use std::collections::BTreeMap;
 
+use disrobe_core::codec::{
+    CustomBase64Alphabet, CustomBase64GroupPolicy, CustomBase64Input, decode_custom_base64,
+};
+
 use crate::error::{Error, Result};
 use crate::obfuscator::string_decode::{
-    apply_segment_reversals, decode_base64_variant, decode_base85_variant,
-    discover_base64_alphabets, discover_base85_alphabets, extract_named_table_body,
-    first_wrapped_table_name, parse_constarray_rotation, parse_lua_string_literals,
+    apply_segment_reversals, decode_base85_variant, discover_base64_alphabets,
+    discover_base85_alphabets, extract_named_table_body, first_wrapped_table_name,
+    parse_constarray_rotation, parse_lua_string_literals,
 };
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
 
@@ -218,7 +222,14 @@ fn decode_string_pool(text: &str) -> Option<PeelResult> {
     if encoded.is_empty() {
         return None;
     }
-    let base64: Vec<(char, BTreeMap<char, u8>)> = discover_base64_alphabets(text);
+    let base64_maps: Vec<(char, BTreeMap<char, u8>)> = discover_base64_alphabets(text);
+    let base64: Vec<(char, CustomBase64Alphabet<'_>)> = base64_maps
+        .iter()
+        .filter_map(|(name, map): &(char, BTreeMap<char, u8>)| {
+            CustomBase64Alphabet::from_character_map(map)
+                .map(|alphabet: CustomBase64Alphabet<'_>| (*name, alphabet))
+        })
+        .collect();
     let base85: Vec<(char, BTreeMap<char, u8>)> = discover_base85_alphabets(text);
     if base64.is_empty() && base85.is_empty() {
         return None;
@@ -300,7 +311,7 @@ enum Encoding {
 
 fn decode_pool_entry(
     enc: &str,
-    base64: &[(char, BTreeMap<char, u8>)],
+    base64: &[(char, CustomBase64Alphabet<'_>)],
     base85: &[(char, BTreeMap<char, u8>)],
 ) -> Option<(String, Encoding)> {
     let mut chars: core::str::Chars<'_> = enc.chars();
@@ -309,8 +320,12 @@ fn decode_pool_entry(
     if body.is_empty() {
         return None;
     }
-    for (_name, alpha) in base64 {
-        let Some(bytes): Option<Vec<u8>> = decode_base64_variant(body, alpha) else {
+    for (_name, alphabet) in base64 {
+        let Some(bytes): Option<Vec<u8>> = decode_custom_base64(
+            CustomBase64Input::Text(body),
+            alphabet,
+            CustomBase64GroupPolicy::DropPartial,
+        ) else {
             continue;
         };
         if !bytes.is_empty() && is_plausible_plaintext(&bytes) {
