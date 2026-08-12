@@ -1,8 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
+use crate::packers::pe_sections::{PeImage, PeSection, parse_pe_image};
+
+const MAX_AUDITABLE_COMPRESSED_BYTES: usize = 4 * 1024 * 1024;
+const MAX_AUDITABLE_DECOMPRESSED_BYTES: usize = 16 * 1024 * 1024;
+const MAX_AUDITABLE_PACKAGES: usize = 16_384;
+const MAX_AUDITABLE_PACKAGE_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_AUDITABLE_JSON_DEPTH: usize = 32;
+const MAX_AUDITABLE_JSON_CONTAINER_ENTRIES: usize = 65_536;
+const MAX_AUDITABLE_JSON_WORK_ITEMS: usize = 1_048_576;
+const MAX_AUDITABLE_JSON_STRING_BYTES: usize = 9 * 1024 * 1024;
+const MAX_AUDITABLE_JSON_ESCAPED_STRING_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DemangledSymbol {
@@ -230,47 +243,1013 @@ pub struct AuditableCrate {
     pub source: Option<String>,
 }
 
+fn parse_pe_auditable_section(bytes: &[u8]) -> Result<AuditableSbom> {
+    let image: PeImage = parse_pe_image(bytes)?;
+    let section: &PeSection = image
+        .section_by_name(b".dep-v0")
+        .ok_or_else(|| Error::SignatureDb("PE image has no .dep-v0 section".to_owned()))?;
+    let section_bytes: usize = if section.virtual_size == 0 {
+        section.raw_size as usize
+    } else {
+        section.virtual_size.min(section.raw_size) as usize
+    };
+    if section_bytes > MAX_AUDITABLE_COMPRESSED_BYTES {
+        return Err(Error::SignatureDb(format!(
+            ".dep-v0 compressed payload is {section_bytes} bytes, exceeding the {MAX_AUDITABLE_COMPRESSED_BYTES}-byte limit"
+        )));
+    }
+    let start: usize = section.raw_pointer as usize;
+    let end: usize = start
+        .checked_add(section_bytes)
+        .ok_or_else(|| Error::SignatureDb(".dep-v0 section byte range overflowed".to_owned()))?;
+    let compressed: &[u8] = bytes.get(start..end).ok_or(Error::Truncated {
+        needed: end,
+        had: bytes.len(),
+    })?;
+    let mut decoder: flate2::read::ZlibDecoder<&[u8]> = flate2::read::ZlibDecoder::new(compressed);
+    let allocation_limit: usize = MAX_AUDITABLE_DECOMPRESSED_BYTES
+        .checked_add(1)
+        .ok_or_else(|| Error::SignatureDb("auditable output limit overflowed".to_owned()))?;
+    let read_limit: u64 = u64::try_from(allocation_limit)
+        .map_err(|_| Error::SignatureDb("auditable output limit cannot fit u64".to_owned()))?;
+    let mut decompressed: Vec<u8> = Vec::new();
+    decompressed
+        .try_reserve_exact(allocation_limit)
+        .map_err(|_| {
+            Error::SignatureDb(format!(
+                ".dep-v0 output allocation of {allocation_limit} bytes failed"
+            ))
+        })?;
+    decoder
+        .by_ref()
+        .take(read_limit)
+        .read_to_end(&mut decompressed)
+        .map_err(|error: std::io::Error| {
+            Error::SignatureDb(format!(".dep-v0 zlib decode failed: {error}"))
+        })?;
+    if decompressed.len() > MAX_AUDITABLE_DECOMPRESSED_BYTES {
+        return Err(Error::SignatureDb(format!(
+            ".dep-v0 decompressed payload exceeds the {MAX_AUDITABLE_DECOMPRESSED_BYTES}-byte limit"
+        )));
+    }
+    parse_auditable_json(&decompressed)
+}
+
 pub fn parse_auditable_section(bytes: &[u8]) -> Result<AuditableSbom> {
-    let decompressed: Vec<u8> = if bytes.starts_with(&[0x1F, 0x8B]) {
+    if bytes.starts_with(b"MZ") {
+        return parse_pe_auditable_section(bytes);
+    }
+    if bytes.len() > MAX_AUDITABLE_DECOMPRESSED_BYTES {
+        return Err(Error::SignatureDb(format!(
+            "auditable decompressed payload is {} bytes, exceeding the {MAX_AUDITABLE_DECOMPRESSED_BYTES}-byte limit",
+            bytes.len()
+        )));
+    }
+    parse_auditable_json(bytes)
+}
+
+fn parse_auditable_json(bytes: &[u8]) -> Result<AuditableSbom> {
+    if bytes.starts_with(&[0x1F, 0x8B]) {
         return Err(Error::SignatureDb(
             "auditable section gzip wrapper not handled in v0.1; pre-inflate before invocation"
                 .to_owned(),
         ));
-    } else {
-        bytes.to_vec()
-    };
-    let value: serde_json::Value = serde_json::from_slice(&decompressed)
-        .map_err(|e: serde_json::Error| Error::SignatureDb(e.to_string()))?;
-    let pkgs: &Vec<serde_json::Value> = value
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| Error::SignatureDb("missing 'packages' array".to_owned()))?;
-    let mut crates: Vec<AuditableCrate> = Vec::with_capacity(pkgs.len());
-    for p in pkgs {
-        let name: String = p
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| Error::SignatureDb("package missing name".to_owned()))?
-            .to_owned();
-        let version: String = p
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| Error::SignatureDb("package missing version".to_owned()))?
-            .to_owned();
-        let source: Option<String> = p
-            .get("source")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        crates.push(AuditableCrate {
+    }
+    validate_auditable_json_string_allocations(bytes)?;
+    let preflight: AuditablePreflight = preflight_auditable_json(bytes)?;
+    decode_auditable_json(bytes, preflight.format_version, preflight.package_count)
+}
+
+fn validate_auditable_json_string_allocations(bytes: &[u8]) -> Result<()> {
+    let mut cursor: usize = 0;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'"' {
+            cursor += 1;
+            continue;
+        }
+        cursor += 1;
+        let mut decoded_bytes: usize = 0;
+        let mut escaped: bool = false;
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b'"' => {
+                    cursor += 1;
+                    break;
+                }
+                b'\\' => {
+                    escaped = true;
+                    let Some(escape): Option<&u8> = bytes.get(cursor + 1) else {
+                        cursor = bytes.len();
+                        break;
+                    };
+                    if *escape == b'u'
+                        && let Some(code_unit) = json_hex_quad(bytes, cursor + 2)
+                    {
+                        let pair_start: usize = cursor + 6;
+                        if (0xD800..=0xDBFF).contains(&code_unit)
+                            && bytes.get(pair_start..pair_start + 2) == Some(b"\\u")
+                            && let Some(low) = json_hex_quad(bytes, pair_start + 2)
+                            && (0xDC00..=0xDFFF).contains(&low)
+                        {
+                            decoded_bytes = checked_escaped_string_length(decoded_bytes, 4)?;
+                            cursor += 12;
+                        } else {
+                            let encoded_bytes: usize =
+                                char::from_u32(u32::from(code_unit)).map_or(3, char::len_utf8);
+                            decoded_bytes =
+                                checked_escaped_string_length(decoded_bytes, encoded_bytes)?;
+                            cursor += 6;
+                        }
+                    } else {
+                        decoded_bytes = checked_escaped_string_length(decoded_bytes, 1)?;
+                        cursor += 2;
+                    }
+                }
+                _ => {
+                    decoded_bytes = checked_escaped_string_length(decoded_bytes, 1)?;
+                    cursor += 1;
+                }
+            }
+            if escaped && decoded_bytes > MAX_AUDITABLE_JSON_ESCAPED_STRING_BYTES {
+                return Err(Error::SignatureDb(format!(
+                    "auditable escaped JSON string is {decoded_bytes} bytes, exceeding the {MAX_AUDITABLE_JSON_ESCAPED_STRING_BYTES}-byte limit"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn checked_escaped_string_length(current: usize, additional: usize) -> Result<usize> {
+    current.checked_add(additional).ok_or_else(|| {
+        Error::SignatureDb("auditable escaped JSON string byte count overflowed".to_owned())
+    })
+}
+
+fn json_hex_quad(bytes: &[u8], start: usize) -> Option<u16> {
+    let end: usize = start.checked_add(4)?;
+    bytes
+        .get(start..end)?
+        .iter()
+        .try_fold(0u16, |value: u16, byte: &u8| {
+            let digit: u16 = match byte {
+                b'0'..=b'9' => u16::from(*byte - b'0'),
+                b'a'..=b'f' => u16::from(*byte - b'a' + 10),
+                b'A'..=b'F' => u16::from(*byte - b'A' + 10),
+                _ => return None,
+            };
+            value.checked_mul(16)?.checked_add(digit)
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum AuditableJsonField {
+    Format,
+    Packages,
+    Name,
+    Version,
+    Source,
+    #[serde(other)]
+    Other,
+}
+
+impl AuditableJsonField {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "format" => Self::Format,
+            "packages" => Self::Packages,
+            "name" => Self::Name,
+            "version" => Self::Version,
+            "source" => Self::Source,
+            _ => Self::Other,
+        }
+    }
+}
+
+struct AuditableMapSeed<V>(V);
+
+impl<'de, V> DeserializeSeed<'de> for AuditableMapSeed<V>
+where
+    V: Visitor<'de>,
+{
+    type Value = V::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self.0)
+    }
+}
+
+struct AuditableSeqSeed<V>(V);
+
+impl<'de, V> DeserializeSeed<'de> for AuditableSeqSeed<V>
+where
+    V: Visitor<'de>,
+{
+    type Value = V::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self.0)
+    }
+}
+
+struct AuditableStrSeed<V>(V);
+
+impl<'de, V> DeserializeSeed<'de> for AuditableStrSeed<V>
+where
+    V: Visitor<'de>,
+{
+    type Value = V::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(self.0)
+    }
+}
+
+#[derive(Default)]
+struct AuditableJsonBudget {
+    work_items: usize,
+    string_bytes: usize,
+}
+
+impl AuditableJsonBudget {
+    fn check_depth<E>(depth: usize) -> core::result::Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        if depth > MAX_AUDITABLE_JSON_DEPTH {
+            return Err(E::custom(format!(
+                "auditable JSON nesting depth is {depth}, exceeding the {MAX_AUDITABLE_JSON_DEPTH}-level limit"
+            )));
+        }
+        Ok(())
+    }
+
+    fn record_work<E>(&mut self) -> core::result::Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        let actual: usize = self
+            .work_items
+            .checked_add(1)
+            .ok_or_else(|| E::custom("auditable JSON work item count overflowed"))?;
+        if actual > MAX_AUDITABLE_JSON_WORK_ITEMS {
+            return Err(E::custom(format!(
+                "auditable JSON work is {actual} items, exceeding the {MAX_AUDITABLE_JSON_WORK_ITEMS}-item limit"
+            )));
+        }
+        self.work_items = actual;
+        Ok(())
+    }
+
+    fn record_string<E>(&mut self, bytes: usize) -> core::result::Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        let actual: usize = self
+            .string_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| E::custom("auditable JSON string byte count overflowed"))?;
+        if actual > MAX_AUDITABLE_JSON_STRING_BYTES {
+            return Err(E::custom(format!(
+                "auditable JSON string bytes are {actual}, exceeding the {MAX_AUDITABLE_JSON_STRING_BYTES}-byte limit"
+            )));
+        }
+        self.string_bytes = actual;
+        Ok(())
+    }
+}
+
+struct BoundedAuditableFieldSeed<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+}
+
+impl<'de> DeserializeSeed<'de> for BoundedAuditableFieldSeed<'_> {
+    type Value = AuditableJsonField;
+
+    fn deserialize<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_identifier(BoundedAuditableFieldVisitor {
+            budget: self.budget,
+        })
+    }
+}
+
+struct BoundedAuditableFieldVisitor<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+}
+
+impl BoundedAuditableFieldVisitor<'_> {
+    fn field<E>(self, value: &str) -> core::result::Result<AuditableJsonField, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.record_string::<E>(value.len())?;
+        Ok(AuditableJsonField::from_name(value))
+    }
+}
+
+impl<'de> Visitor<'de> for BoundedAuditableFieldVisitor<'_> {
+    type Value = AuditableJsonField;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable JSON object field")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.field(value)
+    }
+
+    fn visit_str<E>(self, value: &str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.field(value)
+    }
+
+    fn visit_string<E>(self, value: String) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.field(&value)
+    }
+}
+
+struct BoundedAuditableJsonSeed<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for BoundedAuditableJsonSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        AuditableJsonBudget::check_depth::<D::Error>(self.depth)?;
+        deserializer.deserialize_any(BoundedAuditableJsonVisitor {
+            budget: self.budget,
+            depth: self.depth,
+        })
+    }
+}
+
+struct BoundedAuditableJsonVisitor<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+    depth: usize,
+}
+
+impl BoundedAuditableJsonVisitor<'_> {
+    fn string<E>(self, value: &str) -> core::result::Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.record_string::<E>(value.len())
+    }
+}
+
+impl<'de> Visitor<'de> for BoundedAuditableJsonVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("bounded auditable JSON")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.string(value)
+    }
+
+    fn visit_str<E>(self, value: &str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.string(value)
+    }
+
+    fn visit_string<E>(self, value: String) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.string(&value)
+    }
+
+    fn visit_none<E>(self) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> core::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        BoundedAuditableJsonSeed {
+            budget: self.budget,
+            depth: self.depth,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut count: usize = 0;
+        while sequence
+            .next_element_seed(BoundedAuditableJsonSeed {
+                budget: &mut *self.budget,
+                depth: self.depth + 1,
+            })?
+            .is_some()
+        {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom(
+                    "auditable JSON array entry count overflowed",
+                )
+            })?;
+            if count > MAX_AUDITABLE_JSON_CONTAINER_ENTRIES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable JSON array entry count is {count}, exceeding the {MAX_AUDITABLE_JSON_CONTAINER_ENTRIES}-entry limit"
+                )));
+            }
+            self.budget.record_work::<A::Error>()?;
+        }
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut count: usize = 0;
+        while map
+            .next_key_seed(AuditableStrSeed(AuditableStringLengthVisitor {
+                budget: &mut *self.budget,
+            }))?
+            .is_some()
+        {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom(
+                    "auditable JSON object member count overflowed",
+                )
+            })?;
+            if count > MAX_AUDITABLE_JSON_CONTAINER_ENTRIES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable JSON object member count is {count}, exceeding the {MAX_AUDITABLE_JSON_CONTAINER_ENTRIES}-entry limit"
+                )));
+            }
+            self.budget.record_work::<A::Error>()?;
+            map.next_value_seed(BoundedAuditableJsonSeed {
+                budget: &mut *self.budget,
+                depth: self.depth + 1,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+struct AuditableStringLengthVisitor<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+}
+
+impl<'de> Visitor<'de> for AuditableStringLengthVisitor<'_> {
+    type Value = usize;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.record_string::<E>(value.len())?;
+        Ok(value.len())
+    }
+
+    fn visit_str<E>(self, value: &str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.record_string::<E>(value.len())?;
+        Ok(value.len())
+    }
+
+    fn visit_string<E>(self, value: String) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.record_string::<E>(value.len())?;
+        Ok(value.len())
+    }
+}
+
+struct AuditablePackageShape {
+    name: usize,
+    version: usize,
+    source: usize,
+}
+
+struct AuditablePackageShapeVisitor<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+    depth: usize,
+}
+
+impl<'de> Visitor<'de> for AuditablePackageShapeVisitor<'_> {
+    type Value = AuditablePackageShape;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut count: usize = 0;
+        let mut name_bytes: Option<usize> = None;
+        let mut version_bytes: Option<usize> = None;
+        let mut source_bytes: usize = 0;
+        let mut source_seen: bool = false;
+        while let Some(field) = map.next_key_seed(BoundedAuditableFieldSeed {
+            budget: &mut *self.budget,
+        })? {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom(
+                    "auditable JSON object member count overflowed",
+                )
+            })?;
+            if count > MAX_AUDITABLE_JSON_CONTAINER_ENTRIES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable JSON object member count is {count}, exceeding the {MAX_AUDITABLE_JSON_CONTAINER_ENTRIES}-entry limit"
+                )));
+            }
+            self.budget.record_work::<A::Error>()?;
+            match field {
+                AuditableJsonField::Name => {
+                    let value: usize =
+                        map.next_value_seed(AuditableStrSeed(AuditableStringLengthVisitor {
+                            budget: &mut *self.budget,
+                        }))?;
+                    if name_bytes.replace(value).is_some() {
+                        return Err(<A::Error as serde::de::Error>::custom(
+                            "duplicate auditable package name field",
+                        ));
+                    }
+                }
+                AuditableJsonField::Version => {
+                    let value: usize =
+                        map.next_value_seed(AuditableStrSeed(AuditableStringLengthVisitor {
+                            budget: &mut *self.budget,
+                        }))?;
+                    if version_bytes.replace(value).is_some() {
+                        return Err(<A::Error as serde::de::Error>::custom(
+                            "duplicate auditable package version field",
+                        ));
+                    }
+                }
+                AuditableJsonField::Source => {
+                    let value: usize =
+                        map.next_value_seed(AuditableStrSeed(AuditableStringLengthVisitor {
+                            budget: &mut *self.budget,
+                        }))?;
+                    if source_seen {
+                        return Err(<A::Error as serde::de::Error>::custom(
+                            "duplicate auditable package source field",
+                        ));
+                    }
+                    source_bytes = value;
+                    source_seen = true;
+                }
+                _ => {
+                    map.next_value_seed(BoundedAuditableJsonSeed {
+                        budget: &mut *self.budget,
+                        depth: self.depth + 1,
+                    })?;
+                }
+            }
+        }
+        let name_bytes: usize = name_bytes
+            .ok_or_else(|| <A::Error as serde::de::Error>::custom("package missing name"))?;
+        let version_bytes: usize = version_bytes
+            .ok_or_else(|| <A::Error as serde::de::Error>::custom("package missing version"))?;
+        Ok(AuditablePackageShape {
+            name: name_bytes,
+            version: version_bytes,
+            source: source_bytes,
+        })
+    }
+}
+
+#[derive(Default)]
+struct AuditablePreflight {
+    format_version: u32,
+    package_count: usize,
+    package_text_bytes: usize,
+}
+
+struct AuditablePackagesPreflightVisitor<'preflight> {
+    preflight: &'preflight mut AuditablePreflight,
+    budget: &'preflight mut AuditableJsonBudget,
+    depth: usize,
+}
+
+impl<'de> Visitor<'de> for AuditablePackagesPreflightVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        AuditableJsonBudget::check_depth::<A::Error>(self.depth + 1)?;
+        while let Some(shape) =
+            sequence.next_element_seed(AuditableMapSeed(AuditablePackageShapeVisitor {
+                budget: &mut *self.budget,
+                depth: self.depth + 1,
+            }))?
+        {
+            self.budget.record_work::<A::Error>()?;
+            let package_count: usize =
+                self.preflight.package_count.checked_add(1).ok_or_else(|| {
+                    <A::Error as serde::de::Error>::custom("auditable package count overflowed")
+                })?;
+            if package_count > MAX_AUDITABLE_PACKAGES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable package count is {package_count}, exceeding the {MAX_AUDITABLE_PACKAGES}-package limit"
+                )));
+            }
+            let package_bytes: usize = shape
+                .name
+                .checked_add(shape.version)
+                .and_then(|bytes: usize| bytes.checked_add(shape.source))
+                .ok_or_else(|| {
+                    <A::Error as serde::de::Error>::custom("auditable package text size overflowed")
+                })?;
+            let package_text_bytes: usize = self
+                .preflight
+                .package_text_bytes
+                .checked_add(package_bytes)
+                .ok_or_else(|| {
+                    <A::Error as serde::de::Error>::custom(
+                        "auditable aggregate package text size overflowed",
+                    )
+                })?;
+            if package_text_bytes > MAX_AUDITABLE_PACKAGE_TEXT_BYTES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable package text is {package_text_bytes} bytes, exceeding the {MAX_AUDITABLE_PACKAGE_TEXT_BYTES}-byte limit"
+                )));
+            }
+            self.preflight.package_count = package_count;
+            self.preflight.package_text_bytes = package_text_bytes;
+        }
+        Ok(())
+    }
+}
+
+struct AuditablePreflightVisitor<'budget> {
+    budget: &'budget mut AuditableJsonBudget,
+}
+
+impl<'de> Visitor<'de> for AuditablePreflightVisitor<'_> {
+    type Value = AuditablePreflight;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable JSON object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut count: usize = 0;
+        let mut preflight: AuditablePreflight = AuditablePreflight::default();
+        let mut format_seen: bool = false;
+        let mut packages_seen: bool = false;
+        while let Some(field) = map.next_key_seed(BoundedAuditableFieldSeed {
+            budget: &mut *self.budget,
+        })? {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom(
+                    "auditable JSON object member count overflowed",
+                )
+            })?;
+            if count > MAX_AUDITABLE_JSON_CONTAINER_ENTRIES {
+                return Err(<A::Error as serde::de::Error>::custom(format!(
+                    "auditable JSON object member count is {count}, exceeding the {MAX_AUDITABLE_JSON_CONTAINER_ENTRIES}-entry limit"
+                )));
+            }
+            self.budget.record_work::<A::Error>()?;
+            match field {
+                AuditableJsonField::Format => {
+                    if format_seen {
+                        return Err(<A::Error as serde::de::Error>::custom(
+                            "duplicate auditable format field",
+                        ));
+                    }
+                    let raw: u64 = map.next_value().map_err(|_| {
+                        <A::Error as serde::de::Error>::custom(
+                            "auditable format version is not an unsigned integer",
+                        )
+                    })?;
+                    preflight.format_version = u32::try_from(raw).map_err(|_| {
+                        <A::Error as serde::de::Error>::custom(
+                            "auditable format version exceeds u32",
+                        )
+                    })?;
+                    format_seen = true;
+                }
+                AuditableJsonField::Packages => {
+                    if packages_seen {
+                        return Err(<A::Error as serde::de::Error>::custom(
+                            "duplicate auditable packages field",
+                        ));
+                    }
+                    AuditableJsonBudget::check_depth::<A::Error>(2)?;
+                    map.next_value_seed(AuditableSeqSeed(AuditablePackagesPreflightVisitor {
+                        preflight: &mut preflight,
+                        budget: &mut *self.budget,
+                        depth: 2,
+                    }))?;
+                    packages_seen = true;
+                }
+                _ => {
+                    map.next_value_seed(BoundedAuditableJsonSeed {
+                        budget: &mut *self.budget,
+                        depth: 2,
+                    })?;
+                }
+            }
+        }
+        if !packages_seen {
+            return Err(<A::Error as serde::de::Error>::custom(
+                "missing 'packages' array",
+            ));
+        }
+        Ok(preflight)
+    }
+}
+
+fn preflight_auditable_json(bytes: &[u8]) -> Result<AuditablePreflight> {
+    let mut budget: AuditableJsonBudget = AuditableJsonBudget::default();
+    AuditableJsonBudget::check_depth::<serde_json::Error>(1)
+        .map_err(|error: serde_json::Error| Error::SignatureDb(error.to_string()))?;
+    let mut deserializer: serde_json::Deserializer<serde_json::de::SliceRead<'_>> =
+        serde_json::Deserializer::from_slice(bytes);
+    let preflight: AuditablePreflight = AuditableMapSeed(AuditablePreflightVisitor {
+        budget: &mut budget,
+    })
+    .deserialize(&mut deserializer)
+    .map_err(|error: serde_json::Error| Error::SignatureDb(error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error: serde_json::Error| Error::SignatureDb(error.to_string()))?;
+    Ok(preflight)
+}
+
+struct FallibleAuditableStringVisitor;
+
+impl FallibleAuditableStringVisitor {
+    fn clone<E>(value: &str) -> core::result::Result<String, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut output: String = String::new();
+        output.try_reserve_exact(value.len()).map_err(|_| {
+            E::custom(format!(
+                "auditable text allocation of {} bytes failed",
+                value.len()
+            ))
+        })?;
+        output.push_str(value);
+        Ok(output)
+    }
+}
+
+impl<'de> Visitor<'de> for FallibleAuditableStringVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Self::clone(value)
+    }
+
+    fn visit_str<E>(self, value: &str) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Self::clone(value)
+    }
+
+    fn visit_string<E>(self, value: String) -> core::result::Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(value)
+    }
+}
+
+struct AuditableCrateVisitor;
+
+impl<'de> Visitor<'de> for AuditableCrateVisitor {
+    type Value = AuditableCrate;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut name: Option<String> = None;
+        let mut version: Option<String> = None;
+        let mut source: Option<String> = None;
+        while let Some(field) = map.next_key::<AuditableJsonField>()? {
+            match field {
+                AuditableJsonField::Name => {
+                    let value: String =
+                        map.next_value_seed(AuditableStrSeed(FallibleAuditableStringVisitor))?;
+                    name = Some(value);
+                }
+                AuditableJsonField::Version => {
+                    let value: String =
+                        map.next_value_seed(AuditableStrSeed(FallibleAuditableStringVisitor))?;
+                    version = Some(value);
+                }
+                AuditableJsonField::Source => {
+                    let value: String =
+                        map.next_value_seed(AuditableStrSeed(FallibleAuditableStringVisitor))?;
+                    source = Some(value);
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        let name: String =
+            name.ok_or_else(|| <A::Error as serde::de::Error>::custom("package missing name"))?;
+        let version: String = version
+            .ok_or_else(|| <A::Error as serde::de::Error>::custom("package missing version"))?;
+        Ok(AuditableCrate {
             name,
             version,
             source,
-        });
+        })
     }
-    Ok(AuditableSbom {
-        format_version: 0,
+}
+
+struct AuditableCratesDecodeVisitor<'crates> {
+    crates: &'crates mut Vec<AuditableCrate>,
+}
+
+impl<'de> Visitor<'de> for AuditableCratesDecodeVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable package array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(krate) =
+            sequence.next_element_seed(AuditableMapSeed(AuditableCrateVisitor))?
+        {
+            self.crates.push(krate);
+        }
+        Ok(())
+    }
+}
+
+struct AuditableDecodeVisitor {
+    format_version: u32,
+    package_count: usize,
+    crates: Vec<AuditableCrate>,
+}
+
+impl<'de> Visitor<'de> for AuditableDecodeVisitor {
+    type Value = AuditableSbom;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an auditable JSON object")
+    }
+
+    fn visit_map<A>(mut self, mut map: A) -> core::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        while let Some(field) = map.next_key::<AuditableJsonField>()? {
+            if field == AuditableJsonField::Packages {
+                map.next_value_seed(AuditableSeqSeed(AuditableCratesDecodeVisitor {
+                    crates: &mut self.crates,
+                }))?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        if self.crates.len() != self.package_count {
+            return Err(<A::Error as serde::de::Error>::custom(format!(
+                "auditable package count changed from {} to {} during decoding",
+                self.package_count,
+                self.crates.len()
+            )));
+        }
+        Ok(AuditableSbom {
+            format_version: self.format_version,
+            crates: self.crates,
+        })
+    }
+}
+
+fn decode_auditable_json(
+    bytes: &[u8],
+    format_version: u32,
+    package_count: usize,
+) -> Result<AuditableSbom> {
+    let mut crates: Vec<AuditableCrate> = Vec::new();
+    crates.try_reserve_exact(package_count).map_err(|_| {
+        Error::SignatureDb(format!(
+            "auditable package allocation for {package_count} entries failed"
+        ))
+    })?;
+    let mut deserializer: serde_json::Deserializer<serde_json::de::SliceRead<'_>> =
+        serde_json::Deserializer::from_slice(bytes);
+    let sbom: AuditableSbom = AuditableMapSeed(AuditableDecodeVisitor {
+        format_version,
+        package_count,
         crates,
     })
+    .deserialize(&mut deserializer)
+    .map_err(|error: serde_json::Error| Error::SignatureDb(error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error: serde_json::Error| Error::SignatureDb(error.to_string()))?;
+    Ok(sbom)
 }
 
 #[cfg(test)]

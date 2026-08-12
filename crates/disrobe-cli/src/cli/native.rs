@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -17,6 +18,8 @@ use disrobe_core::scratch::ScratchDir;
 
 const GHIDRA_DECOMPILE_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_CAPTURE_OUTPUT: usize = 4 * 1024 * 1024;
+const MAX_NATIVE_SBOM_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+const NATIVE_SBOM_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 struct CappedRun {
     exit_code: Option<i32>,
@@ -1452,10 +1455,9 @@ pub(crate) fn export(
 pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     use disrobe_pass_native::{AuditableSbom, parse_auditable_section};
 
-    use crate::cli::cyclonedx::{Component, CycloneDxBom, application_component};
+    use crate::cli::cyclonedx::{Component, CycloneDxBom, application_component, to_pretty_json};
 
-    let bytes: Vec<u8> = std::fs::read(&input)
-        .map_err(|e| miette::miette!("DR-NATIVE-0060: cannot read input: {e}"))?;
+    let bytes: Vec<u8> = read_native_sbom_input(&input)?;
     let sbom: AuditableSbom = parse_auditable_section(&bytes)
         .map_err(|e| miette::miette!("DR-NATIVE-0061: parse auditable section: {e}"))?;
 
@@ -1467,7 +1469,8 @@ pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
 
     let root: Component =
         application_component(stem.clone(), sha256_hex(&bytes), blake3_hex(&bytes));
-    let bom: CycloneDxBom = CycloneDxBom::from_crates(None, Some(root), &sbom.crates);
+    let bom: CycloneDxBom = CycloneDxBom::from_crates(None, Some(root), &sbom.crates)
+        .map_err(|error| miette::miette!("DR-NATIVE-0065: {error}"))?;
 
     let out_path: PathBuf =
         out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.cyclonedx.json")));
@@ -1475,8 +1478,8 @@ pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-NATIVE-0062: cannot create out dir: {e}"))?;
     }
-    let buf: Vec<u8> = serde_json::to_vec_pretty(&bom)
-        .map_err(|e| miette::miette!("DR-NATIVE-0063: serialize: {e}"))?;
+    let buf: Vec<u8> = to_pretty_json(&bom)
+        .map_err(|error| miette::miette!("DR-NATIVE-0063: serialize: {error}"))?;
     std::fs::write(&out_path, buf)
         .map_err(|e| miette::miette!("DR-NATIVE-0064: cannot write sbom: {e}"))?;
 
@@ -1486,6 +1489,94 @@ pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("  components:   {}", bom.components.len());
     println!("  wrote:        {}", out_path.display());
     Ok(())
+}
+
+fn read_native_sbom_input(input: &Path) -> miette::Result<Vec<u8>> {
+    let file: std::fs::File = std::fs::File::open(input)
+        .map_err(|error| miette::miette!("DR-NATIVE-0060: cannot read input: {error}"))?;
+    let metadata: std::fs::Metadata = file
+        .metadata()
+        .map_err(|error| miette::miette!("DR-NATIVE-0060: cannot read input metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err(miette::miette!(
+            "DR-NATIVE-0060: cannot read input: path is not a regular file"
+        ));
+    }
+    if metadata.len() > MAX_NATIVE_SBOM_INPUT_BYTES {
+        return Err(miette::miette!(
+            "DR-NATIVE-0060: cannot read input: file exceeds the {MAX_NATIVE_SBOM_INPUT_BYTES}-byte limit"
+        ));
+    }
+
+    let advertised_size: usize = usize::try_from(metadata.len()).map_err(|_| {
+        miette::miette!(
+            "DR-NATIVE-0060: cannot read input: file size cannot be represented in memory"
+        )
+    })?;
+    let input_limit: usize = usize::try_from(MAX_NATIVE_SBOM_INPUT_BYTES).map_err(|_| {
+        miette::miette!(
+            "DR-NATIVE-0060: cannot read input: configured size limit cannot be represented in memory"
+        )
+    })?;
+    let read_limit: u64 = MAX_NATIVE_SBOM_INPUT_BYTES.checked_add(1).ok_or_else(|| {
+        miette::miette!("DR-NATIVE-0060: cannot read input: configured size limit overflowed")
+    })?;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.try_reserve_exact(advertised_size).map_err(|_| {
+        miette::miette!(
+            "DR-NATIVE-0060: cannot read input: allocation of {advertised_size} bytes failed"
+        )
+    })?;
+    let mut limited: std::io::Take<std::fs::File> = file.take(read_limit);
+    let mut chunk: Vec<u8> = Vec::new();
+    chunk
+        .try_reserve_exact(NATIVE_SBOM_READ_CHUNK_BYTES)
+        .map_err(|_| {
+            miette::miette!(
+                "DR-NATIVE-0060: cannot read input: allocation of {NATIVE_SBOM_READ_CHUNK_BYTES} bytes failed"
+            )
+        })?;
+    chunk.resize(NATIVE_SBOM_READ_CHUNK_BYTES, 0);
+
+    loop {
+        let remaining: usize = input_limit
+            .checked_add(1)
+            .and_then(|maximum: usize| maximum.checked_sub(bytes.len()))
+            .ok_or_else(|| {
+                miette::miette!("DR-NATIVE-0060: cannot read input: file size overflowed")
+            })?;
+        let chunk_limit: usize = remaining.min(chunk.len());
+        let count: usize = limited
+            .read(&mut chunk[..chunk_limit])
+            .map_err(|error| miette::miette!("DR-NATIVE-0060: cannot read input: {error}"))?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        let required: usize = bytes.len().checked_add(count).ok_or_else(|| {
+            miette::miette!("DR-NATIVE-0060: cannot read input: file size overflowed")
+        })?;
+        if required > input_limit {
+            return Err(miette::miette!(
+                "DR-NATIVE-0060: cannot read input: file exceeds the {MAX_NATIVE_SBOM_INPUT_BYTES}-byte limit"
+            ));
+        }
+        if required > bytes.capacity() {
+            let doubled_capacity: usize = bytes
+                .capacity()
+                .max(NATIVE_SBOM_READ_CHUNK_BYTES)
+                .saturating_mul(2);
+            let target_capacity: usize = required.max(doubled_capacity).min(input_limit);
+            let additional: usize = target_capacity.checked_sub(bytes.len()).ok_or_else(|| {
+                miette::miette!("DR-NATIVE-0060: cannot read input: allocation size overflowed")
+            })?;
+            bytes.try_reserve_exact(additional).map_err(|_| {
+                miette::miette!(
+                    "DR-NATIVE-0060: cannot read input: allocation of {target_capacity} bytes failed"
+                )
+            })?;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -3452,6 +3543,22 @@ fn render_delphi_sidecar(sidecar: &DelphiSidecar) {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auditable_input_limit_precedes_file_allocation() {
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("native-sbom-input-limit")
+                .expect("create scratch directory");
+        let path: PathBuf = scratch.path().join("oversized.exe");
+        let file: std::fs::File = std::fs::File::create(&path).expect("create sparse input");
+        file.set_len(256 * 1024 * 1024 + 1)
+            .expect("set sparse input length");
+
+        let result: miette::Result<Vec<u8>> = read_native_sbom_input(&path);
+
+        let error: String = result.expect_err("oversized input must fail").to_string();
+        assert!(error.contains("268435456-byte limit"), "{error}");
+    }
 
     #[test]
     fn ne_symbol_dump_uses_the_shared_parser_model() {
