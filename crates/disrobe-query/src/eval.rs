@@ -74,22 +74,61 @@ fn xrefs_to(module: &Module, symbol: &str) -> Vec<XrefMatch> {
     let Some(address): Option<u64> = module.symbol_address(symbol) else {
         return Vec::new();
     };
+    xrefs_to_address(module, address, symbol)
+}
+
+pub(crate) fn xrefs_to_address(module: &Module, address: u64, symbol: &str) -> Vec<XrefMatch> {
+    collect_xrefs_to_address(module, address, symbol, usize::MAX).0
+}
+
+pub(crate) fn bounded_xrefs_to_address(
+    module: &Module,
+    address: u64,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<XrefMatch>, usize> {
+    let (xrefs, exceeded): (Vec<XrefMatch>, bool) =
+        collect_xrefs_to_address(module, address, symbol, limit);
+    if exceeded { Err(limit) } else { Ok(xrefs) }
+}
+
+fn collect_xrefs_to_address(
+    module: &Module,
+    address: u64,
+    symbol: &str,
+    limit: usize,
+) -> (Vec<XrefMatch>, bool) {
     let mut out: Vec<XrefMatch> = Vec::new();
-    for f in module.functions() {
-        for insn in &f.instructions {
-            if references_address(insn, address) {
-                out.push(XrefMatch {
-                    from_function: Some(f.name.clone()),
-                    from_offset: insn.offset,
-                    mnemonic: insn.mnemonic.clone(),
-                    to_symbol: symbol.to_owned(),
-                    to_address: address,
-                });
+    let exceeded: bool =
+        for_each_xref_to_address(module, address, |f: &Function, insn: &InsnView| {
+            if out.len() >= limit {
+                return false;
+            }
+            out.push(XrefMatch {
+                from_function: Some(f.name.clone()),
+                from_offset: insn.offset,
+                mnemonic: insn.mnemonic.clone(),
+                to_symbol: symbol.to_owned(),
+                to_address: address,
+            });
+            true
+        });
+    out.sort_by_key(|m: &XrefMatch| m.from_offset);
+    (out, exceeded)
+}
+
+pub(crate) fn for_each_xref_to_address<F>(module: &Module, address: u64, mut visit: F) -> bool
+where
+    F: FnMut(&Function, &InsnView) -> bool,
+{
+    for function in module.functions() {
+        for instruction in &function.instructions {
+            if references_address(instruction, address) && !visit(function, instruction) {
+                return true;
             }
         }
     }
-    out.sort_by_key(|m: &XrefMatch| m.from_offset);
-    out
+    false
 }
 
 fn references_address(insn: &InsnView, address: u64) -> bool {

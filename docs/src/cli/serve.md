@@ -56,7 +56,7 @@ Unknown fields in params are rejected (hard error). A `path` field is specifical
 
 ## MCP companion
 
-`--mcp` runs the rmcp-based Model Context Protocol companion, exposing `disrobe`'s capabilities as MCP tools (`auto`, `decompile`, `ioc`, `behavior`, `strings`, `verify`, `rename`, `annot`, and `provenance_lookup`) over stdio. The standalone `disrobe-mcp` binary is equivalent. See the dedicated [MCP server integration page](../integrations/mcp.md) for the full tool catalog and client registration.
+`--mcp` runs the rmcp-based Model Context Protocol companion, exposing `disrobe`'s analysis, workspace, and navigation capabilities as MCP tools. Navigation includes `call_graph`, `xrefs`, `function_summary`, and `neighborhood` over content-bound function ids and bounded paginated responses. The standalone `disrobe-mcp` binary is equivalent. See the dedicated [MCP server integration page](../integrations/mcp.md) for the full tool catalog and client registration.
 
 ## Security posture
 

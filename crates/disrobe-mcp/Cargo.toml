@@ -74,6 +74,7 @@ disrobe-pass-nuitka = { workspace = true }
 disrobe-pass-py-disasm = { workspace = true }
 disrobe-pass-py-decompile = { workspace = true }
 disrobe-pass-pyinstaller = { workspace = true }
+disrobe-query = { workspace = true }
 disrobe-passes = { workspace = true, optional = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
@@ -85,6 +86,9 @@ miette = { workspace = true }
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+disrobe-nir = { workspace = true }
+iced-x86 = { workspace = true }
+object = { workspace = true }
 
 [[bin]]
 name = "disrobe-mcp"

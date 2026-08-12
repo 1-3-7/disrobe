@@ -15,16 +15,20 @@ mod common;
 
 const LSP_ADVERTISED_METHODS: [&str; 2] = ["disrobe/analyze", "disrobe/explain"];
 
-const MCP_TOOL_NAMES: [&str; 9] = [
+const MCP_TOOL_NAMES: [&str; 13] = [
     "annot",
     "auto",
     "behavior",
+    "call_graph",
     "decompile",
+    "function_summary",
     "ioc",
+    "neighborhood",
     "provenance_lookup",
     "rename",
     "strings",
     "verify",
+    "xrefs",
 ];
 
 const MCP_CLIENT_PROTOCOL: &str = "2025-06-18";

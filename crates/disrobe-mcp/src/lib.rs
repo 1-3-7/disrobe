@@ -1,6 +1,11 @@
 #![deny(unreachable_pub)]
 #[cfg(feature = "chain")]
 mod chain;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "parent-only visibility keeps navigation protocol types behind the private module while satisfying unreachable_pub"
+)]
+mod navigation;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -666,6 +671,50 @@ impl DisrobeMcp {
         };
         Ok(Json(StringsOut::from(strings_report(&bytes, None, opts))))
     }
+
+    #[rmcp::tool(
+        name = "call_graph",
+        description = "Page through function summaries and explicitly classified call edges from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+    )]
+    fn call_graph(
+        &self,
+        Parameters(p): Parameters<navigation::CallGraphParams>,
+    ) -> Result<navigation::Json<navigation::CallGraphOut>, ErrorData> {
+        navigation::call_graph(p).map(navigation::Json::new)
+    }
+
+    #[rmcp::tool(
+        name = "xrefs",
+        description = "Page through cross-references to a content-bound function id from an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+    )]
+    fn xrefs(
+        &self,
+        Parameters(p): Parameters<navigation::XrefsParams>,
+    ) -> Result<navigation::Json<navigation::XrefsOut>, ErrorData> {
+        navigation::xrefs(p).map(navigation::Json::new)
+    }
+
+    #[rmcp::tool(
+        name = "function_summary",
+        description = "Return one structural summary for a content-bound function id in an inline Disasm- or Mir-rung .dr envelope under a hard o200k_base token budget. Never reads disk."
+    )]
+    fn function_summary(
+        &self,
+        Parameters(p): Parameters<navigation::FunctionSummaryParams>,
+    ) -> Result<navigation::Json<navigation::FunctionSummaryResponse>, ErrorData> {
+        navigation::function_summary(p).map(navigation::Json::new)
+    }
+
+    #[rmcp::tool(
+        name = "neighborhood",
+        description = "Page through a cycle-safe caller, callee, or bidirectional function neighborhood from content-bound entry ids under a hard o200k_base token budget. Never reads disk."
+    )]
+    fn neighborhood(
+        &self,
+        Parameters(p): Parameters<navigation::NeighborhoodParams>,
+    ) -> Result<navigation::Json<navigation::NeighborhoodOut>, ErrorData> {
+        navigation::neighborhood(p).map(navigation::Json::new)
+    }
 }
 
 #[rmcp::tool_handler]
@@ -675,9 +724,13 @@ impl rmcp::ServerHandler for DisrobeMcp {
         info.capabilities = rmcp::model::ServerCapabilities::builder()
             .enable_tools()
             .build();
-        info.instructions = Some(
-            "disrobe MCP companion: auto-detect & chain (auto), decompile to source (decompile), extract IOCs (ioc), summarize behavior/ATT&CK (behavior), pull strings (strings), verify .dr envelopes, and look up provenance-map lines all take inline base64 (or inline JSON) and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root.".to_owned(),
-        );
+        #[cfg(feature = "chain")]
+        let analysis_tools: &str = "auto-detect and chain (auto), decompile to source (decompile), extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        #[cfg(not(feature = "chain"))]
+        let analysis_tools: &str = "extract IOCs (ioc), summarize behavior and ATT&CK (behavior), and pull strings (strings)";
+        info.instructions = Some(format!(
+            "disrobe MCP companion: {analysis_tools}, verify .dr envelopes, look up provenance-map lines, and navigate call graphs, cross-references, function summaries, and cycle-safe neighborhoods. Analysis tools take inline base64 or inline JSON and never read a filesystem path. The workspace tools (rename, annot) read and write only inside the `.disrobe/` workspace under the current directory; annot's target must resolve within that workspace root."
+        ));
         info
     }
 }
@@ -1141,6 +1194,10 @@ mod tests {
             "ioc",
             "behavior",
             "strings",
+            "call_graph",
+            "xrefs",
+            "function_summary",
+            "neighborhood",
         ] {
             assert!(names.contains(&expected), "missing tool {expected}");
         }
@@ -1148,7 +1205,7 @@ mod tests {
         for expected in ["auto", "decompile"] {
             assert!(names.contains(&expected), "missing chain tool {expected}");
         }
-        let expected_count: usize = if cfg!(feature = "chain") { 9 } else { 7 };
+        let expected_count: usize = if cfg!(feature = "chain") { 13 } else { 11 };
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();

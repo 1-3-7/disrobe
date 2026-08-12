@@ -26,6 +26,12 @@ The query layer is built on the same function discovery the disassembler uses (c
 
 Every query honors the global `--json` flag, so the output drops straight into a script.
 
+## Navigation through MCP
+
+The MCP companion exposes the same module model through `call_graph`, `xrefs`, `function_summary`, and `neighborhood`. These tools use ids derived from the module source hash and function address rather than function names, so duplicate names remain addressable. Direct-call outcomes distinguish an exact function start, an address inside one function, an ambiguous overlap, a non-function symbol, and an unresolved address. Calls without a direct target remain explicit indirect-call records.
+
+`call_graph`, `xrefs`, and `neighborhood` paginate deterministically. Each cursor binds the source hash and request parameters, and a cursor from another module or neighborhood is rejected. A content-derived discriminator keeps distinct same-address function records addressable without depending on their position in the module. Graph construction has fixed function, instruction, call, cross-reference, candidate-work, and retained-memory ceilings before response pagination. Neighborhood traversal records visited ids and bounds both depth and retained records, so recursion and mutual recursion terminate without dropping their cycle edges.
+
 ## `disrobe capabilities`: behavior to ATT&CK
 
 ```sh

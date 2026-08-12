@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use disrobe_core::{Cfg, cyclomatic_complexity};
 use disrobe_ir::payload::{
     DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnEncoding, InsnFlow,
@@ -272,6 +274,99 @@ pub struct Function {
     pub instructions: Vec<InsnView>,
 }
 
+pub(crate) fn function_identity_hash(function: &Function) -> [u8; 16] {
+    let mut hasher: blake3::Hasher = blake3::Hasher::new();
+    update_identity_hash_bytes(&mut hasher, function.name.as_bytes());
+    hasher.update(&function.address.to_le_bytes());
+    hasher.update(&function.end.to_le_bytes());
+    hasher.update(&[u8::from(function.is_export)]);
+    hasher.update(
+        &u64::try_from(function.instructions.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for instruction in &function.instructions {
+        update_instruction_identity_hash(&mut hasher, instruction);
+    }
+    let mut identity: [u8; 16] = [0u8; 16];
+    identity.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    if identity == [0u8; 16] {
+        identity[0] = 1;
+    }
+    identity
+}
+
+fn canonicalize_functions(functions: Vec<Function>) -> Vec<Function> {
+    let mut canonical: Vec<Function> = Vec::with_capacity(functions.len());
+    let mut by_identity: BTreeMap<[u8; 16], Vec<usize>> = BTreeMap::new();
+    for function in functions {
+        let identity: [u8; 16] = function_identity_hash(&function);
+        let duplicate: bool = by_identity
+            .get(&identity)
+            .is_some_and(|indices: &Vec<usize>| {
+                indices
+                    .iter()
+                    .any(|index: &usize| canonical.get(*index) == Some(&function))
+            });
+        if duplicate {
+            continue;
+        }
+        let index: usize = canonical.len();
+        canonical.push(function);
+        by_identity.entry(identity).or_default().push(index);
+    }
+    canonical
+}
+
+fn update_instruction_identity_hash(hasher: &mut blake3::Hasher, instruction: &InsnView) {
+    hasher.update(&instruction.offset.to_le_bytes());
+    update_identity_hash_bytes(hasher, instruction.mnemonic.as_bytes());
+    hasher.update(
+        &u64::try_from(instruction.operands.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for operand in &instruction.operands {
+        update_identity_hash_bytes(hasher, operand.as_bytes());
+    }
+    let class: u8 = match instruction.class {
+        InsnClass::Call => 0,
+        InsnClass::UnconditionalJump => 1,
+        InsnClass::ConditionalJump => 2,
+        InsnClass::Return => 3,
+        InsnClass::Other => 4,
+    };
+    hasher.update(&[class]);
+    hasher.update(&[u8::from(instruction.branch_target.is_some())]);
+    hasher.update(&instruction.branch_target.unwrap_or_default().to_le_bytes());
+    update_identity_hash_bytes(hasher, instruction.isa.encoding.as_bytes());
+    hasher.update(
+        &u64::try_from(instruction.isa.cpuid_features.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for feature in &instruction.isa.cpuid_features {
+        update_identity_hash_bytes(hasher, feature.as_bytes());
+    }
+    hasher.update(&instruction.stack_effect.sp_delta.to_le_bytes());
+    hasher.update(&[u8::from(instruction.stack_effect.is_stack)]);
+    hasher.update(&instruction.stack_effect.fpu_increment.to_le_bytes());
+    hasher.update(&[u8::from(instruction.stack_effect.fpu_writes_top)]);
+    hasher.update(&[
+        instruction.segments.legacy_prefix,
+        instruction.segments.opcode,
+        instruction.segments.modrm,
+        instruction.segments.sib,
+        instruction.segments.displacement,
+        instruction.segments.immediate,
+    ]);
+}
+
+fn update_identity_hash_bytes(hasher: &mut blake3::Hasher, value: &[u8]) {
+    hasher.update(&u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(value);
+}
+
 impl Function {
     #[must_use]
     pub const fn instruction_count(&self) -> usize {
@@ -306,6 +401,56 @@ impl Function {
     #[must_use]
     pub fn cyclomatic_complexity(&self) -> u32 {
         cyclomatic_complexity(&self.cfg())
+    }
+
+    pub(crate) fn navigation_metrics(&self) -> (usize, u32) {
+        if self.instructions.is_empty() {
+            return (0, 1);
+        }
+        let end: u64 = self.effective_end();
+        let leaders: Vec<u64> = self.block_leaders();
+        let mut blocks: Vec<(u64, Vec<u64>)> = Vec::with_capacity(leaders.len());
+        for (index, leader) in leaders.iter().enumerate() {
+            let next_leader: Option<u64> = leaders.get(index.saturating_add(1)).copied();
+            let block_end: u64 = next_leader.unwrap_or(end);
+            let lower: usize = self
+                .instructions
+                .partition_point(|instruction: &InsnView| instruction.offset < *leader);
+            let upper: usize = if block_end > *leader {
+                self.instructions
+                    .partition_point(|instruction: &InsnView| instruction.offset < block_end)
+            } else {
+                self.instructions
+                    .partition_point(|instruction: &InsnView| instruction.offset <= *leader)
+            };
+            let Some(last): Option<&InsnView> = self.instructions[lower..upper].last() else {
+                continue;
+            };
+            let fallthrough: Option<u64> = match next_leader {
+                Some(_) => self
+                    .instructions
+                    .get(upper)
+                    .map(|instruction: &InsnView| instruction.offset),
+                None => None,
+            };
+            let (_, successors): (BlockKind, Vec<u64>) =
+                terminator_edges(last, fallthrough, &leaders);
+            blocks.push((*leader, successors));
+        }
+        let starts: Vec<u64> = blocks
+            .iter()
+            .map(|(start, _): &(u64, Vec<u64>)| *start)
+            .collect();
+        let edges: u32 = blocks
+            .iter()
+            .flat_map(|(_, successors): &(u64, Vec<u64>)| successors)
+            .filter(|successor: &&u64| starts.binary_search(successor).is_ok())
+            .fold(0u32, |count: u32, _: &u64| count.saturating_add(1));
+        let nodes: u32 = u32::try_from(blocks.len().max(1)).map_or(u32::MAX, |value: u32| value);
+        (
+            blocks.len(),
+            cyclomatic_complexity(&Cfg::from_counts(nodes, edges)),
+        )
     }
 
     fn effective_end(&self) -> u64 {
@@ -473,34 +618,36 @@ impl Module {
             instruction_end(i.offset, i.bytes.len())
         });
 
-        let functions: Vec<Function> = function_symbols
-            .iter()
-            .enumerate()
-            .map(|(idx, sym): (usize, &FunctionSymbol<'_>)| {
-                let start: u64 = sym.address;
-                let end: u64 = function_symbols
-                    .get(idx + 1)
-                    .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
-                let lo: usize =
-                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < start);
-                let hi: usize = if end > start {
-                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < end)
-                } else {
-                    sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset <= start)
-                };
-                let instructions: Vec<InsnView> = sorted_insns[lo..hi]
-                    .iter()
-                    .map(|i: &&DisasmInstruction| InsnView::from_disasm(i))
-                    .collect();
-                Function {
-                    name: sym.name.to_owned(),
-                    address: start,
-                    end,
-                    is_export: sym.is_export,
-                    instructions,
-                }
-            })
-            .collect();
+        let functions: Vec<Function> = canonicalize_functions(
+            function_symbols
+                .iter()
+                .enumerate()
+                .map(|(idx, sym): (usize, &FunctionSymbol<'_>)| {
+                    let start: u64 = sym.address;
+                    let end: u64 = function_symbols
+                        .get(idx + 1)
+                        .map_or(last_end, |next: &FunctionSymbol<'_>| next.address);
+                    let lo: usize =
+                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < start);
+                    let hi: usize = if end > start {
+                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset < end)
+                    } else {
+                        sorted_insns.partition_point(|i: &&DisasmInstruction| i.offset <= start)
+                    };
+                    let instructions: Vec<InsnView> = sorted_insns[lo..hi]
+                        .iter()
+                        .map(|i: &&DisasmInstruction| InsnView::from_disasm(i))
+                        .collect();
+                    Function {
+                        name: sym.name.to_owned(),
+                        address: start,
+                        end,
+                        is_export: sym.is_export,
+                        instructions,
+                    }
+                })
+                .collect(),
+        );
 
         let symbols_by_addr: IndexMap<u64, SymbolRef> = payload
             .symbol_table
@@ -525,17 +672,19 @@ impl Module {
 
     #[must_use]
     pub fn from_nir(module: &NirModule) -> Self {
-        let functions: Vec<Function> = module
-            .functions
-            .iter()
-            .map(|f: &NirFunction| Function {
-                name: f.name.clone(),
-                address: f.address,
-                end: f.end,
-                is_export: f.is_export,
-                instructions: f.instructions.iter().map(InsnView::from_nir).collect(),
-            })
-            .collect();
+        let functions: Vec<Function> = canonicalize_functions(
+            module
+                .functions
+                .iter()
+                .map(|f: &NirFunction| Function {
+                    name: f.name.clone(),
+                    address: f.address,
+                    end: f.end,
+                    is_export: f.is_export,
+                    instructions: f.instructions.iter().map(InsnView::from_nir).collect(),
+                })
+                .collect(),
+        );
 
         let symbols_by_addr: IndexMap<u64, SymbolRef> = module
             .symbols
@@ -593,55 +742,6 @@ impl Module {
         self.functions
             .iter()
             .find(|f: &&Function| f.contains_offset(offset))
-    }
-
-    #[must_use]
-    pub fn call_graph(&self) -> CallGraph {
-        let nodes: Vec<CallGraphNode> = self
-            .functions
-            .iter()
-            .map(|f: &Function| CallGraphNode {
-                name: f.name.clone(),
-                address: f.address,
-                is_export: f.is_export,
-            })
-            .collect();
-
-        let mut edges: Vec<CallGraphEdge> = Vec::new();
-        for caller in &self.functions {
-            for insn in &caller.instructions {
-                if insn.class != InsnClass::Call {
-                    continue;
-                }
-                let Some(target): Option<u64> = insn.branch_target else {
-                    continue;
-                };
-                let callee_name: String = self
-                    .function_containing(target)
-                    .filter(|callee: &&Function| callee.address == target)
-                    .map(|callee: &Function| callee.name.clone())
-                    .or_else(|| {
-                        self.symbols_by_addr
-                            .get(&target)
-                            .map(|sym: &SymbolRef| sym.name.clone())
-                    })
-                    .unwrap_or_else(|| format!("sub_{target:x}"));
-                edges.push(CallGraphEdge {
-                    caller: caller.name.clone(),
-                    caller_address: caller.address,
-                    call_site: insn.offset,
-                    callee: callee_name,
-                    callee_address: target,
-                });
-            }
-        }
-        edges.sort_by(|a: &CallGraphEdge, b: &CallGraphEdge| {
-            a.call_site
-                .cmp(&b.call_site)
-                .then(a.callee_address.cmp(&b.callee_address))
-        });
-
-        CallGraph { nodes, edges }
     }
 }
 

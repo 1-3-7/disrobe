@@ -4,6 +4,7 @@
 pub mod eval;
 pub mod lift;
 pub mod model;
+pub mod navigation;
 pub mod parse;
 pub mod query;
 
@@ -17,6 +18,12 @@ pub use lift::disasm_to_nir;
 pub use model::{
     BasicBlock, BlockKind, CallGraph, CallGraphEdge, CallGraphNode, Function, InsnClass,
     InsnSegmentsView, InsnView, IsaView, Module, StackEffectView, SymbolKind, SymbolRef,
+};
+pub use navigation::{
+    CallOutcome, FunctionId, FunctionIdParseError, FunctionIdentity, FunctionLookupError,
+    FunctionSummary, NavigationAnalysis, NavigationCall, NavigationLimitError, NavigationLimits,
+    NavigationQueryError, NavigationXref, Neighborhood, NeighborhoodDirection, NeighborhoodLimits,
+    NeighborhoodNode,
 };
 pub use parse::{ParseError, parse_query};
 pub use query::{

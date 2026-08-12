@@ -1,6 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+use std::collections::BTreeSet;
+use std::io::Write as _;
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use disrobe_ir::payload::{DisasmPayload, encode_disasm};
+use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, OpKind};
+use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SectionKind, SymbolKind};
 use rmcp::ServiceExt as _;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -58,6 +65,33 @@ fn structured(result: &CallToolResult) -> Value {
         .expect("tool result must carry structured_content")
 }
 
+fn navigation_structured(result: &CallToolResult) -> Value {
+    let value: Value = structured(result);
+    let mirrored: &str = result
+        .content
+        .as_slice()
+        .first()
+        .and_then(|content: &rmcp::model::Content| content.raw.as_text())
+        .map(|text: &rmcp::model::RawTextContent| text.text.as_str())
+        .expect("navigation output must mirror structured content as text");
+    assert_eq!(
+        serde_json::from_str::<Value>(mirrored).expect("mirrored navigation JSON"),
+        value
+    );
+    let budget: usize = value
+        .get("token_budget")
+        .and_then(Value::as_u64)
+        .and_then(|raw: u64| usize::try_from(raw).ok())
+        .expect("navigation response token budget");
+    let encoded: Vec<u8> = serde_json::to_vec(result).expect("serialize complete tool result");
+    assert!(
+        encoded.len() <= budget,
+        "complete tool result {} exceeds declared UTF-8 byte budget {budget}",
+        encoded.len()
+    );
+    value
+}
+
 fn str_field<'a>(value: &'a Value, key: &str) -> &'a str {
     value
         .get(key)
@@ -70,6 +104,134 @@ fn u64_field(value: &Value, key: &str) -> u64 {
         .get(key)
         .and_then(Value::as_u64)
         .unwrap_or_else(|| panic!("expected integer field `{key}` in {value}"))
+}
+
+fn navigation_envelope(native: &[u8]) -> Vec<u8> {
+    let payload: DisasmPayload =
+        disrobe_pass_native::build_disasm_payload(native).expect("analyse committed native image");
+    let hot: Vec<u8> = encode_disasm(&payload).expect("encode analysed disassembly");
+    disrobe_ir::Envelope::new(disrobe_ir::Rung::Disasm, hot, Vec::new())
+        .encode()
+        .expect("encode navigation envelope")
+}
+
+fn executable_sections(elf: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    let file: object::File<'_> = object::File::parse(elf).expect("parse ELF");
+    file.sections()
+        .filter(|section: &object::Section<'_, '_>| section.kind() == SectionKind::Text)
+        .map(|section: object::Section<'_, '_>| {
+            (
+                section.address(),
+                section.data().expect("read executable section").to_vec(),
+            )
+        })
+        .collect()
+}
+
+fn toolchain_direct_edges(unstripped_elf: &[u8]) -> BTreeSet<(u64, u64, u64, &'static str)> {
+    let file: object::File<'_> = object::File::parse(unstripped_elf).expect("parse reference ELF");
+    let function_starts: BTreeSet<u64> = file
+        .symbols()
+        .filter(|symbol: &object::Symbol<'_, '_>| {
+            symbol.kind() == SymbolKind::Text && symbol.address() != 0
+        })
+        .map(|symbol: object::Symbol<'_, '_>| symbol.address())
+        .collect();
+    let mut edges: BTreeSet<(u64, u64, u64, &'static str)> = BTreeSet::new();
+    for symbol in file.symbols().filter(|symbol: &object::Symbol<'_, '_>| {
+        symbol.kind() == SymbolKind::Text && symbol.address() != 0 && symbol.size() != 0
+    }) {
+        let Some(section_index): Option<object::SectionIndex> = symbol.section_index() else {
+            continue;
+        };
+        let section: object::Section<'_, '_> = file
+            .section_by_index(section_index)
+            .expect("resolve function section");
+        if section.kind() != SectionKind::Text {
+            continue;
+        }
+        let data: &[u8] = section.data().expect("read function section");
+        let relative: u64 = symbol
+            .address()
+            .checked_sub(section.address())
+            .expect("function starts inside section");
+        let start: usize = usize::try_from(relative).expect("function offset fits usize");
+        let size: usize = usize::try_from(symbol.size()).expect("function size fits usize");
+        let end: usize = start.checked_add(size).expect("function extent fits usize");
+        let bytes: &[u8] = data.get(start..end).expect("function bytes fit section");
+        let mut decoder: Decoder<'_> =
+            Decoder::with_ip(64, bytes, symbol.address(), DecoderOptions::NONE);
+        while decoder.can_decode() {
+            let instruction: Instruction = decoder.decode();
+            let direct_call: bool = instruction.flow_control() == FlowControl::Call
+                && matches!(
+                    instruction.op0_kind(),
+                    OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+                );
+            if !direct_call {
+                continue;
+            }
+            let target: u64 = instruction.near_branch_target();
+            if function_starts.contains(&target) {
+                edges.insert((symbol.address(), instruction.ip(), target, "function-start"));
+            }
+        }
+    }
+    edges
+}
+
+fn assert_budget(value: &Value, budget: usize) {
+    let encoded: Vec<u8> = serde_json::to_vec(value).expect("serialize structured result");
+    assert!(
+        encoded.len() <= budget,
+        "serialized response {} exceeds declared UTF-8 byte budget {budget}: {value}",
+        encoded.len()
+    );
+    assert_eq!(
+        value.get("token_budget").and_then(Value::as_u64),
+        Some(budget as u64)
+    );
+    assert_eq!(
+        value.get("budget_measure").and_then(Value::as_str),
+        Some("complete-call-tool-result-serialized-utf8-bytes")
+    );
+    assert_eq!(
+        value.get("tokenizer").and_then(Value::as_str),
+        Some("o200k_base")
+    );
+}
+
+fn o200k_token_count<T: serde::Serialize>(value: &T) -> usize {
+    let encoded: Vec<u8> = serde_json::to_vec(value).expect("serialize tokenizer input");
+    let script: &str = "import sys,tiktoken;text=sys.stdin.buffer.read().decode('utf-8');print(len(tiktoken.get_encoding('o200k_base').encode_ordinary(text)))";
+    let mut child: Child = Command::new("uv")
+        .args([
+            "run",
+            "--isolated",
+            "--with",
+            "tiktoken==0.11.0",
+            "python",
+            "-c",
+            script,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pinned o200k_base tokenizer through uv");
+    let mut stdin: ChildStdin = child.stdin.take().expect("tokenizer stdin");
+    stdin
+        .write_all(&encoded)
+        .expect("send structured response to tokenizer");
+    drop(stdin);
+    let output: Output = child.wait_with_output().expect("wait for tokenizer");
+    assert!(
+        output.status.success(),
+        "o200k_base tokenizer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let count: String = String::from_utf8(output.stdout).expect("tokenizer count is UTF-8");
+    count.trim().parse().expect("tokenizer count is an integer")
 }
 
 #[tokio::test]
@@ -231,6 +393,413 @@ async fn invalid_base64_tool_call_surfaces_a_protocol_error_over_stdio() {
         "the server's invalid-base64 error must travel back over the wire: {}",
         data.message
     );
+
+    client.cancel().await.expect("graceful client shutdown");
+}
+
+#[tokio::test]
+async fn navigation_tools_round_trip_a_committed_stripped_elf_over_stdio() {
+    const REAL_ELF: &[u8] = include_bytes!("../../../corpus/native/discovery/disc.stripped.elf");
+    const TOOLCHAIN_REFERENCE_ELF: &[u8] =
+        include_bytes!("../../../corpus/native/discovery/disc.unstripped.elf");
+    const BUDGET: usize = 16_384;
+
+    assert_ne!(REAL_ELF, TOOLCHAIN_REFERENCE_ELF);
+    assert!(REAL_ELF.len() < TOOLCHAIN_REFERENCE_ELF.len());
+    assert_eq!(
+        executable_sections(REAL_ELF),
+        executable_sections(TOOLCHAIN_REFERENCE_ELF),
+        "stripped subject and unstripped reference must contain identical executable sections"
+    );
+    let twin_direct_edges: BTreeSet<(u64, u64, u64, &str)> =
+        toolchain_direct_edges(TOOLCHAIN_REFERENCE_ELF);
+    let dr: Vec<u8> = navigation_envelope(REAL_ELF);
+    let bytes_b64: String = BASE64_STANDARD.encode(&dr);
+    let client: Client = connect().await;
+    let graph_result: CallToolResult = call(
+        &client,
+        "call_graph",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let graph: Value = navigation_structured(&graph_result);
+    assert_budget(&graph, BUDGET);
+    let functions: &Vec<Value> = graph
+        .get("functions")
+        .and_then(Value::as_array)
+        .expect("function summaries");
+    assert!(
+        !functions.is_empty(),
+        "real ELF must expose functions: {graph}"
+    );
+    let first_id: String = str_field(&functions[0], "id").to_owned();
+
+    let graph_again: Value = navigation_structured(
+        &call(
+            &client,
+            "call_graph",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64.clone())),
+                ("token_budget", Value::from(BUDGET as u64)),
+            ]),
+        )
+        .await,
+    );
+    let first_id_again: &str = graph_again
+        .get("functions")
+        .and_then(Value::as_array)
+        .and_then(|rows: &Vec<Value>| rows.first())
+        .map(|row: &Value| str_field(row, "id"))
+        .expect("repeat function id");
+    assert_eq!(first_id_again, first_id);
+
+    let calls: &Vec<Value> = graph
+        .get("calls")
+        .and_then(Value::as_array)
+        .expect("call rows");
+    let observed_direct_edges: BTreeSet<(u64, u64, u64, &str)> = calls
+        .iter()
+        .filter_map(|row: &Value| {
+            let caller_address: u64 = row.get("caller_address")?.as_u64()?;
+            let call_site: u64 = row.get("call_site")?.as_u64()?;
+            let outcome: &Value = row.get("outcome")?;
+            let kind: &str = outcome.get("kind")?.as_str()?;
+            let target: u64 = match kind {
+                "function-start" | "symbol" | "unresolved" => outcome.get("address")?.as_u64()?,
+                "function-interior" | "ambiguous-function" => {
+                    outcome.get("target_address")?.as_u64()?
+                }
+                "indirect" => return None,
+                unexpected => panic!("unexpected call outcome kind {unexpected}"),
+            };
+            Some((caller_address, call_site, target, kind))
+        })
+        .collect();
+    let toolchain_direct_edges: BTreeSet<(u64, u64, u64, &str)> = [
+        (0x20_1160, 0x20_1161, 0x20_1180, "function-start"),
+        (0x20_1180, 0x20_1186, 0x20_11b0, "function-start"),
+        (0x20_1180, 0x20_118f, 0x20_11e0, "function-start"),
+        (0x20_1180, 0x20_119b, 0x20_11f0, "function-start"),
+        (0x20_11b0, 0x20_11c4, 0x20_1240, "function-start"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        twin_direct_edges, toolchain_direct_edges,
+        "the pinned grade inventory must remain derived from the committed unstripped twin"
+    );
+    let false_positive_count: usize = observed_direct_edges.difference(&twin_direct_edges).count();
+    let false_negative_count: usize = twin_direct_edges.difference(&observed_direct_edges).count();
+    assert_eq!(false_positive_count, 0, "unexpected direct-call edges");
+    assert_eq!(false_negative_count, 0, "missing direct-call edges");
+    let precision_numerator: usize = observed_direct_edges.len() - false_positive_count;
+    let precision_denominator: usize = observed_direct_edges.len();
+    let recall_numerator: usize = twin_direct_edges.len() - false_negative_count;
+    let recall_denominator: usize = twin_direct_edges.len();
+    assert_eq!(
+        (precision_numerator, precision_denominator),
+        (5, 5),
+        "precision"
+    );
+    assert_eq!((recall_numerator, recall_denominator), (5, 5), "recall");
+    assert_eq!(
+        observed_direct_edges, toolchain_direct_edges,
+        "stripped subject must match direct-call addresses and classifications derived from its committed unstripped toolchain twin"
+    );
+    let xref_id: String = calls
+        .iter()
+        .find_map(|row: &Value| {
+            let outcome: &Value = row.get("outcome")?;
+            let kind: &str = outcome.get("kind")?.as_str()?;
+            matches!(kind, "function-start" | "function-interior")
+                .then(|| outcome.get("function_id")?.as_str().map(str::to_owned))
+                .flatten()
+        })
+        .expect("real ELF must have a resolved direct call");
+
+    let summary: Value = navigation_structured(
+        &call(
+            &client,
+            "function_summary",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64.clone())),
+                ("function_id", Value::String(first_id.clone())),
+                ("token_budget", Value::from(BUDGET as u64)),
+            ]),
+        )
+        .await,
+    );
+    assert_budget(&summary, BUDGET);
+    assert_eq!(
+        summary
+            .get("function")
+            .map(|row: &Value| str_field(row, "id")),
+        Some(first_id.as_str())
+    );
+
+    let xrefs: Value = navigation_structured(
+        &call(
+            &client,
+            "xrefs",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64.clone())),
+                ("function_id", Value::String(xref_id.clone())),
+                ("token_budget", Value::from(BUDGET as u64)),
+            ]),
+        )
+        .await,
+    );
+    assert_budget(&xrefs, BUDGET);
+    assert!(
+        xrefs
+            .get("xrefs")
+            .and_then(Value::as_array)
+            .is_some_and(|rows: &Vec<Value>| !rows.is_empty()),
+        "resolved call target must have an xref: {xrefs}"
+    );
+    assert!(
+        xrefs
+            .get("xrefs")
+            .and_then(Value::as_array)
+            .is_some_and(|rows: &Vec<Value>| {
+                rows.iter().all(|row: &Value| {
+                    row.get("from_function_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id: &str| id.starts_with("fn1:"))
+                })
+            }),
+        "xref rows inside functions must expose stable source ids: {xrefs}"
+    );
+
+    let neighborhood: Value = navigation_structured(
+        &call(
+            &client,
+            "neighborhood",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64.clone())),
+                ("entry_ids", Value::Array(vec![Value::String(xref_id)])),
+                ("depth", Value::from(8u64)),
+                ("direction", Value::String("both".to_owned())),
+                ("token_budget", Value::from(BUDGET as u64)),
+            ]),
+        )
+        .await,
+    );
+    assert_budget(&neighborhood, BUDGET);
+    assert!(
+        neighborhood
+            .get("functions")
+            .and_then(Value::as_array)
+            .is_some_and(|rows: &Vec<Value>| !rows.is_empty()),
+        "neighborhood must retain its entry: {neighborhood}"
+    );
+
+    client.cancel().await.expect("graceful client shutdown");
+}
+
+#[tokio::test]
+async fn same_address_ids_returned_by_call_graph_are_accepted_by_summary() {
+    const BUDGET: usize = 8_192;
+    let source: disrobe_nir::SourceRef =
+        disrobe_nir::SourceRef::new(disrobe_nir::SourceLang::NativeX86, 0x40);
+    let module: disrobe_nir::NirModule = disrobe_nir::NirModule {
+        source_hash: [0x63u8; 32],
+        lang: disrobe_nir::SourceLang::NativeX86,
+        functions: vec![
+            disrobe_nir::NirFunction {
+                address: 0x40,
+                name: "first".to_owned(),
+                end: 0x40,
+                is_export: false,
+                instructions: Vec::new(),
+                source: source.clone(),
+            },
+            disrobe_nir::NirFunction {
+                address: 0x40,
+                name: "second".to_owned(),
+                end: 0x41,
+                is_export: false,
+                instructions: Vec::new(),
+                source,
+            },
+        ],
+        symbols: Vec::new(),
+    };
+    let hot: Vec<u8> = disrobe_nir::encode_nir(&module).expect("encode same-address NIR");
+    let dr: Vec<u8> = disrobe_ir::Envelope::new(disrobe_ir::Rung::Mir, hot, Vec::new())
+        .encode()
+        .expect("encode same-address envelope");
+    let bytes_b64: String = BASE64_STANDARD.encode(dr);
+    let client: Client = connect().await;
+    let graph_result: CallToolResult = call(
+        &client,
+        "call_graph",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let graph: Value = navigation_structured(&graph_result);
+    let ids: Vec<String> = graph
+        .get("functions")
+        .and_then(Value::as_array)
+        .expect("same-address summaries")
+        .iter()
+        .map(|row: &Value| str_field(row, "id").to_owned())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+    for id in ids {
+        let result: CallToolResult = call(
+            &client,
+            "function_summary",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64.clone())),
+                ("function_id", Value::String(id)),
+                ("token_budget", Value::from(BUDGET as u64)),
+            ]),
+        )
+        .await;
+        let _: Value = navigation_structured(&result);
+    }
+    client.cancel().await.expect("graceful client shutdown");
+}
+
+#[tokio::test]
+async fn call_graph_budget_and_cursor_hold_on_a_committed_large_image() {
+    const REAL_NIM_ELF: &[u8] = include_bytes!("../../../corpus/native/nim/hello.nim.elf");
+    const BUDGET: usize = 2_048;
+
+    let dr: Vec<u8> = navigation_envelope(REAL_NIM_ELF);
+    let bytes_b64: String = BASE64_STANDARD.encode(&dr);
+    let client: Client = connect().await;
+    let first_result: CallToolResult = call(
+        &client,
+        "call_graph",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let first: Value = navigation_structured(&first_result);
+    assert_budget(&first, BUDGET);
+    assert_eq!(first.get("truncated").and_then(Value::as_bool), Some(true));
+    let cursor: String = str_field(&first, "next_cursor").to_owned();
+    let second: Value = navigation_structured(
+        &call(
+            &client,
+            "call_graph",
+            args(&[
+                ("bytes_b64", Value::String(bytes_b64)),
+                ("token_budget", Value::from(BUDGET as u64)),
+                ("cursor", Value::String(cursor.clone())),
+            ]),
+        )
+        .await,
+    );
+    assert_budget(&second, BUDGET);
+    assert_ne!(
+        second.get("next_cursor").and_then(Value::as_str),
+        Some(cursor.as_str())
+    );
+
+    client.cancel().await.expect("graceful client shutdown");
+}
+
+#[tokio::test]
+#[ignore = "requires uv and PyPI; run explicitly for the external tokenizer gate"]
+async fn o200k_tokenizer_confirms_large_image_response_budget() {
+    const REAL_NIM_ELF: &[u8] = include_bytes!("../../../corpus/native/nim/hello.nim.elf");
+    const BUDGET: usize = 2_048;
+
+    let dr: Vec<u8> = navigation_envelope(REAL_NIM_ELF);
+    let bytes_b64: String = BASE64_STANDARD.encode(&dr);
+    let client: Client = connect().await;
+    let first_result: CallToolResult = call(
+        &client,
+        "call_graph",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let first: Value = navigation_structured(&first_result);
+    let cursor: String = str_field(&first, "next_cursor").to_owned();
+    let second_result: CallToolResult = call(
+        &client,
+        "call_graph",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+            ("cursor", Value::String(cursor)),
+        ]),
+    )
+    .await;
+    let _: Value = navigation_structured(&second_result);
+    let function_id: String = first
+        .get("functions")
+        .and_then(Value::as_array)
+        .and_then(|rows: &Vec<Value>| rows.first())
+        .map(|row: &Value| str_field(row, "id").to_owned())
+        .expect("large image function id");
+    let summary_result: CallToolResult = call(
+        &client,
+        "function_summary",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("function_id", Value::String(function_id.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let _: Value = navigation_structured(&summary_result);
+    let xrefs_result: CallToolResult = call(
+        &client,
+        "xrefs",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64.clone())),
+            ("function_id", Value::String(function_id.clone())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let _: Value = navigation_structured(&xrefs_result);
+    let neighborhood_result: CallToolResult = call(
+        &client,
+        "neighborhood",
+        args(&[
+            ("bytes_b64", Value::String(bytes_b64)),
+            ("entry_ids", Value::Array(vec![Value::String(function_id)])),
+            ("depth", Value::from(8u64)),
+            ("direction", Value::String("both".to_owned())),
+            ("token_budget", Value::from(BUDGET as u64)),
+        ]),
+    )
+    .await;
+    let _: Value = navigation_structured(&neighborhood_result);
+    let token_counts: Vec<(&str, usize)> = [
+        ("call_graph[0]", &first_result),
+        ("call_graph[1]", &second_result),
+        ("function_summary", &summary_result),
+        ("xrefs", &xrefs_result),
+        ("neighborhood", &neighborhood_result),
+    ]
+    .into_iter()
+    .map(|(tool, value): (&str, &CallToolResult)| (tool, o200k_token_count(value)))
+    .collect();
+    for (tool, tokens) in &token_counts {
+        assert!(
+            *tokens <= BUDGET,
+            "o200k_base counted {tokens} tokens for {tool} above the declared {BUDGET}-token budget"
+        );
+    }
+    println!("o200k_base tool token counts {token_counts:?} under budget {BUDGET}");
 
     client.cancel().await.expect("graceful client shutdown");
 }

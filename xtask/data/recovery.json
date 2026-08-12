@@ -925,6 +925,39 @@
           "source": "crates/disrobe-taint/tests/graded_corpus.rs, assert_fresh_o2_grade_still_clears_the_published_floor, sum over the 8 populated categories; ground truth is manifest.xml and each file's own Flow Variant header"
         }
       ]
+    },
+    {
+      "heading": "MCP direct-call edges on a committed stripped ELF",
+      "axis_label": "exact toolchain-derived direct-call edges, %",
+      "kind": "percent",
+      "bars": [
+        {
+          "label": "precision",
+          "value": 100.0,
+          "num": 5,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs",
+            "function": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio",
+            "measured_by": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio"
+          },
+          "detail": "All 5 direct-call edges returned for the stripped ELF match the edge set derived from its distinct committed unstripped toolchain twin. The test computes the false-positive set and requires it to be empty.",
+          "source": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs, navigation_tools_round_trip_a_committed_stripped_elf_over_stdio; ground truth comes from the committed unstripped toolchain twin"
+        },
+        {
+          "label": "recall",
+          "value": 100.0,
+          "num": 5,
+          "den": 5,
+          "verified_by": {
+            "path": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs",
+            "function": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio",
+            "measured_by": "navigation_tools_round_trip_a_committed_stripped_elf_over_stdio"
+          },
+          "detail": "The MCP call_graph tool returns all 5 direct-call edges derived from the committed unstripped toolchain twin. The test computes the false-negative set and requires it to be empty. This small fixture does not establish the same rate for other binaries, architectures, or toolchains.",
+          "source": "crates/disrobe-mcp/tests/mcp_protocol_roundtrip.rs, navigation_tools_round_trip_a_committed_stripped_elf_over_stdio; ground truth comes from the committed unstripped toolchain twin"
+        }
+      ]
     }
   ]
 }

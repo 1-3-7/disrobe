@@ -19,6 +19,10 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "ioc",
         "behavior",
         "strings",
+        "call_graph",
+        "xrefs",
+        "function_summary",
+        "neighborhood",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -26,7 +30,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
     for expected in ["auto", "decompile"] {
         assert!(names.contains(&expected), "missing chain tool {expected}");
     }
-    let expected_count: usize = if cfg!(feature = "chain") { 9 } else { 7 };
+    let expected_count: usize = if cfg!(feature = "chain") { 13 } else { 11 };
     assert_eq!(
         tools.len(),
         expected_count,
@@ -94,6 +98,29 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         assert!(
             t.input_schema["properties"].get("bytes_b64").is_some(),
             "tool {name} must accept bytes_b64"
+        );
+    }
+
+    for name in ["call_graph", "xrefs", "function_summary", "neighborhood"] {
+        let t: &rmcp::model::Tool = tools
+            .iter()
+            .find(|t: &&rmcp::model::Tool| t.name == name)
+            .unwrap();
+        assert!(
+            t.input_schema["properties"].get("bytes_b64").is_some(),
+            "tool {name} must accept bytes_b64"
+        );
+        assert!(
+            t.input_schema["properties"].get("token_budget").is_some(),
+            "tool {name} must declare token_budget"
+        );
+        assert!(
+            t.input_schema["properties"].get("cursor").is_some(),
+            "tool {name} must accept a continuation cursor"
+        );
+        assert!(
+            t.output_schema.is_some(),
+            "tool {name} must retain its structured output schema"
         );
     }
 
