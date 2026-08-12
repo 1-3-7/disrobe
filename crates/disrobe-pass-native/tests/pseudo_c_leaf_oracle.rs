@@ -16,8 +16,8 @@ use std::collections::BTreeSet;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::pseudo_c::fp_semantics;
 use disrobe_pass_native::{
-    Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi,
-    PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
+    Arch, DisasmInsn, FpConstant, JumpTable, LeafRecovery, PseudoAbi, PseudoParameterBinding,
+    PseudoReg, PseudoScalarType as ScalarType, ResolvedCall, callee_int_arity, disassemble,
     recover_leaf_function_abi, recover_leaf_function_const_abi, recover_leaf_function_in_object,
     recover_leaf_function_switch_abi, recover_leaf_function_switch_const_abi,
     recover_leaf_function_with_calls,
@@ -311,6 +311,1441 @@ fn sparse_ms_x64_c_invocation_uses_physical_slot_arity() {
         "sparse MS x64 driver returned {}: {}",
         run.status,
         String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
+fn aapcs64_stack_parameter_locations_keep_the_existing_names_and_order() {
+    let signature: disrobe_pass_native::RecoveredSignature =
+        disrobe_pass_native::RecoveredSignature::from_bindings(
+            PseudoAbi::Aapcs64,
+            vec![
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::A64X1,
+                    width_bits: 64,
+                },
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::A64Stack0,
+                    width_bits: 64,
+                },
+            ],
+        )
+        .expect("the existing AArch64 stack parameter order remains canonical");
+    assert_eq!(
+        signature.observed_integer_registers(),
+        vec![PseudoReg::A64X1, PseudoReg::A64Stack0]
+    );
+    assert!(
+        !signature
+            .observed_integer_registers()
+            .contains(&PseudoReg::X86Stack0)
+    );
+}
+
+fn compile_ms_x64_artifact(source: &str, function_name: &str) -> (Vec<u8>, u64) {
+    let compiler: String = clang().expect("clang is required for Microsoft x64 artifact grades");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("hidden_sret_gap.c");
+    let object_path: PathBuf = scratch.path().join("hidden_sret_gap.obj");
+    std::fs::write(&source_path, source.as_bytes()).expect("write Microsoft x64 artifact source");
+    let compile: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O1",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile Microsoft x64 artifact");
+    assert!(
+        compile.status.success(),
+        "Microsoft x64 artifact compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object: Vec<u8> = std::fs::read(&object_path).expect("read Microsoft x64 artifact");
+    function_code(&object, function_name).expect("Microsoft x64 artifact must expose its function")
+}
+
+fn compile_and_run_recovered_c(source: &str) {
+    let compiler: String = clang().expect("clang is required for recovered C grades");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("recovered_hidden_sret_gap.c");
+    let executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "recovered_hidden_sret_gap.exe"
+    } else {
+        "recovered_hidden_sret_gap"
+    });
+    std::fs::write(&source_path, source.as_bytes()).expect("write recovered C source");
+    let compile: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&executable_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile recovered C source");
+    assert!(
+        compile.status.success(),
+        "recovered C compile failed: {}\n{source}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run: std::process::Output = Command::new(&executable_path)
+        .output()
+        .expect("run recovered C executable");
+    assert!(
+        run.status.success(),
+        "recovered C result diverged: {}\n{source}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
+fn ms_x64_hidden_struct_return_without_user_parameters_emits_void() {
+    let compiler: String = clang().expect("clang is required for the zero-parameter sret grade");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("feat071_hidden_sret_zero.c");
+    let object_path: PathBuf = scratch.path().join("feat071_hidden_sret_zero.obj");
+    let source: &str = "typedef struct { long long a; long long b; long long c; long long d; } feat071_result;\n__attribute__((noinline)) feat071_result feat071_hidden_sret_zero(void) { feat071_result value = {1, 2, 3, 4}; return value; }\n";
+    std::fs::write(&source_path, source.as_bytes())
+        .expect("write zero-parameter sret artifact source");
+    let compile: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O1",
+            "-mno-sse",
+            "-fno-vectorize",
+            "-fno-slp-vectorize",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile zero-parameter sret artifact");
+    assert!(
+        compile.status.success(),
+        "zero-parameter sret artifact compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object: Vec<u8> = std::fs::read(&object_path).expect("read zero-parameter sret artifact");
+    let (machine_code, base): (Vec<u8>, u64) = function_code(&object, "feat071_hidden_sret_zero")
+        .expect("zero-parameter sret artifact must expose its function");
+    let recovery: LeafRecovery = recover_leaf_function_abi(&machine_code, base, PseudoAbi::MsX64)
+        .expect("recover hidden-struct-return function without user parameters");
+    assert!(recovery.sret.is_some());
+    assert_eq!(
+        recovery.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    assert!(recovery.signature.parameter_bindings().is_empty());
+    assert_eq!(recovery.signature.callable_arity(), 0);
+    assert!(
+        recovery.source.contains("recovered(void)"),
+        "the hidden return buffer must not become a user parameter: {}",
+        recovery.source
+    );
+    compile_and_run_recovered_c(&format!(
+        "{}\nint main(void) {{ recovered_sret_t got = recovered(); return got.f0 == 1 && got.f1 == 2 && got.f2 == 3 && got.f3 == 4 ? 0 : 1; }}\n",
+        recovery.source
+    ));
+}
+
+#[test]
+fn ms_x64_hidden_struct_return_preserves_sparse_register_and_stack_positions() {
+    let source: &str = "typedef struct { long long a; long long b; long long c; long long d; } feat071_result;\n__attribute__((noinline)) feat071_result feat071_hidden_sret_sparse_stack(long long a0, long long a1, long long a2, long long a3) { feat071_result value = {a1, a3, a1, a3}; return value; }\n";
+    let (machine_code, base): (Vec<u8>, u64) =
+        compile_ms_x64_artifact(source, "feat071_hidden_sret_sparse_stack");
+    let recovery: LeafRecovery = recover_leaf_function_abi(&machine_code, base, PseudoAbi::MsX64)
+        .expect("recover sparse hidden-struct-return register and stack parameters");
+    assert!(recovery.sret.is_some());
+    assert_eq!(
+        recovery.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    assert_eq!(
+        recovery.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::UnobservedMsX64 { slot: 0 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 2 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    compile_and_run_recovered_c(&format!(
+        "{}\nint main(void) {{ recovered_sret_t got = recovered(11, 22, 33, 44); return got.f0 == 22 && got.f1 == 44 && got.f2 == 22 && got.f3 == 44 ? 0 : 1; }}\n",
+        recovery.source
+    ));
+}
+
+#[test]
+fn ms_x64_hidden_struct_return_preserves_register_only_leading_gap() {
+    let source: &str = "typedef struct { long long a; long long b; long long c; long long d; } feat071_result;\n__attribute__((noinline)) feat071_result feat071_hidden_sret_register_gap(long long a0, long long a1) { feat071_result value = {a1, a1, a1, a1}; return value; }\n";
+    let (machine_code, base): (Vec<u8>, u64) =
+        compile_ms_x64_artifact(source, "feat071_hidden_sret_register_gap");
+    let recovery: LeafRecovery = recover_leaf_function_abi(&machine_code, base, PseudoAbi::MsX64)
+        .expect("recover hidden-struct-return register parameters after an unobserved user slot");
+    assert!(recovery.sret.is_some());
+    assert_eq!(
+        recovery.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    assert_eq!(
+        recovery.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::UnobservedMsX64 { slot: 0 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+        ]
+    );
+    compile_and_run_recovered_c(&format!(
+        "{}\nint main(void) {{ recovered_sret_t got = recovered(11, 22); return got.f0 == 22 && got.f1 == 22 && got.f2 == 22 && got.f3 == 22 ? 0 : 1; }}\n",
+        recovery.source
+    ));
+}
+
+#[test]
+fn ms_x64_hidden_struct_return_rebases_first_stack_argument_from_compiler_artifact() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping Microsoft x64 hidden-struct-return compiler grade: clang not on PATH");
+        return;
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("feat071_hidden_sret_stack.c");
+    let object_path: PathBuf = scratch.path().join("feat071_hidden_sret_stack.obj");
+    let source: &'static str = "typedef struct { long long a; long long b; long long c; long long d; } feat071_result;\n__attribute__((noinline)) feat071_result feat071_hidden_sret_stack(long long a0, long long a1, long long a2, long long a3) { feat071_result value = {a0, a1, a2, a3}; return value; }\n__attribute__((noinline)) feat071_result feat071_hidden_sret_mixed(double a0, long long a1, long long a2, long long a3) { feat071_result value = {(long long)a0, a1, a2, a3}; return value; }\n";
+    std::fs::write(&source_path, source.as_bytes())
+        .expect("write hidden-struct-return compiler source");
+    let compile: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O1",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile Microsoft x64 hidden-struct-return artifact");
+    assert!(
+        compile.status.success(),
+        "compiler failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let object: Vec<u8> =
+        std::fs::read(&object_path).expect("read Microsoft x64 hidden-struct-return artifact");
+    let (machine_code, base): (Vec<u8>, u64) = function_code(&object, "feat071_hidden_sret_stack")
+        .expect("artifact must expose the hidden-struct-return function");
+    let recovery: LeafRecovery = recover_leaf_function_abi(&machine_code, base, PseudoAbi::MsX64)
+        .expect("recover the Microsoft x64 hidden-struct-return function");
+    assert!(recovery.sret.is_some());
+    assert!(recovery.rust_source.is_none());
+    assert_eq!(
+        recovery.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::Rdx,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R9,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    assert_eq!(recovery.signature.callable_arity(), 4);
+    assert_eq!(
+        recovery.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    assert!(
+        disrobe_pass_native::RecoveredSignature::from_bindings(
+            PseudoAbi::MsX64,
+            recovery.signature.parameter_bindings().to_vec(),
+        )
+        .is_err(),
+        "the existing constructor must retain physical-slot validation"
+    );
+    let reconstructed: disrobe_pass_native::RecoveredSignature =
+        disrobe_pass_native::RecoveredSignature::from_bindings_with_origin(
+            PseudoAbi::MsX64,
+            disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn,
+            recovery.signature.parameter_bindings().to_vec(),
+        )
+        .expect("the public signature API must reconstruct a hidden-struct-return recovery");
+    assert_eq!(reconstructed, recovery.signature);
+    let recovered_source: String = format!(
+        "{}\nint main(void) {{ recovered_sret_t got = recovered(11, 22, 33, 44); return got.f0 == 11 && got.f1 == 22 && got.f2 == 33 && got.f3 == 44 ? 0 : 1; }}\n",
+        recovery.source
+    );
+    let recovered_source_path: PathBuf = scratch.path().join("feat071_hidden_sret_recovered.c");
+    let recovered_executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "feat071_hidden_sret_recovered.exe"
+    } else {
+        "feat071_hidden_sret_recovered"
+    });
+    std::fs::write(&recovered_source_path, recovered_source.as_bytes())
+        .expect("write recovered hidden-struct-return source");
+    let recovered_compile: std::process::Output = Command::new(&compiler)
+        .args(["-O1", "-o"])
+        .arg(&recovered_executable_path)
+        .arg(&recovered_source_path)
+        .output()
+        .expect("compile recovered hidden-struct-return source");
+    assert!(
+        recovered_compile.status.success(),
+        "recovered source failed to compile: {}\n{recovered_source}",
+        String::from_utf8_lossy(&recovered_compile.stderr)
+    );
+    let recovered_run: std::process::Output = Command::new(&recovered_executable_path)
+        .output()
+        .expect("run recovered hidden-struct-return source");
+    assert!(
+        recovered_run.status.success(),
+        "recovered source returned the wrong struct: {}",
+        String::from_utf8_lossy(&recovered_run.stderr)
+    );
+    let (mixed_code, mixed_base): (Vec<u8>, u64) =
+        function_code(&object, "feat071_hidden_sret_mixed")
+            .expect("artifact must expose the mixed hidden-struct-return function");
+    let mixed_recovery: LeafRecovery =
+        recover_leaf_function_abi(&mixed_code, mixed_base, PseudoAbi::MsX64)
+            .expect("recover the mixed Microsoft x64 hidden-struct-return function");
+    assert!(mixed_recovery.sret.is_some());
+    assert!(mixed_recovery.rust_source.is_none());
+    assert_eq!(
+        mixed_recovery.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::FloatingPoint {
+                register_index: 1,
+                scalar_type: ScalarType::Double,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R9,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    assert_eq!(mixed_recovery.signature.callable_arity(), 4);
+    assert_eq!(
+        mixed_recovery.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    let mixed_reconstructed: disrobe_pass_native::RecoveredSignature =
+        disrobe_pass_native::RecoveredSignature::from_bindings_with_origin(
+            PseudoAbi::MsX64,
+            disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn,
+            mixed_recovery.signature.parameter_bindings().to_vec(),
+        )
+        .expect("the public signature API must reconstruct mixed hidden-struct-return parameters");
+    assert_eq!(mixed_reconstructed, mixed_recovery.signature);
+}
+
+#[test]
+fn ms_x64_parameter_origin_validation_is_compiler_independent() {
+    assert!(
+        disrobe_pass_native::RecoveredSignature::from_bindings_with_origin(
+            PseudoAbi::SysV,
+            disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn,
+            Vec::new(),
+        )
+        .is_err(),
+        "hidden-struct-return rebasing must remain specific to Microsoft x64"
+    );
+    let register_only: disrobe_pass_native::RecoveredSignature =
+        disrobe_pass_native::RecoveredSignature::from_bindings_with_origin(
+            PseudoAbi::MsX64,
+            disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn,
+            vec![
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::Rdx,
+                    width_bits: 64,
+                },
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::R8,
+                    width_bits: 64,
+                },
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::R9,
+                    width_bits: 64,
+                },
+            ],
+        )
+        .expect("hidden-struct-return rebasing must not require a stack parameter");
+    assert_eq!(register_only.callable_arity(), 3);
+    assert!(
+        disrobe_pass_native::RecoveredSignature::from_bindings_with_origin(
+            PseudoAbi::MsX64,
+            disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn,
+            vec![
+                PseudoParameterBinding::FloatingPoint {
+                    register_index: 1,
+                    scalar_type: ScalarType::Double,
+                },
+                PseudoParameterBinding::Integer {
+                    register: PseudoReg::Rdx,
+                    width_bits: 64,
+                },
+            ],
+        )
+        .is_err(),
+        "two user bindings must not claim the same physical Microsoft x64 position"
+    );
+    let ordinary: disrobe_pass_native::RecoveredSignature =
+        disrobe_pass_native::RecoveredSignature::from_bindings(
+            PseudoAbi::MsX64,
+            vec![PseudoParameterBinding::Integer {
+                register: PseudoReg::Rcx,
+                width_bits: 64,
+            }],
+        )
+        .expect("the ordinary constructor retains physical-slot semantics");
+    assert_eq!(
+        ordinary.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::PhysicalSlotZero
+    );
+}
+
+#[test]
+fn x86_stack_arguments_recover_from_compiler_artifacts_and_recompile() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping x86 stack-argument compiler grade: clang not on PATH");
+        return;
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let source: &'static str = "#include <stdarg.h>\n__attribute__((noinline)) long long feat071_ms(long long a0, long long a1, long long a2, long long a3, long long a4){ return a0 + a4; }\n__attribute__((noinline)) long long feat071_ms_mixed(double a0, long long a1, long long a2, long long a3, long long a4){ return (long long)a0 + a4; }\n__attribute__((noinline)) long long feat071_ms_leading_integer_gap(long long a0, long long a1, long long a2, long long a3, long long a4){ return a1 + a4; }\n__attribute__((noinline)) long long feat071_ms_leading_fp_gap(double a0, double a1, long long a2, long long a3, long long a4){ return (long long)a1 + a4; }\n__attribute__((noinline)) long long feat071_sysv(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6, long long a7, long long a8){ return a0 + a8; }\n__attribute__((noinline)) long long feat071_var(long long count, ...){ va_list ap; va_start(ap, count); long long value = va_arg(ap, long long); va_end(ap); return value; }\n";
+    let source_path: PathBuf = dir.join("feat071_stack_args.c");
+    std::fs::write(&source_path, source.as_bytes()).expect("write stack-argument compiler source");
+    let host_object_path: PathBuf = dir.join("feat071_host.o");
+    let mut host_command: Command = Command::new(&compiler);
+    host_command.args([
+        "--target=x86_64-pc-windows-msvc",
+        "-O1",
+        "-fno-omit-frame-pointer",
+        "-fno-stack-protector",
+        "-c",
+        "-o",
+    ]);
+    host_command.arg(&host_object_path).arg(&source_path);
+    let host_compile: std::process::Output = host_command
+        .output()
+        .expect("compile the Microsoft x64 stack-argument artifact");
+    assert!(
+        host_compile.status.success(),
+        "host compiler failed: {}",
+        String::from_utf8_lossy(&host_compile.stderr)
+    );
+    let host_object: Vec<u8> = std::fs::read(&host_object_path).expect("read host object");
+    let (ms_code, ms_base): (Vec<u8>, u64) = function_code(&host_object, "feat071_ms")
+        .expect("host object must expose the Microsoft x64 stack-argument function");
+    let ms_recovery: LeafRecovery = recover_leaf_function_abi(&ms_code, ms_base, PseudoAbi::MsX64)
+        .expect("recover the compiler-emitted Microsoft x64 stack argument");
+    assert_eq!(ms_recovery.signature.callable_arity(), 5);
+    assert!(ms_recovery.source.contains("r_x86_stack0"));
+    let (mixed_code, mixed_base): (Vec<u8>, u64) = function_code(&host_object, "feat071_ms_mixed")
+        .expect("host object must expose the mixed Microsoft x64 function");
+    let mixed_recovery: LeafRecovery =
+        recover_leaf_function_abi(&mixed_code, mixed_base, PseudoAbi::MsX64)
+            .expect("recover the mixed Microsoft x64 register classes and fifth stack argument");
+    assert_eq!(
+        mixed_recovery.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::FloatingPoint {
+                register_index: 0,
+                scalar_type: ScalarType::Double,
+            },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 1 },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 2 },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 3 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    let (leading_integer_gap_code, leading_integer_gap_base): (Vec<u8>, u64) =
+        function_code(&host_object, "feat071_ms_leading_integer_gap")
+            .expect("host object must expose the leading integer-gap Microsoft x64 function");
+    let leading_integer_gap: LeafRecovery = recover_leaf_function_abi(
+        &leading_integer_gap_code,
+        leading_integer_gap_base,
+        PseudoAbi::MsX64,
+    )
+    .expect("a stack parameter makes every preceding Microsoft x64 position representable");
+    assert_eq!(
+        leading_integer_gap.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::UnobservedMsX64 { slot: 0 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::Rdx,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 2 },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 3 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    let (leading_fp_gap_code, leading_fp_gap_base): (Vec<u8>, u64) =
+        function_code(&host_object, "feat071_ms_leading_fp_gap").expect(
+            "host object must expose the leading floating-point-gap Microsoft x64 function",
+        );
+    let leading_fp_gap: LeafRecovery =
+        recover_leaf_function_abi(&leading_fp_gap_code, leading_fp_gap_base, PseudoAbi::MsX64)
+            .expect("a stack parameter makes a preceding floating-point position representable");
+    assert_eq!(
+        leading_fp_gap.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::UnobservedMsX64 { slot: 0 },
+            PseudoParameterBinding::FloatingPoint {
+                register_index: 1,
+                scalar_type: ScalarType::Double,
+            },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 2 },
+            PseudoParameterBinding::UnobservedMsX64 { slot: 3 },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::X86Stack0,
+                width_bits: 64,
+            },
+        ]
+    );
+    let (var_code, var_base): (Vec<u8>, u64) = function_code(&host_object, "feat071_var")
+        .expect("host object must expose the variadic function");
+    let var_result: Result<LeafRecovery, _> =
+        recover_leaf_function_abi(&var_code, var_base, PseudoAbi::MsX64);
+    assert!(
+        var_result.is_err(),
+        "a variadic function's register-save/home area must stay outside the fixed stack-argument lift"
+    );
+
+    let c_driver: String = format!(
+        "{}\n#ifdef _WIN32\nextern long long feat071_ms(long long, long long, long long, long long, long long);\n#endif\nint main(void) {{ long long got = (long long)recovered(11, 22, 33, 44, 55); long long want = 66;\n#ifdef _WIN32\nwant = feat071_ms(11, 22, 33, 44, 55);\n#endif\nreturn got == want ? 0 : 1; }}\n",
+        ms_recovery.source
+    );
+    let c_driver_path: PathBuf = dir.join("feat071_c_driver.c");
+    std::fs::write(&c_driver_path, c_driver.as_bytes()).expect("write recovered C driver");
+    let c_executable_path: PathBuf = dir.join(if cfg!(windows) {
+        "feat071_c_driver.exe"
+    } else {
+        "feat071_c_driver"
+    });
+    let mut c_command: Command = Command::new(&compiler);
+    c_command
+        .args(["-O1", "-fno-stack-protector", "-o"])
+        .arg(&c_executable_path)
+        .arg(&c_driver_path);
+    if cfg!(windows) {
+        c_command.arg(&host_object_path);
+    }
+    let c_link: std::process::Output = c_command.output().expect("compile and link recovered C");
+    assert!(
+        c_link.status.success(),
+        "recovered C link failed: {}\n{c_driver}",
+        String::from_utf8_lossy(&c_link.stderr)
+    );
+    let c_run: std::process::Output = Command::new(&c_executable_path)
+        .output()
+        .expect("run recovered C against the reference object");
+    assert!(
+        c_run.status.success(),
+        "recovered C disagreed with the compiler reference: {}",
+        String::from_utf8_lossy(&c_run.stderr)
+    );
+
+    let Some(rust_source): Option<String> = ms_recovery.rust_source else {
+        panic!("integer stack-argument recovery must emit Rust");
+    };
+    let rust_driver: String = format!(
+        "{rust_source}\nfn main() {{ let got: u64 = recovered(11, 22, 33, 44, 55); std::process::exit(if got == 66 {{ 0 }} else {{ 1 }}); }}\n"
+    );
+    let rust_driver_path: PathBuf = dir.join("feat071_rust_driver.rs");
+    std::fs::write(&rust_driver_path, rust_driver.as_bytes()).expect("write recovered Rust driver");
+    let rust_executable_path: PathBuf = dir.join(if cfg!(windows) {
+        "feat071_rust_driver.exe"
+    } else {
+        "feat071_rust_driver"
+    });
+    let rust_build: std::process::Output = Command::new("rustc")
+        .args(["--edition=2021", "-O"])
+        .arg(&rust_driver_path)
+        .args(["-o"])
+        .arg(&rust_executable_path)
+        .output()
+        .expect("compile recovered Rust");
+    assert!(
+        rust_build.status.success(),
+        "recovered Rust compile failed: {}\n{rust_driver}",
+        String::from_utf8_lossy(&rust_build.stderr)
+    );
+    let rust_run: std::process::Output = Command::new(&rust_executable_path)
+        .output()
+        .expect("run recovered Rust");
+    assert!(
+        rust_run.status.success(),
+        "recovered Rust disagreed with the compiler reference: {}",
+        String::from_utf8_lossy(&rust_run.stderr)
+    );
+
+    let sysv_object_path: PathBuf = dir.join("feat071_sysv.o");
+    let sysv_compile: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-O1",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&sysv_object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile the SysV x86-64 stack-argument artifact");
+    if sysv_compile.status.success() {
+        let sysv_object: Vec<u8> = std::fs::read(&sysv_object_path).expect("read SysV object");
+        let (sysv_code, sysv_base): (Vec<u8>, u64) = function_code(&sysv_object, "feat071_sysv")
+            .expect("SysV object must expose the stack-argument function");
+        let sysv_recovery: LeafRecovery =
+            recover_leaf_function_abi(&sysv_code, sysv_base, PseudoAbi::SysV)
+                .expect("recover the compiler-emitted SysV stack argument");
+        assert_eq!(sysv_recovery.signature.callable_arity(), 9);
+        assert!(sysv_recovery.source.contains("r_x86_stack2"));
+        let sysv_c_driver: String = format!(
+            "{}\nint main(void) {{ return recovered(1, 2, 3, 4, 5, 6, 7, 8, 9) == 10 ? 0 : 1; }}\n",
+            sysv_recovery.source
+        );
+        let sysv_c_driver_path: PathBuf = dir.join("feat071_sysv_c_driver.c");
+        std::fs::write(&sysv_c_driver_path, sysv_c_driver.as_bytes())
+            .expect("write recovered SysV C driver");
+        let sysv_c_executable_path: PathBuf = dir.join(if cfg!(windows) {
+            "feat071_sysv_c_driver.exe"
+        } else {
+            "feat071_sysv_c_driver"
+        });
+        let sysv_c_build: std::process::Output = Command::new(&compiler)
+            .args(["-O1", "-fno-stack-protector", "-o"])
+            .arg(&sysv_c_executable_path)
+            .arg(&sysv_c_driver_path)
+            .output()
+            .expect("compile recovered SysV C");
+        assert!(
+            sysv_c_build.status.success(),
+            "recovered SysV C compile failed: {}\n{sysv_c_driver}",
+            String::from_utf8_lossy(&sysv_c_build.stderr)
+        );
+        let sysv_c_run: std::process::Output = Command::new(&sysv_c_executable_path)
+            .output()
+            .expect("run recovered SysV C");
+        assert!(
+            sysv_c_run.status.success(),
+            "recovered SysV C disagreed with the compiler reference: {}",
+            String::from_utf8_lossy(&sysv_c_run.stderr)
+        );
+        let Some(sysv_rust_source): Option<String> = sysv_recovery.rust_source else {
+            panic!("SysV integer stack-argument recovery must emit Rust");
+        };
+        let sysv_rust_driver: String = format!(
+            "{sysv_rust_source}\nfn main() {{ let got: u64 = recovered(1, 2, 3, 4, 5, 6, 7, 8, 9); std::process::exit(if got == 10 {{ 0 }} else {{ 1 }}); }}\n"
+        );
+        let sysv_rust_driver_path: PathBuf = dir.join("feat071_sysv_rust_driver.rs");
+        std::fs::write(&sysv_rust_driver_path, sysv_rust_driver.as_bytes())
+            .expect("write recovered SysV Rust driver");
+        let sysv_rust_executable_path: PathBuf = dir.join(if cfg!(windows) {
+            "feat071_sysv_rust_driver.exe"
+        } else {
+            "feat071_sysv_rust_driver"
+        });
+        let sysv_rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition=2021", "-O"])
+            .arg(&sysv_rust_driver_path)
+            .args(["-o"])
+            .arg(&sysv_rust_executable_path)
+            .output()
+            .expect("compile recovered SysV Rust");
+        assert!(
+            sysv_rust_build.status.success(),
+            "recovered SysV Rust compile failed: {}\n{sysv_rust_driver}",
+            String::from_utf8_lossy(&sysv_rust_build.stderr)
+        );
+        let sysv_rust_run: std::process::Output = Command::new(&sysv_rust_executable_path)
+            .output()
+            .expect("run recovered SysV Rust");
+        assert!(
+            sysv_rust_run.status.success(),
+            "recovered SysV Rust disagreed with the compiler reference: {}",
+            String::from_utf8_lossy(&sysv_rust_run.stderr)
+        );
+        let (sysv_var_code, sysv_var_base): (Vec<u8>, u64) =
+            function_code(&sysv_object, "feat071_var")
+                .expect("SysV object must expose variadic function");
+        let sysv_var_result: Result<LeafRecovery, _> =
+            recover_leaf_function_abi(&sysv_var_code, sysv_var_base, PseudoAbi::SysV);
+        assert!(
+            sysv_var_result.is_err(),
+            "a SysV variadic register-save area must stay outside the fixed stack-argument lift"
+        );
+    } else {
+        eprintln!(
+            "skipping SysV artifact half of the compiler grade: {}",
+            String::from_utf8_lossy(&sysv_compile.stderr)
+        );
+    }
+}
+
+#[test]
+fn x86_stack_arguments_recover_through_scalar_memory_categories() {
+    let cases: [(&str, &[u8], usize); 4] = [
+        (
+            "integer source",
+            &[0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3],
+            7,
+        ),
+        (
+            "extended source",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0x48, 0x0f, 0xbe, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            7,
+        ),
+        (
+            "floating-point operand",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x10, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            7,
+        ),
+        (
+            "floating-point comparison flags",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0x66, 0x0f, 0x2e, 0x45, 0x10, 0x0f, 0x94, 0xc0, 0x0f, 0xb6,
+                0xc0, 0x5d, 0xc3,
+            ],
+            8,
+        ),
+    ];
+    for (index, (category, code, expected_arity)) in cases.iter().enumerate() {
+        let base: u64 = 0x2_0000 + u64::try_from(index).expect("category index fits u64") * 0x100;
+        let recovery: LeafRecovery = recover_leaf_function_abi(code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|error| panic!("{category} stack argument must recover: {error}"));
+        assert_eq!(
+            recovery.signature.callable_arity(),
+            *expected_arity,
+            "{category} must expose the incoming slot in the callable signature: {}",
+            recovery.source
+        );
+        assert!(
+            recovery.source.contains("r_x86_stack0") && !recovery.source.contains("r_rbp"),
+            "{category} must use the parameter instead of the caller-owned frame address: {}",
+            recovery.source
+        );
+    }
+}
+
+#[test]
+fn x86_stack_argument_floating_memory_outputs_compile_and_run() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping stack-argument floating-memory compile grade: clang not on PATH");
+        return;
+    };
+    let cases: [(&str, &[u8], &str, &str); 2] = [
+        (
+            "fp_load",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x10, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            "recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x4000000000000000)) == 2.0",
+            "recovered(0, 0, 0, 0, 0, 0, 0x4000000000000000) == 2.0",
+        ),
+        (
+            "fp_compare",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0x66, 0x0f, 0x2e, 0x45, 0x10, 0x0f, 0x94, 0xc0, 0x0f, 0xb6,
+                0xc0, 0x5d, 0xc3,
+            ],
+            "recovered(3.0, 0, 0, 0, 0, 0, 0, UINT64_C(0x4008000000000000)) == 1",
+            "recovered(3.0, 0, 0, 0, 0, 0, 0, 0x4008000000000000) == 1",
+        ),
+    ];
+    let scratch: ScratchDir = scratch_dir();
+    for (index, (name, code, c_expression, rust_expression)) in cases.iter().enumerate() {
+        let base: u64 = 0x3_0000 + u64::try_from(index).expect("case index fits u64") * 0x100;
+        let recovery: LeafRecovery = recover_leaf_function_abi(code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|error| panic!("{name} recovery failed: {error}"));
+        let c_path: PathBuf = scratch.path().join(format!("{name}.c"));
+        let c_executable: PathBuf = scratch.path().join(if cfg!(windows) {
+            format!("{name}_c.exe")
+        } else {
+            format!("{name}_c")
+        });
+        let c_driver: String = format!(
+            "{}\nint main(void) {{ return {c_expression} ? 0 : 1; }}\n",
+            recovery.source
+        );
+        std::fs::write(&c_path, c_driver.as_bytes()).expect("write recovered C grade");
+        let c_build: std::process::Output = Command::new(&compiler)
+            .args(["-O1", "-o"])
+            .arg(&c_executable)
+            .arg(&c_path)
+            .output()
+            .expect("compile recovered C floating-memory grade");
+        assert!(
+            c_build.status.success(),
+            "{name} recovered C did not compile: {}\n{c_driver}",
+            String::from_utf8_lossy(&c_build.stderr)
+        );
+        let c_run: std::process::Output = Command::new(&c_executable)
+            .output()
+            .expect("run recovered C floating-memory grade");
+        assert!(c_run.status.success(), "{name} recovered C result diverged");
+
+        let rust_source: String = recovery
+            .rust_source
+            .unwrap_or_else(|| panic!("{name} must remain Rust-emittable"));
+        let rust_path: PathBuf = scratch.path().join(format!("{name}.rs"));
+        let rust_executable: PathBuf = scratch.path().join(if cfg!(windows) {
+            format!("{name}_rust.exe")
+        } else {
+            format!("{name}_rust")
+        });
+        let rust_driver: String = format!(
+            "{rust_source}\nfn main() {{ std::process::exit(if {rust_expression} {{ 0 }} else {{ 1 }}); }}\n"
+        );
+        std::fs::write(&rust_path, rust_driver.as_bytes()).expect("write recovered Rust grade");
+        let rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition=2024", "-O"])
+            .arg(&rust_path)
+            .args(["-o"])
+            .arg(&rust_executable)
+            .output()
+            .expect("compile recovered Rust floating-memory grade");
+        assert!(
+            rust_build.status.success(),
+            "{name} recovered Rust did not compile: {}\n{rust_driver}",
+            String::from_utf8_lossy(&rust_build.stderr)
+        );
+        let rust_run: std::process::Output = Command::new(&rust_executable)
+            .output()
+            .expect("run recovered Rust floating-memory grade");
+        assert!(
+            rust_run.status.success(),
+            "{name} recovered Rust result diverged"
+        );
+    }
+}
+
+#[test]
+fn write_only_outgoing_stack_slot_keeps_the_caller_ownership_refusal() {
+    let code: [u8; 14] = [
+        0x48, 0x83, 0xec, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+    ];
+    let error: disrobe_pass_native::Error =
+        recover_leaf_function_abi(&code, 0x4_0000, PseudoAbi::SysV)
+            .expect_err("an outgoing-only stack destination is not an incoming parameter");
+    let message: String = error.to_string();
+    assert!(
+        message.contains("caller owns the frame above it")
+            && !message.contains("incoming x86-64 stack argument"),
+        "the outgoing-only destination must retain the caller-ownership refusal: {message}"
+    );
+}
+
+#[test]
+fn incoming_stack_slot_read_then_write_and_rmw_remain_parameters() {
+    let read_then_write: [u8; 19] = [
+        0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x20, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x48,
+        0x83, 0xc4, 0x18, 0xc3,
+    ];
+    let rmw: [u8; 16] = [
+        0x48, 0x83, 0xec, 0x18, 0x48, 0xf7, 0x54, 0x24, 0x20, 0x31, 0xc0, 0x48, 0x83, 0xc4, 0x18,
+        0xc3,
+    ];
+    let composed: LeafRecovery =
+        recover_leaf_function_abi(&read_then_write, 0x4_0100, PseudoAbi::SysV)
+            .expect("a proven incoming slot must remain writable after its read");
+    assert_eq!(composed.signature.callable_arity(), 7);
+    assert!(
+        composed.source.contains("r_rax = r_x86_stack0")
+            && composed.source.contains("r_x86_stack0 = r_rdi"),
+        "the read and write must share one recovered parameter: {}",
+        composed.source
+    );
+    let rmw_recovery: LeafRecovery = recover_leaf_function_abi(&rmw, 0x4_0200, PseudoAbi::SysV)
+        .expect("a memory read-modify-write is a read-bearing incoming access");
+    assert_eq!(rmw_recovery.signature.callable_arity(), 7);
+    assert!(
+        rmw_recovery.source.contains("r_x86_stack0"),
+        "the read-modify-write must establish the incoming parameter: {}",
+        rmw_recovery.source
+    );
+}
+
+#[test]
+fn full_stack_slot_store_before_first_read_keeps_the_caller_ownership_refusal() {
+    let code: [u8; 14] = [
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x7d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+    ];
+    let error: disrobe_pass_native::Error =
+        recover_leaf_function_abi(&code, 0x4_0300, PseudoAbi::SysV)
+            .expect_err("a full write before the first read does not consume an incoming value");
+    let message: String = error.to_string();
+    assert!(
+        message.contains("caller owns the frame above it")
+            && !message.contains("incoming x86-64 stack argument"),
+        "the overwritten slot must retain the caller-ownership refusal: {message}"
+    );
+}
+
+#[test]
+fn full_stack_slot_writes_on_every_branch_do_not_create_an_incoming_parameter() {
+    let code: [u8; 25] = [
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x85, 0xff, 0x74, 0x06, 0x48, 0x89, 0x75, 0x10, 0xeb, 0x04,
+        0x48, 0x89, 0x55, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+    ];
+    let error: disrobe_pass_native::Error =
+        recover_leaf_function_abi(&code, 0x4_0400, PseudoAbi::SysV)
+            .expect_err("every path writes the slot before the merged read");
+    let message: String = error.to_string();
+    assert!(
+        message.contains("caller owns the frame above it")
+            && !message.contains("incoming x86-64 stack argument"),
+        "the definitely overwritten slot must retain the caller-ownership refusal: {message}"
+    );
+}
+
+#[test]
+fn a_branch_path_without_a_stack_slot_write_preserves_the_incoming_parameter() {
+    let code: [u8; 19] = [
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x85, 0xff, 0x74, 0x04, 0x48, 0x89, 0x75, 0x10, 0x48, 0x8b,
+        0x45, 0x10, 0x5d, 0xc3,
+    ];
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x4_0500, PseudoAbi::SysV)
+        .expect("one path still consumes the incoming stack-slot value");
+    assert_eq!(recovery.signature.callable_arity(), 7);
+    assert!(recovery.source.contains("r_x86_stack0"));
+}
+
+#[test]
+fn x86_stack_parameter_typed_accesses_execute_under_strict_optimization() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping stack-parameter strict optimization grade: clang not on PATH");
+        return;
+    };
+    let cases: [(&str, &[u8], &str); 3] = [
+        (
+            "narrow_read",
+            &[0x55, 0x48, 0x89, 0xe5, 0x0f, 0xb7, 0x45, 0x10, 0x5d, 0xc3],
+            "recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)) == UINT64_C(0x7788)",
+        ),
+        (
+            "fp_bits",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0xf2, 0x0f, 0x10, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            "recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x4000000000000000)) == 2.0",
+        ),
+        (
+            "narrow_rmw",
+            &[
+                0x55, 0x48, 0x89, 0xe5, 0x66, 0xf7, 0x55, 0x10, 0x0f, 0xb7, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            "recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)) == UINT64_C(0x8877)",
+        ),
+    ];
+    let scratch: ScratchDir = scratch_dir();
+    for (case_index, (name, code, expression)) in cases.iter().enumerate() {
+        let base: u64 = 0x4_1000 + u64::try_from(case_index).expect("case index fits u64") * 0x100;
+        let recovery: LeafRecovery = recover_leaf_function_abi(code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|error| panic!("{name} recovery failed: {error}"));
+        assert!(
+            !recovery.source.contains("(uintptr_t)&r_x86_stack"),
+            "{name} must not turn the uint64_t parameter into a typed pointer: {}",
+            recovery.source
+        );
+        for optimization in ["-O2", "-O3"] {
+            let tag: String = optimization.trim_start_matches('-').to_ascii_lowercase();
+            let source_path: PathBuf = scratch.path().join(format!("{name}_{tag}.c"));
+            let executable_path: PathBuf = scratch.path().join(if cfg!(windows) {
+                format!("{name}_{tag}.exe")
+            } else {
+                format!("{name}_{tag}")
+            });
+            let driver: String = format!(
+                "{}\nint main(void) {{ return {expression} ? 0 : 1; }}\n",
+                recovery.source
+            );
+            std::fs::write(&source_path, driver.as_bytes())
+                .expect("write strict stack-parameter C grade");
+            let build: std::process::Output = Command::new(&compiler)
+                .args([
+                    "-std=c11",
+                    optimization,
+                    "-fstrict-aliasing",
+                    "-Wstrict-aliasing=2",
+                    "-Werror",
+                    "-o",
+                ])
+                .arg(&executable_path)
+                .arg(&source_path)
+                .output()
+                .expect("compile strict stack-parameter C grade");
+            assert!(
+                build.status.success(),
+                "{name} {optimization} compile failed: {}\n{driver}",
+                String::from_utf8_lossy(&build.stderr)
+            );
+            let run: std::process::Output = Command::new(&executable_path)
+                .output()
+                .expect("run strict stack-parameter C grade");
+            assert!(
+                run.status.success(),
+                "{name} {optimization} execution diverged: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn partial_stack_slot_writes_preserve_untouched_bytes_in_c_and_rust() {
+    struct PartialWriteCase {
+        name: &'static str,
+        code: &'static [u8],
+        c_arguments: &'static str,
+        rust_arguments: &'static str,
+        expected: u64,
+    }
+
+    let compiler: String = clang().expect("clang is required for the partial stack-slot grade");
+    let cases: [PartialWriteCase; 5] = [
+        PartialWriteCase {
+            name: "byte_store",
+            code: &[
+                0x55, 0x48, 0x89, 0xe5, 0x40, 0x88, 0x7d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            c_arguments: "UINT64_C(0xaa), 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)",
+            rust_arguments: "0xaau64, 0, 0, 0, 0, 0, 0x1122334455667788u64",
+            expected: 0x1122_3344_5566_77aa,
+        },
+        PartialWriteCase {
+            name: "word_store",
+            code: &[
+                0x55, 0x48, 0x89, 0xe5, 0x66, 0x89, 0x7d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            c_arguments: "UINT64_C(0xbbcc), 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)",
+            rust_arguments: "0xbbccu64, 0, 0, 0, 0, 0, 0x1122334455667788u64",
+            expected: 0x1122_3344_5566_bbcc,
+        },
+        PartialWriteCase {
+            name: "dword_store",
+            code: &[
+                0x55, 0x48, 0x89, 0xe5, 0x89, 0x7d, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            c_arguments: "UINT64_C(0xaabbccdd), 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)",
+            rust_arguments: "0xaabbccddu64, 0, 0, 0, 0, 0, 0x1122334455667788u64",
+            expected: 0x1122_3344_aabb_ccdd,
+        },
+        PartialWriteCase {
+            name: "float_store",
+            code: &[
+                0x55, 0x48, 0x89, 0xe5, 0xf3, 0x0f, 0x11, 0x45, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d,
+                0xc3,
+            ],
+            c_arguments: "1.0f, 0, 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)",
+            rust_arguments: "1.0f32, 0, 0, 0, 0, 0, 0, 0x1122334455667788u64",
+            expected: 0x1122_3344_3f80_0000,
+        },
+        PartialWriteCase {
+            name: "dword_rmw",
+            code: &[
+                0x55, 0x48, 0x89, 0xe5, 0xf7, 0x55, 0x10, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
+            ],
+            c_arguments: "0, 0, 0, 0, 0, 0, UINT64_C(0x1122334455667788)",
+            rust_arguments: "0, 0, 0, 0, 0, 0, 0x1122334455667788u64",
+            expected: 0x1122_3344_aa99_8877,
+        },
+    ];
+    let scratch: ScratchDir = scratch_dir();
+    for (index, case) in cases.iter().enumerate() {
+        let base: u64 =
+            0x4_2000 + u64::try_from(index).expect("partial-write case index fits u64") * 0x100;
+        let recovery: LeafRecovery = recover_leaf_function_abi(case.code, base, PseudoAbi::SysV)
+            .unwrap_or_else(|error| panic!("{} recovery failed: {error}", case.name));
+        let c_driver: String = format!(
+            "{}\nint main(void) {{ return recovered({}) == UINT64_C(0x{:016x}) ? 0 : 1; }}\n",
+            recovery.source, case.c_arguments, case.expected
+        );
+        let c_path: PathBuf = scratch.path().join(format!("{}_partial.c", case.name));
+        let c_executable: PathBuf = scratch.path().join(format!("{}_partial.exe", case.name));
+        std::fs::write(&c_path, c_driver.as_bytes()).expect("write partial-write C driver");
+        let c_build: std::process::Output = Command::new(&compiler)
+            .args([
+                "-std=c11",
+                "-O3",
+                "-fstrict-aliasing",
+                "-Wstrict-aliasing=2",
+                "-Werror",
+                "-o",
+            ])
+            .arg(&c_executable)
+            .arg(&c_path)
+            .output()
+            .expect("compile partial-write C driver");
+        assert!(
+            c_build.status.success(),
+            "{} C compile failed: {}\n{c_driver}",
+            case.name,
+            String::from_utf8_lossy(&c_build.stderr)
+        );
+        let c_run: std::process::Output = Command::new(&c_executable)
+            .output()
+            .expect("run partial-write C driver");
+        assert!(c_run.status.success(), "{} C result diverged", case.name);
+
+        let rust_source: String = recovery
+            .rust_source
+            .unwrap_or_else(|| panic!("{} recovery must emit Rust", case.name));
+        let rust_driver: String = format!(
+            "{rust_source}\nfn main() {{ let got: u64 = recovered({}); std::process::exit(if got == 0x{:016x}u64 {{ 0 }} else {{ 1 }}); }}\n",
+            case.rust_arguments, case.expected
+        );
+        let rust_path: PathBuf = scratch.path().join(format!("{}_partial.rs", case.name));
+        let rust_executable: PathBuf = scratch
+            .path()
+            .join(format!("{}_partial_rust.exe", case.name));
+        std::fs::write(&rust_path, rust_driver.as_bytes())
+            .expect("write partial-write Rust driver");
+        let rust_build: std::process::Output = Command::new("rustc")
+            .args(["--edition=2021", "-O"])
+            .arg(&rust_path)
+            .args(["-o"])
+            .arg(&rust_executable)
+            .output()
+            .expect("compile partial-write Rust driver");
+        assert!(
+            rust_build.status.success(),
+            "{} Rust compile failed: {}\n{rust_driver}",
+            case.name,
+            String::from_utf8_lossy(&rust_build.stderr)
+        );
+        let rust_run: std::process::Output = Command::new(&rust_executable)
+            .output()
+            .expect("run partial-write Rust driver");
+        assert!(
+            rust_run.status.success(),
+            "{} Rust result diverged",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn resolved_call_with_a_real_outgoing_seventh_argument_refuses_by_name() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping resolved outgoing stack-call grade: clang not on PATH");
+        return;
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("resolved_stack_call.c");
+    let object_path: PathBuf = scratch.path().join("resolved_stack_call.o");
+    let source: &str = "__attribute__((noinline)) long long stack_callee(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6){ return a0 + a6; }\n__attribute__((noinline)) long long stack_caller(long long value){ return stack_callee(value, 2, 3, 4, 5, 6, 77) + 1; }\n";
+    std::fs::write(&source_path, source.as_bytes()).expect("write resolved stack-call source");
+    let build: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-O1",
+            "-fno-omit-frame-pointer",
+            "-fno-optimize-sibling-calls",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile resolved stack-call source");
+    assert!(
+        build.status.success(),
+        "resolved stack-call compile failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let object: Vec<u8> = std::fs::read(&object_path).expect("read resolved stack-call object");
+    let (callee_code, callee_base): (Vec<u8>, u64) =
+        function_code(&object, "stack_callee").expect("object must expose the stack callee");
+    let callee: LeafRecovery =
+        recover_leaf_function_abi(&callee_code, callee_base, PseudoAbi::SysV)
+            .expect("recover the real seventh-argument callee");
+    assert_eq!(callee.signature.callable_arity(), 7);
+    let (caller_code, caller_base): (Vec<u8>, u64) =
+        function_code(&object, "stack_caller").expect("object must expose the stack caller");
+    let caller_insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, caller_base, &caller_code).expect("disassemble the stack caller");
+    assert!(
+        caller_insns.iter().any(|insn: &DisasmInsn| {
+            let operands: String = insn.operands.to_ascii_lowercase();
+            (insn.mnemonic == "push" && (operands.contains("0x4d") || operands.contains("4dh")))
+                || (insn.mnemonic == "mov"
+                    && operands.contains("[rsp")
+                    && (operands.contains("0x4d") || operands.contains("4dh")))
+        }),
+        "the compiler must materialize the constant seventh argument on the outgoing stack: {caller_insns:?}"
+    );
+    let call: &DisasmInsn = caller_insns
+        .iter()
+        .find(|insn: &&DisasmInsn| insn.mnemonic == "call")
+        .expect("the real caller must expose its call instruction");
+    let rel32: i32 = i32::from_le_bytes(
+        call.bytes[1..5]
+            .try_into()
+            .expect("the direct call must carry a four-byte displacement"),
+    );
+    let next: u64 = call
+        .address
+        .checked_add(u64::try_from(call.bytes.len()).expect("call length fits u64"))
+        .expect("call fallthrough address is representable");
+    let target: u64 = next.wrapping_add_signed(i64::from(rel32));
+    let calls: [ResolvedCall; 1] = [ResolvedCall {
+        target,
+        name: Some("stack_callee".to_owned()),
+        signature: callee.signature,
+    }];
+    let error: disrobe_pass_native::Error =
+        recover_leaf_function_with_calls(&caller_code, caller_base, PseudoAbi::SysV, &calls)
+            .expect_err("the call IR cannot carry an outgoing stack operand");
+    assert!(
+        error
+            .to_string()
+            .contains("resolved call requires an outgoing x86-64 stack argument"),
+        "the unresolved call limitation must be named: {error}"
+    );
+}
+
+#[test]
+fn resolved_call_with_a_real_hidden_struct_return_refuses_by_name() {
+    let compiler: String =
+        clang().expect("clang is required for the resolved hidden-struct-return call grade");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("resolved_hidden_sret_call.c");
+    let object_path: PathBuf = scratch.path().join("resolved_hidden_sret_call.obj");
+    let source: &str = "typedef struct { long long a; long long b; long long c; long long d; } feat071_result;\n__attribute__((noinline)) feat071_result hidden_sret_callee(long long a0, long long a1, long long a2) { feat071_result value = {a0, a1, a2, a0 + a2}; return value; }\n__attribute__((noinline)) feat071_result hidden_sret_caller(long long a0, long long a1, long long a2) { feat071_result value = hidden_sret_callee(a0, a1, a2); value.a += 1; return value; }\n";
+    std::fs::write(&source_path, source.as_bytes())
+        .expect("write resolved hidden-struct-return call source");
+    let build: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-pc-windows-msvc",
+            "-O1",
+            "-mno-sse",
+            "-fno-vectorize",
+            "-fno-slp-vectorize",
+            "-fno-omit-frame-pointer",
+            "-fno-optimize-sibling-calls",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile resolved hidden-struct-return call source");
+    assert!(
+        build.status.success(),
+        "resolved hidden-struct-return call compile failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let object: Vec<u8> =
+        std::fs::read(&object_path).expect("read resolved hidden-struct-return call object");
+    let (callee_code, callee_base): (Vec<u8>, u64) = function_code(&object, "hidden_sret_callee")
+        .expect("object must expose the hidden-struct-return callee");
+    let callee: LeafRecovery =
+        recover_leaf_function_abi(&callee_code, callee_base, PseudoAbi::MsX64)
+            .expect("recover the real hidden-struct-return callee");
+    assert!(callee.sret.is_some());
+    assert_eq!(
+        callee.signature.ms_x64_parameter_origin(),
+        disrobe_pass_native::pseudo_c::MsX64ParameterOrigin::AfterHiddenStructReturn
+    );
+    assert_eq!(
+        callee.signature.parameter_bindings(),
+        &[
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::Rdx,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R8,
+                width_bits: 64,
+            },
+            PseudoParameterBinding::Integer {
+                register: PseudoReg::R9,
+                width_bits: 64,
+            },
+        ]
+    );
+    let (caller_code, caller_base): (Vec<u8>, u64) = function_code(&object, "hidden_sret_caller")
+        .expect("object must expose the hidden-struct-return caller");
+    let caller_insns: Vec<DisasmInsn> = disassemble(Arch::X86_64, caller_base, &caller_code)
+        .expect("disassemble the hidden-struct-return caller");
+    let call: &DisasmInsn = caller_insns
+        .iter()
+        .find(|insn: &&DisasmInsn| insn.mnemonic == "call")
+        .expect("the real hidden-struct-return caller must expose its call instruction");
+    let rel32: i32 = i32::from_le_bytes(
+        call.bytes[1..5]
+            .try_into()
+            .expect("the direct call must carry a four-byte displacement"),
+    );
+    let next: u64 = call
+        .address
+        .checked_add(u64::try_from(call.bytes.len()).expect("call length fits u64"))
+        .expect("call fallthrough address is representable");
+    let target: u64 = next.wrapping_add_signed(i64::from(rel32));
+    let calls: [ResolvedCall; 1] = [ResolvedCall {
+        target,
+        name: Some("hidden_sret_callee".to_owned()),
+        signature: callee.signature,
+    }];
+    let error: disrobe_pass_native::Error =
+        recover_leaf_function_with_calls(&caller_code, caller_base, PseudoAbi::MsX64, &calls)
+            .expect_err("the call IR cannot carry a hidden struct return buffer");
+    assert!(
+        error
+            .to_string()
+            .contains("resolved call requires a hidden struct return buffer"),
+        "the unresolved hidden-struct-return limitation must be named: {error}"
+    );
+}
+
+#[test]
+fn x86_stack_arguments_recover_through_dense_switch_entry_point() {
+    let Some(compiler): Option<String> = clang() else {
+        eprintln!("skipping stack-argument dense-switch grade: clang not on PATH");
+        return;
+    };
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("feat071_dense_switch.c");
+    let object_path: PathBuf = scratch.path().join("feat071_dense_switch.o");
+    let source: &str = "__attribute__((noinline)) long long feat071_dense_switch(long long selector, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6){ switch(selector){ case 0: return a6 + a1; case 1: return a6 - a2; case 2: return a6 ^ a3; case 3: return a6 | a4; case 4: return a6 & a5; case 5: return a6 * 3; default: return a6 + 97; } }";
+    std::fs::write(&source_path, source.as_bytes()).expect("write dense-switch stack source");
+    let compiled: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-O2",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile dense-switch stack source");
+    assert!(
+        compiled.status.success(),
+        "dense-switch stack compile failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let object: Vec<u8> = std::fs::read(&object_path).expect("read dense-switch object");
+    let (code, base): (Vec<u8>, u64) = function_code(&object, "feat071_dense_switch")
+        .expect("dense-switch object must expose the graded function");
+    let insns: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("disassemble dense-switch function");
+    assert!(
+        insns.iter().any(|insn: &DisasmInsn| {
+            insn.mnemonic == "jmp"
+                && (insn.operands.contains('[')
+                    || matches!(
+                        insn.operands.as_str(),
+                        "rax" | "rcx" | "rdx" | "rdi" | "r8" | "r9" | "r10" | "r11"
+                    ))
+        }),
+        "compiler must emit the dense dispatch graded by this test: {insns:?}"
+    );
+    let recovery: LeafRecovery =
+        recover_leaf_function_in_object(&object, &code, base, PseudoAbi::SysV, &[])
+            .expect("the public object recovery path must lift a stack argument inside the switch");
+    assert!(
+        recovery.lifted_switch,
+        "the dense-switch constructor must win"
+    );
+    assert_eq!(recovery.signature.callable_arity(), 7);
+    assert!(
+        recovery.source.contains("r_x86_stack0") && !recovery.source.contains("r_rbp"),
+        "the switch must use the incoming parameter instead of caller-owned storage: {}",
+        recovery.source
+    );
+}
+
+#[test]
+fn compiler_nested_loop_recovers_incoming_stack_argument_through_public_object_path() {
+    let compiler: String = clang().expect("clang is required for the nested-loop stack grade");
+    let scratch: ScratchDir = scratch_dir();
+    let source_path: PathBuf = scratch.path().join("feat071_outer_resume.c");
+    let object_path: PathBuf = scratch.path().join("feat071_outer_resume.o");
+    let source: &str = "__attribute__((noinline)) long long feat071_outer_resume(long long *p, long long rows, long long cols, long long a3, long long a4, long long a5, long long a6){ long long s = a6; long long r = 0; do { long long c = 0; do { s += p[r*cols + c]; c++; } while (c != cols); r++; } while (r != rows); return s; }";
+    std::fs::write(&source_path, source.as_bytes()).expect("write outer-resume stack source");
+    let compiled: std::process::Output = Command::new(&compiler)
+        .args([
+            "--target=x86_64-unknown-linux-gnu",
+            "-O3",
+            "-fno-vectorize",
+            "-fno-slp-vectorize",
+            "-fno-unroll-loops",
+            "-fno-omit-frame-pointer",
+            "-fno-stack-protector",
+            "-c",
+            "-o",
+        ])
+        .arg(&object_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile outer-resume stack source");
+    assert!(
+        compiled.status.success(),
+        "outer-resume stack compile failed: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let object: Vec<u8> = std::fs::read(&object_path).expect("read outer-resume stack object");
+    let (code, base): (Vec<u8>, u64) = function_code(&object, "feat071_outer_resume")
+        .expect("outer-resume object must expose the graded function");
+    let recovery: LeafRecovery =
+        recover_leaf_function_in_object(&object, &code, base, PseudoAbi::SysV, &[])
+            .expect("the public object path must lift the nested-loop stack argument");
+    assert!(
+        recovery.lifted_loop
+            && recovery.source.contains("r_x86_stack0")
+            && recovery.signature.callable_arity() == 7,
+        "the compiler artifact must reach a loop with a recovered stack parameter: {}",
+        recovery.source
     );
 }
 
@@ -8676,7 +10111,7 @@ fn compile_sysv_cross_extra(
 
 #[cfg(target_os = "linux")]
 #[test]
-fn clang_o0_sysv_incoming_stack_argument_is_not_modeled_as_a_local() {
+fn clang_o0_sysv_incoming_stack_argument_is_typed_before_local_frame_planning() {
     let source: &str = "__attribute__((noinline)) long long rsp_arg7(long long a0, long long a1, long long a2, long long a3, long long a4, long long a5, long long a6){ volatile long long local = a0 + a1; return local ^ a6; }";
     let objects: SysvCrossObjects =
         compile_sysv_cross_extra("rsp_arg7", source, &["-O0", "-fomit-frame-pointer"])
@@ -8697,13 +10132,14 @@ fn clang_o0_sysv_incoming_stack_argument_is_not_modeled_as_a_local() {
             .any(|insn: &DisasmInsn| insn.operands.contains("[rsp+")),
         "clang must address the incoming seventh argument through the fixed RSP frame: {insns:?}"
     );
-    let error: disrobe_pass_native::Error = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
-        .expect_err("a caller-owned seventh argument must not become a recovered local");
-    let message: String = error.to_string();
+    let recovery: LeafRecovery = recover_leaf_function_abi(&code, base, PseudoAbi::SysV)
+        .expect("a caller-owned seventh argument must become a typed parameter");
     assert!(
-        message.contains("bytes this frame owns")
-            && message.contains("caller owns the frame above it"),
-        "the compiler-emitted incoming stack argument must fail the frame-ownership check: {message}"
+        recovery.signature.callable_arity() == 7
+            && recovery.source.contains("r_x86_stack0")
+            && recovery.source.contains("stack_frame["),
+        "the compiler-emitted incoming stack argument must be separate from local frame storage: {}",
+        recovery.source
     );
 }
 

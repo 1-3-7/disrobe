@@ -90,6 +90,14 @@ pub enum Reg {
     A64Tmp2,
     A64FlagLhs,
     A64FlagRhs,
+    X86Stack0,
+    X86Stack1,
+    X86Stack2,
+    X86Stack3,
+    X86Stack4,
+    X86Stack5,
+    X86Stack6,
+    X86Stack7,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -464,6 +472,42 @@ impl Abi {
                 Reg::A64Stack6,
                 Reg::A64Stack7,
             ],
+        }
+    }
+
+    const fn integer_parameter_order(self) -> &'static [Reg] {
+        match self {
+            Self::MsX64 => &[
+                Reg::Rcx,
+                Reg::Rdx,
+                Reg::R8,
+                Reg::R9,
+                Reg::X86Stack0,
+                Reg::X86Stack1,
+                Reg::X86Stack2,
+                Reg::X86Stack3,
+                Reg::X86Stack4,
+                Reg::X86Stack5,
+                Reg::X86Stack6,
+                Reg::X86Stack7,
+            ],
+            Self::SysV => &[
+                Reg::Rdi,
+                Reg::Rsi,
+                Reg::Rdx,
+                Reg::Rcx,
+                Reg::R8,
+                Reg::R9,
+                Reg::X86Stack0,
+                Reg::X86Stack1,
+                Reg::X86Stack2,
+                Reg::X86Stack3,
+                Reg::X86Stack4,
+                Reg::X86Stack5,
+                Reg::X86Stack6,
+                Reg::X86Stack7,
+            ],
+            Self::Aapcs64 => self.arg_order(),
         }
     }
 }
@@ -1258,17 +1302,63 @@ pub enum ParameterBinding {
     },
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsX64ParameterOrigin {
+    PhysicalSlotZero,
+    AfterHiddenStructReturn,
+}
+
+impl MsX64ParameterOrigin {
+    const fn for_signature(abi: Abi, hidden_struct_return: bool) -> Self {
+        match (abi, hidden_struct_return) {
+            (Abi::MsX64, true) => Self::AfterHiddenStructReturn,
+            (Abi::MsX64 | Abi::SysV | Abi::Aapcs64, false) | (Abi::SysV | Abi::Aapcs64, true) => {
+                Self::PhysicalSlotZero
+            }
+        }
+    }
+
+    const fn physical_slot(self, user_slot: usize) -> Option<usize> {
+        match self {
+            Self::PhysicalSlotZero => Some(user_slot),
+            Self::AfterHiddenStructReturn => user_slot.checked_add(1),
+        }
+    }
+
+    const fn user_slot(self, physical_slot: u8) -> Option<u8> {
+        match self {
+            Self::PhysicalSlotZero => Some(physical_slot),
+            Self::AfterHiddenStructReturn => physical_slot.checked_sub(1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveredSignature {
     abi: Abi,
+    ms_x64_parameter_origin: MsX64ParameterOrigin,
     parameter_bindings: Vec<ParameterBinding>,
 }
 
 impl RecoveredSignature {
     pub fn from_bindings(abi: Abi, parameter_bindings: Vec<ParameterBinding>) -> Result<Self> {
-        validate_parameter_bindings(abi, &parameter_bindings)?;
+        Self::from_bindings_with_origin(
+            abi,
+            MsX64ParameterOrigin::PhysicalSlotZero,
+            parameter_bindings,
+        )
+    }
+
+    pub fn from_bindings_with_origin(
+        abi: Abi,
+        ms_x64_parameter_origin: MsX64ParameterOrigin,
+        parameter_bindings: Vec<ParameterBinding>,
+    ) -> Result<Self> {
+        validate_parameter_bindings(abi, ms_x64_parameter_origin, &parameter_bindings)?;
         Ok(Self {
             abi,
+            ms_x64_parameter_origin,
             parameter_bindings,
         })
     }
@@ -1279,12 +1369,17 @@ impl RecoveredSignature {
     ) -> Self {
         Self {
             abi,
+            ms_x64_parameter_origin: MsX64ParameterOrigin::PhysicalSlotZero,
             parameter_bindings,
         }
     }
 
     pub const fn abi(&self) -> Abi {
         self.abi
+    }
+
+    pub const fn ms_x64_parameter_origin(&self) -> MsX64ParameterOrigin {
+        self.ms_x64_parameter_origin
     }
 
     pub fn parameter_bindings(&self) -> &[ParameterBinding] {
@@ -1333,25 +1428,39 @@ impl RecoveredSignature {
     }
 }
 
-fn validate_parameter_bindings(abi: Abi, bindings: &[ParameterBinding]) -> Result<()> {
+fn validate_parameter_bindings(
+    abi: Abi,
+    ms_x64_parameter_origin: MsX64ParameterOrigin,
+    bindings: &[ParameterBinding],
+) -> Result<()> {
+    if abi != Abi::MsX64 && ms_x64_parameter_origin != MsX64ParameterOrigin::PhysicalSlotZero {
+        return Err(Error::LlvmIr(
+            "hidden struct return parameter rebasing is specific to microsoft x64".to_owned(),
+        ));
+    }
     if abi == Abi::MsX64 {
-        let integer_order: &[Reg] = abi.arg_order();
+        let integer_order: &[Reg] = abi.integer_parameter_order();
         for (slot, binding) in bindings.iter().enumerate() {
             let expected_slot: u8 = u8::try_from(slot)
                 .map_err(|_| Error::LlvmIr("parameter slot index overflow".to_owned()))?;
+            let physical_slot: usize = ms_x64_parameter_origin
+                .physical_slot(slot)
+                .ok_or_else(|| Error::LlvmIr("physical parameter slot overflow".to_owned()))?;
             match binding {
                 ParameterBinding::Integer {
                     register,
                     width_bits,
                 } => {
-                    if *width_bits == 0 || integer_order.get(slot) != Some(register) {
+                    if *width_bits == 0 || integer_order.get(physical_slot) != Some(register) {
                         return Err(Error::LlvmIr(
                             "microsoft x64 integer parameter binding is not canonical".to_owned(),
                         ));
                     }
                 }
                 ParameterBinding::FloatingPoint { register_index, .. } => {
-                    if *register_index != expected_slot || slot >= fp_arg_order(abi).len() {
+                    if usize::from(*register_index) != physical_slot
+                        || physical_slot >= fp_arg_order(abi).len()
+                    {
                         return Err(Error::LlvmIr(
                             "microsoft x64 floating-point parameter binding is not canonical"
                                 .to_owned(),
@@ -1363,8 +1472,8 @@ fn validate_parameter_bindings(abi: Abi, bindings: &[ParameterBinding]) -> Resul
                     width_bits,
                 } => {
                     if *width_bits == 0
-                        || *register_index != expected_slot
-                        || slot >= integer_order.len()
+                        || usize::from(*register_index) != physical_slot
+                        || physical_slot >= fp_arg_order(abi).len()
                     {
                         return Err(Error::LlvmIr(
                             "microsoft x64 vector parameter binding is not canonical".to_owned(),
@@ -1372,7 +1481,7 @@ fn validate_parameter_bindings(abi: Abi, bindings: &[ParameterBinding]) -> Resul
                     }
                 }
                 ParameterBinding::UnobservedMsX64 { slot } => {
-                    if *slot != expected_slot || usize::from(*slot) >= integer_order.len() {
+                    if *slot != expected_slot || physical_slot >= integer_order.len() {
                         return Err(Error::LlvmIr(
                             "microsoft x64 unobserved parameter slot is not canonical".to_owned(),
                         ));
@@ -1383,7 +1492,7 @@ fn validate_parameter_bindings(abi: Abi, bindings: &[ParameterBinding]) -> Resul
         return Ok(());
     }
 
-    let integer_order: &[Reg] = abi.arg_order();
+    let integer_order: &[Reg] = abi.integer_parameter_order();
     let mut stage: u8 = 0;
     let mut prior_vector_register: Option<u8> = None;
     let mut prior_integer: Option<usize> = None;
@@ -2672,7 +2781,7 @@ fn recover_leaf_function_calls_impl(
 ) -> Result<LeafRecovery> {
     let LeafItems {
         insns,
-        items,
+        mut items,
         mut return_width,
     } = build_leaf_items(
         machine_code,
@@ -2682,11 +2791,16 @@ fn recover_leaf_function_calls_impl(
         packed_consts,
         rip_relative_lea_policy,
     )?;
+    let frame_shape: FrameShape = classify_frame(&insns, abi);
+    let rewrote_items: bool = rewrite_incoming_stack_items(&mut items, frame_shape)?;
     let mut structured: Structured = structure_items(&items)?;
     if !calls.is_empty() {
         let call_map: BTreeMap<u64, &ResolvedCall> =
             calls.iter().map(|c: &ResolvedCall| (c.target, c)).collect();
         annotate_calls_block(&mut structured.body, &call_map, abi)?;
+    }
+    if !rewrote_items {
+        rewrite_incoming_stack_arguments(&mut structured.body, frame_shape)?;
     }
     let fp_return: Option<FpWidth> = scalar_fp_return_channel(&structured.body)?;
     let mut call_targets: Vec<u64> = Vec::new();
@@ -2698,6 +2812,8 @@ fn recover_leaf_function_calls_impl(
         .is_none()
         .then(|| detect_sret(&structured.body, abi))
         .flatten();
+    let ms_x64_parameter_origin: MsX64ParameterOrigin =
+        MsX64ParameterOrigin::for_signature(abi, sret_plan.is_some());
     let mut params: Vec<Reg> = infer_params(&structured.body, abi)?;
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
     validate_ms_x64_shared_argument_index(abi, &params, &fp_args, sret_plan.is_some())?;
@@ -2714,7 +2830,7 @@ fn recover_leaf_function_calls_impl(
         exact_integer_types: false,
         abi,
     };
-    let frame_plan: Option<FramePlan> = plan_frame(&structured.body, classify_frame(&insns, abi))?;
+    let frame_plan: Option<FramePlan> = plan_frame(&structured.body, frame_shape)?;
     let mut aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame_plan.as_ref());
     let (frame_base, frame_slots): (Option<Reg>, BTreeMap<i64, SlotCType>) =
@@ -2747,10 +2863,11 @@ fn recover_leaf_function_calls_impl(
         source,
         rust_source,
         return_width_bits: return_width.bits(),
-        signature: RecoveredSignature::from_canonical_bindings(
+        signature: RecoveredSignature::from_bindings_with_origin(
             signature.abi,
-            signature.parameter_bindings(),
-        ),
+            ms_x64_parameter_origin,
+            signature.parameter_bindings_from(ms_x64_parameter_origin),
+        )?,
         returns_fp,
         lifted_split_return: structured.lifted_split_return,
         lifted_loop: structured.lifted_loop,
@@ -2833,8 +2950,15 @@ impl ScalarParam {
 
 impl FnSignature {
     fn parameter_bindings(&self) -> Vec<ParameterBinding> {
+        self.parameter_bindings_from(MsX64ParameterOrigin::PhysicalSlotZero)
+    }
+
+    fn parameter_bindings_from(
+        &self,
+        ms_x64_parameter_origin: MsX64ParameterOrigin,
+    ) -> Vec<ParameterBinding> {
         let mut bindings: Vec<ParameterBinding> = self
-            .ordered_params()
+            .ordered_params_from(ms_x64_parameter_origin)
             .into_iter()
             .map(ScalarParam::parameter_binding)
             .collect();
@@ -2848,8 +2972,15 @@ impl FnSignature {
     }
 
     fn ordered_params(&self) -> Vec<ScalarParam> {
+        self.ordered_params_from(MsX64ParameterOrigin::PhysicalSlotZero)
+    }
+
+    fn ordered_params_from(
+        &self,
+        ms_x64_parameter_origin: MsX64ParameterOrigin,
+    ) -> Vec<ScalarParam> {
         match self.abi {
-            Abi::MsX64 => self.ms_x64_ordered_params(),
+            Abi::MsX64 => self.ms_x64_ordered_params(ms_x64_parameter_origin),
             Abi::SysV | Abi::Aapcs64 => {
                 let mut out: Vec<ScalarParam> = self
                     .fp
@@ -2870,17 +3001,27 @@ impl FnSignature {
         }
     }
 
-    fn ms_x64_ordered_params(&self) -> Vec<ScalarParam> {
-        let int_order: &'static [Reg] = Abi::MsX64.arg_order();
+    fn ms_x64_ordered_params(
+        &self,
+        ms_x64_parameter_origin: MsX64ParameterOrigin,
+    ) -> Vec<ScalarParam> {
+        let int_order: &'static [Reg] = Abi::MsX64.integer_parameter_order();
         let fp_order: &'static [Xmm] = fp_arg_order(Abi::MsX64);
         let mut slotted: Vec<(u8, ScalarParam)> =
             Vec::with_capacity(self.int.len() + self.fp.len());
+        let mut has_stack_parameter: bool = false;
         for (reg, width) in &self.int {
-            let Some(slot): Option<usize> = int_order.iter().position(|r: &Reg| r == reg) else {
+            let Some(physical_slot): Option<usize> = int_order.iter().position(|r: &Reg| r == reg)
+            else {
                 continue;
             };
+            let Some(slot): Option<u8> = ms_x64_parameter_origin.user_slot(physical_slot as u8)
+            else {
+                continue;
+            };
+            has_stack_parameter |= is_x86_stack_argument_reg(*reg);
             slotted.push((
-                slot as u8,
+                slot,
                 ScalarParam::Integer {
                     reg: *reg,
                     width: *width,
@@ -2888,11 +3029,16 @@ impl FnSignature {
             ));
         }
         for (xmm, width) in &self.fp {
-            let Some(slot): Option<usize> = fp_order.iter().position(|x: &Xmm| x == xmm) else {
+            let Some(physical_slot): Option<usize> = fp_order.iter().position(|x: &Xmm| x == xmm)
+            else {
+                continue;
+            };
+            let Some(slot): Option<u8> = ms_x64_parameter_origin.user_slot(physical_slot as u8)
+            else {
                 continue;
             };
             slotted.push((
-                slot as u8,
+                slot,
                 ScalarParam::FloatingPoint {
                     xmm: *xmm,
                     width: *width,
@@ -2900,9 +3046,14 @@ impl FnSignature {
             ));
         }
         slotted.sort_by_key(|(slot, _): &(u8, ScalarParam)| *slot);
+        if slotted.is_empty() {
+            return Vec::new();
+        }
         if slotted
             .first()
             .is_none_or(|(slot, _): &(u8, ScalarParam)| *slot != 0)
+            && !has_stack_parameter
+            && ms_x64_parameter_origin == MsX64ParameterOrigin::PhysicalSlotZero
         {
             return slotted
                 .into_iter()
@@ -2943,6 +3094,7 @@ fn validate_ms_x64_shared_argument_index(
     let int_order: &'static [Reg] = Abi::MsX64.arg_order();
     let fp_order: &'static [Xmm] = fp_arg_order(Abi::MsX64);
     let mut slot_kind: [Option<&'static str>; 4] = [None; 4];
+    let has_stack_parameter: bool = params.iter().copied().any(is_x86_stack_argument_reg);
     for reg in params {
         let Some(slot) = int_order.iter().position(|r: &Reg| r == reg) else {
             continue;
@@ -2973,7 +3125,11 @@ fn validate_ms_x64_shared_argument_index(
         .iter()
         .rposition(Option::is_some)
         .map_or(0, |i: usize| i + 1);
-    if slot_kind[..highest].iter().any(Option::is_none) && (slot_kind[0].is_none() || hidden_sret) {
+    if slot_kind[..highest].iter().any(Option::is_none)
+        && !hidden_sret
+        && !has_stack_parameter
+        && slot_kind[0].is_none()
+    {
         return Err(Error::LlvmIr(
             "microsoft x64 argument positions read before a write are not contiguous from position 0; a gap between the lowest and highest observed register cannot be represented as a single callable prototype".to_owned(),
         ));
@@ -3328,6 +3484,8 @@ fn build_switch_recovery(
         annotate_calls_block(&mut body, &call_map, abi)?;
     }
 
+    let frame_shape: FrameShape = classify_frame(insns, abi);
+    rewrite_incoming_stack_arguments(&mut body, frame_shape)?;
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
     let params: Vec<Reg> = infer_params(&body, abi)?;
@@ -3345,7 +3503,7 @@ fn build_switch_recovery(
         FnReturn::Fp(width) => Some(scalar_of_fp(width)),
         FnReturn::Int(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
-    let frame_plan: Option<FramePlan> = plan_frame(&body, classify_frame(insns, abi))?;
+    let frame_plan: Option<FramePlan> = plan_frame(&body, frame_shape)?;
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, frame_plan.as_ref());
     let source: String = emit_c(
         &body,
@@ -5507,12 +5665,26 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
 }
 
 fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec<Reg>> {
+    if signature.ms_x64_parameter_origin() == MsX64ParameterOrigin::AfterHiddenStructReturn {
+        return Err(Error::LlvmIr(
+            "resolved call requires a hidden struct return buffer that the call IR cannot carry"
+                .to_owned(),
+        ));
+    }
     let abi: Abi = signature.abi();
     let argument_order: &[Reg] = abi.arg_order();
     let mut registers: Vec<Reg> = Vec::with_capacity(signature.callable_arity());
     for binding in signature.parameter_bindings() {
         match binding {
-            ParameterBinding::Integer { register, .. } => registers.push(*register),
+            ParameterBinding::Integer { register, .. } => {
+                if is_x86_stack_argument_reg(*register) {
+                    return Err(Error::LlvmIr(
+                        "resolved call requires an outgoing x86-64 stack argument that the call IR cannot carry"
+                            .to_owned(),
+                    ));
+                }
+                registers.push(*register);
+            }
             ParameterBinding::UnobservedMsX64 { slot } if abi == Abi::MsX64 => {
                 let Some(register): Option<&Reg> = argument_order.get(usize::from(*slot)) else {
                     return Err(Error::LlvmIr(
@@ -5895,6 +6067,19 @@ impl StackFrameExtent {
 
     fn home_end(self) -> i64 {
         self.home_start().saturating_add(self.home_bytes())
+    }
+
+    fn incoming_start(self) -> Option<i64> {
+        match self.boundary {
+            StackFrameBoundary::ReturnAddress {
+                linkage_bytes,
+                home_bytes,
+            } => self
+                .private_end
+                .checked_add(linkage_bytes)?
+                .checked_add(home_bytes),
+            StackFrameBoundary::EntryStackPointer => Some(self.private_end),
+        }
     }
 
     fn owns(self, disp: i64, bytes: i64) -> bool {
@@ -11119,7 +11304,7 @@ fn nzcv_condition_holds(kind: CondKind, nzcv: u8) -> bool {
 fn infer_params(body: &Block, abi: Abi) -> Result<Vec<Reg>> {
     let mut packed_initialized: BTreeSet<Xmm> = BTreeSet::new();
     validate_packed_block(body, &mut packed_initialized)?;
-    let arg_order: &[Reg] = abi.arg_order();
+    let arg_order: &[Reg] = abi.integer_parameter_order();
     let mut written: BTreeMap<Reg, bool> = BTreeMap::new();
     let mut read_before_write: Vec<Reg> = Vec::new();
     let mut note_read = |reg: Reg, written: &BTreeMap<Reg, bool>, acc: &mut Vec<Reg>| {
@@ -11132,6 +11317,40 @@ fn infer_params(body: &Block, abi: Abi) -> Result<Vec<Reg>> {
     };
     scan_block_params(body, &mut written, &mut read_before_write, &mut note_read)?;
     let mut ordered: Vec<Reg> = read_before_write;
+    let highest_stack: Option<usize> = ordered
+        .iter()
+        .filter_map(|reg: &Reg| {
+            matches!(
+                reg,
+                Reg::X86Stack0
+                    | Reg::X86Stack1
+                    | Reg::X86Stack2
+                    | Reg::X86Stack3
+                    | Reg::X86Stack4
+                    | Reg::X86Stack5
+                    | Reg::X86Stack6
+                    | Reg::X86Stack7
+            )
+            .then(|| {
+                arg_order
+                    .iter()
+                    .position(|candidate: &Reg| candidate == reg)
+            })
+            .flatten()
+        })
+        .max();
+    if abi != Abi::MsX64
+        && let Some(highest_stack) = highest_stack
+    {
+        let prefix_len: usize = highest_stack
+            .checked_add(1)
+            .ok_or_else(|| Error::LlvmIr("incoming x86-64 parameter prefix overflow".to_owned()))?;
+        for reg in arg_order.iter().take(prefix_len).copied() {
+            if !ordered.contains(&reg) {
+                ordered.push(reg);
+            }
+        }
+    }
     ordered.sort_by_key(|r: &Reg| {
         arg_order
             .iter()
@@ -13298,6 +13517,14 @@ const fn reg_var(reg: Reg) -> &'static str {
         Reg::R13 => "r_r13",
         Reg::R14 => "r_r14",
         Reg::R15 => "r_r15",
+        Reg::X86Stack0 => "r_x86_stack0",
+        Reg::X86Stack1 => "r_x86_stack1",
+        Reg::X86Stack2 => "r_x86_stack2",
+        Reg::X86Stack3 => "r_x86_stack3",
+        Reg::X86Stack4 => "r_x86_stack4",
+        Reg::X86Stack5 => "r_x86_stack5",
+        Reg::X86Stack6 => "r_x86_stack6",
+        Reg::X86Stack7 => "r_x86_stack7",
         Reg::A64X1 => "r_a64_x1",
         Reg::A64X2 => "r_a64_x2",
         Reg::A64X3 => "r_a64_x3",
@@ -13792,6 +14019,23 @@ fn addr_expr(base: Option<Reg>, index: Option<IndexOperand>, disp: i64) -> Strin
     })
 }
 
+fn x86_stack_argument_mem(mem: &MemRef) -> Option<Reg> {
+    let reg: Reg = mem.base?;
+    (is_x86_stack_argument_reg(reg) && mem.index.is_none() && mem.disp == 0).then_some(reg)
+}
+
+fn x86_stack_argument_read(mem: &MemRef) -> Option<String> {
+    let reg: Reg = x86_stack_argument_mem(mem)?;
+    let var: &'static str = reg_var(reg);
+    Some(match mem.width {
+        Width::W64 => var.to_owned(),
+        width => c_render(|cx| {
+            let value: CExpr = cx.var(var);
+            c_cast(cx, width_c_uint(width), value)
+        }),
+    })
+}
+
 fn aggregate_field_name(disp: i64) -> String {
     format!("field_{disp:x}")
 }
@@ -13886,6 +14130,9 @@ fn aggregate_c_mem_expr(
 }
 
 fn deref_expr(mem: &MemRef, plan: &AggregatePlan) -> String {
+    if let Some(value) = x86_stack_argument_read(mem) {
+        return value;
+    }
     if let Some((expr, _)) = aggregate_c_mem_expr(mem, plan, AggregateScalar::Integer(mem.width)) {
         return expr;
     }
@@ -14904,6 +15151,9 @@ fn infer_aggregate_plan(body: &Block, params: &[Reg], frame: Option<&FramePlan>)
     }
     let mut plan: AggregatePlan = AggregatePlan::default();
     for &reg in params {
+        if is_x86_stack_argument_reg(reg) {
+            continue;
+        }
         if plan.roots.len() >= AGGREGATE_MAX_ROOTS {
             return AggregatePlan::default();
         }
@@ -15039,6 +15289,946 @@ struct FramePlan {
     base: Reg,
     size: usize,
     base_offset: usize,
+}
+
+const X86_STACK_ARGUMENT_SLOTS: usize = 8;
+
+const fn is_x86_stack_argument_reg(reg: Reg) -> bool {
+    matches!(
+        reg,
+        Reg::X86Stack0
+            | Reg::X86Stack1
+            | Reg::X86Stack2
+            | Reg::X86Stack3
+            | Reg::X86Stack4
+            | Reg::X86Stack5
+            | Reg::X86Stack6
+            | Reg::X86Stack7
+    )
+}
+
+const fn x86_stack_argument_reg(index: usize) -> Option<Reg> {
+    if index >= X86_STACK_ARGUMENT_SLOTS {
+        return None;
+    }
+    match index {
+        0 => Some(Reg::X86Stack0),
+        1 => Some(Reg::X86Stack1),
+        2 => Some(Reg::X86Stack2),
+        3 => Some(Reg::X86Stack3),
+        4 => Some(Reg::X86Stack4),
+        5 => Some(Reg::X86Stack5),
+        6 => Some(Reg::X86Stack6),
+        7 => Some(Reg::X86Stack7),
+        _ => None,
+    }
+}
+
+const fn x86_stack_argument_index(reg: Reg) -> Option<usize> {
+    match reg {
+        Reg::X86Stack0 => Some(0),
+        Reg::X86Stack1 => Some(1),
+        Reg::X86Stack2 => Some(2),
+        Reg::X86Stack3 => Some(3),
+        Reg::X86Stack4 => Some(4),
+        Reg::X86Stack5 => Some(5),
+        Reg::X86Stack6 => Some(6),
+        Reg::X86Stack7 => Some(7),
+        _ => None,
+    }
+}
+
+const fn incoming_stack_byte_mask(width: Width) -> u8 {
+    match width {
+        Width::W8 => 0x01,
+        Width::W16 => 0x03,
+        Width::W32 => 0x0f,
+        Width::W64 => 0xff,
+    }
+}
+
+fn incoming_stack_reg_for_mem(
+    mem: MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<Option<RegRef>> {
+    if mem.base != Some(frame_base) || mem.index.is_some() {
+        return Ok(None);
+    }
+    let Some(start): Option<i64> = extent.incoming_start() else {
+        return Ok(None);
+    };
+    if mem.disp < start {
+        return Ok(None);
+    }
+    let relative: i64 = mem
+        .disp
+        .checked_sub(start)
+        .ok_or_else(|| Error::LlvmIr("incoming x86-64 stack offset underflow".to_owned()))?;
+    if relative % 8 != 0 {
+        return Err(Error::LlvmIr(
+            "incoming x86-64 stack argument is not eight-byte aligned".to_owned(),
+        ));
+    }
+    let index: usize = usize::try_from(relative / 8)
+        .map_err(|_| Error::LlvmIr("incoming x86-64 stack argument index overflow".to_owned()))?;
+    let Some(reg): Option<Reg> = x86_stack_argument_reg(index) else {
+        return Err(Error::LlvmIr(
+            "incoming x86-64 stack argument exceeds the bounded eight-slot lift".to_owned(),
+        ));
+    };
+    Ok(Some(RegRef {
+        reg,
+        width: mem.width,
+    }))
+}
+
+fn proven_incoming_stack_reg_for_mem(
+    mem: MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Option<RegRef> {
+    if mem.base != Some(frame_base) || mem.index.is_some() {
+        return None;
+    }
+    let start: i64 = extent.incoming_start()?;
+    for index in 0..X86_STACK_ARGUMENT_SLOTS {
+        let reg: Reg = x86_stack_argument_reg(index)?;
+        if !proven.contains(&reg) {
+            continue;
+        }
+        let byte_offset: i64 = i64::try_from(index.checked_mul(8)?).ok()?;
+        let disp: i64 = start.checked_add(byte_offset)?;
+        if mem.disp == disp {
+            return Some(RegRef {
+                reg,
+                width: mem.width,
+            });
+        }
+    }
+    None
+}
+
+fn incoming_stack_write_index(
+    mem: MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Option<usize> {
+    if mem.base != Some(frame_base) || mem.index.is_some() {
+        return None;
+    }
+    let start: i64 = extent.incoming_start()?;
+    let relative: i64 = mem.disp.checked_sub(start)?;
+    if relative < 0 || relative % 8 != 0 {
+        return None;
+    }
+    let index: usize = usize::try_from(relative / 8).ok()?;
+    (index < X86_STACK_ARGUMENT_SLOTS).then_some(index)
+}
+
+fn analyze_incoming_read_mem(
+    mem: MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    let Some(reference): Option<RegRef> = incoming_stack_reg_for_mem(mem, frame_base, extent)?
+    else {
+        return Ok(());
+    };
+    let Some(index): Option<usize> = x86_stack_argument_index(reference.reg) else {
+        return Err(Error::LlvmIr(
+            "incoming x86-64 stack argument has no bounded slot index".to_owned(),
+        ));
+    };
+    let mask: u8 = incoming_stack_byte_mask(mem.width);
+    if written[index] & mask != mask {
+        proven.insert(reference.reg);
+    }
+    Ok(())
+}
+
+fn analyze_incoming_write_mem(
+    mem: MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: &mut [u8; X86_STACK_ARGUMENT_SLOTS],
+) {
+    if let Some(index) = incoming_stack_write_index(mem, frame_base, extent) {
+        written[index] |= incoming_stack_byte_mask(mem.width);
+    }
+}
+
+fn analyze_incoming_source(
+    source: &Source,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    if let Source::Mem(mem) = source {
+        analyze_incoming_read_mem(*mem, frame_base, extent, written, proven)?;
+    }
+    Ok(())
+}
+
+fn analyze_incoming_ext_source(
+    source: &ExtSource,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    if let ExtSource::Mem(mem) = source {
+        analyze_incoming_read_mem(*mem, frame_base, extent, written, proven)?;
+    }
+    Ok(())
+}
+
+fn analyze_incoming_fp_operand(
+    operand: &FpOperand,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    if let FpOperand::Mem(mem) = operand {
+        analyze_incoming_read_mem(*mem, frame_base, extent, written, proven)?;
+    }
+    Ok(())
+}
+
+fn analyze_incoming_flags(
+    flags: &Flags,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    match flags {
+        Flags::Cmp { rhs, .. } | Flags::Add { rhs, .. } => {
+            analyze_incoming_source(rhs, frame_base, extent, written, proven)?;
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            analyze_incoming_read_mem(*lhs, frame_base, extent, written, proven)?;
+            analyze_incoming_source(rhs, frame_base, extent, written, proven)?;
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            analyze_incoming_flags(prior, frame_base, extent, written, proven)?;
+            analyze_incoming_flags(taken, frame_base, extent, written, proven)?;
+        }
+        Flags::FpCmp { rhs, .. } => {
+            analyze_incoming_fp_operand(rhs, frame_base, extent, written, proven)?;
+        }
+        Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::Snapshot { .. } => {}
+    }
+    Ok(())
+}
+
+fn analyze_incoming_stmt(
+    stmt: &Stmt,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: &mut [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    match stmt {
+        Stmt::Assign { src, .. } | Stmt::BinAssign { src, .. } => {
+            analyze_incoming_source(src, frame_base, extent, *written, proven)?;
+        }
+        Stmt::Store { addr, src } => {
+            analyze_incoming_source(src, frame_base, extent, *written, proven)?;
+            analyze_incoming_write_mem(*addr, frame_base, extent, written);
+        }
+        Stmt::Cond { src, flags, .. } => {
+            analyze_incoming_source(src, frame_base, extent, *written, proven)?;
+            analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+        }
+        Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
+            analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+        }
+        Stmt::MemRmw { addr, op } => {
+            analyze_incoming_read_mem(*addr, frame_base, extent, *written, proven)?;
+            if let MemRmwOp::Bin { src, .. } = op {
+                analyze_incoming_source(src, frame_base, extent, *written, proven)?;
+            }
+            analyze_incoming_write_mem(*addr, frame_base, extent, written);
+        }
+        Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
+            analyze_incoming_ext_source(src, frame_base, extent, *written, proven)?;
+        }
+        Stmt::FpBin { lhs, rhs, .. } | Stmt::FpMinMax { lhs, rhs, .. } => {
+            analyze_incoming_fp_operand(lhs, frame_base, extent, *written, proven)?;
+            analyze_incoming_fp_operand(rhs, frame_base, extent, *written, proven)?;
+        }
+        Stmt::FpMov { src, .. }
+        | Stmt::FpSqrt { src, .. }
+        | Stmt::FpUnary { src, .. }
+        | Stmt::FpRound { src, .. } => {
+            analyze_incoming_fp_operand(src, frame_base, extent, *written, proven)?;
+        }
+        Stmt::FpFma {
+            mul_lhs,
+            mul_rhs,
+            addend,
+            ..
+        } => {
+            analyze_incoming_fp_operand(mul_lhs, frame_base, extent, *written, proven)?;
+            analyze_incoming_fp_operand(mul_rhs, frame_base, extent, *written, proven)?;
+            analyze_incoming_fp_operand(addend, frame_base, extent, *written, proven)?;
+        }
+        Stmt::FpCsel {
+            if_true,
+            if_false,
+            flags,
+            ..
+        } => {
+            analyze_incoming_fp_operand(if_true, frame_base, extent, *written, proven)?;
+            analyze_incoming_fp_operand(if_false, frame_base, extent, *written, proven)?;
+            analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+        }
+        Stmt::Vector(VecStmt::Load { arr, addr, .. }) => {
+            if arr.is_none_or(|arrangement: VecArrangement| arrangement.total_bits() > 64)
+                && incoming_stack_reg_for_mem(*addr, frame_base, extent)?.is_some()
+            {
+                return Err(Error::LlvmIr(
+                    "incoming x86-64 stack argument vector access exceeds one eight-byte slot"
+                        .to_owned(),
+                ));
+            }
+            analyze_incoming_read_mem(*addr, frame_base, extent, *written, proven)?;
+        }
+        Stmt::Vector(VecStmt::Store { addr, .. }) => {
+            analyze_incoming_write_mem(*addr, frame_base, extent, written);
+        }
+        Stmt::FpStore { addr, .. } => {
+            analyze_incoming_write_mem(*addr, frame_base, extent, written);
+        }
+        Stmt::Vector(
+            VecStmt::Bin { .. }
+            | VecStmt::Dup { .. }
+            | VecStmt::LaneInsert { .. }
+            | VecStmt::Compare { .. }
+            | VecStmt::MoveImm { .. }
+            | VecStmt::Reduce { .. }
+            | VecStmt::ExtractToGpr { .. }
+            | VecStmt::WidenExtend { .. }
+            | VecStmt::WidenAdd { .. },
+        )
+        | Stmt::UnAssign { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => {}
+    }
+    Ok(())
+}
+
+fn analyze_incoming_cond(
+    cond: &Cond,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    match cond {
+        Cond::Leaf { flags, .. } => {
+            analyze_incoming_flags(flags, frame_base, extent, written, proven)?;
+        }
+        Cond::And(lhs, rhs) | Cond::Or(lhs, rhs) => {
+            analyze_incoming_cond(lhs, frame_base, extent, written, proven)?;
+            analyze_incoming_cond(rhs, frame_base, extent, written, proven)?;
+        }
+    }
+    Ok(())
+}
+
+fn intersect_incoming_writes(
+    states: &[[u8; X86_STACK_ARGUMENT_SLOTS]],
+) -> [u8; X86_STACK_ARGUMENT_SLOTS] {
+    let mut merged: [u8; X86_STACK_ARGUMENT_SLOTS] = [u8::MAX; X86_STACK_ARGUMENT_SLOTS];
+    for state in states {
+        for (slot, mask) in merged.iter_mut().zip(state) {
+            *slot &= *mask;
+        }
+    }
+    merged
+}
+
+fn analyze_incoming_cfg_block(
+    block: &CfgBlock,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: &mut [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    for stmt in &block.stmts {
+        analyze_incoming_stmt(stmt, frame_base, extent, written, proven)?;
+    }
+    if let BlockTerm::Branch { flags, .. } = &block.term {
+        analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+    }
+    Ok(())
+}
+
+fn analyze_incoming_cfg(
+    blocks: &[CfgBlock],
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    entry_written: [u8; X86_STACK_ARGUMENT_SLOTS],
+) -> Result<BTreeSet<Reg>> {
+    if blocks.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let reachable: BTreeSet<usize> = reachable_blocks(blocks);
+    let predecessors: Vec<Vec<usize>> = block_predecessors(blocks);
+    let mut incoming: Vec<[u8; X86_STACK_ARGUMENT_SLOTS]> =
+        vec![[u8::MAX; X86_STACK_ARGUMENT_SLOTS]; blocks.len()];
+    let mut outgoing: Vec<[u8; X86_STACK_ARGUMENT_SLOTS]> =
+        vec![[u8::MAX; X86_STACK_ARGUMENT_SLOTS]; blocks.len()];
+    incoming[0] = entry_written;
+    let round_limit: usize = blocks
+        .len()
+        .checked_mul(X86_STACK_ARGUMENT_SLOTS * 8 + 1)
+        .ok_or_else(|| Error::LlvmIr("incoming x86-64 flow round bound overflow".to_owned()))?;
+    let mut converged: bool = false;
+    for _ in 0..=round_limit {
+        let mut changed: bool = false;
+        for (index, block) in blocks.iter().enumerate() {
+            if !reachable.contains(&index) {
+                continue;
+            }
+            let next_incoming: [u8; X86_STACK_ARGUMENT_SLOTS] = if index == 0 {
+                entry_written
+            } else {
+                let sources: Vec<[u8; X86_STACK_ARGUMENT_SLOTS]> = predecessors[index]
+                    .iter()
+                    .filter(|predecessor: &&usize| reachable.contains(predecessor))
+                    .map(|predecessor: &usize| outgoing[*predecessor])
+                    .collect();
+                if sources.is_empty() {
+                    continue;
+                }
+                intersect_incoming_writes(&sources)
+            };
+            let mut next_outgoing: [u8; X86_STACK_ARGUMENT_SLOTS] = next_incoming;
+            analyze_incoming_cfg_block(
+                block,
+                frame_base,
+                extent,
+                &mut next_outgoing,
+                &mut BTreeSet::new(),
+            )?;
+            if incoming[index] != next_incoming || outgoing[index] != next_outgoing {
+                incoming[index] = next_incoming;
+                outgoing[index] = next_outgoing;
+                changed = true;
+            }
+        }
+        if !changed {
+            converged = true;
+            break;
+        }
+    }
+    if !converged {
+        return Err(Error::LlvmIr(
+            "incoming x86-64 stack-argument flow did not converge within its finite byte bound"
+                .to_owned(),
+        ));
+    }
+    let mut proven: BTreeSet<Reg> = BTreeSet::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if !reachable.contains(&index) {
+            continue;
+        }
+        let mut written: [u8; X86_STACK_ARGUMENT_SLOTS] = incoming[index];
+        analyze_incoming_cfg_block(block, frame_base, extent, &mut written, &mut proven)?;
+    }
+    Ok(proven)
+}
+
+fn analyze_incoming_block(
+    body: &Block,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    written: &mut [u8; X86_STACK_ARGUMENT_SLOTS],
+    proven: &mut BTreeSet<Reg>,
+) -> Result<()> {
+    for node in body {
+        match node {
+            Node::Stmt(stmt) => {
+                analyze_incoming_stmt(stmt, frame_base, extent, written, proven)?;
+            }
+            Node::If {
+                cond,
+                then_body,
+                else_body,
+            } => {
+                analyze_incoming_cond(cond, frame_base, extent, *written, proven)?;
+                let mut branches: Vec<[u8; X86_STACK_ARGUMENT_SLOTS]> = Vec::with_capacity(2);
+                let mut then_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                analyze_incoming_block(then_body, frame_base, extent, &mut then_written, proven)?;
+                branches.push(then_written);
+                if let Some(else_body) = else_body {
+                    let mut else_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                    analyze_incoming_block(
+                        else_body,
+                        frame_base,
+                        extent,
+                        &mut else_written,
+                        proven,
+                    )?;
+                    branches.push(else_written);
+                } else {
+                    branches.push(*written);
+                }
+                *written = intersect_incoming_writes(&branches);
+            }
+            Node::DoWhile { body, cond } => {
+                let mut loop_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                analyze_incoming_block(body, frame_base, extent, &mut loop_written, proven)?;
+                if let LoopCond::Direct { flags, .. } = cond {
+                    analyze_incoming_flags(flags, frame_base, extent, loop_written, proven)?;
+                }
+                *written = loop_written;
+            }
+            Node::While { body, cond } => {
+                if let Some(LoopCond::Direct { flags, .. }) = cond {
+                    analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+                }
+                let mut loop_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                analyze_incoming_block(body, frame_base, extent, &mut loop_written, proven)?;
+            }
+            Node::CondSnapshot { flags, .. } => {
+                analyze_incoming_flags(flags, frame_base, extent, *written, proven)?;
+            }
+            Node::Switch { cases, default, .. } => {
+                let mut branches: Vec<[u8; X86_STACK_ARGUMENT_SLOTS]> =
+                    Vec::with_capacity(cases.len() + 1);
+                for case in cases {
+                    let mut case_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                    analyze_incoming_block(
+                        &case.body,
+                        frame_base,
+                        extent,
+                        &mut case_written,
+                        proven,
+                    )?;
+                    branches.push(case_written);
+                }
+                let mut default_written: [u8; X86_STACK_ARGUMENT_SLOTS] = *written;
+                analyze_incoming_block(default, frame_base, extent, &mut default_written, proven)?;
+                branches.push(default_written);
+                *written = intersect_incoming_writes(&branches);
+            }
+            Node::OuterResume(tree) => {
+                let blocks: Vec<CfgBlock> = tree.lower_blocks().ok_or_else(|| {
+                    Error::LlvmIr(
+                        "outer-body resume stack-argument flow cannot recover its proven CFG"
+                            .to_owned(),
+                    )
+                })?;
+                proven.extend(analyze_incoming_cfg(&blocks, frame_base, extent, *written)?);
+            }
+            Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_source(
+    source: &mut Source,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<()> {
+    match source {
+        Source::Mem(mem) => {
+            let replacement: Option<RegRef> = incoming_stack_reg_for_mem(*mem, frame_base, extent)?;
+            if let Some(reg) = replacement {
+                *source = Source::Reg(reg);
+            }
+        }
+        Source::Reg(_) | Source::Imm(_) | Source::Lea { .. } => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_ext_source(
+    source: &mut ExtSource,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<()> {
+    match source {
+        ExtSource::Mem(mem) => {
+            let replacement: Option<RegRef> = incoming_stack_reg_for_mem(*mem, frame_base, extent)?;
+            if let Some(reg) = replacement {
+                *source = ExtSource::Reg(reg);
+            }
+        }
+        ExtSource::Reg(_) => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_read_mem(
+    mem: &mut MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<()> {
+    let replacement: Option<RegRef> = incoming_stack_reg_for_mem(*mem, frame_base, extent)?;
+    if let Some(reg) = replacement {
+        *mem = MemRef {
+            base: Some(reg.reg),
+            index: None,
+            disp: 0,
+            width: mem.width,
+        };
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_write_mem(
+    mem: &mut MemRef,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) {
+    if let Some(reg) = proven_incoming_stack_reg_for_mem(*mem, frame_base, extent, proven) {
+        *mem = MemRef {
+            base: Some(reg.reg),
+            index: None,
+            disp: 0,
+            width: mem.width,
+        };
+    }
+}
+
+fn rewrite_incoming_fp_operand(
+    operand: &mut FpOperand,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<()> {
+    match operand {
+        FpOperand::Mem(mem) => rewrite_incoming_read_mem(mem, frame_base, extent)?,
+        FpOperand::Xmm(_) | FpOperand::Const { .. } => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_flags(
+    flags: &mut Flags,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+) -> Result<()> {
+    match flags {
+        Flags::Cmp { rhs, .. } | Flags::Add { rhs, .. } => {
+            rewrite_incoming_source(rhs, frame_base, extent)?;
+        }
+        Flags::CmpMem { lhs, rhs } => {
+            rewrite_incoming_source(rhs, frame_base, extent)?;
+            let replacement: Option<RegRef> = incoming_stack_reg_for_mem(*lhs, frame_base, extent)?;
+            if let Some(reg) = replacement {
+                *flags = Flags::Cmp {
+                    lhs: reg,
+                    rhs: rhs.clone(),
+                };
+            }
+        }
+        Flags::CondCmp { prior, taken, .. } => {
+            rewrite_incoming_flags(prior, frame_base, extent)?;
+            rewrite_incoming_flags(taken, frame_base, extent)?;
+        }
+        Flags::FpCmp { rhs, .. } => {
+            rewrite_incoming_fp_operand(rhs, frame_base, extent)?;
+        }
+        Flags::Test { .. }
+        | Flags::TestImm { .. }
+        | Flags::Sign { .. }
+        | Flags::Snapshot { .. } => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_vec_stmt(
+    stmt: &mut VecStmt,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Result<()> {
+    match stmt {
+        VecStmt::Load { arr, addr, .. } => {
+            if arr.is_none_or(|arrangement: VecArrangement| arrangement.total_bits() > 64)
+                && incoming_stack_reg_for_mem(*addr, frame_base, extent)?.is_some()
+            {
+                return Err(Error::LlvmIr(
+                    "incoming x86-64 stack argument vector access exceeds one eight-byte slot"
+                        .to_owned(),
+                ));
+            }
+            rewrite_incoming_read_mem(addr, frame_base, extent)?;
+        }
+        VecStmt::Store { arr, addr, .. } => {
+            if arr.is_none_or(|arrangement: VecArrangement| arrangement.total_bits() > 64)
+                && proven_incoming_stack_reg_for_mem(*addr, frame_base, extent, proven).is_some()
+            {
+                return Err(Error::LlvmIr(
+                    "incoming x86-64 stack argument vector access exceeds one eight-byte slot"
+                        .to_owned(),
+                ));
+            }
+            rewrite_incoming_write_mem(addr, frame_base, extent, proven);
+        }
+        VecStmt::Bin { .. }
+        | VecStmt::Dup { .. }
+        | VecStmt::LaneInsert { .. }
+        | VecStmt::Compare { .. }
+        | VecStmt::MoveImm { .. }
+        | VecStmt::Reduce { .. }
+        | VecStmt::ExtractToGpr { .. }
+        | VecStmt::WidenExtend { .. }
+        | VecStmt::WidenAdd { .. } => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_stmt(
+    stmt: &mut Stmt,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Result<()> {
+    match stmt {
+        Stmt::Assign { src, .. } | Stmt::BinAssign { src, .. } => {
+            rewrite_incoming_source(src, frame_base, extent)?;
+        }
+        Stmt::Store { addr, src } => {
+            rewrite_incoming_write_mem(addr, frame_base, extent, proven);
+            rewrite_incoming_source(src, frame_base, extent)?;
+        }
+        Stmt::Cond { src, flags, .. } => {
+            rewrite_incoming_source(src, frame_base, extent)?;
+            rewrite_incoming_flags(flags, frame_base, extent)?;
+        }
+        Stmt::SetCc { flags, .. } | Stmt::FlagSnapshot { flags, .. } => {
+            rewrite_incoming_flags(flags, frame_base, extent)?;
+        }
+        Stmt::MemRmw { addr, op } => {
+            rewrite_incoming_read_mem(addr, frame_base, extent)?;
+            if let MemRmwOp::Bin { src, .. } = op {
+                rewrite_incoming_source(src, frame_base, extent)?;
+            }
+        }
+        Stmt::Extend { src, .. } | Stmt::MulImm { src, .. } => {
+            rewrite_incoming_ext_source(src, frame_base, extent)?;
+        }
+        Stmt::FpBin { lhs, rhs, .. } | Stmt::FpMinMax { lhs, rhs, .. } => {
+            rewrite_incoming_fp_operand(lhs, frame_base, extent)?;
+            rewrite_incoming_fp_operand(rhs, frame_base, extent)?;
+        }
+        Stmt::FpMov { src, .. }
+        | Stmt::FpSqrt { src, .. }
+        | Stmt::FpUnary { src, .. }
+        | Stmt::FpRound { src, .. } => {
+            rewrite_incoming_fp_operand(src, frame_base, extent)?;
+        }
+        Stmt::FpFma {
+            mul_lhs,
+            mul_rhs,
+            addend,
+            ..
+        } => {
+            rewrite_incoming_fp_operand(mul_lhs, frame_base, extent)?;
+            rewrite_incoming_fp_operand(mul_rhs, frame_base, extent)?;
+            rewrite_incoming_fp_operand(addend, frame_base, extent)?;
+        }
+        Stmt::FpCsel {
+            if_true,
+            if_false,
+            flags,
+            ..
+        } => {
+            rewrite_incoming_fp_operand(if_true, frame_base, extent)?;
+            rewrite_incoming_fp_operand(if_false, frame_base, extent)?;
+            rewrite_incoming_flags(flags, frame_base, extent)?;
+        }
+        Stmt::Vector(vector) => {
+            rewrite_incoming_vec_stmt(vector, frame_base, extent, proven)?;
+        }
+        Stmt::FpStore { addr, .. } => {
+            rewrite_incoming_write_mem(addr, frame_base, extent, proven);
+        }
+        Stmt::UnAssign { .. }
+        | Stmt::WideMul { .. }
+        | Stmt::Divide { .. }
+        | Stmt::IntToFp { .. }
+        | Stmt::FpToInt { .. }
+        | Stmt::FpConvert { .. }
+        | Stmt::GprToXmm { .. }
+        | Stmt::XmmToGpr { .. }
+        | Stmt::DoubleShift { .. }
+        | Stmt::BlockMove { .. }
+        | Stmt::BlockFill { .. }
+        | Stmt::Call { .. }
+        | Stmt::Packed { .. }
+        | Stmt::PackedToGpr { .. } => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_cond(cond: &mut Cond, frame_base: Reg, extent: StackFrameExtent) -> Result<()> {
+    match cond {
+        Cond::Leaf { flags, .. } => rewrite_incoming_flags(flags, frame_base, extent)?,
+        Cond::And(lhs, rhs) | Cond::Or(lhs, rhs) => {
+            rewrite_incoming_cond(lhs, frame_base, extent)?;
+            rewrite_incoming_cond(rhs, frame_base, extent)?;
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_node(
+    node: &mut Node,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Result<()> {
+    match node {
+        Node::Stmt(stmt) => rewrite_incoming_stmt(stmt, frame_base, extent, proven)?,
+        Node::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            rewrite_incoming_cond(cond, frame_base, extent)?;
+            rewrite_incoming_block(then_body, frame_base, extent, proven)?;
+            if let Some(else_body) = else_body {
+                rewrite_incoming_block(else_body, frame_base, extent, proven)?;
+            }
+        }
+        Node::DoWhile { body, cond } => {
+            rewrite_incoming_block(body, frame_base, extent, proven)?;
+            if let LoopCond::Direct { flags, .. } = cond {
+                rewrite_incoming_flags(flags, frame_base, extent)?;
+            }
+        }
+        Node::While { body, cond } => {
+            rewrite_incoming_block(body, frame_base, extent, proven)?;
+            if let Some(LoopCond::Direct { flags, .. }) = cond {
+                rewrite_incoming_flags(flags, frame_base, extent)?;
+            }
+        }
+        Node::CondSnapshot { flags, .. } => rewrite_incoming_flags(flags, frame_base, extent)?,
+        Node::Switch { cases, default, .. } => {
+            for case in cases {
+                rewrite_incoming_block(&mut case.body, frame_base, extent, proven)?;
+            }
+            rewrite_incoming_block(default, frame_base, extent, proven)?;
+        }
+        Node::OuterResume(tree) => {
+            for block in &mut tree.blocks {
+                for stmt in &mut block.stmts {
+                    rewrite_incoming_stmt(stmt, frame_base, extent, proven)?;
+                }
+                match &mut block.term {
+                    OuterResumeTreeTerm::Branch { flags, .. } => {
+                        rewrite_incoming_flags(flags, frame_base, extent)?;
+                    }
+                    OuterResumeTreeTerm::Ret | OuterResumeTreeTerm::Jump { .. } => {}
+                }
+            }
+        }
+        Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_block(
+    body: &mut Block,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Result<()> {
+    for node in body {
+        rewrite_incoming_node(node, frame_base, extent, proven)?;
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_item(
+    item: &mut Item,
+    frame_base: Reg,
+    extent: StackFrameExtent,
+    proven: &BTreeSet<Reg>,
+) -> Result<()> {
+    match &mut item.kind {
+        ItemKind::Stmt(stmt) => {
+            rewrite_incoming_stmt(stmt, frame_base, extent, proven)?;
+        }
+        ItemKind::Branch { flags, .. } => {
+            rewrite_incoming_flags(flags, frame_base, extent)?;
+        }
+        ItemKind::Jmp { .. } | ItemKind::Switch { .. } | ItemKind::Ret => {}
+    }
+    Ok(())
+}
+
+fn rewrite_incoming_stack_items(items: &mut [Item], shape: FrameShape) -> Result<bool> {
+    let Some(frame_base): Option<Reg> = shape.base else {
+        return Ok(false);
+    };
+    let Some(extent): Option<StackFrameExtent> = shape.stack_extent else {
+        return Ok(false);
+    };
+    let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
+        return Ok(false);
+    };
+    let proven: BTreeSet<Reg> =
+        analyze_incoming_cfg(&blocks, frame_base, extent, [0; X86_STACK_ARGUMENT_SLOTS])?;
+    for item in items {
+        rewrite_incoming_item(item, frame_base, extent, &proven)?;
+    }
+    Ok(true)
+}
+
+fn rewrite_incoming_stack_arguments(body: &mut Block, shape: FrameShape) -> Result<()> {
+    let Some(frame_base): Option<Reg> = shape.base else {
+        return Ok(());
+    };
+    let Some(extent): Option<StackFrameExtent> = shape.stack_extent else {
+        return Ok(());
+    };
+    let mut proven: BTreeSet<Reg> = BTreeSet::new();
+    let mut written: [u8; X86_STACK_ARGUMENT_SLOTS] = [0; X86_STACK_ARGUMENT_SLOTS];
+    analyze_incoming_block(body, frame_base, extent, &mut written, &mut proven)?;
+    rewrite_incoming_block(body, frame_base, extent, &proven)
 }
 
 const INDEXED_FRAME_MAX_ELEMENTS: u64 = 256;
@@ -16146,7 +17336,7 @@ fn emit_c(
         for source in fp_semantics::resolved_sources(&requested) {
             let _ = writeln!(out, "{source}");
         }
-    } else if block_string_ops_present(body) {
+    } else if block_string_ops_present(body) || block_has_vector(body) {
         let _ = writeln!(out, "#include <string.h>");
     }
     let mut call_decls: IndexMap<String, usize> = IndexMap::new();
@@ -16160,7 +17350,9 @@ fn emit_c(
         let _ = writeln!(out, "extern uint64_t {display_name}({params});");
     }
 
-    let scalar_params: Vec<ScalarParam> = signature.ordered_params();
+    let scalar_params: Vec<ScalarParam> = signature.ordered_params_from(
+        MsX64ParameterOrigin::for_signature(signature.abi, sret.is_some()),
+    );
     let scalar_count: usize = scalar_params.len();
     let mut param_decls: Vec<String> = scalar_params
         .iter()
@@ -17069,6 +18261,33 @@ fn assign_cstmt(cx: &mut Cx<'_>, var: &str, rhs: &str) -> CStmt {
     assign_expr_cstmt(cx, var, rhs_expr)
 }
 
+fn stack_slot_write_rhs(dest_var: &str, width: Width, body: &str) -> String {
+    if width == Width::W64 {
+        return body.to_owned();
+    }
+    let value_mask: u128 = match width {
+        Width::W8 => 0xff,
+        Width::W16 => 0xffff,
+        Width::W32 => 0xffff_ffff,
+        Width::W64 => u128::from(u64::MAX),
+    };
+    let keep_mask: u128 = u128::from(u64::MAX) ^ value_mask;
+    c_render(|cx| {
+        c_bin(
+            BinaryOp::BitOr,
+            c_bin(BinaryOp::BitAnd, cx.var(dest_var), c_hex_mask(keep_mask)),
+            c_bin(BinaryOp::BitAnd, c_opaque(cx, body), c_hex_mask(value_mask)),
+        )
+    })
+}
+
+fn x86_stack_argument_write_cstmt(cx: &mut Cx<'_>, mem: &MemRef, value: &str) -> Option<CStmt> {
+    let reg: Reg = x86_stack_argument_mem(mem)?;
+    let var: &'static str = reg_var(reg);
+    let rhs: String = stack_slot_write_rhs(var, mem.width, value);
+    Some(assign_cstmt(cx, var, &rhs))
+}
+
 fn decl_with_init(cx: &mut Cx<'_>, ty_name: &str, name: &str, init: CExpr) -> CStmt {
     let base: CBaseType = CBaseType::plain(cx.named_type(ty_name));
     let decl: CDecl = CDecl {
@@ -17634,11 +18853,14 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, &sel_var(*var), &cond)
         }
         Stmt::Store { addr, src } => {
-            let target: String =
-                slot_typed_lvalue(addr, aggregates).unwrap_or_else(|| deref_expr(addr, aggregates));
             let value: String = source_expr(src, addr.width, aggregates);
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &value);
+            if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &masked) {
+                return write;
+            }
+            let target: String =
+                slot_typed_lvalue(addr, aggregates).unwrap_or_else(|| deref_expr(addr, aggregates));
             assign_cstmt(cx, &target, &masked)
         }
         Stmt::MemRmw { addr, op } => {
@@ -17673,6 +18895,9 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             };
             let mut masked: String = String::new();
             width_mask(&mut masked, addr.width, &body);
+            if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &masked) {
+                return write;
+            }
             assign_cstmt(cx, &target, &masked)
         }
         Stmt::Extend { dest, src, signed } => {
@@ -17769,6 +18994,10 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&value, *width))
         }
         Stmt::FpStore { addr, src, width } => {
+            let bits: String = xmm_bits(*src, *width);
+            if let Some(write) = x86_stack_argument_write_cstmt(cx, addr, &bits) {
+                return write;
+            }
             if let Some((target, _)) =
                 aggregate_c_mem_expr(addr, aggregates, AggregateScalar::Float(*width))
             {
@@ -17776,7 +19005,6 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 assign_cstmt(cx, &target, &value)
             } else {
                 let target: String = deref_expr(addr, aggregates);
-                let bits: String = xmm_bits(*src, *width);
                 assign_cstmt(cx, &target, &bits)
             }
         }
@@ -18124,11 +19352,26 @@ fn vec_low64_mem(addr: &MemRef) -> String {
 fn vec_low64_load_cstmt(cx: &mut Cx<'_>, dest: u8, addr: &MemRef) -> CStmt {
     let var: String = vec_var(dest);
     let zero: CStmt = assign_cstmt(cx, &var, &format!("(__typeof__({var})){{0}}"));
+    if let Some(reg) = x86_stack_argument_mem(addr) {
+        let dest_address: CExpr = c_opaque(cx, &format!("&{var}"));
+        let dest_ptr: CExpr = c_ptr_cast(cx, "void", dest_address);
+        let src_address: CExpr = c_opaque(cx, &format!("&{}", reg_var(reg)));
+        let src_ptr: CExpr = c_ptr_cast(cx, "const void", src_address);
+        let copy: CStmt = CStmt::Expr(cx.call("memcpy", vec![dest_ptr, src_ptr, CExpr::int(8)]));
+        return CStmt::Block(vec![zero, copy]);
+    }
     let write: CStmt = assign_cstmt(cx, &vec_low64_lvalue(dest), &vec_low64_mem(addr));
     CStmt::Block(vec![zero, write])
 }
 
 fn vec_low64_store_cstmt(cx: &mut Cx<'_>, src: u8, addr: &MemRef) -> CStmt {
+    if let Some(reg) = x86_stack_argument_mem(addr) {
+        let dest_address: CExpr = c_opaque(cx, &format!("&{}", reg_var(reg)));
+        let dest_ptr: CExpr = c_ptr_cast(cx, "void", dest_address);
+        let src_address: CExpr = c_opaque(cx, &format!("&{}", vec_var(src)));
+        let src_ptr: CExpr = c_ptr_cast(cx, "const void", src_address);
+        return CStmt::Expr(cx.call("memcpy", vec![dest_ptr, src_ptr, CExpr::int(8)]));
+    }
     assign_cstmt(cx, &vec_low64_mem(addr), &vec_low64_lvalue(src))
 }
 
@@ -18682,6 +19925,13 @@ fn fp_load(operand: &FpOperand, width: FpWidth, aggregates: &AggregatePlan) -> S
             }
         }
         FpOperand::Mem(mem) => {
+            if let Some(bits) = x86_stack_argument_read(mem) {
+                return match width {
+                    FpWidth::F16 => format!("fp_h_from_bits((uint16_t)({bits}))"),
+                    FpWidth::F32 => format!("fp_f_from_bits((uint32_t)({bits}))"),
+                    FpWidth::F64 => format!("fp_d_from_bits((uint64_t)({bits}))"),
+                };
+            }
             if let Some((expr, _)) =
                 aggregate_c_mem_expr(mem, aggregates, AggregateScalar::Float(width))
             {
@@ -21138,6 +22388,17 @@ fn rs_index_extend(reg: RustExpr, extend: IndexExtend) -> RustExpr {
 }
 
 fn rs_addr_expr(base: Option<Reg>, index: Option<IndexOperand>, disp: i64) -> String {
+    if let Some(base) = base
+        && is_x86_stack_argument_reg(base)
+        && index.is_none()
+    {
+        let pointer: String = format!("core::ptr::addr_of!({}) as u64", reg_var(base));
+        return if disp == 0 {
+            pointer
+        } else {
+            format!("({pointer}).wrapping_add({disp}i64 as u64)")
+        };
+    }
     let mut parts: Vec<RustExpr> = Vec::new();
     if let Some(b) = base {
         parts.push(rvar(reg_var(b)));
@@ -23785,11 +25046,20 @@ mod tests {
                     scalar_type: super::ScalarType::Float,
                 }],
             );
+        let out_of_range_ms_vector: super::Result<super::RecoveredSignature> =
+            super::RecoveredSignature::from_bindings(
+                super::Abi::MsX64,
+                vec![super::ParameterBinding::Vector {
+                    register_index: 4,
+                    width_bits: 128,
+                }],
+            );
         assert!(unordered.is_err());
         assert!(duplicate.is_err());
         assert!(zero_width.is_err());
         assert!(duplicate_fp_vector.is_err());
         assert!(out_of_range_fp.is_err());
+        assert!(out_of_range_ms_vector.is_err());
     }
 
     #[test]
@@ -24506,22 +25776,28 @@ mod tests {
     }
 
     #[test]
-    fn an_rsp_constant_slot_above_the_allocation_reads_a_caller_byte_and_is_rejected() {
+    fn an_rsp_constant_slot_above_the_allocation_recovers_the_incoming_argument() {
         const CODE: [u8; 14] = [
             0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x20, 0x48, 0x83, 0xc4, 0x18, 0xc3,
         ];
         const PAST_HOME: [u8; 14] = [
             0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x40, 0x48, 0x83, 0xc4, 0x18, 0xc3,
         ];
-        let message: String = rsp_constant_frame_rejection(&CODE, 0x8a10, Abi::SysV);
+        let rec: LeafRecovery = recover_leaf_function_abi(&CODE, 0x8a10, Abi::SysV)
+            .expect("a System V caller-owned slot is an incoming parameter");
         assert!(
-            message.contains("8-byte slot at 32 is outside the [-128, 24) bytes"),
-            "under System V a load past the return address reads an incoming stack argument: {message}"
+            rec.source.contains("uint64_t r_x86_stack0 = a6;")
+                && rec.source.contains("r_rax = r_x86_stack0;"),
+            "under System V a load past the return address is the seventh integer parameter: {}",
+            rec.source
         );
-        let ms: String = rsp_constant_frame_rejection(&PAST_HOME, 0x8a18, Abi::MsX64);
+        let ms: LeafRecovery = recover_leaf_function_abi(&PAST_HOME, 0x8a18, Abi::MsX64)
+            .expect("a Microsoft x64 slot above the home area is an incoming parameter");
         assert!(
-            ms.contains("8-byte slot at 64 is outside the [0, 24) and [32, 64) bytes"),
-            "a load past the Microsoft x64 home area reads the fifth incoming argument: {ms}"
+            ms.source.contains("uint64_t r_x86_stack0 = a4;")
+                && ms.source.contains("r_rax = r_x86_stack0;"),
+            "a load past the Microsoft x64 home area is the fifth integer parameter: {}",
+            ms.source
         );
     }
 
@@ -24698,7 +25974,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_pointer_frame_rejects_the_caller_frame_above_the_saved_registers() {
+    fn a_frame_pointer_frame_recovers_the_caller_frame_above_the_saved_registers() {
         const ONE_PUSH: [u8; 10] = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3];
         const TWO_PUSHES: [u8; 12] = [
             0x55, 0x53, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x18, 0x5b, 0x5d, 0xc3,
@@ -24706,41 +25982,33 @@ mod tests {
         const LEA_ANCHOR: [u8; 12] = [
             0x55, 0x48, 0x8d, 0x6c, 0x24, 0x00, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3,
         ];
-        let cases: [(&str, &[u8], &str, &str); 3] = [
+        let cases: [(&str, &[u8]); 3] = [
             (
                 "push rbp; mov rbp,rsp; mov rax,[rbp+10h]; pop rbp; ret ",
                 &ONE_PUSH,
-                "8-byte slot at 16 is outside the (-inf, 0) bytes this frame owns",
-                "the saved registers sit at [0, 8), the return address at 8",
             ),
             (
                 "push rbp; push rbx; mov rbp,rsp; mov rax,[rbp+18h]; pop rbx; pop rbp; ret ",
                 &TWO_PUSHES,
-                "8-byte slot at 24 is outside the (-inf, 0) bytes this frame owns",
-                "the saved registers sit at [0, 16), the return address at 16",
             ),
             (
                 "push rbp; lea rbp,[rsp]; mov rax,[rbp+10h]; pop rbp; ret ",
                 &LEA_ANCHOR,
-                "8-byte slot at 16 is outside the (-inf, 0) bytes this frame owns",
-                "the saved registers sit at [0, 8), the return address at 8",
             ),
         ];
-        for (index, (asm, code, extent, linkage)) in cases.into_iter().enumerate() {
+        for (index, (asm, code)) in cases.into_iter().enumerate() {
             let base: u64 = 0x9100 + (index as u64) * 0x40;
             assert_eq!(
                 disasm_text(code, base),
                 asm,
                 "the probe must build the frame pointer the case describes"
             );
-            let message: String = frame_plan_rejection(code, base, Abi::SysV);
+            let rec: LeafRecovery = recover_leaf_function_abi(code, base, Abi::SysV)
+                .expect("the first caller-owned slot is an incoming parameter");
             assert!(
-                message.contains(extent),
-                "an incoming stack argument is not a local slot: {message}"
-            );
-            assert!(
-                message.contains(linkage),
-                "the rejection must place the saved registers the prologue pushed: {message}"
+                rec.source.contains("r_x86_stack0"),
+                "the caller-owned slot must become the first stack parameter: {}",
+                rec.source
             );
         }
     }
@@ -24761,10 +26029,13 @@ mod tests {
             "push rbp; mov rbp,rsp; mov rax,[rbp+30h]; pop rbp; ret ",
             "the probe must read the first byte above the home area"
         );
-        let message: String = frame_plan_rejection(&PAST_HOME, 0x9240, Abi::MsX64);
+        let rec: LeafRecovery = recover_leaf_function_abi(&PAST_HOME, 0x9240, Abi::MsX64)
+            .expect("the first incoming argument sits above the home area");
         assert!(
-            message.contains("8-byte slot at 48 is outside the (-inf, 0) and [16, 48) bytes"),
-            "the fifth incoming argument sits above the home area and is not a local: {message}"
+            rec.source.contains("uint64_t r_x86_stack0 = a4;")
+                && rec.source.contains("r_rax = r_x86_stack0;"),
+            "the fifth incoming argument sits above the home area: {}",
+            rec.source
         );
     }
 
@@ -24795,14 +26066,13 @@ mod tests {
             "push rbp; sub rsp,100h; lea rbp,[rsp-80h]; mov rax,[rbp+190h]; ret ",
             "the probe must read the first byte above the return address"
         );
-        let message: String = frame_plan_rejection(&CALLER_ARGUMENT, 0x9340, Abi::SysV);
+        let rec: LeafRecovery = recover_leaf_function_abi(&CALLER_ARGUMENT, 0x9340, Abi::SysV)
+            .expect("the displaced frame pointer still derives the incoming coordinate");
         assert!(
-            message.contains("8-byte slot at 400 is outside the (-inf, 384) bytes"),
-            "this prologue puts the entry stack pointer at 392, so 400 is the caller's: {message}"
-        );
-        assert!(
-            message.contains("the saved registers sit at [384, 392), the return address at 392"),
-            "the rejection must place the linkage where this prologue put it: {message}"
+            rec.source.contains("uint64_t r_x86_stack0 = a6;")
+                && rec.source.contains("r_rax = r_x86_stack0;"),
+            "this prologue puts the incoming coordinate at 400: {}",
+            rec.source
         );
     }
 
@@ -26553,6 +27823,406 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn sysv_incoming_stack_argument_is_recovered_as_a_parameter() {
+        let code: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x20, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, Abi::SysV)
+            .expect("the seventh System V integer argument is an incoming stack parameter");
+        assert_eq!(recovery.signature.callable_arity(), 7);
+        assert!(!recovery.source.contains("stack_frame["));
+        assert!(recovery.source.contains("r_x86_stack0"));
+    }
+
+    #[test]
+    fn x86_stack_parameter_bindings_are_canonical_public_locations() {
+        let sysv_bindings: Vec<ParameterBinding> = vec![
+            ParameterBinding::Integer {
+                register: Reg::Rdi,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::Rsi,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::Rdx,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::Rcx,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::R8,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::R9,
+                width_bits: 64,
+            },
+            ParameterBinding::Integer {
+                register: Reg::X86Stack0,
+                width_bits: 64,
+            },
+        ];
+        let sysv: RecoveredSignature = RecoveredSignature::from_bindings(Abi::SysV, sysv_bindings)
+            .expect("the seventh System V integer location is canonical");
+        assert_eq!(
+            sysv.observed_integer_registers(),
+            vec![
+                Reg::Rdi,
+                Reg::Rsi,
+                Reg::Rdx,
+                Reg::Rcx,
+                Reg::R8,
+                Reg::R9,
+                Reg::X86Stack0,
+            ]
+        );
+
+        let ms: RecoveredSignature = RecoveredSignature::from_bindings(
+            Abi::MsX64,
+            vec![
+                ParameterBinding::Integer {
+                    register: Reg::Rcx,
+                    width_bits: 64,
+                },
+                ParameterBinding::Integer {
+                    register: Reg::Rdx,
+                    width_bits: 64,
+                },
+                ParameterBinding::Integer {
+                    register: Reg::R8,
+                    width_bits: 64,
+                },
+                ParameterBinding::Integer {
+                    register: Reg::R9,
+                    width_bits: 64,
+                },
+                ParameterBinding::Integer {
+                    register: Reg::X86Stack0,
+                    width_bits: 64,
+                },
+            ],
+        )
+        .expect("the fifth Microsoft x64 integer location is canonical");
+        assert_eq!(
+            ms.observed_integer_registers().last(),
+            Some(&Reg::X86Stack0)
+        );
+    }
+
+    #[test]
+    fn x86_incoming_coordinates_preserve_private_home_and_linkage_ownership() {
+        assert_eq!(
+            StackFrameExtent::x86(24, SYSV_RED_ZONE_BYTES, 0).incoming_start(),
+            Some(32)
+        );
+        assert_eq!(
+            StackFrameExtent::x86(40, 0, MS_X64_HOME_BYTES).incoming_start(),
+            Some(80)
+        );
+        assert_eq!(
+            StackFrameExtent::x86_frame_pointer(
+                FramePointerAnchor {
+                    entry_disp: 8,
+                    saved_bytes: 8,
+                },
+                0,
+            )
+            .expect("the frame-pointer extent is representable")
+            .incoming_start(),
+            Some(16)
+        );
+        assert_eq!(
+            StackFrameExtent::x86_frame_pointer(
+                FramePointerAnchor {
+                    entry_disp: 392,
+                    saved_bytes: 8,
+                },
+                0,
+            )
+            .expect("the displaced frame-pointer extent is representable")
+            .incoming_start(),
+            Some(400)
+        );
+    }
+
+    #[test]
+    fn microsoft_x64_incoming_stack_argument_starts_after_home_space() {
+        let code: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x44, 0x24, 0x50, 0x48, 0x83, 0xc4, 0x28, 0xc3,
+        ];
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1100, Abi::MsX64)
+            .expect("the fifth Microsoft x64 integer argument is above home space");
+        assert_eq!(recovery.signature.callable_arity(), 5);
+        assert!(recovery.source.contains("r_x86_stack0"));
+    }
+
+    #[test]
+    fn frame_pointer_incoming_stack_argument_uses_the_derived_entry_coordinate() {
+        let code: [u8; 15] = [
+            0x55, 0x48, 0x89, 0xe5, 0x48, 0x8b, 0x45, 0x10, 0x5d, 0xc3, 0x90, 0x90, 0x90, 0x90,
+            0x90,
+        ];
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1200, Abi::SysV)
+            .expect("the frame-pointer stack argument is above the return address");
+        assert_eq!(recovery.signature.callable_arity(), 7);
+        assert!(recovery.source.contains("r_x86_stack0"));
+    }
+
+    #[test]
+    fn highest_incoming_stack_slot_implies_preceding_slots_and_narrow_reads_are_valid() {
+        let code: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x0f, 0xb6, 0x44, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let recovery: LeafRecovery = recover_leaf_function_abi(&code, 0x1300, Abi::SysV)
+            .expect("a narrow read from stack argument nine is valid");
+        assert_eq!(recovery.signature.callable_arity(), 9);
+        assert!(recovery.source.contains("r_x86_stack2"));
+    }
+
+    #[test]
+    fn x86_stack_argument_vector_bits_execute_under_strict_optimization() {
+        if !std::process::Command::new("clang")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success())
+        {
+            return;
+        }
+        let address: MemRef = MemRef {
+            base: Some(Reg::X86Stack0),
+            index: None,
+            disp: 0,
+            width: Width::W64,
+        };
+        let body: Block = vec![
+            Node::Stmt(Stmt::Vector(VecStmt::Load {
+                dest: 0,
+                arr: Some(VecArrangement {
+                    lanes: 1,
+                    elem: VecElem::I64,
+                }),
+                addr: address,
+            })),
+            Node::Stmt(Stmt::Vector(VecStmt::ExtractToGpr {
+                dest: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                src: 0,
+                elem: VecElem::I64,
+            })),
+            Node::Return,
+        ];
+        let signature: FnSignature = FnSignature {
+            fp: Vec::new(),
+            int: vec![
+                (Reg::Rdi, Width::W64),
+                (Reg::Rsi, Width::W64),
+                (Reg::Rdx, Width::W64),
+                (Reg::Rcx, Width::W64),
+                (Reg::R8, Width::W64),
+                (Reg::R9, Width::W64),
+                (Reg::X86Stack0, Width::W64),
+            ],
+            vec: Vec::new(),
+            ret: FnReturn::Int(Width::W64),
+            exact_integer_types: false,
+            abi: Abi::SysV,
+        };
+        let source: String = emit_c(&body, &signature, None, None, &AggregatePlan::default())
+            .expect("emit vector stack-argument C");
+        assert!(
+            source.contains("memcpy((void*)(&v0), (const void*)(&r_x86_stack0), 8);")
+                && !source.contains("(uintptr_t)&r_x86_stack")
+                && !source.contains("*(recovered_u64_mem *)(r_x86_stack0)"),
+            "vector stack bits must use byte-copy semantics: {source}"
+        );
+        let scratch: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("disrobe-x86-stack-vector")
+                .expect("create vector stack scratch directory");
+        for optimization in ["-O2", "-O3"] {
+            let tag: &str = optimization.trim_start_matches('-');
+            let source_path: std::path::PathBuf = scratch.path().join(format!("vector_{tag}.c"));
+            let executable_path: std::path::PathBuf = scratch.path().join(if cfg!(windows) {
+                format!("vector_{tag}.exe")
+            } else {
+                format!("vector_{tag}")
+            });
+            let driver: String = format!(
+                "{source}\nint main(void) {{ return recovered(0, 0, 0, 0, 0, 0, UINT64_C(0x8877665544332211)) == UINT64_C(0x8877665544332211) ? 0 : 1; }}\n"
+            );
+            std::fs::write(&source_path, driver.as_bytes()).expect("write vector stack C driver");
+            let build: std::process::Output = std::process::Command::new("clang")
+                .args([
+                    "-std=c11",
+                    optimization,
+                    "-fstrict-aliasing",
+                    "-Wstrict-aliasing=2",
+                    "-Werror",
+                    "-o",
+                ])
+                .arg(&executable_path)
+                .arg(&source_path)
+                .output()
+                .expect("compile vector stack C driver");
+            assert!(
+                build.status.success(),
+                "vector {optimization} compile failed: {}\n{driver}",
+                String::from_utf8_lossy(&build.stderr)
+            );
+            let run: std::process::Output = std::process::Command::new(&executable_path)
+                .output()
+                .expect("run vector stack C driver");
+            assert!(
+                run.status.success(),
+                "vector {optimization} result diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn misaligned_and_over_cap_incoming_stack_slots_are_named_refusals() {
+        let misaligned: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x21, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let over_cap: [u8; 14] = [
+            0x48, 0x83, 0xec, 0x18, 0x48, 0x8b, 0x44, 0x24, 0x60, 0x48, 0x83, 0xc4, 0x18, 0xc3,
+        ];
+        let misaligned_error: Error = recover_leaf_function_abi(&misaligned, 0x1400, Abi::SysV)
+            .expect_err("a non-slot displacement is not an incoming argument");
+        let over_cap_error: Error = recover_leaf_function_abi(&over_cap, 0x1500, Abi::SysV)
+            .expect_err("the bounded stack lift must reject slot eight");
+        assert!(
+            misaligned_error
+                .to_string()
+                .contains("incoming x86-64 stack argument is not eight-byte aligned")
+        );
+        assert!(
+            over_cap_error
+                .to_string()
+                .contains("incoming x86-64 stack argument exceeds the bounded eight-slot lift")
+        );
+    }
+
+    #[test]
+    fn incoming_stack_rewrite_covers_structured_memory_read_boundaries() {
+        let mem = || MemRef {
+            base: Some(Reg::Rbp),
+            index: None,
+            disp: 16,
+            width: Width::W64,
+        };
+        let mut body: Block = vec![
+            Node::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                src: Source::Mem(mem()),
+            }),
+            Node::Stmt(Stmt::Extend {
+                dest: RegRef {
+                    reg: Reg::R10,
+                    width: Width::W64,
+                },
+                src: ExtSource::Mem(mem()),
+                signed: true,
+            }),
+            Node::Stmt(Stmt::FpMov {
+                dest: Xmm::Xmm0,
+                src: FpOperand::Mem(mem()),
+                width: FpWidth::F64,
+            }),
+            Node::Stmt(Stmt::FlagSnapshot {
+                var: 0,
+                kind: CondKind::E,
+                flags: Flags::FpCmp {
+                    lhs: Xmm::Xmm0,
+                    rhs: FpOperand::Mem(mem()),
+                    width: FpWidth::F64,
+                    model: FpUnorderedModel::UnorderedIsEqual,
+                },
+            }),
+            Node::Stmt(Stmt::Vector(VecStmt::Load {
+                dest: 0,
+                arr: Some(VecArrangement {
+                    lanes: 1,
+                    elem: VecElem::I64,
+                }),
+                addr: mem(),
+            })),
+            Node::Stmt(Stmt::MemRmw {
+                addr: mem(),
+                op: MemRmwOp::Un(UnOp::Not),
+            }),
+        ];
+        let shape: FrameShape = FrameShape {
+            base: Some(Reg::Rbp),
+            rbp_is_frame: true,
+            red_zone: false,
+            stack_extent: StackFrameExtent::x86_frame_pointer(
+                FramePointerAnchor {
+                    entry_disp: 8,
+                    saved_bytes: 8,
+                },
+                0,
+            ),
+            stack_pointer_break: None,
+        };
+        rewrite_incoming_stack_arguments(&mut body, shape)
+            .expect("every incoming stack memory read is representable");
+
+        let Node::Stmt(Stmt::Assign {
+            src: Source::Reg(integer),
+            ..
+        }) = &body[0]
+        else {
+            panic!("integer source was not rewritten: {:?}", body[0]);
+        };
+        assert_eq!(integer.reg, Reg::X86Stack0);
+        let Node::Stmt(Stmt::Extend {
+            src: ExtSource::Reg(extended),
+            ..
+        }) = &body[1]
+        else {
+            panic!("extended source was not rewritten: {:?}", body[1]);
+        };
+        assert_eq!(extended.reg, Reg::X86Stack0);
+        let Node::Stmt(Stmt::FpMov {
+            src: FpOperand::Mem(fp),
+            ..
+        }) = &body[2]
+        else {
+            panic!("floating-point operand was not rewritten: {:?}", body[2]);
+        };
+        assert_eq!(fp.base, Some(Reg::X86Stack0));
+        let Node::Stmt(Stmt::FlagSnapshot {
+            flags:
+                Flags::FpCmp {
+                    rhs: FpOperand::Mem(compared),
+                    ..
+                },
+            ..
+        }) = &body[3]
+        else {
+            panic!("floating-point flags were not rewritten: {:?}", body[3]);
+        };
+        assert_eq!(compared.base, Some(Reg::X86Stack0));
+        let Node::Stmt(Stmt::Vector(VecStmt::Load { addr: vector, .. })) = &body[4] else {
+            panic!("vector load was not rewritten: {:?}", body[4]);
+        };
+        assert_eq!(vector.base, Some(Reg::X86Stack0));
+        let Node::Stmt(Stmt::MemRmw { addr: rmw, .. }) = &body[5] else {
+            panic!("read-modify-write was not rewritten: {:?}", body[5]);
+        };
+        assert_eq!(rmw.base, Some(Reg::X86Stack0));
+    }
 }
 
 #[cfg(test)]
@@ -28151,8 +29821,9 @@ mod structuring_corpus {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod forward_join_scope {
     use super::{
-        BlockTerm, CfgBlock, CondKind, Flags, Reg, RegRef, SinkLabel, Source, Stmt, Width,
-        forward_join_lowering_candidates, outer_resume_lowering_candidates, render_cfg_blocks,
+        BlockTerm, CfgBlock, CondKind, Flags, Item, ItemKind, Reg, RegRef, SinkLabel, Source, Stmt,
+        Width, forward_join_lowering_candidates, outer_resume_lowering_candidates,
+        render_cfg_blocks,
     };
     use std::collections::BTreeMap;
 
@@ -28204,6 +29875,102 @@ mod forward_join_scope {
 
     fn no_labels() -> BTreeMap<usize, SinkLabel> {
         BTreeMap::new()
+    }
+
+    fn outer_resume_stack_items() -> (
+        Vec<Item>,
+        BTreeMap<usize, SinkLabel>,
+        super::OuterBodyResume,
+    ) {
+        const SOURCE_PLAN_ORDER: [usize; 23] = [
+            0, 19, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 3, 5, 4, 17, 20, 21, 22,
+        ];
+        const PLAN_SUCCESSORS: [&[usize]; 23] = [
+            &[1, 19],
+            &[2],
+            &[3, 6],
+            &[4, 5],
+            &[],
+            &[],
+            &[3, 7],
+            &[3, 8],
+            &[3, 9],
+            &[3, 10],
+            &[3, 11],
+            &[3, 12],
+            &[3, 13],
+            &[3, 14],
+            &[3, 15],
+            &[5, 16],
+            &[17, 18],
+            &[],
+            &[7, 3],
+            &[20],
+            &[20, 21],
+            &[3, 22],
+            &[2],
+        ];
+        let plan_to_source: BTreeMap<usize, usize> = SOURCE_PLAN_ORDER
+            .iter()
+            .enumerate()
+            .map(|(source, plan): (usize, &usize)| (*plan, source))
+            .collect();
+        let block_address = |source: usize| -> u64 {
+            0x1000_u64
+                .checked_add(u64::try_from(source).expect("fixture source coordinate") * 0x10)
+                .expect("fixture address")
+        };
+        let mut items: Vec<Item> = Vec::with_capacity(SOURCE_PLAN_ORDER.len() + 1);
+        for (source, plan) in SOURCE_PLAN_ORDER.iter().enumerate() {
+            let mut address: u64 = block_address(source);
+            if *plan == 0 {
+                items.push(Item {
+                    address,
+                    kind: ItemKind::Stmt(Stmt::Assign {
+                        dest: RegRef {
+                            reg: Reg::R10,
+                            width: Width::W64,
+                        },
+                        src: Source::Mem(super::MemRef {
+                            base: Some(Reg::Rbp),
+                            index: None,
+                            disp: 16,
+                            width: Width::W64,
+                        }),
+                    }),
+                });
+                address = address.checked_add(1).expect("fixture statement address");
+            }
+            let successors: &[usize] = PLAN_SUCCESSORS[*plan];
+            let kind: ItemKind = match successors {
+                [] => ItemKind::Ret,
+                [target] => ItemKind::Jmp {
+                    target: block_address(plan_to_source[target]),
+                },
+                [taken, fallthrough] => {
+                    assert_eq!(plan_to_source[fallthrough], source + 1);
+                    ItemKind::Branch {
+                        kind: CondKind::E,
+                        flags: probe_flags(),
+                        target: block_address(plan_to_source[taken]),
+                    }
+                }
+                _ => panic!("fixture term has too many successors"),
+            };
+            items.push(Item { address, kind });
+        }
+        let resume: super::OuterBodyResume = super::OuterBodyResume {
+            inner: super::LoopId { header: 10 },
+            outer: super::LoopId { header: 3 },
+            block: 4,
+            stub: 23,
+        };
+        let labels: BTreeMap<usize, SinkLabel> = BTreeMap::from([
+            (plan_to_source[&4], SinkLabel::ContinueLoop(resume.outer)),
+            (plan_to_source[&5], SinkLabel::BreakLoop(resume.outer)),
+            (plan_to_source[&17], SinkLabel::ResumeAt(resume)),
+        ]);
+        (items, labels, resume)
     }
 
     fn contains_goto(body: &[super::Node]) -> bool {
@@ -28473,6 +30240,74 @@ mod forward_join_scope {
             crate::structuring::relowered_matches_original(&original, &lowered, &residual),
             "the resume stub must preserve the exact edge to block 2"
         );
+    }
+
+    #[test]
+    fn pre_structure_stack_normalization_admits_the_exact_outer_resume_topology() {
+        let (mut items, labels, resume): (
+            Vec<Item>,
+            BTreeMap<usize, SinkLabel>,
+            super::OuterBodyResume,
+        ) = outer_resume_stack_items();
+        let raw_blocks: Vec<CfgBlock> = super::build_blocks(&items).expect("raw fixture blocks");
+        assert_eq!(raw_blocks.len(), 23);
+        assert!(
+            super::OuterResumeTree::checked(&raw_blocks, &labels, resume).is_none(),
+            "memory-bearing outer resume input must be rejected"
+        );
+        assert!(
+            super::render_cfg_blocks_nested(&raw_blocks, &labels, true, &BTreeMap::new(), resume,)
+                .is_none(),
+            "the public structuring path must reject the unnormalized topology"
+        );
+        let frame_shape: super::FrameShape = super::FrameShape {
+            base: Some(Reg::Rbp),
+            rbp_is_frame: true,
+            red_zone: false,
+            stack_extent: super::StackFrameExtent::x86_frame_pointer(
+                super::FramePointerAnchor {
+                    entry_disp: 8,
+                    saved_bytes: 8,
+                },
+                0,
+            ),
+            stack_pointer_break: None,
+        };
+        assert!(
+            super::rewrite_incoming_stack_items(&mut items, frame_shape)
+                .expect("normalize incoming stack items")
+        );
+        let normalized_blocks: Vec<CfgBlock> =
+            super::build_blocks(&items).expect("normalized fixture blocks");
+        assert_eq!(normalized_blocks.len(), 23);
+        let body: super::Block = super::render_cfg_blocks_nested(
+            &normalized_blocks,
+            &labels,
+            true,
+            &BTreeMap::new(),
+            resume,
+        )
+        .expect("normalized outer resume topology");
+        let [super::Node::OuterResume(tree)] = body.as_slice() else {
+            panic!("normalized topology did not yield OuterResume: {body:#?}");
+        };
+        assert!(
+            tree.analysis_block()
+                .iter()
+                .any(|node: &super::Node| matches!(
+                    node,
+                    super::Node::Stmt(Stmt::Assign {
+                        src: Source::Reg(RegRef {
+                            reg: Reg::X86Stack0,
+                            width: Width::W64,
+                        }),
+                        ..
+                    })
+                ))
+        );
+        let parameters: Vec<Reg> = super::infer_params(&body, super::Abi::SysV)
+            .expect("outer resume stack parameter binding");
+        assert_eq!(parameters.last(), Some(&Reg::X86Stack0));
     }
 
     #[test]
