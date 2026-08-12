@@ -18,6 +18,7 @@ pub mod extract;
 pub mod native;
 pub mod native_graph;
 pub mod native_image;
+mod ne;
 pub mod quota;
 pub use disrobe_core::structural;
 

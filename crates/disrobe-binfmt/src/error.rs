@@ -202,4 +202,7 @@ pub enum Error {
 
     #[error("DR-BINFMT-0070: uefi firmware volume parse failed: {0}")]
     UefiFirmwareVolume(String),
+
+    #[error("DR-BINFMT-0071: new executable parse failed: {0}")]
+    Ne(String),
 }

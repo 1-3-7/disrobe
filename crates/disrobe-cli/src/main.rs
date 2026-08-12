@@ -515,7 +515,7 @@ enum Cmd {
     },
     #[cfg(feature = "chain")]
     #[command(
-        about = "run every obfuscator/packer catalog detector against a file and report each hit (pass, obfuscator, confidence, markers)"
+        about = "detect parsed New Executable structure and run every obfuscator/packer catalog detector against a file"
     )]
     Detect {
         #[arg(value_name = "PATH", help = "input file to fingerprint")]

@@ -58,7 +58,7 @@ impl Ecosystem {
             Self::Wasm => "WebAssembly",
             Self::Jvm => "JVM / Android",
             Self::Dotnet => ".NET / CLR",
-            Self::Native => "Native (PE / ELF / Mach-O)",
+            Self::Native => "Native (PE / ELF / Mach-O / NE)",
             Self::Go => "Go",
             Self::Lua => "Lua",
             Self::Php => "PHP",
@@ -105,7 +105,7 @@ impl Ecosystem {
             "wasm" | "webassembly" | "wat" => Some(Self::Wasm),
             "jvm" | "java" | "android" | "dalvik" | "dex" | "kotlin" => Some(Self::Jvm),
             "dotnet" | ".net" | "net" | "clr" | "csharp" | "cs" | "il" => Some(Self::Dotnet),
-            "native" | "pe" | "elf" | "macho" | "mach-o" | "packer" | "binary" => {
+            "native" | "pe" | "elf" | "macho" | "mach-o" | "ne" | "packer" | "binary" => {
                 Some(Self::Native)
             }
             "go" | "golang" => Some(Self::Go),
@@ -163,6 +163,8 @@ mod tests {
         assert_eq!(Ecosystem::parse("typescript"), Some(Ecosystem::JavaScript));
         assert_eq!(Ecosystem::parse(".net"), Some(Ecosystem::Dotnet));
         assert_eq!(Ecosystem::parse("golang"), Some(Ecosystem::Go));
+        assert_eq!(Ecosystem::parse("ne"), Some(Ecosystem::Native));
+        assert_eq!(Ecosystem::Native.label(), "Native (PE / ELF / Mach-O / NE)");
         assert_eq!(Ecosystem::parse("boguslang"), None);
     }
 

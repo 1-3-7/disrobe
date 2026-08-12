@@ -50,7 +50,7 @@ Try it in your browser at [`1-3-7.github.io/disrobe/playground`](https://1-3-7.g
 | .NET CIL | Recover | Eazfuscator VM and KoiVM lifted | strong `[CI]` | [dotnet](docs/src/languages/dotnet.md) |
 | JavaScript, TypeScript | Recover | obfuscator.io, JS-Confuser, Jscrambler | pass-gated | [js](docs/src/languages/javascript.md) |
 | WebAssembly | Recover | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions execute equal | strong `[CI]` | [wasm](docs/src/languages/wasm.md) |
-| Native symbols, disasm, IR | Recover | DWARF, PDB, STABS, demangle, RTTI | pass-gated | [native](docs/src/languages/native.md) |
+| Native symbols, structure, disasm, IR | Recover | PE / ELF / Mach-O symbols; Windows and OS/2 NE segments, entries, imports, and resources | pass-gated | [native](docs/src/languages/native.md) |
 | Native decompile | Recover | x86-64 C and Rust output re-executes equal; AArch64 emits pseudo-C | pass-gated | [decompile](docs/src/languages/native-decompile.md) |
 | Native packers | Recover | UPX `.text` and `.pdata` byte-identical | strong `[CI]` | [unpack](docs/src/languages/native-unpack.md) |
 | Native VM protectors | Detect-only | handler stream carved, not lifted | pass-gated | [unpack](docs/src/languages/native-unpack.md) |

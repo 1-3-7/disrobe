@@ -22,6 +22,8 @@ pub enum NativeFormat {
     MachO64,
     MachOFat,
     Coff,
+    NeWindows,
+    NeOs2,
     Wasm,
 }
 
@@ -37,6 +39,7 @@ impl NativeFormat {
             Self::MachO64 => "macho64",
             Self::MachOFat => "macho-fat",
             Self::Coff => "coff",
+            Self::NeWindows | Self::NeOs2 => "ne",
             Self::Wasm => "wasm",
         }
     }
@@ -168,6 +171,9 @@ const MACHO_FAT_MIN: usize = 8;
 
 #[allow(clippy::too_many_lines)]
 pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
+    if crate::ne::is_ne(bytes) {
+        return crate::ne::parse_ne(bytes);
+    }
     let format: NativeFormat = detect_native_format(bytes)?;
 
     if matches!(format, NativeFormat::MachOFat) {

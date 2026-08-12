@@ -121,7 +121,8 @@ fn global_features(native: Option<&NativeFile>) -> GlobalFeatures {
 
 const fn os_for(format: NativeFormat) -> Option<&'static str> {
     match format {
-        NativeFormat::Pe32 | NativeFormat::Pe64 => Some("windows"),
+        NativeFormat::Pe32 | NativeFormat::Pe64 | NativeFormat::NeWindows => Some("windows"),
+        NativeFormat::NeOs2 => Some("os2"),
         NativeFormat::Elf32 | NativeFormat::Elf64 => Some("linux"),
         NativeFormat::MachO32 | NativeFormat::MachO64 | NativeFormat::MachOFat => Some("macos"),
         NativeFormat::Coff | NativeFormat::Wasm => None,
@@ -134,6 +135,7 @@ const fn format_label(format: NativeFormat) -> &'static str {
         NativeFormat::Elf32 | NativeFormat::Elf64 => "elf",
         NativeFormat::MachO32 | NativeFormat::MachO64 | NativeFormat::MachOFat => "macho",
         NativeFormat::Coff => "coff",
+        NativeFormat::NeWindows | NativeFormat::NeOs2 => "ne",
         NativeFormat::Wasm => "wasm",
     }
 }
@@ -1054,5 +1056,28 @@ mod tests {
             set.matches(&Feature::StringExact("abcd".to_owned()))
                 .contains(&0)
         );
+    }
+
+    #[test]
+    fn ne_metadata_reaches_capability_features() {
+        const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+        let payload: DisasmPayload = DisasmPayload {
+            source_hash: [0u8; 32],
+            instructions: Vec::new(),
+            symbol_table: Vec::new(),
+        };
+        let module: Module = Module::from_disasm(&payload);
+        let scoped: ScopedFeatures = extract(&module, REAL_NE, &ImportMap::default());
+        assert_eq!(
+            scoped.file.matches(&Feature::Os("windows".to_owned())),
+            vec![0]
+        );
+        assert_eq!(
+            scoped.file.matches(&Feature::Format("ne".to_owned())),
+            vec![0]
+        );
+        assert!(scoped.file.hits().iter().any(|hit: &FeatureHit| {
+            matches!(&hit.value, FeatureValue::Import(name) if name.starts_with("KERNEL!"))
+        }));
     }
 }

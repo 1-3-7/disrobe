@@ -32,7 +32,7 @@
 - [WebAssembly](./languages/wasm.md)
 - [JVM and Android](./languages/jvm-android.md)
 - [.NET / CIL](./languages/dotnet.md)
-- [Native (PE / ELF / Mach-O)](./languages/native.md)
+- [Native (PE / ELF / Mach-O / NE)](./languages/native.md)
   - [Native decompile](./languages/native-decompile.md)
   - [Native unpacking and devirtualization](./languages/native-unpack.md)
 - [Go](./languages/go.md)

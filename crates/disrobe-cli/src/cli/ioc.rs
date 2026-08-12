@@ -225,4 +225,13 @@ mod tests {
             defanged.indicators
         );
     }
+
+    #[test]
+    fn win16_ne_imports_reach_ioc_enrichment() {
+        const REAL_NE: &[u8] = include_bytes!("../../../../corpus/native/formats/hello_ne.exe");
+        let imports: Vec<String> = native_import_text(REAL_NE);
+        assert_eq!(imports.len(), 81);
+        assert!(imports.iter().any(|import: &String| import == "KERNEL!#3"));
+        assert!(imports.iter().any(|import: &String| import == "USER!#141"));
+    }
 }

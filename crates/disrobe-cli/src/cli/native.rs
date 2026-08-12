@@ -2708,6 +2708,15 @@ struct DebugInfoSummary {
 }
 
 fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
+    if let Ok(native) = parse_native(bytes)
+        && matches!(
+            native.format,
+            disrobe_binfmt::ParsedNativeFormat::NeWindows
+                | disrobe_binfmt::ParsedNativeFormat::NeOs2
+        )
+    {
+        return Ok(dump_ne_symbols(native, input));
+    }
     let file: object::File<'_> = object::File::parse(bytes)
         .map_err(|e| miette::miette!("DR-NATIVE-0020: object parse failed: {e}"))?;
     let format: &'static str = match file.format() {
@@ -2833,6 +2842,88 @@ fn dump_symbols(bytes: &[u8], input: &Path) -> miette::Result<SymbolDump> {
         debug_info,
         cxx_rtti,
     })
+}
+
+fn dump_ne_symbols(native: disrobe_binfmt::NativeFile, input: &Path) -> SymbolDump {
+    let section_names: BTreeMap<u64, String> = native
+        .sections
+        .iter()
+        .filter(|section: &&disrobe_binfmt::SectionInfo| !section.name.starts_with("resource_"))
+        .map(|section: &disrobe_binfmt::SectionInfo| (section.address >> 16, section.name.clone()))
+        .collect();
+    let entry: u64 = native
+        .symbols
+        .iter()
+        .find(|symbol: &&disrobe_binfmt::SymbolInfo| symbol.name == "entry")
+        .map_or(0, |symbol: &disrobe_binfmt::SymbolInfo| symbol.address);
+    let exports: Vec<SymbolRow> = native
+        .symbols
+        .into_iter()
+        .map(|symbol: disrobe_binfmt::SymbolInfo| {
+            let section: Option<String> = section_names.get(&(symbol.address >> 16)).cloned();
+            SymbolRow {
+                name: symbol.name,
+                address: symbol.address,
+                size: symbol.size,
+                kind: format!("{:?}", symbol.kind).to_lowercase(),
+                section,
+            }
+        })
+        .collect();
+    let imports: Vec<ImportRow> = native
+        .imports
+        .into_iter()
+        .map(|import: disrobe_binfmt::ImportInfo| ImportRow {
+            name: import.name,
+            library: Some(import.library),
+        })
+        .collect();
+    let sections: Vec<SectionRow> = native
+        .sections
+        .into_iter()
+        .enumerate()
+        .map(|(index, section): (usize, disrobe_binfmt::SectionInfo)| {
+            let kind: String = if section.name.starts_with("resource_") {
+                "resource".to_owned()
+            } else {
+                "segment".to_owned()
+            };
+            SectionRow {
+                index,
+                name: section.name,
+                address: section.address,
+                size: section.size,
+                kind,
+                flags: "ne".to_owned(),
+            }
+        })
+        .collect();
+    let segments: Vec<SegmentRow> = native
+        .segments
+        .into_iter()
+        .map(|segment: disrobe_binfmt::SegmentInfo| SegmentRow {
+            name: segment.name,
+            address: segment.address,
+            size: segment.size,
+        })
+        .collect();
+    SymbolDump {
+        schema: "disrobe.native.symbols/v0",
+        input: input.display().to_string(),
+        format: native.format.label().to_owned(),
+        arch: "x86".to_owned(),
+        entry,
+        is_64: false,
+        exports,
+        imports,
+        sections,
+        segments,
+        debug_info: DebugInfoSummary {
+            present: native.debug_info_present,
+            sections: Vec::new(),
+        },
+        cxx_rtti: None,
+    }
 }
 
 fn recover_cxx_rtti_summary(bytes: &[u8]) -> Option<CxxRttiSummary> {
@@ -3361,6 +3452,23 @@ fn render_delphi_sidecar(sidecar: &DelphiSidecar) {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ne_symbol_dump_uses_the_shared_parser_model() {
+        const REAL_NE: &[u8] = include_bytes!("../../../../corpus/native/formats/hello_ne.exe");
+        let dump: SymbolDump =
+            dump_symbols(REAL_NE, Path::new("hello_ne.exe")).expect("NE symbol dump");
+        assert_eq!(dump.format, "ne");
+        assert_eq!(dump.arch, "x86");
+        assert_eq!(dump.entry, 0x0001_006c);
+        assert!(!dump.is_64);
+        assert_eq!(dump.exports.len(), 1);
+        assert_eq!(dump.exports[0].name, "entry");
+        assert_eq!(dump.exports[0].section.as_deref(), Some("code_1"));
+        assert_eq!(dump.imports.len(), 81);
+        assert_eq!(dump.sections.len(), 2);
+        assert_eq!(dump.segments.len(), 2);
+    }
 
     #[test]
     fn api_type_and_provenance_render_for_the_banner() {

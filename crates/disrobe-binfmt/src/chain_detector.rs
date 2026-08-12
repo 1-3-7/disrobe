@@ -4,12 +4,109 @@ use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{
     ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector, FAMILY_CONTAINER,
-    OutputKind, Pass,
+    FAMILY_NATIVE_FORMAT, OutputKind, Pass,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 
 pub const PASS_ID: PassId = "binfmt.container";
+pub const NE_PASS_ID: PassId = "native.ne-structure";
+
+#[derive(Debug)]
+pub struct NeDetector;
+
+impl Detector for NeDetector {
+    fn id(&self) -> PassId {
+        NE_PASS_ID
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        let parsed: crate::NativeFile = crate::parse_native(ctx.bytes).ok()?;
+        if !matches!(
+            parsed.format,
+            crate::ParsedNativeFormat::NeWindows | crate::ParsedNativeFormat::NeOs2
+        ) {
+            return None;
+        }
+        Some(DetectVerdict::new(
+            NE_PASS_ID,
+            parsed.format.label(),
+            FAMILY_NATIVE_FORMAT,
+            1.0,
+            10,
+            vec!["mz-ne-header+validated-tables"],
+            "parsed 16-bit new executable structure".to_owned(),
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub struct NePass;
+
+impl Pass for NePass {
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        NE_META
+    }
+
+    fn id(&self) -> PassId {
+        NE_PASS_ID
+    }
+
+    fn detector(&self) -> &'static dyn Detector {
+        &NeDetector
+    }
+
+    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+        OutputKind::Mixed {
+            children: Vec::new(),
+        }
+    }
+
+    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        let bytes: Vec<u8> = render_ne(artifact)?;
+        Ok(Artifact::new(Rung::Disasm, bytes, artifact.root_hash))
+    }
+
+    fn extract_children(&self, artifact: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        let bytes: Vec<u8> = render_ne(artifact)?;
+        Ok(vec![ChildArtifact {
+            handle: ChildHandle {
+                artifact_index: 0,
+                relative_path: "ne-structure.json".to_owned(),
+                hint: Some(disrobe_core::chain::detection::TERMINAL_HINT.to_owned()),
+            },
+            bytes,
+        }])
+    }
+}
+
+fn render_ne(artifact: &Artifact) -> CoreResult<Vec<u8>> {
+    let parsed: crate::NativeFile =
+        crate::parse_native(&artifact.envelope).map_err(|error: crate::Error| {
+            CoreError::PassFailure(format!("DR-BINFMT-0904: native.ne-structure: {error}"))
+        })?;
+    if !matches!(
+        parsed.format,
+        crate::ParsedNativeFormat::NeWindows | crate::ParsedNativeFormat::NeOs2
+    ) {
+        return Err(CoreError::PassFailure(
+            "DR-BINFMT-0905: native.ne-structure: input is not a parsed NE file".to_owned(),
+        ));
+    }
+    serde_json::to_vec_pretty(&parsed).map_err(|error: serde_json::Error| {
+        CoreError::PassFailure(format!("DR-BINFMT-0906: native.ne-structure: {error}"))
+    })
+}
+
+pub const NE_META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    NE_PASS_ID,
+    disrobe_core::chain::Ecosystem::Native,
+    disrobe_core::chain::SupportQuality::Full,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
+pub static NE_PASS: NePass = NePass;
 
 const TAG_ASAR: &str = "asar";
 const TAG_ZIP: &str = "zip";
@@ -528,6 +625,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+    const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
+
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
             bytes,
@@ -540,6 +640,56 @@ mod tests {
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(ContainerDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn ne_pass_reaches_real_win16_structure() {
+        let verdict: DetectVerdict = NeDetector.detect(&ctx(REAL_NE)).expect("NE detect");
+        assert_eq!(verdict.pass_id, NE_PASS_ID);
+        assert_eq!(verdict.format_tag, "ne");
+
+        let artifact: Artifact = Artifact::new(Rung::Raw, REAL_NE.to_vec(), [0u8; 32]);
+        let output: Artifact = NE_PASS.run(&artifact).expect("NE pass");
+        let parsed: crate::NativeFile =
+            serde_json::from_slice(&output.envelope).expect("NE structure JSON");
+        assert_eq!(parsed.format, crate::ParsedNativeFormat::NeWindows);
+        assert_eq!(parsed.segments.len(), 2);
+        assert!(
+            parsed
+                .imports
+                .iter()
+                .any(|import: &crate::ImportInfo| import.library == "KERNEL")
+        );
+
+        let children: Vec<ChildArtifact> = NE_PASS
+            .extract_children(&artifact)
+            .expect("NE structure child");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].handle.relative_path, "ne-structure.json");
+        assert_eq!(children[0].bytes, output.envelope);
+    }
+
+    #[test]
+    fn ne_detector_rejects_non_ne_mz() {
+        let mut bytes: Vec<u8> = vec![0u8; 0x80];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        bytes[0x40..0x42].copy_from_slice(b"PE");
+        assert!(NeDetector.detect(&ctx(&bytes)).is_none());
+    }
+
+    #[test]
+    fn ne_pass_reaches_real_os2_structure() {
+        let verdict: DetectVerdict = NeDetector
+            .detect(&ctx(REAL_OS2_NE))
+            .expect("OS/2 NE detect");
+        assert_eq!(verdict.pass_id, NE_PASS_ID);
+        let artifact: Artifact = Artifact::new(Rung::Raw, REAL_OS2_NE.to_vec(), [0u8; 32]);
+        let output: Artifact = NE_PASS.run(&artifact).expect("OS/2 NE pass");
+        let parsed: crate::NativeFile =
+            serde_json::from_slice(&output.envelope).expect("OS/2 NE structure JSON");
+        assert_eq!(parsed.format, crate::ParsedNativeFormat::NeOs2);
+        assert_eq!(parsed.imports.len(), 6);
     }
 
     #[test]

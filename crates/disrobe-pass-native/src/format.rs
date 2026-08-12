@@ -168,10 +168,25 @@ pub fn detect(bytes: &[u8]) -> Result<DetectedFormat> {
             return classify_pe(bytes, e_lfanew);
         }
         if &sig4[..2] == NE_SIG {
+            let subsystem: Option<String> = match disrobe_binfmt::parse_native(bytes) {
+                Ok(parsed) => match parsed.format {
+                    disrobe_binfmt::ParsedNativeFormat::NeOs2 => Some("os2".to_owned()),
+                    disrobe_binfmt::ParsedNativeFormat::NeWindows => Some("windows".to_owned()),
+                    _ => None,
+                },
+                Err(_) => {
+                    return Ok(DetectedFormat {
+                        kind: NativeFormat::Mz,
+                        bits: 16,
+                        subsystem: None,
+                        notes: vec!["invalid-ne".to_owned()],
+                    });
+                }
+            };
             return Ok(DetectedFormat {
                 kind: NativeFormat::Ne,
                 bits: 16,
-                subsystem: None,
+                subsystem,
                 notes: Vec::new(),
             });
         }
@@ -367,14 +382,19 @@ mod tests {
 
     #[test]
     fn ne_legacy_recognized_through_mz_stub() {
-        let mut buf: Vec<u8> = vec![0u8; 0x80];
-        buf[0] = b'M';
-        buf[1] = b'Z';
-        let ne_off: u32 = 0x40;
-        buf[0x3C..0x40].copy_from_slice(&ne_off.to_le_bytes());
-        buf[0x40] = b'N';
-        buf[0x41] = b'E';
-        let d: DetectedFormat = detect(&buf).expect("ne detect");
+        const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+        let d: DetectedFormat = detect(REAL_NE).expect("ne detect");
         assert_eq!(d.kind, NativeFormat::Ne);
+        assert_eq!(d.subsystem.as_deref(), Some("windows"));
+    }
+
+    #[test]
+    fn invalid_ne_header_is_not_reported_as_a_validated_ne() {
+        const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+        let mut bytes: Vec<u8> = REAL_NE.to_vec();
+        bytes[0x08..0x0a].copy_from_slice(&9u16.to_le_bytes());
+        let detected: DetectedFormat = detect(&bytes).expect("invalid NE classification");
+        assert_eq!(detected.kind, NativeFormat::Mz);
+        assert_eq!(detected.notes, ["invalid-ne"]);
     }
 }

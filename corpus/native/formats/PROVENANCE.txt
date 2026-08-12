@@ -19,6 +19,7 @@ dwarf_v5.o           CU header records the matching DWARF version.
 hello.efi            real UEFI PE32+ application (subsystem 10) from the uefi target.
 hello_stabs.o        object with real .stab/.stabstr sections (GNU as .stabs directives).
 hello_ne.exe         real Win16 NE executable (OpenWatcom wcl -bcl=windows).
+hello_os2_ne.exe     real OS/2 1.x NE executable (OpenWatcom wcl -bcl=os2).
 hello_lx.exe         real OS/2 LX executable (OpenWatcom wcl386 -bcl=os2v2).
 avr_firmware.elf     real AVR ELF firmware (avr-gcc, atmega328p, e_machine=EM_AVR).
 
@@ -37,6 +38,14 @@ DWARF objects:    gcc -gdwarf-N -O0 -c dwsrc.c -o dwarf_vN.o   for N in 2 3 4 5
 EFI application:  rustc --target x86_64-unknown-uefi -C panic=abort efiprog.rs -o hello.efi
 STABS object:     as -o hello_stabs.o stabsrc.s   (GNU as 2.42, .stabs directives)
 Win16 NE:         wcl -bcl=windows necode.c -fe=hello_ne.exe    (OpenWatcom v2)
+                  wdump -f hello_ne.exe                         (OpenWatcom 2.0beta1)
+                  2 segments, entry 0001:006C, 0 exported entry-table members,
+                  186 relocation records, 81 unique imported module/ordinal pairs.
+OS/2 1.x NE:      wcl -bcl=os2 os2_ne_probe.c                   (OpenWatcom 2.0beta1)
+                  rename os2_ne_probe.exe hello_os2_ne.exe
+                  wdump -f hello_os2_ne.exe
+                  2 segments, entry 0001:0040, 0 exported entry-table members,
+                  10 relocation records, 6 unique imported module/ordinal pairs.
 OS/2 LX:          wcl386 -bcl=os2v2 necode.c -fe=hello_lx.exe   (OpenWatcom v2)
 AVR firmware:     avr-gcc -mmcu=atmega328p -Os avrprog.c -o avr_firmware.elf  (avr-gcc 14.1.0)
                   disasm wired via yaxpeax-avr 0.1.0 (yaxpeax-arch 0.2.8, aliased)

@@ -52,7 +52,7 @@ const BATCH_SIZE: usize = 448;
 const CASE_BUDGET: Duration = Duration::from_millis(250);
 const SUITE_BUDGET: Duration = Duration::from_mins(4);
 
-const CORPUS_ENTRIES: usize = 28;
+const CORPUS_ENTRIES: usize = 30;
 const MIN_TOTAL_CASES: usize = 5_000;
 const MIN_ENTRY_POINTS_PER_CASE: u32 = 100;
 
@@ -745,6 +745,14 @@ fn corpus() -> Vec<CorpusEntry> {
         CorpusEntry::new("macho64", macho64_seed()),
         CorpusEntry::new("minidump", minidump_seed()),
         CorpusEntry::new("ms-cabinet", cab_seed()),
+        CorpusEntry::new(
+            "new-executable",
+            include_bytes!("../../../corpus/native/formats/hello_ne.exe").to_vec(),
+        ),
+        CorpusEntry::new(
+            "os2-new-executable",
+            include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe").to_vec(),
+        ),
         CorpusEntry::new("oci-index-json", oci_index_seed()),
         CorpusEntry::new("pe64", pe64_seed()),
         CorpusEntry::new("squashfs-superblock", squashfs_seed()),
@@ -1483,6 +1491,30 @@ fn every_header_prefix_of_every_seed_is_refused_rather_than_panicking() {
         prefixes >= MIN_TRUNCATION_PREFIXES,
         "the truncation sweep only drove {prefixes} prefix(es)"
     );
+}
+
+#[test]
+fn malformed_ne_table_and_resource_mutations_return_typed_errors_without_panicking() {
+    const WINDOWS_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+    const OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
+    let mut dos_overlap: Vec<u8> = WINDOWS_NE.to_vec();
+    write_u16_le(&mut dos_overlap, 0x08, 9);
+    let mut table_inside_header: Vec<u8> = WINDOWS_NE.to_vec();
+    write_u16_le(&mut table_inside_header, 0x80 + 0x22, 2);
+    let mut os2_count_exceeds_segments: Vec<u8> = OS2_NE.to_vec();
+    write_u16_le(&mut os2_count_exceeds_segments, 0x80 + 0x34, 3);
+    let mut os2_table_is_truncated: Vec<u8> = OS2_NE.to_vec();
+    write_u16_le(&mut os2_table_is_truncated, 0x80 + 0x34, 1);
+    for bytes in [
+        dos_overlap,
+        table_inside_header,
+        os2_count_exceeds_segments,
+        os2_table_is_truncated,
+    ] {
+        let outcome: std::thread::Result<Result<NativeFile>> =
+            std::panic::catch_unwind(|| parse_native(&bytes));
+        assert!(matches!(outcome, Ok(Err(disrobe_binfmt::Error::Ne(_)))));
+    }
 }
 
 #[test]

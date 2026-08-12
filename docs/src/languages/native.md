@@ -1,4 +1,4 @@
-# Native (PE / ELF / Mach-O)
+# Native (PE / ELF / Mach-O / NE)
 
 `disrobe` ships its own in-tree x86-64 and AArch64 decompiler, and around it the layer that recovers a binary's symbols, disassembles it, identifies what built and protected it, and patches, fingerprints, or diffs it. It also hands Ghidra and IDA clean, unpacked, symbol-rich input, and can drive Ghidra headlessly in one command.
 
@@ -8,7 +8,7 @@ Two adjacent surfaces have their own pages: [native decompile](./native-decompil
 
 | Surface | Support |
 |---|---|
-| Containers | PE, ELF, Mach-O, plus a flat code blob with `--raw` |
+| Containers | PE, ELF, Mach-O, Windows 3.x NE, OS/2 1.x NE, plus a flat code blob with `--raw` |
 | Architectures | x86 / ARM / RISC-V / MIPS / PowerPC / SPARC / eBPF / AVR |
 | Debug formats | DWARF, PDB, STABS |
 | Demangling | Rust and C++ symbols, with the C++ class hierarchy recovered from RTTI and vtable layout |
@@ -64,7 +64,13 @@ disrobe native sbom app.exe --out app.cyclonedx.json     # CycloneDX 1.5 SBOM fr
 
 ### Symbol recovery and dumping
 
-`native symbols` dumps symbols, sections, segments, imports, and debug info from a PE / ELF / Mach-O. It demangles and restores Rust and C++ symbols across x86 / ARM / RISC-V / MIPS / PowerPC / SPARC / eBPF / AVR, reading DWARF, PDB, and STABS debug formats. For C++ binaries it recovers the class hierarchy from the in-memory RTTI and vtable layout: ABI, each class's inheritance kind, direct base classes (virtual flagged), virtual-method slot counts, and detected STL templates.
+`native symbols` dumps symbols, sections, segments, imports, and debug info from PE, ELF, Mach-O, and 16-bit NE files. It demangles and restores Rust and C++ symbols across x86 / ARM / RISC-V / MIPS / PowerPC / SPARC / eBPF / AVR, reading DWARF, PDB, and STABS debug formats. For C++ binaries it recovers the class hierarchy from the in-memory RTTI and vtable layout: ABI, each class's inheritance kind, direct base classes (virtual flagged), virtual-method slot counts, and detected STL templates.
+
+### New Executable structure
+
+The NE parser accepts the little-endian segmented container used by Windows 3.x and OS/2 1.x. It validates the 64-byte header, segment and resource ranges, entry bundles, resident and nonresident names, module references, imported names, relocation records, and non-additive relocation chains. It lowers segment-relative entry addresses, exports, and imported names into the same native model used by behavior, IOC, HTML-report, and native-symbol surfaces. The identify surface classifies both variants. The registered `native.ne-structure` pass gives `detect` and `auto` the validated structure. It does not claim 16-bit disassembly or decompilation.
+
+NE names use an OEM code page rather than UTF-8. Printable ASCII bytes other than backslash render directly. Backslash and every other byte render as `\xNN`, which keeps the representation unambiguous without guessing a host code page or dropping malformed text.
 
 ### Disassembly, call graph, and CFG
 

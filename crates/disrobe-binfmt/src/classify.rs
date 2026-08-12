@@ -35,6 +35,7 @@ pub enum ObfuscatorFamily {
 #[serde(rename_all = "kebab-case")]
 pub enum NativeFormat {
     Pe,
+    Ne,
     Elf,
     MachO,
 }
@@ -461,6 +462,9 @@ fn looks_like_java_class(bytes: &[u8]) -> bool {
 }
 
 fn native_format(bytes: &[u8]) -> Option<NativeFormat> {
+    if crate::ne::is_ne(bytes) {
+        return crate::ne::parse_ne(bytes).ok().map(|_| NativeFormat::Ne);
+    }
     if bytes.len() >= 4 && bytes.starts_with(ELF_MAGIC) {
         return Some(NativeFormat::Elf);
     }
@@ -797,5 +801,15 @@ mod tests {
             cl.primary_action,
             Action::Decompile { lang: Lang::Native }
         ));
+    }
+
+    #[test]
+    fn malformed_ne_signature_does_not_create_a_native_classification() {
+        const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
+        let mut bytes: Vec<u8> = REAL_NE.to_vec();
+        bytes[0x08..0x0a].copy_from_slice(&9u16.to_le_bytes());
+        assert_eq!(native_format(&bytes), None);
+        let classified: InputClassification = classify_input(&PathBuf::from("invalid.exe"), &bytes);
+        assert!(classified.native.is_none());
     }
 }
