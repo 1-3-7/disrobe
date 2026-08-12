@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use disrobe_pass_native::{LeafRecovery, recover_aarch64_function};
+use disrobe_pass_native::{
+    LeafRecovery, RecoveredFunction, RecoveredProgram, recover_aarch64_function,
+    recover_aarch64_function_with_image, recover_aarch64_program,
+};
 
 #[path = "aarch64_grade/battery.rs"]
 mod battery;
@@ -437,6 +440,133 @@ const FMAX_PROPAGATE_PROBE_NM_F32: &[u8] = &[0x00, 0x68, 0x21, 0x1e, 0xc0, 0x03,
 const FMAX_PROPAGATE_PROBE_PROP_F32: &[u8] = &[0x00, 0x48, 0x21, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
 const FMAX_PROPAGATE_PROBE_NM_F64: &[u8] = &[0x00, 0x78, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
 const FMAX_PROPAGATE_PROBE_PROP_F64: &[u8] = &[0x00, 0x58, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+
+const LDR_LITERAL_F32: &[u8] = &[0x40, 0x00, 0x00, 0x1c, 0xc0, 0x03, 0x5f, 0xd6];
+const LITERAL_F32_BYTES: &[u8] = &[0x00, 0x00, 0xc0, 0x3f];
+const LDR_LITERAL_F64_BACKWARD: &[u8] = &[0xc0, 0xff, 0xff, 0x5c, 0xc0, 0x03, 0x5f, 0xd6];
+const LITERAL_F64_BYTES: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80];
+const WRITES_FPCR: &[u8] = &[0x00, 0x44, 0x1b, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
+const LITERAL_POOL_ELF: &[u8] = include_bytes!("fixtures/aarch64_recovery/literal_pool.elf");
+
+fn recovered_fixture<'program>(
+    program: &'program RecoveredProgram,
+    name: &str,
+) -> &'program RecoveredFunction {
+    program
+        .recovered
+        .iter()
+        .find(|function: &&RecoveredFunction| function.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "the toolchain-built fixture function {name} must recover: {:?}",
+                program.unrecovered
+            )
+        })
+}
+
+#[test]
+fn toolchain_built_literal_pool_fixture_reaches_program_recovery() {
+    let program: RecoveredProgram = recover_aarch64_program(LITERAL_POOL_ELF);
+    let f32_function: &RecoveredFunction = recovered_fixture(&program, "literal_f");
+    assert!(
+        f32_function.source.contains("fp_f_from_bits(0x3fc00000"),
+        "the ELF image context must recover the f32 literal's exact bits:\n{}",
+        f32_function.source
+    );
+    let f64_function: &RecoveredFunction = recovered_fixture(&program, "literal_d");
+    assert!(
+        f64_function
+            .source
+            .contains("fp_d_from_bits(0x8000000000000000ULL)"),
+        "the ELF image context must recover the f64 literal's exact bits:\n{}",
+        f64_function.source
+    );
+}
+
+#[test]
+fn scalar_fp_literal_pool_load_uses_the_image_context() {
+    let recovery: LeafRecovery = recover_aarch64_function_with_image(
+        LDR_LITERAL_F32,
+        0,
+        &|address: u64| (address == 8).then_some(LITERAL_F32_BYTES),
+        &|_: u64| None,
+    )
+    .expect("ldr s0, #8 must recover the bounded f32 literal at image address 8");
+    assert!(
+        recovery.source.contains("fp_f_from_bits(0x3fc00000"),
+        "the recovered C must carry the literal's exact f32 bits:\n{}",
+        recovery.source
+    );
+    let rust: &str = recovery
+        .rust_source
+        .as_deref()
+        .expect("the image-backed scalar literal must reach pseudo-Rust too");
+    assert!(
+        rust.contains("f32::from_bits(0x3fc00000u32)"),
+        "the recovered Rust must carry the literal's exact f32 bits:\n{rust}"
+    );
+}
+
+#[test]
+fn scalar_fp_literal_pool_load_sign_extends_a_backward_f64_target() {
+    let recovery: LeafRecovery = recover_aarch64_function_with_image(
+        LDR_LITERAL_F64_BACKWARD,
+        8,
+        &|address: u64| (address == 0).then_some(LITERAL_F64_BYTES),
+        &|_: u64| None,
+    )
+    .expect("ldr d0, #0 must sign-extend the negative literal displacement from address 8");
+    assert!(
+        recovery
+            .source
+            .contains("fp_d_from_bits(0x8000000000000000ULL)"),
+        "the recovered C must preserve the backward literal's negative-zero bits:\n{}",
+        recovery.source
+    );
+    let rust: &str = recovery
+        .rust_source
+        .as_deref()
+        .expect("the backward f64 literal must reach pseudo-Rust too");
+    assert!(
+        rust.contains("f64::from_bits(0x8000000000000000u64)"),
+        "the recovered Rust must preserve the backward literal's negative-zero bits:\n{rust}"
+    );
+}
+
+#[test]
+fn scalar_fp_literal_pool_load_rejects_missing_and_truncated_image_bytes() {
+    let missing: String =
+        recover_aarch64_function_with_image(LDR_LITERAL_F32, 0, &|_: u64| None, &|_: u64| None)
+            .expect_err("a literal outside the available image must refuse")
+            .to_string();
+    assert!(
+        missing.contains("literal") && missing.contains("image"),
+        "the refusal must identify the unavailable literal image bytes: {missing}"
+    );
+    let truncated: String = recover_aarch64_function_with_image(
+        LDR_LITERAL_F32,
+        0,
+        &|address: u64| (address == 8).then_some(&LITERAL_F32_BYTES[..3]),
+        &|_: u64| None,
+    )
+    .expect_err("a three-byte image tail cannot satisfy an f32 literal")
+    .to_string();
+    assert!(
+        truncated.contains("literal") && truncated.contains("truncated"),
+        "the refusal must identify the bounded literal read: {truncated}"
+    );
+}
+
+#[test]
+fn fpcr_dependent_semantics_refuse_with_a_distinct_reason() {
+    let refusal: String = recover_aarch64_function(WRITES_FPCR, 0)
+        .expect_err("msr fpcr, x0 changes scalar floating-point semantics")
+        .to_string();
+    assert!(
+        refusal.contains("FPCR-dependent scalar floating-point semantics"),
+        "the refusal must name the unsupported architectural control state: {refusal}"
+    );
+}
 
 #[test]
 fn fmax_and_fmaxnm_decode_to_distinct_nan_semantics() {

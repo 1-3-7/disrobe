@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -9,6 +10,9 @@ from pathlib import Path
 HERE: Path = Path(__file__).resolve().parent
 SRC: Path = HERE / "corpus.c"
 OUT: Path = HERE.parent.parent / "aarch64_recovery_corpus.inc"
+LITERAL_POOL_SRC: Path = HERE / "literal_pool.s"
+LITERAL_POOL_OUT: Path = HERE / "literal_pool.elf"
+LITERAL_POOL_SHA256: str = "50a882c7bf80d2d4db2ebf0ccc1d98ab677117cb790a4ad4d9327812f8b34cc5"
 LEVELS: tuple[str, ...] = ("O0", "O1", "O2", "O3", "Os")
 FUNC_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]+ <([A-Za-z_][A-Za-z0-9_]*)>:\s*$")
 INSN_RE: re.Pattern[str] = re.compile(r"^\s*[0-9a-f]+:\s+([0-9a-f]{8})\s+(\S+)(.*)$")
@@ -191,6 +195,41 @@ def disassemble(
     )
 
 
+def verify_literal_pool(out_dir: Path, /) -> str:
+    generated: Path = out_dir / "literal_pool.elf"
+    command: list[str] = [
+        "clang",
+        "--target=aarch64-unknown-linux-gnu",
+        "-nostdlib",
+        "-fuse-ld=lld",
+        "-shared",
+        "-Wl,--hash-style=both",
+        str(LITERAL_POOL_SRC),
+        "-o",
+        str(generated),
+    ]
+    subprocess.run(command, check=True, capture_output=True)
+    expected: bytes = LITERAL_POOL_OUT.read_bytes()
+    actual: bytes = generated.read_bytes()
+    expected_digest: str = hashlib.sha256(expected).hexdigest()
+    actual_digest: str = hashlib.sha256(actual).hexdigest()
+    if expected_digest != LITERAL_POOL_SHA256:
+        raise SystemExit(
+            f"literal pool fixture digest is {expected_digest}, expected {LITERAL_POOL_SHA256}"
+        )
+    if actual_digest != LITERAL_POOL_SHA256 or actual != expected:
+        raise SystemExit(
+            f"literal pool rebuild digest is {actual_digest}, expected {LITERAL_POOL_SHA256}"
+        )
+    version: subprocess.CompletedProcess[str] = subprocess.run(
+        ["clang", "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return version.stdout.splitlines()[0]
+
+
 def gate_fixed_point(
     level: str,
     mnemonics: dict[str, set[str]],
@@ -319,6 +358,7 @@ def main() -> int:
     per_level: dict[str, int] = {}
     with tempfile.TemporaryDirectory() as tmp:
         out_dir: Path = Path(tmp)
+        literal_toolchain: str = verify_literal_pool(out_dir)
         for level in LEVELS:
             functions, mnemonics, encodings, order = disassemble(level, out_dir)
             gate(level, mnemonics)
@@ -332,6 +372,7 @@ def main() -> int:
     OUT.write_text("[\n" + "\n".join(rows) + "\n]\n", encoding="utf-8")
     total: int = sum(per_level.values())
     print(f"levels={per_level} total_cases={total}")
+    print(f"literal_pool_sha256={LITERAL_POOL_SHA256} toolchain={literal_toolchain}")
     print(f"wrote {OUT}")
     return 0
 

@@ -396,6 +396,11 @@ fn no_aarch64_relocation(_: u64) -> Option<u64> {
     None
 }
 
+fn instruction_accesses_fpcr(insn: &DisasmInsn) -> bool {
+    aarch64_instruction_word(insn)
+        .is_some_and(|word: u32| matches!(word & 0xffff_ffe0, 0xd51b_4400 | 0xd53b_4400))
+}
+
 fn recover_with_calls_and_image<'image>(
     machine_code: &[u8],
     base: u64,
@@ -430,6 +435,15 @@ fn recover_with_calls_and_image<'image>(
     let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, base, machine_code)?;
     if insns.is_empty() || insns.len() > MAX_INSTRUCTIONS {
         return Err(reject("instruction count is outside the bounded lift"));
+    }
+    if let Some(insn) = insns
+        .iter()
+        .find(|insn: &&DisasmInsn| instruction_accesses_fpcr(insn))
+    {
+        return Err(reject_at(
+            insn,
+            "FPCR-dependent scalar floating-point semantics are unsupported",
+        ));
     }
     if has_bulk_q_spill(&insns) {
         return Err(reject(
@@ -486,7 +500,9 @@ fn recover_with_calls_and_image<'image>(
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
         }
-        if let Some(stmts) = try_lower_scalar_fp(insn, frame.info_at(index), vector_context)? {
+        if let Some(stmts) =
+            try_lower_scalar_fp(insn, frame.info_at(index), vector_context, &image_context)?
+        {
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -3151,6 +3167,99 @@ fn fp_memory_register(token: &str) -> Result<Option<(Xmm, FpWidth)>> {
     Ok(None)
 }
 
+fn lower_fp_literal(
+    insn: &DisasmInsn,
+    register: Xmm,
+    width: FpWidth,
+    image: &ImageContext<'_, '_>,
+) -> Result<Option<Vec<Stmt>>> {
+    let Some(word): Option<u32> = aarch64_instruction_word(insn) else {
+        return Ok(None);
+    };
+    if word & 0x3f00_0000 != 0x1c00_0000 {
+        return Ok(None);
+    }
+    let encoded_width: FpWidth = match word >> 30 {
+        0 => FpWidth::F32,
+        1 => FpWidth::F64,
+        2 => {
+            return Err(reject_at(
+                insn,
+                "vector literal load is outside scalar floating-point recovery",
+            ));
+        }
+        _ => {
+            return Err(reject_at(
+                insn,
+                "unallocated floating-point literal encoding",
+            ));
+        }
+    };
+    if encoded_width != width {
+        return Err(reject_at(
+            insn,
+            "floating-point literal encoding and destination precision differ",
+        ));
+    }
+    let raw_imm19: i64 = i64::from((word >> 5) & 0x7ffff);
+    let signed_imm19: i64 = if raw_imm19 & (1 << 18) == 0 {
+        raw_imm19
+    } else {
+        raw_imm19 - (1 << 19)
+    };
+    let displacement: i64 = signed_imm19
+        .checked_mul(4)
+        .ok_or_else(|| reject_at(insn, "floating-point literal displacement overflow"))?;
+    let target: u64 = if displacement >= 0 {
+        insn.address
+            .checked_add(displacement.unsigned_abs())
+            .ok_or_else(|| reject_at(insn, "floating-point literal address overflow"))?
+    } else {
+        insn.address
+            .checked_sub(displacement.unsigned_abs())
+            .ok_or_else(|| reject_at(insn, "floating-point literal address underflow"))?
+    };
+    let available: &[u8] = (image.image)(target).ok_or_else(|| {
+        reject_at(
+            insn,
+            "floating-point literal bytes are unavailable from the image context",
+        )
+    })?;
+    let byte_count: usize = usize::try_from(fp_storage_width(width).bits() / 8)
+        .map_err(|_| reject_at(insn, "floating-point literal width exceeds host size"))?;
+    let bytes: &[u8] = available.get(..byte_count).ok_or_else(|| {
+        reject_at(
+            insn,
+            "floating-point literal bytes are truncated in the image context",
+        )
+    })?;
+    let bits: u64 = match width {
+        FpWidth::F16 => {
+            return Err(reject_at(
+                insn,
+                "half-precision literal load has no scalar architectural encoding",
+            ));
+        }
+        FpWidth::F32 => {
+            let raw: [u8; 4] = bytes
+                .try_into()
+                .map_err(|_| reject_at(insn, "single-precision literal width is inconsistent"))?;
+            u64::from(u32::from_le_bytes(raw))
+        }
+        FpWidth::F64 => {
+            let raw: [u8; 8] = bytes
+                .try_into()
+                .map_err(|_| reject_at(insn, "double-precision literal width is inconsistent"))?;
+            u64::from_le_bytes(raw)
+        }
+    };
+    Ok(Some(vec![Stmt::FpMov {
+        dest: register,
+        src: FpOperand::Const { bits, width },
+        width,
+    }]))
+}
+
 const fn fp_storage_width(width: FpWidth) -> Width {
     match width {
         FpWidth::F16 => Width::W16,
@@ -4008,6 +4117,7 @@ fn try_lower_scalar_fp(
     insn: &DisasmInsn,
     frame: FrameInfo,
     vector_context: bool,
+    image: &ImageContext<'_, '_>,
 ) -> Result<Option<Vec<Stmt>>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
@@ -4091,6 +4201,9 @@ fn try_lower_scalar_fp(
             let Some((register, width)): Option<(Xmm, FpWidth)> = fp_memory_register(token)? else {
                 return Ok(None);
             };
+            if let Some(stmts) = lower_fp_literal(insn, register, width, image)? {
+                return Ok(Some(stmts));
+            }
             lower_fp_memory(insn, &operands, register, width, frame).map(Some)
         }
         "ldp" | "stp" => {
