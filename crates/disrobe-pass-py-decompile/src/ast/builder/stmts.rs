@@ -30,8 +30,8 @@ use super::try_with::{
     recover_return_at, region_is_linear, skip_await_poll, structure_try,
     trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
     try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
-    try_structure_loop_else_nested_try, try_structure_loop_then_nested_try,
-    try_structure_multibranch_guarded_try,
+    try_structure_loop_continue_guard_over_try, try_structure_loop_else_nested_try,
+    try_structure_loop_then_nested_try, try_structure_multibranch_guarded_try,
 };
 use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
@@ -1618,7 +1618,7 @@ pub(super) fn then_continues_to_loop(
             | CanonicalOp::ExtendedArg(_) => {}
             op if is_back_edge(op) => {
                 return resolve_jump_target(stream, k, op)
-                    .filter(|t: &usize| *t <= header)
+                    .filter(|t: &usize| *t == header)
                     .map(|_| k);
             }
             _ => return None,
@@ -1858,6 +1858,12 @@ pub(super) fn structure_stmts(
         && !legacy_async_for_enclosed_by_loop(stream, lo, hi, &loop_region)
     {
         return structure_loop(code, stream, lo, hi, &loop_region);
+    }
+    if let Some(region) = find_try_region(stream, lo, hi)
+        && let Some(stmts) =
+            try_structure_loop_continue_guard_over_try(code, stream, lo, hi, &region)?
+    {
+        return Ok(stmts);
     }
     if let Some(stmts) = try_structure_loop_then_nested_try(code, stream, lo, hi)? {
         return Ok(stmts);
@@ -4441,21 +4447,28 @@ fn shares_duplicated_tail(
     }
 }
 
-fn region_all_paths_terminate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+pub(super) fn region_all_paths_terminate(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
     if lo >= hi || hi > stream.ops.len() {
         return false;
     }
-    let mut visited: Vec<bool> = vec![false; hi - lo];
-    let mut work: Vec<usize> = vec![lo];
-    while let Some(idx) = work.pop() {
+    let mut states: Vec<u8> = vec![0; hi - lo];
+    let mut work: Vec<(usize, bool)> = vec![(lo, false)];
+    while let Some((idx, exiting)) = work.pop() {
         if idx < lo || idx >= hi {
             return false;
         }
         let slot: usize = idx - lo;
-        if visited[slot] {
+        if exiting {
+            states[slot] = 2;
             continue;
         }
-        visited[slot] = true;
+        match states[slot] {
+            1 => return false,
+            2 => continue,
+            _ => {}
+        }
+        states[slot] = 1;
+        work.push((idx, true));
         match &stream.ops[idx] {
             CanonicalOp::Return
             | CanonicalOp::ReturnConst(_)
@@ -4466,20 +4479,40 @@ fn region_all_paths_terminate(stream: &DecodedStream, lo: usize, hi: usize) -> b
             | CanonicalOp::JumpBackward(_)
             | CanonicalOp::JumpBackwardNoInterrupt(_)) => {
                 match resolve_jump_target(stream, idx, op) {
-                    Some(target) => work.push(target),
+                    Some(target) => work.push((target, false)),
                     None => return false,
                 }
             }
             op => match resolve_jump_target(stream, idx, op) {
                 Some(target) => {
-                    work.push(target);
-                    work.push(idx + 1);
+                    work.push((target, false));
+                    work.push((idx + 1, false));
                 }
-                None => work.push(idx + 1),
+                None if has_jump_target(op) => return false,
+                None => work.push((idx + 1, false)),
             },
         }
     }
     true
+}
+
+fn has_jump_target(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::PopJumpIfFalse(_)
+            | CanonicalOp::PopJumpIfTrue(_)
+            | CanonicalOp::PopJumpIfFalseBackward(_)
+            | CanonicalOp::PopJumpIfTrueBackward(_)
+            | CanonicalOp::JumpIfTrueOrPop(_)
+            | CanonicalOp::JumpIfFalseOrPop(_)
+            | CanonicalOp::PopJumpIfFalseRel(_)
+            | CanonicalOp::PopJumpIfTrueRel(_)
+            | CanonicalOp::ForIter(_)
+            | CanonicalOp::ForLoopLegacy(_)
+            | CanonicalOp::ContinueLoop(_)
+            | CanonicalOp::Send(_)
+            | CanonicalOp::Other(121, _)
+    )
 }
 
 fn significant_indices_back(stream: &DecodedStream, lo: usize, hi: usize) -> Vec<usize> {
@@ -4988,7 +5021,10 @@ fn trim_body_back_edge(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
 )]
 mod block_range_repro {
     use super::super::{DecodedStream, LoopFrame, pop_loop_frame, push_loop_frame};
-    use super::{rewrite_jump_to_break_continue, significant_run, structure_stmts};
+    use super::{
+        region_all_paths_terminate, rewrite_jump_to_break_continue, significant_run,
+        structure_stmts, then_continues_to_loop,
+    };
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
     use crate::error::DecompileError;
@@ -5065,6 +5101,34 @@ mod block_range_repro {
             1,
             "a foreign loop-frame tail range must be declined, leaving the body intact"
         );
+    }
+
+    #[test]
+    fn earlier_loop_back_edge_is_not_owned_by_the_active_loop() {
+        let mut stream: DecodedStream = stream_with_ops(5);
+        stream.ops[4] = CanonicalOp::JumpBackward(4);
+        push_loop_frame(LoopFrame {
+            header: 2,
+            exit: 5,
+            exit_return: None,
+            exit_tail_range: None,
+        });
+        let recovered: Option<usize> = then_continues_to_loop(&stream, 3, 5);
+        pop_loop_frame();
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn converging_acyclic_region_terminates() {
+        let mut stream: DecodedStream = stream_with_ops(5);
+        stream.ops = vec![
+            CanonicalOp::PopJumpIfFalse(2),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpForward(1),
+            CanonicalOp::Nop,
+            CanonicalOp::ReturnConst(0),
+        ];
+        assert!(region_all_paths_terminate(&stream, 0, stream.ops.len()));
     }
 }
 

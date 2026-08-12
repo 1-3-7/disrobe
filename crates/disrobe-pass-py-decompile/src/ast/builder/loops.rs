@@ -5,8 +5,9 @@ use super::branches::{
 use super::exprs::{build_linear_stmts_sim, is_chain_cond_jump, local_target, name_at};
 use super::stmts::{
     InlineComp, collect_unpack_targets, detect_inline_comprehension, first_significant,
-    last_significant_back, placeholder_target, recover_tuple_target, resolve_jump_target,
-    rewrite_legacy_async_for_body, single_store_target, structure_stmts, then_terminating_jump,
+    last_significant_back, placeholder_target, recover_tuple_target, region_all_paths_terminate,
+    resolve_jump_target, rewrite_legacy_async_for_body, single_store_target, structure_stmts,
+    then_terminating_jump,
 };
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, find_try_region, handler_chain_end, handler_join,
@@ -1031,21 +1032,28 @@ fn find_for_loop(
         }
         let Some(raw_exit): Option<usize> =
             resolve_jump_target(stream, header, &stream.ops[header])
-                .filter(|target: &usize| *target > header)
+                .filter(|target: &usize| *target > header.saturating_add(1))
         else {
             continue;
         };
-        let back_edge: usize = (header + 1..hi)
+        let body_start: usize = header + 1;
+        let bounded_exit: usize = raw_exit.min(hi);
+        if body_start >= bounded_exit {
+            continue;
+        }
+        let back_edge: usize = (body_start..bounded_exit)
             .filter(|&candidate: &usize| is_back_edge(&stream.ops[candidate]))
-            .find(|&candidate: &usize| {
+            .rfind(|&candidate: &usize| {
                 resolve_jump_target(stream, candidate, &stream.ops[candidate])
-                    .is_some_and(|target: usize| target <= header)
+                    .is_some_and(|target: usize| target == header)
             })
-            .unwrap_or_else(|| raw_exit.min(hi).saturating_sub(1).max(header + 1));
+            .or_else(|| {
+                region_all_paths_terminate(stream, body_start, bounded_exit)
+                    .then_some(bounded_exit - 1)
+            })?;
         let exit_via_foriter: usize = raw_exit.min(hi).max((back_edge + 1).min(hi));
-        let body_start: usize = (header + 1).min(hi);
         let absorbed_end: usize =
-            for_body_end_absorbing_cold_handlers(stream, body_start, raw_exit, hi);
+            for_body_end_absorbing_cold_handlers(stream, body_start, raw_exit, hi).min(hi);
         let body_end: usize = exit_via_foriter.max(absorbed_end);
         let region: LoopRegion = LoopRegion {
             kind: LoopKind::For,
@@ -1414,6 +1422,10 @@ fn legacy_guarded_continue_region(
 }
 
 pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
+    let hi: usize = hi.min(stream.ops.len());
+    if lo >= hi {
+        return None;
+    }
     if let Some(region) = find_async_for_loop(stream, lo, hi) {
         return Some(region);
     }
@@ -3275,7 +3287,7 @@ fn redundant_entry_guard_start(
 mod for_target_bounds {
     use super::super::DecodedStream;
     use super::super::try_with::{LoopKind, LoopRegion};
-    use super::recover_for_target;
+    use super::{find_for_loop, find_loop, recover_for_target};
     use crate::ast::node::Expr;
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
@@ -3341,6 +3353,147 @@ mod for_target_bounds {
             recovered.is_none(),
             "a build-tuple count far exceeding the loop body must decline, not reserve gigabytes"
         );
+    }
+
+    #[test]
+    fn for_header_with_immediate_exit_does_not_claim_an_empty_body() {
+        let stream: DecodedStream = stream_from(vec![CanonicalOp::ForIter(0), CanonicalOp::Return]);
+        let recovered: Option<LoopRegion> = find_loop(&stream, 0, stream.ops.len());
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn legacy_for_header_with_immediate_exit_does_not_claim_an_empty_body() {
+        let mut stream: DecodedStream =
+            stream_from(vec![CanonicalOp::ForLoopLegacy(0), CanonicalOp::Return]);
+        stream.version = PyVersion::V3_7;
+        let recovered: Option<LoopRegion> = find_loop(&stream, 0, stream.ops.len());
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn truncated_last_for_header_without_a_decoded_target_is_not_claimed() {
+        let stream: DecodedStream = stream_from(vec![CanonicalOp::ForIter(u32::MAX)]);
+        let recovered: Option<LoopRegion> = find_loop(&stream, 0, stream.ops.len());
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn oversized_structure_window_is_clamped_to_the_decoded_stream() {
+        let stream: DecodedStream = stream_from(vec![CanonicalOp::Return]);
+        let recovered: Option<LoopRegion> = find_loop(&stream, 0, usize::MAX);
+        assert!(recovered.is_none());
+    }
+
+    #[test]
+    fn for_exit_outside_the_structure_window_keeps_the_claim_inside_it() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(4),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(3),
+            CanonicalOp::Nop,
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 0, 3, &[]);
+        let recovered: LoopRegion = recovered.expect("bounded loop region");
+        assert_eq!(recovered.body_end, 3);
+        assert_eq!(recovered.exit, 3);
+    }
+
+    #[test]
+    fn nested_for_does_not_borrow_an_enclosing_loop_back_edge() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::Nop,
+            CanonicalOp::ForIter(4),
+            CanonicalOp::Nop,
+            CanonicalOp::Nop,
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(6),
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 1, 6, &[]);
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn truncated_for_window_does_not_fabricate_a_boundary_back_edge() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(2),
+            CanonicalOp::Nop,
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 0, 1, &[]);
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn terminating_for_body_remains_structurable_without_a_back_edge() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(2),
+            CanonicalOp::StoreFast(0),
+            CanonicalOp::Return,
+            CanonicalOp::Return,
+        ]);
+        let recovered: LoopRegion = find_for_loop(&stream, 0, 4, &[]).expect("terminating for");
+        assert_eq!(recovered.body_start, 1);
+        assert_eq!(recovered.body_end, 3);
+        assert_eq!(recovered.back_edge, 2);
+    }
+
+    #[test]
+    fn cyclic_for_body_without_an_owned_back_edge_is_not_treated_as_terminating() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(3),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(2),
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 0, 4, &[]);
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn unresolved_conditional_target_does_not_fabricate_a_terminating_for() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(3),
+            CanonicalOp::PopJumpIfFalse(u32::MAX),
+            CanonicalOp::Return,
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 0, 4, &[]);
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn unresolved_legacy_continue_does_not_fabricate_a_terminating_for() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(3),
+            CanonicalOp::ContinueLoop(u32::MAX),
+            CanonicalOp::Return,
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: Option<LoopRegion> = find_for_loop(&stream, 0, 4, &[]);
+        assert!(recovered.is_none(), "{recovered:?}");
+    }
+
+    #[test]
+    fn for_region_uses_the_last_owned_back_edge_after_an_early_continue() {
+        let stream: DecodedStream = stream_from(vec![
+            CanonicalOp::ForIter(5),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(3),
+            CanonicalOp::Nop,
+            CanonicalOp::JumpBackward(5),
+            CanonicalOp::Nop,
+            CanonicalOp::Return,
+        ]);
+        let recovered: LoopRegion = find_for_loop(&stream, 0, 7, &[]).expect("for region");
+        assert_eq!(recovered.back_edge, 4);
     }
 
     #[test]

@@ -185,6 +185,54 @@ const CASES: &[LoopTryCase] = &[
         equivalent_on: &["3.9", "3.10", "3.14", "3.15"],
         open_reason: "a raise out of the handler leaves no normal exit to map on 3.11 to 3.13",
     },
+    LoopTryCase {
+        label: "async_for_try",
+        source: "async def f(xs, sink):\n    async for x in xs:\n        try:\n            await sink(x)\n        except LookupError:\n            break\n",
+        equivalent_on: &[],
+        open_reason: "an async-for protected body still loses iterator ownership on every measured band",
+    },
+    LoopTryCase {
+        label: "for_in_for_try",
+        source: "def f(rows, sink):\n    for row in rows:\n        for value in row:\n            try:\n                sink(value)\n            except LookupError:\n                continue\n",
+        equivalent_on: &["3.11", "3.12", "3.13", "3.14", "3.15"],
+        open_reason: "the block-stack bands flatten the inner iterator into an assignment",
+    },
+    LoopTryCase {
+        label: "for_in_while_try",
+        source: "def f(rows, active, sink):\n    for row in rows:\n        while active(row):\n            try:\n                sink(row)\n            except LookupError:\n                break\n",
+        equivalent_on: &["3.10"],
+        open_reason: "the nested while header and protected exit overlap on every other measured band",
+    },
+    LoopTryCase {
+        label: "for_in_async_for_try",
+        source: "async def f(groups, sink):\n    for group in groups:\n        async for value in group:\n            try:\n                await sink(value)\n            except LookupError:\n                continue\n",
+        equivalent_on: &[],
+        open_reason: "an async-for nested under a synchronous for still loses iterator ownership on every measured band",
+    },
+    LoopTryCase {
+        label: "nested_for_try_with",
+        source: "def f(rows, mgr, sink):\n    for row in rows:\n        try:\n            with mgr(row):\n                sink(row)\n        except LookupError:\n            continue\n",
+        equivalent_on: &["3.11", "3.12", "3.13", "3.14", "3.15"],
+        open_reason: "the block-stack bands flatten the outer iterator around the with region",
+    },
+    LoopTryCase {
+        label: "for_negated_guard_try_continue",
+        source: "def f(xs, g, r, sink):\n    for x in xs:\n        if not g(x):\n            try:\n                sink(r(x))\n            except LookupError:\n                sink(None)\n            continue\n        sink(x)\n",
+        equivalent_on: &["3.9", "3.10", "3.11"],
+        open_reason: "3.12 and later invert the guarded continuation into an else arm",
+    },
+    LoopTryCase {
+        label: "for_try_tuple_except",
+        source: "def f(xs, sink):\n    for x in xs:\n        try:\n            sink(x)\n        except (LookupError, ValueError):\n            continue\n",
+        equivalent_on: &["3.11", "3.12", "3.13", "3.14", "3.15"],
+        open_reason: "the block-stack bands flatten the iterator around the tuple handler",
+    },
+    LoopTryCase {
+        label: "for_try_named_except",
+        source: "def f(xs, sink):\n    for x in xs:\n        try:\n            sink(x)\n        except LookupError as error:\n            sink(error)\n",
+        equivalent_on: &["3.11", "3.12", "3.13", "3.14", "3.15"],
+        open_reason: "the block-stack bands flatten the iterator around the named handler",
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -371,9 +419,10 @@ fn loop_bodies_holding_a_try_keep_their_pinned_recovery() {
         }
     }
 
-    if !skipped.is_empty() {
-        println!("NOT MEASURED on {skipped:?}: `uv python install <version>` resolves them");
-    }
+    assert!(
+        skipped.is_empty(),
+        "required CPython interpreters were not measured: {skipped:?}"
+    );
     assert!(
         graded > 0,
         "no CPython 3.9 through 3.15 interpreter resolved, so this case graded nothing"

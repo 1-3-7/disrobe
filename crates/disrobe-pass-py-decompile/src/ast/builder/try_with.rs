@@ -18,8 +18,8 @@ use super::stmts::{
 };
 use super::{
     DecodedStream, PY_CO_FLAG_FUNCTION_SCOPE, StructureHiCapGuard, ThenArmEndCapGuard,
-    active_version, loop_continue_target, loop_frame_depth, none_jump_test, structure_hi_cap,
-    then_arm_end_cap,
+    active_version, fallthrough_cond_test, loop_continue_target, loop_frame_depth, none_jump_test,
+    structure_hi_cap, then_arm_end_cap,
 };
 use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
 use crate::bytecode::opcode::CanonicalOp;
@@ -2969,7 +2969,14 @@ fn append_as_elif(chain: &mut [Stmt], arm: Stmt) -> bool {
     }
 }
 
-fn try_structure_loop_continue_guard_over_try(
+fn single_residual(mut residual: Vec<Expr>) -> Option<Expr> {
+    if residual.len() != 1 {
+        return None;
+    }
+    residual.pop()
+}
+
+pub(super) fn try_structure_loop_continue_guard_over_try(
     code: &CodeObject,
     stream: &DecodedStream,
     lo: usize,
@@ -2989,7 +2996,7 @@ fn try_structure_loop_continue_guard_over_try(
     }) else {
         return Ok(None);
     };
-    if stream.none_jump_kind.contains_key(&guard) || !jump_taken_if_true(stream, guard) {
+    if stream.none_jump_kind.contains_key(&guard) {
         return Ok(None);
     }
     let Some(raw_target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
@@ -3001,7 +3008,10 @@ fn try_structure_loop_continue_guard_over_try(
     if body_entry < region.try_start {
         return Ok(None);
     }
-    if then_continues_to_loop(stream, guard + 1, raw_target).is_none() {
+    let Some(back): Option<usize> = then_continues_to_loop(stream, guard + 1, raw_target) else {
+        return Ok(None);
+    };
+    if region.region_end > back || back >= raw_target {
         return Ok(None);
     }
     if (lo..guard).any(|k: usize| {
@@ -3016,22 +3026,31 @@ fn try_structure_loop_continue_guard_over_try(
     if !head.is_empty() {
         return Ok(None);
     }
-    let Some(positive_test): Option<Expr> = residual.into_iter().next_back() else {
+    let Some(raw_test): Option<Expr> = single_residual(residual) else {
         return Ok(None);
     };
-    if !test_is_polarity_sensitive(&positive_test) {
-        return Ok(None);
-    }
-    let body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, hi)?;
+    let test: Expr = fallthrough_cond_test(stream, guard, raw_test);
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, back)?;
     if body.is_empty() {
         return Ok(None);
     }
-    Ok(Some(vec![Stmt::If {
-        test: positive_test,
+    if !matches!(
+        body.last(),
+        Some(Stmt::Return(_) | Stmt::Raise { .. } | Stmt::Break | Stmt::Continue)
+    ) {
+        body.push(Stmt::Continue);
+    }
+    let tail: Vec<Stmt> = structure_stmts(code, stream, raw_target, hi)?;
+    let mut out: Vec<Stmt> = head;
+    out.reserve(1 + tail.len());
+    out.push(Stmt::If {
+        test,
         body,
         orelse: Vec::new(),
         line: None,
-    }]))
+    });
+    out.extend(tail);
+    Ok(Some(out))
 }
 
 fn try_structure_stmt_continue_guard_before_try(
@@ -3084,7 +3103,7 @@ fn try_structure_stmt_continue_guard_before_try(
     }
     let (head, residual): (Vec<Stmt>, Vec<Expr>) =
         build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
-    let Some(raw_test): Option<Expr> = residual.into_iter().next_back() else {
+    let Some(raw_test): Option<Expr> = single_residual(residual) else {
         return Ok(None);
     };
     let is_none_jump: bool = stream.none_jump_kind.contains_key(&guard);
@@ -8808,8 +8827,9 @@ mod with_region_bounds {
     use super::super::DecodedStream;
     use super::{
         SPECIAL_AENTER, SPECIAL_AEXIT, SPECIAL_ENTER, SPECIAL_EXIT, TryRegion, find_try_region,
-        special_method_name,
+        single_residual, special_method_name,
     };
+    use crate::ast::node::{ConstValue, Expr};
     use crate::bytecode::flow::ExceptionTableEntry;
     use crate::bytecode::opcode::CanonicalOp;
     use crate::bytecode::version::PyVersion;
@@ -8860,6 +8880,21 @@ mod with_region_bounds {
             depth: 2,
             lasti: true,
         }
+    }
+
+    #[test]
+    fn guard_recovery_requires_exactly_one_residual_expression() {
+        let first: Expr = Expr::Constant {
+            value: ConstValue::False,
+            line: None,
+        };
+        let second: Expr = Expr::Constant {
+            value: ConstValue::True,
+            line: None,
+        };
+        assert_eq!(single_residual(Vec::new()), None);
+        assert_eq!(single_residual(vec![first.clone()]), Some(first));
+        assert_eq!(single_residual(vec![second.clone(), second]), None);
     }
 
     #[test]
