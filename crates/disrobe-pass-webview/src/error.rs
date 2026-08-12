@@ -52,6 +52,11 @@ pub enum Error {
         "DR-WEBVIEW-0012: input is a {container} package rather than an application image; extract its members first and carve each one"
     )]
     PackagedContainer { container: &'static str },
+
+    #[error(
+        "DR-WEBVIEW-0013: recovered output paths collide under case-insensitive comparison: `{first}` and `{second}`"
+    )]
+    PathCollision { first: String, second: String },
 }
 
 impl From<ByteReadError> for Error {

@@ -7,7 +7,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveReport, Compression, Error, RecoveredAsset, WebviewFamily, carve_report,
+    CarveConfig, CarveReport, Compression, Error, RecoveredAsset, WebviewFamily, carve_report,
+    carve_with_config,
 };
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -907,14 +908,10 @@ fn a_traversal_key_is_dropped_while_the_rest_of_the_map_survives() {
 }
 
 #[test]
-fn duplicate_keys_collapse_and_case_variants_stay_distinct() {
+fn an_exact_duplicate_keeps_the_first_record() {
     let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), zstd_encode);
     let duplicate: Vec<u8> = zstd_encode(b"a different body for the same key".repeat(9).as_slice());
     entries.push(("/index.html", duplicate));
-    entries.push((
-        "/Index.HTML",
-        zstd_encode(b"the case variant body".repeat(9).as_slice()),
-    ));
     let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
 
     let report: CarveReport = carve_report(&image).expect("carve map with duplicate keys");
@@ -924,14 +921,71 @@ fn duplicate_keys_collapse_and_case_variants_stay_distinct() {
         expected_tauri_map(&tauri_asset_tree()).get("index.html"),
         "the first record for a key wins, and the later duplicate must not overwrite it"
     );
-    assert_eq!(
-        recovered
-            .keys()
-            .filter(|key: &&String| key.eq_ignore_ascii_case("index.html"))
-            .count(),
-        2,
-        "keys that differ only by case are distinct in the map and must both be reported"
+}
+
+#[test]
+fn ascii_case_collisions_are_rejected_before_a_report_escapes() {
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), zstd_encode);
+    entries.push((
+        "/Index.HTML",
+        zstd_encode(b"the case variant body".repeat(9).as_slice()),
+    ));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let error: Error = carve_report(&image).expect_err(
+        "two output paths that differ only by ASCII case must not escape in one report",
     );
+    match error {
+        Error::PathCollision { first, second } => {
+            assert_eq!(first, "index.html");
+            assert_eq!(second, "Index.HTML");
+        }
+        other => panic!("expected a typed path collision, got {other:?}"),
+    }
+}
+
+#[test]
+fn unicode_case_expansion_collisions_are_rejected_before_a_report_escapes() {
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), zstd_encode);
+    entries.push((
+        "/assets/Stra\u{00df}e.js",
+        zstd_encode(b"export const sharp = true;".repeat(12).as_slice()),
+    ));
+    entries.push((
+        "/assets/STRASSE.js",
+        zstd_encode(b"export const capital = true;".repeat(12).as_slice()),
+    ));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let error: Error = carve_report(&image)
+        .expect_err("Unicode case expansion equivalents must not become colliding output paths");
+    match error {
+        Error::PathCollision { first, second } => {
+            assert_eq!(first, "assets/Stra\u{00df}e.js");
+            assert_eq!(second, "assets/STRASSE.js");
+        }
+        other => panic!("expected a typed path collision, got {other:?}"),
+    }
+}
+
+#[test]
+fn directory_paths_consume_the_collision_preflight_entry_quota() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tree, zstd_encode);
+    entries.push(("/assets/generated/", Vec::new()));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+    let mut config: CarveConfig = CarveConfig::default();
+    config.quota.max_entries = tree.len();
+
+    let error: Error = carve_with_config(&image, &config)
+        .expect_err("a retained directory path beyond max_entries must be refused");
+    match error {
+        Error::Quota { entry, reason } => {
+            assert_eq!(entry, "assets/generated");
+            assert_eq!(reason, format!("max_entries={} reached", tree.len()));
+        }
+        other => panic!("expected a typed entry quota refusal, got {other:?}"),
+    }
 }
 
 #[test]

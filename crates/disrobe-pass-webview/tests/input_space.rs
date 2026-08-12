@@ -225,14 +225,28 @@ const INTEGRITY: [(&str, Coverage); 3] = [
     ),
 ];
 
-const HOSTILE_SHAPES: [(&str, Coverage); 6] = [
+const HOSTILE_SHAPES: [(&str, Coverage); 9] = [
     (
         "key that escapes the output root by traversal, absolute prefix or drive letter",
         Coverage::GradedBy("a_traversal_key_is_dropped_while_the_rest_of_the_map_survives"),
     ),
     (
-        "two keys that differ only by case, and one key repeated",
-        Coverage::GradedBy("duplicate_keys_collapse_and_case_variants_stay_distinct"),
+        "two output paths that differ only by ASCII case",
+        Coverage::GradedBy("ascii_case_collisions_are_rejected_before_a_report_escapes"),
+    ),
+    (
+        "two output paths whose Unicode uppercase mapping collides through scalar expansion",
+        Coverage::GradedBy(
+            "unicode_case_expansion_collisions_are_rejected_before_a_report_escapes",
+        ),
+    ),
+    (
+        "the same output path repeated exactly",
+        Coverage::GradedBy("an_exact_duplicate_keeps_the_first_record"),
+    ),
+    (
+        "directory paths retained by collision preflight beyond the configured entry cap",
+        Coverage::GradedBy("directory_paths_consume_the_collision_preflight_entry_quota"),
     ),
     (
         "pointer-shaped array that is not an asset map",

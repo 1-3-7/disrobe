@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use disrobe_binfmt::containers::bare_stream::{detect_gzip, detect_zstd};
 use disrobe_binfmt::{QuotaGuard, sanitize_entry_path};
@@ -405,6 +405,7 @@ fn assemble(
     anchor: Option<Compression>,
     cfg: &CarveConfig,
 ) -> Result<Assembled> {
+    reject_case_collisions(run, cfg.quota)?;
     let mut guard: QuotaGuard = QuotaGuard::new(cfg.quota);
     let mut assets: Vec<RecoveredAsset> = Vec::new();
     let mut directories: BTreeSet<String> = BTreeSet::new();
@@ -459,6 +460,40 @@ fn assemble(
         declared,
         recovered,
     })
+}
+
+fn reject_case_collisions(run: &[Record<'_>], quota: ExtractionQuota) -> Result<()> {
+    let mut guard: QuotaGuard = QuotaGuard::new(quota);
+    let mut first_by_key: BTreeMap<String, String> = BTreeMap::new();
+    for record in run {
+        let raw: &str = if record.is_dir {
+            record.name.trim_end_matches('/')
+        } else {
+            record.name
+        };
+        let Some(safe): Option<String> = normalize_key(raw) else {
+            continue;
+        };
+        let key: String = case_collision_key(&safe);
+        match first_by_key.entry(key) {
+            Entry::Vacant(slot) => {
+                guard.admit_entry(&safe, 0, 0)?;
+                slot.insert(safe);
+            }
+            Entry::Occupied(slot) if slot.get() != &safe => {
+                return Err(Error::PathCollision {
+                    first: slot.get().clone(),
+                    second: safe,
+                });
+            }
+            Entry::Occupied(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn case_collision_key(path: &str) -> String {
+    path.to_uppercase()
 }
 
 fn decode_cap(compressed_len: usize, quota: &ExtractionQuota) -> u64 {
