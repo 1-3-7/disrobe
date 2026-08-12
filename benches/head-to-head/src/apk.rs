@@ -3166,7 +3166,7 @@ mod tests {
             emitted: 295,
             cause: UncertifiedCause::ProducerExit,
             original: 114,
-            detail: "jadx exited after partial output".to_owned(),
+            detail: "jadx exited nonzero after emitting 295 methods".to_owned(),
         };
         let row: Value = score.to_json("jadx", "1.5.5");
         assert_eq!(row["uncertified_stage"], "producer");
@@ -3174,6 +3174,11 @@ mod tests {
         assert!(row.get("producer_exit_status").is_none());
         assert!(row.get("first_defect_line").is_none());
         assert_eq!(row["emitted"], 295);
+        assert_eq!(
+            score_phrase(&score),
+            "295 emitted methods, none of them certified (jadx exited nonzero after emitting 295 methods)"
+        );
+        assert!(!score_phrase(&score).contains("status"));
     }
 
     #[test]
