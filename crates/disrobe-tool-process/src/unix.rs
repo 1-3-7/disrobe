@@ -1,5 +1,8 @@
+use std::fs::File;
 use std::io;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -7,6 +10,15 @@ use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
     canonical_program, environment, program,
 };
+
+pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
+    let path_metadata: std::fs::Metadata = std::fs::symlink_metadata(path)?;
+    let opened_metadata: std::fs::Metadata = file.metadata()?;
+    Ok(path_metadata.dev() == opened_metadata.dev()
+        && path_metadata.ino() == opened_metadata.ino()
+        && path_metadata.is_file()
+        && opened_metadata.is_file())
+}
 
 const OBSERVATION_INTERVAL: Duration = Duration::from_millis(2);
 const TEARDOWN_GRACE: Duration = Duration::from_secs(5);

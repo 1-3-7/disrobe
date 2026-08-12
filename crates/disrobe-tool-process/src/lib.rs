@@ -2,11 +2,16 @@
 
 use std::ffi::OsString;
 use std::fmt::{self, Display, Formatter};
+use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+pub fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
+    platform::opened_file_matches_path(path, file)
+}
 
 #[cfg(unix)]
 #[allow(clippy::redundant_pub_crate)]
@@ -692,6 +697,26 @@ mod tests {
         assert_eq!(captured.bytes, b"partial");
         assert!(!captured.truncated);
         assert_eq!(source.to_string(), "capture fault");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn opened_file_identity_rejects_replacement_path() -> io::Result<()> {
+        let root: PathBuf = std::env::temp_dir().join(format!(
+            "disrobe-tool-process-identity-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let path: PathBuf = root.join("source.java");
+        let replacement: PathBuf = root.join("replacement.java");
+        std::fs::write(&path, b"class First {}")?;
+        std::fs::write(&replacement, b"class Replacement {}")?;
+        let opened: File = File::open(&path)?;
+        std::fs::rename(&replacement, &path.with_extension("replacement"))?;
+        std::fs::write(&path, b"class Replacement {}")?;
+        assert!(!opened_file_matches_path(&path, &opened)?);
+        let _: io::Result<()> = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[test]

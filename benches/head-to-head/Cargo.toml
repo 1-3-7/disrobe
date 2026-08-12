@@ -20,6 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 disrobe-core = { workspace = true }
+disrobe-tool-process = { workspace = true }
 disrobe-pass-jvm = { workspace = true }
 disrobe-pass-pickle = { workspace = true }
 serde = { workspace = true }

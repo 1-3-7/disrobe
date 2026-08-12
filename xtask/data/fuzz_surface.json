@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1367,
+    "entry_points": 1368,
     "parse_shaped": 569,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 619,
     "named_by_a_suite_recording_seed_reach": 126,
-    "named_by_neither": 715
+    "named_by_neither": 716
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -426,7 +426,7 @@
     },
     {
       "crate": "disrobe-pass-jvm",
-      "entry_points": 66,
+      "entry_points": 67,
       "parse_shaped": 26,
       "with_declared_coverage_guided_target": 9,
       "with_replay_proven_semantic_reach": 6,
@@ -434,6 +434,7 @@
       "named_by_a_suite_recording_seed_reach": 5,
       "named_by_neither": [
         "disrobe-pass-jvm/src/android_backend.rs::run_jadx_on_bytes",
+        "disrobe-pass-jvm/src/android_backend.rs::run_jadx_on_bytes_detailed",
         "disrobe-pass-jvm/src/apk_resources.rs::analyze_apk",
         "disrobe-pass-jvm/src/apk_resources.rs::analyze_manifest_bytes",
         "disrobe-pass-jvm/src/apk_resources.rs::decode_manifest",

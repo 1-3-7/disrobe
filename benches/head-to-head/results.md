@@ -4,20 +4,20 @@ Each leg gives `disrobe` and its leading tool the same input and scoring rule. T
 
 Regenerate with `cargo run -p disrobe-bench-head-to-head`; `--check` fails if the committed measured JSON or this table drifts from a fresh run. `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr` checks only the APK result without writing it. The numbers are surfaced into the public evidence report by `cargo run -p xtask -- evidence` (the `headtohead-import` and `gate-test-harvest` oracle kinds).
 
-## APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean main-class methods under real javac)
+## APK / DEX decompilation: disrobe vs JADX vs CFR (recompile-clean emitted methods under real javac)
 
 - dataset: corpus/jvm/dex/EdgeCases.dex (SHA-256 fdc012bd9b9596256ee2bb319ef3e215a34b6d58c3b0856d7ea8bdb290910e26) for the DEX leg; corpus/jvm/megafile/EdgeCases-baseline.jar (SHA-256 9e68bd1344b5a0143966d80a7b53fe71b23809c18dac139b38e41edc9dd413a6) for the JAR leg; both committed, fully offline
-- oracle: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes. A method is certified clean only from a file javac type-checked end to end; javac reports no method-level result for a file it stopped parsing, so such a file certifies nothing rather than scoring zero
+- oracle: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes. The scorer first compiles the complete recovered source set. If a parse failure prevents attribution, it isolates only the implicated balanced method, field-initializer, or type region and reruns javac under a 64-round ceiling. A method in an isolated method or type region is unclean. Every other method is scored from the compiler diagnostics after attribution resumes. An unmapped parse failure certifies nothing.
 - reproduce: `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`
 
 | tool | version | metric | value | status |
 |---|---|---|---|---|
-| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 45 clean / 131 emitted (34.4%) | ok |
-| jadx (DEX input) | 1.5.5 | recompile-clean main-class methods (clean / emitted) | not certified: 130 methods emitted | uncertified |
-| disrobe (in-house JVM, JAR input) | n/a (in-process) | recompile-clean main-class methods (clean / emitted) | 131 clean / 131 emitted (100.0%) | ok |
-| cfr (JAR input) | CFR 0.152 | recompile-clean main-class methods (clean / emitted) | not certified: 106 methods emitted | uncertified |
+| disrobe (in-house Dalvik, DEX input) | n/a (in-process) | recompile-clean emitted methods (clean / emitted) | 52 clean / 165 emitted (31.5%) | ok |
+| jadx (DEX input) | 1.5.5 | recompile-clean emitted methods (clean / emitted) | not certified: 295 methods emitted | uncertified |
+| disrobe (in-house JVM, JAR input) | n/a (in-process) | recompile-clean emitted methods (clean / emitted) | 181 clean / 181 emitted (100.0%) | ok |
+| cfr (JAR input) | CFR 0.152 | recompile-clean emitted methods (clean / emitted) | 152 clean / 166 emitted (91.6%) | ok |
 
-DEX leg: `disrobe` recovers 45 clean of 131 emitted (34.4%), beside 2 compiler defects outside any method; `jadx` (1.5.5) recovers 130 emitted methods, none of them certified, because javac stopped at a defect on line 619 of the recovered file. No lead is stated, because the compiler did not certify both sides. JAR leg: `disrobe` recovers 131 clean of 131 emitted (100.0%); `cfr` (CFR 0.152) recovers 106 emitted methods, none of them certified, because javac stopped at a defect on line 173 of the recovered file. No lead is stated, because the compiler did not certify both sides. All rows use the same stubbed real-`javac` oracle and are recompile-only. A method counts clean only when javac type-checked the whole recovered file: a file the compiler stopped parsing certifies nothing, for either side, and is reported with the method count its tool did emit rather than as a zero. The same rule scores `disrobe` and every competitor, and a leg states no lead unless the compiler certified both of its sides.
+DEX leg: `disrobe` recovers 52 clean of 165 emitted (31.5%), beside 3 compiler defects outside any method; `jadx` (1.5.5) recovers 295 emitted methods, none of them certified (jadx exited with status 1 after emitting 295 methods). No lead is stated, because the compiler did not certify both sides. JAR leg: `disrobe` recovers 181 clean of 181 emitted (100.0%); `cfr` (CFR 0.152) recovers 152 clean of 166 emitted (91.6%). `disrobe` leads by 29 clean methods; `disrobe` leads on clean rate, 100.0% to 91.6%. All rows use the same stubbed real-`javac` oracle and are recompile-only. The scorer compiles the complete recovered source set first. If a parse failure prevents attribution, it isolates implicated balanced method, field-initializer, or type regions under a 64-round ceiling, then reruns javac. Methods inside isolated method or type regions are unclean; peer methods are scored only after javac reaches attribution. An unmapped or over-budget failure certifies nothing. The scorer receives source only, so the same rule binds `disrobe` and every competitor. A leg states no lead unless both sides are certified.
 
 ## Secret / IOC recall: disrobe frisk vs apkleaks (same APK, hand-verified planted ground truth)
 

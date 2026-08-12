@@ -84,8 +84,8 @@ pub mod string_recovery;
 pub mod stub_emulator;
 
 pub use android_backend::{
-    AndroidDecompileOutput, AndroidDecompiler, BackendPreference,
-    decompile_dex as android_decompile_dex, run_jadx_on_bytes,
+    AndroidDecompileOutput, AndroidDecompiler, BackendPreference, JadxOutcome, JadxRefusal,
+    decompile_dex as android_decompile_dex, run_jadx_on_bytes, run_jadx_on_bytes_detailed,
 };
 pub use apk_resources::{
     ApkReconstruction, ApkResourceReport, ResourceEntrySummary,

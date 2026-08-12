@@ -1,6 +1,13 @@
+use std::fs::File;
+use std::io;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::{CommandSpec, LaunchError, LifecycleError, PipeSet, PlatformCompletion};
+
+pub(crate) fn opened_file_matches_path(_path: &Path, _file: &File) -> io::Result<bool> {
+    Ok(false)
+}
 
 pub(crate) struct ContainedProcess;
 

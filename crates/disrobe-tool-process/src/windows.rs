@@ -16,6 +16,9 @@ use windows_sys::Win32::Foundation::{
     WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::{
+    BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+};
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -38,6 +41,33 @@ use crate::{
     CommandSpec, LaunchError, LaunchStage, LifecycleError, PipeSet, PlatformCompletion, arguments,
     canonical_program, environment, program,
 };
+
+pub(crate) fn opened_file_matches_path(path: &Path, file: &File) -> io::Result<bool> {
+    let path_file: File = open_identity_file(path)?;
+    let path_identity: BY_HANDLE_FILE_INFORMATION = file_identity(&path_file)?;
+    let opened_identity: BY_HANDLE_FILE_INFORMATION = file_identity(file)?;
+    Ok(
+        path_identity.dwVolumeSerialNumber == opened_identity.dwVolumeSerialNumber
+            && path_identity.nFileIndexHigh == opened_identity.nFileIndexHigh
+            && path_identity.nFileIndexLow == opened_identity.nFileIndexLow
+            && path_identity.dwFileAttributes & 0x10 == 0
+            && opened_identity.dwFileAttributes & 0x10 == 0,
+    )
+}
+
+fn open_identity_file(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new().read(true).open(path)
+}
+
+fn file_identity(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let succeeded: i32 =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &raw mut information) };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(information)
+}
 
 const OBSERVATION_INTERVAL: Duration = Duration::from_millis(10);
 const TEARDOWN_GRACE: Duration = Duration::from_secs(5);
