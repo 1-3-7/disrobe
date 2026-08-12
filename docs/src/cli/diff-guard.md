@@ -14,7 +14,7 @@ A parallel `disrobe envelope diff` works on two `.dr` envelopes directly. It com
 
 ## `disrobe guard`: ground-truth protection
 
-In a recovery workspace, the byte-exact stage outputs (`out/**/stages`, `out/**/final`) are ground truth; an analyst or an agent should never edit them in place, because that would silently corrupt the provenance chain. `disrobe guard` enforces this.
+In a recovery workspace, the exact stage records (`out/**/stages`, `out/**/final`) are provenance inputs. Do not edit them in place because that would corrupt the recorded chain. `disrobe guard` enforces this boundary.
 
 ### `guard verify`: hash verification
 

@@ -23,14 +23,14 @@ None of the walled bodies is fabricated. Other registered families have protecto
 
 ```sh
 disrobe dotnet decompile App.dll --backend ilspy --out src/
-disrobe dotnet decompile App.exe --backend dnspyex --out src/
+disrobe dotnet decompile App.exe --backend dnspy-ex --out src/
 disrobe dotnet decompile App.dll --backend de4dot --out src/
 disrobe dotnet analyze App.dll
 disrobe dotnet backends                  # report available .NET backends on PATH
-disrobe auto App.exe --out recovered/     # ConfuserEx2 PE -> de4dot -> ILSpy -> C#
+disrobe auto App.exe --out recovered/     # static protector peel + in-house CIL-to-C#
 ```
 
-`decompile` routes a .NET PE (`.dll` / `.exe`) through ILSpy, dnSpy, dnSpyEx, or de4dot. `analyze` reports the PE and CLR summary, protector detection, and whether ReadyToRun (R2R) or Native AOT is detected. Detailed AOT names and metadata attribution are exposed by the library AOT report, not the current CLI summary.
+`decompile` always runs the in-house CIL renderer. Its default `--backend auto` policy may also invoke the first installed external backend in this order: ILSpy, dnSpyEx, dnSpy, then de4dot. `--backend ilspy|dnspy|dnspy-ex|de4dot` requests one explicitly, but the current selector falls back to the same first-installed order if the requested tool is absent. `disrobe auto` stays on the registered in-house pass and does not launch those backends. `analyze` reports the PE and CLR summary, protector detection, and whether ReadyToRun (R2R) or Native AOT is detected. Detailed AOT names and metadata attribution are exposed by the library AOT report, not the current CLI summary.
 
 ## Coverage and fidelity
 
@@ -72,7 +72,7 @@ Detection and string decryption are separate claims, and the evidence behind the
 
 Reversed on a real committed sample (plaintext recovered from the artifact, plaintext-absent oracle):
 
-- **ConfuserEx2**: in-house recovery reverses the *constants* protection (the documented FOSS "Ki.Constants" block-XOR / LZMA-validated algorithm) on a real committed `SampleConstants.confuserex2.dll`, with a test whose fixture holds only ciphertext plus the real decryptor and asserts plaintext not present anywhere in it. The encrypted-resource layer is carved byte-exact but walled on the runtime key. Control-flow flattening is deflattened in-house: `disrobe` rebuilds the original control-flow graph from the `while(true)/switch` dispatcher and recovers the switch-key encoding across ConfuserEx's NormalPredicate, x86Predicate (the native decoder stub emulated through the in-house x86 interpreter), and ExpressionPredicate (the inverse expression folded symbolically) modes, graded on real ConfuserEx `ctrl flow` output against the known clean baseline with every benign method's control-flow graph recovered to match. The remaining runtime-VM string decryption and anti-tamper cleanup are **delegated to de4dot** via `disrobe auto` / `--backend de4dot`.
+- **ConfuserEx2**: in-house recovery reverses the *constants* protection (the documented FOSS "Ki.Constants" block-XOR / LZMA-validated algorithm) on a real committed `SampleConstants.confuserex2.dll`, with a test whose fixture holds only ciphertext plus the real decryptor and asserts plaintext not present anywhere in it. The encrypted-resource layer is carved byte-exact but walled on the runtime key. Control-flow flattening is deflattened in-house: `disrobe` rebuilds the original control-flow graph from the `while(true)/switch` dispatcher and recovers the switch-key encoding across ConfuserEx's NormalPredicate, x86Predicate (the native decoder stub emulated through the in-house x86 interpreter), and ExpressionPredicate (the inverse expression folded symbolically) modes, graded on real ConfuserEx `ctrl flow` output against the known clean baseline with every benign method's control-flow graph recovered to match. For de4dot's runtime-VM string and anti-tamper handling, confirm de4dot is available with `disrobe dotnet backends`, then use `disrobe dotnet decompile App.exe --backend de4dot`. `disrobe auto` does not invoke that external backend.
 
 In-assembly-decryptor recovery, graded by round-trip against the pre-encryption original. This list is grouped by how recovery works, not by who produced the sample, so a family in it also appears in [String decryption evidence](#string-decryption-evidence) below: the round-trip proves the decoder inverts the encryption, and the table below states whether the encrypted input came from the protector's own tool or from a fixture built to its published algorithm.
 

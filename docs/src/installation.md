@@ -86,7 +86,7 @@ Layer specific passes back onto a slim base with `--features`, for example `--no
 
 ```sh
 disrobe --version          # print the version
-disrobe passes             # list every registered pass with a one-line summary
+disrobe passes             # direct families plus auto-chain pass IDs
 disrobe --help             # full subcommand surface
 disrobe <pass> --help      # drill into any pass, e.g. `disrobe py --help`
 ```

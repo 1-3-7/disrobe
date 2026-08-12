@@ -1,20 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="'JetBrains Mono', ui-monospace, monospace">
   <title>disrobe</title>
-  <desc>disrobe: decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.</desc>
+  <desc>disrobe: static recovery for compiled and obfuscated software with deterministic output ordering.</desc>
   <defs>
-    <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
+    <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="1086" y1="0" x2="1144" y2="0">
       <stop offset="0" stop-color="#000000"/>
-      <stop offset="0.44" stop-color="#000000"/>
-      <stop offset="0.58" stop-color="#808080"/>
-      <stop offset="0.72" stop-color="#ffffff"/>
+      <stop offset="0.25" stop-color="#000000"/>
+      <stop offset="0.70" stop-color="#808080"/>
       <stop offset="1" stop-color="#ffffff"/>
     </linearGradient>
-    <linearGradient id="reveal-inv" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
+    <linearGradient id="reveal-inv" gradientUnits="userSpaceOnUse" x1="1086" y1="0" x2="1144" y2="0">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.44" stop-color="#ffffff"/>
-      <stop offset="0.58" stop-color="#808080"/>
-      <stop offset="0.72" stop-color="#000000"/>
+      <stop offset="0.25" stop-color="#ffffff"/>
+      <stop offset="0.70" stop-color="#808080"/>
       <stop offset="1" stop-color="#000000"/>
     </linearGradient>
     <mask id="obfmask" maskUnits="userSpaceOnUse" x="540" y="132" width="668" height="300">
@@ -45,9 +43,9 @@
   <text x="70" y="234.2" font-size="11.5" xml:space="preserve" fill="#ededed"> ▒▒▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒      ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒  </text>
   <rect x="70" y="262" width="417" height="3" fill="#8fb3d9"/>
   <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">deobfuscate, decompile, and unpack</text>
-  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">compiled software, deterministically.</text>
-  <text x="70" y="392" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">never executes the sample, calls no model,</text>
-  <text x="70" y="413" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">graded against real compilers and verifiers.</text>
+  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">with deterministic output ordering.</text>
+  <text x="70" y="392" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">static analysis by default; no model in recovery.</text>
+  <text x="70" y="413" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">dynamic execution requires explicit opt-in.</text>
   <g font-family="Inter, ui-sans-serif, sans-serif">
     <text x="70" y="456" font-size="13" fill="#828282" letter-spacing="0.3">RAW</text>
     <text x="113" y="456" font-size="13" fill="#828282">&#8594;</text>
@@ -97,9 +95,10 @@
     <text x="1198" y="405.2" font-size="14.5" text-anchor="end" xml:space="preserve" fill="#333333">▓|&gt;@▓]▓=@*░&lt;░]+▓=░@▒!!░}░*░;]=$+▓@!░!~|.░|#:{!!+%?|][}\?*;?%{^*░#.{▓░░▓&lt;#!▓:▓▒</text>
     <text x="1198" y="421.6" font-size="14.5" text-anchor="end" xml:space="preserve" fill="#333333">$?:~}!]&lt;=;:@#/%!|:^/▓▒*!;+&lt;!░~^▒▒/\%+}?/▓▓^[{\&gt;[^*~:$}%/&amp;=[&gt;[░;?$.{▓;▒:▒░░▒░▒▓</text>
   </g>
+  <line x1="1086" y1="142" x2="1086" y2="422" stroke="#3a3a3a" opacity="0.65"/>
   <rect x="540.5" y="132.5" width="667" height="299" rx="9" fill="none" stroke="#262626"/>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
-  <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python 96.60% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>101 formats, no external unzipper</text>
-  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android dex 118 classes JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>1.0M+ lines of Rust in 62 crates</text>
+  <text x="72" y="582" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>15 ecosystems<tspan fill="#828282"> &#183; </tspan>Python 96.60% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>Android DEX 118/118 verifier-presented classes clean</text>
+  <text x="72" y="608" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>containers: 101 declared in-tree extractors<tspan fill="#828282"> &#183; </tspan>35 exercised by committed inputs</text>
 </svg>

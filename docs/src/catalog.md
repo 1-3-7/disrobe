@@ -115,11 +115,11 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 
 ## The `disrobe auto` chain
 
-`disrobe auto` is the front door to the whole catalog. It fingerprints the input, picks the highest-confidence pass, runs it, re-fingerprints the output, and repeats until no further pass clears the confidence threshold or the depth cap is hit. Detection spans 23 pass crates.
+`disrobe auto` is the front door to the pass registry compiled into the current binary. It fingerprints the input, picks the highest-confidence pass, runs it, re-fingerprints the output, and repeats until no further pass clears the confidence threshold or the depth cap is hit. `disrobe passes` prints that registry. Some cataloged operations are reachable only through direct commands; `disrobe --help` is the authority for those surfaces.
 
 ```sh
 disrobe auto suspect.exe --out recovered/                 # detect + chain the whole pipeline
-disrobe auto suspect.exe --out recovered/ --capture-stages # keep each stage's byte-exact output
+disrobe auto suspect.exe --out recovered/ --capture-stages # keep the exact output written by each stage
 disrobe auto firmware-dir/ --out out/ --batch-max-depth 6
 ```
 
@@ -129,6 +129,14 @@ Representative chains:
 - `PyInstaller -> PyArmor -> .pyc decompile`
 - `APK -> dex -> Java + manifest`
 - `Electron .asar -> unbundle -> source`
-- `ConfuserEx2 PE -> de4dot -> ILSpy -> C#`
+- `.NET PE -> in-house CIL decompile -> C#`
+
+Compiled webview frontends also have a direct static recovery path:
+
+```sh
+disrobe webview desktop.exe --out frontend/
+```
+
+The standard CLI build does not advertise `webview.carve` in its `auto` registry, so use the direct command for Electron, Tauri, and Wails assets.
 
 With `--capture-stages`, stage outputs land in `out/01-*/`, `out/02-*/`, ..., `out/final/`. The full mechanism, including the depth cap, cycle detection, and the `chain.json` topology descriptor, is in [The chain runner](./chain.md).

@@ -1,19 +1,19 @@
 # CLI overview
 
-Every `disrobe` operation follows one shape:
+Ecosystem command families usually nest an action:
 
 ```sh
 disrobe <pass> <action> <input> [--out <path>] [flags]
 ```
 
-A few top-level commands take their arguments directly rather than through a pass/action pair: `auto`, `chain`, `scan`, `frisk`, `prowl`, `ioc`, `indicators`, `strings`, `behavior`, `identify`, `detect`, `catalog`, `query`, `capabilities`, `taint`, `extract`, `yara`, `report`, `diff`, `status`, `verify`, `passes`, `doctor`, `install`, `install-deps`, `init`, `config`, `context`, `annot`, `rename`, `bug-report`, `self-update`, `completions`, and `man`.
+Other operations take their arguments directly. Examples include `auto`, `scan`, `query`, `taint`, `extract`, `webview`, and `report`. Use `disrobe --help` for the complete surface compiled into your binary; the list changes when optional build features change.
 
 ## Discovering the surface
 
 ```sh
 disrobe --help                # every subcommand
 disrobe <pass> --help         # actions and flags for one pass, e.g. `disrobe py --help`
-disrobe passes                # one-line capability summary per registered pass
+disrobe passes                # direct recovery families plus auto-chain pass IDs
 disrobe catalog [ecosystem]   # supported families and recovery tiers
 disrobe explain DR-CLI-0030   # look up any error code
 ```
@@ -22,7 +22,7 @@ Subcommand inference is enabled: unambiguous prefixes work (`disrobe dec ...` re
 
 ## Output formats
 
-`disrobe scan` supports these global output flags:
+The CLI accepts these global output flags. A command can reject a format that does not fit its output contract:
 
 | Flag | Output |
 |---|---|

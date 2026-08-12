@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="920" height="652" viewBox="0 0 920 652" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from ecosystems.json sha256:c19be05f2216504b4e368edf43672dda</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="652" viewBox="0 0 920 652" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"><desc>generated from ecosystems.json sha256:7f7ba7b04138c7b94eed9efbb932bc0f</desc>
   <rect x="0" y="0" width="920" height="652" rx="10" fill="#0a0a0a"/>
   <rect x="0.5" y="0.5" width="919" height="651" rx="9.5" fill="none" stroke="#262626"/>
   <text x="28.00" y="40.00" font-size="19" fill="#ededed" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="600">Ecosystem coverage</text>
-  <text x="28.00" y="61.00" font-size="12.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">one static Rust binary, no LLM; every cell is a real pass on the run path</text>
+  <text x="28.00" y="61.00" font-size="12.5" fill="#a1a1a1" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" text-anchor="start" font-weight="400">static recovery by default; run disrobe passes for auto-chain reachability</text>
   <line x1="28.00" y1="74.00" x2="892.00" y2="74.00" stroke="#333333" stroke-width="1"/>
   <rect x="28.00" y="92.00" width="277.33" height="50.00" rx="7.00" fill="#161616" stroke="#262626" stroke-width="1"/>
   <rect x="28.00" y="92.00" width="3.50" height="50.00" fill="#9cc2c4"/>

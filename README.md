@@ -1,6 +1,6 @@
-![disrobe: decompile, deobfuscate, and unpack compiled software, deterministically](docs/assets/social-card.svg)
+![disrobe: deobfuscate, decompile, and unpack with deterministic output ordering](docs/assets/social-card.svg)
 
-disrobe is one static Rust binary that decompiles, deobfuscates, and unpacks compiled software across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JVM and Android, .NET, JavaScript and WebAssembly, Lua, Go, Ruby, PHP, shell, and native x86-64/AArch64. By default it never executes the sample, runs no model, and produces byte-identical output on every machine.
+disrobe is a Rust command-line suite that decompiles, deobfuscates, and unpacks compiled software. Its catalog spans <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JavaScript and TypeScript, WebAssembly, JVM and Android, .NET, native binaries, Go, Lua, PHP, Ruby, BEAM, Swift and Objective-C, ActionScript 3, mobile runtimes, and shell languages. Default recovery paths do not execute the sample or call a model. A committed determinism gate hashes three real fixture recoveries across Linux, macOS, Windows, and the batch runner at one and four workers.
 
 Every `strong` published number comes from a committed test graded against an independent reference: recovered Python must recompile to equivalent bytecode, recovered Android classes must pass the real JVM verifier, unpacked sections must byte-compare to the original. `coverage-self-reported` rows visibly state when they count disrobe's own output and pin the population they inspect. Where the data is absent from the artifact, disrobe reports the limit instead of guessing past it. Numbers, evidence classes, and reproduce commands live in [evidence/](evidence/).
 
@@ -30,6 +30,7 @@ disrobe auto suspect.exe --out recovered/             # fingerprint, then chain 
 disrobe identify suspect.exe                          # format, packer, and compiler ID
 disrobe py decompile module.pyc --out src/            # recover Python source from bytecode
 disrobe native unpack packed.exe --out unpacked.bin   # stub-emulator unpack, byte-recovery graded
+disrobe webview desktop.exe --out frontend/           # recover Electron, Tauri, or Wails assets
 ```
 
 For recognized inputs with a viable chain, `disrobe auto` fingerprints the input and composes the whole pipeline in one call: `PE -> UPX -> demangle`, `APK -> dex -> Java`, `PyInstaller -> PyArmor -> .pyc decompile`. With `--capture-stages` each stage lands in `out/01-*/`, `out/02-*/`, ..., `out/final/`. If it recovers no files, it reports that limit and directs you to `disrobe detect` and the relevant dedicated command.
@@ -151,7 +152,7 @@ The BEAM figure is scoped to the committed `test/0` observation in each case. Th
 
 The Swift row is pinned against a committed fixture's own symbol table and expected in-process renderings. The parity leg against the reference `swift-demangle` runs only where that tool is installed; CI neither requires nor provisions it, so it is not a guaranteed CI-graded public comparison. HashLink also parses the whole HLB image byte-exact, 336 functions and 421 types on the committed fixture. The PyArmor row is limited to 72 manifest-named v8/v9 default-trial wrapper/runtime pairs. Its test statically decrypts each body and requires its header-anchored marshal stream to decode as one complete root `CodeObject`; it does not compare source, emitted `.pyc` bytes, semantic or execution behavior, or external-tool output. The container row's assertion is `published_container_counts_match_this_enum`, which binds the 35 to the formats a committed input drives to member bytes rather than to the roster that declares the extractors; the rest have no committed input, so they are unverified rather than shown to fail. The six planted IOC categories frisk is graded on are endpoints, manifest findings, URLs, IPv4, email, and `.onion`.
 
-Native UPX recovers about 96% of the whole image beyond the two byte-identical sections. For the committed packer pairs, `.text` and `.data` are byte-identical for all three families, and nspack's `.rdata` is byte-identical too. One packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image; `fsg_unpack.rs` and `nspack_byte_recovery.rs` sit beside the cited petite test, and no figure is published for any of them because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
+Native UPX recovers about 96% of the whole image beyond the two byte-identical sections. For the committed packer pairs, `.text` and `.data` are byte-identical for all three families, and nspack's `.rdata` is byte-identical too. One packed-and-original pair per family is committed, so each figure reproduces from a clean checkout. The same decoders score lower on the whole-image measure over larger uncommitted vendor samples, with the content sections holding up far better than the whole image. `fsg_unpack.rs` and `nspack_byte_recovery.rs` sit beside the cited petite test, but no figure is published for them because nothing there reproduces or is pinned. Determinism is also checked across worker-pool sizes: the same fixtures run through `disrobe auto <dir>`'s batch runner at `--jobs 1` and `--jobs 4` produce identical bytes, and that batch runner is the one real concurrent code path in the CLI.
 
 ### Recompile-only
 
@@ -206,7 +207,7 @@ cargo run  -p disrobe-bench-native-unpack                                 # nati
 
 ![Python decompilation coverage by version against competing tools](docs/assets/python-versions.svg)
 
-Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and native recovery, recon, and verification in one static binary. Only committed input, pinned tools, a shared oracle, and a drift gate go in the table below. The runner is [`benches/head-to-head/`](benches/head-to-head/); pinned tools live in [`evidence/competitors/`](evidence/competitors/).
+The head-to-head runner compares the same committed input with pinned tool versions and records the reference each row uses. A missing same-input runner is not treated as a win. The runner is [`benches/head-to-head/`](benches/head-to-head/); pinned tools live in [`evidence/competitors/`](evidence/competitors/).
 
 | Surface | `disrobe` | Leading tool | Result | Reproduce |
 |---|---|---|---|---|
@@ -243,7 +244,7 @@ Native decompilation runs on an in-tree backend, which is the default: x86-64 to
 
 ## CLI surface
 
-Every pass is a subcommand. One representative command per family:
+`disrobe --help` lists direct analysis commands and ecosystem command families. Representative commands:
 
 ```sh
 disrobe auto sample.bin --out recovered/ --capture-stages   # detect and chain, keeping every stage
@@ -265,6 +266,7 @@ disrobe go recover app --out symbols.json                   # pclntab symbols, B
 disrobe lua decompile script.luac --out script.lua          # 5.1-5.4, LuaJIT, Luau, IronBrew2 devirt
 disrobe shell deob payload.ps1 --out clean.ps1              # PowerShell, bash, batch, VBA, Excel 4.0
 disrobe extract firmware.bin --out carved/ --recursive      # carve every supported container format
+disrobe webview desktop.exe --out frontend/                  # Electron ASAR, Tauri, or Wails frontend assets
 disrobe frisk recovered/ --format sarif                     # secrets, endpoints, buckets, IOCs
 disrobe prowl example.com --subs --format json              # the one command that touches the network
 disrobe report out/ --format html                           # self-contained offline forensic report
@@ -291,9 +293,9 @@ See the [library guide](docs/src/library.md), the [Python bindings](docs/src/pyt
    bytes     opcodes      mid       high      source
 ```
 
-Unpacking and decryption operate at Raw, where byte-exact recovery lives. Disassembly produces Disasm. Decompilers do their structural work at MIR and HIR, then render Surface, which is recompiled and verified against the oracle. Ten lifter paths feed the ladder: nine bytecode front-ends in `disrobe-nir-lift` (AVM2, BEAM, CIL, Dalvik, JVM, Lua, Python, WebAssembly, YARV) plus native via the disassembler. Three more consumers sit on the same normalized Mir: `disrobe query` with `disrobe capabilities`, `disrobe taint`, and `disrobe-semdiff`. `disrobe-semdiff` matches functions by a relocation-invariant signature, so two builds of the same source diff to nothing while a single changed function is reported.
+Unpacking and decryption operate at Raw, where byte recovery lives. Disassembly produces Disasm. Decompilers do their structural work at MIR and HIR, then render Surface for the checks available to that pass. `disrobe-nir-lift` contains bytecode front ends for AVM2, BEAM, CIL, Dalvik, JVM, Lua, Python, WebAssembly, and YARV; native lifting enters through the disassembler. `disrobe query`, `disrobe capabilities`, and `disrobe taint` consume the normalized IR through direct CLI commands. `disrobe passes` prints the separate set of pass IDs that the standard CLI build can reach through `disrobe auto`.
 
-Every recovered artifact is persisted as a `.dr` envelope: an rkyv payload, a postcard metadata sidecar, and a BLAKE3 root over both. Identical input yields a byte-identical envelope, so cache hits and fresh runs are indistinguishable. Any result can be transcoded, diffed, signed, or replayed. Any pass can emit an `--llm` metadata sidecar carrying the call graph, types, control flow, capability surface, and provenance.
+The shared artifact layer can persist recovered state as a `.dr` envelope: an rkyv payload, a postcard metadata sidecar, and a BLAKE3 root over both. Chain runs also write `chain.json` and `recovery.json`; `--capture-stages` records the exact bytes written by each stage. Commands that implement metadata bundles accept `--metadata-pack-1` through `--metadata-pack-4`; `--llm` is a compatibility alias for pack 4. The bundle is deterministic data for downstream tooling and does not invoke a model.
 
 The [architecture guide](https://1-3-7.github.io/disrobe/latest/architecture.html) has the full model, the [IR ladder page](docs/src/ir-ladder.md) the rung definitions, and the [whitepaper](https://1-3-7.github.io/disrobe/latest/architecture/whitepaper.html) the deterministic CPython decompiler, the typed-AST x86-64 lift, managed-VM devirtualization, and the grading discipline behind every claim.
 
@@ -303,7 +305,7 @@ Every default path is pure static analysis and never executes the sample. The pi
 
 ## Documentation
 
-Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a gray-zone recognizer escalating to a full peel.
+Full docs site: [`1-3-7.github.io/disrobe`](https://1-3-7.github.io/disrobe/), covering the architecture, the IR ladder, the chain runner, per-language guides, [webview desktop recovery](docs/src/languages/webview.md), the Python-bindings reference, the complete CLI reference, and the safety posture. The book source is under [`docs/`](docs/). [Per-protector stances](https://1-3-7.github.io/disrobe/latest/legal.html#per-protector-stances-on-file) records the legal posture behind a gray-zone recognizer escalating to a full peel.
 
 Integrations: a [GitHub Action](docs/src/integrations/github-action.md) that scans a path or glob and uploads SARIF to code scanning, a [pre-commit hook](docs/src/integrations/pre-commit.md) that blocks a commit on a packed or obfuscated artifact, an [MCP server](docs/src/integrations/mcp.md), and [editor plugins](docs/src/integrations/editor-plugins.md) for VS Code, IDA Pro, Ghidra, and Binary Ninja.
 

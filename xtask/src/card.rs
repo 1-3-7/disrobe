@@ -33,15 +33,18 @@ struct RecoveryBar {
     value: Option<f64>,
     #[serde(default)]
     detected: Option<u64>,
+    #[serde(default)]
+    delivered: Option<u64>,
 }
 
 #[derive(Debug)]
 struct CardStats {
+    ecosystem_count: usize,
     py_pct: f64,
     fmt_count: u64,
+    fmt_exercised: u64,
     dex_clean: u64,
-    rust_loc: usize,
-    crate_count: usize,
+    dex_total: u64,
 }
 
 #[derive(Debug)]
@@ -54,20 +57,18 @@ struct CardArtifact {
 const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="'JetBrains Mono', ui-monospace, monospace">
   <title>disrobe</title>
-  <desc>disrobe: decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.</desc>
+  <desc>disrobe: static recovery for compiled and obfuscated software with deterministic output ordering.</desc>
   <defs>
-    <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
+    <linearGradient id="reveal" gradientUnits="userSpaceOnUse" x1="1086" y1="0" x2="1144" y2="0">
       <stop offset="0" stop-color="#000000"/>
-      <stop offset="0.44" stop-color="#000000"/>
-      <stop offset="0.58" stop-color="#808080"/>
-      <stop offset="0.72" stop-color="#ffffff"/>
+      <stop offset="0.25" stop-color="#000000"/>
+      <stop offset="0.70" stop-color="#808080"/>
       <stop offset="1" stop-color="#ffffff"/>
     </linearGradient>
-    <linearGradient id="reveal-inv" gradientUnits="userSpaceOnUse" x1="540" y1="0" x2="1208" y2="0">
+    <linearGradient id="reveal-inv" gradientUnits="userSpaceOnUse" x1="1086" y1="0" x2="1144" y2="0">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.44" stop-color="#ffffff"/>
-      <stop offset="0.58" stop-color="#808080"/>
-      <stop offset="0.72" stop-color="#000000"/>
+      <stop offset="0.25" stop-color="#ffffff"/>
+      <stop offset="0.70" stop-color="#808080"/>
       <stop offset="1" stop-color="#000000"/>
     </linearGradient>
     <mask id="obfmask" maskUnits="userSpaceOnUse" x="540" y="132" width="668" height="300">
@@ -98,9 +99,9 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
   <text x="70" y="234.2" font-size="11.5" xml:space="preserve" fill="#ededed"> ▒▒▒▒▒▒▒▒ ▒▒▒▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒      ▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒   ▒▒▒▒▒▒  </text>
   <rect x="70" y="262" width="417" height="3" fill="#8fb3d9"/>
   <text x="70" y="312" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">deobfuscate, decompile, and unpack</text>
-  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">compiled software, deterministically.</text>
-  <text x="70" y="392" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">never executes the sample, calls no model,</text>
-  <text x="70" y="413" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">graded against real compilers and verifiers.</text>
+  <text x="70" y="343" font-size="22" fill="#a1a1a1" letter-spacing="0.1" font-family="Inter, ui-sans-serif, sans-serif">with deterministic output ordering.</text>
+  <text x="70" y="392" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">static analysis by default; no model in recovery.</text>
+  <text x="70" y="413" font-size="15" fill="#828282" font-family="Inter, ui-sans-serif, sans-serif">dynamic execution requires explicit opt-in.</text>
   <g font-family="Inter, ui-sans-serif, sans-serif">
     <text x="70" y="456" font-size="13" fill="#828282" letter-spacing="0.3">RAW</text>
     <text x="113" y="456" font-size="13" fill="#828282">&#8594;</text>
@@ -150,11 +151,12 @@ const TEMPLATE: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
     <text x="1198" y="405.2" font-size="14.5" text-anchor="end" xml:space="preserve" fill="#333333">▓|&gt;@▓]▓=@*░&lt;░]+▓=░@▒!!░}░*░;]=$+▓@!░!~|.░|#:{!!+%?|][}\?*;?%{^*░#.{▓░░▓&lt;#!▓:▓▒</text>
     <text x="1198" y="421.6" font-size="14.5" text-anchor="end" xml:space="preserve" fill="#333333">$?:~}!]&lt;=;:@#/%!|:^/▓▒*!;+&lt;!░~^▒▒/\%+}?/▓▓^[{\&gt;[^*~:$}%/&amp;=[&gt;[░;?$.{▓;▒:▒░░▒░▒▓</text>
   </g>
+  <line x1="1086" y1="142" x2="1086" y2="422" stroke="#3a3a3a" opacity="0.65"/>
   <rect x="540.5" y="132.5" width="667" height="299" rx="9" fill="none" stroke="#262626"/>
 
   <line x1="72" y1="554" x2="1208" y2="554" stroke="#262626"/>
-  <text x="72" y="582" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>20+ ecosystems, one static binary<tspan fill="#828282"> &#183; </tspan>0 LLM, deterministic<tspan fill="#828282"> &#183; </tspan>python __PY_PCT__% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>__FMT_COUNT__ formats, no external unzipper</text>
-  <text x="72" y="606" font-size="13.5" fill="#a1a1a1" xml:space="preserve" letter-spacing="0.15"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>Android dex __DEX_CLEAN__ classes JVM-verified<tspan fill="#828282"> &#183; </tspan>WASM re-run under wasmtime<tspan fill="#828282"> &#183; </tspan>Lua IronBrew2 devirt proven by execution<tspan fill="#828282"> &#183; </tspan>__RUST_LOC__ lines of Rust in __CRATE_COUNT__ crates</text>
+  <text x="72" y="582" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>__ECOSYSTEM_COUNT__ ecosystems<tspan fill="#828282"> &#183; </tspan>Python __PY_PCT__% recompile-verified in CI<tspan fill="#828282"> &#183; </tspan>Android DEX __DEX_CLEAN__/__DEX_TOTAL__ verifier-presented classes clean</text>
+  <text x="72" y="608" font-size="16" fill="#c5c5c5" xml:space="preserve" letter-spacing="0.05"><tspan fill="#8fb3d9" font-weight="700">$ </tspan>containers: __FMT_COUNT__ declared in-tree extractors<tspan fill="#828282"> &#183; </tspan>__FMT_EXERCISED__ exercised by committed inputs</text>
 </svg>
 "##;
 
@@ -339,16 +341,19 @@ fn collect_stats(
     recovery: &RecoveryDoc,
     verif: &VerificationDoc,
 ) -> Result<CardStats> {
+    let ecosystem_count: usize = crate::catalog_counts::tables(root)?.ecosystems;
     let py_pct: f64 = find_value(recovery, "Python bytecode", "200-module pinned corpus")?;
     let fmt_count: u64 = find_detected(recovery, "Detection and extraction breadth", "Containers")?;
-    let dex_clean: u64 = find_dex_clean(verif)?;
-    let (rust_loc, crate_count): (usize, usize) = count_rust_lines(root)?;
+    let fmt_exercised: u64 =
+        find_delivered(recovery, "Detection and extraction breadth", "Containers")?;
+    let (dex_clean, dex_total): (u64, u64) = find_dex_counts(verif)?;
     Ok(CardStats {
+        ecosystem_count,
         py_pct,
         fmt_count,
+        fmt_exercised,
         dex_clean,
-        rust_loc,
-        crate_count,
+        dex_total,
     })
 }
 
@@ -386,7 +391,24 @@ fn find_detected(doc: &RecoveryDoc, heading_sub: &str, label: &str) -> Result<u6
     bail!("no bar `{label}` under heading containing `{heading_sub}`")
 }
 
-fn find_dex_clean(doc: &VerificationDoc) -> Result<u64> {
+fn find_delivered(doc: &RecoveryDoc, heading_sub: &str, label: &str) -> Result<u64> {
+    for group in &doc.groups {
+        if !group.heading.contains(heading_sub) {
+            continue;
+        }
+        for bar in &group.bars {
+            if bar.label == label {
+                let Some(delivered): Option<u64> = bar.delivered else {
+                    bail!("bar `{label}` under `{heading_sub}` has no delivered count");
+                };
+                return Ok(delivered);
+            }
+        }
+    }
+    bail!("no bar `{label}` under heading containing `{heading_sub}`")
+}
+
+fn find_dex_counts(doc: &VerificationDoc) -> Result<(u64, u64)> {
     for row in &doc.rows {
         if row.ecosystem != "Android DEX" {
             continue;
@@ -412,73 +434,55 @@ fn find_dex_clean(doc: &VerificationDoc) -> Result<u64> {
                 row.result
             );
         }
-        return Ok(clean);
+        return Ok((clean, total));
     }
     bail!("no 'Android DEX' row in verification.json")
-}
-
-fn approximate_loc(lines: usize) -> String {
-    if lines >= 1_000_000 {
-        let tenths: usize = lines / 100_000;
-        format!("{}.{}M+", tenths / 10, tenths % 10)
-    } else {
-        format!("{}k+", lines / 10_000 * 10)
-    }
-}
-
-fn rust_lines_under(dir: &Path) -> Result<usize> {
-    if !dir.is_dir() {
-        return Ok(0);
-    }
-    let mut total: usize = 0;
-    let entries = std::fs::read_dir(dir).wrap_err_with(|| format!("reading {}", dir.display()))?;
-    for entry in entries {
-        let path: PathBuf = entry?.path();
-        if path.is_dir() {
-            total += rust_lines_under(&path)?;
-            continue;
-        }
-        if path
-            .extension()
-            .is_some_and(|ext: &std::ffi::OsStr| ext.eq_ignore_ascii_case("rs"))
-        {
-            let text: String = read_text_bounded(&path, MAX_SVG_BYTES)?;
-            total += text.lines().count();
-        }
-    }
-    Ok(total)
-}
-
-fn count_rust_lines(root: &Path) -> Result<(usize, usize)> {
-    let mut lines: usize = 0;
-    let mut crates: usize = 0;
-    let crates_dir: PathBuf = root.join("crates");
-    let entries = std::fs::read_dir(&crates_dir)
-        .wrap_err_with(|| format!("reading {}", crates_dir.display()))?;
-    for entry in entries {
-        let path: PathBuf = entry?.path();
-        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
-            continue;
-        }
-        crates += 1;
-        lines += rust_lines_under(&path.join("src"))?;
-    }
-    Ok((lines, crates))
 }
 
 fn render(stats: &CardStats) -> String {
     let py_str: String = format!("{:.2}", stats.py_pct);
     TEMPLATE
+        .replace("__ECOSYSTEM_COUNT__", &stats.ecosystem_count.to_string())
         .replace("__PY_PCT__", &py_str)
         .replace("__FMT_COUNT__", &stats.fmt_count.to_string())
+        .replace("__FMT_EXERCISED__", &stats.fmt_exercised.to_string())
         .replace("__DEX_CLEAN__", &stats.dex_clean.to_string())
-        .replace("__RUST_LOC__", &approximate_loc(stats.rust_loc))
-        .replace("__CRATE_COUNT__", &stats.crate_count.to_string())
+        .replace("__DEX_TOTAL__", &stats.dex_total.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_renders_evidence_counts_from_authoritative_data() -> Result<()> {
+        let manifest_dir: &Path = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Some(root): Option<&Path> = manifest_dir.parent() else {
+            bail!("xtask manifest directory has no repository parent");
+        };
+        let recovery_raw: String = read_text_bounded(
+            &root.join("xtask").join("data").join("recovery.json"),
+            MAX_DATA_JSON_BYTES,
+        )?;
+        let recovery: RecoveryDoc = serde_json::from_str(&recovery_raw)?;
+        let verification_raw: String = read_text_bounded(
+            &root.join("xtask").join("data").join("verification.json"),
+            MAX_DATA_JSON_BYTES,
+        )?;
+        let verification: VerificationDoc = serde_json::from_str(&verification_raw)?;
+        let stats: CardStats = collect_stats(root, &recovery, &verification)?;
+        let rendered: String = render(&stats);
+
+        assert!(rendered.contains("15 ecosystems"));
+        assert!(rendered.contains("101 declared in-tree extractors"));
+        assert!(rendered.contains("35 exercised by committed inputs"));
+        assert!(rendered.contains("with deterministic output ordering."));
+        assert!(!rendered.contains("20+ ecosystems"));
+        assert!(!rendered.contains("compiled software, deterministically."));
+        assert!(!rendered.contains("lines of Rust"));
+        assert!(!rendered.contains("crates</text>"));
+        Ok(())
+    }
 
     #[test]
     fn card_check_rejects_one_byte_png_mutation() -> Result<()> {

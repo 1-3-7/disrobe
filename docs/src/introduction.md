@@ -1,34 +1,37 @@
-# `disrobe`: a universal decompiler, deobfuscator, and unpacker
+# Deterministic static recovery with `disrobe`
 
 ![disrobe](./assets/social-card.svg)
 
-> One tool to decompile, deobfuscate, and unpack compiled software, deterministically, in a single Rust binary.
+> Decompile, deobfuscate, and unpack compiled software through one evidence-tracked command line.
 
-`disrobe` is a universal multi-language decompiler and deobfuscator. It decompiles Python `.pyc` bytecode, unpacks PyArmor and PyInstaller, reads Nuitka-compiled binaries, decompiles WebAssembly, deobfuscates JavaScript, decompiles .NET / CIL and JVM / Java, recovers Android DEX, and unwraps native PE / ELF / Mach-O packers, all from one static binary built for malware analysis and reverse engineering.
+`disrobe` is a Rust command-line suite for static software recovery. It handles source obfuscation, bytecode, frozen applications, managed assemblies, native binaries, packers, archives, firmware, and compiled webview frontends. The default path never executes the sample. One opt-in PyArmor v6/v7 fallback does execute it and requires `--allow-dynamic`; use that path only inside an isolated sandbox.
 
 [![disrobe demo](./demo/disrobe-demo.svg)](https://github.com/1-3-7/disrobe/blob/main/docs/demo/disrobe.cast)
 
 > **Try it in your browser: [the `disrobe` playground](https://1-3-7.github.io/disrobe/playground/).** Decompile a `.pyc`, scan a pickle for malicious reduce callables, and summarize a `.wasm` module, all client-side, with the core passes compiled to WebAssembly. Nothing is uploaded.
 
-`disrobe` reverses the bytecode, packers, freezers, and protectors layered onto compiled and frozen software across <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JavaScript/TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O, Go, Lua, PHP, Ruby, Erlang/Elixir (BEAM), Swift/Objective-C, ActionScript 3, React Native Hermes, Flutter Dart AOT, and the native packer tier layered on top of them (<!-- packer-roster:implemented -->Donut, sRDI, UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy<!-- /packer-roster -->). It ships as a single static Rust binary.
+The live catalog spans <!-- m:catalog_ecosystems -->15<!-- /m --> ecosystems: Python, JavaScript and TypeScript, WebAssembly, JVM and Android, .NET, native PE/ELF/Mach-O/NE, Go, Lua, PHP, Ruby, Erlang and Elixir on BEAM, Swift and Objective-C, ActionScript 3, mobile runtimes, and shell languages. The implemented native-packer tier currently lists <!-- packer-roster:implemented -->Donut, sRDI, UPX, ASPack, Petite, MPRESS, FSG, PECompact, Yoda's Crypter, NSPack, MEW, kkrunchy<!-- /packer-roster -->. Run `disrobe catalog [ecosystem]` for the per-family recovery tier compiled into your binary.
 
-Built for forensic and recovery work where reproducibility matters:
+## Guarantees and boundaries
 
-- No model runs anywhere in the decompile path. The same input produces byte-identical output on every machine and every run, so a result serves as evidence and as a diff baseline.
-- The core runs as one static binary. It needs no JVM, no Python runtime, and no Docker image. It builds from a single `cargo build --release` and drops into CI headlessly.
-- Every recovered artifact persists as a content-addressed `.dr` envelope: an rkyv hot payload plus a postcard cold sidecar, rooted by a BLAKE3 hash. Cache hits are byte-identical, and chains compose offline.
-- Every Python decompile is recompiled on the matching interpreter and compared opcode-for-opcode: <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). Recovery that falls short is labeled `SEMANTIC`, `PARTIAL`, or `SKELETON` rather than presented as ground truth. Commercial-tier packers that `disrobe` cannot fully unpack are reported as detect-only by design, never faked.
+- No model runs in the recovery path. Metadata bundles are deterministic structured data for downstream tools.
+- Output ordering and serialization are deterministic. A committed gate hashes three real fixture recoveries across Linux, macOS, Windows, and the batch runner at one and four workers. This evidence does not claim that three fixtures prove every possible input.
+- The main CLI ships as one Rust binary. In-house paths launch no external program. Commands with optional backends can invoke installed tools when you select a backend or use that command's `--backend auto` policy.
+- The shared artifact layer can store recovered state in a content-addressed `.dr` envelope with an rkyv payload, postcard sidecar, and BLAKE3 root. Chain runs record topology and per-stage provenance separately.
+- Python recovery is measured at <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), plus <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->). These figures describe their stated populations, not every Python program.
 
 ## Who this is for
 
 - Malware analysts and incident responders who receive a packed, frozen, or obfuscated sample and need to read what it does, without executing it.
 - Security researchers auditing a closed binary for interoperability or vulnerability research.
 - Developers recovering their own lost source from a shipped `.pyc`, `.jar`, `.dll`, or bundled `.js`.
-- Review tooling. Every pass can emit a structured metadata sidecar (`--metadata-pack-4`, with `--llm` kept as a compatibility alias) carrying the call graph, type signatures, control-flow shape, capability surface, and decompile provenance. The sidecar is deterministic data for downstream tooling, not a model-backed decompiler.
+- Tooling authors who need the Rust crates, typed Python bindings, daemon protocols, metadata bundles, or browser playground.
 
-## Where it sits against existing tools
+## Choose the reachable surface
 
-`disrobe` ships passes for every ecosystem above from a single binary. Where mature FOSS already exists (CFR, Vineflower, jadx, ILSpy, JPEXS, unluac, hermes-dec, Ghidra), `disrobe` wraps it headlessly behind a unified CLI and adds chain auto-detection, deterministic `.dr` envelopes, and round-trip verification. Where FOSS coverage is thin (PyArmor v9-pro, the native packer tier, Hermes against a live bundle, Flutter Dart AOT, MicroPython `.mpy`, PEP 750 t-strings), it is among the few tools handling these statically and offline. Where the field is dominant (Ghidra/IDA/Binary Ninja for native decompilation), `disrobe` is the unpack, symbol-recovery, and chain-detect layer that feeds them cleaner input.
+`disrobe auto` can run only the pass IDs registered in that build. `disrobe passes` prints those IDs, their ecosystem, and their support tier. Direct commands expose additional operations that are not auto-chain passes, including recon, taint analysis, optional external decompilers, and `disrobe webview` for Electron, Tauri, and Wails frontend recovery. Use `disrobe --help` for direct commands and `disrobe catalog [ecosystem]` for recognized families.
+
+In-house recovery remains available without optional toolchains. JVM, Android, .NET, and native commands can also use installed tools such as CFR, Vineflower, jadx, ILSpy, de4dot, or Ghidra where their command-specific backend policy allows it. `disrobe doctor` reports what is installed; it does not make an unavailable backend part of an in-house result.
 
 ## Measured recovery
 
@@ -51,7 +54,7 @@ a hollow mark means the input stays outside the tree.
 | PyArmor | <!-- m:pyarmor_frac -->72 / 72<!-- /m --> manifest-named v8/v9 default-trial wrappers decrypt and decode one complete header-anchored root `CodeObject` | self-reported structural check; no source, emitted `.pyc`, semantic, execution, or external comparison |
 | Containers | <!-- m:containers_formats -->101<!-- /m --> formats declared with an in-tree extractor, <!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them driven to member bytes by a committed input | extraction over the committed corpus, pinned per format |
 
-The numbers that are not perfect are labeled `SEMANTIC`, `PARTIAL`, or `SKELETON`, and the information-theoretic walls (native-virtualized code, runtime-only keys, RSA-wrapped capsule keys) are reported as detect-only by design.
+The numbers that are not perfect are labeled `SEMANTIC`, `PARTIAL`, or `SKELETON`. Native-virtualized code, runtime-only keys, and RSA-wrapped capsule keys remain detect-only when the required information is absent from the input.
 
 ## Refusal is a result
 
@@ -61,7 +64,7 @@ The rule behind it: a wrong recovery costs more than no recovery. A reader who r
 
 Evidence that is only probable does not become a result. Where several readings of the same bytes are equally consistent with the input, `disrobe` reports the ambiguity instead of choosing the likeliest one. A native function compiled to a single return instruction, for example, cannot be distinguished from several different source signatures on its own bytes, so it is refused unless a caller in the same object proves which one applies.
 
-A refusal is scoped to the evidence, not to the problem. "Not recoverable from this input" is a claim about the bytes supplied; a wider input set can reopen it. Only a limit that survives that distinction, such as a key that exists solely at run time, is reported as a wall.
+A refusal is scoped to the evidence, not to the problem. "Not recoverable from this input" is a claim about the bytes supplied; a wider input set can reopen it. A key that exists solely at run time is reported as a static-recovery limit.
 
 ## Where to start
 

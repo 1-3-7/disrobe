@@ -36,7 +36,7 @@ disrobe context  (./out/sample)
 
 `disrobe report ./out/sample` renders the same run as text, markdown, JSON, or a self-contained HTML page, and adds a recovery score, the artifact inventory, and the detect-only and skeleton caveats. See [run reports](./cli/report.md).
 
-Pass `--capture-stages` on any run you expect to have to debug. It mirrors each stage's byte-exact output to `./out/sample/NN-<pass>/output.bin` and links the terminal stages under `./out/sample/final/`, which is what lets you re-enter the pipeline at the stage that stopped. Without it you have the verdicts but not the bytes.
+Pass `--capture-stages` on any run you expect to debug. It mirrors the exact bytes written by each stage to `./out/sample/NN-<pass>/output.bin` and links the terminal stages under `./out/sample/final/`, which lets you re-enter the pipeline at the stage that stopped. Exact capture does not mean a decompiler's source output is byte-identical to the compiled input. Without capture you have the verdicts but not the stage bytes.
 
 ## Two vocabularies, and one word they share
 
@@ -183,7 +183,7 @@ The distinction is worth holding onto when you decide whether to keep pushing. A
 
 **Symptom.** An `--emit` kind wrote a small JSON document instead of an artifact.
 
-**Meaning.** Every pass answers all twelve emit kinds. A pass that cannot produce a given kind writes an explicit stub with `"applicable": false`, `"schema": "disrobe.emit.stub/v0"`, and a `reason` that usually names the pass to chain with instead. This is so a downstream tool always gets a well-formed answer. See [standardized emits](./passes.md#standardized-emits).
+**Meaning.** Commands that implement the standardized emit contract return either the requested artifact or a stub with `"applicable": false`, `"schema": "disrobe.emit.stub/v0"`, and a reason. The shared parser recognizes fifteen emit labels, but support is command-specific and `auto` accepts only `recovery`. See [standardized emits](./passes.md#standardized-emits).
 
 **Next.** Run the pass the reason names. `disrobe auto --emit` accepts only `recovery`, which echoes `recovery.json` to stdout under `--json`; for structured emits, drive the per-language subcommand directly.
 

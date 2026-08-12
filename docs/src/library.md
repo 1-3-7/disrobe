@@ -1,19 +1,23 @@
 # Use it as a library
 
-`disrobe` embeds as well as it runs from a shell. The CLI is a thin layer over the same crates, so a TUI, an IDE plugin, a web service, or a batch engine can drive the full pass set directly. There are three ways in: the Rust crates, the Python bindings, and the daemon.
+`disrobe` embeds as well as it runs from a shell. The CLI integrates the same crates exposed to library consumers. There are three primary entry points: the Rust crates, the Python bindings, and the daemon.
 
 ## Rust
 
-Every pass is its own crate over the shared `disrobe-core` and `disrobe-ir` types, so you depend only on the ones you need. The chain runner that backs `disrobe auto` lives in `disrobe-binfmt`.
+Ecosystem recovery code is split across dedicated crates over shared artifact and IR types, so a library consumer can select only the surfaces it needs. A crate may expose multiple direct operations or chain passes. The pass registry and chain state machine live in `disrobe-core`; `disrobe-passes` assembles the feature-selected registry used by `disrobe auto`.
 
 | Crate | What you get |
 |---|---|
-| `disrobe-core` | Shared types: the `Artifact` envelope, `Rung`, confidence tiers, error codes, the chain `Pass`/`Detector` traits, and the obfuscator-catalog traits. |
+| `disrobe-core` | Shared types: `Artifact`, `Rung`, confidence tiers, error codes, the chain registry and state machine, the `Pass`/`Detector` traits, and the obfuscator-catalog traits. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot payload + postcard cold sidecar + BLAKE3 root), and the transcode registry. |
-| `disrobe-binfmt` | Container detection, the in-tree format extractors, and the chain runner. |
+| `disrobe-nir`, `disrobe-nir-lift` | Normalized MIR and bytecode front ends for AVM2, BEAM, CIL, Dalvik, JVM, Lua, Python, WebAssembly, and YARV. |
+| `disrobe-binfmt` | Container detection, in-tree format extractors, recursive carving, and shared extraction quotas. |
+| `disrobe-passes` | The single construction site for a feature-selected `PassRegistry`. |
 | `disrobe-prowl` | Typed URL and IOC harvest reports, source filters, bounded async provider fan-out, and API-key resolution for the `prowl` CLI. |
 | `disrobe-pass-py-decompile`, `disrobe-pass-jvm`, `disrobe-pass-native`, `disrobe-pass-dotnet`, ... | One crate per ecosystem, each exposing a typed `Pass` plus direct entry points (for example the Python decompiler's `PY_DECOMPILE_PASS` and `roundtrip_native`). |
+| `disrobe-pass-webview` | Static Electron ASAR and embedded Tauri/Wails frontend recovery with typed reports and extraction quotas. |
 | `disrobe-query`, `disrobe-capabilities` | The queryable-IR layer and the ATT&CK/MBC rule engine over the disassembled native code. |
+| `disrobe-taint` | Source-to-sink flow analysis over normalized native, WebAssembly, JVM, Dalvik, and `.dr` inputs. |
 
 Add the crates you want to a workspace member or an external project that pins the published versions:
 
@@ -42,7 +46,7 @@ fn recover(pyc: Vec<u8>, root: [u8; 32]) -> disrobe_core::Result<Artifact> {
 
 The Python decompiler additionally exposes `roundtrip_native`, which recompiles recovered source on the matching interpreter and returns a `RoundtripOutcome` carrying the `PERFECT`/`SEMANTIC`/`CODE_DIFF` verdict, so the same recompile-equivalence check the CI gate runs is available in-process.
 
-Because every pass speaks the same `Artifact` dialect, the `disrobe-binfmt` chain runner can compose any pass with any other without a per-pair compatibility table: it re-detects the current bytes after each stage and picks whichever registered pass returns the highest-confidence, highest-precedence verdict. That is what lets `PyInstaller -> PyArmor -> .pyc decompile` run as one call rather than three hand-wired steps. The shape of the `Pass` trait and the selection mechanism is in [Passes and pass selection](./passes.md#pass-selection).
+Because every chain pass speaks the same `Artifact` dialect, `PassRegistry` can re-detect the current bytes after each stage and select the highest-confidence, highest-precedence verdict without a per-pair compatibility table. The registry contains only the passes compiled and registered by the caller. The standard CLI uses `disrobe-passes` as its assembly point; `disrobe passes` shows what that build exposes to `auto`. The shape of the `Pass` trait and the selection mechanism is in [Passes and pass selection](./passes.md#pass-selection).
 
 ## Python
 

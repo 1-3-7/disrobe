@@ -8,13 +8,13 @@ The chain runner is what turns a pile of single-purpose passes into a one-comman
 disrobe auto suspect.exe --out recovered/
 ```
 
-`disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. Detection spans 26 pass crates: native packer, PyArmor, JS deob, Python deob, container formats, SourceDefender, py-decompile, py-disasm, PyInstaller, pickle, JVM, .NET, Go, mobile, AS3, BEAM, Lua, Ruby, shell, scriptlang, nativelang, PHP, Nuitka, Wasm, pyfreeze, and swift-objc. `disrobe passes` prints the set this build actually registers, with each pass ecosystem and support tier, and is the live answer if this list ever lags. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
+`disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. `disrobe passes` prints the auto-chain pass IDs compiled into the current binary, with each pass ecosystem and support tier. Use that output instead of a copied count. Direct commands such as `scan`, `frisk`, `taint`, and `webview` are separate surfaces and do not become auto-chain passes merely because the CLI can run them. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
 
 Representative chains:
 
 - `PE -> UPX -> rust-demangle`
 - `PyInstaller -> PyArmor -> .pyc decompile`
-- `APK -> dex -> JADX + Smali + manifest`
+- `APK -> DEX -> Java + manifest`
 - `Electron .asar -> unbundle -> source`
 
 ## Explicit chains
@@ -49,13 +49,13 @@ Adversarial input can try to make a chain recurse forever (an archive nested ins
 
 ## Stage mirrors
 
-Pass `--capture-stages` to materialize every executed pass's byte-exact output:
+Pass `--capture-stages` to materialize the exact bytes written by every executed pass. This records each stage faithfully; it does not mean decompiled source is byte-identical to the compiled input.
 
 ```text
 recovered/
-├── 01-pyinstaller/        # byte-exact output of pass 1
-├── 02-pyarmor/            # byte-exact output of pass 2
-├── 03-py-decompile/       # byte-exact output of pass 3
+├── 01-pyinstaller/        # exact recorded output of pass 1
+├── 02-pyarmor/            # exact recorded output of pass 2
+├── 03-py-decompile/       # exact recorded output of pass 3
 ├── final/                 # terminal stage(s), linked
 │   └── 03-py-decompile/   # symlink -> NTFS junction -> recursive copy fallback (Windows)
 ├── chain.json             # the chain topology descriptor

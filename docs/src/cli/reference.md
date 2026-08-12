@@ -1,6 +1,6 @@
 # Command reference
 
-The authoritative source is always `disrobe <command> --help`. This page is a complete map of the command surface. `[--out]` and the standardized `[--emit ...]` selector are available on most passes; see the [global flags](./global-flags.md) for flags that apply everywhere.
+The authoritative source is always `disrobe <command> --help` for the binary you are running. This page maps the public command surface. Output paths and `--emit` support are command-specific; see the [global flags](./global-flags.md) for the options parsed at the top level.
 
 ## Python
 
@@ -25,6 +25,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe js deob <js>` | Deobfuscate (obfuscator.io, JS-Confuser, Jscrambler, esoteric encoders). |
 | `disrobe js unbundle <js>` | Split a bundle into per-module sources; the unbundler routes <!-- m:js_bundlers -->11<!-- /m --> catalogued bundler families. |
 | `disrobe js v8 <blob>` | Inspect V8 `.jsc` / Node SEA / nexe / nw.js / Electron `.asar`. |
+| `disrobe webview <binary>` | Statically recover Electron ASAR or embedded Tauri/Wails HTML, JavaScript, CSS, and assets to `--out <DIR>`. The standard CLI exposes this as a direct command rather than an `auto` pass. See [Webview desktop frontends](../languages/webview.md). |
 | `disrobe wasm decompile <wasm>` | Lift to `--target json\|rust\|ts\|wat\|c`. |
 | `disrobe wasm deob <wasm>` | Reverse Wasm obfuscator families. |
 | `disrobe wasm component <wasm>` | Parse a Component Model envelope. |
@@ -35,13 +36,13 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 
 | Command | Purpose |
 |---|---|
-| `disrobe jvm decompile <class\|jar\|dex\|apk>` | Decompile via `--backend cfr\|vineflower\|procyon\|jadx`. |
+| `disrobe jvm decompile <class\|jar\|dex\|apk>` | Run the in-house classfile, jar, DEX, or APK recovery path and optionally invoke an installed backend selected by `--backend auto\|cfr\|vineflower\|procyon\|jd\|krakatau\|jadx\|dex2-jar`. `auto` chooses an applicable installed backend when one is available. Jar, DEX, and APK inputs emit in-house source by default; classfiles require `--emit source`. |
 | `disrobe jvm extract <jar\|apk>` | Extract container + dump classfile inventory. |
 | `disrobe jvm backends` | Report JVM/Android backends on PATH. |
 | `disrobe jvm retrace` | Retrace an obfuscated stack frame back to class/method/line through a ProGuard/R8 `mapping.txt` (`--mapping`, `--class`, `--method`, `--line`). |
 | `disrobe jvm jni <class\|jar\|dex\|apk\|aab\|aar\|apks\|oat>` | Link declared `native` methods across the DEX/classfile <-> `.so`/`.dll`/`.dylib` JNI boundary: static `Java_` symbol matching, `RegisterNatives` triple recovery, and C prototype emission. `--native <LIB>` supplies a native library, or a split `.apk`/`.apks`, for a bare class/jar/dex/oat (repeatable); a self-contained apk/aab/aar/apks carries its own. An `.aar` scans `jni/<abi>/*.so` and its nested `classes.jar`. A raw `.oat` file locates its single embedded dex through the OAT header; a multi-dex `.oat` is refused rather than guessed. `--json` for machine output. |
 | `disrobe apk <apk>` | Decode the binary AndroidManifest.xml, map resource ids to names, dump each signer certificate's SHA-256, and link the embedded DEX against its embedded native libraries (the same JNI surface `jvm jni` prints). `--out <DIR>` writes the decoded manifest and resource table to disk. |
-| `disrobe dotnet decompile <dll\|exe>` | Decompile via `--backend ilspy\|dnspy\|dnspyex\|de4dot`. |
+| `disrobe dotnet decompile <dll\|exe>` | Run the in-house CIL decompiler and optionally invoke `--backend auto\|ilspy\|dnspy\|dnspy-ex\|de4dot`. If a requested tool is unavailable, the current selector falls back to the first installed backend in the auto order. `--language csharp\|fsharp\|vbnet` selects the in-house surface language. |
 | `disrobe dotnet deobfuscate\|peel <dll\|exe>` | Detect the .NET protector and peel it: decrypt resources, recover constants/strings, classify renamable identifiers, strip watermarks. `--protector <name>` forces one. |
 | `disrobe dotnet analyze <dll>` | PE/CLR metadata, protector detection, R2R + NativeAOT probe. |
 | `disrobe dotnet backends` | Report .NET backends on PATH. |
@@ -69,6 +70,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm- or Mir-rung `.dr` envelope. |
 | `disrobe capabilities <bin\|.dr>` | Rule engine over the IR, mapping behaviors to MITRE ATT&CK + MBC with per-match evidence. |
 | `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / CIL / ABC / Ruby / Lua / BEAM / `.pyc` / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). With `--cfg`, `--dfg` or a pack that names them it also writes the control-flow and data-flow metadata categories; see [metadata sidecar](../llm-sidecar.md#control-flow-and-data-flow). |
+| `disrobe vulnmatch <input>` | Match reachability-aware vulnerability rules against a PE, ELF, Mach-O, COFF, or Disasm/Mir-rung `.dr` envelope while preserving `reachable`, `reachability-unknown`, `present`, and `confirmed` states. |
 
 ## Other languages
 
@@ -125,7 +127,7 @@ The authoritative source is always `disrobe <command> --help`. This page is a co
 | `disrobe config init [--out <path>] [--force]` | Write a documented `.disrobe.toml` template. |
 | `disrobe annot refresh\|regenerate` | Rebuild a symbol annotation file. |
 | `disrobe rename <old> <new> [--note]` | Record an append-only rename. |
-| `disrobe passes` | List every registered pass with a one-line capability summary. |
+| `disrobe passes` | Print direct recovery-family summaries followed by the pass IDs reachable from `disrobe auto` in this build. |
 | `disrobe plugin run <component> --trusted-key <pubkey> --out <file> [--input <file>] [--fuel N] [--wall-deadline-ms MS] [--memory-cap-bytes N] [--format text\|json]` | Verify and run a signed WebAssembly component plugin under the `disrobe-plugin-host` sandbox (fuel, wall-clock, and memory caps; deny-all imports). Reads input from stdin when `--input` is omitted. CLI-only: a plugin names an explicit local path an operator supplies, not a chain pass reachable from `disrobe auto`. |
 | `disrobe plugin verify <component> --trusted-key <pubkey> [--format text\|json]` | Verify a signed WebAssembly component plugin's signature and capability manifest without running it. |
 | `disrobe plugin list <dir> [--trusted-key <pubkey>] [--format text\|json]` | List plugin bundles (a `<name>.wasm` component beside its `<name>.wasm.minisig` signature and `<name>.toml` manifest) in a directory; verifies each bundle when `--trusted-key` is given. |

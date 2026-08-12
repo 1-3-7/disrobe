@@ -1,6 +1,6 @@
 {
   "title": "Ecosystem coverage",
-  "subtitle": "one static Rust binary, no LLM; every cell is a real pass on the run path",
+  "subtitle": "static recovery by default; run disrobe passes for auto-chain reachability",
   "kinds": {
     "source": "recovers source",
     "bytecode": "bytecode to source",

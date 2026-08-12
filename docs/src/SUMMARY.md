@@ -29,6 +29,7 @@
 
 - [Python](./languages/python.md)
 - [JavaScript / TypeScript](./languages/javascript.md)
+- [Webview desktop frontends](./languages/webview.md)
 - [WebAssembly](./languages/wasm.md)
 - [JVM and Android](./languages/jvm-android.md)
 - [.NET / CIL](./languages/dotnet.md)

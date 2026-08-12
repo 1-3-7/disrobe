@@ -18,28 +18,31 @@ For the full design rationale, including the determinism argument and the oracle
 
 ## Crate map
 
-The workspace splits into a small set of shared cores and one crate per ecosystem pass:
+The workspace splits into shared cores and dedicated ecosystem or recovery-surface crates:
 
 | Crate | Role |
 |---|---|
-| `disrobe-core` | Shared types: error codes (`DR-<DOMAIN>-<NNNN>`), progress, confidence tiers, secret/credential scanning, cyclomatic metrics. |
+| `disrobe-core` | Shared artifacts, error codes (`DR-<DOMAIN>-<NNNN>`), confidence tiers, the `Pass` and `Detector` traits, pass selection, and the chain state machine. |
 | `disrobe-prowl` | Async URL and IOC harvester over public archives and threat-intel feeds, with bounded paging, per-host rate limits, key resolution, and typed reports. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot + postcard cold + BLAKE3 root), transcoders, capability descriptors. |
-| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->101<!-- /m --> formats detected, each with an in-tree extractor and <!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them reached by a committed input, plus a recursive carve-everything engine) with shared zip-slip and decompression-bomb quota machinery. |
+| `disrobe-nir`, `disrobe-nir-lift` | Normalized MIR plus bytecode front ends for AVM2, BEAM, CIL, Dalvik, JVM, Lua, Python, WebAssembly, and YARV. |
+| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->101<!-- /m --> formats detected, each with an in-tree extractor and <!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them reached by a committed input, plus recursive carving) with shared path-safety and decompression-quota machinery. |
+| `disrobe-passes` | Single assembly point for the feature-selected auto-chain registry. The standard CLI enables a specific subset; `disrobe passes` prints the resulting IDs. |
 | `disrobe-llm-metadata` | The `--llm` sidecar: 18 categories, 4 packs, `AGENTS.md` / `SKILL.md` brief generation. |
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |
 | `disrobe-py-marshal` | CPython marshal reader: code objects across 1.0-3.15. |
-| `disrobe-pass-*` | One crate per ecosystem (py-decompile, py-disasm, py-deob, pyarmor, pyinstaller, pyfreeze, nuitka, js-deob, wasm-deob, jvm, dotnet, native, nativelang, go, lua, php, ruby, beam, pickle, swift-objc, as3, mobile, shell, scriptlang, sourcedefender). The native pass adds the iced-backed disassembler, symbol-independent function discovery, call graph and basic-block CFG, instruction re-encode/relocate, C++ RTTI/vtable recovery, and emulation-driven string recovery. |
+| `disrobe-pass-*` | One crate per ecosystem or recovery surface, including Python, JavaScript, WebAssembly, JVM, .NET, native, Go, Lua, PHP, Ruby, BEAM, Swift/Objective-C, AS3, mobile, shell, and webview desktop assets. The native pass adds the iced-backed disassembler, symbol-independent function discovery, call graph and basic-block CFG, instruction re-encode/relocate, C++ RTTI/vtable recovery, and emulation-driven string recovery. |
 | `disrobe-query` | Queryable-IR layer over the disassembled native code: functions, calls-to, xrefs, string-decoders, complexity, capability sites, behind `disrobe query`. |
 | `disrobe-capabilities` | Capability rule engine over the queryable IR, mapping matched behaviors to MITRE ATT&CK and MBC, behind `disrobe capabilities`. |
-| `disrobe-cli` | The `disrobe` binary: argument parsing, output formats, the chain runner, the daemon. |
+| `disrobe-taint` | Source-to-sink data-flow analysis over normalized native, WebAssembly, JVM, Dalvik, and `.dr` inputs, behind `disrobe taint`. |
+| `disrobe-cli` | The `disrobe` binary: argument parsing, direct command handlers, output formats, chain integration, and daemon protocols. |
 | `disrobe-validator` | Walks a corpus and validates every fixture round-trips, used in CI. |
 
 ## The `Pass` trait
 
-Every pass implements one trait (`Pass` in `disrobe-core`, re-exported as `chain::detector::Pass`): it exposes a `Detector` that scores how confidently it recognizes an input, plus a `run` method that takes an `Artifact` at one rung and returns an `Artifact` one or more rungs higher. Because every pass speaks the same detector interface, the chain runner needs no per-pair compatibility table: it re-detects the current bytes after every stage and picks whichever registered pass returns the highest-confidence, highest-precedence verdict. This is what lets `PyInstaller -> PyArmor -> .pyc decompile` work as a single `disrobe auto` invocation rather than three hand-wired steps.
+Every chain pass implements one trait (`Pass` in `disrobe-core`, re-exported as `chain::detector::Pass`): it exposes a `Detector` that scores how confidently it recognizes an input, plus a `run` method that takes an `Artifact` at one rung and returns an `Artifact` one or more rungs higher. Because every chain pass speaks the same detector interface, the chain runner needs no per-pair compatibility table: it re-detects the current bytes after every stage and picks whichever registered pass returns the highest-confidence, highest-precedence verdict. This is what lets `PyInstaller -> PyArmor -> .pyc decompile` work as a single `disrobe auto` invocation rather than three hand-wired steps.
 
-Each pass also exposes a standardized set of emits (`source`, `disasm`, `ast`, `cfg`, `ir`, `manifest`, `sourcemap`, `symbols`, `strings`, `imports`, `signatures`, `report`). A pass that cannot produce a given emit writes an explicit `applicable: false` stub with the `DR-IR-NotApplicable` code rather than silently dropping it.
+The CLI also has a standardized emit vocabulary, but it is not part of the `Pass` trait and support varies by command. A command wired to the emit helper writes an `applicable: false` stub when a requested kind does not apply. `auto` accepts only the `recovery` emit. See [Standardized emits](./passes.md#standardized-emits).
 
 ## The four pillars
 
@@ -50,6 +53,6 @@ Each pass also exposes a standardized set of emits (`source`, `disasm`, `ast`, `
 
 ## Determinism is a design constraint, not a feature
 
-The entire architecture exists to make output reproducible. There is no model in the decompile path, and no randomness in it either: the only generator in shipped code produces the ephemeral key for opt-in redaction (`Redactor::with_random_key` in `crates/disrobe-core/src/recon/redact.rs`), which must not be reproducible or the redaction would be reversible, and its `with_key` sibling derives a stable key when you do want repeatable output. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed (BLAKE3) rather than timestamp-addressed, so a cache hit is provably the same bytes. This is what makes `disrobe` output usable as a forensic baseline and as a `disrobe diff` input across versions.
+The recovery architecture is designed for reproducible output. No model runs in the decompile path, and recovery output does not depend on randomness. The only generator in shipped code produces the ephemeral key for opt-in redaction (`Redactor::with_random_key` in `crates/disrobe-core/src/recon/redact.rs`). That key must vary or the redaction would be reversible. Its `with_key` sibling derives a stable key when repeatable redaction is required. Timing tokens are scrubbed from golden outputs so that two runs hash identically. The `.dr` envelope is content-addressed with BLAKE3 rather than timestamp-addressed, so a cache hit identifies the same bytes. This makes `disrobe` output usable as a forensic baseline and as a `disrobe diff` input across versions.
 
-This is proven across real machines, not just within one process: each of the `test` job's three OS legs (Linux, macOS, Windows) runs the real CLI against the same corpus fixtures, and the downstream `determinism-cross-platform` job hashes the real recovered output with BLAKE3 and fails the build if any two operating systems disagree. A companion check on a single leg runs the same fixtures through `disrobe auto`'s batch runner, the one code path in the CLI that actually spreads work across a multi-worker thread pool, at `--jobs 1` and `--jobs 4`, and confirms the recovered bytes are identical either way. See `crates/disrobe-cli/tests/determinism_cross_platform.rs` and the `determinism-cross-platform` job in `.github/workflows/ci.yml`.
+The committed cross-platform gate exercises three real fixtures. Each of the `test` job's Linux, macOS, and Windows legs runs the CLI against those fixtures, and the downstream `determinism-cross-platform` job hashes the recovered output with BLAKE3 and fails if the operating systems disagree. A companion check runs the same fixtures through the batch path at `--jobs 1` and `--jobs 4`. These checks establish determinism for that population; they do not turn three fixtures into a claim about every input. See `crates/disrobe-cli/tests/determinism_cross_platform.rs` and the `determinism-cross-platform` job in `.github/workflows/ci.yml`.

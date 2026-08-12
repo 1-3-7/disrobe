@@ -1,20 +1,20 @@
 # The `.dr` envelope
 
-The `.dr` envelope is `disrobe`'s content-addressed wire format. Every recovered artifact can be persisted as one, and the chain runner uses envelopes internally to pass work between stages. The format is designed for one thing above all: **deterministic, verifiable, offline-composable caching**.
+The `.dr` envelope is `disrobe`'s content-addressed IR wire format. A caller can persist a supported artifact as one, inspect or verify it without running a recovery pass, and pass it to consumers that accept its rung. The chain runner uses `disrobe-core::Artifact` between stages and writes separate `chain.json` and `recovery.json` records; it does not require every stage to become a `.dr` file.
 
 ## Anatomy
 
 A `.dr` envelope has three parts:
 
-1. **Hot payload (rkyv).** The primary data, serialized with rkyv 0.8 for zero-copy access. An envelope can be `mmap`-ed and the payload read without a deserialize pass, measured at roughly 21 ns to "deserialize" a cached envelope, because there is effectively nothing to deserialize.
+1. **Hot payload (rkyv).** The primary typed IR data, serialized with rkyv 0.8. The mmap reader validates the header, declared lengths, and root hash before exposing the archived payload for zero-copy access.
 2. **Cold sidecar (postcard).** Secondary metadata serialized with postcard, kept out of the hot path so the common case stays fast.
-3. **BLAKE3 root hash.** A content hash over the payload that is the envelope's identity. Two envelopes with the same root hash are byte-identical by construction.
+3. **BLAKE3 root hash.** A content hash over both the hot and cold bytes. Equal roots identify equal payload and sidecar bytes. The root does not include the header fields, so it is not by itself a claim that two complete envelope files are byte-identical.
 
-Every envelope also carries its schema **version**, its IR **rung** ([see the ladder](./ir-ladder.md)), its **capability set**, and a **provenance** record describing which pass produced it.
+The fixed header also carries the schema **version**, IR **rung** ([see the ladder](./ir-ladder.md)), flags, hot and cold lengths, and root hash. The postcard sidecar stores the producer, producer version, capability set, and string provenance map.
 
 ## Why content-addressed, not timestamp-addressed
 
-Because the identity is the BLAKE3 hash of the content, a cache hit is provably the same bytes, not "probably the same, modified at the same time." This is what makes `--no-cache` an optimization toggle rather than a correctness toggle: with the cache on or off, the output is identical. It is also what lets chains compose offline: a downstream pass can trust that an upstream envelope it pulled from cache is exactly what would have been produced live.
+The root binds the typed payload and sidecar to their bytes rather than to a path or timestamp. `disrobe envelope verify` recomputes that root and rejects a mismatch. Cache entries use a separate key derived from the operation, input bytes, and effective configuration, and the cache reader validates its own stored checksum before returning a hit.
 
 ## Working with envelopes
 
@@ -32,15 +32,15 @@ disrobe verify source.dr               # convenience alias
 # Structurally diff two envelopes
 disrobe envelope diff a.dr b.dr        # version, rung, flags, root hash, producer, capabilities, provenance
 
-# Validate a migration is sound before performing it
+# Validate one envelope against another envelope's version and rung
 disrobe envelope migrate-check source.dr target.dr
 ```
 
-`migrate-check` answers a precise question: can the source envelope be transcoded to the target envelope's `(version, rung)` such that a transcode path exists *and* every `Requires` capability remains satisfiable? It is how `disrobe` stays sound across schema bumps without silently dropping capability guarantees.
+`migrate-check` answers a precise question: can the source envelope be transcoded to the target envelope's `(version, rung)` through a registered path while every `Requires` capability remains satisfiable? It validates the proposed transition; it does not rewrite either input.
 
 ## Transcoding across schema versions
 
-`disrobe-ir` carries a transcode registry keyed on `(from_version, from_rung, to_version, to_rung)`. Identity transcodes are registered for every rung at every version, and real transcodes are registered for the migration paths `disrobe` supports. Transcoding never changes the rung implicitly: a transcode moves an envelope across schema versions while it stays at the same rung, which keeps the operation auditable.
+`disrobe-ir` carries a transcode registry keyed on `(from_version, from_rung, to_version, to_rung)`. Identity transcodes are registered for every current rung. A non-identity transition succeeds only when the caller requests a registered path and its capability requirements remain satisfiable; no implicit rung change occurs.
 
 ## Hardening
 

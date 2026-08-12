@@ -13,6 +13,7 @@
 | Renaming | `--rename` (hex idents to `var_N`) and `--rename-scope-aware` (oxc_semantic, conflict-checked) |
 | Bundlers | Webpack 4/5, Vite, Rollup, Rolldown, esbuild, Turbopack, Bun, Browserify, Parcel, SystemJS, AMD |
 | Packaged runtimes | V8 cached-data `.jsc` (bytenode), Node SEA blobs, nexe, nw.js zip-suffix, Electron `.asar` |
+| Compiled webview hosts | Electron ASAR plus embedded Tauri and Wails frontend trees through the direct `webview` command |
 
 ## Commands
 
@@ -24,7 +25,10 @@ disrobe js unbundle app.bundle.js --out src/ --emit sourcemap
 disrobe js v8 app.jsc
 disrobe js v8 app.asar --json-out report.json
 disrobe auto app.asar --out recovered/        # Electron and Node packaging chains run end to end
+disrobe webview desktop.exe --out frontend/    # Electron, Tauri, or Wails assets
 ```
+
+Use `js v8` to inspect a packaged JavaScript runtime and `webview` to recover the shipped frontend tree from a desktop binary. The standard CLI exposes `webview` directly rather than through `auto`. See [Webview desktop frontends](./webview.md).
 
 The default `deob` path runs string-array recovery and writes a `detection.json` sidecar naming the matched family. `--full` runs the complete obfuscator.io reversal pipeline and records per-stage statistics in a `pipeline.json` (string-array call sites inlined, dispatch blocks collapsed, opaque predicates folded, packed blocks expanded). `--legacy jsobfu|jscrambler-free|auto` targets the older families; `--unminify` adds the `!0`/`void 0`/string-concat peepholes.
 
