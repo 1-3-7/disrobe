@@ -397,6 +397,14 @@ fn loop_bodies_holding_a_try_keep_their_pinned_recovery() {
             let recovered: String = build_real_source(&original, &version, marshal_version)
                 .unwrap_or_else(|e| panic!("py{alias}/{label} decompile: {e}"));
 
+            if label == "async_for_try" && alias == "3.11" {
+                assert!(
+                    recovered.contains("async for x in xs:")
+                        && recovered.contains("except LookupError:"),
+                    "py{alias}/{label} lost the owned async-for try region:\n{recovered}"
+                );
+            }
+
             graded += 1;
 
             let recovered_path: PathBuf = scratch.join(format!("{label}.rec.{alias}.py"));
