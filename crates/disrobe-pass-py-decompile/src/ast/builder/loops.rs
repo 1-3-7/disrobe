@@ -50,7 +50,7 @@ fn find_async_for_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<L
         kind: LoopKind::AsyncFor,
         header: anext,
         body_start: store_idx,
-        body_end: back_edge,
+        body_end: end_async_for,
         back_edge,
         exit: (end_async_for + 1).min(hi),
         infinite: false,
@@ -1633,7 +1633,7 @@ pub(super) fn try_enclosed_by_loop(
         {
             return true;
         }
-        return matches!(loop_region.kind, LoopKind::For)
+        return matches!(loop_region.kind, LoopKind::For | LoopKind::AsyncFor)
             && loop_region.header <= region.try_start
             && region.try_start < loop_region.body_end
             && region.handler_start < loop_region.body_end;

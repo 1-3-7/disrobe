@@ -188,8 +188,8 @@ const CASES: &[LoopTryCase] = &[
     LoopTryCase {
         label: "async_for_try",
         source: "async def f(xs, sink):\n    async for x in xs:\n        try:\n            await sink(x)\n        except LookupError:\n            break\n",
-        equivalent_on: &[],
-        open_reason: "an async-for protected body still loses iterator ownership on every measured band",
+        equivalent_on: &["3.11"],
+        open_reason: "an async-for protected body still loses iterator ownership outside 3.11",
     },
     LoopTryCase {
         label: "for_in_for_try",
