@@ -1452,7 +1452,12 @@ pub(crate) fn export(
     Ok(())
 }
 
-pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+pub(crate) fn sbom(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    format: crate::SbomFormat,
+    timestamp: Option<String>,
+) -> miette::Result<()> {
     use disrobe_pass_native::{AuditableSbom, parse_auditable_section};
 
     use crate::cli::cyclonedx::{Component, CycloneDxBom, application_component, to_pretty_json};
@@ -1469,23 +1474,49 @@ pub(crate) fn sbom(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
 
     let root: Component =
         application_component(stem.clone(), sha256_hex(&bytes), blake3_hex(&bytes));
-    let bom: CycloneDxBom = CycloneDxBom::from_crates(None, Some(root), &sbom.crates)
+    if let Some(created) = timestamp.as_deref() {
+        crate::cli::structured_document::validate_utc_timestamp(created)
+            .map_err(|error| miette::miette!("DR-NATIVE-0067: document timestamp: {error}"))?;
+    }
+    let bom: CycloneDxBom = CycloneDxBom::from_crates(timestamp.clone(), Some(root), &sbom.crates)
         .map_err(|error| miette::miette!("DR-NATIVE-0065: {error}"))?;
 
+    let (format_label, default_extension, buf): (&str, &str, Vec<u8>) = match format {
+        crate::SbomFormat::Cyclonedx => (
+            "CycloneDX 1.5",
+            "cyclonedx.json",
+            to_pretty_json(&bom)
+                .map_err(|error| miette::miette!("DR-NATIVE-0063: serialize: {error}"))?,
+        ),
+        crate::SbomFormat::Spdx => {
+            let created: &str = timestamp.as_deref().ok_or_else(|| {
+                miette::miette!(
+                    "DR-NATIVE-0066: SPDX 2.3 output requires --timestamp YYYY-MM-DDTHH:MM:SSZ"
+                )
+            })?;
+            let document: crate::cli::spdx::SpdxDocument =
+                crate::cli::spdx::SpdxDocument::from_components(&stem, created, &bom.components)
+                    .map_err(|error| miette::miette!("DR-NATIVE-0067: SPDX 2.3: {error}"))?;
+            (
+                "SPDX 2.3",
+                "spdx.json",
+                crate::cli::spdx::to_pretty_json(&document)
+                    .map_err(|error| miette::miette!("DR-NATIVE-0063: serialize: {error}"))?,
+            )
+        }
+    };
     let out_path: PathBuf =
-        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.cyclonedx.json")));
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}.{default_extension}")));
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-NATIVE-0062: cannot create out dir: {e}"))?;
     }
-    let buf: Vec<u8> = to_pretty_json(&bom)
-        .map_err(|error| miette::miette!("DR-NATIVE-0063: serialize: {error}"))?;
     std::fs::write(&out_path, buf)
         .map_err(|e| miette::miette!("DR-NATIVE-0064: cannot write sbom: {e}"))?;
 
     println!("native sbom: OK");
     println!("  input:        {}", input.display());
-    println!("  format:       CycloneDX 1.5");
+    println!("  format:       {format_label}");
     println!("  components:   {}", bom.components.len());
     println!("  wrote:        {}", out_path.display());
     Ok(())

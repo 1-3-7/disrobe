@@ -65,12 +65,12 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 | `disrobe native entropy <bin>` | 4KB sliding-window Shannon entropy; ASCII heat-strip + byte histogram + packed-region runs. `--format text\|json\|svg` (default `text`), `--svg <out>` for a dark-theme entropy map with section overlays. |
 | `disrobe native signatures <bin>` | Crypto-constant fingerprints (AES, SHA, ChaCha20). `--flirt <sig>` to match a FLIRT DB. |
 | `disrobe native fingerprint <bin>` | Aggregate crypto-constant + FLIRT + string-xref sidecar at `.disrobe/fingerprints/<stem>.json`. `--flirt <sig>`. |
-| `disrobe native sbom <bin>` | CycloneDX 1.5 SBOM from cargo-auditable metadata embedded in the binary. |
+| `disrobe native sbom <bin>` | Emit a CycloneDX 1.5 SBOM from embedded cargo-auditable metadata. Pass `--format spdx --timestamp YYYY-MM-DDTHH:MM:SSZ` for SPDX 2.3 JSON. Both formats use the same component discovery result. SPDX output records the application and Cargo packages, their checksums and package URLs, and `CONTAINS` relationships. Unknown supplier and licence fields are omitted. |
 | `disrobe native graph <bin>` | Import/export table as Graphviz DOT. |
 | `disrobe query <bin\|.dr> <q...>` | Queryable IR: `functions`, `calls-to <sym>`, `xrefs-to <sym>`, `string-decoders`, `complexity-over <n>`, `capability <network\|crypto\|filesystem\|process>`. Accepts a raw binary or a Disasm- or Mir-rung `.dr` envelope. |
 | `disrobe capabilities <bin\|.dr>` | Rule engine over the IR, mapping behaviors to MITRE ATT&CK + MBC with per-match evidence. |
 | `disrobe taint <input>` | Track a value from source calls to sink calls across the normalized IR (native / wasm / JVM / Dalvik / CIL / ABC / Ruby / Lua / BEAM / `.pyc` / `.dr`). `--source <SYM>` / `--sink <SYM>` override the built-in source/sink sets (repeatable). With `--cfg`, `--dfg` or a pack that names them it also writes the control-flow and data-flow metadata categories; see [metadata sidecar](../llm-sidecar.md#control-flow-and-data-flow). |
-| `disrobe vulnmatch <input>` | Match reachability-aware vulnerability rules against a PE, ELF, Mach-O, COFF, or Disasm/Mir-rung `.dr` envelope while preserving `reachable`, `reachability-unknown`, `present`, and `confirmed` states. |
+| `disrobe vulnmatch <input>` | Match reachability-aware vulnerability rules against a PE, ELF, Mach-O, COFF, or Disasm/Mir-rung `.dr` envelope while preserving `reachable`, `reachability-unknown`, `present`, and `confirmed` states. Pass `--openvex --author <IDENTITY> --timestamp YYYY-MM-DDTHH:MM:SSZ` to emit OpenVEX 0.2.0 JSON. Reachable and confirmed findings map to `affected`; a proven unreachable finding maps to `not_affected`; all unresolved states map to `under_investigation`. The command never emits `fixed` because static reachability analysis does not prove remediation. |
 
 ## Other languages
 

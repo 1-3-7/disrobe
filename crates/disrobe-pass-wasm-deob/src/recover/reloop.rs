@@ -8,6 +8,7 @@ type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
 
 const NODE_LIMIT: usize = 512;
 const RENDER_GUARD: usize = 4096;
+const TRANSITION_INSTRUCTION_LIMIT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReloopOutcome {
@@ -323,6 +324,9 @@ fn classify_case(func: &LocalFunction, body: &Body, slot: StateSlot) -> Option<N
     }
 
     let stripped: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(body);
+    if let Some(node) = classify_select_conditional(stripped, slot) {
+        return Some(node);
+    }
     let (last, head): (
         &(Instr, walrus::ir::InstrLocId),
         &[(Instr, walrus::ir::InstrLocId)],
@@ -359,6 +363,99 @@ fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], slot: StateSlot) 
         cond: Vec::new(),
         trans: Trans::Goto(next),
     })
+}
+
+fn classify_select_conditional(
+    stripped: &[(Instr, walrus::ir::InstrLocId)],
+    slot: StateSlot,
+) -> Option<Node> {
+    if stripped.len() > TRANSITION_INSTRUCTION_LIMIT {
+        return None;
+    }
+    let store_index: usize = stripped.len().checked_sub(1)?;
+    let select_index: usize = store_index.checked_sub(1)?;
+    if !matches!(stripped.get(select_index)?.0, Instr::Select(_)) {
+        return None;
+    }
+    let store: &Instr = &stripped.get(store_index)?.0;
+    let prefix: &[(Instr, walrus::ir::InstrLocId)] = stripped.get(..select_index)?;
+    let (anchor, then_state, else_state): (usize, i32, i32) =
+        prefix.windows(3).enumerate().rev().find_map(
+            |(index, window): (usize, &[(Instr, walrus::ir::InstrLocId)])| {
+                select_transition_candidate(index, window, store, slot)
+            },
+        )?;
+    let condition_start: usize = anchor.checked_add(3)?;
+    let work: Body = stripped.get(..anchor)?.to_vec();
+    let cond: Body = stripped.get(condition_start..select_index)?.to_vec();
+    if cond.is_empty()
+        || !is_flat(&work)
+        || !is_flat(&cond)
+        || !condition_has_isolated_value_stack(&cond)
+    {
+        return None;
+    }
+    Some(Node {
+        work,
+        cond,
+        trans: Trans::Cond {
+            then_state,
+            else_state,
+        },
+    })
+}
+
+fn condition_has_isolated_value_stack(condition: &Body) -> bool {
+    let mut height: usize = 0;
+    for (instr, _) in condition {
+        let (pops, pushes): (usize, usize) = match instr {
+            Instr::Const(_) | Instr::LocalGet(_) | Instr::GlobalGet(_) => (0, 1),
+            Instr::LocalSet(_) | Instr::GlobalSet(_) | Instr::Drop(_) => (1, 0),
+            Instr::LocalTee(_) | Instr::Unop(_) | Instr::Load(_) => (1, 1),
+            Instr::Binop(_) => (2, 1),
+            Instr::Select(_) => (3, 1),
+            _ => return false,
+        };
+        if height < pops {
+            return false;
+        }
+        height = height - pops + pushes;
+        if height > TRANSITION_INSTRUCTION_LIMIT {
+            return false;
+        }
+    }
+    height == 1
+}
+
+fn select_transition_candidate(
+    index: usize,
+    window: &[(Instr, walrus::ir::InstrLocId)],
+    store: &Instr,
+    slot: StateSlot,
+) -> Option<(usize, i32, i32)> {
+    let then_state: i32 = match_select_state_store(
+        &window.first()?.0,
+        &window.get(1)?.0,
+        &window.get(2)?.0,
+        store,
+        slot,
+    )?;
+    let else_state: i32 = i32_constant(&window.get(2)?.0)?;
+    Some((index, then_state, else_state))
+}
+
+fn match_select_state_store(
+    base_get: &Instr,
+    then_value: &Instr,
+    else_value: &Instr,
+    store: &Instr,
+    slot: StateSlot,
+) -> Option<i32> {
+    let _: i32 = i32_constant(else_value)?;
+    if !state_store_matches(base_get, store, slot) {
+        return None;
+    }
+    i32_constant(then_value)
 }
 
 fn classify_conditional(
@@ -447,22 +544,33 @@ fn match_state_store(
     store: &Instr,
     slot: StateSlot,
 ) -> Option<i32> {
+    if !state_store_matches(base_get, store, slot) {
+        return None;
+    }
+    i32_constant(const_val)
+}
+
+fn state_store_matches(base_get: &Instr, store: &Instr, slot: StateSlot) -> bool {
     let Instr::LocalGet(base) = base_get else {
-        return None;
-    };
-    let Instr::Const(c) = const_val else {
-        return None;
+        return false;
     };
     let Instr::Store(s) = store else {
-        return None;
+        return false;
     };
     if base.local != slot.base
         || s.arg.offset != slot.offset
         || !matches!(s.kind, StoreKind::I32 { .. })
     {
-        return None;
+        return false;
     }
-    match c.value {
+    true
+}
+
+const fn i32_constant(instr: &Instr) -> Option<i32> {
+    let Instr::Const(constant) = instr else {
+        return None;
+    };
+    match constant.value {
         Value::I32(v) => Some(v),
         _ => None,
     }

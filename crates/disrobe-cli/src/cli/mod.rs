@@ -73,6 +73,7 @@ pub(crate) mod native;
 pub(crate) mod native_match;
 pub(crate) mod nir_source;
 pub(crate) mod nuitka;
+pub(crate) mod openvex;
 pub(crate) mod output;
 pub(crate) mod pass_registry;
 #[cfg(feature = "chain")]
@@ -104,8 +105,10 @@ pub(crate) mod self_update;
 pub(crate) mod serve;
 #[cfg(feature = "shell")]
 pub(crate) mod shell;
+pub(crate) mod spdx;
 pub(crate) mod status;
 pub(crate) mod strings;
+pub(crate) mod structured_document;
 #[cfg(feature = "swift")]
 pub(crate) mod swift;
 pub(crate) mod taint;

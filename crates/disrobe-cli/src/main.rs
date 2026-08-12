@@ -11,7 +11,7 @@ mod cli;
 
 use std::path::PathBuf;
 
-use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use cli::annot::{self, AnnotCmd};
 #[cfg(feature = "jvm")]
@@ -796,6 +796,28 @@ enum Cmd {
             help = "native binary (PE/ELF/Mach-O/COFF) or a Disasm- or Mir-rung .dr envelope"
         )]
         input: PathBuf,
+        #[arg(
+            long = "osv-db",
+            value_name = "FILE",
+            help = "match installed Debian packages in an extracted root filesystem against one local OSV v1 vulnerability document"
+        )]
+        osv_db: Option<PathBuf>,
+        #[arg(long, help = "emit OpenVEX 0.2.0 JSON instead of the normal report")]
+        openvex: bool,
+        #[arg(
+            long,
+            value_name = "IDENTITY",
+            requires = "openvex",
+            help = "OpenVEX document author identity"
+        )]
+        author: Option<String>,
+        #[arg(
+            long,
+            value_name = "UTC",
+            requires = "openvex",
+            help = "OpenVEX issue time in canonical UTC form YYYY-MM-DDTHH:MM:SSZ"
+        )]
+        timestamp: Option<String>,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -1129,6 +1151,13 @@ enum GuardCmd {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum SbomFormat {
+    #[default]
+    Cyclonedx,
+    Spdx,
+}
+
 #[derive(Subcommand, Debug)]
 enum NativeCmd {
     #[command(
@@ -1297,7 +1326,7 @@ enum NativeCmd {
         flirt: Option<PathBuf>,
     },
     #[command(
-        about = "emit a CycloneDX 1.5 SBOM from an extracted artifact's embedded cargo-auditable dependency metadata"
+        about = "emit a CycloneDX 1.5 or SPDX 2.3 SBOM from an extracted artifact's embedded cargo-auditable dependency metadata"
     )]
     Sbom {
         #[arg(help = "input native binary with an embedded cargo-auditable section")]
@@ -1305,9 +1334,22 @@ enum NativeCmd {
         #[arg(
             short,
             long,
-            help = "output path for the SBOM JSON (default: ./out/<stem>.cyclonedx.json)"
+            help = "output path for the SBOM JSON (default: ./out/<stem>.<format>.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t,
+            help = "SBOM document format: cyclonedx or spdx"
+        )]
+        format: SbomFormat,
+        #[arg(
+            long,
+            value_name = "UTC",
+            help = "SPDX creation time in canonical UTC form YYYY-MM-DDTHH:MM:SSZ"
+        )]
+        timestamp: Option<String>,
     },
     #[command(
         about = "reconstruct compilable C++ headers from a Windows PDB's TPI/IPI type streams (UDTs, enums, typedefs, globals, functions)"
@@ -1761,7 +1803,12 @@ fn main() -> miette::Result<()> {
             } => native::entropy(input, out, format, svg),
             NativeCmd::Signatures { input, out, flirt } => native::signatures(input, out, flirt),
             NativeCmd::Fingerprint { input, out, flirt } => native::fingerprint(input, out, flirt),
-            NativeCmd::Sbom { input, out } => native::sbom(input, out),
+            NativeCmd::Sbom {
+                input,
+                out,
+                format,
+                timestamp,
+            } => native::sbom(input, out, format, timestamp),
             NativeCmd::PdbCxx { input, out } => native::pdb_cxx(input, out, fmt),
             NativeCmd::Graph { input, out } => native::graph(input, out),
             NativeCmd::Disasm {
@@ -1854,7 +1901,13 @@ fn main() -> miette::Result<()> {
             source,
             sink,
         } => taint::run(input, source, sink, fmt, &llm_flags),
-        Cmd::Vulnmatch { input } => vulnmatch::run(input, fmt),
+        Cmd::Vulnmatch {
+            input,
+            osv_db,
+            openvex,
+            author,
+            timestamp,
+        } => vulnmatch::run(input, osv_db, fmt, openvex, author, timestamp),
         #[cfg(feature = "chain")]
         Cmd::Auto {
             input,

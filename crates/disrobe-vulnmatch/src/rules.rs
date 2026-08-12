@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::PredicateEvaluation;
 use crate::adapters::{AbstractArgument, DirectCall, ResolvedCallee};
+use crate::version::VersionScheme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,6 +97,14 @@ pub struct Rule {
     pub requires_source: Option<SourceClass>,
     #[serde(default)]
     pub arg_constraints: Vec<ArgPredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageRule {
+    pub id: String,
+    pub scheme: VersionScheme,
+    pub package: String,
+    pub constraint: String,
 }
 
 #[derive(Debug, Error)]

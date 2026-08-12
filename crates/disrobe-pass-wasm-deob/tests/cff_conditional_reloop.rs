@@ -101,6 +101,16 @@ fn assert_equivalent(reference: &mut Inst, candidate: &mut Inst, export: &str) {
     }
 }
 
+fn assert_distinguished(reference: &mut Inst, candidate: &mut Inst, export: &str) {
+    let distinguished: bool = battery()
+        .into_iter()
+        .any(|arg: i32| call_i32(reference, export, arg) != call_i32(candidate, export, arg));
+    assert!(
+        distinguished,
+        "the runtime battery must reject a conditional-transition mutation for `{export}`"
+    );
+}
+
 struct CondCase {
     clean: &'static str,
     obf: &'static str,
@@ -163,6 +173,36 @@ fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
         let obf_bytes: Vec<u8> = assemble(case.obf);
         assert_reloops_to_clean_behavior(&clean_bytes, &obf_bytes, case.export, case.obf);
     }
+}
+
+#[test]
+fn clang_select_transition_reloops_through_the_public_recovery_api() {
+    let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
+    let obf_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.obf.wasm");
+    assert_reloops_to_clean_behavior(
+        clean_bytes,
+        obf_bytes,
+        "classify_select",
+        "cff_cond_select.obf.wasm",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_select_successors() {
+    let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
+    let mutant_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.mutant.wasm");
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_select");
+}
+
+#[test]
+fn select_transition_that_consumes_candidate_values_remains_walled() {
+    let bytes: Vec<u8> = assemble_fixture("cff_select_stack_alias.obf.wat");
+    let recovered: RecoveredModule = recover_module(&bytes).expect("recover bounded stack alias");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
 }
 
 fn assert_fixture_reloops(clean: &str, obf: &str, export: &str) {

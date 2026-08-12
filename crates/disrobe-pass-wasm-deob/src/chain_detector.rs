@@ -571,6 +571,24 @@ mod tests {
     }
 
     #[test]
+    fn pass_run_surfaces_clang_select_state_recovery() {
+        let bytes: Vec<u8> = include_bytes!("../tests/fixtures/cff_cond_select.obf.wasm").to_vec();
+        let recovered: crate::recover::RecoveredModule =
+            recover_module(&bytes).expect("recover clang select-state cff");
+        assert_eq!(recovered.report.flattened_conditional_restructured, 1);
+        assert_eq!(recovered.report.flattened_dispatchers_walled, 0);
+
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let surfaced: Artifact = WASM_DEOB_PASS
+            .run(&artifact)
+            .expect("registered wasm pass must surface the conditional recovery");
+        assert_eq!(surfaced.rung, Rung::Surface);
+        let wat: &str = std::str::from_utf8(&surfaced.envelope).expect("surface wat is utf8");
+        assert!(wat.contains("\n    if\n"));
+        assert!(!wat.contains("br_table"));
+    }
+
+    #[test]
     fn pass_run_walls_honestly_when_flagged_family_recovers_nothing() {
         let mut module: walrus::Module = walrus::Module::default();
         for name in ["a", "b", "c", "d"] {

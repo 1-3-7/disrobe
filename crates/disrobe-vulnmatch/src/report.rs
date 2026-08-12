@@ -3,8 +3,10 @@ use std::fmt::Write;
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::{AbstractArgument, DirectCall, FunctionId};
+use crate::constraint::ConstraintError;
 use crate::rank::{FindingEvidence, FindingTier, RankedFinding};
 use crate::reach::PathWitness;
+use crate::version::{VersionError, VersionScheme};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -31,6 +33,72 @@ pub struct Finding {
 pub struct Report {
     pub findings: Vec<Finding>,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageVersion {
+    pub scheme: VersionScheme,
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PackageMatchIssue {
+    UnsupportedScheme { scheme: VersionScheme },
+    NonconformingConstraint { constraint: String },
+    InvalidVersion { value: String },
+    LimitExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "issue")]
+pub enum PackageMatchStatus {
+    Affected,
+    Unaffected,
+    Indeterminate(PackageMatchIssue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageRuleMatch {
+    pub rule_id: String,
+    pub package: PackageVersion,
+    pub status: PackageMatchStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageMatchReport {
+    pub matches: Vec<PackageRuleMatch>,
+    pub complete: bool,
+    pub issue: Option<PackageMatchIssue>,
+}
+
+impl PackageMatchIssue {
+    pub(crate) fn from_constraint(error: ConstraintError, constraint: &str) -> Self {
+        match error {
+            ConstraintError::Version(VersionError::UnsupportedScheme { scheme }) => {
+                Self::UnsupportedScheme { scheme }
+            }
+            ConstraintError::Version(VersionError::Invalid { .. } | VersionError::Empty { .. })
+            | ConstraintError::Empty
+            | ConstraintError::Nonconforming { .. } => Self::NonconformingConstraint {
+                constraint: constraint.to_owned(),
+            },
+            ConstraintError::Version(VersionError::TooLong { .. })
+            | ConstraintError::TooLong { .. }
+            | ConstraintError::TooManyPredicates { .. } => Self::LimitExceeded,
+        }
+    }
+
+    pub(crate) fn from_version(error: VersionError, version: &str) -> Self {
+        match error {
+            VersionError::UnsupportedScheme { scheme } => Self::UnsupportedScheme { scheme },
+            VersionError::TooLong { .. } => Self::LimitExceeded,
+            VersionError::Empty { .. } | VersionError::Invalid { .. } => Self::InvalidVersion {
+                value: version.to_owned(),
+            },
+        }
+    }
 }
 
 impl Report {

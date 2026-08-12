@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
@@ -10,8 +11,9 @@ use disrobe_query::{CallGraph, Module, disasm_to_nir};
 use disrobe_taint::{TaintConfig, TaintReport};
 use disrobe_vulnmatch::{
     Budget, Finding, FindingTier, FunctionId, PathWitness, QueryCallGraphView, Report, RuleStore,
-    Severity, TaintReportOracle, taint_config_for_rules,
+    Severity, TaintReportOracle, match_debian_rootfs, taint_config_for_rules,
 };
+use sha2::{Digest, Sha256};
 
 use crate::cli::output::{self, OutputFormat};
 use crate::cli::sarif::{
@@ -23,11 +25,13 @@ const MAX_ANALYSIS_NODES: usize = 50_000;
 const MAX_ANALYSIS_DEPTH: usize = 128;
 const MAX_ANALYSIS_STEPS: usize = 2_000_000;
 const INCOMPLETE_ANALYSIS_RULE_ID: &str = "disrobe.vulnmatch.analysis-incomplete";
+const MAX_VULNMATCH_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug)]
 struct LoadedModule {
     query: Module,
     nir: NirModule,
+    product_sha256: String,
 }
 
 #[derive(Debug)]
@@ -36,20 +40,107 @@ struct AnalysisResult {
     budget: Budget,
 }
 
-pub(crate) fn run(input: PathBuf, fmt: OutputFormat) -> miette::Result<()> {
+pub(crate) fn run(
+    input: PathBuf,
+    osv_db: Option<PathBuf>,
+    fmt: OutputFormat,
+    openvex: bool,
+    author: Option<String>,
+    timestamp: Option<String>,
+) -> miette::Result<()> {
+    if let Some(database) = osv_db {
+        if openvex {
+            return Err(miette::miette!(
+                "DR-CLI-0870: --osv-db cannot be combined with --openvex"
+            ));
+        }
+        return run_offline_package_match(&input, &database, fmt);
+    }
     let module: LoadedModule = load_module(&input)?;
     let result: AnalysisResult = analyze_module(&module);
+    if openvex {
+        if fmt != OutputFormat::Text {
+            return Err(miette::miette!(
+                "DR-CLI-0861: --openvex cannot be combined with --json, --ndjson, or --sarif"
+            ));
+        }
+        let author: &str = author
+            .as_deref()
+            .ok_or_else(|| miette::miette!("DR-CLI-0862: --openvex requires --author IDENTITY"))?;
+        let timestamp: &str = timestamp.as_deref().ok_or_else(|| {
+            miette::miette!("DR-CLI-0863: --openvex requires --timestamp YYYY-MM-DDTHH:MM:SSZ")
+        })?;
+        let document: crate::cli::openvex::OpenVexDocument =
+            crate::cli::openvex::OpenVexDocument::from_report(
+                author,
+                timestamp,
+                &module.product_sha256,
+                &result.report,
+            )
+            .map_err(|error| miette::miette!("DR-CLI-0864: OpenVEX 0.2.0: {error}"))?;
+        let bytes: Vec<u8> = crate::cli::openvex::to_pretty_json(&document)
+            .map_err(|error| miette::miette!("DR-CLI-0865: OpenVEX 0.2.0: {error}"))?;
+        let stdout: std::io::Stdout = std::io::stdout();
+        let mut output: std::io::StdoutLock<'_> = stdout.lock();
+        output
+            .write_all(&bytes)
+            .and_then(|()| output.write_all(b"\n"))
+            .map_err(|error| miette::miette!("DR-CLI-0866: write OpenVEX output: {error}"))?;
+        return Ok(());
+    }
     match fmt {
         OutputFormat::Sarif => output::emit_sarif_log(&report_to_sarif(&input, &result.report)),
         _ => output::emit(fmt, &result.report, || render_text(&input, &result)),
     }
 }
 
+fn run_offline_package_match(
+    rootfs: &Path,
+    database: &Path,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    if fmt == OutputFormat::Sarif {
+        return Err(miette::miette!(
+            "DR-CLI-0862: offline package vulnerability matching supports text, JSON, and NDJSON output"
+        ));
+    }
+    let report: disrobe_vulnmatch::OfflineMatchReport = match_debian_rootfs(rootfs, database)
+        .map_err(|error: disrobe_vulnmatch::OfflineMatchError| {
+            miette::miette!("DR-CLI-0861: offline vulnerability match failed: {error}")
+        })?;
+    output::emit(fmt, &report, || {
+        println!("vulnmatch {}", rootfs.display());
+        println!("database schema: {}", report.database_schema_version);
+        println!("database modified: {}", report.database_modified);
+        println!("ecosystem: {}", report.ecosystem);
+        println!("packages: {}", report.packages_scanned);
+        println!("findings: {}", report.findings.len());
+        for finding in &report.findings {
+            println!(
+                "vulnerability: {} | package: {} | version: {} | architecture: {} | purl: {}",
+                finding.vulnerability_id,
+                finding.package.name,
+                finding.package.version,
+                finding.package.architecture,
+                finding.package.purl
+            );
+        }
+        println!("issues: {}", report.issues.len());
+        for issue in &report.issues {
+            println!(
+                "issue: {:?} | vulnerability: {} | package: {} | detail: {}",
+                issue.kind, issue.vulnerability_id, issue.package_name, issue.detail
+            );
+        }
+        println!("complete: {}", report.complete);
+    })
+}
+
 fn load_module(input: &Path) -> miette::Result<LoadedModule> {
-    let bytes: Vec<u8> = std::fs::read(input)
-        .map_err(|e| miette::miette!("DR-CLI-0855: cannot read {}: {e}", input.display()))?;
+    let bytes: Vec<u8> = read_input(input)?;
+    let product_sha256: String = format!("{:x}", Sha256::digest(&bytes));
     if let Ok(env) = Envelope::decode(&bytes) {
-        return module_from_envelope(&env, input);
+        return module_from_envelope(&env, input, product_sha256);
     }
     let payload: DisasmPayload = build_disasm_payload(&bytes).map_err(|e| {
         miette::miette!(
@@ -60,10 +151,15 @@ fn load_module(input: &Path) -> miette::Result<LoadedModule> {
     Ok(LoadedModule {
         query: Module::from_disasm(&payload),
         nir: disasm_to_nir(&payload),
+        product_sha256,
     })
 }
 
-fn module_from_envelope(env: &Envelope, input: &Path) -> miette::Result<LoadedModule> {
+fn module_from_envelope(
+    env: &Envelope,
+    input: &Path,
+    product_sha256: String,
+) -> miette::Result<LoadedModule> {
     let query: Module = disrobe_query::module_from_envelope(env).map_err(|e| {
         miette::miette!(
             "DR-CLI-0857: {} is a .dr envelope but not queryable: {e}",
@@ -93,7 +189,62 @@ fn module_from_envelope(env: &Envelope, input: &Path) -> miette::Result<LoadedMo
             ));
         }
     };
-    Ok(LoadedModule { query, nir })
+    Ok(LoadedModule {
+        query,
+        nir,
+        product_sha256,
+    })
+}
+
+fn read_input(input: &Path) -> miette::Result<Vec<u8>> {
+    let file: std::fs::File = std::fs::File::open(input).map_err(|error| {
+        miette::miette!("DR-CLI-0855: cannot read {}: {error}", input.display())
+    })?;
+    let metadata: std::fs::Metadata = file.metadata().map_err(|error| {
+        miette::miette!(
+            "DR-CLI-0855: cannot read {} metadata: {error}",
+            input.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(miette::miette!(
+            "DR-CLI-0855: cannot read {}: path is not a regular file",
+            input.display()
+        ));
+    }
+    if metadata.len() > MAX_VULNMATCH_INPUT_BYTES {
+        return Err(miette::miette!(
+            "DR-CLI-0855: cannot read {}: file exceeds the {MAX_VULNMATCH_INPUT_BYTES}-byte limit",
+            input.display()
+        ));
+    }
+    let capacity: usize = usize::try_from(metadata.len()).map_err(|_| {
+        miette::miette!(
+            "DR-CLI-0855: cannot read {}: file size cannot be represented in memory",
+            input.display()
+        )
+    })?;
+    let read_limit: u64 = MAX_VULNMATCH_INPUT_BYTES
+        .checked_add(1)
+        .ok_or_else(|| miette::miette!("DR-CLI-0855: vulnmatch input limit overflowed"))?;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.try_reserve_exact(capacity).map_err(|_| {
+        miette::miette!(
+            "DR-CLI-0855: cannot read {}: allocation of {capacity} bytes failed",
+            input.display()
+        )
+    })?;
+    let mut limited: std::io::Take<std::fs::File> = file.take(read_limit);
+    limited.read_to_end(&mut bytes).map_err(|error| {
+        miette::miette!("DR-CLI-0855: cannot read {}: {error}", input.display())
+    })?;
+    if bytes.len() > capacity {
+        return Err(miette::miette!(
+            "DR-CLI-0855: cannot read {}: file changed while reading",
+            input.display()
+        ));
+    }
+    Ok(bytes)
 }
 
 fn analyze_module(module: &LoadedModule) -> AnalysisResult {
