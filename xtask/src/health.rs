@@ -453,15 +453,17 @@ fn check_dependency_table_for_internal_version_pins(
         let Some(dependency_dir) = normalized_dependency_dir(member_dir, path) else {
             continue;
         };
-        if !internal_dirs.contains_key(&dependency_dir) {
+        let Some(internal_version): Option<&String> = internal_dirs.get(&dependency_dir) else {
             continue;
-        }
+        };
         let disables_workspace_defaults: bool = table
             .get("default-features")
             .and_then(toml::Value::as_bool)
             .is_some_and(|enabled: bool| !enabled)
             && workspace_default_enabled_dirs.contains(&dependency_dir);
-        if table.get("version").is_none() && disables_workspace_defaults {
+        if disables_workspace_defaults
+            && table.get("version").and_then(toml::Value::as_str) == Some(internal_version.as_str())
+        {
             continue;
         }
         let check: &'static str = if table.get("version").and_then(toml::Value::as_str).is_some() {
@@ -835,8 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn local_path_can_disable_workspace_defaults_without_a_version() -> Result<(), toml::de::Error>
-    {
+    fn versioned_local_path_can_disable_workspace_defaults() -> Result<(), toml::de::Error> {
         let report: Report = internal_version_report(
             r#"
                 [package]
@@ -844,10 +845,31 @@ mod tests {
                 version = "0.10.5"
 
                 [dependencies]
-                disrobe-a = { path = "../disrobe-a", default-features = false }
+                disrobe-a = { path = "../disrobe-a", version = "0.10.5", default-features = false }
             "#,
         )?;
         assert!(report.findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn local_path_disabling_defaults_rejects_a_wrong_version() -> Result<(), toml::de::Error> {
+        let report: Report = internal_version_report(
+            r#"
+                [package]
+                name = "disrobe-b"
+                version = "0.10.5"
+
+                [dependencies]
+                disrobe-a = { path = "../disrobe-a", version = "0.10.4", default-features = false }
+            "#,
+        )?;
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding: &Finding| finding.check == "internal-version-pin")
+        );
         Ok(())
     }
 }

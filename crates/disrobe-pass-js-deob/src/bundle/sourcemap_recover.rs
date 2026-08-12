@@ -975,8 +975,7 @@ mod tests {
 
     #[test]
     fn decodes_inline_percent_data_url_with_literal_plus() {
-        let json: &str =
-            r#"{"version":3,"sources":["a.js"],"sourcesContent":["+w=="],"names":[],"mappings":""}"#;
+        let json: &str = r#"{"version":3,"sources":["a.js"],"sourcesContent":["+w=="],"names":[],"mappings":""}"#;
         let encoded: String = json.replace('"', "%22");
         let url: String = format!("data:application/json,{encoded}");
         let report: RecoveryReport =

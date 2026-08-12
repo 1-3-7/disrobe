@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 disrobe-pass-py-disasm = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", default-features = false }
+disrobe-pass-py-disasm = { path = "../disrobe-pass-py-disasm", version = "0.10.5", default-features = false }
 
 [features]
 default = []

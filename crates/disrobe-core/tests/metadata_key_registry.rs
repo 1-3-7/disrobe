@@ -2148,13 +2148,14 @@ fn metadata_map_aliases_apply_across_source_files() {
 
 #[test]
 fn comments_and_literals_do_not_create_metadata_usage_or_accesses() {
-    let source: &str = r####"
-        // node.metadata.insert(build_key(), value);
-        /* metadata_keys::set_comma_list(&mut node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY, &["cff"]); */
-        const NORMAL: &str = "node.metadata.clone(); metadata_keys::get_comma_list(&node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY);";
-        const RAW: &str = r###"node.metadata.into_values(); metadata_keys::set_comma_list(&mut node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY, &[])"###;
-        fn live(node: &mut Node) { metadata_keys::get_comma_list(&node.metadata, keys::LIVE_KEY); }
-    "####;
+    let source: &str = concat!(
+        "\n        ",
+        "// node.metadata.insert(build_key(), value);\n        ",
+        "/* metadata_keys::set_comma_list(&mut node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY, &[\"cff\"]); */\n        ",
+        "const NORMAL: &str = \"node.metadata.clone(); metadata_keys::get_comma_list(&node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY);\";\n        ",
+        "const RAW: &str = r###\"node.metadata.into_values(); metadata_keys::set_comma_list(&mut node.metadata, keys::ANTI_RECOVERED_TECHNIQUES_KEY, &[])\"###;\n        ",
+        "fn live(node: &mut Node) { metadata_keys::get_comma_list(&node.metadata, keys::LIVE_KEY); }\n    "
+    );
     assert!(probe_metadata_key_accesses(source).is_empty());
     let usage: BTreeMap<String, KeyUsage> = key_usage_in_sources([source]);
     assert_eq!(usage.len(), 1);

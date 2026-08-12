@@ -3,6 +3,7 @@ use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(feature = "dotnet")]
 use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
 use zip::write::{FileOptions, ZipWriter};
 
@@ -1872,6 +1873,7 @@ fn wasm_lift_gc_emits_reconstructed_gc_struct_and_array_types() {
 }
 
 #[test]
+#[cfg(feature = "dotnet")]
 fn dotnet_recover_iterators_surfaces_the_move_next_bodies() {
     let dll: PathBuf = corpus_path("dotnet/constructs/Constructs.dll");
     assert!(
@@ -1900,6 +1902,7 @@ fn dotnet_recover_iterators_surfaces_the_move_next_bodies() {
 }
 
 #[test]
+#[cfg(feature = "dotnet")]
 fn dotnet_recover_iterators_json_carries_yield_and_await_bodies() {
     let dll: PathBuf = corpus_path("dotnet/constructs/Constructs.dll");
     assert!(
@@ -1938,6 +1941,7 @@ fn dotnet_recover_iterators_json_carries_yield_and_await_bodies() {
 }
 
 #[test]
+#[cfg(feature = "dotnet")]
 fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {
     let body: &str = concat!(
         "private void MoveNext()\n",
@@ -1950,6 +1954,7 @@ fn sentinel_plus_return_is_not_an_unlowered_compiler_construct_refusal() {
 }
 
 #[test]
+#[cfg(feature = "dotnet")]
 fn dotnet_recover_iterators_json_refuses_count_with_async_cached_lambda_field() {
     let dll: PathBuf = corpus_path("dotnet/megafile/EdgeCases.baseline.dll");
     assert!(
