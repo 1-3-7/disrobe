@@ -439,12 +439,45 @@ fn verify_json(path: &Path, value: &Value) -> Result<()> {
 fn verify_text(path: &Path, expected: &str) -> Result<()> {
     match read_bounded_string(path, MAX_TEXT_BYTES) {
         Ok(on_disk) if on_disk == expected => Ok(()),
-        Ok(_) => bail!(
-            "{} is stale; run `cargo run -p disrobe-bench-head-to-head`",
-            path.display()
-        ),
+        Ok(on_disk) => {
+            let (line, committed, generated): (usize, String, String) =
+                first_text_difference(&on_disk, expected).unwrap_or_else(|| {
+                    (
+                        0,
+                        bounded_text_fragment(&on_disk),
+                        bounded_text_fragment(expected),
+                    )
+                });
+            bail!(
+                "{} is stale; first mismatch at line {line}: committed={committed:?}, generated={generated:?}; run `cargo run -p disrobe-bench-head-to-head`",
+                path.display()
+            )
+        }
         Err(err) => bail!("{} unreadable: {err}", path.display()),
     }
+}
+
+fn first_text_difference(committed: &str, generated: &str) -> Option<(usize, String, String)> {
+    let mut committed_lines: std::str::Split<'_, char> = committed.split('\n');
+    let mut generated_lines: std::str::Split<'_, char> = generated.split('\n');
+    let mut line: usize = 1;
+    loop {
+        let committed_line: Option<&str> = committed_lines.next();
+        let generated_line: Option<&str> = generated_lines.next();
+        if committed_line != generated_line {
+            return Some((
+                line,
+                committed_line.map_or_else(|| "<end>".to_owned(), bounded_text_fragment),
+                generated_line.map_or_else(|| "<end>".to_owned(), bounded_text_fragment),
+            ));
+        }
+        committed_line?;
+        line = line.saturating_add(1);
+    }
+}
+
+fn bounded_text_fragment(value: &str) -> String {
+    value.chars().take(256).collect()
 }
 
 #[cfg(test)]
@@ -470,6 +503,23 @@ mod tests {
                 only: Some("apk-jadx-cfr".to_owned()),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn stale_measurement_reports_the_first_bounded_difference() -> Result<()> {
+        let scratch: ScratchDir = ScratchDir::create("disrobe_h2h_stale_diagnostic")?;
+        let path: PathBuf = scratch.path().join("measurement.json");
+        write_file(&path, "first\ncommitted row\n")?;
+        let generated: String = format!("first\n{}\n", "generated row".repeat(64));
+        let error: String = verify_text(&path, &generated)
+            .err()
+            .ok_or_else(|| eyre::eyre!("different measurements must fail"))?
+            .to_string();
+        assert!(error.contains("first mismatch at line 2"));
+        assert!(error.contains("committed=\"committed row\""));
+        assert!(error.contains("generated=\"generated rowgenerated row"));
+        assert!(error.len() < 1_024);
         Ok(())
     }
 

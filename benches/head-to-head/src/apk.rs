@@ -2835,7 +2835,7 @@ fn open_cfr_source(root: &Path, path: &Path) -> Result<File, String> {
         .metadata()
         .map_err(|error| format!("could not inspect opened cfr source: {error}"))?;
     let after: Metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| format!("could not restat cfr source: {error}"))?;
+        .map_err(|error| format!("could not inspect cfr source again: {error}"))?;
     let canonical_after: PathBuf = std::fs::canonicalize(path)
         .map_err(|error| format!("could not resolve reopened cfr source: {error}"))?;
     let reparse_after: bool = cfr_path_contains_reparse_component(root, path)?;

@@ -712,7 +712,7 @@ mod tests {
         std::fs::write(&path, b"class First {}")?;
         std::fs::write(&replacement, b"class Replacement {}")?;
         let opened: File = File::open(&path)?;
-        std::fs::rename(&replacement, &path.with_extension("replacement"))?;
+        std::fs::rename(&replacement, path.with_extension("replacement"))?;
         std::fs::write(&path, b"class Replacement {}")?;
         assert!(!opened_file_matches_path(&path, &opened)?);
         let _: io::Result<()> = std::fs::remove_dir_all(&root);
