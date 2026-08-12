@@ -1,48 +1,186 @@
-use crate::expr::{Expr, Width, equivalent_exhaustive, equivalent_exhaustive_runnable};
+use crate::expr::{BinOp, Expr, UnOp, Width};
 use crate::linear_solver::solve_linear_mba;
 use crate::poly_mba::solve_polynomial_mba;
 use crate::rewrite::canonicalize;
+use crate::simplify::Verification;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_MIXED_MBA_VARS: u32 = 6;
+pub const MAX_MIXED_MBA_NODES: usize = 16_384;
+pub const MAX_MIXED_MBA_WORK: usize = 1_024;
+
+const MAX_MIXED_RECURSION_DEPTH: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MixedRefusal {
+    DepthLimit { depth: usize, limit: usize },
+    NodeLimit { nodes: usize, limit: usize },
+    WorkLimit { required: usize, limit: usize },
+    VariableLimit { required: u32, limit: u32 },
+    InvalidSlice { lo: u32, hi: u32 },
+    Memory,
+    BackSubstitution,
+    Unproven,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MixedSimplification {
+    Simplified {
+        expression: Expr,
+        verification: Verification,
+    },
+    Unchanged,
+    Refused(MixedRefusal),
+}
 
 #[must_use]
 pub fn simplify_mixed(expr: &Expr, width: Width) -> Option<Expr> {
-    if expr.depth() > crate::expr::MAX_MBA_DEPTH {
-        return None;
-    }
-    let candidate: Expr = rewrite(expr, width);
-    if candidate == *expr {
-        return None;
-    }
-    if verify_whole(expr, &candidate, width) {
-        Some(candidate)
-    } else {
-        None
+    match simplify_mixed_detailed(expr, width) {
+        MixedSimplification::Simplified { expression, .. } => Some(expression),
+        MixedSimplification::Unchanged | MixedSimplification::Refused(_) => None,
     }
 }
 
-fn rewrite(expr: &Expr, width: Width) -> Expr {
+#[must_use]
+pub fn simplify_mixed_detailed(expr: &Expr, width: Width) -> MixedSimplification {
+    let depth: usize = expr.depth();
+    let depth_limit: usize = MAX_MIXED_RECURSION_DEPTH.min(crate::expr::MAX_MBA_DEPTH);
+    if depth >= depth_limit {
+        return MixedSimplification::Refused(MixedRefusal::DepthLimit {
+            depth,
+            limit: depth_limit,
+        });
+    }
+    let nodes: usize = expr.node_count();
+    if nodes > MAX_MIXED_MBA_NODES {
+        return MixedSimplification::Refused(MixedRefusal::NodeLimit {
+            nodes,
+            limit: MAX_MIXED_MBA_NODES,
+        });
+    }
+    if contains_memory(expr) {
+        return MixedSimplification::Refused(MixedRefusal::Memory);
+    }
+    let variables: BTreeSet<u32> = expr.vars();
+    let Ok(variable_count): Result<u32, _> = u32::try_from(variables.len()) else {
+        return MixedSimplification::Refused(MixedRefusal::VariableLimit {
+            required: u32::MAX,
+            limit: MAX_MIXED_MBA_VARS,
+        });
+    };
+    if variable_count > MAX_MIXED_MBA_VARS {
+        return MixedSimplification::Refused(MixedRefusal::VariableLimit {
+            required: variable_count,
+            limit: MAX_MIXED_MBA_VARS,
+        });
+    }
+    let mut work: WorkBudget = WorkBudget {
+        consumed: 0,
+        limit: MAX_MIXED_MBA_WORK,
+    };
+    let candidate: Expr = match rewrite(expr, width, 1, &mut work) {
+        Ok(candidate) => candidate,
+        Err(refusal) => return MixedSimplification::Refused(refusal),
+    };
+    if candidate == *expr {
+        return MixedSimplification::Unchanged;
+    }
+    let proof_var_count: u32 = expr
+        .max_var()
+        .map_or(0, |index: u32| index.saturating_add(1))
+        .max(
+            candidate
+                .max_var()
+                .map_or(0, |index: u32| index.saturating_add(1)),
+        );
+    let verification: Verification =
+        crate::simplify::prove_mixed_equivalent(expr, &candidate, width, proof_var_count);
+    if !verification.is_proven() {
+        return MixedSimplification::Refused(MixedRefusal::Unproven);
+    }
+    MixedSimplification::Simplified {
+        expression: candidate,
+        verification,
+    }
+}
+
+#[derive(Debug)]
+struct WorkBudget {
+    consumed: usize,
+    limit: usize,
+}
+
+impl WorkBudget {
+    const fn consume(&mut self) -> Result<(), MixedRefusal> {
+        let Some(required): Option<usize> = self.consumed.checked_add(1) else {
+            return Err(MixedRefusal::WorkLimit {
+                required: usize::MAX,
+                limit: self.limit,
+            });
+        };
+        if required > self.limit {
+            return Err(MixedRefusal::WorkLimit {
+                required,
+                limit: self.limit,
+            });
+        }
+        self.consumed = required;
+        Ok(())
+    }
+}
+
+fn rewrite(
+    expr: &Expr,
+    width: Width,
+    depth: usize,
+    work: &mut WorkBudget,
+) -> Result<Expr, MixedRefusal> {
+    if depth >= MAX_MIXED_RECURSION_DEPTH {
+        return Err(MixedRefusal::DepthLimit {
+            depth,
+            limit: MAX_MIXED_RECURSION_DEPTH,
+        });
+    }
+    work.consume()?;
     match expr {
-        Expr::Const(_) | Expr::Var(_) => expr.clone(),
+        Expr::Const(_) | Expr::Var(_) => Ok(expr.clone()),
         Expr::Unary(op, inner) => {
-            let inner: Expr = rewrite(inner, width);
+            let inner: Expr = rewrite(inner, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::Unary(*op, Box::new(inner));
             best_local(&node, width)
         }
         Expr::Binary(op, left, right) => {
-            let left: Expr = rewrite(left, width);
-            let right: Expr = rewrite(right, width);
+            let left: Expr = rewrite(left, width, depth.saturating_add(1), work)?;
+            let right: Expr = rewrite(right, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::Binary(*op, Box::new(left), Box::new(right));
             best_local(&node, width)
         }
-        Expr::Ite(_, _, _) | Expr::Slice(_, _, _) | Expr::Compose(_, _, _) | Expr::Mem(_, _) => {
-            expr.clone()
+        Expr::Ite(cond, then_branch, else_branch) => {
+            let cond: Expr = rewrite(cond, width, depth.saturating_add(1), work)?;
+            let then_branch: Expr = rewrite(then_branch, width, depth.saturating_add(1), work)?;
+            let else_branch: Expr = rewrite(else_branch, width, depth.saturating_add(1), work)?;
+            let node: Expr = Expr::ite(cond, then_branch, else_branch);
+            best_local(&node, width)
         }
+        Expr::Slice(inner, lo, hi) => {
+            if hi <= lo {
+                return Err(MixedRefusal::InvalidSlice { lo: *lo, hi: *hi });
+            }
+            let inner: Expr = rewrite(inner, width, depth.saturating_add(1), work)?;
+            let node: Expr = Expr::slice(inner, *lo, *hi);
+            best_local(&node, width)
+        }
+        Expr::Compose(low, high, low_bits) => {
+            let low: Expr = rewrite(low, width, depth.saturating_add(1), work)?;
+            let high: Expr = rewrite(high, width, depth.saturating_add(1), work)?;
+            let node: Expr = Expr::compose(low, high, *low_bits);
+            best_local(&node, width)
+        }
+        Expr::Mem(_, _) => Err(MixedRefusal::Memory),
     }
 }
 
-fn best_local(node: &Expr, width: Width) -> Expr {
+fn best_local(node: &Expr, width: Width) -> Result<Expr, MixedRefusal> {
     let mut best: Expr = node.clone();
 
     let canonicalized: Expr = canonicalize(node, width);
@@ -62,10 +200,13 @@ fn best_local(node: &Expr, width: Width) -> Expr {
 
     let vars: BTreeSet<u32> = node.vars();
     let Ok(var_count): Result<u32, _> = u32::try_from(vars.len()) else {
-        return best;
+        return Err(MixedRefusal::VariableLimit {
+            required: u32::MAX,
+            limit: MAX_MIXED_MBA_VARS,
+        });
     };
     if var_count == 0 || var_count > MAX_MIXED_MBA_VARS {
-        return best;
+        return Ok(best);
     }
 
     let (dense, inverse): (BTreeMap<u32, u32>, BTreeMap<u32, u32>) = build_remap(&vars);
@@ -84,7 +225,285 @@ fn best_local(node: &Expr, width: Width) -> Expr {
         }
     }
 
-    best
+    if let Some(solved) = solve_substituted(&dense_node, width, var_count)? {
+        let restored: Expr = solved.remap_vars(&inverse);
+        if restored.node_count() < best.node_count() {
+            best = restored;
+        }
+    }
+
+    Ok(best)
+}
+
+#[derive(Debug)]
+struct Substitutions {
+    atoms: Vec<Expr>,
+    first_fresh: u32,
+}
+
+impl Substitutions {
+    fn intern(&mut self, atom: &Expr) -> Result<Expr, MixedRefusal> {
+        if let Some(position) = self
+            .atoms
+            .iter()
+            .position(|existing: &Expr| existing == atom)
+        {
+            let Ok(offset): Result<u32, _> = u32::try_from(position) else {
+                return Err(MixedRefusal::VariableLimit {
+                    required: u32::MAX,
+                    limit: MAX_MIXED_MBA_VARS,
+                });
+            };
+            let Some(index): Option<u32> = self.first_fresh.checked_add(offset) else {
+                return Err(MixedRefusal::VariableLimit {
+                    required: u32::MAX,
+                    limit: MAX_MIXED_MBA_VARS,
+                });
+            };
+            return Ok(Expr::var(index));
+        }
+        let Ok(offset): Result<u32, _> = u32::try_from(self.atoms.len()) else {
+            return Err(MixedRefusal::VariableLimit {
+                required: u32::MAX,
+                limit: MAX_MIXED_MBA_VARS,
+            });
+        };
+        let Some(index): Option<u32> = self.first_fresh.checked_add(offset) else {
+            return Err(MixedRefusal::VariableLimit {
+                required: u32::MAX,
+                limit: MAX_MIXED_MBA_VARS,
+            });
+        };
+        let Some(required): Option<u32> = index.checked_add(1) else {
+            return Err(MixedRefusal::VariableLimit {
+                required: u32::MAX,
+                limit: MAX_MIXED_MBA_VARS,
+            });
+        };
+        if required > MAX_MIXED_MBA_VARS {
+            return Err(MixedRefusal::VariableLimit {
+                required,
+                limit: MAX_MIXED_MBA_VARS,
+            });
+        }
+        self.atoms.push(atom.clone());
+        Ok(Expr::var(index))
+    }
+}
+
+fn solve_substituted(
+    expr: &Expr,
+    width: Width,
+    var_count: u32,
+) -> Result<Option<Expr>, MixedRefusal> {
+    let mut substitutions: Substitutions = Substitutions {
+        atoms: Vec::new(),
+        first_fresh: var_count,
+    };
+    let purified: Expr = purify_value(expr, width, &mut substitutions)?;
+    if substitutions.atoms.is_empty() {
+        return Ok(None);
+    }
+    let Ok(atom_count): Result<u32, _> = u32::try_from(substitutions.atoms.len()) else {
+        return Err(MixedRefusal::VariableLimit {
+            required: u32::MAX,
+            limit: MAX_MIXED_MBA_VARS,
+        });
+    };
+    let Some(effective_count): Option<u32> = var_count.checked_add(atom_count) else {
+        return Err(MixedRefusal::VariableLimit {
+            required: u32::MAX,
+            limit: MAX_MIXED_MBA_VARS,
+        });
+    };
+    if effective_count > MAX_MIXED_MBA_VARS {
+        return Err(MixedRefusal::VariableLimit {
+            required: effective_count,
+            limit: MAX_MIXED_MBA_VARS,
+        });
+    }
+    let mut best: Option<Expr> = None;
+    for solved in [
+        solve_linear_mba(&purified, width, effective_count),
+        solve_polynomial_mba(&purified, width, effective_count),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Some(restored): Option<Expr> = restore_substitutions(&solved, &substitutions) else {
+            return Err(MixedRefusal::BackSubstitution);
+        };
+        let reabstracted: Expr = abstract_known_atoms(&restored, &substitutions);
+        if reabstracted != solved {
+            return Err(MixedRefusal::BackSubstitution);
+        }
+        if restored.node_count() >= expr.node_count() || restored.node_count() > MAX_MIXED_MBA_NODES
+        {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current: &Expr| restored.node_count() < current.node_count())
+        {
+            best = Some(restored);
+        }
+    }
+    Ok(best)
+}
+
+fn purify_value(
+    expr: &Expr,
+    width: Width,
+    substitutions: &mut Substitutions,
+) -> Result<Expr, MixedRefusal> {
+    match expr {
+        Expr::Const(_) | Expr::Var(_) => Ok(expr.clone()),
+        Expr::Unary(UnOp::Neg, inner) => Ok(Expr::neg(purify_value(inner, width, substitutions)?)),
+        Expr::Unary(UnOp::Not, _) | Expr::Binary(BinOp::And | BinOp::Or | BinOp::Xor, _, _) => {
+            purify_bitwise(expr, width, substitutions)
+        }
+        Expr::Binary(BinOp::Add, left, right) => Ok(Expr::add(
+            purify_value(left, width, substitutions)?,
+            purify_value(right, width, substitutions)?,
+        )),
+        Expr::Binary(BinOp::Sub, left, right) => Ok(Expr::sub(
+            purify_value(left, width, substitutions)?,
+            purify_value(right, width, substitutions)?,
+        )),
+        Expr::Binary(BinOp::Mul, left, right) => Ok(Expr::mul(
+            purify_value(left, width, substitutions)?,
+            purify_value(right, width, substitutions)?,
+        )),
+        Expr::Binary(BinOp::Shl, left, right) if matches!(right.as_ref(), Expr::Const(_)) => Ok(
+            Expr::shl(purify_value(left, width, substitutions)?, (**right).clone()),
+        ),
+        Expr::Binary(BinOp::Shl | BinOp::Shr, _, _)
+        | Expr::Ite(_, _, _)
+        | Expr::Slice(_, _, _)
+        | Expr::Compose(_, _, _) => substitutions.intern(expr),
+        Expr::Mem(_, _) => Err(MixedRefusal::Memory),
+    }
+}
+
+fn purify_bitwise(
+    expr: &Expr,
+    width: Width,
+    substitutions: &mut Substitutions,
+) -> Result<Expr, MixedRefusal> {
+    match expr {
+        Expr::Const(value) if value & width.mask() == 0 || value & width.mask() == width.mask() => {
+            Ok(expr.clone())
+        }
+        Expr::Var(_) => Ok(expr.clone()),
+        Expr::Unary(UnOp::Not, inner) => {
+            Ok(Expr::not(purify_bitwise(inner, width, substitutions)?))
+        }
+        Expr::Binary(BinOp::And, left, right) => Ok(Expr::and(
+            purify_bitwise(left, width, substitutions)?,
+            purify_bitwise(right, width, substitutions)?,
+        )),
+        Expr::Binary(BinOp::Or, left, right) => Ok(Expr::or(
+            purify_bitwise(left, width, substitutions)?,
+            purify_bitwise(right, width, substitutions)?,
+        )),
+        Expr::Binary(BinOp::Xor, left, right) => Ok(Expr::xor(
+            purify_bitwise(left, width, substitutions)?,
+            purify_bitwise(right, width, substitutions)?,
+        )),
+        Expr::Mem(_, _) => Err(MixedRefusal::Memory),
+        _ => substitutions.intern(expr),
+    }
+}
+
+fn restore_substitutions(expr: &Expr, substitutions: &Substitutions) -> Option<Expr> {
+    match expr {
+        Expr::Const(_) => Some(expr.clone()),
+        Expr::Var(index) if *index < substitutions.first_fresh => Some(expr.clone()),
+        Expr::Var(index) => {
+            let offset: u32 = index.checked_sub(substitutions.first_fresh)?;
+            let offset: usize = usize::try_from(offset).ok()?;
+            substitutions.atoms.get(offset).cloned()
+        }
+        Expr::Unary(op, inner) => Some(Expr::Unary(
+            *op,
+            Box::new(restore_substitutions(inner, substitutions)?),
+        )),
+        Expr::Binary(op, left, right) => Some(Expr::Binary(
+            *op,
+            Box::new(restore_substitutions(left, substitutions)?),
+            Box::new(restore_substitutions(right, substitutions)?),
+        )),
+        Expr::Ite(cond, then_branch, else_branch) => Some(Expr::ite(
+            restore_substitutions(cond, substitutions)?,
+            restore_substitutions(then_branch, substitutions)?,
+            restore_substitutions(else_branch, substitutions)?,
+        )),
+        Expr::Slice(inner, lo, hi) => Some(Expr::slice(
+            restore_substitutions(inner, substitutions)?,
+            *lo,
+            *hi,
+        )),
+        Expr::Compose(low, high, low_bits) => Some(Expr::compose(
+            restore_substitutions(low, substitutions)?,
+            restore_substitutions(high, substitutions)?,
+            *low_bits,
+        )),
+        Expr::Mem(_, _) => None,
+    }
+}
+
+fn abstract_known_atoms(expr: &Expr, substitutions: &Substitutions) -> Expr {
+    let position: Option<usize> = substitutions
+        .atoms
+        .iter()
+        .position(|atom: &Expr| atom == expr);
+    if let Some(position) = position {
+        let offset: Result<u32, _> = u32::try_from(position);
+        if let Ok(offset) = offset {
+            let index: Option<u32> = substitutions.first_fresh.checked_add(offset);
+            if let Some(index) = index {
+                return Expr::var(index);
+            }
+        }
+    }
+    match expr {
+        Expr::Const(_) | Expr::Var(_) | Expr::Mem(_, _) => expr.clone(),
+        Expr::Unary(op, inner) => {
+            Expr::Unary(*op, Box::new(abstract_known_atoms(inner, substitutions)))
+        }
+        Expr::Binary(op, left, right) => Expr::Binary(
+            *op,
+            Box::new(abstract_known_atoms(left, substitutions)),
+            Box::new(abstract_known_atoms(right, substitutions)),
+        ),
+        Expr::Ite(cond, then_branch, else_branch) => Expr::ite(
+            abstract_known_atoms(cond, substitutions),
+            abstract_known_atoms(then_branch, substitutions),
+            abstract_known_atoms(else_branch, substitutions),
+        ),
+        Expr::Slice(inner, lo, hi) => {
+            Expr::slice(abstract_known_atoms(inner, substitutions), *lo, *hi)
+        }
+        Expr::Compose(low, high, low_bits) => Expr::compose(
+            abstract_known_atoms(low, substitutions),
+            abstract_known_atoms(high, substitutions),
+            *low_bits,
+        ),
+    }
+}
+
+fn contains_memory(expr: &Expr) -> bool {
+    match expr {
+        Expr::Mem(_, _) => true,
+        Expr::Const(_) | Expr::Var(_) => false,
+        Expr::Unary(_, inner) | Expr::Slice(inner, _, _) => contains_memory(inner),
+        Expr::Binary(_, left, right) | Expr::Compose(left, right, _) => {
+            contains_memory(left) || contains_memory(right)
+        }
+        Expr::Ite(cond, then_branch, else_branch) => {
+            contains_memory(cond) || contains_memory(then_branch) || contains_memory(else_branch)
+        }
+    }
 }
 
 fn build_remap(vars: &BTreeSet<u32>) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>) {
@@ -98,35 +517,11 @@ fn build_remap(vars: &BTreeSet<u32>) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>)
     (dense, inverse)
 }
 
-fn verify_whole(original: &Expr, candidate: &Expr, width: Width) -> bool {
-    let var_count: u32 = original
-        .max_var()
-        .map_or(0, |index: u32| index.saturating_add(1))
-        .max(
-            candidate
-                .max_var()
-                .map_or(0, |index: u32| index.saturating_add(1)),
-        );
-    if crate::simplify::expr_is_eval_faithful(original)
-        && crate::simplify::expr_is_eval_faithful(candidate)
-        && width.is_exhaustible()
-        && equivalent_exhaustive_runnable(width, var_count)
-    {
-        return equivalent_exhaustive(original, candidate, width, var_count);
-    }
-    #[cfg(feature = "smt-verify")]
-    {
-        if crate::verify::verify_equivalent(original, candidate, width).is_proven() {
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::expr::equivalent_exhaustive;
     use crate::simplify::{Simplification, simplify};
 
     fn var(index: u32) -> Expr {
@@ -138,6 +533,52 @@ mod tests {
             Expr::xor(var(a), var(b)),
             Expr::mul(Expr::konst(2), Expr::and(var(a), var(b))),
         )
+    }
+
+    #[test]
+    fn equal_subterms_share_exactly_one_fresh_atom() {
+        let atom: Expr = Expr::mul(var(0), var(1));
+        let mut substitutions: Substitutions = Substitutions {
+            atoms: Vec::new(),
+            first_fresh: 2,
+        };
+        let first: Expr = substitutions.intern(&atom).expect("within atom cap");
+        let second: Expr = substitutions.intern(&atom).expect("within atom cap");
+        assert_eq!(first, second);
+        assert_eq!(substitutions.atoms, vec![atom]);
+    }
+
+    #[test]
+    fn distinct_subterms_receive_distinct_fresh_atoms() {
+        let left: Expr = Expr::mul(var(0), var(1));
+        let right: Expr = Expr::mul(var(1), var(0));
+        let mut substitutions: Substitutions = Substitutions {
+            atoms: Vec::new(),
+            first_fresh: 2,
+        };
+        let left_var: Expr = substitutions.intern(&left).expect("within atom cap");
+        let right_var: Expr = substitutions.intern(&right).expect("within atom cap");
+        assert_ne!(left_var, right_var);
+        assert_eq!(substitutions.atoms, vec![left, right]);
+    }
+
+    #[test]
+    fn substitution_model_never_proves_a_wrong_back_substitution() {
+        let original: Expr = Expr::add(Expr::mul(var(0), var(1)), var(2));
+        let wrong: Expr = Expr::add(Expr::mul(var(0), var(0)), var(2));
+        for width in [
+            Width::W1,
+            Width::W2,
+            Width::W4,
+            Width::W8,
+            Width::W16,
+            Width::W32,
+            Width::W64,
+        ] {
+            let proof: Verification =
+                crate::simplify::prove_mixed_equivalent(&original, &wrong, width, 3);
+            assert!(!proof.is_proven(), "{width:?}: {proof:?}");
+        }
     }
 
     #[test]

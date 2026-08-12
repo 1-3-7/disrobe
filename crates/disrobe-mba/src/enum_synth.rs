@@ -361,7 +361,7 @@ mod tests {
         candidate == *expr && !verification.is_proven()
     }
 
-    fn genuine_win_cases() -> Vec<(Expr, u32)> {
+    fn opaque_atom_cases() -> Vec<(Expr, u32)> {
         vec![
             (Expr::sub(Expr::or(a(), b()), b()), 2),
             (Expr::sub(Expr::and(a(), b()), Expr::or(a(), b())), 2),
@@ -378,35 +378,25 @@ mod tests {
     }
 
     #[test]
-    fn every_genuine_win_is_untouched_by_l0_l5() {
-        for (expr, var_count) in genuine_win_cases() {
-            assert!(
-                l0_l5_untouched(&expr, Width::W8, var_count),
-                "L0-L5 unexpectedly simplified `{expr}`; it is not an L6-only case"
-            );
-        }
-    }
-
-    #[test]
-    fn l6_recovers_and_proves_every_genuine_win() {
-        for (expr, var_count) in genuine_win_cases() {
+    fn opaque_atom_cases_are_recovered_and_proven() {
+        for (expr, var_count) in opaque_atom_cases() {
             let result: Simplification = simplify(&expr, Width::W8);
             assert!(
                 result.changed(),
-                "L6 failed to simplify `{expr}` that L0-L5 left untouched"
+                "failed to simplify opaque-atom expression `{expr}`"
             );
             assert!(
                 result.verification.is_proven(),
-                "L6 emitted an unproven rewrite for `{expr}`"
+                "emitted an unproven rewrite for `{expr}`"
             );
             assert!(
                 result.simplified.node_count() < expr.node_count(),
-                "L6 rewrite `{}` is not strictly smaller than `{expr}`",
+                "rewrite `{}` is not strictly smaller than `{expr}`",
                 result.simplified
             );
             assert!(
                 equivalent_exhaustive(&expr, &result.simplified, Width::W8, var_count),
-                "L6 rewrite `{}` is not equal to `{expr}`",
+                "rewrite `{}` is not equal to `{expr}`",
                 result.simplified
             );
         }
@@ -513,7 +503,7 @@ mod tests {
     #[test]
     fn synthesis_never_emits_a_non_equivalent_rewrite() {
         let width: Width = Width::W8;
-        let mut cases: Vec<(Expr, u32)> = genuine_win_cases();
+        let mut cases: Vec<(Expr, u32)> = opaque_atom_cases();
         let mut rng: SplitMix64 = SplitMix64::new(0x9E37_79B9_7F4A_7C15);
         for _ in 0..400 {
             let vars: u32 = 1 + rng.below(2) as u32;
@@ -556,12 +546,12 @@ mod tests {
     }
 
     #[test]
-    fn canonicalize_does_not_shrink_the_win_cases() {
-        for (expr, _var_count) in genuine_win_cases() {
+    fn canonicalize_does_not_shrink_the_opaque_atom_cases() {
+        for (expr, _var_count) in opaque_atom_cases() {
             let folded: Expr = canonicalize(&expr, Width::W8);
             assert!(
                 folded.node_count() >= expr.node_count(),
-                "canonicalize shrank `{expr}` to `{folded}`; not an L6-only case"
+                "canonicalize unexpectedly shrank `{expr}` to `{folded}`"
             );
         }
     }

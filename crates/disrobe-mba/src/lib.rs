@@ -57,7 +57,10 @@ pub use linear_mba::synthesize_linear_basis;
 pub use linear_solver::{
     MAX_SOLVER_VARS, columns_equal_mod_width, is_column_faithful, solve_linear_mba, truth_column,
 };
-pub use mixed_mba::{MAX_MIXED_MBA_VARS, simplify_mixed};
+pub use mixed_mba::{
+    MAX_MIXED_MBA_NODES, MAX_MIXED_MBA_VARS, MAX_MIXED_MBA_WORK, MixedRefusal, MixedSimplification,
+    simplify_mixed, simplify_mixed_detailed,
+};
 pub use opaque::{BranchFold, CmpOp, OpaqueVerdict, Predicate, classify, fold_branch};
 pub use perm_poly::{PermutationPolynomial, recover_inverse};
 pub use poly_mba::{MAX_POLY_MBA_VARS, solve_polynomial_mba};

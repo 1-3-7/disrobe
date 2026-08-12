@@ -1,6 +1,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use disrobe_mba::{Expr, Simplification, Width, equivalent_exhaustive, simplify, simplify_mixed};
+use disrobe_mba::poly_oracle::polynomial_identity_proves;
+use disrobe_mba::{
+    Expr, MAX_MIXED_MBA_NODES, MAX_MIXED_MBA_WORK, MixedRefusal, MixedSimplification,
+    Simplification, Verification, Width, equivalent_exhaustive, simplify, simplify_mixed,
+    simplify_mixed_detailed,
+};
 use proptest::prelude::*;
 
 const fn var(index: u32) -> Expr {
@@ -12,6 +17,179 @@ fn hidden_sum(a: u32, b: u32) -> Expr {
         Expr::xor(var(a), var(b)),
         Expr::mul(Expr::konst(2), Expr::and(var(a), var(b))),
     )
+}
+
+fn hidden_sum_of(left: Expr, right: Expr) -> Expr {
+    Expr::add(
+        Expr::xor(left.clone(), right.clone()),
+        Expr::mul(Expr::konst(2), Expr::and(left, right)),
+    )
+}
+
+#[test]
+fn nonlinear_product_subterm_is_recovered_with_a_width_specific_proof() {
+    let product: Expr = Expr::mul(var(0), var(1));
+    let obfuscated: Expr = hidden_sum_of(product.clone(), var(2));
+    for width in [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ] {
+        let result: MixedSimplification = simplify_mixed_detailed(&obfuscated, width);
+        let MixedSimplification::Simplified {
+            expression,
+            verification,
+        } = result
+        else {
+            panic!("{width:?}: expected a proven nonlinear-subterm rewrite, got {result:?}");
+        };
+        let expected: Expr = if width == Width::W1 {
+            Expr::xor(var(2), product.clone())
+        } else {
+            Expr::add(product.clone(), var(2))
+        };
+        assert!(
+            polynomial_identity_proves(&expression, &expected, width),
+            "{width:?}: expected `{expected}`, got `{expression}`"
+        );
+        assert!(
+            expression.node_count() < obfuscated.node_count(),
+            "{width:?}"
+        );
+        assert!(verification.is_proven(), "{width:?}: {verification:?}");
+        assert_ne!(verification, Verification::Unverified, "{width:?}");
+    }
+}
+
+#[test]
+fn substitution_refuses_when_fresh_atoms_exceed_the_effective_variable_cap() {
+    let nonlinear: Expr = Expr::mul(
+        Expr::add(Expr::add(var(1), var(2)), Expr::add(var(3), var(4))),
+        var(5),
+    );
+    let obfuscated: Expr = hidden_sum_of(nonlinear, var(0));
+    assert_eq!(
+        simplify_mixed_detailed(&obfuscated, Width::W8),
+        MixedSimplification::Refused(MixedRefusal::VariableLimit {
+            required: 7,
+            limit: 6,
+        })
+    );
+}
+
+#[test]
+fn memory_load_is_never_selected_as_a_substitution_atom() {
+    let read: Expr = Expr::mem(var(0), Width::W8);
+    let obfuscated: Expr = hidden_sum_of(read, var(1));
+    assert_eq!(
+        simplify_mixed_detailed(&obfuscated, Width::W8),
+        MixedSimplification::Refused(MixedRefusal::Memory)
+    );
+    assert!(simplify_mixed(&obfuscated, Width::W8).is_none());
+}
+
+fn balanced_add_tree(levels: usize) -> Expr {
+    let mut expression: Expr = var(0);
+    for _ in 0..levels {
+        expression = Expr::add(expression.clone(), expression);
+    }
+    expression
+}
+
+#[test]
+fn repeated_requests_return_the_same_typed_depth_node_and_work_refusals() {
+    let mut too_deep: Expr = var(0);
+    for _ in 1..256 {
+        too_deep = Expr::not(too_deep);
+    }
+    let too_many_nodes: Expr = balanced_add_tree(14);
+    assert_eq!(too_many_nodes.node_count(), MAX_MIXED_MBA_NODES * 2 - 1);
+    let too_much_work: Expr = balanced_add_tree(10);
+    assert_eq!(too_much_work.node_count(), MAX_MIXED_MBA_WORK * 2 - 1);
+    for _ in 0..3 {
+        assert_eq!(
+            simplify_mixed_detailed(&too_deep, Width::W8),
+            MixedSimplification::Refused(MixedRefusal::DepthLimit {
+                depth: 256,
+                limit: 256,
+            })
+        );
+        assert_eq!(
+            simplify_mixed_detailed(&too_many_nodes, Width::W8),
+            MixedSimplification::Refused(MixedRefusal::NodeLimit {
+                nodes: MAX_MIXED_MBA_NODES * 2 - 1,
+                limit: MAX_MIXED_MBA_NODES,
+            })
+        );
+        assert_eq!(
+            simplify_mixed_detailed(&too_much_work, Width::W8),
+            MixedSimplification::Refused(MixedRefusal::WorkLimit {
+                required: MAX_MIXED_MBA_WORK + 1,
+                limit: MAX_MIXED_MBA_WORK,
+            })
+        );
+    }
+}
+
+fn assert_proven_rewrite(original: &Expr, expected: &Expr, width: Width) {
+    let result: MixedSimplification = simplify_mixed_detailed(original, width);
+    let MixedSimplification::Simplified {
+        expression,
+        verification,
+    } = result
+    else {
+        panic!("expected a proven rewrite for `{original}`, got {result:?}");
+    };
+    assert!(verification.is_proven(), "{verification:?}");
+    assert!(
+        polynomial_identity_proves(&expression, expected, width)
+            || equivalent_exhaustive(&expression, expected, width, original.vars().len() as u32),
+        "expected `{expected}`, got `{expression}`"
+    );
+}
+
+#[test]
+fn recursion_proves_rewrites_inside_ite_slice_and_compose_nodes() {
+    let product: Expr = Expr::mul(var(0), var(1));
+    let hidden: Expr = hidden_sum_of(product.clone(), var(2));
+    let clean: Expr = Expr::add(product, var(2));
+    let ite: Expr = Expr::ite(var(3), hidden.clone(), var(4));
+    let clean_ite: Expr = Expr::ite(var(3), clean.clone(), var(4));
+    assert_proven_rewrite(&ite, &clean_ite, Width::W2);
+    let slice: Expr = Expr::slice(hidden.clone(), 0, 2);
+    let clean_slice: Expr = Expr::slice(clean.clone(), 0, 2);
+    assert_proven_rewrite(&slice, &clean_slice, Width::W2);
+    let compose: Expr = Expr::compose(hidden, var(3), 1);
+    let clean_compose: Expr = Expr::compose(clean, var(3), 1);
+    assert_proven_rewrite(&compose, &clean_compose, Width::W2);
+}
+
+#[test]
+fn nested_mixed_subterm_and_variable_shift_rewrite_only_after_whole_width_proof() {
+    let product: Expr = Expr::mul(var(0), var(1));
+    let inner_hidden: Expr = hidden_sum_of(product.clone(), var(2));
+    let nested: Expr = Expr::mul(inner_hidden, var(3));
+    let obfuscated: Expr = hidden_sum_of(nested, var(4));
+    let clean_nested: Expr = Expr::mul(Expr::add(product, var(2)), var(3));
+    let clean: Expr = Expr::add(clean_nested, var(4));
+    assert_proven_rewrite(&obfuscated, &clean, Width::W2);
+    let shifted: Expr = Expr::shl(var(0), var(1));
+    let shifted_obfuscated: Expr = hidden_sum_of(shifted.clone(), var(2));
+    let shifted_clean: Expr = Expr::add(shifted, var(2));
+    assert_proven_rewrite(&shifted_obfuscated, &shifted_clean, Width::W32);
+}
+
+#[test]
+fn zero_width_slice_has_a_named_refusal() {
+    let invalid: Expr = Expr::slice(hidden_sum(0, 1), 4, 4);
+    assert_eq!(
+        simplify_mixed_detailed(&invalid, Width::W8),
+        MixedSimplification::Refused(MixedRefusal::InvalidSlice { lo: 4, hi: 4 })
+    );
 }
 
 #[test]

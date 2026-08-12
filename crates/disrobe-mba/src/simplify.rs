@@ -903,6 +903,33 @@ fn verify_equivalent(
     Verification::Unverified
 }
 
+pub(crate) fn prove_mixed_equivalent(
+    original: &Expr,
+    candidate: &Expr,
+    width: Width,
+    var_count: u32,
+) -> Verification {
+    let budget_width: Width = largest_verifiable_width(var_count);
+    let enumerable: bool = expr_is_eval_faithful(original)
+        && expr_is_eval_faithful(candidate)
+        && width.is_exhaustible()
+        && width.bits() <= budget_width.bits();
+    if enumerable {
+        if equivalent_exhaustive(original, candidate, width, var_count) {
+            return Verification::ExhaustiveAtWidth(width);
+        }
+        return Verification::Unverified;
+    }
+    if crate::poly_oracle::polynomial_identity_proves(original, candidate, width) {
+        return Verification::PolynomialIdentity(width);
+    }
+    #[cfg(feature = "smt-verify")]
+    if crate::verify::verify_equivalent(original, candidate, width).is_proven() {
+        return Verification::SmtProvenAtWidth(width);
+    }
+    Verification::Unverified
+}
+
 fn column_identity_proves(original: &Expr, candidate: &Expr, width: Width, var_count: u32) -> bool {
     if !is_column_faithful(original, width) || !is_column_faithful(candidate, width) {
         return false;

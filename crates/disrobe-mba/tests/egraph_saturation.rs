@@ -115,7 +115,7 @@ fn whole_simplifier_never_produces_non_equivalent_output() {
 }
 
 #[test]
-fn l5_collapses_opaque_leaf_identity_that_pre_l5_layers_miss() {
+fn mixed_substitution_collapses_opaque_leaf_identity_before_egraph() {
     let width: Width = Width::W8;
     let opaque: Expr = Expr::mul(Expr::var(0), Expr::var(1));
     let other: Expr = Expr::var(2);
@@ -137,16 +137,18 @@ fn l5_collapses_opaque_leaf_identity_that_pre_l5_layers_miss() {
         solve_polynomial_mba(&obfuscated, width, 3).is_none(),
         "the polynomial reducer must not fire on an opaque-leaf identity"
     );
+    let mixed: Option<Expr> = simplify_mixed(&obfuscated, width);
     assert!(
-        simplify_mixed(&obfuscated, width).is_none(),
-        "the mixed reducer must not fire on an opaque-leaf identity"
+        mixed.is_some(),
+        "the mixed reducer must recover the opaque-leaf identity"
     );
+    let Some(mixed): Option<Expr> = mixed else {
+        return;
+    };
+    assert!(mixed.node_count() < obfuscated.node_count());
 
     let result: Simplification = simplify(&obfuscated, width);
-    assert!(
-        result.changed(),
-        "L5 must reduce (a|b)+(a&b) with an opaque leaf"
-    );
+    assert!(result.changed());
     assert!(result.verification.is_proven());
     assert!(result.simplified.node_count() < obfuscated.node_count());
     let expected: Expr = Expr::add(opaque, other);
