@@ -26,7 +26,7 @@
           "leg": "dex",
           "metric": "recompile-clean emitted methods (clean / emitted)",
           "name": "jadx (DEX input)",
-          "producer_exit_status": 1,
+          "producer_exit": true,
           "result": "not certified: 295 methods emitted",
           "role": "competitor",
           "status": "uncertified",
@@ -67,7 +67,7 @@
       "floor": null,
       "floor_holds": true,
       "id": "apk-jadx-cfr",
-      "measured": "Android DEX: `disrobe` 52 / 165 (31.5%) vs JADX not certified (295 methods emitted; the producer exited with status 1); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
+      "measured": "Android DEX: `disrobe` 52 / 165 (31.5%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)",
       "oracle_strength": "recompile-only",
       "pairs": [
         {
@@ -77,7 +77,7 @@
             "emitted": 295,
             "label": "JADX",
             "name": "jadx (DEX input)",
-            "producer_exit_status": 1,
+            "producer_exit": true,
             "uncertified_stage": "producer",
             "version": "1.5.5"
           },

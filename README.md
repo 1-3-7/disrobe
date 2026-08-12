@@ -211,7 +211,7 @@ Most tools specialize in one layer. `disrobe` chains unpacking, bytecode and nat
 | Surface | `disrobe` | Leading tool | Result | Reproduce |
 |---|---|---|---|---|
 | <!-- evidence-pair:apk-jadx-cfr:jar -->JVM classfile | 181 / 181 methods recompile | CFR 0.152: 152 / 166 methods recompile | `disrobe` leads on clean methods and clean rate | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
-| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 52 / 165 methods recompile | JADX 1.5.5: not certified: 295 methods emitted | no lead: the JADX output is not certified (the producer exited with status 1) | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
+| <!-- evidence-pair:apk-jadx-cfr:dex -->Android DEX | 52 / 165 methods recompile | JADX 1.5.5: not certified: 295 methods emitted | no lead: the JADX output is not certified (the producer exited nonzero) | `cargo run --locked -p disrobe-bench-head-to-head -- --check --only apk-jadx-cfr`<!-- /evidence-pair --> |
 | APK secrets | 8 / 8 planted secrets | apkleaks 2.6.3: 5 / 8 | `disrobe` catches the AWS secret key, Basic credential, and JWT apkleaks misses | `cargo run -p disrobe-bench-head-to-head` |
 
 Missing rows are not implied wins. Every surface without a same-input runner stays in the edge table below until one exists.

@@ -177,7 +177,7 @@ struct CompetitorRow {
     value: Option<f64>,
     first_defect_line: Option<u64>,
     uncertified_stage: Option<String>,
-    producer_exit_status: Option<i64>,
+    producer_exit: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,7 +214,7 @@ enum PairOutcome {
 #[derive(Debug, Clone)]
 enum UncertifiedCause {
     Compiler { first_defect_line: Option<u64> },
-    ProducerExit { status: i64 },
+    ProducerExit,
 }
 
 impl PairScore {
@@ -874,17 +874,11 @@ fn uncertified_outcome(row: &CompetitorRow, emitted: u64) -> Result<PairOutcome>
         );
     }
     let cause: UncertifiedCause = match row.uncertified_stage.as_deref() {
-        Some("compiler") if row.producer_exit_status.is_none() => UncertifiedCause::Compiler {
+        Some("compiler") if row.producer_exit.is_none() => UncertifiedCause::Compiler {
             first_defect_line: row.first_defect_line,
         },
-        Some("producer") if row.first_defect_line.is_none() => {
-            let status: i64 = row.producer_exit_status.ok_or_else(|| {
-                eyre::eyre!(
-                    "head-to-head row `{}` has a producer refusal without its exit status",
-                    row.name
-                )
-            })?;
-            UncertifiedCause::ProducerExit { status }
+        Some("producer") if row.first_defect_line.is_none() && row.producer_exit == Some(true) => {
+            UncertifiedCause::ProducerExit
         }
         _ => {
             bail!(
@@ -945,10 +939,8 @@ fn summary_side(score: &PairScore) -> String {
         } => format!("not certified ({emitted} methods emitted; the compiler did not start)"),
         PairOutcome::Uncertified {
             emitted,
-            cause: UncertifiedCause::ProducerExit { status },
-        } => format!(
-            "not certified ({emitted} methods emitted; the producer exited with status {status})"
-        ),
+            cause: UncertifiedCause::ProducerExit,
+        } => format!("not certified ({emitted} methods emitted; the producer exited nonzero)"),
     }
 }
 
@@ -1027,9 +1019,9 @@ fn uncertified_reason(score: &PairScore) -> String {
             ..
         } => "the shared compiler did not certify it".to_owned(),
         PairOutcome::Uncertified {
-            cause: UncertifiedCause::ProducerExit { status },
+            cause: UncertifiedCause::ProducerExit,
             ..
-        } => format!("the producer exited with status {status}"),
+        } => "the producer exited nonzero".to_owned(),
     }
 }
 
@@ -1210,7 +1202,7 @@ fn competitor_row(tool: &Value) -> CompetitorRow {
             .get("uncertified_stage")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        producer_exit_status: tool.get("producer_exit_status").and_then(Value::as_i64),
+        producer_exit: tool.get("producer_exit").and_then(Value::as_bool),
     }
 }
 
@@ -1437,9 +1429,9 @@ fn pair_side_json(score: &PairScore) -> Value {
                         side["first_defect_line"] = json!(first_defect_line);
                     }
                 }
-                UncertifiedCause::ProducerExit { status } => {
+                UncertifiedCause::ProducerExit => {
                     side["uncertified_stage"] = Value::String("producer".to_owned());
-                    side["producer_exit_status"] = json!(status);
+                    side["producer_exit"] = Value::Bool(true);
                 }
             }
         }
@@ -1469,8 +1461,8 @@ fn competitors_json(rows: &[CompetitorRow]) -> Vec<Value> {
             if let Some(stage) = &c.uncertified_stage {
                 row["uncertified_stage"] = Value::String(stage.clone());
             }
-            if let Some(status) = c.producer_exit_status {
-                row["producer_exit_status"] = json!(status);
+            if let Some(producer_exit) = c.producer_exit {
+                row["producer_exit"] = json!(producer_exit);
             }
             row
         })
@@ -2073,7 +2065,7 @@ mod tests {
                 value: Some(100.0 * 129.0 / 132.0),
                 first_defect_line: None,
                 uncertified_stage: None,
-                producer_exit_status: None,
+                producer_exit: None,
             },
             CompetitorRow {
                 name: "jadx (DEX input)".to_owned(),
@@ -2090,7 +2082,7 @@ mod tests {
                 value: Some(100.0 * 128.0 / 130.0),
                 first_defect_line: None,
                 uncertified_stage: None,
-                producer_exit_status: None,
+                producer_exit: None,
             },
             CompetitorRow {
                 name: "disrobe (in-house JVM, JAR input)".to_owned(),
@@ -2107,7 +2099,7 @@ mod tests {
                 value: Some(100.0),
                 first_defect_line: None,
                 uncertified_stage: None,
-                producer_exit_status: None,
+                producer_exit: None,
             },
             CompetitorRow {
                 name: "cfr (JAR input)".to_owned(),
@@ -2124,7 +2116,7 @@ mod tests {
                 value: Some(100.0 * 105.0 / 106.0),
                 first_defect_line: None,
                 uncertified_stage: None,
-                producer_exit_status: None,
+                producer_exit: None,
             },
         ]
     }
@@ -2186,7 +2178,7 @@ mod tests {
             value: Some(0.0),
             first_defect_line: None,
             uncertified_stage: None,
-            producer_exit_status: None,
+            producer_exit: None,
         });
         let error: eyre::Report = match resolve_pairs(&binding, &trailing) {
             Ok(_) => bail!("an unpaired row must fail"),
@@ -2234,7 +2226,7 @@ mod tests {
         row.emitted = Some(emitted);
         row.first_defect_line = Some(first_defect_line);
         row.uncertified_stage = Some("compiler".to_owned());
-        row.producer_exit_status = None;
+        row.producer_exit = None;
         row.display = format!("not certified: {emitted} methods emitted");
     }
 
@@ -2301,13 +2293,13 @@ mod tests {
         uncertify(&mut producer_exit[1], 130, 619);
         producer_exit[1].first_defect_line = None;
         producer_exit[1].uncertified_stage = Some("producer".to_owned());
-        producer_exit[1].producer_exit_status = Some(1);
+        producer_exit[1].producer_exit = Some(true);
         let pairs: Vec<ResolvedPair> = resolve_pairs(&binding, &producer_exit)?;
         assert!(matches!(
             pairs[0].competitor.outcome,
             PairOutcome::Uncertified {
                 emitted: 130,
-                cause: UncertifiedCause::ProducerExit { status: 1 }
+                cause: UncertifiedCause::ProducerExit
             }
         ));
 

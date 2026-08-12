@@ -298,7 +298,7 @@ fn score_phrase(score: &ToolScore) -> String {
         }
         | ToolScore::Uncertified {
             emitted,
-            cause: UncertifiedCause::ProducerExit { .. },
+            cause: UncertifiedCause::ProducerExit,
             detail,
             ..
         } => format!(
@@ -370,7 +370,7 @@ enum ToolScore {
 #[derive(Debug)]
 enum UncertifiedCause {
     Compiler { first_defect_line: Option<usize> },
-    ProducerExit { status: i32 },
+    ProducerExit,
 }
 
 impl ToolScore {
@@ -456,9 +456,9 @@ impl ToolScore {
                             row["first_defect_line"] = json!(first_defect_line);
                         }
                     }
-                    UncertifiedCause::ProducerExit { status } => {
+                    UncertifiedCause::ProducerExit => {
                         row["uncertified_stage"] = Value::String("producer".to_owned());
-                        row["producer_exit_status"] = json!(status);
+                        row["producer_exit"] = Value::Bool(true);
                     }
                 }
                 row["display"] = Value::String(uncertified_display(*emitted));
@@ -522,33 +522,33 @@ fn score_jadx(javac: &Path, dex_bytes: &[u8], denominator: usize) -> ToolScore {
     let out: AndroidDecompileOutput = match run_jadx_on_bytes_detailed(dex_bytes, "EdgeCases.dex") {
         Ok(JadxOutcome::Recovered(out)) => out,
         Ok(JadxOutcome::ProducerFailed {
-            status,
+            status: _,
             stderr,
             emitted_methods,
             ..
         }) if emitted_methods > 0 => {
             let bounded_stderr: String = bounded_error_text(&stderr);
             let detail: String = if bounded_stderr.is_empty() {
-                format!("jadx exited with status {status} after emitting {emitted_methods} methods")
+                format!("jadx exited nonzero after emitting {emitted_methods} methods")
             } else {
                 format!(
-                    "jadx exited with status {status} after emitting {emitted_methods} methods: {bounded_stderr}"
+                    "jadx exited nonzero after emitting {emitted_methods} methods: {bounded_stderr}"
                 )
             };
             return ToolScore::Uncertified {
                 emitted: emitted_methods,
-                cause: UncertifiedCause::ProducerExit { status },
+                cause: UncertifiedCause::ProducerExit,
                 original: denominator,
                 detail,
             };
         }
-        Ok(JadxOutcome::ProducerFailed { status, stderr, .. }) => {
+        Ok(JadxOutcome::ProducerFailed {
+            status: _, stderr, ..
+        }) => {
             let bounded_stderr: String = bounded_error_text(&stderr);
             return ToolScore::miss(
                 denominator,
-                format!(
-                    "jadx exited with status {status} before emitting a method: {bounded_stderr}"
-                ),
+                format!("jadx exited nonzero before emitting a method: {bounded_stderr}"),
             );
         }
         Ok(JadxOutcome::Refused(refusal)) => {
@@ -3164,13 +3164,14 @@ mod tests {
     fn producer_exit_is_uncertified_without_a_fabricated_compiler_line() {
         let score: ToolScore = ToolScore::Uncertified {
             emitted: 295,
-            cause: UncertifiedCause::ProducerExit { status: 1 },
+            cause: UncertifiedCause::ProducerExit,
             original: 114,
             detail: "jadx exited after partial output".to_owned(),
         };
         let row: Value = score.to_json("jadx", "1.5.5");
         assert_eq!(row["uncertified_stage"], "producer");
-        assert_eq!(row["producer_exit_status"], 1);
+        assert_eq!(row["producer_exit"], true);
+        assert!(row.get("producer_exit_status").is_none());
         assert!(row.get("first_defect_line").is_none());
         assert_eq!(row["emitted"], 295);
     }

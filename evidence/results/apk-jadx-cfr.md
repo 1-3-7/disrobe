@@ -3,7 +3,7 @@
 - id: `apk-jadx-cfr`
 - ecosystem: android
 - claim: On their respective committed EdgeCases inputs, real javac scores every emitted method by one source-only rule. The scorer compiles the complete recovered source set first. If a parse failure blocks attribution, it isolates the implicated balanced method, field-initializer, or type region under a 64-round ceiling and reruns javac. Methods in isolated method or type regions are unclean. Peer methods count only after javac reaches attribution. A leg publishes a lead only when both sides are certified.
-- measured: Android DEX: `disrobe` 52 / 165 (31.5%) vs JADX not certified (295 methods emitted; the producer exited with status 1); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)
+- measured: Android DEX: `disrobe` 52 / 165 (31.5%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)
 - oracle strength: recompile-only
 - CI-attested: yes [CI]
 - evidence basis: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; one source-only scorer applies the same complete-compile, bounded region-isolation, and final diagnostic rule to every tool
