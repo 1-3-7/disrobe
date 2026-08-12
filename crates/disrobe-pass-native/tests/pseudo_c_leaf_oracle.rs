@@ -6784,6 +6784,14 @@ fn fp_driver_snippet(case: &FpCase, recovered_name: &str) -> String {
     snippet
 }
 
+const FP_HALF_BIT_CASTS: &str =
+    "static inline _Float16 fp_h_from_bits(uint16_t b){ _Float16 v; memcpy(&v,&b,2); return v; }
+static inline uint16_t fp_h_to_bits(_Float16 v){ uint16_t b; memcpy(&b,&v,2); return b; }";
+
+fn fp_driver_prelude() -> String {
+    format!("{FP_HALF_BIT_CASTS}\n{}", fp_semantics::prelude_source())
+}
+
 fn strip_shared_fp_prelude(source: &str) -> String {
     let prelude: BTreeSet<String> = fp_semantics::prelude_lines().into_iter().collect();
     let lines: Vec<&str> = source.lines().collect();
@@ -6827,7 +6835,7 @@ fn build_fp_driver(recovered_decls: &str, driver_body: &str) -> String {
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
          }}\n",
-        fp_semantics::prelude_source()
+        fp_driver_prelude()
     )
 }
 
@@ -7567,7 +7575,7 @@ fn build_minmax_driver(recovered_decls: &str, driver_body: &str) -> String {
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
          }}\n",
-        fp_semantics::prelude_source()
+        fp_driver_prelude()
     )
 }
 
@@ -8045,7 +8053,7 @@ fn build_fc_driver(recovered_decls: &str, driver_body: &str) -> String {
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
          }}\n",
-        fp_semantics::prelude_source()
+        fp_driver_prelude()
     )
 }
 
@@ -8609,7 +8617,7 @@ fn build_fp_sqrt_driver(recovered_decls: &str, driver_body: &str) -> String {
          \x20   printf(\"OK\\n\");\n\
          \x20   return 0;\n\
          }}\n",
-        fp_semantics::prelude_source()
+        fp_driver_prelude()
     )
 }
 
@@ -8811,7 +8819,7 @@ fn gcc_o0_frame_reload_compare_returns_integer() {
     let build_driver = |candidate: &str| -> String {
         format!(
             "#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\n#include <stddef.h>\nstatic inline double fp_d_from_bits(uint64_t b){{ double v; memcpy(&v,&b,8); return v; }}\nstatic inline uint64_t fp_d_to_bits(double v){{ uint64_t b; memcpy(&b,&v,8); return b; }}\nstatic inline float fp_f_from_bits(uint32_t b){{ float v; memcpy(&v,&b,4); return v; }}\nstatic inline uint32_t fp_f_to_bits(float v){{ uint32_t b; memcpy(&b,&v,4); return b; }}\n{}\n{}\n{}\nint main(void){{\n    double nan = fp_d_from_bits(UINT64_C(0x7ff8000000000001));\n    double pairs[][2] = {{ {{2.0,2.0}}, {{2.0,3.0}}, {{-0.0,0.0}}, {{nan,nan}}, {{nan,1.0}} }};\n    size_t count = sizeof(pairs)/sizeof(pairs[0]);\n    for (size_t index = 0; index < count; index++) {{\n        long long want = feq(pairs[index][0], pairs[index][1]);\n        uint64_t got = {recovered_name}(pairs[index][0], pairs[index][1]);\n        if ((uint64_t)want != got) {{ printf(\"MISMATCH %zu want=%lld got=%llu\\n\", index, want, (unsigned long long)got); return 1; }}\n    }}\n    puts(\"OK\");\n    return 0;\n}}\n",
-            fp_semantics::prelude_source(),
+            fp_driver_prelude(),
             fp_extern_decl(&case),
             candidate,
         )
