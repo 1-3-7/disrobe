@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CilOp {
     Nop,
     LdargN(u8),
@@ -30,6 +30,9 @@ pub enum CilOp {
     Mul,
     Div,
     Rem,
+    And,
+    Or,
+    Xor,
     Ldstr,
 }
 
@@ -126,6 +129,9 @@ impl CilOp {
             Self::Mul => "mul",
             Self::Div => "div",
             Self::Rem => "rem",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
             Self::Ldstr => "ldstr",
         }
     }
@@ -180,6 +186,9 @@ impl CilOp {
             "mul" => Self::Mul,
             "div" => Self::Div,
             "rem" => Self::Rem,
+            "and" => Self::And,
+            "or" => Self::Or,
+            "xor" => Self::Xor,
             "ldstr" => Self::Ldstr,
             _ => return None,
         };

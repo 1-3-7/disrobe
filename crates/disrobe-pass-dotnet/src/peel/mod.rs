@@ -283,6 +283,13 @@ pub(crate) fn try_managed_string_decryptor(
     report.recovered_strings = recovered;
 }
 
+const MAX_EAZVM_ANALYSIS_REFUSALS: usize = 32;
+const MAX_EAZVM_ANALYSIS_NAME_CHARS: usize = 128;
+
+fn bounded_eazvm_analysis_name(name: &str) -> String {
+    name.chars().take(MAX_EAZVM_ANALYSIS_NAME_CHARS).collect()
+}
+
 pub(crate) fn apply_eazvm_tier(image: &[u8], report: &mut PeelReport, protector_label: &str) {
     let Ok(recovery): std::result::Result<eazvm::EazVmRecovery, _> = eazvm::devirtualize(image)
     else {
@@ -292,18 +299,92 @@ pub(crate) fn apply_eazvm_tier(image: &[u8], report: &mut PeelReport, protector_
         return;
     }
     report.strategy = PeelStrategy::EncryptedResourceExtracted;
+    let recovered_decoder_count: u32 =
+        u32::try_from(recovery.methods.len()).map_or(u32::MAX, |count: u32| count);
     report.recovered_decoders = report
         .recovered_decoders
-        .saturating_add(u32::try_from(recovery.methods.len()).unwrap_or(u32::MAX));
+        .saturating_add(recovered_decoder_count);
+    let mut analysis_refusals: Vec<String> = Vec::new();
+    let mut analysis_refusal_count: usize = 0;
+    let analyzed: Vec<crate::devirt::extract::ExtractedVmModel> =
+        match crate::devirt::extract::models_from_eazvm_recovery(&recovery) {
+            Ok(models) => models,
+            Err(error) => {
+                analysis_refusals.push(format!("model extraction: {error:?}"));
+                analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                Vec::new()
+            }
+        };
+    let mut handler_analysis_completed: usize = 0;
+    let mut mba_budget: eazvm::cil_mba::ImageBudget = eazvm::cil_mba::ImageBudget::new();
     report.recovered_methods = recovery
         .methods
         .iter()
-        .map(|m: &eazvm::EazVmMethod| RecoveredMethod {
-            method_name: m.name.clone(),
-            metadata_token: m.metadata_token,
-            arg_count: m.info.param_count,
-            local_count: m.info.local_count,
-            cil: m.lifted.render(),
+        .enumerate()
+        .map(|(index, m): (usize, &eazvm::EazVmMethod)| {
+            let ordered_cil: Vec<String> = analyzed.get(index).map_or_else(
+                || m.lifted.render(),
+                |extracted: &crate::devirt::extract::ExtractedVmModel| {
+                    if extracted.method_name != m.name {
+                        if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
+                            analysis_refusals.push(format!(
+                                "method alignment: expected {}, found {}",
+                                bounded_eazvm_analysis_name(&m.name),
+                                bounded_eazvm_analysis_name(&extracted.method_name)
+                            ));
+                        }
+                        analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                        return m.lifted.render();
+                    }
+                    let mut budget: crate::devirt::Budget = crate::devirt::Budget::new(4_000_000);
+                    match crate::devirt::devirtualize(&extracted.model, &mut budget) {
+                        Ok(_) => {
+                            handler_analysis_completed =
+                                handler_analysis_completed.saturating_add(1);
+                            if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
+                                analysis_refusals.push(format!(
+                                    "{}: integer width metadata unavailable",
+                                    bounded_eazvm_analysis_name(&m.name)
+                                ));
+                            }
+                            analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                            m.lifted.render()
+                        }
+                        Err(reject) => {
+                            if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
+                                analysis_refusals.push(format!(
+                                    "{}: {}",
+                                    bounded_eazvm_analysis_name(&m.name),
+                                    reject.reason
+                                ));
+                            }
+                            analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                            m.lifted.render()
+                        }
+                    }
+                },
+            );
+            let cil: Vec<String> = match eazvm::cil_mba::rewrite_method(m, &mut mba_budget) {
+                eazvm::cil_mba::RewriteOutcome::Rewritten(body) => body.render(),
+                eazvm::cil_mba::RewriteOutcome::Unchanged => ordered_cil,
+                eazvm::cil_mba::RewriteOutcome::Refused(reason) => {
+                    if analysis_refusals.len() < MAX_EAZVM_ANALYSIS_REFUSALS {
+                        analysis_refusals.push(format!(
+                            "{}: W32 MBA rewrite refused: {reason}",
+                            bounded_eazvm_analysis_name(&m.name)
+                        ));
+                    }
+                    analysis_refusal_count = analysis_refusal_count.saturating_add(1);
+                    ordered_cil
+                }
+            };
+            RecoveredMethod {
+                method_name: m.name.clone(),
+                metadata_token: m.metadata_token,
+                arg_count: m.info.param_count,
+                local_count: m.info.local_count,
+                cil,
+            }
         })
         .collect();
     let total_instrs: usize = recovery
@@ -319,6 +400,20 @@ pub(crate) fn apply_eazvm_tier(image: &[u8], report: &mut PeelReport, protector_
         recovery.methods.len(),
         total_instrs,
     ));
+    report.notes.push(format!(
+        "{protector_label} VM-tier: canonical handler analysis completed for {handler_analysis_completed} of {} method body(ies); all bodies retain the ordered opcode lift until exact integer width metadata is available",
+        recovery.methods.len(),
+    ));
+    if !analysis_refusals.is_empty() {
+        let omitted: usize = analysis_refusal_count.saturating_sub(analysis_refusals.len());
+        if omitted > 0 {
+            analysis_refusals.push(format!("{omitted} additional refusal(s) omitted"));
+        }
+        report.notes.push(format!(
+            "{protector_label} VM-tier: canonical handler analysis and output refusals: {}",
+            analysis_refusals.join("; ")
+        ));
+    }
     if recovery.undecoded_count > 0 {
         let reason: &str = recovery
             .first_failure

@@ -8,6 +8,10 @@ use super::ir::BinOp;
 use super::profile::{OperandEncoding, SyntheticHandler, SyntheticVmModel, VInstr};
 use super::state::PrimitiveEffect;
 
+const MAX_EAZVM_MODELS: usize = 1_024;
+const MAX_EAZVM_MODEL_INSTRUCTIONS: usize = 4_096;
+const MAX_EAZVM_MODEL_INSTRUCTIONS_TOTAL: usize = 65_536;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtractedVmModel {
     pub method_name: String,
@@ -66,8 +70,29 @@ impl HandlerTableBuilder {
 
 pub fn models_from_eazvm_image(image: &[u8]) -> Result<Vec<ExtractedVmModel>, ExtractError> {
     let recovery: EazVmRecovery = devirtualize(image).map_err(ExtractError::Recovery)?;
+    models_from_eazvm_recovery(&recovery)
+}
+
+pub(crate) fn models_from_eazvm_recovery(
+    recovery: &EazVmRecovery,
+) -> Result<Vec<ExtractedVmModel>, ExtractError> {
     if recovery.methods.is_empty() {
         return Err(ExtractError::NoMethods);
+    }
+    if recovery.methods.len() > MAX_EAZVM_MODELS {
+        return Err(ExtractError::ProgramTooLarge);
+    }
+    let mut instruction_total: usize = 0;
+    for method in &recovery.methods {
+        if method.lifted.instrs.len() > MAX_EAZVM_MODEL_INSTRUCTIONS {
+            return Err(ExtractError::ProgramTooLarge);
+        }
+        instruction_total = instruction_total
+            .checked_add(method.lifted.instrs.len())
+            .ok_or(ExtractError::ProgramTooLarge)?;
+        if instruction_total > MAX_EAZVM_MODEL_INSTRUCTIONS_TOTAL {
+            return Err(ExtractError::ProgramTooLarge);
+        }
     }
     let mut models: Vec<ExtractedVmModel> = Vec::with_capacity(recovery.methods.len());
     for method in &recovery.methods {
@@ -79,6 +104,13 @@ pub fn models_from_eazvm_image(image: &[u8]) -> Result<Vec<ExtractedVmModel>, Ex
 fn model_from_method(method: &EazVmMethod) -> Result<ExtractedVmModel, ExtractError> {
     let body: &LiftedBody = &method.lifted;
     let program_length: usize = body.instrs.len();
+    if program_length > MAX_EAZVM_MODEL_INSTRUCTIONS {
+        return Err(ExtractError::ProgramTooLarge);
+    }
+    let argument_count: u16 =
+        u16::try_from(method.info.param_count).map_err(|_| ExtractError::ProgramTooLarge)?;
+    let local_count: u16 =
+        u16::try_from(method.info.local_count).map_err(|_| ExtractError::ProgramTooLarge)?;
     let mut builder: HandlerTableBuilder = HandlerTableBuilder::default();
     let mut instructions: Vec<VInstr> = Vec::with_capacity(program_length);
     for instruction in &body.instrs {
@@ -87,10 +119,6 @@ fn model_from_method(method: &EazVmMethod) -> Result<ExtractedVmModel, ExtractEr
         let handler_id: u16 = builder.intern(spec)?;
         instructions.push(VInstr::new(handler_id, operand));
     }
-    let argument_count: u16 =
-        u16::try_from(method.info.param_count).map_err(|_| ExtractError::ProgramTooLarge)?;
-    let local_count: u16 =
-        u16::try_from(method.info.local_count).map_err(|_| ExtractError::ProgramTooLarge)?;
     Ok(ExtractedVmModel {
         method_name: method.name.clone(),
         model: SyntheticVmModel::new(
@@ -168,6 +196,9 @@ fn handler_spec(instruction: &LiftedInstr) -> HandlerSpec {
         CilOp::Add => plain(vec![PrimitiveEffect::Binary(BinOp::Add)]),
         CilOp::Sub => plain(vec![PrimitiveEffect::Binary(BinOp::Sub)]),
         CilOp::Mul => plain(vec![PrimitiveEffect::Binary(BinOp::Mul)]),
+        CilOp::And => plain(vec![PrimitiveEffect::Binary(BinOp::And)]),
+        CilOp::Or => plain(vec![PrimitiveEffect::Binary(BinOp::Or)]),
+        CilOp::Xor => plain(vec![PrimitiveEffect::Binary(BinOp::Xor)]),
         CilOp::Ret => plain(vec![PrimitiveEffect::Return]),
         CilOp::BrS => target(vec![PrimitiveEffect::Branch]),
         CilOp::BrtrueS => target(vec![PrimitiveEffect::BranchIfTrue]),

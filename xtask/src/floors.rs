@@ -74,11 +74,11 @@ const CLAIMS: [FloorClaim; 18] = [
         constant: "CLEAN_BASELINE_INSTRUCTIONS",
         source: EAZVM_GATE,
         sites: &[
-            (WHITEPAPER_DOC, "The result is 57 of {} instructions"),
-            (WHITEPAPER_DOC, "The EazVM ordered-CIL grade, 57 of {}"),
-            (WHITEPAPER_DOC, "at 57 of {} instructions in order"),
-            (DOTNET_DOC, "57 of {} instructions match in sequence"),
-            (README_DOC, "57 / {} instructions lifted, ordered-CIL match"),
+            (WHITEPAPER_DOC, "The result is 67 of {} instructions"),
+            (WHITEPAPER_DOC, "The EazVM ordered-CIL grade, 67 of {}"),
+            (WHITEPAPER_DOC, "at 67 of {} instructions in order"),
+            (DOTNET_DOC, "67 of {} instructions match in sequence"),
+            (README_DOC, "67 / {} instructions lifted, ordered-CIL match"),
         ],
     },
     FloorClaim {

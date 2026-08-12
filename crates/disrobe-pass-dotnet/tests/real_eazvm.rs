@@ -12,6 +12,12 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[cfg(feature = "chain")]
+use disrobe_core::chain::{ChildArtifact, Pass};
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
+#[cfg(feature = "chain")]
+use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::peel::eazvm::grade::{
     OrderedInstr, OrderedScore, grade_ordered_lifted, known_method_ordered, ordered_lifted,
 };
@@ -20,8 +26,8 @@ use disrobe_pass_dotnet::peel::eazvm::{
 };
 use disrobe_pass_dotnet::peel::{PeelReport, PeelStrategy, peel_eazfuscator};
 
-const EXPECTED_STDOUT: &str = "5\n69\n55\n-1\n9\n";
-const CLEAN_BASELINE_INSTRUCTIONS: u32 = 57;
+const EXPECTED_STDOUT: &str = "5\n69\n2147483647\n55\n-1\n9\n";
+const CLEAN_BASELINE_INSTRUCTIONS: u32 = 67;
 
 fn corpus_dir() -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -36,14 +42,64 @@ fn corpus(rel: &str) -> Vec<u8> {
     })
 }
 
+fn execute_ordered_i4(cil: &[String], arguments: &[i32]) -> i32 {
+    let mut stack: Vec<i32> = Vec::new();
+    for line in cil {
+        let mut fields: std::str::SplitWhitespace<'_> = line.split_whitespace();
+        let label: &str = fields.next().unwrap_or_default();
+        assert!(label.starts_with("IL_"), "expected ordered CIL, got {line}");
+        match fields.next().unwrap_or_default() {
+            "ldarg.0" => stack.push(arguments[0]),
+            "ldarg.1" => stack.push(arguments[1]),
+            "ldc.i4.1" => stack.push(1),
+            "ldc.i4.3" => stack.push(3),
+            "add" => {
+                let right: i32 = stack.pop().expect("right add operand");
+                let left: i32 = stack.pop().expect("left add operand");
+                stack.push(left.wrapping_add(right));
+            }
+            "sub" => {
+                let right: i32 = stack.pop().expect("right subtract operand");
+                let left: i32 = stack.pop().expect("left subtract operand");
+                stack.push(left.wrapping_sub(right));
+            }
+            "mul" => {
+                let right: i32 = stack.pop().expect("right multiply operand");
+                let left: i32 = stack.pop().expect("left multiply operand");
+                stack.push(left.wrapping_mul(right));
+            }
+            "and" => {
+                let right: i32 = stack.pop().expect("right and operand");
+                let left: i32 = stack.pop().expect("left and operand");
+                stack.push(left & right);
+            }
+            "xor" => {
+                let right: i32 = stack.pop().expect("right xor operand");
+                let left: i32 = stack.pop().expect("left xor operand");
+                stack.push(left ^ right);
+            }
+            "ret" => return stack.pop().expect("return value"),
+            opcode => panic!("unsupported ordered i4 opcode {opcode} in {line}"),
+        }
+    }
+    panic!("ordered i4 method has no return")
+}
+
+const fn clean_poly_i4(argument: i32) -> i32 {
+    argument
+        .wrapping_mul(argument)
+        .wrapping_add(3_i32.wrapping_mul(argument))
+        .wrapping_sub(1)
+}
+
 #[test]
 fn detect_reports_full_vm_structure() {
     let image: Vec<u8> = corpus("EazSample.eazvm.dll");
     let d: EazVmDetection = detect(&image);
     assert!(d.embedded_resource_present);
     assert!(d.dispatch_table_present);
-    assert_eq!(d.identified_opcodes, 48);
-    assert_eq!(d.stub_count, 5);
+    assert_eq!(d.identified_opcodes, 51);
+    assert_eq!(d.stub_count, 6);
 }
 
 #[test]
@@ -68,7 +124,7 @@ fn devirtualizes_every_method_to_ordered_cil() {
         "undecoded={:?}",
         recovery.undecoded
     );
-    assert_eq!(recovery.methods.len(), 5);
+    assert_eq!(recovery.methods.len(), 6);
 
     let known: BTreeMap<String, Vec<OrderedInstr>> = known_method_ordered(&clean, "Compute");
     let mut total_matched: u32 = 0;
@@ -96,7 +152,7 @@ fn devirtualizes_every_method_to_ordered_cil() {
     );
     assert_eq!(
         total_length, CLEAN_BASELINE_INSTRUCTIONS,
-        "the five Compute bodies hold {CLEAN_BASELINE_INSTRUCTIONS} instructions in the clean \
+        "the six Compute bodies hold {CLEAN_BASELINE_INSTRUCTIONS} instructions in the clean \
          baseline, and that count is the denominator the documents publish, so a shorter baseline \
          must fail here rather than raise the rate against a smaller population"
     );
@@ -145,6 +201,141 @@ fn peel_path_surfaces_vm_tier_recovery() {
             .any(|n: &String| n.contains("VM-tier") && n.contains("lifted")),
         "peel notes must describe the VM-tier lift; got {:?}",
         report.notes
+    );
+    assert!(
+        report.notes.iter().any(|note: &String| {
+            note.contains("canonical handler analysis completed for 3 of 6 method body")
+        }),
+        "the committed EazVM image must reach canonical handler analysis through the public peel caller; got {:?}",
+        report.notes
+    );
+    assert!(
+        report.notes.iter().any(|note: &String| {
+            note.contains("canonical handler analysis and output refusals:")
+                && note.contains("Add: integer width metadata unavailable")
+                && note.contains("Classify: virtual instruction has an unknown handler effect")
+        }),
+        "the public caller must retain the typed refusal when it preserves the ordered lift; got {:?}",
+        report.notes
+    );
+    let add: &disrobe_pass_dotnet::RecoveredMethod = report
+        .recovered_methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Add")
+        .expect("Add recovery");
+    assert!(
+        add.cil.iter().any(|line: &String| line == "IL_0002 add")
+            && !add.cil.iter().any(|line: &String| line.contains("int64")),
+        "the public EazVM peel output must retain the ordered i4 lift until exact integer widths are known; got {:?}",
+        add.cil
+    );
+    let classify: &disrobe_pass_dotnet::RecoveredMethod = report
+        .recovered_methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Classify")
+        .expect("Classify recovery");
+    assert!(
+        classify
+            .cil
+            .iter()
+            .any(|line: &String| line.starts_with("IL_")),
+        "a refused handler analysis must preserve the ordered opcode lift; got {:?}",
+        classify.cil
+    );
+}
+
+#[test]
+fn peel_keeps_i4_overflow_semantics_when_handler_analysis_succeeds() {
+    let image: Vec<u8> = corpus("EazSample.eazvm.dll");
+    let report: PeelReport = peel_eazfuscator(&image).expect("peel");
+    let poly: &disrobe_pass_dotnet::RecoveredMethod = report
+        .recovered_methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Poly")
+        .expect("Poly recovery");
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note: &String| { note.contains("Poly: integer width metadata unavailable") })
+    );
+
+    let argument: i32 = 50_000;
+    let recovered: i32 = execute_ordered_i4(&poly.cil, &[argument]);
+    let clean_reference: i32 = clean_poly_i4(argument);
+    let promoted_i64: i64 =
+        i64::from(argument) * i64::from(argument) + 3_i64 * i64::from(argument) - 1_i64;
+
+    assert_eq!(clean_reference, -1_794_817_297);
+    assert_eq!(recovered, clean_reference);
+    assert_eq!(promoted_i64, 2_500_149_999);
+    assert_ne!(i64::from(recovered), promoted_i64);
+}
+
+#[test]
+fn peel_simplifies_real_mixed_i4_body_before_rendering() {
+    let image: Vec<u8> = corpus("EazSample.eazvm.dll");
+    let report: PeelReport = peel_eazfuscator(&image).expect("peel");
+    let mixed: &disrobe_pass_dotnet::RecoveredMethod = report
+        .recovered_methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Mixed")
+        .expect("Mixed recovery");
+
+    assert_eq!(
+        mixed.cil,
+        vec![
+            "IL_0000 ldarg.0".to_string(),
+            "IL_0001 ldarg.1".to_string(),
+            "IL_0002 add".to_string(),
+            "IL_0003 ret".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn mixed_differential_rejects_a_deliberate_operator_mutation() {
+    let image: Vec<u8> = corpus("EazSample.eazvm.dll");
+    let report: PeelReport = peel_eazfuscator(&image).expect("peel");
+    let mixed: &disrobe_pass_dotnet::RecoveredMethod = report
+        .recovered_methods
+        .iter()
+        .find(|method: &&disrobe_pass_dotnet::RecoveredMethod| method.method_name == "Mixed")
+        .expect("Mixed recovery");
+    let mut mutated: Vec<String> = mixed.cil.clone();
+    mutated[2] = "IL_0002 sub".to_string();
+
+    for argument in [0, 1, -1, i32::MIN, i32::MAX, 0x5555_5555] {
+        let reference: i32 = argument.wrapping_add(-1);
+        assert_eq!(execute_ordered_i4(&mixed.cil, &[argument, -1]), reference);
+        assert_ne!(execute_ordered_i4(&mutated, &[argument, -1]), reference);
+    }
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn auto_chain_emits_width_preserving_eazvm_cil() {
+    let image: Vec<u8> = corpus("EazSample.eazvm.dll");
+    let artifact: Artifact = Artifact::new(Rung::Raw, image, [0u8; 32]);
+    let children: Vec<ChildArtifact> = DOTNET_PASS
+        .extract_children(&artifact)
+        .expect("EazVM child extraction");
+    let recovered_cil: &ChildArtifact = children
+        .iter()
+        .find(|child: &&ChildArtifact| child.handle.relative_path.ends_with(".recovered-cil.txt"))
+        .expect("recovered CIL child");
+    let text: &str = std::str::from_utf8(&recovered_cil.bytes).expect("UTF-8 recovered CIL");
+    assert!(
+        text.contains("method Add token=")
+            && text.contains("IL_0000 ldarg.0")
+            && text.contains("IL_0001 ldarg.1")
+            && text.contains("IL_0002 add")
+            && !text.contains("int64"),
+        "the auto/chain artifact must retain the width-preserving ordered Add method; got {text}"
+    );
+    assert!(
+        text.contains("method Classify token=") && text.contains("IL_"),
+        "the auto/chain artifact must retain the ordered lift for refused handlers; got {text}"
     );
 }
 
@@ -206,8 +397,8 @@ fn recovered_cil_reinjects_and_runs_identically() {
     let recovery: EazVmRecovery = devirtualize(&vm).expect("devirtualize");
     assert_eq!(
         recovery.methods.len(),
-        5,
-        "all five bodies must devirtualize"
+        6,
+        "all six bodies must devirtualize"
     );
     let recovered_cil: String = render_recovered_cil(&recovery);
     assert!(

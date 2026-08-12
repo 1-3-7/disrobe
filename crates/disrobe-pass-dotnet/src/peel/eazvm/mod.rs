@@ -1,3 +1,4 @@
+pub(crate) mod cil_mba;
 pub mod disasm;
 pub mod dispatch;
 pub mod grade;
@@ -401,8 +402,8 @@ mod tests {
             d.dispatch_table_present,
             "the virtual->CIL dispatch table must be recoverable"
         );
-        assert_eq!(d.identified_opcodes, 48, "all 48 handlers identified");
-        assert_eq!(d.stub_count, 5, "five methods were virtualized");
+        assert_eq!(d.identified_opcodes, 51, "all 51 handlers identified");
+        assert_eq!(d.stub_count, 6, "six methods were virtualized");
     }
 
     #[test]
@@ -414,8 +415,8 @@ mod tests {
             "no method should fail to decode; undecoded={:?}",
             recovery.undecoded
         );
-        assert_eq!(recovery.methods.len(), 5);
-        for expected in ["Add", "Classify", "Max3", "Poly", "SumTo"] {
+        assert_eq!(recovery.methods.len(), 6);
+        for expected in ["Add", "Classify", "Max3", "Mixed", "Poly", "SumTo"] {
             let m: &EazVmMethod =
                 lookup_method(&recovery, expected).expect("recovered method present");
             assert!(

@@ -9,14 +9,14 @@ compiler = "Roslyn csc (.NET 9 SDK), -optimize+"
 virtualizer = "corpus/dotnet/eazvm/virtualizer (our implementation of the Eaz VM wire format)"
 isa_reference = "the publicly documented Eazfuscator.NET VM as captured by the eazdevirt project: CryptoStreamV1 position-keyed XOR, base-85 PositionString over an Int64 with the DefaultPseudoRandomInts, ReadInt32Special jumbled opcode/operand reader, per-build randomized virtual-opcode table, by-name member resolution"
 seed = 24226
-verified = "the recovered CIL matches the independently compiled clean DLL 57/57 instructions in order (opcode and operand, branch targets resolved to instruction index), and re-injected into a runnable assembly prints output byte-identical to the unobfuscated baseline under the .NET 9 runtime"
+verified = "the recovered CIL matches the independently compiled clean DLL 67/67 instructions in order (opcode and operand, branch targets resolved to instruction index), and re-injected into a runnable assembly prints output byte-identical to the unobfuscated baseline under the .NET 9 runtime"
 
 [[fixture]]
 name = "EazSample.cs"
 path = "EazSample.cs"
 kind = "csharp-source"
 provenance = "real"
-description = "benign self-authored source: Add, Poly, SumTo, Classify, Max3 plus Main"
+description = "benign self-authored source: Add, Poly, Mixed, SumTo, Classify, Max3 plus Main"
 
 [[fixture]]
 name = "EazSample.clean.dll"
@@ -24,14 +24,14 @@ path = "EazSample.clean.dll"
 kind = "managed-pe-exe"
 provenance = "real"
 source = "EazSample.cs"
-description = "unobfuscated baseline; the ground-truth CIL the devirtualizer is graded against. Output: 5 / 69 / 55 / -1 / 9"
+description = "unobfuscated baseline; the ground-truth CIL the devirtualizer is graded against. Output: 5 / 69 / 2147483647 / 55 / -1 / 9"
 
 [[fixture]]
 name = "EazSample.eazvm.dll"
 path = "EazSample.eazvm.dll"
 kind = "eazvm-virtualized-pe"
 provenance = "self-virtualized"
-description = "the clean assembly after EazVM-format virtualization by our own in-repo encoder (NOT the paid Eazfuscator.NET tool, which was never run); it reproduces the documented Eazfuscator VM wire format. Five method bodies replaced with position-string stubs, 48 handler methods, a dispatch-table builder, and the EazVirtualizedStream embedded resource holding the position-keyed encrypted virtual-instruction stream"
+description = "the clean assembly after EazVM-format virtualization by our own in-repo encoder (NOT the paid Eazfuscator.NET tool, which was never run); it reproduces the documented Eazfuscator VM wire format. Six method bodies replaced with position-string stubs, 51 handler methods, a dispatch-table builder, and the EazVirtualizedStream embedded resource holding the position-keyed encrypted virtual-instruction stream"
 
 [[fixture]]
 name = "EazSample.opcodemap.txt"
@@ -52,11 +52,12 @@ name = "EazSample.devirt.dll"
 path = "EazSample.devirt.dll"
 kind = "reinjected-pe"
 provenance = "derived"
-description = "a runnable assembly rebuilt purely from EazSample.recovered.cil; running it prints 5 / 69 / 55 / -1 / 9, byte-identical to the clean baseline, proving the lift is semantically correct"
+description = "a runnable assembly rebuilt purely from EazSample.recovered.cil; running it prints 5 / 69 / 2147483647 / 55 / -1 / 9, byte-identical to the clean baseline, proving the lift is semantically correct"
 
 [virtualized_methods]
 Add = "(int a, int b) => a + b; Add(2,3)=5"
 Poly = "(int x) => x*x + 3*x - 1; Poly(7)=69"
+Mixed = "(int x,int y) => (x^y)+2*(x&y); Mixed(int.MinValue,-1)=2147483647"
 SumTo = "(int n) => sum 1..n via for loop; SumTo(10)=55"
 Classify = "(int v) => v<0 ? -1 : v==0 ? 0 : 1; Classify(-5)=-1"
 Max3 = "(int a,int b,int c) => max of three; Max3(3,9,4)=9"

@@ -4,6 +4,8 @@ use disrobe_bytes::ByteReader;
 pub struct EazMethodInfo {
     pub name: String,
     pub return_type_code: i32,
+    pub local_type_codes: Vec<i32>,
+    pub parameter_type_codes: Vec<i32>,
     pub returns_void: bool,
     pub local_count: u32,
     pub param_count: u32,
@@ -16,6 +18,7 @@ pub enum StreamError {
     Truncated,
     BadVersion(u8),
     BadString,
+    TooManySlots,
 }
 
 struct Reader<'a> {
@@ -82,6 +85,7 @@ impl<'a> Reader<'a> {
 }
 
 pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
+    const MAX_METHOD_SLOTS: u32 = 1_024;
     let mut r: Reader<'_> = Reader::new(region);
 
     let version: u8 = r.u8()?;
@@ -91,7 +95,16 @@ pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
 
     let local_count: i16 = r.i16()?;
     let local_n: u32 = u32::try_from(local_count.max(0)).unwrap_or(0);
-    r.skip(local_n as usize * 4)?;
+    if local_n > MAX_METHOD_SLOTS {
+        return Err(StreamError::TooManySlots);
+    }
+    let mut local_type_codes: Vec<i32> = Vec::new();
+    local_type_codes
+        .try_reserve_exact(local_n as usize)
+        .map_err(|_| StreamError::BadString)?;
+    for _ in 0..local_n {
+        local_type_codes.push(r.i32()?);
+    }
 
     let return_type_code: i32 = r.i32()?;
     let _unknown1: bool = r.bool()?;
@@ -99,7 +112,17 @@ pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
 
     let param_count: i16 = r.i16()?;
     let param_n: u32 = u32::try_from(param_count.max(0)).unwrap_or(0);
-    r.skip(param_n as usize * 5)?;
+    if param_n > MAX_METHOD_SLOTS {
+        return Err(StreamError::TooManySlots);
+    }
+    let mut parameter_type_codes: Vec<i32> = Vec::new();
+    parameter_type_codes
+        .try_reserve_exact(param_n as usize)
+        .map_err(|_| StreamError::BadString)?;
+    for _ in 0..param_n {
+        parameter_type_codes.push(r.i32()?);
+        r.skip(1)?;
+    }
 
     let name: String = r.dotnet_string()?;
 
@@ -118,6 +141,8 @@ pub fn parse_method_info(region: &[u8]) -> Result<EazMethodInfo, StreamError> {
     Ok(EazMethodInfo {
         name,
         return_type_code,
+        local_type_codes,
+        parameter_type_codes,
         returns_void: return_type_code == 0,
         local_count: local_n,
         param_count: param_n,

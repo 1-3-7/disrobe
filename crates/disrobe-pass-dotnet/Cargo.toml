@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 disrobe-cfg = { workspace = true }
 disrobe-core = { workspace = true }
+disrobe-mba = { workspace = true }
 disrobe-binfmt = { workspace = true }
 disrobe-bytes = { workspace = true }
 disrobe-pass-native = { workspace = true }

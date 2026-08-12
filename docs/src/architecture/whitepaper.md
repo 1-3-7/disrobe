@@ -1950,12 +1950,12 @@ for i in 0..common {
 ```
 (`crates/disrobe-pass-dotnet/src/peel/eazvm/grade.rs`, `grade_ordered`)
 
-The corpus's five virtualized bodies hold exactly 57 instructions in the clean baseline, and every one of them must match in order. The test fixes both the count and the percentage:
+The corpus's six virtualized bodies hold exactly 67 instructions in the clean baseline, and every one of them must match in order. The test fixes both the count and the percentage:
 
 ```rust
 assert_eq!(
-    total_length, 57,
-    "the five Compute bodies hold 57 instructions in the clean baseline"
+    total_length, 67,
+    "the six Compute bodies hold 67 instructions in the clean baseline"
 );
 assert!(
     (pct - 100.0).abs() < f64::EPSILON,
@@ -1965,7 +1965,7 @@ assert!(
 ```
 (`real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`)
 
-The result is 57 of 57 instructions recovered in order, a 100% ordered match against compiler-emitted CIL the recovery code never saw. A separate test closes the loop dynamically when a .NET runtime is present: the recovered CIL is rendered, re-injected into a rebuilt assembly, executed, and its standard output compared byte-for-byte against the clean program's output `"5\n69\n55\n-1\n9\n"` (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`, expected constant `EXPECTED_STDOUT`). When no runtime is on `PATH` the dynamic half is skipped explicitly and the in-process ordered-CIL equivalence still gates the run (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`); the numeric claim never silently depends on a tool that was absent.
+The result is 67 of 67 instructions recovered in order, a 100% ordered match against compiler-emitted CIL the recovery code never saw. One body contains the W32 identity `(x ^ y) + 2 * (x & y)` and the recovery path emits the shorter equivalent `x + y` CIL only after an exact-width proof. A separate test closes the loop dynamically when a .NET runtime is present: the recovered CIL is rendered, re-injected into a rebuilt assembly, executed, and its standard output compared byte-for-byte against the clean program's output `"5\n69\n2147483647\n55\n-1\n9\n"` (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`, expected constant `EXPECTED_STDOUT`). When no runtime is on `PATH` the dynamic half is skipped explicitly and the in-process ordered-CIL equivalence still gates the run (`real_eazvm.rs`, `recovered_cil_reinjects_and_runs_identically`); the numeric claim never silently depends on a tool that was absent.
 
 KoiVM is graded against an independent, hand-specified projection of the same six methods rather than compiler-emitted CIL. The `ground_truth` table declares the expected operation sequence for each method (`koivm/grade.rs`, `ground_truth`), `project` collapses the lifted body into the same coarse vocabulary, and the aggregate must clear a 75% floor:
 
@@ -2143,12 +2143,12 @@ Because the recovered function is linked against the same object that produced t
 
 The recovered artifact is graded against a separately produced clean artifact that was never packed, virtualized, or obfuscated. The oracle is a second, independently built version of the same program. This is the form used when the recovery target is a transformation that has an inverse only in the presence of a known-good reference, such as a commercial virtualizing protector.
 
-The Eazfuscator VM devirtualizer is graded against a clean assembly compiled from the same source without the protector. First, the clean baseline must not be mistaken for the protected one, which guards against a detector that fires on everything: the negative-baseline test shown in section 3.1 asserts the clean DLL exposes no dispatch table, carries zero stubs, and cannot be devirtualized (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `clean_assembly_is_not_seen_as_eazvm`). Then the devirtualized CIL is graded instruction by instruction, in order, against the CIL of the clean baseline, and the match must be exact, using the `grade_ordered` comparison and the 57-of-57 assertion shown in section 3.3 (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`).
+The Eazfuscator VM devirtualizer is graded against a clean assembly compiled from the same source without the protector. First, the clean baseline must not be mistaken for the protected one, which guards against a detector that fires on everything: the negative-baseline test shown in section 3.1 asserts the clean DLL exposes no dispatch table, carries zero stubs, and cannot be devirtualized (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `clean_assembly_is_not_seen_as_eazvm`). Then the devirtualized CIL is graded instruction by instruction, in order, against the CIL of the clean baseline, and the match must be exact, using the `grade_ordered` comparison and the 67-of-67 assertion shown in section 3.3 (`crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `devirtualizes_every_method_to_ordered_cil`).
 
 The strongest step in this oracle removes even the assumption that matching CIL implies matching behavior. The recovered CIL is re-injected into an assembly, rebuilt with the real .NET toolchain, executed, and its standard output is compared byte for byte against the known output of the clean program:
 
 ```rust
-const EXPECTED_STDOUT: &str = "5\n69\n55\n-1\n9\n";
+const EXPECTED_STDOUT: &str = "5\n69\n2147483647\n55\n-1\n9\n";
 ```
 `crates/disrobe-pass-dotnet/tests/real_eazvm.rs`, `EXPECTED_STDOUT`
 
@@ -2379,7 +2379,7 @@ A floor is only as reproducible as its inputs and its toolchain. When an oracle 
 
 Reproducible with a Rust toolchain alone, because the input and the reference answer are both committed:
 
-- The EazVM ordered-CIL grade, 57 of 57 (Section 3.3). Both `EazSample.eazvm.dll` and the `EazSample.clean.dll` answer key are committed; the grade is computed in process. Only the dynamic re-injection half needs a .NET runtime, and it says so when one is absent.
+- The EazVM ordered-CIL grade, 67 of 67 (Section 3.3). Both `EazSample.eazvm.dll` and the `EazSample.clean.dll` answer key are committed; the grade is computed in process. Only the dynamic re-injection half needs a .NET runtime, and it says so when one is absent.
 - The KoiVM grade against its hand-specified ground truth, including the seed-0 `System.Random` and descriptor-table anchors.
 - The UPX `.text` and `.pdata` byte-identity assertions and the 96.0% nrv2b whole-image content floor (Section 4.2.4).
 - The Go floors. The reference is a committed capture of real `go tool nm` output alongside the committed binaries (`crates/disrobe-pass-go/tests/fixtures/`), so no Go toolchain is needed at test time; the reference was produced by the real tool, not simulated. A missing or unreadable tracked fixture fails the gate.
@@ -2452,7 +2452,7 @@ reproduce from a clone is the byte-identical `.text` and `.pdata` recovery and t
 
 The KoiVM oracle is weaker than the Eazfuscator oracle. EazVM recovery is graded against
 ordered CIL that the C# compiler emitted into a separate clean assembly the recovery code
-never sees, at 57 of 57 instructions in order. KoiVM is graded against a hand-specified
+never sees, at 67 of 67 instructions in order. KoiVM is graded against a hand-specified
 projection of the same six methods over a coarser operation vocabulary: two bodies (Add,
 Square) are proven to recover fully and the aggregate clears a 75% floor, so the other four
 are bounded only by that floor and are not claimed as full recoveries. The oracle is

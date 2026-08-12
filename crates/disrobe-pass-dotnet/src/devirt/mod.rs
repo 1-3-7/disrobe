@@ -6,6 +6,7 @@ pub mod extract;
 mod handlers;
 mod ir;
 mod lift;
+mod mba;
 mod microop;
 pub mod oracle;
 mod profile;

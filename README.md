@@ -107,7 +107,7 @@ The Oracle column names the independent reference in a few words. What that refe
 | Pickle safety | 102 / 102 fixtures classify `[CI]` | pickletools semantics | `crates/disrobe-pass-pickle/tests/corpus.rs` |
 | Pickle reconstruction roundtrip | 470 / 470 re-execute equal, floor 100% `[CI]` | CPython re-execution | `crates/disrobe-pass-pickle/tests/roundtrip.rs` |
 | Android DEX, committed corpus | <!-- m:dalvik_verifier_frac -->118 / 118<!-- /m --> verifier-presented classes clean, 317 re-hosted bodies clean `[CI]` | real JVM verifier | `crates/disrobe-pass-jvm/tests/dalvik_verifier_gate.rs` |
-| .NET Eazfuscator VM | 57 / 57 instructions lifted, ordered-CIL match `[CI]` | independent clean DLL | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
+| .NET Eazfuscator VM | 67 / 67 instructions lifted, ordered-CIL match `[CI]` | independent clean DLL | `crates/disrobe-pass-dotnet/tests/real_eazvm.rs` |
 | .NET KoiVM | 6 / 6 bodies lifted, structural recovery >= 75% `[CI]` | independent clean build | `crates/disrobe-pass-dotnet/tests/real_koivm.rs` |
 | .NET protectors | <!-- m:dotnet_protectors -->23<!-- /m --> classified, ConfuserEx2 decrypted `[CI]` | plaintext-absent check | `crates/disrobe-pass-dotnet/tests/confuserex2_full.rs` |
 | WebAssembly, execution-equiv | <!-- m:wasm_execution_frac -->57 / 57<!-- /m --> eligible functions equal, 6 byte-identical `[CI]` | wasmtime differential | `crates/disrobe-pass-wasm-deob/tests/semantic_differential.rs` |

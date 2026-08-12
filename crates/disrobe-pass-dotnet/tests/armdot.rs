@@ -73,7 +73,7 @@ fn armdot_route_lifts_eazvm_shaped_stream_not_a_real_armdot_sample() {
     let report: PeelReport = peel_armdot(&image).expect("peel");
     assert_eq!(report.protector, Protector::ArmDot);
     assert_eq!(report.strategy, PeelStrategy::EncryptedResourceExtracted);
-    assert_eq!(report.recovered_methods.len(), 5);
+    assert_eq!(report.recovered_methods.len(), 6);
     assert!(
         report
             .recovered_methods

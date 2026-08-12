@@ -140,14 +140,18 @@ impl Pass for DotnetPass {
             .unwrap_or_else(|| "dotnet".to_string());
         let mut children: Vec<ChildArtifact> = Vec::new();
 
-        if let Ok(summary) = analyze(bytes)
-            && let Ok(json) = serde_json::to_vec_pretty(&analyze_manifest(&summary))
+        let summary: Option<PassSummary> = analyze(bytes).ok();
+        if let Some(summary) = summary.as_ref()
+            && let Ok(json) = serde_json::to_vec_pretty(&analyze_manifest(summary))
         {
             push_terminal_child(&mut children, format!("{stem}.analyze.json"), json);
         }
 
-        let detection: DetectionReport = detect_all(bytes);
-        if let Some(protector) = detection.primary
+        let protector: Option<Protector> = summary
+            .as_ref()
+            .and_then(|summary: &PassSummary| summary.primary_protector)
+            .or_else(|| detect_all(bytes).primary);
+        if let Some(protector) = protector
             && let Some(Ok(report)) = peel_by(protector, bytes)
         {
             if let Ok(json) = serde_json::to_vec_pretty(&peel_manifest(protector, &report)) {

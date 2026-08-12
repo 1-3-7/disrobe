@@ -122,7 +122,7 @@ namespace EazVmBuilder
                     MethodBodyBlock bodyBlock = peReader.GetMethodBody(rva);
                     int localCount = CountLocals(md, bodyBlock.LocalSignature);
 
-                    List<CilOp> ops = DecodeCil(bodyBlock.GetILBytes(), md);
+                    List<CilOp> ops = DecodeCil(bodyBlock.GetILBytes() ?? Array.Empty<byte>(), md);
                     result.Add(new SrcMethod
                     {
                         Name = methodName,
@@ -205,6 +205,8 @@ namespace EazVmBuilder
                     case 0x5A: op.Name = "mul"; break;
                     case 0x5B: op.Name = "div"; break;
                     case 0x5D: op.Name = "rem"; break;
+                    case 0x5F: op.Name = "and"; break;
+                    case 0x61: op.Name = "xor"; break;
                     case 0x72: op.Name = "ldstr"; op.Operand = EazOperand.InlineString; op.LiteralString = ResolveUserString(md, BitConverter.ToInt32(il, pos)); pos += 4; break;
                     default: throw new NotSupportedException($"unhandled CIL byte 0x{b:X2} at {start}");
                 }
@@ -251,7 +253,7 @@ namespace EazVmBuilder
                 "ldc.i4.5", "ldc.i4.6", "ldc.i4.7", "ldc.i4.8", "ldc.i4.s", "ldc.i4",
                 "dup", "pop", "call", "ret",
                 "br.s", "brfalse.s", "brtrue.s", "beq.s", "bge.s", "bgt.s", "ble.s", "blt.s",
-                "add", "sub", "mul", "div", "rem", "ldstr",
+                "add", "sub", "mul", "div", "rem", "and", "or", "xor", "ldstr",
             };
             var used = new HashSet<int>();
             var map = new Dictionary<string, int>();
@@ -476,7 +478,7 @@ namespace EazVmBuilder
                 sb.AppendLine($"op {kv.Key} {unchecked((uint)kv.Value)}");
             foreach (SrcMethod m in methods)
                 sb.AppendLine($"method {m.Name} pos={positions[m.Name]} pstr={positionStrings[m.Name]} params={m.ParamCount} locals={m.LocalCount} ret={(m.ReturnsVoid ? "void" : "i4")}");
-            File.WriteAllText(path, sb.ToString());
+            File.WriteAllText(path, sb.ToString().Replace("\r\n", "\n"));
         }
 
         // -------- assembly emission --------
@@ -488,7 +490,7 @@ namespace EazVmBuilder
             var ilBuilder = new BlobBuilder();
 
             md.AddModule(0, md.GetOrAddString("EazSample.eazvm.dll"),
-                md.GetOrAddGuid(Guid.NewGuid()), default, default);
+                md.GetOrAddGuid(new Guid("5ea20000-0000-0000-0000-000000000034")), default, default);
 
             AssemblyReferenceHandle corlib = md.AddAssemblyReference(
                 md.GetOrAddString("System.Runtime"),

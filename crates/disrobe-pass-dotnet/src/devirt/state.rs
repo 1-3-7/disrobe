@@ -39,7 +39,9 @@ pub enum Expr {
 
 impl Expr {
     pub fn canonicalize(&self, budget: &mut Budget) -> Result<Self, Reject> {
-        self.canonicalize_at_depth(budget, 0)
+        let canonical: Self = self.canonicalize_at_depth(budget, 0)?;
+        Ok(super::mba::simplify_expression(&canonical)
+            .map_or(canonical, |simplified: Self| simplified))
     }
 
     fn canonicalize_at_depth(&self, budget: &mut Budget, depth: u8) -> Result<Self, Reject> {

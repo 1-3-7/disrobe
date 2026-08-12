@@ -14,6 +14,11 @@ namespace EazSample
             return x * x + 3 * x - 1;
         }
 
+        public static int Mixed(int x, int y)
+        {
+            return (x ^ y) + 2 * (x & y);
+        }
+
         public static int SumTo(int n)
         {
             int total = 0;
@@ -58,6 +63,7 @@ namespace EazSample
         {
             Console.WriteLine(Compute.Add(2, 3));
             Console.WriteLine(Compute.Poly(7));
+            Console.WriteLine(Compute.Mixed(int.MinValue, -1));
             Console.WriteLine(Compute.SumTo(10));
             Console.WriteLine(Compute.Classify(-5));
             Console.WriteLine(Compute.Max3(3, 9, 4));

@@ -372,8 +372,8 @@ fn analyze_surfaces_both_koivm_and_eazvm_vm_tiers() {
         .expect("analyze must surface the EazVM VM-tier on an EazVM image");
     assert!(eazvm.dispatch_table_present);
     assert_eq!(
-        eazvm.devirtualized_methods, 5,
-        "EazVM analyze must report all five devirtualized methods; got {}",
+        eazvm.devirtualized_methods, 6,
+        "EazVM analyze must report all six devirtualized methods; got {}",
         eazvm.devirtualized_methods
     );
     assert!(

@@ -214,7 +214,7 @@ pub fn is_vm_stub(image: &[u8], pe: &PeImage, ty: &TypeModel, method: &MethodMod
     has_ldstr && ldc_count >= 2 && pop_count >= 3
 }
 
-const HANDLED_OPS: [CilOp; 48] = [
+const HANDLED_OPS: [CilOp; 51] = [
     CilOp::Nop,
     CilOp::LdargN(0),
     CilOp::LdargN(1),
@@ -262,6 +262,9 @@ const HANDLED_OPS: [CilOp; 48] = [
     CilOp::Mul,
     CilOp::Div,
     CilOp::Rem,
+    CilOp::And,
+    CilOp::Or,
+    CilOp::Xor,
     CilOp::Ldstr,
 ];
 

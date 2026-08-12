@@ -1,6 +1,7 @@
-resource_key=1878242889
-position_key=336077329
+resource_key=833071757
+position_key=102473877
 op add 2029111812
+op and 2102767360
 op beq.s 797507120
 op bge.s 197328421
 op bgt.s 1191503855
@@ -35,9 +36,10 @@ op ldloc.2 1369656348
 op ldloc.3 699384303
 op ldloc.s 1446546265
 op ldnull 212696009
-op ldstr 2102767360
+op ldstr 2086086544
 op mul 1558839523
 op nop 4090561
+op or 1878242889
 op pop 1604169728
 op rem 1157939693
 op ret 750478628
@@ -48,8 +50,10 @@ op stloc.2 372942651
 op stloc.3 1074966439
 op stloc.s 1033376509
 op sub 1684772228
-method Add pos=0 pstr=&J5Zi'bqN$ params=2 locals=0 ret=i4
-method Classify pos=50 pstr=&J5Zi'bqN2 params=1 locals=0 ret=i4
-method Max3 pos=136 pstr=&J5Zi'bqOW params=3 locals=1 ret=i4
-method Poly pos=244 pstr=&J5Zi'bqPF params=1 locals=0 ret=i4
-method SumTo pos=314 pstr=&J5Zi'bqK9 params=1 locals=2 ret=i4
+op xor 336077328
+method Add pos=0 pstr=Q'I]&Q'I]& params=2 locals=0 ret=i4
+method Classify pos=50 pstr=Q'I]&Q'I]4 params=1 locals=0 ret=i4
+method Max3 pos=136 pstr=Q'I]&Q'I[X params=3 locals=1 ret=i4
+method Mixed pos=244 pstr=Q'I]&Q'I\G params=2 locals=0 ret=i4
+method Poly pos=320 pstr=Q'I]&Q'IZe params=1 locals=0 ret=i4
+method SumTo pos=390 pstr=Q'I]&Q'IXI params=1 locals=2 ret=i4

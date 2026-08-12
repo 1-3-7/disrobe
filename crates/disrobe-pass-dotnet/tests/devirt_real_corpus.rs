@@ -11,10 +11,10 @@ use disrobe_pass_dotnet::model::{AssemblyModel, Resolver};
 use disrobe_pass_dotnet::pe::{ClrHeader, PeImage, parse, parse_clr_header};
 
 const BUDGET_CAP: u64 = 4_000_000;
-const POPULATION_FLOOR: usize = 5;
-const EQUIVALENT_FLOOR: u64 = 2;
+const POPULATION_FLOOR: usize = 6;
+const EQUIVALENT_FLOOR: u64 = 3;
 const REJECTED_CEILING: u64 = 3;
-const EQUIVALENT_METHODS: [&str; 2] = ["Add", "Poly"];
+const EQUIVALENT_METHODS: [&str; 3] = ["Add", "Mixed", "Poly"];
 
 fn corpus_path(name: &str) -> PathBuf {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -210,6 +210,8 @@ namespace EazReinject
                 case "mul": il.OpCode(ILOpCode.Mul); break;
                 case "div": il.OpCode(ILOpCode.Div); break;
                 case "rem": il.OpCode(ILOpCode.Rem); break;
+                case "and": il.OpCode(ILOpCode.And); break;
+                case "xor": il.OpCode(ILOpCode.Xor); break;
                 case "dup": il.OpCode(ILOpCode.Dup); break;
                 case "pop": il.OpCode(ILOpCode.Pop); break;
                 case "ret": il.OpCode(ILOpCode.Ret); break;
@@ -239,6 +241,7 @@ namespace EazReinject
 
             EmitCall(il, handles, "Add", new[] { 2, 3 }, writeLineInt);
             EmitCall(il, handles, "Poly", new[] { 7 }, writeLineInt);
+            EmitCall(il, handles, "Mixed", new[] { int.MinValue, -1 }, writeLineInt);
             EmitCall(il, handles, "SumTo", new[] { 10 }, writeLineInt);
             EmitCall(il, handles, "Classify", new[] { -5 }, writeLineInt);
             EmitCall(il, handles, "Max3", new[] { 3, 9, 4 }, writeLineInt);

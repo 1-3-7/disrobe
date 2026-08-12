@@ -2231,6 +2231,7 @@ dependencies = [
  "disrobe-cfg",
  "disrobe-core",
  "disrobe-llm-metadata",
+ "disrobe-mba",
  "disrobe-pass-native",
  "flate2",
  "lzma-rs",

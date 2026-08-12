@@ -33,6 +33,18 @@ IL_0011 stloc.0
 IL_0012 ldloc.0
 IL_0013 ret
 end
+method Mixed params=2 locals=0 ret=i4
+IL_0000 ldarg.0
+IL_0001 ldarg.1
+IL_0002 xor
+IL_0003 ldc.i4.2
+IL_0004 ldarg.0
+IL_0005 ldarg.1
+IL_0006 and
+IL_0007 mul
+IL_0008 add
+IL_0009 ret
+end
 method Poly params=1 locals=0 ret=i4
 IL_0000 ldarg.0
 IL_0001 ldarg.0

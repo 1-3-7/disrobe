@@ -389,6 +389,9 @@ fn normalize_lifted_instr(ins: &LiftedInstr) -> Option<String> {
         CilOp::Mul => "mul".to_string(),
         CilOp::Div => "div".to_string(),
         CilOp::Rem => "rem".to_string(),
+        CilOp::And => "and".to_string(),
+        CilOp::Or => "or".to_string(),
+        CilOp::Xor => "xor".to_string(),
         CilOp::Ldstr => "ldstr".to_string(),
     };
     Some(norm)
