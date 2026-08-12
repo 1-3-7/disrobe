@@ -128,36 +128,47 @@ fn executable_sections(elf: &[u8]) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
+fn validated_text_symbol_extent(
+    file: &object::File<'_>,
+    symbol: &object::Symbol<'_, '_>,
+) -> Option<(object::SectionIndex, usize, usize)> {
+    if symbol.kind() != SymbolKind::Text || symbol.address() == 0 || symbol.size() == 0 {
+        return None;
+    }
+    let section_index: object::SectionIndex = symbol.section_index()?;
+    let section: object::Section<'_, '_> = file.section_by_index(section_index).ok()?;
+    if section.kind() != SectionKind::Text {
+        return None;
+    }
+    let data: &[u8] = section.data().ok()?;
+    let relative: u64 = symbol.address().checked_sub(section.address())?;
+    let start: usize = usize::try_from(relative).ok()?;
+    let size: usize = usize::try_from(symbol.size()).ok()?;
+    let end: usize = start.checked_add(size)?;
+    data.get(start..end)?;
+    Some((section_index, start, end))
+}
+
 fn toolchain_direct_edges(unstripped_elf: &[u8]) -> BTreeSet<(u64, u64, u64, &'static str)> {
     let file: object::File<'_> = object::File::parse(unstripped_elf).expect("parse reference ELF");
     let function_starts: BTreeSet<u64> = file
         .symbols()
         .filter(|symbol: &object::Symbol<'_, '_>| {
-            symbol.kind() == SymbolKind::Text && symbol.address() != 0
+            validated_text_symbol_extent(&file, symbol).is_some()
         })
         .map(|symbol: object::Symbol<'_, '_>| symbol.address())
         .collect();
     let mut edges: BTreeSet<(u64, u64, u64, &'static str)> = BTreeSet::new();
-    for symbol in file.symbols().filter(|symbol: &object::Symbol<'_, '_>| {
-        symbol.kind() == SymbolKind::Text && symbol.address() != 0 && symbol.size() != 0
-    }) {
-        let Some(section_index): Option<object::SectionIndex> = symbol.section_index() else {
+    for symbol in file.symbols() {
+        let Some((section_index, start, end)): Option<(object::SectionIndex, usize, usize)> =
+            validated_text_symbol_extent(&file, &symbol)
+        else {
             continue;
         };
         let section: object::Section<'_, '_> = file
             .section_by_index(section_index)
             .expect("resolve function section");
-        if section.kind() != SectionKind::Text {
-            continue;
-        }
         let data: &[u8] = section.data().expect("read function section");
-        let relative: u64 = symbol
-            .address()
-            .checked_sub(section.address())
-            .expect("function starts inside section");
-        let start: usize = usize::try_from(relative).expect("function offset fits usize");
-        let size: usize = usize::try_from(symbol.size()).expect("function size fits usize");
-        let end: usize = start.checked_add(size).expect("function extent fits usize");
         let bytes: &[u8] = data.get(start..end).expect("function bytes fit section");
         let mut decoder: Decoder<'_> =
             Decoder::with_ip(64, bytes, symbol.address(), DecoderOptions::NONE);
