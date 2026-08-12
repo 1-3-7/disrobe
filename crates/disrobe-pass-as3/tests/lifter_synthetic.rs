@@ -1285,6 +1285,94 @@ fn structures_switch_with_breaks_and_default_fallthrough() {
 }
 
 #[test]
+fn structures_string_dispatch_with_non_empty_default() {
+    use disrobe_pass_as3::lifter::{CaseLabel, Stmt};
+
+    let mut code: Vec<u8> = vec![0x10];
+    let dispatch_jump: usize = code.len();
+    s24(0, &mut code);
+
+    let alpha_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let alpha_follow_jump: usize = code.len();
+    s24(0, &mut code);
+
+    let beta_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let beta_follow_jump: usize = code.len();
+    s24(0, &mut code);
+
+    let dispatch_off: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x2C, 0x05, 0x19]);
+    let alpha_branch: usize = code.len();
+    s24(0, &mut code);
+    code.extend_from_slice(&[0xD1, 0x2C, 0x06, 0x19]);
+    let beta_branch: usize = code.len();
+    s24(0, &mut code);
+    code.extend_from_slice(&[0x24, 0x00, 0xD6]);
+
+    let follow_off: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    let patch_after = |bytes: &mut Vec<u8>, operand: usize, target: usize| {
+        let after: usize = operand + 3;
+        let rel: i32 = target as i32 - after as i32;
+        let raw: u32 = rel as u32;
+        bytes[operand] = (raw & 0xFF) as u8;
+        bytes[operand + 1] = ((raw >> 8) & 0xFF) as u8;
+        bytes[operand + 2] = ((raw >> 16) & 0xFF) as u8;
+    };
+    patch_after(&mut code, dispatch_jump, dispatch_off);
+    patch_after(&mut code, alpha_follow_jump, follow_off);
+    patch_after(&mut code, beta_follow_jump, follow_off);
+    patch_after(&mut code, alpha_branch, alpha_off);
+    patch_after(&mut code, beta_branch, beta_off);
+
+    let abc: AbcFile = mk_abc(
+        &["", "C", "Object", "x", "run", "alpha", "beta"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Vec::new(),
+        one_param_method(),
+        code,
+    );
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    let structured: Vec<&Stmt> = lifted
+        .statements
+        .iter()
+        .filter(|statement: &&Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        .collect();
+    assert_eq!(structured.len(), 1, "one dispatch switch: {rendered}");
+    let Stmt::StructuredSwitch { cases, .. } = structured[0] else {
+        unreachable!()
+    };
+    assert_eq!(cases.len(), 3, "two string cases and one default");
+    assert_eq!(
+        cases[0].labels,
+        vec![CaseLabel::Expr(disrobe_pass_as3::lifter::Expr::StringLit(
+            "alpha".to_owned()
+        ))]
+    );
+    assert_eq!(
+        cases[1].labels,
+        vec![CaseLabel::Expr(disrobe_pass_as3::lifter::Expr::StringLit(
+            "beta".to_owned()
+        ))]
+    );
+    assert_eq!(cases[2].labels, vec![CaseLabel::Default]);
+    assert!(
+        cases.iter().all(|case| !case.body.is_empty()),
+        "the default must retain its assignment: {cases:?}"
+    );
+    assert!(lifted.structurally_recovered, "{rendered}");
+    assert!(!rendered.contains("goto"), "{rendered}");
+    assert!(
+        rendered.contains("default:\n        loc2 = 0;"),
+        "{rendered}"
+    );
+    assert!(rendered.ends_with("return loc2;\n"), "{rendered}");
+}
+
+#[test]
 fn lifts_inclocal_i_to_in_place_increment() {
     let code: Vec<u8> = vec![0xC2, 0x01, 0x47];
     let abc: AbcFile = mk_abc(

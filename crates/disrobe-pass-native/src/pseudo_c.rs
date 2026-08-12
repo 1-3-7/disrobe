@@ -261,6 +261,18 @@ enum RoundMode {
     TiesAway,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpRoundRange {
+    I32,
+    I64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FpRoundKind {
+    Integral(RoundMode),
+    SignedRange(FpRoundRange),
+}
+
 impl RoundMode {
     const fn from_imm8(imm: i64) -> Option<Self> {
         if imm & 0x4 != 0 {
@@ -1172,7 +1184,7 @@ enum Stmt {
         dest: Xmm,
         src: FpOperand,
         width: FpWidth,
-        mode: RoundMode,
+        kind: FpRoundKind,
     },
     GprToXmm {
         dest: Xmm,
@@ -13127,7 +13139,7 @@ fn lift_fp(
                 dest,
                 src,
                 width,
-                mode,
+                kind: FpRoundKind::Integral(mode),
             }))
         }
         "movq" | "movd" => {
@@ -14265,8 +14277,8 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
                 Stmt::FpFma { width, .. } => {
                     acc.insert(fp_semantics::fma_helper(*width));
                 }
-                Stmt::FpRound { width, mode, .. } => {
-                    acc.insert(fp_semantics::rint_helper(*mode, *width));
+                Stmt::FpRound { width, kind, .. } => {
+                    acc.insert(fp_semantics::rint_helper(*kind, *width));
                 }
                 Stmt::FpSqrt {
                     width, saturating, ..
@@ -14284,16 +14296,28 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
                     match round {
                         FpToIntRound::Zero => {}
                         FpToIntRound::Nearest => {
-                            acc.insert(fp_semantics::rint_helper(RoundMode::Nearest, *width));
+                            acc.insert(fp_semantics::rint_helper(
+                                FpRoundKind::Integral(RoundMode::Nearest),
+                                *width,
+                            ));
                         }
                         FpToIntRound::Floor => {
-                            acc.insert(fp_semantics::rint_helper(RoundMode::Floor, *width));
+                            acc.insert(fp_semantics::rint_helper(
+                                FpRoundKind::Integral(RoundMode::Floor),
+                                *width,
+                            ));
                         }
                         FpToIntRound::Ceil => {
-                            acc.insert(fp_semantics::rint_helper(RoundMode::Ceil, *width));
+                            acc.insert(fp_semantics::rint_helper(
+                                FpRoundKind::Integral(RoundMode::Ceil),
+                                *width,
+                            ));
                         }
                         FpToIntRound::Away => {
-                            acc.insert(fp_semantics::rint_helper(RoundMode::TiesAway, *width));
+                            acc.insert(fp_semantics::rint_helper(
+                                FpRoundKind::Integral(RoundMode::TiesAway),
+                                *width,
+                            ));
                         }
                     }
                     if let Some(helper) =
@@ -18763,8 +18787,8 @@ fn packed_shldq_exprs(imm: u8, lo: &str, hi: &str) -> (String, String) {
     ("0ULL".to_owned(), format!("({lo} << {})", bits - 64))
 }
 
-fn c_fp_rint(mode: RoundMode, value: &str, width: FpWidth) -> String {
-    let name: &'static str = fp_semantics::rint_helper(mode, width);
+fn c_fp_rint(kind: FpRoundKind, value: &str, width: FpWidth) -> String {
+    let name: &'static str = fp_semantics::rint_helper(kind, width);
     c_render(|cx| {
         let arg: CExpr = cx.var(value);
         cx.call(name, vec![arg])
@@ -19083,10 +19107,18 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             };
             let rounded: String = match round {
                 FpToIntRound::Zero => value,
-                FpToIntRound::Nearest => c_fp_rint(RoundMode::Nearest, &value, *width),
-                FpToIntRound::Floor => c_fp_rint(RoundMode::Floor, &value, *width),
-                FpToIntRound::Ceil => c_fp_rint(RoundMode::Ceil, &value, *width),
-                FpToIntRound::Away => c_fp_rint(RoundMode::TiesAway, &value, *width),
+                FpToIntRound::Nearest => {
+                    c_fp_rint(FpRoundKind::Integral(RoundMode::Nearest), &value, *width)
+                }
+                FpToIntRound::Floor => {
+                    c_fp_rint(FpRoundKind::Integral(RoundMode::Floor), &value, *width)
+                }
+                FpToIntRound::Ceil => {
+                    c_fp_rint(FpRoundKind::Integral(RoundMode::Ceil), &value, *width)
+                }
+                FpToIntRound::Away => {
+                    c_fp_rint(FpRoundKind::Integral(RoundMode::TiesAway), &value, *width)
+                }
             };
             let bits: u32 = dest.width.bits();
             let convert: Option<&'static str> = if fbits.is_some() && *width == FpWidth::F16 {
@@ -19272,10 +19304,10 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             dest,
             src,
             width,
-            mode,
+            kind,
         } => {
             let value: String = fp_load(src, *width, aggregates);
-            let call: String = c_fp_rint(*mode, &value, *width);
+            let call: String = c_fp_rint(*kind, &value, *width);
             assign_cstmt(cx, xmm_var(*dest), &fp_store_expr(&call, *width))
         }
         Stmt::GprToXmm { dest, src, width } => {
@@ -21545,10 +21577,22 @@ fn rs_fp_to_int_stmt(out: &mut String, plan: RsFpToIntPlan, indent: &str) -> Opt
     };
     let rounded: String = match plan.round {
         FpToIntRound::Zero => value,
-        FpToIntRound::Nearest => rs_fp_rint(RoundMode::Nearest, &value, plan.width),
-        FpToIntRound::Floor => rs_fp_rint(RoundMode::Floor, &value, plan.width),
-        FpToIntRound::Ceil => rs_fp_rint(RoundMode::Ceil, &value, plan.width),
-        FpToIntRound::Away => rs_fp_rint(RoundMode::TiesAway, &value, plan.width),
+        FpToIntRound::Nearest => rs_fp_rint(
+            FpRoundKind::Integral(RoundMode::Nearest),
+            &value,
+            plan.width,
+        ),
+        FpToIntRound::Floor => {
+            rs_fp_rint(FpRoundKind::Integral(RoundMode::Floor), &value, plan.width)
+        }
+        FpToIntRound::Ceil => {
+            rs_fp_rint(FpRoundKind::Integral(RoundMode::Ceil), &value, plan.width)
+        }
+        FpToIntRound::Away => rs_fp_rint(
+            FpRoundKind::Integral(RoundMode::TiesAway),
+            &value,
+            plan.width,
+        ),
     };
     let ity: &str = rs_int_ty(plan.dest.width);
     let uty: &str = rs_uint_ty(plan.dest.width);
@@ -21599,8 +21643,8 @@ fn rs_fp_convert_stmt(
     rs_emit_xmm_store(out, dest, &value, to, indent);
 }
 
-fn rs_fp_rint(mode: RoundMode, value: &str, width: FpWidth) -> String {
-    let helper: &'static str = fp_semantics::rint_helper(mode, width);
+fn rs_fp_rint(kind: FpRoundKind, value: &str, width: FpWidth) -> String {
+    let helper: &'static str = fp_semantics::rint_helper(kind, width);
     format!("{helper}({value})")
 }
 
@@ -21647,12 +21691,12 @@ fn rs_fp_round_stmt(
     dest: Xmm,
     src: &FpOperand,
     width: FpWidth,
-    mode: RoundMode,
+    kind: FpRoundKind,
     indent: &str,
     aggregates: &AggregatePlan,
 ) {
     let value: String = rs_fp_load(src, width, aggregates);
-    let call: String = rs_fp_rint(mode, &value, width);
+    let call: String = rs_fp_rint(kind, &value, width);
     rs_emit_xmm_store(out, dest, &call, width, indent);
 }
 
@@ -21898,8 +21942,8 @@ fn rs_emit_stmt(
             dest,
             src,
             width,
-            mode,
-        } => rs_fp_round_stmt(out, *dest, src, *width, *mode, indent, aggregates),
+            kind,
+        } => rs_fp_round_stmt(out, *dest, src, *width, *kind, indent, aggregates),
         Stmt::GprToXmm { dest, src, width } => rs_gpr_to_xmm_stmt(out, *dest, *src, *width, indent),
         Stmt::XmmToGpr { dest, src, width } => rs_xmm_to_gpr_stmt(out, *dest, *src, *width, indent),
         Stmt::Store { addr, src } => {

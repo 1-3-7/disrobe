@@ -441,6 +441,15 @@ const FMAX_PROPAGATE_PROBE_PROP_F32: &[u8] = &[0x00, 0x48, 0x21, 0x1e, 0xc0, 0x0
 const FMAX_PROPAGATE_PROBE_NM_F64: &[u8] = &[0x00, 0x78, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
 const FMAX_PROPAGATE_PROBE_PROP_F64: &[u8] = &[0x00, 0x58, 0x61, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
 
+const FRINT32Z_F32: &[u8] = &[0x00, 0x40, 0x28, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT32Z_F64: &[u8] = &[0x00, 0x40, 0x68, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT32X_F32: &[u8] = &[0x00, 0xc0, 0x28, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT32X_F64: &[u8] = &[0x00, 0xc0, 0x68, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT64Z_F32: &[u8] = &[0x00, 0x40, 0x29, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT64Z_F64: &[u8] = &[0x00, 0x40, 0x69, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT64X_F32: &[u8] = &[0x00, 0xc0, 0x29, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FRINT64X_F64: &[u8] = &[0x00, 0xc0, 0x69, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+
 const LDR_LITERAL_F32: &[u8] = &[0x40, 0x00, 0x00, 0x1c, 0xc0, 0x03, 0x5f, 0xd6];
 const LITERAL_F32_BYTES: &[u8] = &[0x00, 0x00, 0xc0, 0x3f];
 const LDR_LITERAL_F64_BACKWARD: &[u8] = &[0xc0, 0xff, 0xff, 0x5c, 0xc0, 0x03, 0x5f, 0xd6];
@@ -566,6 +575,157 @@ fn fpcr_dependent_semantics_refuse_with_a_distinct_reason() {
         refusal.contains("FPCR-dependent scalar floating-point semantics"),
         "the refusal must name the unsupported architectural control state: {refusal}"
     );
+}
+
+#[test]
+fn scalar_range_limited_rounding_recovers_through_exact_helpers() {
+    for (bytes, helper) in [
+        (FRINT32Z_F32, "fpx_rint32z_f32"),
+        (FRINT32Z_F64, "fpx_rint32z_f64"),
+        (FRINT64Z_F32, "fpx_rint64z_f32"),
+        (FRINT64Z_F64, "fpx_rint64z_f64"),
+    ] {
+        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0)
+            .unwrap_or_else(|error| panic!("scalar range-limited round must recover: {error}"));
+        assert!(
+            recovery.source.contains(helper),
+            "recovered c must call {helper}:\n{}",
+            recovery.source
+        );
+        let rust: &str = recovery
+            .rust_source
+            .as_deref()
+            .expect("scalar range-limited round must recover rust");
+        assert!(
+            rust.contains(helper),
+            "recovered rust must call {helper}:\n{rust}"
+        );
+    }
+}
+
+#[test]
+fn scalar_range_limited_exact_rounding_refuses_unmodelled_ambient_fpcr() {
+    for bytes in [FRINT32X_F32, FRINT32X_F64, FRINT64X_F32, FRINT64X_F64] {
+        let error: String = recover_aarch64_function(bytes, 0)
+            .expect_err("range-limited exact rounding depends on ambient FPCR")
+            .to_string();
+        assert!(
+            error.contains("range-limited exact rounding depends on unmodelled ambient FPCR state"),
+            "unexpected refusal: {error}"
+        );
+    }
+}
+
+fn run_bounded(mut command: Command, label: &str) -> std::process::Output {
+    let mut child: std::process::Child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {label}: {error}"));
+    let status: Option<std::process::ExitStatus> = {
+        use wait_timeout::ChildExt as _;
+        child
+            .wait_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|error| panic!("wait for {label}: {error}"))
+    };
+    if status.is_none() {
+        child
+            .kill()
+            .unwrap_or_else(|error| panic!("kill timed-out {label}: {error}"));
+    }
+    let output: std::process::Output = child
+        .wait_with_output()
+        .unwrap_or_else(|error| panic!("collect {label}: {error}"));
+    assert!(status.is_some(), "{label} exceeded its 20 second budget");
+    output
+}
+
+#[test]
+fn scalar_range_limited_rounding_executes_boundary_values() {
+    let compiler: String = cc().expect("range-limited execution needs a host C compiler");
+    let cases: [(&[u8], &str, &str); 4] = [
+        (
+            FRINT32Z_F32,
+            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 1.0f && recovered(-1.75f) == -1.0f && recovered(0x1p31f) == -0x1p31f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p31f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p31f",
+            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f32::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f32::NAN), -2_147_483_648.0);",
+        ),
+        (
+            FRINT32Z_F64,
+            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 1.0 && recovered(-1.75) == -1.0 && recovered(0x1p31) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p31",
+            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f64::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f64::NAN), -2_147_483_648.0);",
+        ),
+        (
+            FRINT64Z_F32,
+            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 1.0f && recovered(-1.75f) == -1.0f && recovered(0x1p63f) == -0x1p63f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p63f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p63f",
+            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::NAN), -9_223_372_036_854_775_808.0);",
+        ),
+        (
+            FRINT64Z_F64,
+            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 1.0 && recovered(-1.75) == -1.0 && recovered(0x1p63) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p63",
+            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::NAN), -9_223_372_036_854_775_808.0);",
+        ),
+    ];
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("range-limited scratch dir");
+    for (index, (bytes, c_assertion, rust_assertions)) in cases.into_iter().enumerate() {
+        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0)
+            .unwrap_or_else(|error| panic!("recover range-limited case {index}: {error}"));
+        let c_source: String = format!(
+            "{}\nint main(void) {{ return {c_assertion} ? 0 : 1; }}\n",
+            recovery.source
+        );
+        let c_path: PathBuf = directory.path().join(format!("range_{index}.c"));
+        let c_exe: PathBuf = directory.path().join(format!("range_{index}.exe"));
+        std::fs::write(&c_path, c_source).expect("write range-limited C source");
+        let mut c_build: Command = Command::new(&compiler);
+        c_build
+            .args(["-std=c11", "-Werror"])
+            .arg(&c_path)
+            .arg("-o")
+            .arg(&c_exe);
+        let built: std::process::Output = run_bounded(c_build, "range-limited C build");
+        assert!(
+            built.status.success(),
+            "range-limited C case {index} failed to build:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let executed: std::process::Output =
+            run_bounded(Command::new(&c_exe), "range-limited C execution");
+        assert!(
+            executed.status.success(),
+            "range-limited C case {index} failed"
+        );
+
+        let rust_source: &str = recovery
+            .rust_source
+            .as_deref()
+            .expect("range-limited Rust recovery");
+        let rust_path: PathBuf = directory.path().join(format!("range_{index}.rs"));
+        let rust_exe: PathBuf = directory.path().join(format!("range_rust_{index}.exe"));
+        std::fs::write(
+            &rust_path,
+            format!("{rust_source}\n#[test]\nfn boundaries() {{ {rust_assertions} }}\n"),
+        )
+        .expect("write range-limited Rust source");
+        let mut rust_build: Command = Command::new("rustc");
+        rust_build
+            .args(["--edition", "2024", "--test", "-D", "warnings"])
+            .arg(&rust_path)
+            .arg("-o")
+            .arg(&rust_exe);
+        let built: std::process::Output = run_bounded(rust_build, "range-limited Rust build");
+        assert!(
+            built.status.success(),
+            "range-limited Rust case {index} failed to build:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let executed: std::process::Output =
+            run_bounded(Command::new(&rust_exe), "range-limited Rust execution");
+        assert!(
+            executed.status.success(),
+            "range-limited Rust case {index} failed:\n{}",
+            String::from_utf8_lossy(&executed.stdout)
+        );
+    }
 }
 
 #[test]

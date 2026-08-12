@@ -477,7 +477,7 @@ pub enum Region {
     TryFinally {
         try_body: Box<Self>,
         handlers: Vec<(Vec<String>, Self)>,
-        finally_chain: Vec<BlockId>,
+        finally_body: Box<Self>,
         finally_completes_normally: bool,
     },
     TryWithResources {
@@ -950,20 +950,42 @@ impl<'a> Structurer<'a> {
                     });
                 }
             }
-            let mut normal_succs = self.cfg.blocks[cur.0 as usize]
-                .successors
-                .iter()
-                .filter(|e| !matches!(e.kind, EdgeKind::Exception));
-            let next: BlockId = match (normal_succs.next(), normal_succs.next()) {
-                (Some(only), None) => only.target,
-                _ => return None,
-            };
+            let next: BlockId = self.next_block_by_pc(cur)?;
             if chain.contains(&next) {
+                return None;
+            }
+            let normal_predecessors: Vec<BlockId> = self.cfg.blocks[next.0 as usize]
+                .predecessors
+                .iter()
+                .filter(|predecessor: &&BlockId| {
+                    self.cfg.blocks[predecessor.0 as usize]
+                        .successors
+                        .iter()
+                        .any(|edge: &Edge| {
+                            edge.target == next && !matches!(edge.kind, EdgeKind::Exception)
+                        })
+                })
+                .copied()
+                .collect();
+            if normal_predecessors.is_empty()
+                || !normal_predecessors
+                    .iter()
+                    .all(|predecessor: &BlockId| chain.contains(predecessor))
+            {
                 return None;
             }
             chain.push(next);
             cur = next;
         }
+    }
+
+    fn next_block_by_pc(&self, current: BlockId) -> Option<BlockId> {
+        let start_pc: u32 = self.cfg.blocks[current.0 as usize].start_pc;
+        self.cfg
+            .pc_to_block
+            .range(start_pc.checked_add(1)?..)
+            .next()
+            .map(|(_, block): (&u32, &BlockId)| *block)
     }
 
     fn chain_reloads_slot(&self, chain: &[BlockId], slot: u16) -> bool {
@@ -1041,13 +1063,59 @@ impl<'a> Structurer<'a> {
         }
         let tail_return: usize = usize::from(chain.trim == 0);
         let scanned: &[Instruction] = body.get(..body.len() - tail_return)?;
-        if scanned
-            .iter()
-            .any(|ins: &Instruction| matches!(ins.opcode, 0x99..=0xB1 | 0xBF | 0xC6..=0xC9))
-        {
+        if scanned.iter().any(|ins: &Instruction| {
+            matches!(ins.opcode, 0xA8..=0xB1 | 0xBF | 0xC9)
+                || (matches!(ins.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
+                    && branch_target(ins).is_none_or(|target: u32| {
+                        body_target_index(&body, self.pc_after_last(&body), target).is_none()
+                    }))
+        }) {
             return None;
         }
         Some(body)
+    }
+
+    fn finally_inline_blocks(&self, chain: &FinallyChain, start: BlockId) -> Option<Vec<BlockId>> {
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let mut copy: Vec<Instruction> = Vec::new();
+        let mut blocks: Vec<BlockId> = Vec::new();
+        let mut current: BlockId = start;
+        while copy.len() < body.len() {
+            if blocks.len() >= MAX_BLOCKS || blocks.contains(&current) {
+                return None;
+            }
+            let instructions: &[Instruction] = self.block_instructions(current);
+            if instructions.is_empty() || copy.len().checked_add(instructions.len())? > body.len() {
+                return None;
+            }
+            copy.extend_from_slice(instructions);
+            blocks.push(current);
+            if copy.len() < body.len() {
+                current = self.next_block_by_pc(current)?;
+            }
+        }
+        self.finally_copy_matches(&body, &copy).then_some(blocks)
+    }
+
+    fn finally_value_return_after_blocks(
+        &self,
+        group: &GroupedTry,
+        copy_head: BlockId,
+        continuation: BlockId,
+    ) -> Option<(BlockId, u16)> {
+        let [load, ret]: &[Instruction; 2] =
+            self.block_instructions(continuation).try_into().ok()?;
+        if !matches!(ret.opcode, 0xAC..=0xB0) {
+            return None;
+        }
+        let slot: u16 = any_load_slot(load)?;
+        let predecessor: BlockId = self.single_try_predecessor(group, copy_head)?;
+        if any_store_slot(self.block_instructions(predecessor).last()?) != Some(slot)
+            || self.slot_total_uses(slot) != 2
+        {
+            return None;
+        }
+        Some((predecessor, slot))
     }
 
     fn slot_total_uses(&self, slot: u16) -> usize {
@@ -1571,9 +1639,7 @@ impl<'a> Structurer<'a> {
                 let finally_chain: Option<FinallyChain> =
                     finally_handler.and_then(|bid| self.finally_handler_chain(bid));
                 if let Some(chain) = finally_chain.as_ref() {
-                    for &fb in &chain.blocks {
-                        self.visited.insert(fb);
-                    }
+                    self.visited.extend(chain.blocks.iter().copied());
                 }
                 let redundant_finally: bool = finally_handler
                     .is_some_and(|h| self.active_finally.contains(&h))
@@ -1668,6 +1734,13 @@ impl<'a> Structurer<'a> {
                     let gap_exits: Vec<BlockId> = self.try_gap_blocks(&try_group);
                     let all_exits: Vec<BlockId> =
                         gap_exits.iter().copied().chain(after_try).collect();
+                    let has_internal_control_flow: bool = self
+                        .finally_body_instructions(&chain)
+                        .is_some_and(|body: Vec<Instruction>| {
+                            body.iter().any(|instruction: &Instruction| {
+                                matches!(instruction.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
+                            })
+                        });
                     let multi_folds: Option<Vec<(BlockId, BlockId, u16)>> =
                         self.multi_exit_return_folds(&try_group, &chain, &all_exits);
                     if let Some(folds) = multi_folds {
@@ -1679,9 +1752,43 @@ impl<'a> Structurer<'a> {
                         }
                         after_try = None;
                     } else {
-                        for gap in gap_exits {
-                            if let Some(skip) = self.finally_inline_skip(&chain, gap) {
-                                self.finally_inline_skips.insert(gap, skip);
+                        for gap in &gap_exits {
+                            if let Some(skip) = self.finally_inline_skip(&chain, *gap) {
+                                self.finally_inline_skips.insert(*gap, skip);
+                            }
+                        }
+                        if has_internal_control_flow && let Some(copy_head) = after_try {
+                            match self.finally_inline_blocks(&chain, copy_head) {
+                                Some(blocks) if blocks.len() > 1 => {
+                                    let continuation: Option<BlockId> = blocks
+                                        .last()
+                                        .and_then(|last: &BlockId| self.next_block_by_pc(*last));
+                                    for block in blocks {
+                                        self.finally_inline_skips
+                                            .insert(block, self.block_instructions(block).len());
+                                        self.visited.insert(block);
+                                    }
+                                    if let Some(continuation) = continuation
+                                        && let Some((predecessor, slot)) = self
+                                            .finally_value_return_after_blocks(
+                                                &try_group,
+                                                copy_head,
+                                                continuation,
+                                            )
+                                    {
+                                        self.finally_return_stores.insert(predecessor, slot);
+                                        self.visited.insert(continuation);
+                                        after_try = None;
+                                    } else {
+                                        after_try = continuation;
+                                    }
+                                }
+                                _ => {
+                                    self.unmodelled_finally.get_or_insert(
+                                        "a finally body with internal control flow was not folded \
+                                         out of every exit path",
+                                    );
+                                }
                             }
                         }
                     }
@@ -1724,12 +1831,14 @@ impl<'a> Structurer<'a> {
                         self.finally_inline_skips.insert(cont, skip);
                     }
                     if let Some(handler) = finally_handler {
-                        for site in self.protected_exit_inline_sites(&chain, handler) {
-                            if self.finally_inline_skips.contains_key(&site) {
+                        let protected_sites: Vec<BlockId> =
+                            self.protected_exit_inline_sites(&chain, handler);
+                        for site in &protected_sites {
+                            if self.finally_inline_skips.contains_key(site) {
                                 continue;
                             }
-                            if let Some(skip) = self.finally_inline_prefix(&chain, site) {
-                                self.finally_inline_skips.insert(site, skip);
+                            if let Some(skip) = self.finally_inline_prefix(&chain, *site) {
+                                self.finally_inline_skips.insert(*site, skip);
                             }
                         }
                         for &catch_bid in &handler_set {
@@ -1741,6 +1850,23 @@ impl<'a> Structurer<'a> {
                             {
                                 self.finally_inline_skips.insert(catch_bid, skip);
                             }
+                        }
+                        let partial_copy: bool = has_internal_control_flow
+                            && (gap_exits.iter().any(|site: &BlockId| {
+                                !self.finally_inline_skips.contains_key(site)
+                                    && !self.visited.contains(site)
+                            }) || protected_sites.iter().any(|site: &BlockId| {
+                                !self.finally_inline_skips.contains_key(site)
+                                    && !self.visited.contains(site)
+                            }) || handler_set.iter().any(|site: &BlockId| {
+                                !self.finally_inline_skips.contains_key(site)
+                                    && !self.visited.contains(site)
+                            }));
+                        if partial_copy {
+                            self.unmodelled_finally.get_or_insert(
+                                "a finally body with internal control flow was only partly folded \
+                                 out of its exit paths",
+                            );
                         }
                     }
                     if chain.trim == 0 && after_try.is_some() {
@@ -1757,11 +1883,33 @@ impl<'a> Structurer<'a> {
                     {
                         self.finally_tail_trims.insert(tail, chain.trim);
                     }
+                    let finally_body: Region =
+                        match (chain.blocks.first().copied(), chain.blocks.last().copied()) {
+                            (Some(head), Some(tail))
+                                if head != tail && has_internal_control_flow =>
+                            {
+                                for block in &chain.blocks {
+                                    self.visited.remove(block);
+                                }
+                                let body: Region = self.structure_at(head, Some(tail));
+                                self.visited.insert(tail);
+                                body
+                            }
+                            (Some(_), Some(_)) => {
+                                for block in &chain.blocks {
+                                    self.visited.insert(*block);
+                                }
+                                Region::Sequence(
+                                    chain.blocks.iter().copied().map(Region::Block).collect(),
+                                )
+                            }
+                            _ => Region::Sequence(Vec::new()),
+                        };
                     seq.push(Region::TryFinally {
                         try_body: Box::new(body_region),
                         handlers: handlers_out,
                         finally_completes_normally: chain.trim == 2,
-                        finally_chain: chain.blocks,
+                        finally_body: Box::new(finally_body),
                     });
                 } else {
                     seq.push(Region::Try {

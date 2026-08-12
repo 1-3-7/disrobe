@@ -767,7 +767,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
         Region::TryFinally {
             try_body,
             handlers,
-            finally_chain,
+            finally_body,
             ..
         } => {
             let pad: String = indent_string(level);
@@ -779,9 +779,7 @@ fn render_region(state: &mut RenderState<'_>, region: &Region, out: &mut String,
                 render_region(state, handler_region, out, level + 1);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
-            for &fb in finally_chain {
-                render_block(state, fb, out, level + 1);
-            }
+            render_region(state, finally_body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
         Region::TryWithResources {

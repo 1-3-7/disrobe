@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{FpWidth, RoundMode, Width};
+use super::{FpRoundKind, FpRoundRange, FpWidth, RoundMode, Width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FpHelper {
@@ -412,6 +412,22 @@ const RINT_WRAPPERS: &[(&str, &str)] = &[
     (
         "fpx_rinta_f64",
         "static inline double fpx_rinta_f64(double x) { return fp_d_from_bits(fpx_rint_core(fp_d_to_bits(x), 53u, 11u, 4u)); }",
+    ),
+    (
+        "fpx_rint32z_f32",
+        "static inline float fpx_rint32z_f32(float x) { float r = fp_f_from_bits((uint32_t)fpx_rint_core((uint64_t)fp_f_to_bits(x), 24u, 8u, 3u)); return r >= -0x1p31f && r < 0x1p31f ? r : -0x1p31f; }",
+    ),
+    (
+        "fpx_rint64z_f32",
+        "static inline float fpx_rint64z_f32(float x) { float r = fp_f_from_bits((uint32_t)fpx_rint_core((uint64_t)fp_f_to_bits(x), 24u, 8u, 3u)); return r >= -0x1p63f && r < 0x1p63f ? r : -0x1p63f; }",
+    ),
+    (
+        "fpx_rint32z_f64",
+        "static inline double fpx_rint32z_f64(double x) { double r = fp_d_from_bits(fpx_rint_core(fp_d_to_bits(x), 53u, 11u, 3u)); return r >= -0x1p31 && r < 0x1p31 ? r : -0x1p31; }",
+    ),
+    (
+        "fpx_rint64z_f64",
+        "static inline double fpx_rint64z_f64(double x) { double r = fp_d_from_bits(fpx_rint_core(fp_d_to_bits(x), 53u, 11u, 3u)); return r >= -0x1p63 && r < 0x1p63 ? r : -0x1p63; }",
     ),
 ];
 
@@ -1082,6 +1098,26 @@ const RS_WRAPPERS: &[(&str, &str, &str)] = &[
         "#[allow(dead_code)]\nfn fpx_rinta_f64(x: f64) -> f64 { fpx_rint_f64(x, 4) }",
     ),
     (
+        "fpx_rint32z_f32",
+        "fpx_rint_f32",
+        "#[allow(dead_code)]\nfn fpx_rint32z_f32(x: f32) -> f32 { let r: f32 = fpx_rint_f32(x, 3); if r >= -2147483648.0_f32 && r < 2147483648.0_f32 { r } else { -2147483648.0_f32 } }",
+    ),
+    (
+        "fpx_rint64z_f32",
+        "fpx_rint_f32",
+        "#[allow(dead_code)]\nfn fpx_rint64z_f32(x: f32) -> f32 { let r: f32 = fpx_rint_f32(x, 3); if r >= -9223372036854775808.0_f32 && r < 9223372036854775808.0_f32 { r } else { -9223372036854775808.0_f32 } }",
+    ),
+    (
+        "fpx_rint32z_f64",
+        "fpx_rint_f64",
+        "#[allow(dead_code)]\nfn fpx_rint32z_f64(x: f64) -> f64 { let r: f64 = fpx_rint_f64(x, 3); if r >= -2147483648.0_f64 && r < 2147483648.0_f64 { r } else { -2147483648.0_f64 } }",
+    ),
+    (
+        "fpx_rint64z_f64",
+        "fpx_rint_f64",
+        "#[allow(dead_code)]\nfn fpx_rint64z_f64(x: f64) -> f64 { let r: f64 = fpx_rint_f64(x, 3); if r >= -9223372036854775808.0_f64 && r < 9223372036854775808.0_f64 { r } else { -9223372036854775808.0_f64 } }",
+    ),
+    (
         "fpx_maxnum_f32",
         "fpx_minmax_f32",
         "#[allow(dead_code)]\nfn fpx_maxnum_f32(a: f32, b: f32) -> f32 { fpx_minmax_f32(a, b, true, false) }",
@@ -1259,23 +1295,28 @@ pub(super) fn resolved_sources(requested: &BTreeSet<&'static str>) -> Vec<&'stat
         .collect()
 }
 
-pub(super) const fn rint_helper(mode: RoundMode, width: FpWidth) -> &'static str {
-    match (mode, width) {
-        (RoundMode::Nearest, FpWidth::F16) => "fpx_rintn_f16",
-        (RoundMode::Floor, FpWidth::F16) => "fpx_rintm_f16",
-        (RoundMode::Ceil, FpWidth::F16) => "fpx_rintp_f16",
-        (RoundMode::Trunc, FpWidth::F16) => "fpx_rintz_f16",
-        (RoundMode::TiesAway, FpWidth::F16) => "fpx_rinta_f16",
-        (RoundMode::Nearest, FpWidth::F32) => "fpx_rintn_f32",
-        (RoundMode::Floor, FpWidth::F32) => "fpx_rintm_f32",
-        (RoundMode::Ceil, FpWidth::F32) => "fpx_rintp_f32",
-        (RoundMode::Trunc, FpWidth::F32) => "fpx_rintz_f32",
-        (RoundMode::TiesAway, FpWidth::F32) => "fpx_rinta_f32",
-        (RoundMode::Nearest, FpWidth::F64) => "fpx_rintn_f64",
-        (RoundMode::Floor, FpWidth::F64) => "fpx_rintm_f64",
-        (RoundMode::Ceil, FpWidth::F64) => "fpx_rintp_f64",
-        (RoundMode::Trunc, FpWidth::F64) => "fpx_rintz_f64",
-        (RoundMode::TiesAway, FpWidth::F64) => "fpx_rinta_f64",
+pub(super) const fn rint_helper(kind: FpRoundKind, width: FpWidth) -> &'static str {
+    match (kind, width) {
+        (FpRoundKind::Integral(RoundMode::Nearest), FpWidth::F16) => "fpx_rintn_f16",
+        (FpRoundKind::Integral(RoundMode::Floor), FpWidth::F16) => "fpx_rintm_f16",
+        (FpRoundKind::Integral(RoundMode::Ceil), FpWidth::F16) => "fpx_rintp_f16",
+        (FpRoundKind::Integral(RoundMode::Trunc), FpWidth::F16) => "fpx_rintz_f16",
+        (FpRoundKind::Integral(RoundMode::TiesAway), FpWidth::F16) => "fpx_rinta_f16",
+        (FpRoundKind::Integral(RoundMode::Nearest), FpWidth::F32) => "fpx_rintn_f32",
+        (FpRoundKind::Integral(RoundMode::Floor), FpWidth::F32) => "fpx_rintm_f32",
+        (FpRoundKind::Integral(RoundMode::Ceil), FpWidth::F32) => "fpx_rintp_f32",
+        (FpRoundKind::Integral(RoundMode::Trunc), FpWidth::F32) => "fpx_rintz_f32",
+        (FpRoundKind::Integral(RoundMode::TiesAway), FpWidth::F32) => "fpx_rinta_f32",
+        (FpRoundKind::Integral(RoundMode::Nearest), FpWidth::F64) => "fpx_rintn_f64",
+        (FpRoundKind::Integral(RoundMode::Floor), FpWidth::F64) => "fpx_rintm_f64",
+        (FpRoundKind::Integral(RoundMode::Ceil), FpWidth::F64) => "fpx_rintp_f64",
+        (FpRoundKind::Integral(RoundMode::Trunc), FpWidth::F64) => "fpx_rintz_f64",
+        (FpRoundKind::Integral(RoundMode::TiesAway), FpWidth::F64) => "fpx_rinta_f64",
+        (FpRoundKind::SignedRange(FpRoundRange::I32), FpWidth::F32) => "fpx_rint32z_f32",
+        (FpRoundKind::SignedRange(FpRoundRange::I64), FpWidth::F32) => "fpx_rint64z_f32",
+        (FpRoundKind::SignedRange(FpRoundRange::I32), FpWidth::F64) => "fpx_rint32z_f64",
+        (FpRoundKind::SignedRange(FpRoundRange::I64), FpWidth::F64) => "fpx_rint64z_f64",
+        (FpRoundKind::SignedRange(_), FpWidth::F16) => "fpx_rintz_f16",
     }
 }
 

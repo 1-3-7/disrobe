@@ -28,6 +28,89 @@ use crate::bytecode::opcode::CanonicalOp;
 use crate::error::Result;
 use disrobe_py_marshal::CodeObject;
 
+#[derive(Debug, Clone, Copy)]
+struct LoopOwnership {
+    body_start: usize,
+    body_end: usize,
+    primary_latch: usize,
+    rotated_latch: Option<usize>,
+}
+
+impl LoopOwnership {
+    const fn single(body_start: usize, body_end: usize, primary_latch: usize) -> Self {
+        Self {
+            body_start,
+            body_end,
+            primary_latch,
+            rotated_latch: None,
+        }
+    }
+
+    const fn rotated(
+        body_start: usize,
+        body_end: usize,
+        primary_latch: usize,
+        rotated_latch: usize,
+    ) -> Self {
+        Self {
+            body_start,
+            body_end,
+            primary_latch,
+            rotated_latch: Some(rotated_latch),
+        }
+    }
+
+    const fn lexical_latch(self) -> usize {
+        match self.rotated_latch {
+            Some(rotated_latch) => rotated_latch,
+            None => self.primary_latch,
+        }
+    }
+
+    fn conflicts_with_candidate(self, header: usize, back_edge: usize) -> bool {
+        self.rotated_latch.is_some()
+            && header >= self.body_start
+            && header < self.body_end
+            && (header..=back_edge).contains(&self.primary_latch)
+    }
+}
+
+thread_local! {
+    static LOOP_OWNERSHIP: std::cell::RefCell<Vec<LoopOwnership>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn active_ownership_conflicts(header: usize, back_edge: usize) -> bool {
+    LOOP_OWNERSHIP.with(|stack: &std::cell::RefCell<Vec<LoopOwnership>>| {
+        stack
+            .borrow()
+            .last()
+            .copied()
+            .is_some_and(|ownership: LoopOwnership| {
+                ownership.conflicts_with_candidate(header, back_edge)
+            })
+    })
+}
+
+struct LoopOwnershipGuard;
+
+impl LoopOwnershipGuard {
+    fn enter(ownership: LoopOwnership) -> Self {
+        LOOP_OWNERSHIP.with(|stack: &std::cell::RefCell<Vec<LoopOwnership>>| {
+            stack.borrow_mut().push(ownership);
+        });
+        Self
+    }
+}
+
+impl Drop for LoopOwnershipGuard {
+    fn drop(&mut self) {
+        LOOP_OWNERSHIP.with(|stack: &std::cell::RefCell<Vec<LoopOwnership>>| {
+            let _: Option<LoopOwnership> = stack.borrow_mut().pop();
+        });
+    }
+}
+
 fn find_async_for_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     let anext: usize =
         (lo..hi).find(|&k: &usize| matches!(stream.ops[k], CanonicalOp::GetAnext))?;
@@ -1421,6 +1504,28 @@ fn legacy_guarded_continue_region(
     None
 }
 
+fn rotated_latch_after_continue(
+    stream: &DecodedStream,
+    header: usize,
+    primary_latch: usize,
+    hi: usize,
+) -> Option<usize> {
+    let exit: usize = (header..primary_latch)
+        .filter(|&k: &usize| {
+            is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
+        })
+        .filter_map(|k: usize| resolve_jump_target(stream, k, &stream.ops[k]))
+        .filter(|&target: &usize| target > primary_latch && target <= hi)
+        .max()?;
+    (primary_latch + 1..exit.min(hi)).rfind(|&k: &usize| {
+        (is_back_edge(&stream.ops[k])
+            || is_cond_back_edge(&stream.ops[k])
+            || is_cond_jump_with_backward_target(stream, k))
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .is_some_and(|target: usize| target > header && target <= primary_latch)
+    })
+}
+
 pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<LoopRegion> {
     let hi: usize = hi.min(stream.ops.len());
     if lo >= hi {
@@ -1461,6 +1566,9 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                 exit,
                 infinite: false,
             };
+            if active_ownership_conflicts(header, back_edge) {
+                continue;
+            }
             if best.is_none_or(|b: LoopRegion| header < b.header) {
                 best = Some(region);
             }
@@ -1478,8 +1586,21 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                 continue;
             }
             let header: usize = t;
-            let back_edge: usize = max_back_edge_to_header(stream, header, lo, hi);
-            if back_edge != j {
+            let primary_latch: usize = max_back_edge_to_header(stream, header, lo, hi);
+            if primary_latch != j {
+                continue;
+            }
+            let rotated_latch: Option<usize> = if stream.is_pre_311() {
+                None
+            } else {
+                rotated_latch_after_continue(stream, header, primary_latch, hi)
+            };
+            let ownership: LoopOwnership = rotated_latch.map_or_else(
+                || LoopOwnership::single(header, primary_latch, primary_latch),
+                |latch: usize| LoopOwnership::rotated(header, latch, primary_latch, latch),
+            );
+            let back_edge: usize = ownership.lexical_latch();
+            if active_ownership_conflicts(header, back_edge) {
                 continue;
             }
             let conds: Vec<usize> = (header..back_edge)
@@ -1516,10 +1637,15 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                                 infinite: true,
                             }
                         } else {
-                            let bottom_cond: Option<usize> = conds
-                                .last()
-                                .copied()
-                                .filter(|&c: &usize| is_bottom_test(stream, c, back_edge));
+                            let bottom_cond: Option<usize> = rotated_latch
+                                .is_none()
+                                .then(|| {
+                                    conds
+                                        .last()
+                                        .copied()
+                                        .filter(|&c: &usize| is_bottom_test(stream, c, back_edge))
+                                })
+                                .flatten();
                             let effective: Vec<usize> = if bottom_cond.is_some() {
                                 conds.clone()
                             } else {
@@ -1528,6 +1654,31 @@ pub(super) fn find_loop(stream: &DecodedStream, lo: usize, hi: usize) -> Option<
                             while_region(stream, header, back_edge, hi, &effective, bottom_cond)
                         }
                     });
+            let region: LoopRegion = if rotated_latch.is_some() {
+                let top_conds: Vec<usize> = conds
+                    .iter()
+                    .copied()
+                    .take_while(|&cond: &usize| cond < primary_latch)
+                    .collect();
+                let top_region: LoopRegion =
+                    while_region(stream, header, back_edge, hi, &top_conds, None);
+                let body_end: usize = last_significant_back(stream, primary_latch + 1, back_edge)
+                    .filter(|&test: &usize| is_forward_cond_jump(&stream.ops[test]))
+                    .map(|test: usize| cond_expr_start(stream, test, primary_latch + 1))
+                    .or_else(|| {
+                        (is_cond_back_edge(&stream.ops[back_edge])
+                            || is_cond_jump_with_backward_target(stream, back_edge))
+                        .then(|| cond_expr_start(stream, back_edge, primary_latch + 1))
+                    })
+                    .unwrap_or(primary_latch + 1);
+                LoopRegion {
+                    body_end,
+                    infinite: false,
+                    ..top_region
+                }
+            } else {
+                region
+            };
             if best.is_none_or(|b: LoopRegion| header < b.header) {
                 best = Some(region);
             }
@@ -1597,9 +1748,13 @@ pub(super) fn loop_header_owns_test(
     {
         return false;
     }
-    if resolve_jump_target(stream, region.back_edge, &stream.ops[region.back_edge])
-        != Some(region.header)
-    {
+    let owns_header_latch: bool = (region.header..=region.back_edge).any(|latch: usize| {
+        (is_back_edge(&stream.ops[latch])
+            || is_cond_back_edge(&stream.ops[latch])
+            || is_cond_jump_with_backward_target(stream, latch))
+            && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(region.header)
+    });
+    if !owns_header_latch {
         return false;
     }
     if (region.header..test).any(|k: usize| transfers_control(&stream.ops[k])) {
@@ -2001,6 +2156,8 @@ fn structure_while_body_absorbing_break_handler(
     if let Some(region_try) = while_break_handler_try(stream, region, hi) {
         if absorb_hoists_nested_try(stream, region, &region_try) {
             let body_hi: usize = region_try.region_end().min(hi);
+            let _body_cap: Option<StructureHiCapGuard> =
+                (!stream.is_pre_311()).then(|| StructureHiCapGuard::enter(region.body_end));
             return structure_stmts(code, stream, region.body_start, body_hi);
         }
         let try_hi: usize = region_try.region_end().min(hi);
@@ -2038,6 +2195,25 @@ pub(super) fn structure_loop(
         exit_return,
         exit_tail_range: loop_exit_tail_range(stream, region, hi),
     });
+    let primary_latch: usize = (region.header..=region.back_edge)
+        .find(|&latch: &usize| {
+            (is_back_edge(&stream.ops[latch])
+                || is_cond_back_edge(&stream.ops[latch])
+                || is_cond_jump_with_backward_target(stream, latch))
+                && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(region.header)
+        })
+        .unwrap_or(region.back_edge);
+    let ownership: LoopOwnership = if primary_latch == region.back_edge {
+        LoopOwnership::single(region.body_start, region.body_end, primary_latch)
+    } else {
+        LoopOwnership::rotated(
+            region.body_start,
+            region.body_end,
+            primary_latch,
+            region.back_edge,
+        )
+    };
+    let ownership_guard: LoopOwnershipGuard = LoopOwnershipGuard::enter(ownership);
     let mut cold_handler_exit_tail: Vec<Stmt> = Vec::new();
     let result: Result<Stmt> = (|| -> Result<Stmt> {
         let loop_stmt: Stmt = match region.kind {
@@ -2106,6 +2282,7 @@ pub(super) fn structure_loop(
         };
         Ok(loop_stmt)
     })();
+    drop(ownership_guard);
     pop_loop_frame();
     let loop_stmt: Stmt = result?;
     let mut out: Vec<Stmt> = head;
@@ -2955,6 +3132,9 @@ fn recover_while_test(code: &CodeObject, stream: &DecodedStream, region: &LoopRe
     if let Some(test) = recover_while_bottom_test_compound(code, stream, region) {
         return test;
     }
+    if let Some(test) = recover_rotated_while_top_test(code, stream, region) {
+        return test;
+    }
     let back_op: &CanonicalOp = &stream.ops[region.back_edge];
     let cond_back: bool =
         is_cond_back_edge(back_op) || is_cond_jump_with_backward_target(stream, region.back_edge);
@@ -3000,6 +3180,29 @@ fn recover_while_test(code: &CodeObject, stream: &DecodedStream, region: &LoopRe
     let conjuncts: Vec<WhileConjunct> =
         collect_while_conjuncts(stream, expr_start, last_cond, region.header, region.exit);
     fold_while_conjuncts(code, stream, &conjuncts)
+}
+
+fn recover_rotated_while_top_test(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    region: &LoopRegion,
+) -> Option<Expr> {
+    if stream.is_pre_311()
+        || resolve_jump_target(stream, region.back_edge, &stream.ops[region.back_edge])
+            == Some(region.header)
+    {
+        return None;
+    }
+    let test_jump: usize = (region.header..region.body_start)
+        .rev()
+        .find(|&k: &usize| is_forward_cond_jump(&stream.ops[k]))?;
+    let (head, residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[region.header..test_jump]).ok()?;
+    if !head.is_empty() {
+        return None;
+    }
+    let raw_test: Expr = residual.into_iter().next_back()?;
+    Some(super::fallthrough_cond_test(stream, test_jump, raw_test))
 }
 
 fn recover_while_compound_test(

@@ -2857,6 +2857,56 @@ fn const_to_case_label(e: &Expr) -> CaseLabel {
     }
 }
 
+fn forward_dispatch_follow(
+    region: &[Stmt],
+    case_label_positions: &[(usize, usize)],
+) -> Option<usize> {
+    let mut follow: Option<usize> = None;
+    for (index, (label_pos, _)) in case_label_positions.iter().enumerate() {
+        let segment_end: usize = case_label_positions
+            .get(index + 1)
+            .map_or(region.len(), |(next_pos, _): &(usize, usize)| *next_pos);
+        let tail: &Stmt = region.get(label_pos + 1..segment_end)?.last()?;
+        let target_label: &usize = match tail {
+            Stmt::Jump { target_label } => target_label,
+            Stmt::Return(_) | Stmt::Throw(_) => continue,
+            _ => return None,
+        };
+        match follow {
+            Some(existing) if existing != *target_label => return None,
+            Some(_) => {}
+            None => follow = Some(*target_label),
+        }
+    }
+    follow
+}
+
+fn structure_forward_dispatch_body(
+    stmts: &[Stmt],
+    body_slice: &[Stmt],
+    merge_label: usize,
+    depth: usize,
+) -> Option<Vec<Stmt>> {
+    let body_slice: &[Stmt] = match body_slice.last() {
+        Some(Stmt::Jump { target_label }) if *target_label == merge_label => {
+            &body_slice[..body_slice.len() - 1]
+        }
+        _ => body_slice,
+    };
+    if !slice_labels_are_private(stmts, body_slice) {
+        return None;
+    }
+    let inner_depth: usize = depth - 1;
+    let body: Vec<Stmt> = structure_if_blocks(
+        structure_loops(
+            structure_switches(body_slice.to_vec(), inner_depth),
+            inner_depth,
+        ),
+        inner_depth,
+    );
+    slice_is_structured(&body).then_some(body)
+}
+
 fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
@@ -2893,20 +2943,6 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             .push(test.case_const.clone());
     }
 
-    let merge_label: usize = match stmts.get(after_tests) {
-        Some(Stmt::Label(l)) => *l,
-        Some(Stmt::Jump { target_label }) => *target_label,
-        _ => return None,
-    };
-    if target_consts.contains_key(&merge_label) {
-        return None;
-    }
-
-    let end: usize = stmts[after_tests..]
-        .iter()
-        .position(|s: &Stmt| matches!(s, Stmt::Label(l) if *l == merge_label))
-        .map(|p: usize| after_tests + p)?;
-
     let case_label_positions: Vec<(usize, usize)> = region
         .iter()
         .enumerate()
@@ -2924,7 +2960,19 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
         }
     }
 
-    let inner_depth: usize = depth - 1;
+    let merge_label: usize = match stmts.get(after_tests) {
+        Some(Stmt::Label(label)) => *label,
+        Some(Stmt::Jump { target_label }) => *target_label,
+        _ => forward_dispatch_follow(region, &case_label_positions)?,
+    };
+    if target_consts.contains_key(&merge_label) {
+        return None;
+    }
+    let end: usize = stmts[after_tests..]
+        .iter()
+        .position(|s: &Stmt| matches!(s, Stmt::Label(label) if *label == merge_label))
+        .map(|position: usize| after_tests + position)?;
+
     let mut cases: Vec<SwitchCase> = Vec::with_capacity(case_label_positions.len() + 1);
     for (n, (label_pos, label)) in case_label_positions.iter().enumerate() {
         let body_start: usize = label_pos + 1;
@@ -2938,19 +2986,8 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             }
             _ => (segment, false),
         };
-        if !slice_labels_are_private(stmts, body_slice) {
-            return None;
-        }
-        let body: Vec<Stmt> = structure_if_blocks(
-            structure_loops(
-                structure_switches(body_slice.to_vec(), inner_depth),
-                inner_depth,
-            ),
-            inner_depth,
-        );
-        if !slice_is_structured(&body) {
-            return None;
-        }
+        let body: Vec<Stmt> =
+            structure_forward_dispatch_body(stmts, body_slice, merge_label, depth)?;
         let labels: Vec<CaseLabel> = target_consts[label]
             .iter()
             .map(|e: &Expr| const_to_case_label(e))
@@ -2961,9 +2998,11 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             breaks,
         });
     }
+    let default_body: Vec<Stmt> =
+        structure_forward_dispatch_body(stmts, &stmts[after_tests..end], merge_label, depth)?;
     cases.push(SwitchCase {
         labels: vec![CaseLabel::Default],
-        body: Vec::new(),
+        body: default_body,
         breaks: false,
     });
 
@@ -4893,6 +4932,51 @@ mod tests {
             param_names: Vec::new(),
             param_count: 0,
         }
+    }
+
+    #[test]
+    fn forward_dispatch_follow_requires_one_exact_target() {
+        let matching: Vec<Stmt> = vec![
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 90 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 90 },
+        ];
+        let conflicting: Vec<Stmt> = vec![
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 90 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 91 },
+        ];
+        let no_follow: Vec<Stmt> = vec![Stmt::Label(10), Stmt::Return(None)];
+        let terminal_case: Vec<Stmt> = vec![
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 90 },
+            Stmt::Label(20),
+            Stmt::Return(None),
+        ];
+        let nonterminal_fallthrough: Vec<Stmt> = vec![
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 90 },
+            Stmt::Label(20),
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::IntLit(7),
+            },
+        ];
+        let two_cases: Vec<(usize, usize)> = vec![(0, 10), (2, 20)];
+        let one_case: Vec<(usize, usize)> = vec![(0, 10)];
+        assert_eq!(forward_dispatch_follow(&matching, &two_cases), Some(90));
+        assert_eq!(forward_dispatch_follow(&conflicting, &two_cases), None);
+        assert_eq!(forward_dispatch_follow(&no_follow, &one_case), None);
+        assert_eq!(
+            forward_dispatch_follow(&terminal_case, &two_cases),
+            Some(90)
+        );
+        assert_eq!(
+            forward_dispatch_follow(&nonterminal_fallthrough, &two_cases),
+            None
+        );
     }
 
     #[test]

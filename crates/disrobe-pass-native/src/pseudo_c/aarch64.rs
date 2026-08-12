@@ -1,10 +1,10 @@
 use super::return_channel;
 use super::{
     Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpToIntRound, FpUnaryOp,
-    FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind, LeafRecovery,
-    MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result, RoundMode,
-    ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
+    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpRoundKind, FpRoundRange, FpToIntRound,
+    FpUnaryOp, FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
+    LeafRecovery, MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result,
+    RoundMode, ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
     VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi,
     collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
     infer_fp_params, infer_params, plan_frame, stmt_writes_rax_int, structure_items,
@@ -3838,7 +3838,7 @@ fn lower_fp_convert(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
-fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], mode: RoundMode) -> Result<Vec<Stmt>> {
+fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], kind: FpRoundKind) -> Result<Vec<Stmt>> {
     if operands.len() != 2 {
         return Err(reject_at(
             insn,
@@ -3852,11 +3852,17 @@ fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], mode: RoundMode) -> Resu
     if width != src_width {
         return Err(reject_at(insn, "round to integral uses mixed precision"));
     }
+    if width == FpWidth::F16 && matches!(kind, FpRoundKind::SignedRange(_)) {
+        return Err(reject_at(
+            insn,
+            "range-limited rounding does not encode a half-precision form",
+        ));
+    }
     Ok(vec![Stmt::FpRound {
         dest,
         src: FpOperand::Xmm(src),
         width,
-        mode,
+        kind,
     }])
 }
 
@@ -4165,15 +4171,19 @@ fn try_lower_scalar_fp(
                 "frinta" => RoundMode::TiesAway,
                 _ => RoundMode::Nearest,
             };
-            lower_fp_round(insn, &operands, mode).map(Some)
+            lower_fp_round(insn, &operands, FpRoundKind::Integral(mode)).map(Some)
         }
-        "frint32z" | "frint32x" if has_scalar_fp_destination(&operands) => Err(reject_at(
+        "frint32z" | "frint64z" if has_scalar_fp_destination(&operands) => {
+            let range: FpRoundRange = if insn.mnemonic.starts_with("frint32") {
+                FpRoundRange::I32
+            } else {
+                FpRoundRange::I64
+            };
+            lower_fp_round(insn, &operands, FpRoundKind::SignedRange(range)).map(Some)
+        }
+        "frint32x" | "frint64x" if has_scalar_fp_destination(&operands) => Err(reject_at(
             insn,
-            "32-bit integral rounding requires FPSR semantics",
-        )),
-        "frint64z" | "frint64x" if has_scalar_fp_destination(&operands) => Err(reject_at(
-            insn,
-            "64-bit integral rounding requires FPSR semantics",
+            "range-limited exact rounding depends on unmodelled ambient FPCR state",
         )),
         "fjcvtzs" if has_scalar_gpr_destination(&operands) => Err(reject_at(
             insn,

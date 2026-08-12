@@ -1729,18 +1729,7 @@ pub(super) fn try_structure_guarded_try(
     let conjunct_guard: Option<usize> = compound
         .as_ref()
         .map(|c: &CompoundIf| c.last_jump)
-        .filter(|&last: &usize| last >= first_cond)
-        .filter(|&last: &usize| {
-            let Some(exit): Option<usize> = resolve_jump_target(stream, last, &stream.ops[last])
-            else {
-                return false;
-            };
-            (first_cond..=last)
-                .filter(|&k: &usize| {
-                    is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
-                })
-                .all(|k: usize| resolve_jump_target(stream, k, &stream.ops[k]) == Some(exit))
-        });
+        .filter(|&last: &usize| last >= first_cond);
     let guard: usize = conjunct_guard.unwrap_or(first_cond);
     if conjunct_guard.is_none()
         && (lo..guard).any(|k: usize| {
@@ -1758,16 +1747,32 @@ pub(super) fn try_structure_guarded_try(
         return Ok(None);
     };
     let Some(region): Option<TryRegion> =
-        find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi)
+        find_protected_try_with_outer_handler(stream, guard + 1, false_target, hi).or_else(|| {
+            (!stream.is_pre_311())
+                .then(|| find_try_region(stream, guard + 1, false_target))
+                .flatten()
+                .filter(|region: &TryRegion| {
+                    region.handler_start < false_target && region.region_end <= false_target
+                })
+        })
     else {
         return Ok(None);
     };
+    let inline_handler_before_false_arm: bool = region.handler_start < false_target
+        && region.region_end <= false_target
+        && loop_continue_target().is_some_and(|header: usize| {
+            (region.region_end..false_target).any(|edge: usize| {
+                is_back_edge(&stream.ops[edge])
+                    && resolve_jump_target(stream, edge, &stream.ops[edge]) == Some(header)
+            })
+        });
     if region.is_finally
         || region.try_start <= guard
         || region.try_start >= false_target
-        || region.handler_start < false_target
+        || (region.handler_start < false_target && !inline_handler_before_false_arm)
         || guard_is_inside_protected_try_with_continuation(stream, guard, false_target, &region)
-        || first_significant(stream, false_target, region.handler_start).is_none()
+        || (!inline_handler_before_false_arm
+            && first_significant(stream, false_target, region.handler_start).is_none())
     {
         return Ok(None);
     }
@@ -1816,8 +1821,20 @@ pub(super) fn try_structure_guarded_try(
         extend_body_over_trailing_guard(stream, region.try_start, body_end, false_target);
     let continuation_end: usize = {
         let raw: usize = trim_trailing_comp_cleanup(stream, false_target, region.handler_start);
-        let cap: usize = then_arm_end_cap();
-        if cap != 0 && cap >= false_target && cap < raw {
+        let then_cap: usize = then_arm_end_cap();
+        let structure_cap: usize = structure_hi_cap();
+        let cap: usize = match (then_cap, structure_cap) {
+            (0, 0) => 0,
+            (0, cap) | (cap, 0) => cap,
+            (left, right) => left.min(right),
+        };
+        if inline_handler_before_false_arm {
+            if structure_cap >= false_target {
+                structure_cap.min(hi)
+            } else {
+                hi
+            }
+        } else if cap != 0 && cap >= false_target && cap < raw {
             cap
         } else {
             raw
@@ -1837,7 +1854,7 @@ pub(super) fn try_structure_guarded_try(
     let cap_then_arm: bool = else_join.is_some()
         && region.region_end > false_target
         && first_significant(stream, false_target, region.region_end).is_some();
-    let if_body: Vec<Stmt> = if inner_guard_before_try {
+    let mut if_body: Vec<Stmt> = if inner_guard_before_try {
         let body_start: usize =
             first_significant(stream, guard + 1, false_target).unwrap_or(guard + 1);
         let _then_cap: Option<ThenArmEndCapGuard> =
@@ -1870,14 +1887,34 @@ pub(super) fn try_structure_guarded_try(
         };
         let mut body: Vec<Stmt> = prelude;
         body.push(try_stmt);
-        if !span_is_else {
+        if !span_is_else && !inline_handler_before_false_arm {
             body.extend(structure_stmts(code, stream, body_end, false_target)?);
         }
         body
     };
+    let shared_continue_latch: Option<usize> = loop_continue_target().and_then(|header: usize| {
+        (region.try_start..false_target).find(|&latch: &usize| {
+            is_back_edge(&stream.ops[latch])
+                && resolve_jump_target(stream, latch, &stream.ops[latch]) == Some(header)
+        })
+    });
+    let handler_rejoins_continue: bool = shared_continue_latch.is_some_and(|latch: usize| {
+        (region.handler_start..region.region_end).any(|edge: usize| {
+            (is_back_edge(&stream.ops[edge])
+                || matches!(
+                    stream.ops[edge],
+                    CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+                ))
+                && resolve_jump_target(stream, edge, &stream.ops[edge]) == Some(latch)
+        })
+    });
+    if handler_rejoins_continue && !matches!(if_body.last(), Some(Stmt::Continue)) {
+        if_body.push(Stmt::Continue);
+    }
 
     let trailing_is_continuation: bool = else_join.is_none()
-        && (dup_pop_except.is_some()
+        && ((inline_handler_before_false_arm && handler_rejoins_continue)
+            || dup_pop_except.is_some()
             || handler_normal_exit_backjumps_to(
                 stream,
                 region.handler_start,
@@ -1926,7 +1963,20 @@ pub(super) fn try_structure_guarded_try(
     {
         out.extend(structure_stmts(code, stream, join, region.handler_start)?);
     }
-    out.extend(structure_stmts(code, stream, region.region_end, hi)?);
+    let structure_cap: usize = structure_hi_cap();
+    let tail_hi: usize = if structure_cap == 0 {
+        hi
+    } else {
+        hi.min(structure_cap)
+    };
+    let tail_start: usize = if inline_handler_before_false_arm {
+        continuation_end
+    } else {
+        region.region_end
+    };
+    if tail_start < tail_hi {
+        out.extend(structure_stmts(code, stream, tail_start, tail_hi)?);
+    }
     Ok(Some(out))
 }
 

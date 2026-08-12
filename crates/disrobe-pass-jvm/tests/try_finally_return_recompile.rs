@@ -171,6 +171,25 @@ fn normalize_javap(raw: &str) -> Vec<String> {
     out
 }
 
+fn method_body(source: &str, signature_fragment: &str) -> Option<String> {
+    let start: usize = source.find(signature_fragment)?;
+    let open: usize = source[start..].find('{')? + start;
+    let mut depth: usize = 0;
+    for (offset, byte) in source.as_bytes()[open..].iter().enumerate() {
+        match byte {
+            b'{' => depth = depth.checked_add(1)?,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return source.get(open..=open + offset).map(str::to_owned);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn javap_code(javap: &PathBuf, class_dir: &PathBuf, class: &str) -> String {
     let out: std::process::Output = Command::new(javap)
         .arg("-c")
@@ -277,6 +296,83 @@ fn try_finally_with_return_recompiles_to_equivalent_bytecode() {
     );
 }
 
+const FINALLY_IF_SRC: &str = "public class FinallyIf {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a * 2;\n\
+        } finally {\n\
+            if (a > 0) { CTR++; } else { CTR--; }\n\
+        }\n\
+    }\n\
+}\n";
+
+#[test]
+fn finally_if_else_recompiles_to_equivalent_bytecode() {
+    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_if").expect("scratch");
+    let orig_dir: PathBuf = scratch.path().join("orig");
+    let rec_dir: PathBuf = scratch.path().join("rec");
+    std::fs::create_dir_all(&orig_dir).expect("original directory");
+    std::fs::create_dir_all(&rec_dir).expect("recovered directory");
+    let source_path: PathBuf = orig_dir.join("FinallyIf.java");
+    std::fs::write(&source_path, FINALLY_IF_SRC).expect("source fixture");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&orig_dir)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let class_bytes: Vec<u8> =
+        std::fs::read(orig_dir.join("FinallyIf.class")).expect("class fixture");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse class fixture");
+    let decompiled: DecompiledClass = decompile_class(&class_file);
+    let body: String = method_body(&decompiled.source, " run(").expect("recovered run method");
+
+    assert!(!body.contains("not recovered:"), "method refused:\n{body}");
+    assert!(
+        !body.contains("catch (Throwable"),
+        "finally became catch:\n{body}"
+    );
+    assert!(
+        !body.contains("stack reset"),
+        "method has lifting hole:\n{body}"
+    );
+    assert!(body.contains("finally {"), "finally missing:\n{body}");
+    assert!(body.contains("if ("), "finally condition missing:\n{body}");
+    assert!(body.contains("else {"), "finally else arm missing:\n{body}");
+
+    let recovered_source: PathBuf = rec_dir.join("FinallyIf.java");
+    std::fs::write(&recovered_source, &decompiled.source).expect("recovered source");
+    let recompile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&rec_dir)
+        .arg(&recovered_source)
+        .output()
+        .expect("recompile recovered source");
+    assert!(
+        recompile.status.success(),
+        "recovered source failed to compile: {}\n{}",
+        String::from_utf8_lossy(&recompile.stderr),
+        decompiled.source
+    );
+    let original_code: Vec<String> = normalize_javap(&javap_code(&javap, &orig_dir, "FinallyIf"));
+    let recovered_code: Vec<String> = normalize_javap(&javap_code(&javap, &rec_dir, "FinallyIf"));
+    assert_eq!(
+        original_code, recovered_code,
+        "recompiled finally-if bytecode differs from the original:\n{}",
+        decompiled.source
+    );
+}
+
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     static int CTR = 0;\n\
     static int finallyWithIf(int a) {\n\
@@ -330,7 +426,6 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
 }\n";
 
 const UNMODELLED_FINALLY_METHODS: &[&str] = &[
-    "finallyWithIf",
     "finallyBreaks",
     "finallyContinues",
     "finallyNestedTry",

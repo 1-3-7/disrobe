@@ -2381,6 +2381,9 @@ fn append_shared_fallthrough_tail(
         Some(b) => b.id,
         None => return,
     };
+    if ctx.finally_tail_trims.contains_key(&tail_bid) {
+        return;
+    }
     if !ctx.rendered_blocks.contains(&tail_bid) {
         return;
     }
@@ -4009,7 +4012,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
         Region::TryFinally {
             try_body,
             handlers,
-            finally_chain,
+            finally_body,
             ..
         } => {
             let pad: String = indent_string(level);
@@ -4023,7 +4026,7 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                 render_handler_region(ctx, handler_region, &var, out, level + 1);
             }
             let _ = writeln!(out, "{pad}}} finally {{");
-            render_finally_body(ctx, finally_chain, out, level + 1);
+            render_region(ctx, finally_body, out, level + 1);
             let _ = writeln!(out, "{pad}}}");
         }
         Region::TryWithResources {
@@ -4665,60 +4668,6 @@ fn render_block_seeded(
     }
 }
 
-fn render_finally_body(
-    ctx: &mut RenderCtx<'_>,
-    finally_chain: &[BlockId],
-    out: &mut String,
-    level: usize,
-) {
-    let pad: String = indent_string(level);
-    let mut stack: Vec<Expr> = Vec::new();
-    for &bid in finally_chain {
-        ctx.rendered_blocks.insert(bid);
-        let (block_start, block_end): (usize, usize) = block_insn_range(ctx, bid);
-        let skip_front: usize = ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0);
-        let trim_back: usize = ctx.finally_tail_trims.get(&bid).copied().unwrap_or(0);
-        let lo: usize = block_start.saturating_add(skip_front);
-        let hi: usize = block_end.saturating_sub(trim_back);
-        if lo >= hi {
-            continue;
-        }
-        for ins in &ctx.insns[lo..hi] {
-            let op: u8 = ins.opcode;
-            if matches!(
-                op,
-                0x99..=0xA6 | 0xC6 | 0xC7 | 0xA7 | 0xC8 | 0xAA | 0xAB | 0xA9
-            ) {
-                continue;
-            }
-            let lifted: LiftResult = lift_one(
-                ctx.cf,
-                ins,
-                &mut stack,
-                ctx.params,
-                ctx.bootstraps,
-                ctx.has_this,
-                ctx.bool_return,
-            );
-            match lifted {
-                LiftResult::Statement(s) => {
-                    let _ = writeln!(out, "{pad}{s};");
-                }
-                LiftResult::ControlFlow(s) => {
-                    let _ = writeln!(out, "{pad}{s}");
-                    ctx.fully_lifted = false;
-                }
-                LiftResult::Pushed | LiftResult::Elided => {}
-                LiftResult::Unhandled => {
-                    stack.clear();
-                    ctx.fully_lifted = false;
-                    let _ = writeln!(out, "{pad}// {} (stack reset)", ins.mnemonic);
-                }
-            }
-        }
-    }
-}
-
 fn lift_lock_expr(ctx: &RenderCtx<'_>, bid: BlockId) -> Option<Expr> {
     let (start, end): (usize, usize) = block_insn_range(ctx, bid);
     let slice: &[Instruction] = &ctx.insns[start..end];
@@ -5352,7 +5301,13 @@ fn render_head_prefix_and_condition(
     out: &mut String,
     level: usize,
 ) -> String {
-    let (start, end): (usize, usize) = block_insn_range(ctx, head);
+    let (block_start, block_end): (usize, usize) = block_insn_range(ctx, head);
+    let end: usize = block_end
+        .saturating_sub(ctx.finally_tail_trims.get(&head).copied().unwrap_or(0))
+        .max(block_start);
+    let start: usize = block_start
+        .saturating_add(ctx.finally_inline_skips.get(&head).copied().unwrap_or(0))
+        .min(end);
     if start == end {
         ctx.rendered_blocks.insert(head);
         return "true".to_string();
@@ -5467,7 +5422,13 @@ fn render_if_condition(
     out: &mut String,
     level: usize,
 ) -> String {
-    let (start, end): (usize, usize) = block_insn_range(ctx, head);
+    let (block_start, block_end): (usize, usize) = block_insn_range(ctx, head);
+    let end: usize = block_end
+        .saturating_sub(ctx.finally_tail_trims.get(&head).copied().unwrap_or(0))
+        .max(block_start);
+    let start: usize = block_start
+        .saturating_add(ctx.finally_inline_skips.get(&head).copied().unwrap_or(0))
+        .min(end);
     if start == end {
         return "true".to_string();
     }

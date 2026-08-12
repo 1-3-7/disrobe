@@ -12,6 +12,7 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
+use crate::decompile::OPARRAY_MAGIC;
 use crate::detect::{PhpConfidence, PhpDetection, PhpKind, detect as detect_php};
 use crate::peel::{PeelOptions, PeelReport, PeelTrace, peel as peel_php};
 use crate::phar::{PharArchive, PharEntry, extract_entry, parse as parse_phar};
@@ -26,6 +27,7 @@ const PEEL_MANIFEST_SCHEMA: &str = "disrobe.php.peel-manifest/v0";
 const TAG_PHP_SOURCE: &str = "php-source";
 const TAG_PHAR_STUB: &str = "php-phar-stub";
 const TAG_PHAR_ARCHIVE: &str = "php-phar-archive";
+const TAG_OPARRAY: &str = "php-oparray";
 const TAG_BCG: &str = "php-bcg";
 
 const PHAR_MANIFEST_BANNER: &str = "php.phar archive";
@@ -40,8 +42,7 @@ impl Detector for PhpDetectorImpl {
     }
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
-        let detection: PhpDetection = detect_php(ctx.bytes);
-        verdict_for(&detection)
+        verdict_for_bytes(ctx.bytes)
     }
 }
 
@@ -81,10 +82,23 @@ impl Pass for PhpPass {
         dbg.section("php.peel");
         let bytes: &[u8] = artifact.envelope.as_slice();
         dbg.kv("input_len", || bytes.len().to_string());
+        let is_oparray: bool = bytes.starts_with(OPARRAY_MAGIC);
         let detection: PhpDetection = detect_php(bytes);
-        dbg.kv("detected_kind", || format!("{:?}", detection.kind));
-        dbg.kv("confidence", || format!("{:?}", detection.confidence));
-        let verdict: DetectVerdict = verdict_for(&detection).ok_or_else(|| {
+        dbg.kv("detected_kind", || {
+            if is_oparray {
+                "OpArray".to_owned()
+            } else {
+                format!("{:?}", detection.kind)
+            }
+        });
+        dbg.kv("confidence", || {
+            if is_oparray {
+                format!("{:?}", PhpConfidence::Definite)
+            } else {
+                format!("{:?}", detection.confidence)
+            }
+        });
+        let verdict: DetectVerdict = verdict_for_bytes(bytes).ok_or_else(|| {
             dbg.line(|| "no verdict: input is not a recognized php source or archive".to_owned());
             CoreError::PassFailure(
                 "DR-PHP-0902: php.peel: input is not a recognized php source or archive"
@@ -106,6 +120,16 @@ impl Pass for PhpPass {
                     manifest.into_bytes(),
                     artifact.root_hash,
                 ))
+            }
+            TAG_OPARRAY => {
+                let recovery: RecoveryReport =
+                    recover_php(bytes, None).map_err(|error: crate::error::Error| {
+                        dbg.line(|| format!("op_array recovery failed: {error}"));
+                        CoreError::PassFailure(error.to_string())
+                    })?;
+                let source: Vec<u8> = recovery.output.into_bytes();
+                dbg.kv("recovered_source_len", || source.len().to_string());
+                Ok(Artifact::new(Rung::Surface, source, artifact.root_hash))
             }
             _ => {
                 let source: Vec<u8> = recovered_source(bytes);
@@ -414,6 +438,21 @@ fn verdict_for(d: &PhpDetection) -> Option<DetectVerdict> {
         vec![marker],
         format!("php kind={tag} halt={halt}", halt = d.has_halt_compiler),
     ))
+}
+
+fn verdict_for_bytes(bytes: &[u8]) -> Option<DetectVerdict> {
+    if bytes.starts_with(OPARRAY_MAGIC) {
+        return Some(DetectVerdict::new(
+            PASS_ID,
+            TAG_OPARRAY,
+            FAMILY_OBFUSCATOR_WRAPPER,
+            confidence_to_float(PhpConfidence::Definite),
+            30,
+            vec!["DZOA-magic"],
+            "php kind=php-oparray halt=false".to_owned(),
+        ));
+    }
+    verdict_for(&detect_php(bytes))
 }
 
 #[inline]

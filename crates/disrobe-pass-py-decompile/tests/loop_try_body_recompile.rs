@@ -58,6 +58,19 @@ def chained_guard(active, primary, secondary, sink):
         sink('ready')
 ";
 
+const WHILE_OR_GUARD_TRY_CONTINUE: &str = r"
+def guarded_read(active, primary, secondary, read, sink):
+    while active():
+        if primary() or secondary():
+            try:
+                sink(read())
+            except LookupError:
+                sink(None)
+            continue
+        sink('ready')
+    return None
+";
+
 const WHILE_TRY_HANDLER_FALLTHROUGH: &str = r"
 def retain_handler_fallthrough(active, next_item, sink):
     while active():
@@ -81,6 +94,7 @@ def retain_mixed_handler_flow(active, next_item, sink):
 ";
 
 const PRE311_ALIASES: &[&str] = &["3.8", "3.9", "3.10"];
+const POST311_ALIASES: &[&str] = &["3.11", "3.12", "3.14", "3.15"];
 
 fn stable_interpreter() -> BandInterpreter {
     resolve_band(&["3.10"], &[])
@@ -103,6 +117,20 @@ fn required_pre311_interpreters() -> Vec<BandInterpreter> {
         resolved.as_slice(),
         PRE311_ALIASES,
         "guarded-loop recovery requires CPython 3.8, 3.9, and 3.10; CI provisions all three"
+    );
+    interpreters
+}
+
+fn required_post311_interpreters() -> Vec<BandInterpreter> {
+    let interpreters: Vec<BandInterpreter> = resolve_band(POST311_ALIASES, &[]);
+    let resolved: Vec<&str> = interpreters
+        .iter()
+        .map(|interpreter: &BandInterpreter| interpreter.alias)
+        .collect();
+    assert_eq!(
+        resolved.as_slice(),
+        POST311_ALIASES,
+        "guarded loop recovery requires CPython 3.11, 3.12, 3.14, and 3.15; CI provisions all four"
     );
     interpreters
 }
@@ -283,6 +311,40 @@ fn guarded_while_or_continue_recompiles_equivalently() {
         assert!(
             recovered.contains("sink(\"ready\")"),
             "the false arm must remain in the loop body:\n{recovered}"
+        );
+    }
+}
+
+#[test]
+fn post311_while_or_guard_try_continue_recompiles_equivalently() {
+    for interpreter in required_post311_interpreters() {
+        let label: String = format!("while_or_guard_try_continue_{}", interpreter.alias);
+        let recovered: String =
+            assert_recompile_equivalence(&interpreter, WHILE_OR_GUARD_TRY_CONTINUE, &label);
+
+        assert_eq!(
+            recovered.matches("while active():").count(),
+            1,
+            "the loop header must own the outer region:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("if primary() or secondary():").count(),
+            1,
+            "the short-circuit guard must stay inside the loop:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("except LookupError:").count(),
+            1,
+            "the protected region must stay inside the guarded arm:\n{recovered}"
+        );
+        assert_eq!(
+            recovered.matches("continue").count(),
+            1,
+            "the guarded arm must retain its loop edge:\n{recovered}"
+        );
+        assert!(
+            recovered.contains("sink(\"ready\")"),
+            "the false arm must stay in the loop body:\n{recovered}"
         );
     }
 }
