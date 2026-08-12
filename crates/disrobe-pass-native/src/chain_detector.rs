@@ -12,13 +12,14 @@ use disrobe_core::pass::PassId;
 use disrobe_core::recon::{ReconConfig, ReconReport, report_bytes};
 
 use crate::packers::{
-    AspackPhaseTwoOutput, Detection as PackerDetection, FsgUnpackOutput, KkrunchyUnpackOutput,
-    LoaderInspection, LoaderRecovery, MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport,
-    Packer, PecompactPhaseTwoOutput, PetitePhase2EmulatedOutput, RecoveryField, UnpackerStatus,
-    UpxUnpackOutput, YodasCrypterCarve, detect as detect_packers, recover_loader,
-    recover_yodas_crypter_carve, unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy,
-    unpack_mew, unpack_mpress, unpack_nspack_emulated, unpack_pecompact_phase2_emulated,
-    unpack_petite_phase2_emulated, unpack_upx,
+    AspackPhaseTwoOutput, Detection as PackerDetection, DonutModuleType, FsgUnpackOutput,
+    KkrunchyUnpackOutput, LoaderConfig, LoaderFamily, LoaderInspection, LoaderRecovery,
+    MewUnpackOutput, MpressUnpackOutput, NspackEmulatedReport, Packer, PecompactPhaseTwoOutput,
+    PetitePhase2EmulatedOutput, RecoveryField, UnpackerStatus, UpxUnpackOutput, YodasCrypterCarve,
+    detect as detect_packers, recover_loader, recover_yodas_crypter_carve,
+    unpack_aspack_phase2_emulated, unpack_fsg, unpack_kkrunchy, unpack_mew, unpack_mpress,
+    unpack_nspack_emulated, unpack_pecompact_phase2_emulated, unpack_petite_phase2_emulated,
+    unpack_upx,
 };
 
 pub const PASS_ID: PassId = "native.packer-unpack";
@@ -75,7 +76,7 @@ impl Pass for PackerPass {
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let recovery: PackerRecovery = recover(input)?;
-        Ok(build_children(&recovery))
+        build_children(&recovery)
     }
 }
 
@@ -92,7 +93,7 @@ pub static PACKER_PASS: PackerPass = PackerPass;
 #[derive(Debug)]
 struct PackerRecovery {
     packer: Packer,
-    image: Vec<u8>,
+    image: RecoveryField<Vec<u8>>,
     oep_va: Option<u64>,
     loader: Option<LoaderInspection>,
 }
@@ -110,17 +111,39 @@ fn recover(artifact: &Artifact) -> CoreResult<PackerRecovery> {
     dispatch_unpack(pick.packer, artifact)
 }
 
-const RECOVERED_IMAGE_PATH: &str = "recovered-image.bin";
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecoveredChildDescriptor {
+    path: &'static str,
+    hint: Option<&'static str>,
+}
 
-fn build_children(recovery: &PackerRecovery) -> Vec<ChildArtifact> {
+const RECOVERED_IMAGE: RecoveredChildDescriptor = RecoveredChildDescriptor {
+    path: "recovered-image.bin",
+    hint: None,
+};
+
+fn build_children(recovery: &PackerRecovery) -> CoreResult<Vec<ChildArtifact>> {
     let mut children: Vec<ChildArtifact> = Vec::new();
-    let image: &[u8] = recovery.image.as_slice();
+    let known_image: Option<(&[u8], RecoveredChildDescriptor)> = match &recovery.image {
+        RecoveryField::Known { value } => {
+            let descriptor: RecoveredChildDescriptor = recovered_child_descriptor(recovery);
+            children.push(child(0, descriptor.path, descriptor.hint, value.clone()));
+            Some((value.as_slice(), descriptor))
+        }
+        RecoveryField::Unknown { .. } => None,
+    };
 
-    children.push(child(0, RECOVERED_IMAGE_PATH, None, recovery.image.clone()));
-
-    if let Ok(json) = serde_json::to_vec_pretty(&unpack_manifest(recovery)) {
-        push_terminal(&mut children, "packer-unpack.manifest.json", json);
-    }
+    let manifest: Vec<u8> = serde_json::to_vec_pretty(&unpack_manifest(recovery)).map_err(
+        |error: serde_json::Error| {
+            CoreError::PassFailure(format!(
+                "DR-NAT-0933: native.packer-unpack: manifest serialization failed: {error}"
+            ))
+        },
+    )?;
+    push_terminal(&mut children, "packer-unpack.manifest.json", manifest);
+    let Some((image, descriptor)): Option<(&[u8], RecoveredChildDescriptor)> = known_image else {
+        return Ok(children);
+    };
     let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(image);
     if let Ok(json) = serde_json::to_vec_pretty(&identity) {
         push_terminal(&mut children, "identity.json", json);
@@ -139,14 +162,75 @@ fn build_children(recovery: &PackerRecovery) -> Vec<ChildArtifact> {
     {
         push_terminal(&mut children, "deobf.json", json);
     }
-    let recon: ReconReport =
-        report_bytes(image, Some(RECOVERED_IMAGE_PATH), &ReconConfig::default());
+    let recon: ReconReport = report_bytes(image, Some(descriptor.path), &ReconConfig::default());
     if !recon.findings.is_empty()
         && let Ok(json) = serde_json::to_vec_pretty(&recon)
     {
         push_terminal(&mut children, "recon.json", json);
     }
-    children
+    Ok(children)
+}
+
+fn recovered_child_descriptor(recovery: &PackerRecovery) -> RecoveredChildDescriptor {
+    recovery
+        .loader
+        .as_ref()
+        .map_or(RECOVERED_IMAGE, loader_child_descriptor)
+}
+
+fn loader_child_descriptor(inspection: &LoaderInspection) -> RecoveredChildDescriptor {
+    if inspection.family == LoaderFamily::Srdi {
+        return RecoveredChildDescriptor {
+            path: RECOVERED_IMAGE.path,
+            hint: None,
+        };
+    }
+    let LoaderConfig::Donut(config) = &inspection.config else {
+        return RecoveredChildDescriptor {
+            path: "recovered-module.bin",
+            hint: None,
+        };
+    };
+    let RecoveryField::Known { value: module_type } = &config.module_type else {
+        return RecoveredChildDescriptor {
+            path: "recovered-module.bin",
+            hint: None,
+        };
+    };
+    match module_type {
+        DonutModuleType::ManagedDll => RecoveredChildDescriptor {
+            path: "recovered-module.dll",
+            hint: None,
+        },
+        DonutModuleType::ManagedExe => RecoveredChildDescriptor {
+            path: "recovered-module.exe",
+            hint: None,
+        },
+        DonutModuleType::NativeDll => RecoveredChildDescriptor {
+            path: RECOVERED_IMAGE.path,
+            hint: None,
+        },
+        DonutModuleType::NativeExe => RecoveredChildDescriptor {
+            path: RECOVERED_IMAGE.path,
+            hint: None,
+        },
+        DonutModuleType::VbScript => RecoveredChildDescriptor {
+            path: "recovered-module.vbs",
+            hint: None,
+        },
+        DonutModuleType::JavaScript => RecoveredChildDescriptor {
+            path: "recovered-module.js",
+            hint: None,
+        },
+        DonutModuleType::Xsl => RecoveredChildDescriptor {
+            path: "recovered-module.xsl",
+            hint: None,
+        },
+        DonutModuleType::Unknown { .. } => RecoveredChildDescriptor {
+            path: "recovered-module.bin",
+            hint: None,
+        },
+    }
 }
 
 fn child(index: u32, path: &str, hint: Option<&str>, bytes: Vec<u8>) -> ChildArtifact {
@@ -177,12 +261,40 @@ fn signatures_report(bytes: &[u8]) -> serde_json::Value {
 }
 
 fn unpack_manifest(recovery: &PackerRecovery) -> serde_json::Value {
+    let (recovered_image, recovered_image_bytes, recovery_status): (
+        Option<&str>,
+        Option<usize>,
+        serde_json::Value,
+    ) = match &recovery.image {
+        RecoveryField::Known { value } => {
+            let descriptor: RecoveredChildDescriptor = recovered_child_descriptor(recovery);
+            (
+                Some(descriptor.path),
+                Some(value.len()),
+                serde_json::json!({
+                    "status": "known",
+                    "path": descriptor.path,
+                    "hint": descriptor.hint,
+                    "bytes": value.len(),
+                }),
+            )
+        }
+        RecoveryField::Unknown { reason } => (
+            None,
+            None,
+            serde_json::json!({
+                "status": "unknown",
+                "reason": reason,
+            }),
+        ),
+    };
     serde_json::json!({
         "schema": "disrobe.native.packer-unpack/v1",
         "packer": recovery.packer.label(),
-        "recovered_image": RECOVERED_IMAGE_PATH,
-        "recovered_image_bytes": recovery.image.len(),
+        "recovered_image": recovered_image,
+        "recovered_image_bytes": recovered_image_bytes,
         "recovered_oep_va": recovery.oep_va,
+        "recovery": recovery_status,
         "loader": recovery.loader,
     })
 }
@@ -191,13 +303,24 @@ fn render_manifest(recovery: &PackerRecovery) -> String {
     use std::fmt::Write as _;
     let mut s: String = String::with_capacity(128);
     s.push_str("native.packer-unpack\n");
-    let _ = writeln!(
-        s,
-        "packer={label} recovered_bytes={n} oep_va={oep:?}",
-        label = recovery.packer.label(),
-        n = recovery.image.len(),
-        oep = recovery.oep_va,
-    );
+    match &recovery.image {
+        RecoveryField::Known { value } => {
+            let _ = writeln!(
+                s,
+                "packer={label} recovery=known recovered_bytes={n} oep_va={oep:?}",
+                label = recovery.packer.label(),
+                n = value.len(),
+                oep = recovery.oep_va,
+            );
+        }
+        RecoveryField::Unknown { reason } => {
+            let _ = writeln!(
+                s,
+                "packer={label} recovery=unknown reason={reason}",
+                label = recovery.packer.label(),
+            );
+        }
+    }
     s
 }
 
@@ -311,7 +434,7 @@ fn run_rust_unpacker(packer: Packer, artifact: &Artifact) -> CoreResult<PackerRe
     }
     Ok(PackerRecovery {
         packer,
-        image: recovered,
+        image: RecoveryField::Known { value: recovered },
         oep_va,
         loader,
     })
@@ -323,16 +446,7 @@ fn loader_packer_recovery(out: LoaderRecovery) -> CoreResult<PackerRecovery> {
         crate::packers::LoaderFamily::Donut => Packer::Donut,
         crate::packers::LoaderFamily::Srdi => Packer::Srdi,
     };
-    let image: Vec<u8> = match module {
-        RecoveryField::Known { value } => value,
-        RecoveryField::Unknown { reason } => {
-            return Err(CoreError::PassFailure(format!(
-                "DR-NAT-0932: native.packer-unpack: {label} module was not recovered: {reason}",
-                label = packer.label(),
-            )));
-        }
-    };
-    if image.is_empty() {
+    if matches!(&module, RecoveryField::Known { value } if value.is_empty()) {
         return Err(CoreError::PassFailure(format!(
             "DR-NAT-0915: native.packer-unpack: {label} unpacker produced no bytes",
             label = packer.label(),
@@ -340,7 +454,7 @@ fn loader_packer_recovery(out: LoaderRecovery) -> CoreResult<PackerRecovery> {
     }
     Ok(PackerRecovery {
         packer,
-        image,
+        image: module,
         oep_va: None,
         loader: Some(inspection),
     })
@@ -660,10 +774,387 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::packers::{
+        ByteRegion, DonutConfig, DonutEntropy, LoaderArchitecture, LoaderVariant,
+        WrappedModuleFormat, WrappedModuleMetadata,
+    };
+
+    const KNOWN_DONUT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/loader_generators/known.go-donut.bin"
+    ));
+    const FSG_PACKED: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../corpus/native/packers/fsg/Hash.packed.fsg.exe"
+    ));
 
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(PackerDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn donut_module_types_select_child_paths_and_hints() {
+        let cases: [(DonutModuleType, RecoveredChildDescriptor); 8] = [
+            (
+                DonutModuleType::ManagedDll,
+                RecoveredChildDescriptor {
+                    path: "recovered-module.dll",
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::ManagedExe,
+                RecoveredChildDescriptor {
+                    path: "recovered-module.exe",
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::NativeDll,
+                RecoveredChildDescriptor {
+                    path: RECOVERED_IMAGE.path,
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::NativeExe,
+                RecoveredChildDescriptor {
+                    path: RECOVERED_IMAGE.path,
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::VbScript,
+                RecoveredChildDescriptor {
+                    path: "recovered-module.vbs",
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::JavaScript,
+                RecoveredChildDescriptor {
+                    path: "recovered-module.js",
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::Xsl,
+                RecoveredChildDescriptor {
+                    path: "recovered-module.xsl",
+                    hint: None,
+                },
+            ),
+            (
+                DonutModuleType::Unknown { value: 99 },
+                RecoveredChildDescriptor {
+                    path: "recovered-module.bin",
+                    hint: None,
+                },
+            ),
+        ];
+        for case in cases {
+            let (module_type, expected): (DonutModuleType, RecoveredChildDescriptor) = case;
+            let inspection: LoaderInspection = donut_inspection(module_type);
+            assert_eq!(loader_child_descriptor(&inspection), expected);
+        }
+    }
+
+    #[test]
+    fn srdi_recovered_pe_remains_available_to_downstream_passes() {
+        let inspection: LoaderInspection = LoaderInspection {
+            family: LoaderFamily::Srdi,
+            variant: LoaderVariant::SrdiV1,
+            architecture: LoaderArchitecture::X64,
+            config_region: ByteRegion {
+                offset: 0,
+                length: 69,
+            },
+            config: LoaderConfig::Srdi(crate::packers::SrdiConfig {
+                function_hash: 0,
+                flags: 0,
+                user_data_region: RecoveryField::Known {
+                    value: ByteRegion {
+                        offset: 69,
+                        length: 0,
+                    },
+                },
+            }),
+            wrapped_module: WrappedModuleMetadata {
+                region: RecoveryField::Known {
+                    value: ByteRegion {
+                        offset: 69,
+                        length: 1,
+                    },
+                },
+                format: RecoveryField::Known {
+                    value: crate::packers::WrappedModuleFormat::Pe32Plus,
+                },
+                stored_size: RecoveryField::Known { value: 1 },
+                original_size: RecoveryField::Known { value: 1 },
+                entry_point_rva: RecoveryField::Known { value: 1 },
+            },
+        };
+        assert_eq!(
+            loader_child_descriptor(&inspection),
+            RecoveredChildDescriptor {
+                path: RECOVERED_IMAGE.path,
+                hint: None,
+            }
+        );
+    }
+
+    #[test]
+    fn donut_script_payloads_remain_typed_but_unrecovered() {
+        #[derive(Clone, Copy)]
+        struct ScriptCase {
+            payload: &'static [u8],
+            module_type: DonutModuleType,
+            format: WrappedModuleFormat,
+            label: &'static str,
+            serialized_type: &'static str,
+            expected_path: &'static str,
+        }
+
+        let cases: [ScriptCase; 6] = [
+            ScriptCase {
+                payload: b"const answer = 42;",
+                module_type: DonutModuleType::JavaScript,
+                format: WrappedModuleFormat::JavaScript,
+                label: "javascript",
+                serialized_type: "java-script",
+                expected_path: "recovered-module.js",
+            },
+            ScriptCase {
+                payload: b"const = ;",
+                module_type: DonutModuleType::JavaScript,
+                format: WrappedModuleFormat::JavaScript,
+                label: "javascript",
+                serialized_type: "java-script",
+                expected_path: "recovered-module.js",
+            },
+            ScriptCase {
+                payload: b"Option Explicit\r\nDim answer\r\nanswer = 42\r\n",
+                module_type: DonutModuleType::VbScript,
+                format: WrappedModuleFormat::VbScript,
+                label: "vbscript",
+                serialized_type: "vb-script",
+                expected_path: "recovered-module.vbs",
+            },
+            ScriptCase {
+                payload: b"Option Explicit\r\nDim\r\n",
+                module_type: DonutModuleType::VbScript,
+                format: WrappedModuleFormat::VbScript,
+                label: "vbscript",
+                serialized_type: "vb-script",
+                expected_path: "recovered-module.vbs",
+            },
+            ScriptCase {
+                payload: br#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"></xsl:stylesheet>"#,
+                module_type: DonutModuleType::Xsl,
+                format: WrappedModuleFormat::Xsl,
+                label: "xsl",
+                serialized_type: "xsl",
+                expected_path: "recovered-module.xsl",
+            },
+            ScriptCase {
+                payload: br#"<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"></xsl:stylesheet><"#,
+                module_type: DonutModuleType::Xsl,
+                format: WrappedModuleFormat::Xsl,
+                label: "xsl",
+                serialized_type: "xsl",
+                expected_path: "recovered-module.xsl",
+            },
+        ];
+        for case in cases {
+            let wrapper: Vec<u8> = crate::packers::loader_generators::test_go_donut_wrapper(
+                KNOWN_DONUT,
+                case.payload,
+                case.module_type,
+                LoaderArchitecture::X64,
+            )
+            .expect("script Donut fixture");
+            let recovery: LoaderRecovery = recover_loader(&wrapper).expect("script recovery");
+            let LoaderConfig::Donut(config) = &recovery.inspection.config else {
+                panic!("script wrapper lost Donut config");
+            };
+            assert_eq!(
+                config.module_type,
+                RecoveryField::Known {
+                    value: case.module_type,
+                }
+            );
+            assert_eq!(
+                recovery.inspection.wrapped_module.format,
+                RecoveryField::Known { value: case.format }
+            );
+            let RecoveryField::Unknown { reason } = &recovery.module else {
+                panic!("{} script bytes were reported recovered", case.label);
+            };
+            assert!(reason.contains(case.label));
+            assert!(reason.contains("static parser"));
+            assert_eq!(
+                loader_child_descriptor(&recovery.inspection),
+                RecoveredChildDescriptor {
+                    path: case.expected_path,
+                    hint: None,
+                }
+            );
+            let artifact: Artifact = Artifact::new(Rung::Raw, wrapper, [0u8; 32]);
+            let children: Vec<ChildArtifact> = PACKER_PASS
+                .extract_children(&artifact)
+                .expect("script refusal children");
+            assert!(
+                children
+                    .iter()
+                    .all(|child: &ChildArtifact| child.handle.relative_path != case.expected_path)
+            );
+            let manifest_child: &ChildArtifact = children
+                .iter()
+                .find(|child: &&ChildArtifact| {
+                    child.handle.relative_path == "packer-unpack.manifest.json"
+                })
+                .expect("script refusal manifest");
+            let manifest: serde_json::Value = serde_json::from_slice(&manifest_child.bytes)
+                .expect("script refusal manifest JSON");
+            assert_eq!(manifest["recovery"]["status"], "unknown");
+            assert_eq!(manifest["recovery"]["reason"], reason.as_str());
+            assert_eq!(
+                manifest["loader"]["config"]["value"]["module_type"]["value"]["kind"],
+                case.serialized_type
+            );
+            assert_eq!(
+                manifest["loader"]["wrapped_module"]["format"]["value"],
+                case.serialized_type
+            );
+        }
+    }
+
+    #[test]
+    fn donut_recovered_packer_reaches_the_real_downstream_detector() {
+        use std::collections::BTreeMap;
+        use std::time::Instant;
+
+        use disrobe_core::chain::state_machine::PassRunner;
+        use disrobe_core::chain::{
+            ChainConfig, ChainDriver, ChainSpec, DetectorPick, PassRegistry, PassRunOutcome,
+            Verdict,
+        };
+
+        #[derive(Debug)]
+        struct Runner;
+
+        impl PassRunner for Runner {
+            fn run(
+                &self,
+                pick: &DetectorPick,
+                bytes: Vec<u8>,
+                _config: &ChainConfig,
+                path_hint: Option<&str>,
+            ) -> core::result::Result<PassRunOutcome, String> {
+                let root_hash: [u8; 32] = *blake3::hash(&bytes).as_bytes();
+                let artifact: Artifact = Artifact::new(Rung::Raw, bytes, root_hash);
+                let started: Instant = Instant::now();
+                let output: Artifact = pick
+                    .pass
+                    .run_with_path(&artifact, path_hint)
+                    .map_err(|error: CoreError| error.to_string())?;
+                let output_kind: OutputKind = pick.pass.output_kind(&output);
+                let (kind, children): (OutputKind, Vec<Vec<u8>>) = if output_kind.is_mixed() {
+                    let extracted: Vec<ChildArtifact> = pick
+                        .pass
+                        .extract_children(&artifact)
+                        .map_err(|error: CoreError| error.to_string())?;
+                    OutputKind::mixed_from_children(extracted)
+                } else {
+                    (output_kind, Vec::new())
+                };
+                Ok(PassRunOutcome {
+                    output_bytes: output.envelope,
+                    kind,
+                    duration: started.elapsed(),
+                    metadata: BTreeMap::new(),
+                    children,
+                })
+            }
+        }
+
+        let wrapper: Vec<u8> = crate::packers::loader_generators::test_go_donut_wrapper(
+            KNOWN_DONUT,
+            FSG_PACKED,
+            DonutModuleType::NativeExe,
+            LoaderArchitecture::X86,
+        )
+        .expect("nested Donut fixture");
+        let mut registry: PassRegistry = PassRegistry::new();
+        let _replaced: Option<&'static dyn Pass> = registry.register(&PACKER_PASS);
+        let runner: Runner = Runner;
+        let driver: ChainDriver<'_, Runner> =
+            ChainDriver::new(&registry, &runner, ChainConfig::default());
+        let plan: disrobe_core::chain::ChainPlan =
+            driver.run(wrapper, &ChainSpec::Auto { cap: 3 }, None);
+        let donut_node: &disrobe_core::chain::Node = plan
+            .nodes
+            .iter()
+            .find(|node: &&disrobe_core::chain::Node| {
+                node.pass_id.as_deref() == Some(PASS_ID)
+                    && node.format_tag_in.as_deref() == Some("donut")
+            })
+            .expect("Donut node");
+        let fsg_node: &disrobe_core::chain::Node = plan
+            .nodes
+            .iter()
+            .find(|node: &&disrobe_core::chain::Node| {
+                node.parent_id == Some(donut_node.id)
+                    && node.pass_id.as_deref() == Some(PASS_ID)
+                    && node.format_tag_in.as_deref() == Some("fsg")
+            })
+            .expect("FSG downstream node");
+        assert!(matches!(
+            fsg_node.verdict,
+            Verdict::FanOut { count } if count > 0
+        ));
+    }
+
+    fn donut_inspection(module_type: DonutModuleType) -> LoaderInspection {
+        let unavailable: String = "unavailable in routing test".to_owned();
+        LoaderInspection {
+            family: LoaderFamily::Donut,
+            variant: LoaderVariant::GoDonutV1,
+            architecture: LoaderArchitecture::X64,
+            config_region: ByteRegion {
+                offset: 5,
+                length: 23_936,
+            },
+            config: LoaderConfig::Donut(DonutConfig {
+                entropy: DonutEntropy::None,
+                api_hash_count: RecoveryField::Known { value: 1 },
+                module_type: RecoveryField::Known { value: module_type },
+                compression: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+                module_header_region: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+            }),
+            wrapped_module: WrappedModuleMetadata {
+                region: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+                format: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+                stored_size: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+                original_size: RecoveryField::Unknown {
+                    reason: unavailable.clone(),
+                },
+                entry_point_rva: RecoveryField::Unknown {
+                    reason: unavailable,
+                },
+            },
+        }
     }
 
     #[test]
@@ -911,7 +1402,7 @@ mod tests {
 
         let recovered: &ChildArtifact = children
             .iter()
-            .find(|c: &&ChildArtifact| c.handle.relative_path == RECOVERED_IMAGE_PATH)
+            .find(|c: &&ChildArtifact| c.handle.relative_path == RECOVERED_IMAGE.path)
             .expect("the recovered image must be a chain child so auto re-chains it");
         assert!(
             recovered.handle.hint.is_none(),

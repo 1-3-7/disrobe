@@ -772,6 +772,28 @@ pub fn detect(bytes: &[u8]) -> Vec<Detection> {
                 ),
             },
         );
+    } else if let Ok(recovery) = recover_loader(bytes) {
+        let LoaderRecovery { inspection, module } = recovery;
+        let packer: Packer = match inspection.family {
+            LoaderFamily::Donut => Packer::Donut,
+            LoaderFamily::Srdi => Packer::Srdi,
+        };
+        if let RecoveryField::Unknown { reason } = module {
+            found.insert(
+                packer,
+                Detection {
+                    packer,
+                    confidence: Confidence::High,
+                    matched_offset: Some(0),
+                    note: format!(
+                        "{} loader envelope offset={} length={} recognized; recovery refused: {reason}",
+                        packer.label(),
+                        inspection.config_region.offset,
+                        inspection.config_region.length,
+                    ),
+                },
+            );
+        }
     }
     if crate::format::detect(bytes).is_err() {
         return found.into_values().collect();

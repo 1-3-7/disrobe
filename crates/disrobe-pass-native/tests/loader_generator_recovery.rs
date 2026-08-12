@@ -323,12 +323,62 @@ fn truncation_and_oversized_declarations_are_bounded() -> TestResult<()> {
 
 #[cfg(feature = "chain")]
 mod chain {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
     use super::{KNOWN_DLL, KNOWN_DONUT, KNOWN_SRDI, TestResult, Value, failure};
-    use disrobe_core::chain::{ChildArtifact, DetectContext, DetectVerdict, Detector};
+    use disrobe_core::chain::detection::TERMINAL_HINT;
+    use disrobe_core::chain::state_machine::PassRunner;
+    use disrobe_core::chain::{
+        ChainConfig, ChainDriver, ChainPlan, ChainSpec, ChildArtifact, ChildHandle, DetectContext,
+        DetectVerdict, Detector, DetectorPick, OutputKind, PassRegistry, PassRunOutcome,
+    };
     use disrobe_core::{Artifact, Pass, Rung};
     use disrobe_pass_native::chain_detector::{PACKER_PASS, PackerDetector};
 
-    fn verify_chain_recovery(wrapper: &[u8], expected_tag: &str) -> TestResult<()> {
+    #[derive(Debug)]
+    struct NativePassRunner;
+
+    impl PassRunner for NativePassRunner {
+        fn run(
+            &self,
+            pick: &DetectorPick,
+            bytes: Vec<u8>,
+            _config: &ChainConfig,
+            path_hint: Option<&str>,
+        ) -> core::result::Result<PassRunOutcome, String> {
+            let root_hash: [u8; 32] = *blake3::hash(&bytes).as_bytes();
+            let artifact: Artifact = Artifact::new(Rung::Raw, bytes, root_hash);
+            let started: Instant = Instant::now();
+            let output: Artifact = pick
+                .pass
+                .run_with_path(&artifact, path_hint)
+                .map_err(|error| error.to_string())?;
+            let output_kind: OutputKind = pick.pass.output_kind(&output);
+            let (kind, children): (OutputKind, Vec<Vec<u8>>) = if output_kind.is_mixed() {
+                let extracted: Vec<ChildArtifact> = pick
+                    .pass
+                    .extract_children(&artifact)
+                    .map_err(|error| error.to_string())?;
+                OutputKind::mixed_from_children(extracted)
+            } else {
+                (output_kind, Vec::new())
+            };
+            Ok(PassRunOutcome {
+                output_bytes: output.envelope,
+                kind,
+                duration: started.elapsed(),
+                metadata: BTreeMap::new(),
+                children,
+            })
+        }
+    }
+
+    fn verify_chain_recovery(
+        wrapper: &[u8],
+        expected_tag: &str,
+        source_path: &str,
+    ) -> TestResult<()> {
         let context: DetectContext<'_> = DetectContext {
             bytes: wrapper,
             path_hint: None,
@@ -339,17 +389,50 @@ mod chain {
             .ok_or_else(|| failure("loader detection missing"))?;
         assert_eq!(verdict.format_tag, expected_tag);
 
-        let artifact: Artifact = Artifact::new(Rung::Raw, wrapper.to_vec(), [0u8; 32]);
-        let children: Vec<ChildArtifact> = PACKER_PASS.extract_children(&artifact)?;
-        let recovered: &ChildArtifact = children
+        let mut registry: PassRegistry = PassRegistry::new();
+        let _replaced: Option<&'static dyn Pass> = registry.register(&PACKER_PASS);
+        let runner: NativePassRunner = NativePassRunner;
+        let config: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let driver: ChainDriver<'_, NativePassRunner> =
+            ChainDriver::new(&registry, &runner, config);
+        let spec: ChainSpec = ChainSpec::Auto { cap: 3 };
+        let plan: ChainPlan = driver.run(wrapper.to_vec(), &spec, Some(source_path.to_owned()));
+        let packer_node: &disrobe_core::chain::Node = plan
+            .nodes
             .iter()
-            .find(|child| child.handle.relative_path == "recovered-image.bin")
-            .ok_or_else(|| failure("recovered module child missing"))?;
+            .find(|node| node.pass_id.as_deref() == Some("native.packer-unpack"))
+            .ok_or_else(|| failure("packer chain node missing"))?;
+        let packer_children: &[ChildHandle] = packer_node
+            .output_kind
+            .as_ref()
+            .and_then(|kind| match kind {
+                OutputKind::Mixed { children } => Some(children.as_slice()),
+                _ => None,
+            })
+            .ok_or_else(|| failure("packer mixed child handles missing"))?;
+        let recovered_handle: &ChildHandle = packer_children
+            .iter()
+            .find(|child| child.relative_path == "recovered-image.bin")
+            .ok_or_else(|| failure("recovered module handle missing"))?;
+        assert_eq!(recovered_handle.hint, None);
+        let recovered_hash: [u8; 32] = *blake3::hash(KNOWN_DLL).as_bytes();
+        assert!(plan.nodes.iter().any(|node| {
+            node.parent_id == Some(packer_node.id) && node.input_blake3 == recovered_hash
+        }));
+        let recovered: &disrobe_core::chain::ExtractedArtifact = plan
+            .extracted
+            .iter()
+            .find(|artifact| artifact.relative_path == "recovered-image.bin")
+            .ok_or_else(|| failure("recovered module artifact missing"))?;
         assert_eq!(recovered.bytes, KNOWN_DLL);
 
-        let manifest: &ChildArtifact = children
+        let manifest: &disrobe_core::chain::ExtractedArtifact = plan
+            .extracted
             .iter()
-            .find(|child| child.handle.relative_path == "packer-unpack.manifest.json")
+            .find(|artifact| artifact.relative_path == "packer-unpack.manifest.json")
             .ok_or_else(|| failure("loader manifest child missing"))?;
         let value: Value = serde_json::from_slice(&manifest.bytes)?;
         assert_eq!(value["packer"], expected_tag);
@@ -357,13 +440,63 @@ mod chain {
             value["loader"]["wrapped_module"]["original_size"]["value"],
             18_944
         );
+        assert_eq!(value["recovery"]["status"], "known");
+        assert_eq!(value["recovery"]["path"], "recovered-image.bin");
+        assert!(value["recovery"]["hint"].is_null());
         Ok(())
     }
 
     #[test]
-    fn packer_detector_and_pass_recover_both_real_wrappers() -> TestResult<()> {
-        verify_chain_recovery(KNOWN_SRDI, "srdi")?;
-        verify_chain_recovery(KNOWN_DONUT, "donut")?;
+    fn packer_chain_enqueues_both_real_wrappers_for_downstream_detection() -> TestResult<()> {
+        verify_chain_recovery(KNOWN_SRDI, "srdi", "known.srdi.bin")?;
+        verify_chain_recovery(KNOWN_DONUT, "donut", "known.go-donut.bin")?;
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_entropy_is_a_chain_visible_typed_refusal() -> TestResult<()> {
+        let mut wrapper: Vec<u8> = KNOWN_DONUT.to_vec();
+        wrapper[569..573].copy_from_slice(&99u32.to_le_bytes());
+        let context: DetectContext<'_> = DetectContext {
+            bytes: &wrapper,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        };
+        let verdict: DetectVerdict = Detector::detect(&PackerDetector, &context)
+            .ok_or_else(|| failure("refused Donut loader detection missing"))?;
+        assert_eq!(verdict.format_tag, "donut");
+
+        let artifact: Artifact = Artifact::new(Rung::Raw, wrapper, [0u8; 32]);
+        let output: Artifact = PACKER_PASS.run(&artifact)?;
+        let rendered: &str = std::str::from_utf8(&output.envelope)?;
+        assert!(rendered.contains("recovery=unknown"));
+        let children: Vec<ChildArtifact> = PACKER_PASS.extract_children(&artifact)?;
+        assert_eq!(children.len(), 1);
+        assert!(
+            children
+                .iter()
+                .all(|child| child.handle.hint.as_deref() == Some(TERMINAL_HINT))
+        );
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|child| child.handle.relative_path == "packer-unpack.manifest.json")
+            .ok_or_else(|| failure("loader refusal manifest missing"))?;
+        let value: Value = serde_json::from_slice(&manifest.bytes)?;
+        assert_eq!(value["packer"], "donut");
+        assert_eq!(value["recovery"]["status"], "unknown");
+        assert!(
+            value["recovery"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("entropy mode 99"))
+        );
+        assert_eq!(
+            value["loader"]["config"]["value"]["entropy"]["kind"],
+            "unknown"
+        );
+        assert_eq!(value["loader"]["config"]["value"]["entropy"]["value"], 99);
+        assert!(value["recovered_image"].is_null());
+        assert!(value["recovered_image_bytes"].is_null());
         Ok(())
     }
 }
