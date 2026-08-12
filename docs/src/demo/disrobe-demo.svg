@@ -68,7 +68,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.012520"/>
-        <text x="0.00" y="180.88" fill="#8fb3d9" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">nly;</text>
+        <text x="0.00" y="180.88" fill="#8fb3d9" xml:space="preserve" textLength="32.00" lengthAdjust="spacing">&#x6e;&#x6c;&#x79;;</text>
         <text x="32.00" y="180.88" fill="#a1a1a1" xml:space="preserve" textLength="288.00" lengthAdjust="spacing"> wasm-name-obfuscator classify-only)</text>
       </g>
       <g opacity="0">
@@ -88,7 +88,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.013263"/>
-        <text x="0.00" y="256.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">K</text>
+        <text x="0.00" y="256.88" fill="#8fb3d9" xml:space="preserve" textLength="8.00" lengthAdjust="spacing">&#x4b;</text>
         <text x="8.00" y="256.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing"> / MBC tags</text>
       </g>
       <g opacity="0">
@@ -481,7 +481,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.111175"/>
-        <text x="0.00" y="1681.88" fill="#8fb3d9" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">ed</text>
+        <text x="0.00" y="1681.88" fill="#8fb3d9" xml:space="preserve" textLength="16.00" lengthAdjust="spacing">&#x65;&#x64;</text>
         <text x="16.00" y="1681.88" fill="#a1a1a1" xml:space="preserve" textLength="656.00" lengthAdjust="spacing"> non-zeroing xor, the bulk string / payload decoder  [ATT&amp;CK T1027, MBC C0026.002]</text>
       </g>
       <g opacity="0">
@@ -562,7 +562,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.143658"/>
-        <text x="0.00" y="1985.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">execute</text>
+        <text x="0.00" y="1985.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">&#x65;&#x78;&#x65;&#x63;&#x75;&#x74;&#x65;</text>
         <text x="56.00" y="1985.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing"> the sample</text>
       </g>
       <g opacity="0">
@@ -1019,7 +1019,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.345771"/>
-        <text x="0.00" y="3467.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">ute</text>
+        <text x="0.00" y="3467.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">&#x75;&#x74;&#x65;</text>
         <text x="24.00" y="3467.88" fill="#a1a1a1" xml:space="preserve" textLength="88.00" lengthAdjust="spacing"> the sample</text>
       </g>
       <g opacity="0">
@@ -1030,7 +1030,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.346044"/>
-        <text x="0.00" y="3505.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">stream</text>
+        <text x="0.00" y="3505.88" fill="#8fb3d9" xml:space="preserve" textLength="48.00" lengthAdjust="spacing">&#x73;&#x74;&#x72;&#x65;&#x61;&#x6d;</text>
         <text x="48.00" y="3505.88" fill="#a1a1a1" xml:space="preserve" textLength="208.00" lengthAdjust="spacing"> was recovered in this run</text>
       </g>
       <g opacity="0">
@@ -1937,7 +1937,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.794358"/>
-        <text x="0.00" y="6222.88" fill="#8fb3d9" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">FILE_DIRECTORY&quot;]</text>
+        <text x="0.00" y="6222.88" fill="#8fb3d9" xml:space="preserve" textLength="128.00" lengthAdjust="spacing">&#x46;&#x49;&#x4c;&#x45;_DIRECTORY&quot;]</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.794537"/>
@@ -2125,7 +2125,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.910216"/>
-        <text x="0.00" y="6792.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">NTACTS&quot;</text>
+        <text x="0.00" y="6792.88" fill="#8fb3d9" xml:space="preserve" textLength="56.00" lengthAdjust="spacing">&#x4e;&#x54;&#x41;&#x43;&#x54;&#x53;&quot;</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.910506"/>
@@ -2134,7 +2134,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.910506"/>
-        <text x="0.00" y="6830.88" fill="#8fb3d9" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">FINE_LOCATION&quot;</text>
+        <text x="0.00" y="6830.88" fill="#8fb3d9" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">&#x46;&#x49;&#x4e;&#x45;_LOCATION&quot;</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.910754"/>
@@ -2144,7 +2144,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.910754"/>
-        <text x="0.00" y="6868.88" fill="#8fb3d9" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">xported=&quot;true&quot;</text>
+        <text x="0.00" y="6868.88" fill="#8fb3d9" xml:space="preserve" textLength="112.00" lengthAdjust="spacing">&#x78;&#x70;&#x6f;&#x72;&#x74;&#x65;&#x64;=&quot;true&quot;</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.911002"/>
@@ -2158,7 +2158,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.911250"/>
-        <text x="0.00" y="6925.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">om&quot;</text>
+        <text x="0.00" y="6925.88" fill="#8fb3d9" xml:space="preserve" textLength="24.00" lengthAdjust="spacing">&#x6f;&#x6d;&quot;</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.911404"/>
@@ -2173,7 +2173,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.911575"/>
-        <text x="0.00" y="6982.88" fill="#a1a1a1" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">roid:</text>
+        <text x="0.00" y="6982.88" fill="#a1a1a1" xml:space="preserve" textLength="40.00" lengthAdjust="spacing">&#x72;&#x6f;&#x69;&#x64;:</text>
         <text x="40.00" y="6982.88" fill="#ededed" xml:space="preserve" textLength="120.00" lengthAdjust="spacing">exported=&quot;true&quot;</text>
       </g>
       <g opacity="0">
@@ -2305,7 +2305,7 @@
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.953373"/>
-        <text x="0.00" y="7419.88" fill="#8fb3d9" xml:space="preserve" textLength="176.00" lengthAdjust="spacing">ge=&quot;com.disrobe.rich&quot;&gt;</text>
+        <text x="0.00" y="7419.88" fill="#8fb3d9" xml:space="preserve" textLength="176.00" lengthAdjust="spacing">&#x67;&#x65;=&quot;com.disrobe.rich&quot;&gt;</text>
       </g>
       <g opacity="0">
         <animate attributeName="opacity" dur="117.014s" repeatCount="indefinite" calcMode="discrete" values="0;1" keyTimes="0;0.953681"/>

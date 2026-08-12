@@ -1,4 +1,4 @@
-use std::fmt::Arguments;
+use std::fmt::{Arguments, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -88,6 +88,7 @@ struct Line {
     end_change: f64,
     states: Vec<(f64, String)>,
     kind: LineKind,
+    soft_wrapped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +196,7 @@ struct Terminal {
     cur_col: usize,
     max_line: usize,
     scroll: Vec<(f64, usize)>,
+    soft_wrapped: Vec<bool>,
 }
 
 impl Terminal {
@@ -208,6 +210,7 @@ impl Terminal {
             cur_col: 0,
             max_line: 0,
             scroll: vec![(0.0, 0)],
+            soft_wrapped: vec![false],
         }
     }
 
@@ -215,13 +218,15 @@ impl Terminal {
         while self.lines.len() <= index {
             self.lines.push(String::new());
             self.histories.push(Vec::new());
+            self.soft_wrapped.push(false);
         }
     }
 
-    fn newline(&mut self, time: f64) {
+    fn newline(&mut self, time: f64, soft_wrapped: bool) {
         self.cur_line += 1;
         self.cur_col = 0;
         self.grow_to(self.cur_line);
+        self.soft_wrapped[self.cur_line] = soft_wrapped;
         if self.cur_line > self.max_line {
             self.max_line = self.cur_line;
             let offset: usize = (self.max_line + 1).saturating_sub(self.rows);
@@ -266,7 +271,7 @@ impl Terminal {
                 }
                 '\r' => self.cur_col = 0,
                 '\n' => {
-                    self.newline(event.time);
+                    self.newline(event.time, false);
                 }
                 '\t' => {
                     let stop: usize = (self.cur_col / 8 + 1) * 8;
@@ -278,7 +283,7 @@ impl Terminal {
                 c if (c as u32) < 0x20 => {}
                 c => {
                     if self.cur_col >= self.cols {
-                        self.newline(event.time);
+                        self.newline(event.time, true);
                     }
                     self.put(c);
                     dirty.push(self.cur_line);
@@ -325,6 +330,7 @@ fn build_model(cast: &Cast) -> Result<Model> {
             end_change,
             states: hist.clone(),
             kind,
+            soft_wrapped: term.soft_wrapped.get(index).copied().unwrap_or(false),
         });
     }
 
@@ -406,6 +412,27 @@ struct Run {
 fn esc(s: &str) -> String {
     let mut out: String = String::with_capacity(s.len());
     for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn esc_soft_wrap_prefix(s: &str) -> String {
+    let mut out: String = String::with_capacity(s.len());
+    let mut prefix: bool = true;
+    for ch in s.chars() {
+        if prefix && ch.is_alphabetic() {
+            let _: std::fmt::Result = write!(out, "&#x{:x};", ch as u32);
+            continue;
+        }
+        prefix = false;
         match ch {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
@@ -735,7 +762,7 @@ fn render_line(body: &mut String, line: &Line, dur: f64) {
     }
 }
 
-fn emit_runs(mut body: &mut String, runs: &[Run], base_x: f64, y: f64) {
+fn emit_runs(mut body: &mut String, runs: &[Run], base_x: f64, y: f64, soft_wrapped: bool) {
     for run in runs {
         let x: f64 = (run.col as f64).mul_add(CELL_W, base_x);
         let text_len: f64 = run.text.chars().count() as f64 * CELL_W;
@@ -743,7 +770,11 @@ fn emit_runs(mut body: &mut String, runs: &[Run], base_x: f64, y: f64) {
             body,
             "        <text x=\"{x:.2}\" y=\"{y:.2}\" fill=\"{}\" xml:space=\"preserve\" textLength=\"{text_len:.2}\" lengthAdjust=\"spacing\">{}</text>",
             run.fill,
-            esc(&run.text)
+            if soft_wrapped && run.col == 0 {
+                esc_soft_wrap_prefix(&run.text)
+            } else {
+                esc(&run.text)
+            }
         );
     }
 }
@@ -761,7 +792,7 @@ fn render_static_line(mut body: &mut String, line: &Line, dur: f64) {
         "        <animate attributeName=\"opacity\" dur=\"{dur:.3}s\" repeatCount=\"indefinite\" calcMode=\"discrete\" values=\"0;1\" keyTimes=\"0;{:.6}\"/>",
         kt(line.appear, dur)
     );
-    emit_runs(body, &runs, 0.0, y);
+    emit_runs(body, &runs, 0.0, y, line.soft_wrapped);
     push_line!(body, "      </g>");
 }
 
@@ -784,7 +815,7 @@ fn render_bar_line(mut body: &mut String, line: &Line, dur: f64) {
             "        <animate attributeName=\"opacity\" dur=\"{dur:.3}s\" repeatCount=\"indefinite\" calcMode=\"discrete\" values=\"0;1;0\" keyTimes=\"0;{:.6};{end_key:.6}\"/>",
             kt(*t, dur)
         );
-        emit_runs(body, &runs, 0.0, y);
+        emit_runs(body, &runs, 0.0, y, line.soft_wrapped);
         push_line!(body, "      </g>");
     }
 }
@@ -807,7 +838,7 @@ fn render_typed_line(mut body: &mut String, line: &Line, dur: f64) {
         "        <animate attributeName=\"opacity\" dur=\"{dur:.3}s\" repeatCount=\"indefinite\" calcMode=\"discrete\" values=\"0;1\" keyTimes=\"0;{:.6}\"/>",
         kt(line.appear, dur)
     );
-    emit_runs(body, &prompt_runs, 0.0, y);
+    emit_runs(body, &prompt_runs, 0.0, y, line.soft_wrapped);
     push_line!(body, "      </g>");
 
     let cmd_x: f64 = prompt_len as f64 * CELL_W;
@@ -845,7 +876,7 @@ fn render_typed_line(mut body: &mut String, line: &Line, dur: f64) {
         "        <animate attributeName=\"opacity\" dur=\"{dur:.3}s\" repeatCount=\"indefinite\" calcMode=\"discrete\" values=\"0;1\" keyTimes=\"0;{:.6}\"/>",
         kt(line.appear, dur)
     );
-    emit_runs(body, &cmd_runs, cmd_x, y);
+    emit_runs(body, &cmd_runs, cmd_x, y, false);
     push_line!(body, "      </g>");
 }
 
@@ -1046,6 +1077,32 @@ mod tests {
         assert!(svg.trim_end().ends_with("</svg>"), "svg closed");
         assert!(svg.contains("repeatCount=\"indefinite\""), "loops");
         assert!(svg.len() < MAX_SVG_BYTES, "within budget");
+    }
+
+    #[test]
+    fn soft_wrapped_word_fragments_are_entity_encoded() {
+        let cast: Cast = Cast {
+            cols: 4,
+            rows: 4,
+            events: vec![CastEvent {
+                time: 0.5,
+                data: "abcde\r\n".to_owned(),
+            }],
+            duration: 1.0,
+        };
+        let model: Model = build_model(&cast).expect("model");
+        let wrapped: &Line = model
+            .lines
+            .iter()
+            .find(|line: &&Line| line.soft_wrapped)
+            .expect("soft-wrapped line");
+        assert_eq!(
+            wrapped.states.last().map(|(_, text)| text.as_str()),
+            Some("e")
+        );
+        let svg: String = render(&model).expect("render");
+        assert!(svg.contains("&#x65;"), "wrapped fragment is encoded");
+        assert!(!svg.contains(">e</text>"), "fragment is not a word token");
     }
 
     #[test]
