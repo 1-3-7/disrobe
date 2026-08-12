@@ -20,6 +20,12 @@ impl fmt::Display for ByteReadError {
 
 impl Error for ByteReadError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endian {
+    Little,
+    Big,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ByteReader<'a> {
     bytes: &'a [u8],
@@ -27,7 +33,16 @@ pub struct ByteReader<'a> {
 }
 
 macro_rules! endian_methods {
-    ($read_le:ident, $read_be:ident, $peek_le:ident, $peek_be:ident, $ty:ty, $width:literal) => {
+    (
+        $read:ident,
+        $read_le:ident,
+        $read_be:ident,
+        $peek:ident,
+        $peek_le:ident,
+        $peek_be:ident,
+        $ty:ty,
+        $width:literal
+    ) => {
         pub fn $read_le(&mut self) -> Result<$ty, ByteReadError> {
             let raw: [u8; $width] = self.read_array::<$width>()?;
             Ok(<$ty>::from_le_bytes(raw))
@@ -46,6 +61,42 @@ macro_rules! endian_methods {
         pub fn $peek_be(&self) -> Result<$ty, ByteReadError> {
             let mut clone: Self = *self;
             clone.$read_be()
+        }
+
+        #[inline]
+        pub fn $read(&mut self, endian: Endian) -> Result<$ty, ByteReadError> {
+            match endian {
+                Endian::Little => self.$read_le(),
+                Endian::Big => self.$read_be(),
+            }
+        }
+
+        #[inline]
+        pub fn $peek(&self, endian: Endian) -> Result<$ty, ByteReadError> {
+            match endian {
+                Endian::Little => self.$peek_le(),
+                Endian::Big => self.$peek_be(),
+            }
+        }
+    };
+}
+
+macro_rules! runtime_endian_methods {
+    ($read:ident, $read_le:ident, $read_be:ident, $peek:ident, $peek_le:ident, $peek_be:ident, $ty:ty) => {
+        #[inline]
+        pub fn $read(&mut self, endian: Endian) -> Result<$ty, ByteReadError> {
+            match endian {
+                Endian::Little => self.$read_le(),
+                Endian::Big => self.$read_be(),
+            }
+        }
+
+        #[inline]
+        pub fn $peek(&self, endian: Endian) -> Result<$ty, ByteReadError> {
+            match endian {
+                Endian::Little => self.$peek_le(),
+                Endian::Big => self.$peek_be(),
+            }
         }
     };
 }
@@ -164,30 +215,106 @@ impl<'a> ByteReader<'a> {
         clone.read_i8()
     }
 
-    endian_methods!(read_u16_le, read_u16_be, peek_u16_le, peek_u16_be, u16, 2);
-    endian_methods!(read_i16_le, read_i16_be, peek_i16_le, peek_i16_be, i16, 2);
-    endian_methods!(read_u32_le, read_u32_be, peek_u32_le, peek_u32_be, u32, 4);
-    endian_methods!(read_i32_le, read_i32_be, peek_i32_le, peek_i32_be, i32, 4);
-    endian_methods!(read_u64_le, read_u64_be, peek_u64_le, peek_u64_be, u64, 8);
-    endian_methods!(read_i64_le, read_i64_be, peek_i64_le, peek_i64_be, i64, 8);
     endian_methods!(
+        read_u16,
+        read_u16_le,
+        read_u16_be,
+        peek_u16,
+        peek_u16_le,
+        peek_u16_be,
+        u16,
+        2
+    );
+    endian_methods!(
+        read_i16,
+        read_i16_le,
+        read_i16_be,
+        peek_i16,
+        peek_i16_le,
+        peek_i16_be,
+        i16,
+        2
+    );
+    endian_methods!(
+        read_u32,
+        read_u32_le,
+        read_u32_be,
+        peek_u32,
+        peek_u32_le,
+        peek_u32_be,
+        u32,
+        4
+    );
+    endian_methods!(
+        read_i32,
+        read_i32_le,
+        read_i32_be,
+        peek_i32,
+        peek_i32_le,
+        peek_i32_be,
+        i32,
+        4
+    );
+    endian_methods!(
+        read_u64,
+        read_u64_le,
+        read_u64_be,
+        peek_u64,
+        peek_u64_le,
+        peek_u64_be,
+        u64,
+        8
+    );
+    endian_methods!(
+        read_i64,
+        read_i64_le,
+        read_i64_be,
+        peek_i64,
+        peek_i64_le,
+        peek_i64_be,
+        i64,
+        8
+    );
+    endian_methods!(
+        read_u128,
         read_u128_le,
         read_u128_be,
+        peek_u128,
         peek_u128_le,
         peek_u128_be,
         u128,
         16
     );
     endian_methods!(
+        read_i128,
         read_i128_le,
         read_i128_be,
+        peek_i128,
         peek_i128_le,
         peek_i128_be,
         i128,
         16
     );
-    endian_methods!(read_f32_le, read_f32_be, peek_f32_le, peek_f32_be, f32, 4);
-    endian_methods!(read_f64_le, read_f64_be, peek_f64_le, peek_f64_be, f64, 8);
+    endian_methods!(
+        read_f32,
+        read_f32_le,
+        read_f32_be,
+        peek_f32,
+        peek_f32_le,
+        peek_f32_be,
+        f32,
+        4
+    );
+    endian_methods!(
+        read_f64,
+        read_f64_le,
+        read_f64_be,
+        peek_f64,
+        peek_f64_le,
+        peek_f64_be,
+        f64,
+        8
+    );
 
     pub fn read_u24_le(&mut self) -> Result<u32, ByteReadError> {
         let raw: [u8; 3] = self.read_array::<3>()?;
@@ -228,6 +355,25 @@ impl<'a> ByteReader<'a> {
         let mut clone: Self = *self;
         clone.read_i24_be()
     }
+
+    runtime_endian_methods!(
+        read_u24,
+        read_u24_le,
+        read_u24_be,
+        peek_u24,
+        peek_u24_le,
+        peek_u24_be,
+        u32
+    );
+    runtime_endian_methods!(
+        read_i24,
+        read_i24_le,
+        read_i24_be,
+        peek_i24,
+        peek_i24_le,
+        peek_i24_be,
+        i32
+    );
 }
 
 #[inline]
@@ -239,7 +385,82 @@ pub const fn sign_extend_24(raw: u32) -> i32 {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{ByteReadError, ByteReader};
+    use super::{ByteReadError, ByteReader, Endian};
+
+    #[test]
+    fn runtime_endian_reads_and_peeks_every_width() {
+        let data: [u8; 16] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA,
+            0xDC, 0xFE,
+        ];
+
+        macro_rules! assert_endian {
+            ($read:ident, $peek:ident, $little:expr, $big:expr) => {{
+                let mut little_reader: ByteReader<'_> = ByteReader::new(&data);
+                assert_eq!(little_reader.$peek(Endian::Little).unwrap(), $little);
+                assert_eq!(little_reader.position(), 0);
+                assert_eq!(little_reader.$read(Endian::Little).unwrap(), $little);
+
+                let mut big_reader: ByteReader<'_> = ByteReader::new(&data);
+                assert_eq!(big_reader.$peek(Endian::Big).unwrap(), $big);
+                assert_eq!(big_reader.position(), 0);
+                assert_eq!(big_reader.$read(Endian::Big).unwrap(), $big);
+            }};
+        }
+
+        assert_endian!(read_u16, peek_u16, 0x2301, 0x0123);
+        assert_endian!(read_i16, peek_i16, 0x2301, 0x0123);
+        assert_endian!(read_u24, peek_u24, 0x45_2301, 0x01_2345);
+        assert_endian!(read_i24, peek_i24, 0x45_2301, 0x01_2345);
+        assert_endian!(read_u32, peek_u32, 0x6745_2301, 0x0123_4567);
+        assert_endian!(read_i32, peek_i32, 0x6745_2301, 0x0123_4567);
+        assert_endian!(
+            read_u64,
+            peek_u64,
+            0xEFCD_AB89_6745_2301,
+            0x0123_4567_89AB_CDEF
+        );
+        assert_endian!(
+            read_i64,
+            peek_i64,
+            -0x1032_5476_98BA_DCFF,
+            0x0123_4567_89AB_CDEF
+        );
+        assert_endian!(
+            read_u128,
+            peek_u128,
+            0xFEDC_BA98_7654_3210_EFCD_AB89_6745_2301,
+            0x0123_4567_89AB_CDEF_1032_5476_98BA_DCFE
+        );
+        assert_endian!(
+            read_i128,
+            peek_i128,
+            -0x0123_4567_89AB_CDEF_1032_5476_98BA_DCFF,
+            0x0123_4567_89AB_CDEF_1032_5476_98BA_DCFE
+        );
+
+        let mut f32_little: ByteReader<'_> = ByteReader::new(&data);
+        let f32_big: ByteReader<'_> = ByteReader::new(&data);
+        assert_eq!(
+            f32_little.read_f32(Endian::Little).unwrap().to_bits(),
+            0x6745_2301
+        );
+        assert_eq!(
+            f32_big.peek_f32(Endian::Big).unwrap().to_bits(),
+            0x0123_4567
+        );
+
+        let f64_little: ByteReader<'_> = ByteReader::new(&data);
+        let mut f64_big: ByteReader<'_> = ByteReader::new(&data);
+        assert_eq!(
+            f64_little.peek_f64(Endian::Little).unwrap().to_bits(),
+            0xEFCD_AB89_6745_2301
+        );
+        assert_eq!(
+            f64_big.read_f64(Endian::Big).unwrap().to_bits(),
+            0x0123_4567_89AB_CDEF
+        );
+    }
 
     #[test]
     fn reads_little_and_big_endian_widths() {

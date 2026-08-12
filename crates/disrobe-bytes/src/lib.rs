@@ -41,5 +41,5 @@ pub use cstr::{
     CStrOptions, CStrRun, CStrRuns, CStrSpan, cstr_runs, read_cstr_at, read_cstr_span_at,
 };
 pub use leb128::{LebError, read_sleb128_at, read_uleb128_at};
-pub use reader::{ByteReadError, ByteReader, sign_extend_24};
+pub use reader::{ByteReadError, ByteReader, Endian, sign_extend_24};
 pub use section_map::{SectionMap, SectionSpan};

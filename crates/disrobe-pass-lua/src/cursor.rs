@@ -1,11 +1,10 @@
 use crate::error::{Error, Result};
-use disrobe_bytes::LebError;
+use disrobe_bytes::{ByteReadError, ByteReader, Endian, LebError};
 
 #[derive(Debug, Clone)]
 pub struct ByteCursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-    little_endian: bool,
+    inner: ByteReader<'a>,
+    endian: Endian,
 }
 
 impl<'a> ByteCursor<'a> {
@@ -13,106 +12,65 @@ impl<'a> ByteCursor<'a> {
     #[must_use]
     pub const fn new(bytes: &'a [u8]) -> Self {
         Self {
-            bytes,
-            pos: 0,
-            little_endian: true,
+            inner: ByteReader::new(bytes),
+            endian: Endian::Little,
         }
     }
 
     #[inline]
     #[must_use]
     pub const fn position(&self) -> usize {
-        self.pos
+        self.inner.position()
     }
 
     #[inline]
     #[must_use]
     pub const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.pos)
+        self.inner.remaining()
     }
 
     #[inline]
     pub fn set_little_endian(&mut self, le: bool) {
-        self.little_endian = le;
+        self.endian = if le { Endian::Little } else { Endian::Big };
     }
 
     #[inline]
     #[must_use]
     pub const fn is_little_endian(&self) -> bool {
-        self.little_endian
+        matches!(self.endian, Endian::Little)
     }
 
     pub fn need(&self, n: usize) -> Result<()> {
-        if self.remaining() < n {
-            return Err(Error::Truncated {
-                offset: self.pos,
-                needed: n,
-                had: self.remaining(),
-            });
-        }
-        Ok(())
+        self.inner
+            .peek_bytes(n)
+            .map(|_| ())
+            .map_err(map_byte_read_error)
     }
 
     pub fn read_u8(&mut self) -> Result<u8> {
-        self.need(1)?;
-        let b: u8 = self.bytes[self.pos];
-        self.pos += 1;
-        Ok(b)
+        self.inner.read_u8().map_err(map_byte_read_error)
     }
 
     pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        self.need(n)?;
-        let out: &'a [u8] = &self.bytes[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(out)
+        self.inner.read_bytes(n).map_err(map_byte_read_error)
     }
 
     pub fn read_u16(&mut self) -> Result<u16> {
-        let bytes: [u8; 2] = self
-            .read_bytes(2)?
-            .try_into()
-            .map_err(|_| Error::Truncated {
-                offset: self.pos,
-                needed: 2,
-                had: 0,
-            })?;
-        Ok(if self.little_endian {
-            u16::from_le_bytes(bytes)
-        } else {
-            u16::from_be_bytes(bytes)
-        })
+        self.inner
+            .read_u16(self.endian)
+            .map_err(map_byte_read_error)
     }
 
     pub fn read_u32(&mut self) -> Result<u32> {
-        let bytes: [u8; 4] = self
-            .read_bytes(4)?
-            .try_into()
-            .map_err(|_| Error::Truncated {
-                offset: self.pos,
-                needed: 4,
-                had: 0,
-            })?;
-        Ok(if self.little_endian {
-            u32::from_le_bytes(bytes)
-        } else {
-            u32::from_be_bytes(bytes)
-        })
+        self.inner
+            .read_u32(self.endian)
+            .map_err(map_byte_read_error)
     }
 
     pub fn read_u64(&mut self) -> Result<u64> {
-        let bytes: [u8; 8] = self
-            .read_bytes(8)?
-            .try_into()
-            .map_err(|_| Error::Truncated {
-                offset: self.pos,
-                needed: 8,
-                had: 0,
-            })?;
-        Ok(if self.little_endian {
-            u64::from_le_bytes(bytes)
-        } else {
-            u64::from_be_bytes(bytes)
-        })
+        self.inner
+            .read_u64(self.endian)
+            .map_err(map_byte_read_error)
     }
 
     pub fn read_f64(&mut self) -> Result<f64> {
@@ -121,10 +79,10 @@ impl<'a> ByteCursor<'a> {
     }
 
     pub fn read_uleb128(&mut self) -> Result<u64> {
-        let start: usize = self.pos;
-        match disrobe_bytes::read_uleb128_at(self.bytes, start) {
+        let start: usize = self.inner.position();
+        match disrobe_bytes::read_uleb128_at(self.inner.as_slice(), start) {
             Ok((value, consumed)) => {
-                self.pos = start + consumed;
+                self.inner.skip(consumed).map_err(map_byte_read_error)?;
                 Ok(value)
             }
             Err(LebError::OutOfBounds(err)) => Err(Error::Truncated {
@@ -180,6 +138,14 @@ impl<'a> ByteCursor<'a> {
     }
 }
 
+const fn map_byte_read_error(error: ByteReadError) -> Error {
+    Error::Truncated {
+        offset: error.offset,
+        needed: error.needed,
+        had: error.available,
+    }
+}
+
 pub const MAX_PROTO_DEPTH: usize = 256;
 
 const MAX_RESERVE_BYTES: usize = 16 << 20;
@@ -225,5 +191,27 @@ mod tests {
         let mut cursor: ByteCursor<'_> = ByteCursor::new(&bytes);
         let result: Result<u64> = cursor.read_uleb128();
         assert!(matches!(result, Err(Error::BadUleb128(0))));
+    }
+
+    #[test]
+    fn truncation_keeps_exact_error_text_after_reader_delegation() {
+        let mut cursor: ByteCursor<'_> = ByteCursor::new(&[0xAA]);
+        let result: Result<u32> = cursor.read_u32();
+        let error_text: Option<String> = result.err().map(|error: Error| error.to_string());
+        assert_eq!(
+            error_text.as_deref(),
+            Some("DR-LUA-0004: truncated chunk at offset 0 (needed 4 bytes, had 1)")
+        );
+        assert_eq!(cursor.position(), 0);
+    }
+
+    #[test]
+    fn endian_can_change_after_reads_without_rebuilding_the_cursor() {
+        let mut cursor: ByteCursor<'_> = ByteCursor::new(&[0x01, 0x02, 0x01, 0x02]);
+        assert_eq!(cursor.read_u16().ok(), Some(0x0201));
+        cursor.set_little_endian(false);
+        assert_eq!(cursor.read_u16().ok(), Some(0x0102));
+        assert_eq!(cursor.remaining(), 0);
+        assert_eq!(cursor.read_bytes(0).ok().map(<[u8]>::len), Some(0));
     }
 }
