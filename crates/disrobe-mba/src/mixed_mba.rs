@@ -5,11 +5,16 @@ use crate::rewrite::canonicalize;
 use crate::simplify::Verification;
 use std::collections::{BTreeMap, BTreeSet};
 
+type VariableRemap = (BTreeMap<u32, u32>, BTreeMap<u32, u32>);
+
 pub const MAX_MIXED_MBA_VARS: u32 = 6;
 pub const MAX_MIXED_MBA_NODES: usize = 16_384;
 pub const MAX_MIXED_MBA_WORK: usize = 1_024;
 
 const MAX_MIXED_RECURSION_DEPTH: usize = 256;
+const MIXED_WORK_QUANTUM: usize = 1 << 21;
+const MAX_POLYNOMIAL_PAIR_WORK: usize = 8_192 * 8_192;
+const MAX_PROOF_PAIR_WORK: usize = 4_096 * 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MixedRefusal {
@@ -43,6 +48,14 @@ pub fn simplify_mixed(expr: &Expr, width: Width) -> Option<Expr> {
 
 #[must_use]
 pub fn simplify_mixed_detailed(expr: &Expr, width: Width) -> MixedSimplification {
+    simplify_mixed_with_work_limit(expr, width, MAX_MIXED_MBA_WORK)
+}
+
+fn simplify_mixed_with_work_limit(
+    expr: &Expr,
+    width: Width,
+    work_limit: usize,
+) -> MixedSimplification {
     let depth: usize = expr.depth();
     let depth_limit: usize = MAX_MIXED_RECURSION_DEPTH.min(crate::expr::MAX_MBA_DEPTH);
     if depth >= depth_limit {
@@ -74,32 +87,36 @@ pub fn simplify_mixed_detailed(expr: &Expr, width: Width) -> MixedSimplification
             limit: MAX_MIXED_MBA_VARS,
         });
     }
+    let (dense, inverse): VariableRemap = match build_remap(&variables) {
+        Ok(remap) => remap,
+        Err(refusal) => return MixedSimplification::Refused(refusal),
+    };
+    let dense_expr: Expr = expr.remap_vars(&dense);
     let mut work: WorkBudget = WorkBudget {
         consumed: 0,
-        limit: MAX_MIXED_MBA_WORK,
+        limit: work_limit,
     };
-    let candidate: Expr = match rewrite(expr, width, 1, &mut work) {
+    let candidate: Expr = match rewrite(&dense_expr, width, 1, &mut work) {
         Ok(candidate) => candidate,
         Err(refusal) => return MixedSimplification::Refused(refusal),
     };
-    if candidate == *expr {
+    if candidate == dense_expr {
         return MixedSimplification::Unchanged;
     }
-    let proof_var_count: u32 = expr
-        .max_var()
-        .map_or(0, |index: u32| index.saturating_add(1))
-        .max(
-            candidate
-                .max_var()
-                .map_or(0, |index: u32| index.saturating_add(1)),
-        );
+    if let Err(refusal) = work.consume(proof_work(&dense_expr, &candidate, width, variable_count)) {
+        return MixedSimplification::Refused(refusal);
+    }
     let verification: Verification =
-        crate::simplify::prove_mixed_equivalent(expr, &candidate, width, proof_var_count);
+        crate::simplify::prove_mixed_equivalent(&dense_expr, &candidate, width, variable_count);
     if !verification.is_proven() {
         return MixedSimplification::Refused(MixedRefusal::Unproven);
     }
+    let restored: Expr = candidate.remap_vars(&inverse);
+    if restored.remap_vars(&dense) != candidate {
+        return MixedSimplification::Refused(MixedRefusal::BackSubstitution);
+    }
     MixedSimplification::Simplified {
-        expression: candidate,
+        expression: restored,
         verification,
     }
 }
@@ -111,8 +128,8 @@ struct WorkBudget {
 }
 
 impl WorkBudget {
-    const fn consume(&mut self) -> Result<(), MixedRefusal> {
-        let Some(required): Option<usize> = self.consumed.checked_add(1) else {
+    const fn consume(&mut self, amount: usize) -> Result<(), MixedRefusal> {
+        let Some(required): Option<usize> = self.consumed.checked_add(amount) else {
             return Err(MixedRefusal::WorkLimit {
                 required: usize::MAX,
                 limit: self.limit,
@@ -120,13 +137,43 @@ impl WorkBudget {
         };
         if required > self.limit {
             return Err(MixedRefusal::WorkLimit {
-                required,
+                required: self.limit.saturating_add(1),
                 limit: self.limit,
             });
         }
         self.consumed = required;
         Ok(())
     }
+}
+
+fn proof_work(original: &Expr, candidate: &Expr, width: Width, var_count: u32) -> usize {
+    let nodes: usize = original.node_count().saturating_add(candidate.node_count());
+    let total_bits: u32 = width.bits().saturating_mul(var_count.max(1));
+    let exhaustive_work: usize = if total_bits <= 24 {
+        1usize
+            .checked_shl(total_bits)
+            .map_or(usize::MAX, |evaluations: usize| {
+                evaluations.saturating_mul(nodes)
+            })
+    } else {
+        0
+    };
+    let bitblast_work: usize = 9 * (1usize << 20);
+    let polynomial_work: usize = count_products(original)
+        .saturating_add(count_products(candidate))
+        .saturating_mul(MAX_PROOF_PAIR_WORK);
+    work_units(
+        exhaustive_work
+            .saturating_add(bitblast_work)
+            .saturating_add(polynomial_work),
+    )
+}
+
+const fn work_units(primitive_work: usize) -> usize {
+    let units: usize = primitive_work
+        .saturating_add(MIXED_WORK_QUANTUM - 1)
+        .saturating_div(MIXED_WORK_QUANTUM);
+    if units == 0 { 1 } else { units }
 }
 
 fn rewrite(
@@ -141,26 +188,26 @@ fn rewrite(
             limit: MAX_MIXED_RECURSION_DEPTH,
         });
     }
-    work.consume()?;
+    work.consume(1)?;
     match expr {
         Expr::Const(_) | Expr::Var(_) => Ok(expr.clone()),
         Expr::Unary(op, inner) => {
             let inner: Expr = rewrite(inner, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::Unary(*op, Box::new(inner));
-            best_local(&node, width)
+            best_local(&node, width, work)
         }
         Expr::Binary(op, left, right) => {
             let left: Expr = rewrite(left, width, depth.saturating_add(1), work)?;
             let right: Expr = rewrite(right, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::Binary(*op, Box::new(left), Box::new(right));
-            best_local(&node, width)
+            best_local(&node, width, work)
         }
         Expr::Ite(cond, then_branch, else_branch) => {
             let cond: Expr = rewrite(cond, width, depth.saturating_add(1), work)?;
             let then_branch: Expr = rewrite(then_branch, width, depth.saturating_add(1), work)?;
             let else_branch: Expr = rewrite(else_branch, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::ite(cond, then_branch, else_branch);
-            best_local(&node, width)
+            best_local(&node, width, work)
         }
         Expr::Slice(inner, lo, hi) => {
             if hi <= lo {
@@ -168,37 +215,29 @@ fn rewrite(
             }
             let inner: Expr = rewrite(inner, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::slice(inner, *lo, *hi);
-            best_local(&node, width)
+            best_local(&node, width, work)
         }
         Expr::Compose(low, high, low_bits) => {
             let low: Expr = rewrite(low, width, depth.saturating_add(1), work)?;
             let high: Expr = rewrite(high, width, depth.saturating_add(1), work)?;
             let node: Expr = Expr::compose(low, high, *low_bits);
-            best_local(&node, width)
+            best_local(&node, width, work)
         }
         Expr::Mem(_, _) => Err(MixedRefusal::Memory),
     }
 }
 
-fn best_local(node: &Expr, width: Width) -> Result<Expr, MixedRefusal> {
+fn best_local(node: &Expr, width: Width, work: &mut WorkBudget) -> Result<Expr, MixedRefusal> {
     let mut best: Expr = node.clone();
 
+    work.consume(work_units(node.node_count().saturating_mul(64)))?;
     let canonicalized: Expr = canonicalize(node, width);
     if canonicalized.node_count() < best.node_count() {
         best = canonicalized;
     }
 
-    #[cfg(feature = "smt-verify")]
-    {
-        let minimized: Option<Expr> = crate::simplify::minimize_boolean_verified(&best, width);
-        if let Some(minimized) = minimized
-            && minimized.node_count() < best.node_count()
-        {
-            best = minimized;
-        }
-    }
-
     let vars: BTreeSet<u32> = node.vars();
+    work.consume(work_units(node.node_count().saturating_add(vars.len())))?;
     let Ok(var_count): Result<u32, _> = u32::try_from(vars.len()) else {
         return Err(MixedRefusal::VariableLimit {
             required: u32::MAX,
@@ -209,15 +248,17 @@ fn best_local(node: &Expr, width: Width) -> Result<Expr, MixedRefusal> {
         return Ok(best);
     }
 
-    let (dense, inverse): (BTreeMap<u32, u32>, BTreeMap<u32, u32>) = build_remap(&vars);
+    let (dense, inverse): VariableRemap = build_remap(&vars)?;
     let dense_node: Expr = best.remap_vars(&dense);
 
+    work.consume(work_units(linear_solver_work(&dense_node, var_count)))?;
     if let Some(solved) = solve_linear_mba(&dense_node, width, var_count) {
         let restored: Expr = solved.remap_vars(&inverse);
         if restored.node_count() < best.node_count() {
             best = restored;
         }
     }
+    work.consume(work_units(polynomial_solver_work(&dense_node, var_count)))?;
     if let Some(solved) = solve_polynomial_mba(&dense_node, width, var_count) {
         let restored: Expr = solved.remap_vars(&inverse);
         if restored.node_count() < best.node_count() {
@@ -225,7 +266,7 @@ fn best_local(node: &Expr, width: Width) -> Result<Expr, MixedRefusal> {
         }
     }
 
-    if let Some(solved) = solve_substituted(&dense_node, width, var_count)? {
+    if let Some(solved) = solve_substituted(&dense_node, width, var_count, work)? {
         let restored: Expr = solved.remap_vars(&inverse);
         if restored.node_count() < best.node_count() {
             best = restored;
@@ -233,6 +274,50 @@ fn best_local(node: &Expr, width: Width) -> Result<Expr, MixedRefusal> {
     }
 
     Ok(best)
+}
+
+fn linear_solver_work(expr: &Expr, var_count: u32) -> usize {
+    let rows: usize = 1usize
+        .checked_shl(var_count)
+        .map_or(usize::MAX, |rows: usize| rows);
+    let combinations: usize = if var_count <= 5 { 60_000 } else { 0 };
+    expr.node_count()
+        .saturating_mul(rows.saturating_mul(4))
+        .saturating_add(combinations)
+}
+
+fn polynomial_solver_work(expr: &Expr, var_count: u32) -> usize {
+    let nodes: usize = expr.node_count();
+    if var_count > crate::poly_mba::MAX_POLY_MBA_VARS || count_products(expr) == 0 {
+        return nodes;
+    }
+    MAX_POLYNOMIAL_PAIR_WORK.saturating_add(
+        nodes
+            .saturating_mul(nodes)
+            .saturating_mul(width_factor(var_count)),
+    )
+}
+
+const fn width_factor(var_count: u32) -> usize {
+    1usize << var_count
+}
+
+fn count_products(expr: &Expr) -> usize {
+    match expr {
+        Expr::Binary(BinOp::Mul, left, right) => 1usize
+            .saturating_add(count_products(left))
+            .saturating_add(count_products(right)),
+        Expr::Unary(_, inner) | Expr::Slice(inner, _, _) | Expr::Mem(inner, _) => {
+            count_products(inner)
+        }
+        Expr::Binary(_, left, right) | Expr::Compose(left, right, _) => {
+            count_products(left).saturating_add(count_products(right))
+        }
+        Expr::Ite(cond, then_branch, else_branch) => count_products(cond)
+            .saturating_add(count_products(then_branch))
+            .saturating_add(count_products(else_branch)),
+        Expr::Const(_) | Expr::Var(_) => 0,
+    }
 }
 
 #[derive(Debug)]
@@ -295,12 +380,16 @@ fn solve_substituted(
     expr: &Expr,
     width: Width,
     var_count: u32,
+    work: &mut WorkBudget,
 ) -> Result<Option<Expr>, MixedRefusal> {
     let mut substitutions: Substitutions = Substitutions {
         atoms: Vec::new(),
         first_fresh: var_count,
     };
     let purified: Expr = purify_value(expr, width, &mut substitutions)?;
+    work.consume(work_units(
+        expr.node_count().saturating_add(substitutions.atoms.len()),
+    ))?;
     if substitutions.atoms.is_empty() {
         return Ok(None);
     }
@@ -323,13 +412,14 @@ fn solve_substituted(
         });
     }
     let mut best: Option<Expr> = None;
-    for solved in [
-        solve_linear_mba(&purified, width, effective_count),
-        solve_polynomial_mba(&purified, width, effective_count),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    work.consume(work_units(linear_solver_work(&purified, effective_count)))?;
+    let linear: Option<Expr> = solve_linear_mba(&purified, width, effective_count);
+    work.consume(work_units(polynomial_solver_work(
+        &purified,
+        effective_count,
+    )))?;
+    let polynomial: Option<Expr> = solve_polynomial_mba(&purified, width, effective_count);
+    for solved in [linear, polynomial].into_iter().flatten() {
         let Some(restored): Option<Expr> = restore_substitutions(&solved, &substitutions) else {
             return Err(MixedRefusal::BackSubstitution);
         };
@@ -506,15 +596,20 @@ fn contains_memory(expr: &Expr) -> bool {
     }
 }
 
-fn build_remap(vars: &BTreeSet<u32>) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>) {
+fn build_remap(vars: &BTreeSet<u32>) -> Result<VariableRemap, MixedRefusal> {
     let mut dense: BTreeMap<u32, u32> = BTreeMap::new();
     let mut inverse: BTreeMap<u32, u32> = BTreeMap::new();
     for (index, &original) in vars.iter().enumerate() {
-        let dense_index: u32 = index.try_into().unwrap_or(u32::MAX);
+        let Ok(dense_index): Result<u32, _> = u32::try_from(index) else {
+            return Err(MixedRefusal::VariableLimit {
+                required: u32::MAX,
+                limit: MAX_MIXED_MBA_VARS,
+            });
+        };
         dense.insert(original, dense_index);
         inverse.insert(dense_index, original);
     }
-    (dense, inverse)
+    Ok((dense, inverse))
 }
 
 #[cfg(test)]
@@ -656,14 +751,35 @@ mod tests {
     fn sparse_variable_indices_inside_a_subterm_remap_correctly() {
         let obfuscated: Expr = Expr::xor(hidden_sum(3, 7), Expr::add(var(3), var(7)));
         let result: Option<Expr> = simplify_mixed(&obfuscated, Width::W8);
-        if cfg!(feature = "smt-verify") {
-            assert_eq!(result, Some(Expr::konst(0)));
-        } else {
-            assert_eq!(
-                result, None,
-                "eight sparse indices put W8 beyond the enumerable core, so without the bit-blasting leg the mixed path must abstain"
-            );
-        }
+        assert_eq!(result, Some(Expr::konst(0)));
+    }
+
+    #[test]
+    fn maximum_sparse_indices_are_compacted_before_proof_work() {
+        let left: u32 = u32::MAX - 1;
+        let right: u32 = u32::MAX;
+        let obfuscated: Expr = Expr::xor(hidden_sum(left, right), Expr::add(var(left), var(right)));
+        let result: MixedSimplification =
+            simplify_mixed_with_work_limit(&obfuscated, Width::W8, MAX_MIXED_MBA_WORK);
+        assert!(matches!(
+            result,
+            MixedSimplification::Simplified {
+                expression: Expr::Const(0),
+                verification,
+            } if verification.is_proven()
+        ));
+    }
+
+    #[test]
+    fn cumulative_work_limit_refuses_before_optional_solver_work() {
+        let obfuscated: Expr = Expr::xor(hidden_sum(0, 1), Expr::add(var(0), var(1)));
+        assert!(matches!(
+            simplify_mixed_with_work_limit(&obfuscated, Width::W8, 1),
+            MixedSimplification::Refused(MixedRefusal::WorkLimit {
+                required: 2,
+                limit: 1,
+            })
+        ));
     }
 
     #[test]
