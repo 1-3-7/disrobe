@@ -4,7 +4,7 @@ use crate::recovery::{ConfidenceTier, TierHistogram};
 
 use super::chain_json::VerdictDoc;
 use super::detection::OutputKind;
-use super::state_machine::{ChainPlan, Node, Verdict};
+use super::state_machine::{ChainPlan, Node, Verdict, continues_a_recovery};
 
 pub const RECOVERY_SCHEMA_VERSION: &str = "disrobe.recovery/v1";
 
@@ -89,10 +89,25 @@ pub const fn tier_from_node(node: &Node) -> ConfidenceTier {
 fn format_out_of(kind: Option<&OutputKind>) -> Option<String> {
     match kind {
         Some(OutputKind::Source { language, .. }) => Some(language.label().to_string()),
-        Some(OutputKind::Bytes { format_tag, .. }) => Some((*format_tag).to_string()),
+        Some(OutputKind::Bytes { format_tag, .. } | OutputKind::Report { format_tag, .. }) => {
+            Some((*format_tag).to_string())
+        }
         Some(OutputKind::Mixed { .. }) => Some("mixed".to_string()),
         None => None,
     }
+}
+
+#[inline]
+#[must_use]
+pub fn status_in_chain(nodes: &[Node], node: &Node) -> RecoveryStatus {
+    if matches!(node.verdict, Verdict::Error { .. })
+        && node
+            .parent_id
+            .is_some_and(|parent: u32| continues_a_recovery(nodes, parent))
+    {
+        return RecoveryStatus::Incomplete;
+    }
+    status_from_node(node)
 }
 
 use crate::codec::hex::encode as hex32;
@@ -106,7 +121,7 @@ impl ChainRecoveryReport {
             .skip(1)
             .map(|n: &Node| ChainPassRecovery {
                 name: n.pass_id.clone().unwrap_or_else(|| "terminal".to_string()),
-                status: status_from_node(n),
+                status: status_in_chain(&plan.nodes, n),
                 confidence: tier_from_node(n),
                 duration_ms: n.duration.map(|d: std::time::Duration| d.as_millis()),
                 format_in: n.format_tag_in.clone(),
@@ -306,6 +321,68 @@ mod tests {
             Verdict::Ok,
         );
         assert_eq!(tier_from_node(&n), ConfidenceTier::Partial);
+    }
+
+    #[test]
+    fn tier_skeleton_for_a_report_because_describing_an_input_is_not_recovering_it() {
+        let n: Node = pass_node(
+            1,
+            "nativelang.classify",
+            [1u8; 32],
+            Some([2u8; 32]),
+            Some(OutputKind::Report {
+                format_tag: "nativelang.report",
+                family: "native-format",
+            }),
+            Verdict::Ok,
+        );
+        assert_eq!(
+            tier_from_node(&n),
+            ConfidenceTier::Skeleton,
+            "a report declares what the input is; only a transformation earns Partial"
+        );
+        assert_eq!(
+            format_out_of(n.output_kind.as_ref()),
+            Some("nativelang.report".to_string())
+        );
+    }
+
+    #[test]
+    fn a_failure_below_a_recovered_ancestor_is_incomplete_not_failed() {
+        let recovered: Node = pass_node(
+            1,
+            "as3.classify",
+            [1u8; 32],
+            Some([2u8; 32]),
+            Some(OutputKind::Source {
+                language: Language::Python,
+                formatted: true,
+            }),
+            Verdict::Ok,
+        );
+        let mut downstream: Node = pass_node(
+            2,
+            "lua.deob",
+            [2u8; 32],
+            None,
+            None,
+            Verdict::Error {
+                message: "refused".to_string(),
+            },
+        );
+        downstream.parent_id = Some(1);
+        let nodes: Vec<Node> = vec![root_node([0u8; 32], 4), recovered, downstream];
+        assert_eq!(
+            status_in_chain(&nodes, &nodes[2]),
+            RecoveryStatus::Incomplete,
+            "a speculative continuation failure must not be charged as a failed pass"
+        );
+        assert_eq!(status_in_chain(&nodes, &nodes[1]), RecoveryStatus::Advanced);
+        assert_eq!(
+            status_from_node(&nodes[2]),
+            RecoveryStatus::Failed,
+            "the standalone grade of the node itself is unchanged"
+        );
     }
 
     #[test]

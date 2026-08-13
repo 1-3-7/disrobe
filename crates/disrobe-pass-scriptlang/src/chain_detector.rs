@@ -32,6 +32,7 @@ const TAG_HAXE_NEKO: &str = "haxe-neko";
 const TAG_WIN_SCRIPT: &str = "win-script";
 
 const SCRIPT_REPORT_TAG: &str = "scriptlang-report";
+const WIN_SCRIPT_SPECIFICITY: u16 = 50;
 const TCL_BANNER: &str = "# tcl starkit container";
 const R_BANNER: &str = "# r rds object";
 const HAXE_BANNER: &str = "// haxe cross-target output";
@@ -82,7 +83,7 @@ impl Pass for ScriptLangPass {
                 children: Vec::new(),
             }
         } else {
-            OutputKind::Bytes {
+            OutputKind::Report {
                 format_tag: SCRIPT_REPORT_TAG,
                 family: FAMILY_SOURCE,
             }
@@ -495,7 +496,7 @@ fn verdict_for(bytes: &[u8], lang: ScriptLang) -> DetectVerdict {
             TAG_WIN_SCRIPT,
             FAMILY_SOURCE,
             0.85,
-            26,
+            WIN_SCRIPT_SPECIFICITY,
             "win-script-obfuscation",
             "windows script obfuscation (powershell/batch/vbscript layered recovery)".to_string(),
         ),
@@ -590,9 +591,45 @@ mod tests {
             "haxe report must lead with banner"
         );
         match SCRIPTLANG_PASS.output_kind(&out) {
-            OutputKind::Bytes { format_tag, .. } => assert_eq!(format_tag, SCRIPT_REPORT_TAG),
+            OutputKind::Report { format_tag, .. } => assert_eq!(format_tag, SCRIPT_REPORT_TAG),
             other => panic!("haxe is emitted output, not recoverable source; got {other:?}"),
         }
+    }
+
+    #[test]
+    fn win_script_is_a_broad_family_and_declares_the_lowest_precedence_in_this_pass() {
+        let obf: &[u8] = b"@echo off\nset a=he^llo\ncall echo %a%\n";
+        let v: DetectVerdict = ScriptLangDetector
+            .detect(&ctx(obf))
+            .expect("a batch script must still be claimed");
+        assert_eq!(v.format_tag, TAG_WIN_SCRIPT);
+        assert!(
+            (v.confidence - 0.85).abs() < f32::EPSILON,
+            "the strength of the windows-script claim itself is unchanged; got {}",
+            v.confidence
+        );
+        let structural: [u16; 4] = [30, 32, 35, 28];
+        for other in structural {
+            assert!(
+                v.specificity > other,
+                "a marker heuristic spanning powershell, batch and vbscript must not outrank a parsed artifact at {other}; got {}",
+                v.specificity
+            );
+        }
+        assert!(
+            v.specificity > 30,
+            "a named obfuscator claim at specificity 30 must win an equal-confidence tie; got {}",
+            v.specificity
+        );
+    }
+
+    #[test]
+    fn every_structural_script_claim_still_outranks_the_win_script_heuristic() {
+        let perl: DetectVerdict = ScriptLangDetector
+            .detect(&ctx(include_bytes!("../tests/fixtures/hello.concise.txt")))
+            .expect("perl concise must be claimed");
+        assert_eq!(perl.format_tag, TAG_PERL);
+        assert!(perl.specificity < WIN_SCRIPT_SPECIFICITY);
     }
 
     fn build_zip_starkit(files: &[(&str, &[u8])]) -> Vec<u8> {

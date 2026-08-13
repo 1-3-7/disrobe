@@ -314,12 +314,28 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
             };
             let layer_id: NodeId = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
             let format_tag_in: String = pick.verdict.format_tag.to_string();
+            let rescue: Option<ExtractedArtifact> =
+                if self.config.persist_children && continues_a_recovery(&nodes, item.parent) {
+                    Some(ExtractedArtifact {
+                        node_id: item.parent,
+                        relative_path: stage_artifact_path(&nodes, item.parent),
+                        bytes: item.bytes.clone(),
+                    })
+                } else {
+                    None
+                };
             let input_bytes: Vec<u8> = item.bytes;
             let pass_run: Result<PassRunOutcome, String> =
                 self.runner
                     .run(&pick, input_bytes, &self.config, item.path_hint.as_deref());
             match pass_run {
                 Err(msg) => {
+                    if let Some(artifact) = rescue {
+                        sink(&artifact);
+                        if !self.config.stream_extracted {
+                            extracted.push(artifact);
+                        }
+                    }
                     nodes.push(Node {
                         verdict: Verdict::Error { message: msg },
                         ..pass_node_base(
@@ -529,6 +545,68 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
                                 parent_hint: Some(format_tag.to_string()),
                             });
                         }
+                        OutputKind::Report { format_tag, .. } => {
+                            if outcome.output_bytes.is_empty() {
+                                nodes.push(Node {
+                                    output_kind: Some(outcome.kind),
+                                    output_size: Some(0),
+                                    duration: Some(outcome.duration),
+                                    metadata: outcome.metadata,
+                                    verdict: Verdict::Stalled,
+                                    ..pass_node_base(
+                                        layer_id,
+                                        item.parent,
+                                        item.depth,
+                                        item.branch_id.clone(),
+                                        in_hash,
+                                        in_size,
+                                        format_tag_in,
+                                        pick,
+                                    )
+                                });
+                                continue;
+                            }
+                            let out_hash: [u8; 32] = blake3_of(&outcome.output_bytes);
+                            let out_size: u64 = outcome.output_bytes.len() as u64;
+                            let relative_path: String =
+                                report_artifact_path(layer_id, format_tag, &outcome.output_bytes);
+                            let captured: Option<Vec<u8>> = if self.config.capture_stage_bytes {
+                                Some(outcome.output_bytes.clone())
+                            } else {
+                                None
+                            };
+                            nodes.push(Node {
+                                output_kind: Some(outcome.kind),
+                                output_blake3: Some(out_hash),
+                                output_size: Some(out_size),
+                                output_bytes: captured,
+                                duration: Some(outcome.duration),
+                                metadata: outcome.metadata,
+                                artifacts: vec![relative_path.clone()],
+                                verdict: Verdict::Ok,
+                                ..pass_node_base(
+                                    layer_id,
+                                    item.parent,
+                                    item.depth,
+                                    item.branch_id.clone(),
+                                    in_hash,
+                                    in_size,
+                                    format_tag_in,
+                                    pick,
+                                )
+                            });
+                            if self.config.persist_children {
+                                let artifact: ExtractedArtifact = ExtractedArtifact {
+                                    node_id: layer_id,
+                                    relative_path,
+                                    bytes: outcome.output_bytes,
+                                };
+                                sink(&artifact);
+                                if !self.config.stream_extracted {
+                                    extracted.push(artifact);
+                                }
+                            }
+                        }
                         OutputKind::Mixed { children } => {
                             let child_count: u32 =
                                 u32::try_from(children.len()).unwrap_or(u32::MAX);
@@ -668,6 +746,62 @@ impl<'r, R: PassRunner> ChainDriver<'r, R> {
     }
 }
 
+#[must_use]
+pub fn continues_a_recovery(nodes: &[Node], parent: NodeId) -> bool {
+    nodes.get(parent as usize).is_some_and(|n: &Node| {
+        n.output_blake3.is_some() && !matches!(n.verdict, Verdict::Error { .. })
+    })
+}
+
+fn sanitize_component(raw: &str) -> String {
+    let mut out: String = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("artifact");
+    }
+    out
+}
+
+fn payload_extension(bytes: &[u8]) -> &'static str {
+    match bytes
+        .iter()
+        .find(|b: &&u8| !b.is_ascii_whitespace())
+        .copied()
+    {
+        Some(b'{' | b'[') => "json",
+        _ => "txt",
+    }
+}
+
+fn report_artifact_path(node: NodeId, format_tag: &str, bytes: &[u8]) -> String {
+    format!(
+        "chain-node-{node}-{tag}.{ext}",
+        tag = sanitize_component(format_tag),
+        ext = payload_extension(bytes),
+    )
+}
+
+fn stage_artifact_path(nodes: &[Node], parent: NodeId) -> String {
+    let node: Option<&Node> = nodes.get(parent as usize);
+    let pass: String = node
+        .and_then(|n: &Node| n.pass_id.as_deref())
+        .map_or_else(|| "pass".to_owned(), sanitize_component);
+    let ext: String = match node.and_then(|n: &Node| n.output_kind.as_ref()) {
+        Some(OutputKind::Source { language, .. }) => {
+            sanitize_component(&language.label().to_ascii_lowercase())
+        }
+        Some(OutputKind::Bytes { format_tag, .. }) => sanitize_component(format_tag),
+        Some(OutputKind::Report { .. } | OutputKind::Mixed { .. }) | None => "bin".to_owned(),
+    };
+    format!("chain-node-{parent}-{pass}.{ext}")
+}
+
 fn aggregate_verdict(nodes: &[Node]) -> Verdict {
     let leaves: Vec<&Node> = collect_leaves(nodes);
     if leaves.is_empty() {
@@ -682,6 +816,13 @@ fn aggregate_verdict(nodes: &[Node]) -> Verdict {
     let mut formats: Vec<String> = Vec::new();
     for leaf in &leaves {
         total = total.saturating_add(1);
+        if matches!(leaf.verdict, Verdict::Error { .. })
+            && leaf
+                .parent_id
+                .is_some_and(|p: NodeId| continues_a_recovery(nodes, p))
+        {
+            continue;
+        }
         match &leaf.verdict {
             Verdict::Complete {
                 formats: leaf_formats,
@@ -1873,6 +2014,292 @@ mod tests {
             6,
             "the 10MiB output budget must halt this lineage at generation 6 (6x2MiB), well before the depth cap of {}",
             super::super::spec::MAX_CAP
+        );
+    }
+
+    const STUB_REPORT_BODY: &[u8] = b"{\"lang\":\"d\",\"symbols\":[\"hello.Greeter\"]}";
+
+    fn always_report() -> RunnerFn {
+        Box::new(|_n: u32, _bytes: &[u8]| {
+            Ok(PassRunOutcome {
+                output_bytes: STUB_REPORT_BODY.to_vec(),
+                kind: OutputKind::Report {
+                    format_tag: "stub.report",
+                    family: super::super::FAMILY_NATIVE_FORMAT,
+                },
+                duration: Duration::from_millis(1),
+                metadata: BTreeMap::new(),
+                children: Vec::new(),
+            })
+        })
+    }
+
+    #[test]
+    fn a_report_is_the_answer_for_its_node_and_is_never_re_detected() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: always_report(),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(
+            runner.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "a report must not be fed back as a sample; the stub detector claims every input"
+        );
+        assert_eq!(plan.nodes.len(), 2, "root plus exactly one pass node");
+        assert!(matches!(plan.nodes[1].verdict, Verdict::Ok));
+        assert!(
+            plan.nodes[1]
+                .output_kind
+                .as_ref()
+                .is_some_and(OutputKind::is_report)
+        );
+        assert!(matches!(plan.verdict, Verdict::Ok));
+    }
+
+    #[test]
+    fn a_report_reaches_the_caller_as_an_extracted_artifact() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: always_report(),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(plan.extracted.len(), 1);
+        assert_eq!(
+            plan.extracted[0].relative_path,
+            "chain-node-1-stub.report.json"
+        );
+        assert_eq!(plan.extracted[0].bytes.as_slice(), STUB_REPORT_BODY);
+        assert_eq!(
+            plan.nodes[1].artifacts,
+            vec!["chain-node-1-stub.report.json".to_string()],
+            "the node must name the artifact it surfaced"
+        );
+    }
+
+    #[test]
+    fn a_report_produced_below_the_root_is_still_terminal() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|n: u32, _bytes: &[u8]| {
+                if n == 0 {
+                    Ok(PassRunOutcome {
+                        output_bytes: b"peeled-inner-layer".to_vec(),
+                        kind: OutputKind::Bytes {
+                            format_tag: "inner",
+                            family: super::super::FAMILY_PACKER_ARCHIVE,
+                        },
+                        duration: Duration::from_millis(1),
+                        metadata: BTreeMap::new(),
+                        children: Vec::new(),
+                    })
+                } else {
+                    Ok(PassRunOutcome {
+                        output_bytes: STUB_REPORT_BODY.to_vec(),
+                        kind: OutputKind::Report {
+                            format_tag: "stub.report",
+                            family: super::super::FAMILY_NATIVE_FORMAT,
+                        },
+                        duration: Duration::from_millis(1),
+                        metadata: BTreeMap::new(),
+                        children: Vec::new(),
+                    })
+                }
+            }),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(runner.calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(plan.nodes.len(), 3);
+        assert_eq!(plan.nodes[2].depth, 2);
+        assert!(matches!(plan.verdict, Verdict::Ok));
+    }
+
+    #[test]
+    fn an_empty_report_stalls_instead_of_surfacing_an_empty_file() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _bytes: &[u8]| {
+                Ok(PassRunOutcome {
+                    output_bytes: Vec::new(),
+                    kind: OutputKind::Report {
+                        format_tag: "stub.report",
+                        family: super::super::FAMILY_NATIVE_FORMAT,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(matches!(plan.nodes[1].verdict, Verdict::Stalled));
+        assert!(plan.extracted.is_empty());
+    }
+
+    fn recover_then_fail() -> RunnerFn {
+        Box::new(|n: u32, _bytes: &[u8]| {
+            if n == 0 {
+                Ok(PassRunOutcome {
+                    output_bytes: b"recovered-actionscript-source".to_vec(),
+                    kind: OutputKind::Source {
+                        language: Language::Python,
+                        formatted: true,
+                    },
+                    duration: Duration::from_millis(1),
+                    metadata: BTreeMap::new(),
+                    children: Vec::new(),
+                })
+            } else {
+                Err("DR-STUB-0001: downstream pass refused this input".to_string())
+            }
+        })
+    }
+
+    #[test]
+    fn a_downstream_failure_does_not_erase_a_recovered_ancestor() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: recover_then_fail(),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(
+            matches!(plan.verdict, Verdict::Ok),
+            "a speculative continuation failure must not become the chain verdict; got {:?}",
+            plan.verdict
+        );
+        assert!(
+            matches!(plan.nodes[2].verdict, Verdict::Error { .. }),
+            "the failure itself must stay visible on its own node"
+        );
+        assert_eq!(plan.extracted.len(), 1);
+        assert_eq!(
+            plan.extracted[0].bytes.as_slice(),
+            b"recovered-actionscript-source",
+            "the ancestor's recovered output must still reach the caller"
+        );
+        assert_eq!(
+            plan.extracted[0].relative_path,
+            "chain-node-1-stub.a.python"
+        );
+    }
+
+    #[test]
+    fn a_seed_failure_is_still_a_chain_error() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|_n: u32, _bytes: &[u8]| {
+                Err("DR-STUB-0002: the first pass could not run".to_string())
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(
+            matches!(plan.verdict, Verdict::Error { .. }),
+            "nothing was recovered, so the chain genuinely failed; got {:?}",
+            plan.verdict
+        );
+        assert!(plan.extracted.is_empty());
+    }
+
+    #[test]
+    fn no_rescue_buffer_is_taken_when_the_caller_persists_nothing() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: recover_then_fail(),
+        };
+        let d: ChainDriver<'_, CountingRunner> =
+            ChainDriver::new(&r, &runner, ChainConfig::default());
+        let plan: ChainPlan = d.run(b"seed".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert!(plan.extracted.is_empty());
+        assert!(matches!(plan.verdict, Verdict::Ok));
+    }
+
+    #[test]
+    fn a_carved_child_failure_keeps_the_existing_fan_out_semantics() {
+        let r: PassRegistry = registry_with_a();
+        let runner: CountingRunner = CountingRunner {
+            calls: AtomicU32::new(0),
+            produce: Box::new(|n: u32, _bytes: &[u8]| {
+                if n == 0 {
+                    Ok(PassRunOutcome {
+                        output_bytes: Vec::new(),
+                        kind: OutputKind::Mixed {
+                            children: vec![ChildHandle {
+                                artifact_index: 0,
+                                relative_path: "member.bin".to_string(),
+                                hint: None,
+                            }],
+                        },
+                        duration: Duration::from_millis(1),
+                        metadata: BTreeMap::new(),
+                        children: vec![b"carved-member".to_vec()],
+                    })
+                } else {
+                    Err("DR-STUB-0003: member refused".to_string())
+                }
+            }),
+        };
+        let cfg: ChainConfig = ChainConfig {
+            persist_children: true,
+            ..ChainConfig::default()
+        };
+        let d: ChainDriver<'_, CountingRunner> = ChainDriver::new(&r, &runner, cfg);
+        let plan: ChainPlan = d.run(b"container".to_vec(), &ChainSpec::Auto { cap: 8 }, None);
+        assert_eq!(
+            plan.extracted.len(),
+            1,
+            "the carved member is surfaced by the fan-out path, never twice"
+        );
+        assert_eq!(plan.extracted[0].relative_path, "member.bin");
+        assert!(
+            matches!(plan.verdict, Verdict::Error { .. }),
+            "a carved child that no pass can recover keeps reporting the failure; got {:?}",
+            plan.verdict
+        );
+    }
+
+    #[test]
+    fn artifact_path_components_are_sanitised_and_deterministic() {
+        assert_eq!(sanitize_component("nativelang.report"), "nativelang.report");
+        assert_eq!(sanitize_component("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(sanitize_component(""), "artifact");
+        assert_eq!(payload_extension(b"  {\"a\":1}"), "json");
+        assert_eq!(payload_extension(b"[1,2]"), "json");
+        assert_eq!(payload_extension(b"# recovered windows script"), "txt");
+        assert_eq!(payload_extension(b""), "txt");
+        assert_eq!(
+            report_artifact_path(3, "a/b", b"{}"),
+            "chain-node-3-a_b.json"
         );
     }
 }

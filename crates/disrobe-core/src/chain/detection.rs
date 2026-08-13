@@ -114,6 +114,10 @@ pub enum OutputKind {
         format_tag: &'static str,
         family: &'static str,
     },
+    Report {
+        format_tag: &'static str,
+        family: &'static str,
+    },
     Mixed {
         children: Vec<ChildHandle>,
     },
@@ -149,6 +153,21 @@ impl OutputKind {
     #[must_use]
     pub const fn is_bytes(&self) -> bool {
         matches!(self, Self::Bytes { .. })
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_report(&self) -> bool {
+        matches!(self, Self::Report { .. })
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn report_format_tag(&self) -> Option<&'static str> {
+        match self {
+            Self::Report { format_tag, .. } => Some(format_tag),
+            Self::Source { .. } | Self::Bytes { .. } | Self::Mixed { .. } => None,
+        }
     }
 }
 
@@ -225,5 +244,41 @@ mod tests {
         assert!(s.is_source());
         assert!(b.is_bytes());
         assert!(m.is_mixed());
+    }
+
+    #[test]
+    fn report_is_its_own_kind_and_never_reads_as_bytes() {
+        let r: OutputKind = OutputKind::Report {
+            format_tag: "nativelang.report",
+            family: "native-format",
+        };
+        assert!(r.is_report());
+        assert!(!r.is_bytes());
+        assert!(!r.is_source());
+        assert!(!r.is_mixed());
+        assert_eq!(r.report_format_tag(), Some("nativelang.report"));
+    }
+
+    #[test]
+    fn report_serialises_under_its_own_kind_discriminant() {
+        let r: OutputKind = OutputKind::Report {
+            format_tag: "scriptlang-report",
+            family: "source",
+        };
+        let json: String = serde_json::to_string(&r).expect("serialize");
+        assert!(
+            json.contains("\"kind\":\"report\""),
+            "a report must be distinguishable on the wire; got {json}"
+        );
+    }
+
+    #[test]
+    fn bytes_output_never_claims_to_be_a_report() {
+        let b: OutputKind = OutputKind::Bytes {
+            format_tag: "msgpack-plaintext",
+            family: "interpreter-bytecode",
+        };
+        assert!(!b.is_report());
+        assert_eq!(b.report_format_tag(), None);
     }
 }

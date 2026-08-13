@@ -59,7 +59,7 @@ impl Pass for NativeLangPassAdapter {
 
     #[inline]
     fn output_kind(&self, _output: &Artifact) -> OutputKind {
-        OutputKind::Bytes {
+        OutputKind::Report {
             format_tag: NATIVELANG_REPORT_TAG,
             family: FAMILY_NATIVE_FORMAT,
         }
@@ -345,14 +345,16 @@ mod tests {
     }
 
     #[test]
-    fn pass_output_kind_is_bytes_native_format() {
+    fn pass_output_kind_is_a_report_not_a_new_sample() {
         let a: Artifact = Artifact::new(Rung::Raw, vec![], [0u8; 32]);
         match NATIVELANG_PASS.output_kind(&a) {
-            OutputKind::Bytes { format_tag, family } => {
+            OutputKind::Report { format_tag, family } => {
                 assert_eq!(format_tag, NATIVELANG_REPORT_TAG);
                 assert_eq!(family, FAMILY_NATIVE_FORMAT);
             }
-            other => panic!("expected Bytes; got {other:?}"),
+            other => {
+                panic!("the analysis json describes the input; expected Report, got {other:?}")
+            }
         }
     }
 

@@ -130,7 +130,7 @@ impl Detector for JsObfDetector {
             }
         }
         let det: Detection = detect_obfuscator(bytes);
-        if let Some(v) = verdict_from_obfuscator(&det) {
+        if let Some(v) = verdict_from_obfuscator(bytes, &det) {
             return Some(v);
         }
         eso.as_ref().and_then(verdict_from_weak_esoteric)
@@ -448,8 +448,22 @@ fn verdict_from_weak_esoteric(eso: &EsotericClassification) -> Option<DetectVerd
     }
 }
 
-fn verdict_from_obfuscator(det: &Detection) -> Option<DetectVerdict> {
+fn is_structured_document(bytes: &[u8]) -> bool {
+    let leading: Option<u8> = bytes
+        .iter()
+        .find(|b: &&u8| !b.is_ascii_whitespace())
+        .copied();
+    if !matches!(leading, Some(b'{' | b'[')) {
+        return false;
+    }
+    serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok()
+}
+
+fn verdict_from_obfuscator(bytes: &[u8], det: &Detection) -> Option<DetectVerdict> {
     if det.confidence < 0.5 {
+        return None;
+    }
+    if det.family == JsObfuscator::Minified && is_structured_document(bytes) {
         return None;
     }
     let (format_tag, specificity): (&'static str, u16) = match det.family {
@@ -831,6 +845,94 @@ mod tests {
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(JsObfDetector.id(), PASS_ID);
+    }
+
+    fn detect_bytes(src: &[u8]) -> Option<DetectVerdict> {
+        let ctx: DetectContext<'_> = DetectContext {
+            bytes: src,
+            path_hint: None,
+            parent_hint: None,
+            depth: 1,
+        };
+        Detector::detect(&JsObfDetector, &ctx)
+    }
+
+    fn minified_body(total: usize) -> Vec<u8> {
+        let prefix: &[u8] = b"var pad=\"";
+        let suffix: &[u8] = b"\";";
+        let fill: usize = total.saturating_sub(prefix.len() + suffix.len());
+        let mut out: Vec<u8> = Vec::with_capacity(total);
+        out.extend_from_slice(prefix);
+        out.extend(std::iter::repeat_n(b'x', fill));
+        out.extend_from_slice(suffix);
+        out
+    }
+
+    fn json_report_body(total: usize) -> Vec<u8> {
+        let prefix: &[u8] = b"{\"lang\":\"d\",\"note\":\"";
+        let suffix: &[u8] = b"\"}";
+        let fill: usize = total.saturating_sub(prefix.len() + suffix.len());
+        let mut out: Vec<u8> = Vec::with_capacity(total);
+        out.extend_from_slice(prefix);
+        out.extend(std::iter::repeat_n(b'x', fill));
+        out.extend_from_slice(suffix);
+        out
+    }
+
+    #[test]
+    fn a_structured_pass_report_is_refused_even_at_the_minified_boundary() {
+        for size in [199usize, 200, 201, 4096] {
+            let body: Vec<u8> = json_report_body(size);
+            assert_eq!(body.len(), size);
+            assert!(
+                serde_json::from_slice::<serde::de::IgnoredAny>(&body).is_ok(),
+                "the probe body must be a complete json document at {size} bytes"
+            );
+            assert!(
+                detect_bytes(&body).is_none(),
+                "a serialized pass report must never be claimed as javascript at {size} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn genuine_minified_javascript_is_still_claimed_across_the_boundary() {
+        for size in [201usize, 400, 4096] {
+            let body: Vec<u8> = minified_body(size);
+            assert_eq!(body.len(), size);
+            let v: DetectVerdict = detect_bytes(&body)
+                .unwrap_or_else(|| panic!("minified javascript of {size} bytes must be claimed"));
+            assert_eq!(v.format_tag, TAG_GENERIC);
+        }
+        for size in [199usize, 200] {
+            let body: Vec<u8> = minified_body(size);
+            assert!(
+                detect_bytes(&body).is_none(),
+                "the single-line rule starts above 200 bytes, so {size} must stay unclaimed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_json_document_that_is_not_a_report_shaped_object_is_unaffected() {
+        let almost: &[u8] =
+            b"{this is not json but starts with a brace and runs well past two hundred bytes to reach the single line minified rule which needs more than two hundred characters in total so keep typing until the body is long enough}";
+        assert!(almost.len() > 200);
+        let v: DetectVerdict =
+            detect_bytes(almost).expect("a non-json single-line body keeps the minified claim");
+        assert_eq!(v.format_tag, TAG_GENERIC);
+    }
+
+    #[test]
+    fn a_named_obfuscator_claim_survives_a_json_shaped_body() {
+        let mut src: Vec<u8> = Vec::new();
+        src.extend_from_slice(b"{\"code\":\"var _0x1234 = 1;\", \"fn\": \"function _0xabcd(){}\"}");
+        let v: DetectVerdict =
+            detect_bytes(&src).expect("a named obfuscator marker must still be claimed");
+        assert_eq!(
+            v.format_tag, TAG_JAVASCRIPT_OBF,
+            "the report guard must only bind the generic minified claim"
+        );
     }
 
     #[test]

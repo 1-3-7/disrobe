@@ -35,6 +35,7 @@ pub struct ChainSpecDoc {
 pub enum OutputKindDoc {
     Source { language: String, formatted: bool },
     Bytes { format_tag: String, family: String },
+    Report { format_tag: String, family: String },
     Mixed { children: Vec<ChildHandle> },
 }
 
@@ -49,6 +50,10 @@ impl From<&OutputKind> for OutputKindDoc {
                 formatted: *formatted,
             },
             OutputKind::Bytes { format_tag, family } => Self::Bytes {
+                format_tag: (*format_tag).to_string(),
+                family: (*family).to_string(),
+            },
+            OutputKind::Report { format_tag, family } => Self::Report {
                 format_tag: (*format_tag).to_string(),
                 family: (*family).to_string(),
             },
