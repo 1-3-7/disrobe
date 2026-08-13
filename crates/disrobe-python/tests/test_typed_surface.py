@@ -11,6 +11,8 @@ from __future__ import annotations
 import pathlib
 import struct
 
+import pytest
+
 import disrobe
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -348,6 +350,56 @@ def test_container_typed() -> None:
     members = disrobe.container_members(data)
     assert isinstance(members, disrobe.ContainerMembers)
     assert members.format is not None
+
+
+def test_byte_coverage_accounts_for_every_byte_of_a_real_image() -> None:
+    image_path = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "corpus"
+        / "native"
+        / "formats"
+        / "hello.pe64.exe"
+    )
+    assert image_path.is_file(), (
+        "this case accounts for a committed image, so its absence is a damaged checkout: "
+        f"{image_path}"
+    )
+    image = image_path.read_bytes()
+
+    coverage = disrobe.byte_coverage(image)
+    assert isinstance(coverage, disrobe.ByteCoverage)
+    assert coverage.file_len == len(image)
+    assert coverage.claimed_bytes is not None and coverage.claimed_bytes > 0
+    assert (
+        coverage.claimed_bytes + coverage.unclaimed_bytes + coverage.slack_bytes
+        == coverage.file_len
+    ), "every byte belongs to a claimed region, an unclaimed one, or alignment slack"
+    assert coverage.region_count > 0
+
+
+def test_byte_coverage_reports_an_appended_overlay() -> None:
+    image_path = (
+        pathlib.Path(__file__).resolve().parents[3]
+        / "corpus"
+        / "native"
+        / "formats"
+        / "hello.pe64.exe"
+    )
+    image = image_path.read_bytes()
+    overlaid = image + b"\xa5" * 4096
+
+    coverage = disrobe.byte_coverage(overlaid)
+    assert coverage.unclaimed_bytes >= 4096, (
+        "4096 appended bytes belong to no declared structure, so they must be unclaimed, got "
+        f"{coverage.unclaimed_bytes}"
+    )
+    assert coverage.complete is False
+
+
+def test_byte_coverage_refuses_bytes_that_are_not_an_image() -> None:
+    with pytest.raises(Exception) as excinfo:
+        disrobe.byte_coverage(b"\x00" * 64)
+    assert "DR-PY-0410" in str(excinfo.value)
 
 
 def test_powershell_and_batch_typed() -> None:

@@ -234,6 +234,24 @@ typed_report!(
 );
 
 typed_report!(
+    ByteCoverage,
+    "ByteCoverage",
+    "Byte accounting for a native image: how many bytes the declared structures claim, how many are alignment slack, how many nothing claims, and how many a structure declares past the end of the file.",
+    accessors {
+        format -> Option<String> : |d| field_str(d, "format"),
+        file_len -> Option<u64> : |d| field_u64(d, "file_len"),
+        claimed_bytes -> Option<u64> : |d| field_u64(d, "claimed_bytes"),
+        slack_bytes -> Option<u64> : |d| field_u64(d, "slack_bytes"),
+        unclaimed_bytes -> Option<u64> : |d| field_u64(d, "unclaimed_bytes"),
+        truncated_bytes -> Option<u64> : |d| field_u64(d, "truncated_bytes"),
+        coverage_ratio -> Option<f64> : |d| field_f64(d, "coverage_ratio"),
+        complete -> bool : |d| field_bool(d, "complete"),
+        overlap_detected -> bool : |d| field_bool(d, "overlap_detected"),
+        region_count -> usize : |d| array_len(d, "regions"),
+    }
+);
+
+typed_report!(
     DisasmPayload,
     "DisasmPayload",
     "Recovered disassembly: instruction stream plus symbol table for a Disasm-rung envelope.",

@@ -1,4 +1,6 @@
-use disrobe_binfmt::{ContainerKind, chain_detector::CONTAINER_PASS, detect_container};
+use disrobe_binfmt::{
+    ContainerKind, chain_detector::CONTAINER_PASS, detect_container, file_byte_coverage,
+};
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
 use pyo3::prelude::*;
@@ -7,7 +9,7 @@ use serde::Serialize;
 
 use crate::err::{DisrobeError, map};
 use crate::llm::null_bundled_value;
-use crate::typed::{ContainerDetection, ContainerMembers};
+use crate::typed::{ByteCoverage, ContainerDetection, ContainerMembers};
 
 const MAX_CONTAINER_INPUT_BYTES: usize = 256 * 1024 * 1024;
 
@@ -136,7 +138,19 @@ fn classify_listing(rest: &str) -> MemberListing {
     }
 }
 
+#[pyfunction]
+#[pyo3(name = "byte_coverage", text_signature = "(image_bytes)")]
+fn byte_coverage(image_bytes: &[u8]) -> PyResult<ByteCoverage> {
+    let mapped: disrobe_binfmt::ByteCoverage = file_byte_coverage(image_bytes).map_err(|e| {
+        DisrobeError::new_err(format!(
+            "DR-PY-0410: cannot account for the bytes of this input: {e}"
+        ))
+    })?;
+    Ok(ByteCoverage::from_value(null_bundled_value(&mapped)?))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(byte_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(container_detect, m)?)?;
     m.add_function(wrap_pyfunction!(container_members, m)?)?;
     Ok(())
