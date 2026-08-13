@@ -1330,22 +1330,26 @@ impl<'a> Lifter<'a> {
         }
         let result_key: (OperandType, u32) = (gate.result_type, gate.result);
         let lhs: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        let refused_before: usize = self.refused.len();
         let mut k: u32 = i + 1;
         while k < join {
             self.eval_op(k);
             k += 1;
         }
+        if self.refused.len() != refused_before {
+            return None;
+        }
         let rhs: Expr = self.slots.get(&result_key).cloned()?;
-        let (connector, prec): (&str, u8) = if gate.opcode == op::COALESCE {
-            ("??", PREC_COALESCE)
+        let (connector, prec, right_prec): (&str, u8, u8) = if gate.opcode == op::COALESCE {
+            ("??", PREC_COALESCE, PREC_COALESCE)
         } else {
-            ("?:", PREC_TERNARY)
+            ("?:", PREC_TERNARY, PREC_TERNARY + 1)
         };
         let text: String = format!(
             "{} {} {}",
             lhs.wrapped(prec + 1),
             connector,
-            rhs.wrapped(prec)
+            rhs.wrapped(right_prec)
         );
         self.slots.insert(result_key, Expr { text, prec });
         Some((Vec::new(), join))
@@ -1384,7 +1388,7 @@ impl<'a> Lifter<'a> {
             (then_op.result_type, then_op.result),
             Expr {
                 text,
-                prec: PREC_COALESCE,
+                prec: PREC_TERNARY,
             },
         );
         Some((Vec::new(), else_addr + 1))

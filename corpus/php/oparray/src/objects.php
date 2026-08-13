@@ -30,6 +30,8 @@ $none = null;
 echo $none ?? "fallback", "\n";
 $pick = $asText ?: "empty";
 echo $pick, "\n";
+$branch = ($asInt > 5 ? "hi" : "lo") ?: "none";
+echo $branch, "\n";
 
 $copy = clone $box;
 echo $copy->n, "\n";

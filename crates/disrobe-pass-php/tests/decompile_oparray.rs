@@ -906,6 +906,81 @@ fn a_property_named_by_a_value_stays_a_computed_property() {
 }
 
 #[test]
+fn a_default_join_holding_an_unmodelled_op_refuses_instead_of_taking_the_last_branch() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("value");
+        b.var("out");
+        let miss: u32 = b.lit_str("miss");
+        b.op(op::COALESCE, T_CV, T_UNUSED, T_TMP, 0, 3, 0, 0, 1);
+        b.op(op::SWITCH_LONG, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 2);
+        b.op(op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP, miss, 0, 0, 0, 3);
+        b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 0, 0, 0, 4);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, miss, 0, 0, 0, 5);
+    });
+
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.mnemonic == "ZEND_COALESCE"),
+        "when the right-hand side of a default join holds an opcode this lifter cannot model, \
+         folding it would silently emit that branch unconditionally, so the join itself must be \
+         refused: {:?}\n{}",
+        decomp.unrecovered,
+        decomp.php_skeleton
+    );
+    assert!(
+        !decomp.php_skeleton.contains("??"),
+        "a refused join must not be rendered as a recovered coalesce: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn the_refusal_detail_list_is_capped_while_the_reported_total_stays_exact() {
+    const OVER_CAP: u32 = 4097;
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("k");
+        let one: u32 = b.lit_long(1);
+        for line in 0..OVER_CAP {
+            b.op(
+                op::SWITCH_LONG,
+                T_CV,
+                T_UNUSED,
+                T_UNUSED,
+                0,
+                OVER_CAP,
+                0,
+                0,
+                line,
+            );
+        }
+        b.op(
+            op::RETURN,
+            T_CONST,
+            T_UNUSED,
+            T_UNUSED,
+            one,
+            0,
+            0,
+            0,
+            OVER_CAP,
+        );
+    });
+
+    assert_eq!(
+        decomp.unrecovered_total, OVER_CAP as usize,
+        "the reported total must count every refused opcode even past the detail cap"
+    );
+    assert_eq!(
+        decomp.unrecovered.len(),
+        4096,
+        "the detail list is bounded so a container full of unmodelled opcodes cannot drive an \
+         input-sized allocation of records"
+    );
+}
+
+#[test]
 fn two_decompiles_of_one_container_produce_the_same_bytes_and_the_same_refusals() {
     let mut b: OpArrayBuilder = OpArrayBuilder::main();
     b.var("k");
