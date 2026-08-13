@@ -62,31 +62,7 @@ fn blake3_hash(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn registry_full() -> PassRegistry {
-    let mut r: PassRegistry = PassRegistry::new();
-    r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
-    r.register(&disrobe_pass_native::chain_detector::PACKER_PASS);
-    r.register(&disrobe_pass_js_deob::chain_detector::JS_OBF_PASS);
-    r.register(&disrobe_pass_py_deob::chain_detector::PY_DEOB_PASS);
-    r.register(&disrobe_binfmt::chain_detector::CONTAINER_PASS);
-    r.register(&disrobe_pass_sourcedefender::chain_detector::SOURCEDEFENDER_PASS);
-    r.register(&disrobe_pass_pyfreeze::chain_detector::PYFREEZE_PASS);
-    r.register(&disrobe_pass_nuitka::chain_detector::NUITKA_PASS);
-    r.register(&disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS);
-    r.register(&disrobe_pass_php::chain_detector::PHP_PASS);
-    r.register(&disrobe_pass_ruby::chain_detector::RUBY_PASS);
-    r.register(&disrobe_pass_shell::chain_detector::SHELL_PASS);
-    r.register(&disrobe_pass_mobile::chain_detector::MOBILE_PASS);
-    r.register(&disrobe_pass_lua::chain_detector::LUA_PASS);
-    r.register(&disrobe_pass_swift_objc::chain_detector::SWIFT_OBJC_PASS);
-    r.register(&disrobe_pass_py_disasm::chain_detector::PY_DISASM_PASS);
-    r.register(&disrobe_pass_py_decompile::chain_detector::PY_DECOMPILE_PASS);
-    r.register(&disrobe_pass_pyinstaller::chain_detector::PYINSTALLER_PASS);
-    r.register(&disrobe_pass_jvm::chain_detector::JVM_PASS);
-    r.register(&disrobe_pass_dotnet::chain_detector::DOTNET_PASS);
-    r.register(&disrobe_pass_go::chain_detector::GO_PASS);
-    r.register(&disrobe_pass_beam::chain_detector::BEAM_PASS);
-    r.register(&disrobe_pass_as3::chain_detector::AS3_PASS);
-    r
+    disrobe_passes::build_registry()
 }
 
 fn workspace_root() -> PathBuf {
