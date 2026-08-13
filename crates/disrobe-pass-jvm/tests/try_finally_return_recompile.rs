@@ -512,6 +512,13 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
             if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
         }\n\
     }\n\
+    static int finallyThrowsAlways(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            throw new IllegalStateException(\"always\");\n\
+        }\n\
+    }\n\
 }\n";
 
 const UNMODELLED_FINALLY_METHODS: &[&str] = &[
@@ -519,6 +526,7 @@ const UNMODELLED_FINALLY_METHODS: &[&str] = &[
     "finallyContinues",
     "finallyNestedTry",
     "finallyThrowsVoid",
+    "finallyThrowsAlways",
 ];
 
 #[test]
@@ -587,6 +595,60 @@ fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_int
         recompile.status.success(),
         "a refused method must still leave the class compilable:\n{}\n---source---\n{}",
         String::from_utf8_lossy(&recompile.stderr),
+        decompiled.source
+    );
+}
+
+const AUTHOR_THROWABLE_SRC: &str = "public class AuthorThrowable {\n\
+    static int CTR = 0;\n\
+    static int caught(int a) {\n\
+        try {\n\
+            return 100 / a;\n\
+        } catch (Throwable t) {\n\
+            CTR++;\n\
+            return -1;\n\
+        }\n\
+    }\n\
+}\n";
+
+#[test]
+fn an_author_written_throwable_catch_still_renders_as_a_catch() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+
+    let purpose: String = format!("disrobe_author_throwable_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let src_path: PathBuf = dir.join("AuthorThrowable.java");
+    std::fs::write(&src_path, AUTHOR_THROWABLE_SRC).expect("write src");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&dir)
+        .arg(&src_path)
+        .output()
+        .expect("javac orig");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let class_bytes: Vec<u8> = std::fs::read(dir.join("AuthorThrowable.class")).expect("read class");
+    let cf: ClassFile = parse_classfile(&class_bytes).expect("parse");
+    let decompiled: DecompiledClass = decompile_class(&cf);
+
+    assert!(
+        decompiled.source.contains("catch (Throwable"),
+        "an author-written catch (Throwable) must still render as a catch, not be refused as an \
+         unmodellable finally:\n{}",
+        decompiled.source
+    );
+    assert!(
+        !decompiled.source.contains("not recovered:"),
+        "an author-written catch (Throwable) must not be refused:\n{}",
         decompiled.source
     );
 }

@@ -1649,6 +1649,18 @@ impl<'a> Structurer<'a> {
                     .iter()
                     .find(|(t, bid)| t.is_none() && self.is_finally_handler(*bid))
                     .map(|(_, bid)| *bid);
+                let unchained_finally: bool = handler_block_ids.iter().any(
+                    |(catch_type, bid): &(Option<String>, BlockId)| {
+                        catch_type.is_none() && !self.is_finally_handler(*bid)
+                    },
+                );
+                if unchained_finally {
+                    self.unmodelled_finally.get_or_insert(
+                        "a compiler-inserted finally handler forms no foldable chain, so its body \
+                         cannot be recovered without changing what the method does with a pending \
+                         exception",
+                    );
+                }
                 let finally_chain: Option<FinallyChain> =
                     finally_handler.and_then(|bid| self.finally_handler_chain(bid));
                 if let Some(chain) = finally_chain.as_ref() {
