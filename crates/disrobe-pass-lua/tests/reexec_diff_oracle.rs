@@ -912,6 +912,70 @@ fn prometheus_vmify_never_reports_full_recovery_while_emitting_an_unrecovered_cl
     );
 }
 
+const PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_loop_capture/clean.lua");
+const PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_loop_capture/obfuscated.lua");
+
+#[test]
+fn prometheus_vmify_loop_capture_fixtures_already_agree() {
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_loop_capture_fixture_clean",
+        PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN,
+    )
+    .expect("clean fixture must run under real Lua 5.1");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_loop_capture_fixture_obfuscated",
+        PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED,
+    )
+    .expect("real Prometheus Vmify output must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "the committed loop-capture obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
+    );
+    assert_eq!(
+        expected.replace('\r', ""),
+        "10\n20\n30\n",
+        "the fixture must actually distinguish per-iteration capture from a shared variable; three identical lines would make the refusal it drives untestable"
+    );
+}
+
+#[test]
+fn prometheus_vmify_loop_capture_refusal_reaches_a_consumer_surface() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on a real loop-capture sample without panicking");
+    assert!(
+        !peeled.fully_recovered,
+        "a per-iteration capture this pass cannot name must never be reported as fully recovered; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    assert!(
+        peeled.residual_markers.iter().any(|m: &String| m
+            .contains("refused rather than emitted partly wrong")
+            && m.contains("sits inside a loop")),
+        "the refusal reason must reach a consumer-visible surface; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    let emitted: String =
+        String::from_utf8(peeled.deobfuscated).expect("emitted artifact must be UTF-8");
+    assert!(
+        !emitted.contains("prometheus-vmify:"),
+        "a refused sample must not leave one of this pass's own stubs in the emitted artifact"
+    );
+}
+
 #[test]
 fn prometheus_vmify_obfuscated_and_clean_fixtures_already_agree() {
     let tc: Toolchain = require_toolchain("5.1");

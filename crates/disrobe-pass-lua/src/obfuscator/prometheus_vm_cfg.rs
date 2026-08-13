@@ -3000,6 +3000,26 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_real_vmify_capture_allocated_inside_a_loop() {
+        let src: &str =
+            include_str!("../../../../corpus/lua/prometheus/vmify_loop_capture/obfuscated.lua");
+        let err: Error = recover(src).expect_err(
+            "each iteration of the source loop captures its own variable, so one function-scope \
+             declaration would make all three closures share a single variable and print the last \
+             value three times; that must be refused, not emitted",
+        );
+        let message: String = err.to_string();
+        assert!(
+            message.contains("sits inside a loop"),
+            "the refusal must name per-iteration capture as the cause, got: {message}"
+        );
+        assert!(
+            message.contains("alias"),
+            "the refusal must say what would go wrong if it emitted anyway, got: {message}"
+        );
+    }
+
+    #[test]
     fn refuses_a_vmify_capture_whose_reference_counted_helpers_are_absent() {
         let src: &str =
             include_str!("../../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");

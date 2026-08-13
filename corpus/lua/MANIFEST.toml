@@ -178,6 +178,15 @@ input = "prometheus/vmify_upvalue/clean.lua"
 notes = "Vmify only, so the recovered artifact grades the VM layer with no string or number layer in the way. The clean input returns a closure that reads and writes a local of its enclosing function, which makes Prometheus emit its reference-counted captured-variable protocol: a slot allocator, a shared slot store, a per-slot reference count, and closure-creation calls that carry a table of slot identifiers. Seed=1337 replaces the upstream random Seed=0. Target=Lua51. DISROBE_ROOT is the repository root. input_sha256=d7e6b16fa1b309560d443d13433dcc6714aab85fa817fb7964a236d443715924; config_sha256=c1812c0d081db3e6fca59fb92c42faaec67db4263a23240139949251e8b2cd28; output_sha256=d02e1325aaafc8b94896415b2b57eb0b375cac1cb771202fdc47ebbc082e8980. Three independent invocations produced byte-identical output. The clean input and the obfuscated output print the same three lines under real lua 5.1."
 
 [[obfuscators.fixtures]]
+path = "prometheus/vmify_loop_capture/obfuscated.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 1325
+sha256 = "5d7087d1ff04e67b1e261aa4769e7e83bc891a32f344daca9b382881ec53f114"
+generator = 'levno-710/Prometheus@a4efc5f381c50ae2a111bdbb9272fa3203685be3 from its checkout root: lua5.1 cli.lua --config "$DISROBE_ROOT/corpus/lua/prometheus/vmify_loop_capture/config.lua" --Lua51 --nocolors --out "$DISROBE_ROOT/corpus/lua/prometheus/vmify_loop_capture/obfuscated.lua" "$DISROBE_ROOT/corpus/lua/prometheus/vmify_loop_capture/clean.lua"'
+input = "prometheus/vmify_loop_capture/clean.lua"
+notes = "Vmify only. The clean input builds one closure per loop iteration over a variable declared inside the loop, so each closure captures its own variable and the program prints 10, 20 and 30. Prometheus allocates a fresh captured-variable slot per iteration, a shape a single function-scope declaration would alias into one shared variable. Seed=1337 replaces the upstream random Seed=0. Target=Lua51. DISROBE_ROOT is the repository root. input_sha256=9635e5bf40805f4267ebba788a3105978539d533e66a2ec0e016f4e82df090e8; config_sha256=c1812c0d081db3e6fca59fb92c42faaec67db4263a23240139949251e8b2cd28; output_sha256=5d7087d1ff04e67b1e261aa4769e7e83bc891a32f344daca9b382881ec53f114. Three independent invocations produced byte-identical output."
+
+[[obfuscators.fixtures]]
 path = "obfuscators/luaobfuscator_com/sample_default_obf_v1.lua"
 kind = "lua-source-obfuscated"
 size_bytes = 33112

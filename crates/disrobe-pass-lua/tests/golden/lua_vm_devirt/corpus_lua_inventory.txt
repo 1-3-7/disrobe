@@ -32,6 +32,9 @@ prometheus/gauntlet/gauntlet_clean.lua
 prometheus/gauntlet/gauntlet_weak_obfuscated.lua
 prometheus/vmify/clean.lua
 prometheus/vmify/obfuscated.lua
+prometheus/vmify_loop_capture/clean.lua
+prometheus/vmify_loop_capture/config.lua
+prometheus/vmify_loop_capture/obfuscated.lua
 prometheus/vmify_nested/clean.lua
 prometheus/vmify_nested/obfuscated.lua
 prometheus/vmify_simple/clean.lua
