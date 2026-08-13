@@ -468,14 +468,36 @@ fn aarch64_recover_source(
     name: &str,
     devirt: bool,
 ) -> Result<(String, bool, serde_json::Value), String> {
+    pcode_recover_source(
+        disrobe_nir_lift::PcodeArch::AArch64,
+        code,
+        address,
+        name,
+        devirt,
+    )
+}
+
+#[cfg(feature = "nir-lift")]
+pub(crate) fn pcode_recover_source(
+    arch: disrobe_nir_lift::PcodeArch,
+    code: &[u8],
+    address: u64,
+    name: &str,
+    devirt: bool,
+) -> Result<(String, bool, serde_json::Value), String> {
     use disrobe_nir::{
         HirFunction, NirFunction, SurfaceFunction, emit_pseudo_source, structurize_function,
         surfacify_function,
     };
-    use disrobe_nir_lift::lower_aarch64;
+    use disrobe_nir_lift::{ArchLift, lower_arch};
 
-    let nir: NirFunction =
-        lower_aarch64(code, address, name).map_err(|e| format!("aarch64 lift failed: {e}"))?;
+    let lift: ArchLift = lower_arch(arch, code, address, name).map_err(|e| {
+        format!(
+            "{} lift failed: {e}",
+            arch.label().unwrap_or("this architecture")
+        )
+    })?;
+    let nir: NirFunction = lift.function;
 
     #[cfg(feature = "devirt")]
     let (nir, devirt_report): (NirFunction, serde_json::Value) = if devirt {
@@ -3936,6 +3958,67 @@ mod tests {
         assert!(text.trim_end().ends_with("</svg>"));
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(feature = "nir-lift")]
+    const ARM32_A32_O2: &[u8] =
+        include_bytes!("../../../disrobe-sleigh/tests/corpus/arm32_a32_oracle_o2.text");
+    #[cfg(feature = "nir-lift")]
+    const MIPS32BE_O2: &[u8] =
+        include_bytes!("../../../disrobe-sleigh/tests/corpus/mips32be_oracle_o2.text");
+    #[cfg(feature = "nir-lift")]
+    const MIPS32LE_O2: &[u8] =
+        include_bytes!("../../../disrobe-sleigh/tests/corpus/mips32le_oracle_o2.text");
+
+    #[cfg(feature = "nir-lift")]
+    #[test]
+    fn every_lifted_architecture_reaches_pseudo_source_through_one_entry_point() {
+        use disrobe_nir_lift::PcodeArch;
+
+        let cases: [(PcodeArch, &[u8]); 3] = [
+            (PcodeArch::Arm32A32, ARM32_A32_O2),
+            (PcodeArch::Mips32Be, MIPS32BE_O2),
+            (PcodeArch::Mips32Le, MIPS32LE_O2),
+        ];
+        for (arch, code) in cases {
+            let label: &str = arch.label().unwrap_or("unlabelled");
+            let recovered: Result<(String, bool, serde_json::Value), String> =
+                pcode_recover_source(arch, code, 0x1000, "recovered", false);
+            assert!(
+                recovered.is_ok(),
+                "{label} must recover pseudo-source: {recovered:?}"
+            );
+            let source: String = recovered
+                .map(|(source, _, _): (String, bool, serde_json::Value)| source)
+                .unwrap_or_default();
+            assert!(
+                !source.trim().is_empty(),
+                "{label} recovered an empty body from {} byte(s)",
+                code.len()
+            );
+        }
+    }
+
+    #[cfg(feature = "nir-lift")]
+    #[test]
+    fn the_architecture_argument_decides_what_the_bytes_mean() {
+        use disrobe_nir_lift::PcodeArch;
+
+        let big: String =
+            pcode_recover_source(PcodeArch::Mips32Be, MIPS32BE_O2, 0x1000, "m", false)
+                .expect("big-endian mips recovers")
+                .0;
+        let swapped: Result<(String, bool, serde_json::Value), String> =
+            pcode_recover_source(PcodeArch::Mips32Le, MIPS32BE_O2, 0x1000, "m", false);
+        let differs: bool = swapped
+            .map_or(true, |(other, _, _): (String, bool, serde_json::Value)| {
+                other != big
+            });
+        assert!(
+            differs,
+            "reading big-endian mips words as little-endian produced identical source, so the \
+             architecture argument is being ignored:\n{big}"
+        );
     }
 
     #[cfg(feature = "nir-lift")]
