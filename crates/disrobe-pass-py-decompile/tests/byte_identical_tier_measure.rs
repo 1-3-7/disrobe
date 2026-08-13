@@ -24,6 +24,8 @@ use common::stdlib_measure::{
 };
 
 const FIRST_PINNED_SERIES: (u8, u8) = (3, 10);
+const GATE_PREFIX: &str = "arbitrary_recompile_gate";
+const UNSUFFIXED_GATE_SERIES: (u8, u8) = (3, 14);
 const EXCLUDED_DIMENSIONS: &str = "co_filename,co_linetable,co_firstlineno";
 const DEPTH_LIMIT_KEY: &str = "strict_dim_co_consts_depth_limit";
 const THIN_SAMPLE_MODULES: u64 = 100;
@@ -466,6 +468,60 @@ fn byte_identical_tier_over_every_measured_band() {
     );
 }
 
+fn band_of_gate_file(stem: &str) -> (u8, u8) {
+    let name: &str = stem;
+    let Some(suffix): Option<&str> = stem.strip_prefix(GATE_PREFIX) else {
+        panic!("`{name}` does not start with `{GATE_PREFIX}`")
+    };
+    if suffix.is_empty() {
+        return UNSUFFIXED_GATE_SERIES;
+    }
+    let digits: &str = suffix.strip_prefix('_').unwrap_or_else(|| {
+        panic!(
+            "`{name}` carries the suffix `{suffix}` where a band gate names its series as \
+             `_3NN`, so this gate cannot tell which interpreter it measures"
+        )
+    });
+    let (major, minor): (&str, &str) = digits.split_at(1);
+    (
+        major
+            .parse::<u8>()
+            .unwrap_or_else(|e: std::num::ParseIntError| {
+                panic!("`{name}` major version `{major}`: {e}")
+            }),
+        minor
+            .parse::<u8>()
+            .unwrap_or_else(|e: std::num::ParseIntError| {
+                panic!("`{name}` minor version `{minor}`: {e}")
+            }),
+    )
+}
+
+fn normalized_gate_bands() -> Vec<(u8, u8)> {
+    let tests: PathBuf = manifest_dir().join("tests");
+    let entries: std::fs::ReadDir = std::fs::read_dir(&tests)
+        .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", tests.display()));
+    let mut found: Vec<(u8, u8)> = Vec::new();
+    for entry in entries {
+        let path: PathBuf = entry
+            .unwrap_or_else(|e: std::io::Error| panic!("read {}: {e}", tests.display()))
+            .path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+            continue;
+        }
+        let stem: String = path
+            .file_stem()
+            .map(|entry: &std::ffi::OsStr| entry.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !stem.starts_with(GATE_PREFIX) {
+            continue;
+        }
+        found.push(band_of_gate_file(&stem));
+    }
+    found.sort_unstable();
+    found
+}
+
 #[test]
 fn every_band_the_normalized_tier_measures_is_a_band_the_strict_tier_reaches() {
     let pinned: Vec<(u8, u8)> = CPYTHON_SERIES
@@ -473,12 +529,17 @@ fn every_band_the_normalized_tier_measures_is_a_band_the_strict_tier_reaches() {
         .map(|band: &BandRelease| band.version)
         .filter(|version: &(u8, u8)| *version >= FIRST_PINNED_SERIES)
         .collect();
-    let gates: [(u8, u8); 6] = [(3, 10), (3, 11), (3, 12), (3, 13), (3, 14), (3, 15)];
+    let gates: Vec<(u8, u8)> = normalized_gate_bands();
+    assert!(
+        !gates.is_empty(),
+        "no `{GATE_PREFIX}*.rs` case was found beside this one, so this check compares the strict \
+         band set against nothing"
+    );
     assert_eq!(
         pinned, gates,
-        "the strict tiers walk {pinned:?} while the crate publishes normalized band gates for \
-         {gates:?}; the strict tier has to run wherever the normalized tier runs, so a new band \
-         gate has to appear on both lists at once"
+        "the strict tiers walk {pinned:?} while the crate ships normalized band gates for \
+         {gates:?}; the strict tier has to run wherever the normalized tier runs, so a band gate \
+         added or removed on disk has to move the strict band set with it"
     );
     for version in gates {
         let band: &BandRelease = CPYTHON_SERIES

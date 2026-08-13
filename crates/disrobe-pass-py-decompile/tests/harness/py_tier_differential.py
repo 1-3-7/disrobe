@@ -34,13 +34,13 @@ import json
 import os
 import sys
 import types
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import py_arbitrary_measure as tier
 
-MAX_CASES = 64
+MAX_CASES = 256
 TARGET_NAME = "f"
 
 JUMP_NEST_ORIGINAL = """
@@ -136,17 +136,32 @@ def f(a, b):
     return c
 """
 
-Mutation = Callable[[types.CodeType], Tuple[Optional[types.CodeType], Optional[types.CodeType]]]
+CLASS_ORIGINAL = """
+class C:
+    def f(self, a):
+        self.kept = a
+"""
+CLASS_SHIFTED = """
+
+class C:
+    def f(self, a):
+        self.kept = a
+"""
+
+Mutation = Callable[[types.CodeType], Tuple[types.CodeType, types.CodeType]]
+Row = Dict[str, object]
 
 
-def target_of(source: str, optimize: int, filename: str) -> types.CodeType:
+def target_of(
+    source: str, optimize: int, filename: str, target: str = TARGET_NAME
+) -> types.CodeType:
     module: types.CodeType = compile(
         source, filename, "exec", dont_inherit=True, optimize=optimize
     )
     for constant in module.co_consts:
-        if isinstance(constant, types.CodeType) and constant.co_name == TARGET_NAME:
+        if isinstance(constant, types.CodeType) and constant.co_name == target:
             return constant
-    raise SystemExit(f"source compiled at optimize={optimize} carries no `{TARGET_NAME}`")
+    raise SystemExit(f"source compiled at optimize={optimize} carries no `{target}`")
 
 
 def mutate_stacksize(base: types.CodeType) -> tuple[types.CodeType, types.CodeType]:
@@ -196,15 +211,21 @@ def mutate_exceptiontable(base: types.CodeType) -> tuple[types.CodeType, types.C
 
 
 PAIR_CASES = (
-    ("jump_target_nesting", JUMP_NEST_ORIGINAL, JUMP_NEST_RECOVERED),
-    ("docstring_dropped", DOCSTRING_PRESENT, DOCSTRING_ABSENT),
-    ("docstring_invented", DOCSTRING_ABSENT, DOCSTRING_PRESENT),
-    ("assert_dropped", ASSERT_PRESENT, ASSERT_ABSENT),
-    ("statement_reorder", ORDER_ORIGINAL, ORDER_RECOVERED),
-    ("comprehension_scope_collapsed", COMPREHENSION_ORIGINAL, COMPREHENSION_RECOVERED),
-    ("line_shifted_body", LINE_ORIGINAL, LINE_RECOVERED),
-    ("control_recompiled_twice", CONTROL_SOURCE, CONTROL_SOURCE),
-    ("control_comment_only", CONTROL_SOURCE, CONTROL_COMMENTED),
+    ("jump_target_nesting", JUMP_NEST_ORIGINAL, JUMP_NEST_RECOVERED, TARGET_NAME),
+    ("docstring_dropped", DOCSTRING_PRESENT, DOCSTRING_ABSENT, TARGET_NAME),
+    ("docstring_invented", DOCSTRING_ABSENT, DOCSTRING_PRESENT, TARGET_NAME),
+    ("assert_dropped", ASSERT_PRESENT, ASSERT_ABSENT, TARGET_NAME),
+    ("statement_reorder", ORDER_ORIGINAL, ORDER_RECOVERED, TARGET_NAME),
+    (
+        "comprehension_scope_collapsed",
+        COMPREHENSION_ORIGINAL,
+        COMPREHENSION_RECOVERED,
+        TARGET_NAME,
+    ),
+    ("line_shifted_body", LINE_ORIGINAL, LINE_RECOVERED, TARGET_NAME),
+    ("class_body_line_shifted", CLASS_ORIGINAL, CLASS_SHIFTED, "C"),
+    ("control_recompiled_twice", CONTROL_SOURCE, CONTROL_SOURCE, TARGET_NAME),
+    ("control_comment_only", CONTROL_SOURCE, CONTROL_COMMENTED, TARGET_NAME),
 )
 
 MUTANT_CASES = (
@@ -221,7 +242,9 @@ MUTANT_CASES = (
 )
 
 
-def grade(name: str, kind: str, optimize: int, a: types.CodeType, b: types.CodeType) -> dict:
+def grade(
+    name: str, kind: str, optimize: int, a: types.CodeType, b: types.CodeType
+) -> Row:
     normalized_ok, normalized_reason = tier.own_equiv(a, b)
     dimensions: list[str] = tier.strict_diff_dimensions(a, b)
     pairs, aligned, alignable = tier.align_positions(a, b)
@@ -249,7 +272,7 @@ def grade(name: str, kind: str, optimize: int, a: types.CodeType, b: types.CodeT
     }
 
 
-def unavailable(name: str, kind: str, optimize: int, reason: str) -> dict:
+def unavailable(name: str, kind: str, optimize: int, reason: str) -> Row:
     return {
         "case": name,
         "kind": kind,
@@ -271,13 +294,15 @@ def unavailable(name: str, kind: str, optimize: int, reason: str) -> dict:
     }
 
 
-def run_pair(name: str, original: str, recovered: str, optimize: int) -> dict:
-    a: types.CodeType = target_of(original, optimize, "<original>")
-    b: types.CodeType = target_of(recovered, optimize, "<recovered>")
+def run_pair(
+    name: str, original: str, recovered: str, target: str, optimize: int
+) -> Row:
+    a: types.CodeType = target_of(original, optimize, "<original>", target)
+    b: types.CodeType = target_of(recovered, optimize, "<recovered>", target)
     return grade(name, "pair", optimize, a, b)
 
 
-def run_mutant(name: str, mutation: Mutation, optimize: int) -> dict:
+def run_mutant(name: str, mutation: Mutation, optimize: int) -> Row:
     base: types.CodeType = target_of(MUTANT_BASE, optimize, "<base>")
     try:
         a, b = mutation(base)
@@ -316,10 +341,10 @@ def main() -> None:
     if planned > MAX_CASES:
         raise SystemExit(f"{planned} graded rows passes the {MAX_CASES} this harness bounds")
 
-    rows: list[dict] = []
+    rows: list[Row] = []
     for level in levels:
-        for name, original, recovered in PAIR_CASES:
-            rows.append(run_pair(name, original, recovered, level))
+        for name, original, recovered, target in PAIR_CASES:
+            rows.append(run_pair(name, original, recovered, target, level))
         for name, mutation in MUTANT_CASES:
             rows.append(run_mutant(name, mutation, level))
 

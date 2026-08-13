@@ -37,6 +37,7 @@ enum Lines {
 #[derive(Debug, Clone, Copy)]
 enum Dimensions {
     None,
+    Any,
     Contains {
         required: &'static [&'static str],
         forbidden: &'static [&'static str],
@@ -108,7 +109,19 @@ const fn docstring_already_stripped() -> LevelExpectation {
     }
 }
 
-const CASES: [CaseExpectation; 19] = [
+const ESCALATIONS: [(&str, (u8, u8), Dimensions); 1] =
+    [("class_body_line_shifted", (3, 13), Dimensions::Any)];
+
+fn strict_expectation(case: &str, band: (u8, u8), base: Dimensions) -> Dimensions {
+    ESCALATIONS
+        .iter()
+        .find(|(name, from, _): &&(&str, (u8, u8), Dimensions)| *name == case && band >= *from)
+        .map_or(base, |(_, _, escalated): &(&str, (u8, u8), Dimensions)| {
+            *escalated
+        })
+}
+
+const CASES: [CaseExpectation; 20] = [
     CaseExpectation {
         case: "jump_target_nesting",
         mechanism: "the normalized tier folds every jump into a target-free JUMP token, so a \
@@ -185,6 +198,22 @@ const CASES: [CaseExpectation; 19] = [
             strict: Dimensions::None,
             lines: Lines::SomeMismatch,
             firstlineno_equal: true,
+        }),
+    },
+    CaseExpectation {
+        case: "class_body_line_shifted",
+        mechanism: "moving a class down by one line changes nothing the class body executes. From \
+                    3.13 the compiler bakes the class's first line into the code object to feed \
+                    __firstlineno__, as a co_consts entry on 3.13 and as a LOAD_SMALL_INT operand \
+                    inside co_code from 3.14, and the normalized tier pops that load in both \
+                    forms, so the byte tier is the only tier that reports the shift on those \
+                    releases; before 3.13 nothing carries the line and only the line tier sees it",
+        available_from: (3, 8),
+        levels: every_level(LevelExpectation {
+            normalized_detects: false,
+            strict: Dimensions::None,
+            lines: Lines::SomeMismatch,
+            firstlineno_equal: false,
         }),
     },
     CaseExpectation {
@@ -479,11 +508,17 @@ fn judge(band: (u8, u8), release: &str, row: &Row) {
         expectation.mechanism
     );
 
-    match expected.strict {
+    match strict_expectation(&row.case, band, expected.strict) {
         Dimensions::None => assert!(
             row.dimensions.is_empty(),
             "{where_}: the byte tier reported {:?} where it must report nothing. {}",
             row.dimensions,
+            expectation.mechanism
+        ),
+        Dimensions::Any => assert!(
+            !row.dimensions.is_empty(),
+            "{where_}: the byte tier reported nothing where it must report the loss on whichever \
+             field this release encodes it in. {}",
             expectation.mechanism
         ),
         Dimensions::Contains {
