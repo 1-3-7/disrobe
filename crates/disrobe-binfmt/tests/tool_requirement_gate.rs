@@ -248,17 +248,82 @@ fn the_workflow_demands_the_same_programs_the_search_accepts() {
                 SEVEN_ZIP.require_var
             )
         });
-    let listed: Vec<&str> = loop_header
+    let iterated: &str = loop_header
         .trim_start_matches("for candidate in ")
         .trim_end_matches("; do")
-        .split_whitespace()
-        .collect();
+        .trim();
+    if let Some(name) = expanded_array_name(iterated) {
+        assert_appended_entries_stay_within_the_search(&workflow, name);
+    }
+    let listed: Vec<&str> = probed_programs(&workflow, iterated);
     assert_eq!(
         listed, SEVEN_ZIP.programs,
         "{CI_WORKFLOW} probes {listed:?} but the measurement accepts {:?}, so the run can demand a \
          program the tests never look for",
         SEVEN_ZIP.programs
     );
+}
+
+fn probed_programs<'a>(workflow: &'a str, iterated: &'a str) -> Vec<&'a str> {
+    let Some(name): Option<&str> = expanded_array_name(iterated) else {
+        return iterated.split_whitespace().collect();
+    };
+    assigned_array_entries(workflow, name).unwrap_or_else(|| {
+        panic!(
+            "{CI_WORKFLOW} iterates {name} but never assigns it, so the demand that arms {} can no \
+             longer be checked against the programs this search accepts",
+            SEVEN_ZIP.require_var
+        )
+    })
+}
+
+fn assert_appended_entries_stay_within_the_search(workflow: &str, name: &str) {
+    for entry in appended_array_entries(workflow, name) {
+        let stem: &str = Path::new(entry)
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or(entry);
+        assert!(
+            SEVEN_ZIP.programs.contains(&stem),
+            "{CI_WORKFLOW} appends {entry} to {name}, whose program name {stem} is not one the \
+             measurement accepts {:?}, so the run can demand a program the tests never look for",
+            SEVEN_ZIP.programs
+        );
+    }
+}
+
+fn expanded_array_name(iterated: &str) -> Option<&str> {
+    iterated
+        .trim_matches('"')
+        .strip_prefix("${")?
+        .strip_suffix("[@]}")
+}
+
+fn assigned_array_entries<'a>(workflow: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    let opening: String = format!("{name}=(");
+    workflow
+        .lines()
+        .map(str::trim)
+        .find_map(|line: &str| line.strip_prefix(opening.as_str()))
+        .and_then(|rest: &str| rest.strip_suffix(')'))
+        .map(|inside: &str| inside.split_whitespace().collect())
+}
+
+fn appended_array_entries<'a>(workflow: &'a str, name: &str) -> Vec<&'a str> {
+    let opening: String = format!("{name}+=(");
+    workflow
+        .lines()
+        .map(str::trim)
+        .filter_map(|line: &str| line.strip_prefix(opening.as_str()))
+        .filter_map(|rest: &str| rest.strip_suffix(')'))
+        .flat_map(|inside: &str| {
+            inside
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .collect::<Vec<&'a str>>()
+        })
+        .collect()
 }
 
 #[test]
