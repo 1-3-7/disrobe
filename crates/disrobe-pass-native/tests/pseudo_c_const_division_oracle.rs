@@ -272,7 +272,28 @@ struct DifferentialCase {
 }
 
 fn differential_cases() -> Vec<DifferentialCase> {
-    let mut cases: Vec<DifferentialCase> = Vec::new();
+    let mut cases: Vec<DifferentialCase> = vec![
+        DifferentialCase {
+            name: "hi_s",
+            arity: 2,
+            c_source: "long long hi_s(long long a, long long b){ return (long long)(((__int128)a * (__int128)b) >> 64); }".to_owned(),
+        },
+        DifferentialCase {
+            name: "hi_u",
+            arity: 2,
+            c_source: "unsigned long long hi_u(unsigned long long a, unsigned long long b){ return (unsigned long long)(((unsigned __int128)a * (unsigned __int128)b) >> 64); }".to_owned(),
+        },
+        DifferentialCase {
+            name: "cd_loop",
+            arity: 1,
+            c_source: "unsigned cd_loop(unsigned n){ unsigned s = 0u; for (unsigned i = 0u; i < (n & 0xffu); i++) { s += i / 7u; } return s; }".to_owned(),
+        },
+        DifferentialCase {
+            name: "cd_loopm",
+            arity: 1,
+            c_source: "unsigned cd_loopm(unsigned n){ unsigned s = 0u; for (unsigned i = 0u; i < (n & 0xffu); i++) { s += i % 7u; } return s; }".to_owned(),
+        },
+    ];
     for (name, text) in [
         ("cd_u7", "unsigned cd_u7(unsigned a){ return a / 7u; }"),
         ("cd_s7", "int cd_s7(int a){ return a / 7; }"),
@@ -358,6 +379,7 @@ fn recovered_constant_division_matches_the_compiled_function() {
     }
     let scratch: ScratchDir = scratch_dir("disrobe-const-division-diff");
     let mut measured: usize = 0;
+    let mut exercised: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     for compiler in &compilers {
         for opt in OPT_LEVELS {
             let object_path: PathBuf = scratch
@@ -389,9 +411,10 @@ fn recovered_constant_division_matches_the_compiled_function() {
                 ));
                 declarations.push_str(&renamed);
                 declarations.push('\n');
+                let parameter_list: String = vec!["unsigned long long"; case.arity].join(", ");
                 let _ = writeln!(
                     declarations,
-                    "extern unsigned long long {}(unsigned long long);",
+                    "extern unsigned long long {}({parameter_list});",
                     case.name
                 );
                 let mask: String = if recovery.return_width_bits == 64 {
@@ -399,21 +422,34 @@ fn recovered_constant_division_matches_the_compiled_function() {
                 } else {
                     format!("0x{:x}ULL", (1u128 << recovery.return_width_bits) - 1)
                 };
+                let slot = |index: usize| -> String {
+                    if index == 0 {
+                        "in".to_owned()
+                    } else {
+                        "alt".to_owned()
+                    }
+                };
+                let original_arguments: String = (0..case.arity)
+                    .map(slot)
+                    .collect::<Vec<String>>()
+                    .join(", ");
                 let arguments: String = (0..case.arity.max(recovery.signature.callable_arity()))
-                    .map(|_| "in".to_owned())
+                    .map(slot)
                     .collect::<Vec<String>>()
                     .join(", ");
                 let _ = write!(
                     body,
                     "    for (size_t k = 0; k < n_inputs; k++) {{\n\
                      \x20       unsigned long long in = inputs[k];\n\
-                     \x20       unsigned long long want = (unsigned long long){}(in) & {mask};\n\
+                     \x20       unsigned long long alt = inputs[(k + 3) % n_inputs];\n\
+                     \x20       unsigned long long want = (unsigned long long){}({original_arguments}) & {mask};\n\
                      \x20       unsigned long long got = {recovered_name}({arguments}) & {mask};\n\
-                     \x20       if (want != got) {{ printf(\"MISMATCH {} in=%llu want=%llu got=%llu\\n\", in, want, got); return 1; }}\n\
+                     \x20       if (want != got) {{ printf(\"MISMATCH {} in=%llu alt=%llu want=%llu got=%llu\\n\", in, alt, want, got); return 1; }}\n\
                      \x20   }}\n",
                     case.name, case.name,
                 );
                 lifted += 1;
+                exercised.insert(case.name);
             }
             if lifted == 0 {
                 continue;
@@ -442,7 +478,21 @@ fn recovered_constant_division_matches_the_compiled_function() {
         measured > 0,
         "the constant-division differential measured nothing"
     );
-    println!("constant-division differential: {measured} recovered functions executed");
+    for required in [
+        "hi_s", "hi_u", "cd_loop", "cd_loopm", "cd_s64", "cm_s64", "cd_u64", "cd_u14", "cm_u7",
+        "cm_s7", "cd_s7",
+    ] {
+        assert!(
+            exercised.contains(required),
+            "`{required}` never lifted, so the differential proved nothing about the path it \
+             covers; exercised cases were {exercised:?}"
+        );
+    }
+    println!(
+        "constant-division differential: {measured} recovered functions executed across {} \
+         distinct cases",
+        exercised.len()
+    );
 }
 
 #[test]
@@ -496,6 +546,59 @@ fn a_fixed_point_scale_is_never_rewritten_as_a_division() {
          optimization, so nothing proved the back-check rejects a near miss"
     );
     println!("fixed-point near-miss: {measured} multiply-shift scales left as multiplies");
+}
+
+#[test]
+fn division_inside_a_loop_never_names_the_wrong_divisor() {
+    let compilers: Vec<CompilerId> = available_compilers();
+    if compilers.is_empty() {
+        eprintln!("skipping loop-context constant division: no C compiler on PATH");
+        return;
+    }
+    let program: &str = "unsigned lp_div(unsigned n){ unsigned s = 0u; for (unsigned i = 0u; i < (n & 0xffu); i++) { s += i / 7u; } return s; }\n";
+    let scratch: ScratchDir = scratch_dir("disrobe-const-division-loop");
+    let mut measured: usize = 0;
+    let mut rewritten: usize = 0;
+    for compiler in &compilers {
+        for opt in OPT_LEVELS {
+            let object_path: PathBuf = scratch
+                .path()
+                .join(format!("loopdiv_{}_{opt}.o", compiler.bin));
+            let Some(object): Option<Vec<u8>> =
+                compile_object_opt(compiler.bin, opt, &["-c"], program, &object_path)
+            else {
+                continue;
+            };
+            let Some((code, base)): Option<(Vec<u8>, u64)> = function_code(&object, "lp_div")
+            else {
+                continue;
+            };
+            let Ok(recovery): Result<LeafRecovery, _> =
+                recover_leaf_function_abi(&code, base, common::HOST_ABI)
+            else {
+                continue;
+            };
+            measured += 1;
+            if let Some((operator, value)) = recovered_constant_operator(&recovery.source) {
+                rewritten += 1;
+                assert_eq!(
+                    (operator, value),
+                    ('/', 7),
+                    "{} {opt}: a division inside a loop was rewritten with the wrong divisor:\n{}",
+                    compiler.bin,
+                    recovery.source
+                );
+            }
+        }
+    }
+    assert!(
+        measured > 0,
+        "the loop-context constant-division check measured nothing"
+    );
+    println!(
+        "loop-context constant division: {rewritten}/{measured} lifted loop bodies rewrote the \
+         division; the rest kept the multiply-shift sequence"
+    );
 }
 
 #[test]

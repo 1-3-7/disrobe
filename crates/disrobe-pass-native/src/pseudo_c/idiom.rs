@@ -1011,7 +1011,7 @@ fn region_is_straight_line(items: &[Item], start: usize, end: usize) -> bool {
     let Some(exit): Option<&Item> = items.get(end) else {
         return false;
     };
-    !items.iter().any(|item: &Item| match &item.kind {
+    if items.iter().any(|item: &Item| match &item.kind {
         ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => {
             *target > entry.address && *target <= exit.address
         }
@@ -1020,6 +1020,18 @@ fn region_is_straight_line(items: &[Item], start: usize, end: usize) -> bool {
                 || cases.iter().any(|(_, target): &(i64, u64)| {
                     *target > entry.address && *target <= exit.address
                 })
+        }
+        ItemKind::Stmt(_) | ItemKind::Ret => false,
+    }) {
+        return false;
+    }
+    !items[start..].iter().any(|item: &Item| match &item.kind {
+        ItemKind::Branch { target, .. } | ItemKind::Jmp { target } => *target <= entry.address,
+        ItemKind::Switch { cases, default, .. } => {
+            *default <= entry.address
+                || cases
+                    .iter()
+                    .any(|(_, target): &(i64, u64)| *target <= entry.address)
         }
         ItemKind::Stmt(_) | ItemKind::Ret => false,
     })
