@@ -1,3 +1,5 @@
+mod aarch64_seeds;
+
 use std::collections::BTreeSet;
 
 use disrobe_binfmt::native::{
@@ -349,20 +351,7 @@ fn entry_export_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
 
 fn aarch64_function_seeds(native: &NativeFile, bytes: &[u8]) -> Vec<u64> {
     let mut seeds: Vec<u64> = entry_export_seeds(native, bytes);
-    let Ok(file): core::result::Result<object::File<'_>, object::Error> =
-        object::File::parse(bytes)
-    else {
-        return seeds;
-    };
-    seeds.extend(
-        file.symbols()
-            .filter(|symbol: &object::Symbol<'_, '_>| {
-                matches!(symbol.kind(), ObjSymbolKind::Text)
-                    && !symbol.is_undefined()
-                    && symbol.address() != 0
-            })
-            .map(|symbol: object::Symbol<'_, '_>| symbol.address()),
-    );
+    seeds.extend(aarch64_seeds::collect(native, bytes).addresses());
     seeds.sort_unstable();
     seeds.dedup();
     seeds
