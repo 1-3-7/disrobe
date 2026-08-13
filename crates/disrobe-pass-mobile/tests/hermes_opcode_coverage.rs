@@ -14,14 +14,16 @@ use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
     DeclineCount, DecompileReport, DecompiledFunction, HermesModule, OpcodeCount,
-    decompile_hermes_module, parse_hermes_module,
+    decompile_hermes_module, hermes_disasm_function, parse_hermes_module,
 };
 use hermes_production_bundle::{PUBLISHED_FUNCTION_COUNT, load_bundle};
 
-const TRACKED_V96_SAMPLE_COUNT: usize = 5;
+const TRACKED_SAMPLE_COUNT: usize = 7;
 
-const TRACKED_V96_SAMPLES: [[&str; 2]; TRACKED_V96_SAMPLE_COUNT] = [
+const TRACKED_SAMPLES: [[&str; 2]; TRACKED_SAMPLE_COUNT] = [
     ["sample", "sample.hbc.v96"],
+    ["sample", "sample.hbc.v84"],
+    ["sample", "sample.hbc.v76"],
     ["regex", "regexes.hbc.v96"],
     ["regex", "edge.hbc.v96"],
     ["regex", "nest.hbc.v96"],
@@ -115,12 +117,12 @@ fn describe_tail(counts: &[OpcodeCount], width: usize) -> String {
 #[test]
 fn every_decoded_opcode_in_the_tracked_corpus_lands_in_exactly_one_column() {
     assert_eq!(
-        TRACKED_V96_SAMPLES.len(),
-        TRACKED_V96_SAMPLE_COUNT,
+        TRACKED_SAMPLES.len(),
+        TRACKED_SAMPLE_COUNT,
         "the graded corpus is pinned by equality, so deleting a sample fails here rather than \
          quietly narrowing what this gate reads"
     );
-    for parts in TRACKED_V96_SAMPLES {
+    for parts in TRACKED_SAMPLES {
         let label: String = parts.join("/");
         let report: DecompileReport = report_for(&parts);
         assert!(report.lift_supported, "{label}");
@@ -142,7 +144,7 @@ fn every_decoded_opcode_in_the_tracked_corpus_lands_in_exactly_one_column() {
 
 #[test]
 fn the_tracked_corpus_declines_no_opcode_and_names_any_that_it_would() {
-    for parts in TRACKED_V96_SAMPLES {
+    for parts in TRACKED_SAMPLES {
         let label: String = parts.join("/");
         let report: DecompileReport = report_for(&parts);
         assert!(
@@ -156,6 +158,44 @@ fn the_tracked_corpus_declines_no_opcode_and_names_any_that_it_would() {
             report.unaccounted_opcodes
         );
     }
+}
+
+#[test]
+fn a_version_with_no_opcode_table_refuses_to_disassemble_rather_than_guess() {
+    let path: PathBuf = corpus(&["sample", "sample.hbc.v96"]);
+    let committed: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is committed, so a run that cannot read it grades no refusal: {error}",
+            path.display()
+        )
+    });
+    let unlifted: u32 = 90;
+    let mut restamped: Vec<u8> = committed.clone();
+    restamped.splice(8..12, unlifted.to_le_bytes());
+    let module: HermesModule = parse_hermes_module(&restamped)
+        .unwrap_or_else(|error| panic!("v{unlifted} is inside the accepted band: {error}"));
+
+    let lines: Vec<String> = hermes_disasm_function(&module, 0);
+    assert_eq!(
+        lines.len(),
+        1,
+        "a version with no opcode table must state the refusal instead of listing instructions \
+         decoded through another release numbering; got {lines:?}"
+    );
+    assert!(
+        lines[0].contains(&format!("hbc v{unlifted}")) && lines[0].contains("no opcode table"),
+        "the refusal names the version and the reason; got {:?}",
+        lines[0]
+    );
+
+    let graded: HermesModule =
+        parse_hermes_module(&committed).unwrap_or_else(|error| panic!("v96 sample: {error}"));
+    let decoded: Vec<String> = hermes_disasm_function(&graded, 0);
+    assert!(
+        decoded.len() > 1 && decoded[0].contains(':'),
+        "the same function at a version with a table disassembles, so the refusal above is a \
+         version decision and not an empty function; got {decoded:?}"
+    );
 }
 
 #[test]

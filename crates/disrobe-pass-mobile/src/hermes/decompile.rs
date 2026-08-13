@@ -1318,7 +1318,8 @@ fn lift_instruction_inner(
         "GetBuiltinClosure" => {
             let d: u32 = reg_of(ops.first());
             let builtin_id: u64 = uint_of(ops.get(1));
-            ctx.set_reg(d, super::builtins::builtin_name(builtin_id));
+            let version: u32 = ctx.module.header.version;
+            ctx.set_reg(d, super::builtins::builtin_name(version, builtin_id));
             ctx.reconstructed += 1;
         }
         "Debugger" => {
@@ -1485,12 +1486,13 @@ fn lift_instruction_inner(
             let d: u32 = reg_of(ops.first());
             let builtin_id: u64 = uint_of(ops.get(1));
             let argc: u64 = uint_of(ops.get(2)).saturating_sub(1);
-            if super::builtins::is_template_object_builtin(builtin_id) {
+            let version: u32 = ctx.module.header.version;
+            if super::builtins::is_template_object_builtin(version, builtin_id) {
                 ctx.set_reg(d, "`${/* template */}`".to_owned());
                 ctx.reconstructed += 1;
                 return;
             }
-            let callee: String = super::builtins::builtin_name(builtin_id);
+            let callee: String = super::builtins::builtin_name(version, builtin_id);
             let args: String = unrecovered_arg_list(argc);
             ctx.set_reg(d, format!("{callee}({args})"));
             ctx.reconstructed += 1;
