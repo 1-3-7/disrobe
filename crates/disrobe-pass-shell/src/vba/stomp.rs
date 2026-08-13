@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use super::extract::{ExtractedProject, extract_from_bytes, vba_project_bin_from_bytes};
+use super::extract::{
+    ExtractedModule, ExtractedProject, extract_from_bytes, vba_project_bin_from_bytes,
+};
 use super::pcode_lift::{SemanticLift, semantic_lift};
 use super::pcode_real::{RealModuleDisasm, RealPCodeReport, disassemble_pcode_real};
 use crate::error::Result;
@@ -44,15 +46,14 @@ pub fn analyze_stomp_parts(project: &ExtractedProject, pcode: &RealPCodeReport) 
     let mut any_stomped: bool = false;
     let mut paired_source_names: BTreeSet<String> = BTreeSet::new();
     for module in &pcode.modules {
-        let source_text: Option<&str> = project
+        let paired: Option<&ExtractedModule> = project
             .modules
             .iter()
             .find(|m| names_match(&m.name, &module.name))
-            .map(|m| {
+            .inspect(|m| {
                 paired_source_names.insert(m.name.clone());
-                m.recovered_source.as_str()
             });
-        let report: ModuleStompReport = analyze_module(module, source_text);
+        let report: ModuleStompReport = analyze_module(module, paired);
         if report.verdict == StompVerdict::Stomped {
             any_stomped = true;
         }
@@ -201,9 +202,12 @@ fn string_literals(line: &str) -> Vec<String> {
     out
 }
 
+const KNOWN_CALLS: &[&str] = &["MsgBox", "Shell", "CreateObject", "GetObject", "WScript"];
+
 fn call_names(line: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(rest) = line.strip_prefix("Call ") {
+    let trimmed: &str = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("Call ") {
         let name: String = rest
             .trim_start()
             .chars()
@@ -213,9 +217,26 @@ fn call_names(line: &str) -> Vec<String> {
             out.push(last_segment(&name));
         }
     }
-    for known in ["MsgBox", "Shell", "CreateObject", "GetObject", "WScript"] {
-        if line.contains(known) {
-            out.push(known.to_owned());
+    if !trimmed.is_empty() && !trimmed.starts_with('\'') && !is_block_keyword_line(trimmed) {
+        let head: String = trimmed
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        if !head.is_empty() {
+            let after: &str = trimmed[head.len()..].trim_start();
+            let looks_call: bool = after.starts_with('(')
+                || after.starts_with('"')
+                || after.is_empty()
+                || after.starts_with(|c: char| c.is_alphanumeric());
+            let looks_assign: bool = after.starts_with('=') || trimmed.contains(" = ");
+            if looks_call && !looks_assign && !is_keyword(&head) {
+                out.push(last_segment(&head));
+            }
+        }
+    }
+    for known in KNOWN_CALLS {
+        if trimmed.contains(known) {
+            out.push((*known).to_owned());
         }
     }
     out
@@ -223,65 +244,6 @@ fn call_names(line: &str) -> Vec<String> {
 
 fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_owned()
-}
-
-#[derive(Debug, Default)]
-struct PCodeFacts {
-    procedures: BTreeSet<String>,
-    calls: BTreeSet<String>,
-    strings: BTreeSet<String>,
-}
-
-fn extract_pcode_facts(lift: &SemanticLift) -> PCodeFacts {
-    let mut facts: PCodeFacts = PCodeFacts::default();
-    for line in lift.pseudocode.lines() {
-        let trimmed: &str = line.trim();
-        if let Some(name) = procedure_name(trimmed) {
-            facts.procedures.insert(name);
-        }
-        for s in string_literals(trimmed) {
-            facts.strings.insert(s);
-        }
-        for c in pcode_call_names(trimmed) {
-            facts.calls.insert(c);
-        }
-    }
-    facts
-}
-
-fn pcode_call_names(line: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let trimmed: &str = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('\'') || is_block_keyword_line(trimmed) {
-        for known in ["MsgBox", "Shell", "CreateObject", "GetObject"] {
-            if trimmed.contains(known) {
-                out.push(known.to_owned());
-            }
-        }
-        return out;
-    }
-    let head: String = trimmed
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-        .collect();
-    if head.is_empty() {
-        return out;
-    }
-    let after: &str = trimmed[head.len()..].trim_start();
-    let looks_call: bool = after.starts_with('(')
-        || after.starts_with('"')
-        || after.is_empty()
-        || after.starts_with(|c: char| c.is_alphanumeric());
-    let looks_assign: bool = after.starts_with('=') || trimmed.contains(" = ");
-    if looks_call && !looks_assign && !is_keyword(&head) {
-        out.push(last_segment(&head));
-    }
-    for known in ["MsgBox", "Shell", "CreateObject", "GetObject"] {
-        if trimmed.contains(known) {
-            out.push(known.to_owned());
-        }
-    }
-    out
 }
 
 fn is_block_keyword_line(line: &str) -> bool {
@@ -326,10 +288,13 @@ fn is_keyword(word: &str) -> bool {
     KW.iter().any(|k| k.eq_ignore_ascii_case(word))
 }
 
-fn analyze_module(module: &RealModuleDisasm, source_text: Option<&str>) -> ModuleStompReport {
+fn analyze_module(
+    module: &RealModuleDisasm,
+    source_module: Option<&ExtractedModule>,
+) -> ModuleStompReport {
     let lift: SemanticLift = semantic_lift(module);
-    let pcode_facts: PCodeFacts = extract_pcode_facts(&lift);
-    let Some(source) = source_text else {
+    let pcode_facts: SourceFacts = extract_source_facts(&lift.pseudocode);
+    let Some(source_module) = source_module else {
         return ModuleStompReport {
             module: module.name.clone(),
             verdict: StompVerdict::PCodeOnly,
@@ -346,7 +311,7 @@ fn analyze_module(module: &RealModuleDisasm, source_text: Option<&str>) -> Modul
             evidence: vec!["compiled p-code present with no recoverable source stream".to_owned()],
         };
     };
-    let source_facts: SourceFacts = extract_source_facts(source);
+    let source_facts: SourceFacts = extract_source_facts(&source_module.recovered_source);
     let pcode_only_procedures: Vec<String> =
         difference_exact(&pcode_facts.procedures, &source_facts.procedures);
     let pcode_only_calls: Vec<String> = difference_exact(&pcode_facts.calls, &source_facts.calls);
@@ -356,6 +321,9 @@ fn analyze_module(module: &RealModuleDisasm, source_text: Option<&str>) -> Modul
         || !pcode_facts.calls.is_empty()
         || !pcode_facts.strings.is_empty();
     let mut evidence: Vec<String> = Vec::new();
+    if let Some(reason) = source_module.source_error.as_deref() {
+        evidence.push(format!("module source stream did not decode: {reason}"));
+    }
     if !pcode_only_procedures.is_empty() {
         evidence.push(format!(
             "p-code defines procedures absent from source: {}",
@@ -383,12 +351,14 @@ fn analyze_module(module: &RealModuleDisasm, source_text: Option<&str>) -> Modul
         || !source_facts.strings.is_empty();
     let structural_mismatch: bool =
         !pcode_only_procedures.is_empty() || !pcode_only_calls.is_empty();
-    let verdict: StompVerdict =
-        if pcode_has_behavior && (!source_has_behavior || structural_mismatch) {
-            StompVerdict::Stomped
-        } else {
-            StompVerdict::Consistent
-        };
+    let source_undecodable: bool = source_module.source_error.is_some();
+    let verdict: StompVerdict = if source_undecodable
+        || (pcode_has_behavior && (!source_has_behavior || structural_mismatch))
+    {
+        StompVerdict::Stomped
+    } else {
+        StompVerdict::Consistent
+    };
     if verdict == StompVerdict::Consistent {
         evidence
             .push("source and compiled p-code agree on procedures, calls, and strings".to_owned());
@@ -454,6 +424,26 @@ mod tests {
         }
     }
 
+    fn source_module(name: &str, text: &str) -> ExtractedModule {
+        ExtractedModule {
+            name: name.to_owned(),
+            raw_bytes_len: text.len(),
+            text_offset: Some(0),
+            recovered_source: text.to_owned(),
+            source_error: None,
+        }
+    }
+
+    fn undecodable_module(name: &str, reason: &str) -> ExtractedModule {
+        ExtractedModule {
+            name: name.to_owned(),
+            raw_bytes_len: 0,
+            text_offset: Some(0),
+            recovered_source: String::new(),
+            source_error: Some(reason.to_owned()),
+        }
+    }
+
     #[test]
     fn procedure_name_handles_modifiers() {
         assert_eq!(procedure_name("Public Sub Main()"), Some("Main".to_owned()));
@@ -484,9 +474,11 @@ mod tests {
                 line(2, "EndSub"),
             ],
         );
-        let source: &str =
-            "Attribute VB_Name = \"Module1\"\nSub Main()\n    MsgBox \"hello world\"\nEnd Sub\n";
-        let r: ModuleStompReport = analyze_module(&m, Some(source));
+        let source: ExtractedModule = source_module(
+            "Module1",
+            "Attribute VB_Name = \"Module1\"\nSub Main()\n    MsgBox \"hello world\"\nEnd Sub\n",
+        );
+        let r: ModuleStompReport = analyze_module(&m, Some(&source));
         assert_eq!(r.verdict, StompVerdict::Consistent, "report: {r:?}");
         assert!(r.pcode_only_strings.is_empty());
         assert!(r.pcode_only_calls.is_empty());
@@ -502,8 +494,8 @@ mod tests {
                 line(2, "EndSub"),
             ],
         );
-        let source: &str = "Attribute VB_Name = \"Module1\"\n";
-        let r: ModuleStompReport = analyze_module(&m, Some(source));
+        let source: ExtractedModule = source_module("Module1", "Attribute VB_Name = \"Module1\"\n");
+        let r: ModuleStompReport = analyze_module(&m, Some(&source));
         assert_eq!(r.verdict, StompVerdict::Stomped, "report: {r:?}");
         assert!(
             r.pcode_only_strings.contains(&"hello world".to_owned()),
@@ -523,12 +515,39 @@ mod tests {
                 line(2, "EndSub"),
             ],
         );
-        let source: &str =
-            "Attribute VB_Name = \"Module1\"\nSub Main()\n    MsgBox \"benign\"\nEnd Sub\n";
-        let r: ModuleStompReport = analyze_module(&m, Some(source));
+        let source: ExtractedModule = source_module(
+            "Module1",
+            "Attribute VB_Name = \"Module1\"\nSub Main()\n    MsgBox \"benign\"\nEnd Sub\n",
+        );
+        let r: ModuleStompReport = analyze_module(&m, Some(&source));
         assert_eq!(r.verdict, StompVerdict::Stomped, "report: {r:?}");
         assert!(r.pcode_only_calls.contains(&"Shell".to_owned()));
         assert!(r.pcode_only_strings.contains(&"cmd.exe".to_owned()));
+    }
+
+    #[test]
+    fn undecodable_source_stream_is_reported_as_a_stomp_with_its_reason() {
+        let m: RealModuleDisasm = module(
+            "Module1",
+            vec![
+                line(0, "FuncDefn func_00000000"),
+                line(1, "LitStr 0x000B \"hello world\"\nArgsCall MsgBox 0x0001"),
+                line(2, "EndSub"),
+            ],
+        );
+        let source: ExtractedModule =
+            undecodable_module("Module1", "MS-OVBA signature byte must be 0x01, got 0x53");
+        let r: ModuleStompReport = analyze_module(&m, Some(&source));
+        assert_eq!(r.verdict, StompVerdict::Stomped, "report: {r:?}");
+        assert!(
+            r.evidence.iter().any(
+                |e: &String| e.contains("module source stream did not decode")
+                    && e.contains("0x53")
+            ),
+            "the decode failure must be named in the evidence; evidence={:?}",
+            r.evidence
+        );
+        assert!(r.recovered_source.contains("MsgBox \"hello world\""));
     }
 
     #[test]

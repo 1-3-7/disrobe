@@ -13,6 +13,7 @@ pub struct ExtractedModule {
     pub raw_bytes_len: usize,
     pub text_offset: Option<usize>,
     pub recovered_source: String,
+    pub source_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +36,8 @@ const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ENTRY_RESERVE: usize = 4 * 1024 * 1024;
 const MAX_CFB_STREAM_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CFB_STREAM_RESERVE: usize = 4 * 1024 * 1024;
+const MAX_MODULE_REFS: usize = 512;
+const MAX_TOTAL_MODULE_STREAM_BYTES: u64 = 256 * 1024 * 1024;
 
 const REC_MODULENAME: u16 = 0x0019;
 const REC_MODULESTREAMNAME: u16 = 0x001A;
@@ -55,6 +58,7 @@ pub fn extract_from_bytes(data: &[u8]) -> Result<ExtractedProject> {
             raw_bytes_len: data.len(),
             text_offset: None,
             recovered_source: String::from_utf8_lossy(data).into_owned(),
+            source_error: None,
         }],
     })
 }
@@ -132,19 +136,45 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
         .map(|e: cfb::Entry| normalize_cfb_path(&e.path().display().to_string()))
         .collect();
     let module_refs: Vec<ModuleRef> = read_module_refs(&mut comp, &stream_paths);
+    if module_refs.len() > MAX_MODULE_REFS {
+        return Err(Error::VbaPcode {
+            reason: format!(
+                "VBA project declares {} modules, above the {MAX_MODULE_REFS}-module cap",
+                module_refs.len()
+            ),
+        });
+    }
     let mut modules: Vec<ExtractedModule> = Vec::new();
     if !module_refs.is_empty() {
+        let mut stream_budget: u64 = MAX_TOTAL_MODULE_STREAM_BYTES;
         for module_ref in &module_refs {
             let stream_path: String = locate_module_stream(&stream_paths, &module_ref.stream);
-            let Ok(buf): Result<Vec<u8>> = read_stream(&mut comp, &stream_path) else {
-                continue;
+            let read: Result<Vec<u8>> = read_stream(&mut comp, &stream_path);
+            let (buf, read_error): (Vec<u8>, Option<String>) = match read {
+                Ok(bytes) => (bytes, None),
+                Err(e) => (Vec::new(), Some(e.to_string())),
             };
-            let recovered: String = decompress_source_at(&buf, module_ref.text_offset)?;
+            let Some(remaining): Option<u64> = stream_budget.checked_sub(buf.len() as u64) else {
+                return Err(Error::VbaPcode {
+                    reason: format!(
+                        "VBA module streams exceed the {MAX_TOTAL_MODULE_STREAM_BYTES}-byte total cap"
+                    ),
+                });
+            };
+            stream_budget = remaining;
+            let (recovered, source_error): (String, Option<String>) = match read_error {
+                Some(reason) => (String::new(), Some(reason)),
+                None => match decompress_source_at(&buf, module_ref.text_offset) {
+                    Ok(text) => (text, None),
+                    Err(e) => (String::new(), Some(e.to_string())),
+                },
+            };
             modules.push(ExtractedModule {
                 name: module_ref.name.clone(),
                 raw_bytes_len: buf.len(),
                 text_offset: Some(module_ref.text_offset),
                 recovered_source: recovered,
+                source_error,
             });
         }
         return Ok(ExtractedProject {
@@ -152,21 +182,50 @@ fn extract_from_ole(data: &[u8]) -> Result<ExtractedProject> {
             modules,
         });
     }
+    let mut stream_budget: u64 = MAX_TOTAL_MODULE_STREAM_BYTES;
     for path in stream_paths {
         if !looks_like_vba_module(&path) {
             continue;
         }
-        let buf: Vec<u8> = read_stream(&mut comp, &path)?;
-        let recovered: String = decompress_ovba(&buf)
-            .ok()
-            .map(|bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_else(|| String::from_utf8_lossy(&buf).into_owned());
+        if modules.len() >= MAX_MODULE_REFS {
+            return Err(Error::VbaPcode {
+                reason: format!(
+                    "VBA container holds more than {MAX_MODULE_REFS} module-shaped streams"
+                ),
+            });
+        }
         let name: String = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let buf: Vec<u8> = match read_stream(&mut comp, &path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                modules.push(ExtractedModule {
+                    name,
+                    raw_bytes_len: 0,
+                    text_offset: None,
+                    recovered_source: String::new(),
+                    source_error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+        let Some(remaining): Option<u64> = stream_budget.checked_sub(buf.len() as u64) else {
+            return Err(Error::VbaPcode {
+                reason: format!(
+                    "VBA module streams exceed the {MAX_TOTAL_MODULE_STREAM_BYTES}-byte total cap"
+                ),
+            });
+        };
+        stream_budget = remaining;
+        let (recovered, source_error): (String, Option<String>) = match decompress_ovba(&buf) {
+            Ok(bytes) => (decode_mbcs(&bytes), None),
+            Err(e) => (String::new(), Some(e.to_string())),
+        };
         modules.push(ExtractedModule {
             name,
             raw_bytes_len: buf.len(),
             text_offset: None,
             recovered_source: recovered,
+            source_error,
         });
     }
     Ok(ExtractedProject {
@@ -273,6 +332,9 @@ fn parse_module_table(dir: &[u8]) -> Vec<ModuleRef> {
                         stream: stream_name,
                         text_offset,
                     });
+                    if modules.len() > MAX_MODULE_REFS {
+                        return modules;
+                    }
                 }
                 name = None;
                 stream = None;

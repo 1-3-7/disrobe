@@ -1081,68 +1081,81 @@ mod tests {
         );
     }
 
-    fn stomp_module1_source(raw: &[u8]) -> Option<Vec<u8>> {
+    fn stomp_module1_source(raw: &[u8], payload: &[u8]) -> Vec<u8> {
         use std::io::{Seek as _, SeekFrom, Write as _};
 
-        let project: crate::vba::ExtractedProject = crate::vba::extract_from_bytes(raw).ok()?;
+        let project: crate::vba::ExtractedProject =
+            crate::vba::extract_from_bytes(raw).expect("extract the clean project");
         let text_offset: usize = project
             .modules
             .iter()
             .find(|m: &&crate::vba::ExtractedModule| m.name.eq_ignore_ascii_case("Module1"))
-            .and_then(|m: &crate::vba::ExtractedModule| m.text_offset)?;
+            .and_then(|m: &crate::vba::ExtractedModule| m.text_offset)
+            .expect("Module1 carries a TextOffset");
         let cursor: std::io::Cursor<Vec<u8>> = std::io::Cursor::new(raw.to_vec());
         let mut comp: cfb::CompoundFile<std::io::Cursor<Vec<u8>>> =
-            cfb::CompoundFile::open(cursor).ok()?;
-        let mut stream: cfb::Stream<std::io::Cursor<Vec<u8>>> =
-            comp.open_stream("/VBA/Module1").ok()?;
-        let len: u64 = stream.len();
+            cfb::CompoundFile::open(cursor).expect("open the compound file");
+        let mut stream: cfb::Stream<std::io::Cursor<Vec<u8>>> = comp
+            .open_stream("/VBA/Module1")
+            .expect("open the Module1 stream");
         let source_start: u64 = text_offset as u64;
-        if source_start >= len {
-            return None;
-        }
-        let new_len: u64 = source_start.checked_add(1)?;
-        stream.seek(SeekFrom::Start(source_start)).ok()?;
-        stream.write_all(&[0x01]).ok()?;
-        stream.set_len(new_len).ok()?;
-        stream.flush().ok()?;
+        assert!(
+            source_start < stream.len(),
+            "TextOffset must sit inside the module stream"
+        );
+        stream
+            .seek(SeekFrom::Start(source_start))
+            .expect("seek to the source");
+        stream.write_all(payload).expect("write the stomp payload");
+        stream
+            .set_len(source_start + payload.len() as u64)
+            .expect("resize the module stream");
+        stream.flush().expect("flush the module stream");
         drop(stream);
-        Some(comp.into_inner().into_inner())
+        comp.into_inner().into_inner()
     }
 
     #[test]
     fn chain_stomped_vba_recovers_from_pcode_when_source_is_gone() {
-        let Some(raw): Option<Vec<u8>> = corpus_bytes("vba/vbaProject.bin") else {
-            eprintln!("SKIP: vbaProject.bin fixture missing");
-            return;
-        };
-        let Some(stomped): Option<Vec<u8>> = stomp_module1_source(&raw) else {
-            eprintln!("SKIP: could not synthesize a stomped Module1 source stream");
-            return;
-        };
-        let project: crate::vba::ExtractedProject =
-            crate::vba::extract_from_bytes(&stomped).expect("re-extract stomped project");
-        let module1_source_empty: bool = project
-            .modules
-            .iter()
-            .find(|m: &&crate::vba::ExtractedModule| m.name.eq_ignore_ascii_case("Module1"))
-            .is_none_or(|m: &crate::vba::ExtractedModule| m.recovered_source.trim().is_empty());
-        assert!(
-            module1_source_empty,
-            "stomp helper must leave Module1 source unrecoverable so the p-code fallback is exercised"
-        );
-        let chained: String = chain_recovered(&stomped);
-        assert!(
-            chained.contains("MsgBox") && chained.contains("hello world"),
-            "stomped VBA must recover MsgBox \"hello world\" from p-code on the chain; got {chained:?}"
-        );
-        let cli_equivalent: Vec<RecoveredVbaModule> = recover_vba_from_pcode(&stomped);
-        assert!(
-            !cli_equivalent.is_empty()
-                && cli_equivalent
-                    .iter()
-                    .any(|m: &RecoveredVbaModule| m.source.contains("MsgBox")),
-            "the shared p-code fallback the CLI uses must also recover the behavior"
-        );
+        let raw: Vec<u8> =
+            corpus_bytes("vba/vbaProject.bin").expect("committed vbaProject.bin fixture");
+        for (label, payload) in [
+            (
+                "source replaced with an empty compressed container",
+                &[0x01][..],
+            ),
+            (
+                "source overwritten with bytes that do not decompress",
+                b"STOMPED!",
+            ),
+            ("module stream truncated at the source", b""),
+        ] {
+            let stomped: Vec<u8> = stomp_module1_source(&raw, payload);
+            let project: crate::vba::ExtractedProject =
+                crate::vba::extract_from_bytes(&stomped).expect("re-extract stomped project");
+            let module1_source_empty: bool = project
+                .modules
+                .iter()
+                .find(|m: &&crate::vba::ExtractedModule| m.name.eq_ignore_ascii_case("Module1"))
+                .is_none_or(|m: &crate::vba::ExtractedModule| m.recovered_source.trim().is_empty());
+            assert!(
+                module1_source_empty,
+                "{label}: the stomp must leave Module1 source unrecoverable so the p-code fallback is exercised"
+            );
+            let chained: String = chain_recovered(&stomped);
+            assert!(
+                chained.contains("MsgBox") && chained.contains("hello world"),
+                "{label}: stomped VBA must recover MsgBox \"hello world\" from p-code on the chain; got {chained:?}"
+            );
+            let cli_equivalent: Vec<RecoveredVbaModule> = recover_vba_from_pcode(&stomped);
+            assert!(
+                !cli_equivalent.is_empty()
+                    && cli_equivalent
+                        .iter()
+                        .any(|m: &RecoveredVbaModule| m.source.contains("MsgBox")),
+                "{label}: the shared p-code fallback the CLI uses must also recover the behavior"
+            );
+        }
     }
 
     #[test]
