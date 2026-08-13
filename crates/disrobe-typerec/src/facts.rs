@@ -7,7 +7,8 @@ use crate::cfg::{self, Cfg};
 use crate::constraint::Constraint;
 use crate::decode::decode_all;
 use crate::lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
-use crate::memssa::{self, MemSsa};
+use crate::memssa::{self, CellAccess, MemSsa};
+use crate::region::{Region, RegionModel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotMode {
@@ -83,27 +84,37 @@ impl Extractor {
         }
     }
 
+    fn foreign_cell(&self) -> Option<TypeVar> {
+        let SlotResolver::Split(ssa) = &self.resolver else {
+            return None;
+        };
+        let access: CellAccess = ssa.access_at(self.current_ip)?;
+        (access.key.region != Region::Stack).then_some(access.cell)
+    }
+
+    fn memory_cell(&mut self, insn: &Instruction) -> Option<TypeVar> {
+        match rbp_slot_disp(insn) {
+            Some(rbp_disp) => self.slot_cell(rbp_disp),
+            None => self.foreign_cell(),
+        }
+    }
+
     fn operand_read_cell(&mut self, insn: &Instruction, op: u32) -> Option<TypeVar> {
         match insn.op_kind(op) {
             OpKind::Register => {
                 let reg: Register = insn.op_register(op);
                 reg.is_gpr().then(|| self.reg_use(reg))
             }
-            OpKind::Memory => {
-                rbp_slot_disp(insn).and_then(|rbp_disp: i64| self.slot_cell(rbp_disp))
-            }
+            OpKind::Memory => self.memory_cell(insn),
             _ => None,
         }
     }
 
     fn record_slot_width(&mut self, insn: &Instruction) {
-        let Some(rbp_disp): Option<i64> = rbp_slot_disp(insn) else {
-            return;
-        };
         let Some(width): Option<Width> = memory_width(insn) else {
             return;
         };
-        let Some(cell): Option<TypeVar> = self.slot_cell(rbp_disp) else {
+        let Some(cell): Option<TypeVar> = self.memory_cell(insn) else {
             return;
         };
         self.constraints
@@ -128,8 +139,7 @@ impl Extractor {
                 if !dst_reg.is_gpr() {
                     return;
                 }
-                let slot: Option<TypeVar> =
-                    rbp_slot_disp(insn).and_then(|rbp_disp: i64| self.slot_cell(rbp_disp));
+                let slot: Option<TypeVar> = self.memory_cell(insn);
                 let dst: TypeVar = self.reg_def(dst_reg);
                 if let Some(src) = slot {
                     self.constraints.push(Constraint::SignLink(dst, src));
@@ -140,11 +150,8 @@ impl Extractor {
                 if !src_reg.is_gpr() {
                     return;
                 }
-                let Some(rbp_disp): Option<i64> = rbp_slot_disp(insn) else {
-                    return;
-                };
                 let src: TypeVar = self.reg_use(src_reg);
-                let Some(slot): Option<TypeVar> = self.slot_cell(rbp_disp) else {
+                let Some(slot): Option<TypeVar> = self.memory_cell(insn) else {
                     return;
                 };
                 self.constraints.push(Constraint::SignLink(slot, src));
@@ -282,21 +289,25 @@ pub fn extract_split(bytes: &[u8], base: u64) -> FactSet {
 }
 
 pub(crate) fn extract_from(instrs: &[Instruction]) -> FactSet {
-    run(instrs, SlotMode::Merge)
+    run(instrs, SlotMode::Merge, &RegionModel::default())
 }
 
 pub(crate) fn extract_split_from(instrs: &[Instruction]) -> FactSet {
-    run(instrs, SlotMode::Split)
+    run(instrs, SlotMode::Split, &RegionModel::default())
 }
 
-fn run(instrs: &[Instruction], mode: SlotMode) -> FactSet {
+pub(crate) fn extract_split_with_model(instrs: &[Instruction], model: &RegionModel) -> FactSet {
+    run(instrs, SlotMode::Split, model)
+}
+
+fn run(instrs: &[Instruction], mode: SlotMode, model: &RegionModel) -> FactSet {
     let has_frame_pointer: bool = detects_frame_pointer(instrs);
     let (store, resolver): (CellStore, SlotResolver) = match mode {
         SlotMode::Merge => (CellStore::new(), SlotResolver::Merge(BTreeMap::new())),
         SlotMode::Split => {
             let cfg: Cfg = cfg::build(instrs);
             let mut store: CellStore = CellStore::new();
-            let ssa: MemSsa = memssa::build(instrs, &cfg, &mut store);
+            let ssa: MemSsa = memssa::build_with_model(instrs, &cfg, &mut store, model);
             (store, SlotResolver::Split(ssa))
         }
     };

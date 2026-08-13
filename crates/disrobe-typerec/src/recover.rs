@@ -6,9 +6,10 @@ use crate::abi::{self, RecoveredProto};
 use crate::cells::CellType;
 use crate::constraint::solve;
 use crate::decode::decode_all;
-use crate::facts::{FactSet, extract_from, extract_split_from};
+use crate::facts::{FactSet, extract_from, extract_split_with_model};
 use crate::lattice::{Sign, TypeVar, Width};
 use crate::memssa::VersionInfo;
+use crate::region::RegionModel;
 use crate::structrec::{self, RecoveredStruct};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,10 +168,19 @@ impl TypedFunction {
 
 #[must_use]
 pub fn recover_function(bytes: &[u8], base: u64) -> TypedFunction {
+    recover_function_with_regions(bytes, base, &RegionModel::default())
+}
+
+#[must_use]
+pub fn recover_function_with_regions(
+    bytes: &[u8],
+    base: u64,
+    model: &RegionModel,
+) -> TypedFunction {
     let instrs: Vec<Instruction> = decode_all(bytes, base);
     let (rbp_slots, has_frame_pointer): (BTreeMap<i64, RecoveredScalar>, bool) =
         recover_merge(&instrs);
-    let objects: Vec<RecoveredObject> = recover_split(&instrs);
+    let objects: Vec<RecoveredObject> = recover_split(&instrs, model);
     let structs: Vec<RecoveredStruct> = structrec::recover_structs_from(&instrs);
     let proto: RecoveredProto = abi::recover_proto_from(&instrs);
     TypedFunction {
@@ -198,8 +208,8 @@ fn recover_merge(instrs: &[Instruction]) -> (BTreeMap<i64, RecoveredScalar>, boo
     (rbp_slots, has_frame_pointer)
 }
 
-fn recover_split(instrs: &[Instruction]) -> Vec<RecoveredObject> {
-    let mut facts: FactSet = extract_split_from(instrs);
+fn recover_split(instrs: &[Instruction], model: &RegionModel) -> Vec<RecoveredObject> {
+    let mut facts: FactSet = extract_split_with_model(instrs, model);
     solve(&mut facts.store, &facts.constraints);
     let versions: Vec<VersionInfo> = facts.ssa.versions().to_vec();
     let mut objects: Vec<RecoveredObject> = Vec::new();

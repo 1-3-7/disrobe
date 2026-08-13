@@ -6,6 +6,7 @@ use object::{Object, ObjectSection};
 use crate::dwarf_location::{self, FrameBase, FrameSlot, LocationSurvey, PcRange, UnlocatedReason};
 use crate::error::{Result, TypeRecError};
 use crate::lattice::{Sign, Width};
+use crate::region::RegionModel;
 
 const MAX_UNITS: usize = 1 << 12;
 const MAX_DIE_VISITS: usize = 1 << 20;
@@ -110,6 +111,7 @@ pub struct DebugImage {
     pub text: Vec<u8>,
     pub functions: Vec<GroundTruthFunction>,
     pub locations: LocationSurvey,
+    pub regions: RegionModel,
 }
 
 impl DebugImage {
@@ -149,6 +151,7 @@ pub fn load(bytes: &[u8]) -> Result<DebugImage> {
         text,
         functions,
         locations,
+        regions: RegionModel::from_image(bytes),
     })
 }
 

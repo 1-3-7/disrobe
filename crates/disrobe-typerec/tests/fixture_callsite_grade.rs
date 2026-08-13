@@ -6,6 +6,7 @@ use disrobe_typerec::dwarf_gt::{self, DebugImage, GroundTruthFunction};
 use disrobe_typerec::grade::{self, ApiTypeGradeReport};
 use disrobe_typerec::import_map::ImportMap;
 use disrobe_typerec::lattice::{Sign, Width};
+use disrobe_typerec::region::RegionModel;
 use disrobe_typerec::sigdb::{Abi, SigDb};
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -31,6 +32,7 @@ fn stripped_input() -> (DebugImage, ImportMap) {
             text,
             functions: unstripped.functions,
             locations: unstripped.locations,
+            regions: RegionModel::from_image(&stripped_bytes),
         },
         imports,
     )

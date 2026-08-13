@@ -18,6 +18,7 @@ use disrobe_typerec::grade::{self, StructGradeReport};
 use disrobe_typerec::lattice::{TypeVar, Width};
 use disrobe_typerec::memssa;
 use disrobe_typerec::recover::TypedFunction;
+use disrobe_typerec::region::RegionModel;
 use disrobe_typerec::structrec::{AccessFlags, FieldNameTier, RecoveredField, RecoveredStruct};
 use iced_x86::{Decoder, DecoderOptions, Instruction, OpKind, Register};
 
@@ -42,8 +43,8 @@ fn fixture(name: &str) -> Vec<u8> {
 fn stripped_input() -> DebugImage {
     let unstripped: DebugImage =
         dwarf_gt::load(&fixture("struct_corpus.unstripped.exe")).expect("load unstripped");
-    let (base, text): (u64, Vec<u8>) =
-        dwarf_gt::load_text(&fixture("struct_corpus.stripped.exe")).expect("load stripped");
+    let stripped: Vec<u8> = fixture("struct_corpus.stripped.exe");
+    let (base, text): (u64, Vec<u8>) = dwarf_gt::load_text(&stripped).expect("load stripped");
     assert_eq!(base, unstripped.text_base, "text bases must match");
     assert_eq!(text, unstripped.text, "strip must not alter .text bytes");
     DebugImage {
@@ -51,6 +52,7 @@ fn stripped_input() -> DebugImage {
         text,
         functions: unstripped.functions,
         locations: unstripped.locations,
+        regions: RegionModel::from_image(&stripped),
     }
 }
 
@@ -384,9 +386,10 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
     else {
         panic!("freshly built indexed fixture must carry DWARF");
     };
-    let Some((base, text)): Option<(u64, Vec<u8>)> = std::fs::read(&stripped)
-        .ok()
-        .and_then(|bytes: Vec<u8>| dwarf_gt::load_text(&bytes).ok())
+    let Some(stripped_bytes): Option<Vec<u8>> = std::fs::read(&stripped).ok() else {
+        panic!("freshly stripped indexed fixture must be readable");
+    };
+    let Some((base, text)): Option<(u64, Vec<u8>)> = dwarf_gt::load_text(&stripped_bytes).ok()
     else {
         panic!("freshly stripped indexed fixture must expose .text");
     };
@@ -401,6 +404,7 @@ fn o2_indexed_stack_fixture_matches_dwarf_offsets_and_widths() {
         text,
         functions,
         locations,
+        regions: RegionModel::from_image(&stripped_bytes),
     };
     let Some(function): Option<dwarf_gt::GroundTruthFunction> = image
         .functions
@@ -508,6 +512,7 @@ fn recompiled_struct_corpus_reproduces_perfect_layout() {
         text,
         functions: ground_truth.functions,
         locations: ground_truth.locations,
+        regions: RegionModel::from_image(&stripped_bytes),
     };
     eprintln!("fresh struct reference: {}", image.locations);
     assert!(

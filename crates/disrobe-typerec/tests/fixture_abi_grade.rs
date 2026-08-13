@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use disrobe_typerec::abi::{Convention, RecoveredProto, ReturnKind};
 use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, SigGradeReport};
+use disrobe_typerec::region::RegionModel;
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -17,8 +18,8 @@ fn fixture(name: &str) -> Vec<u8> {
 fn stripped_input() -> DebugImage {
     let unstripped: DebugImage =
         dwarf_gt::load(&fixture("abi_corpus.unstripped.exe")).expect("load unstripped");
-    let (base, text): (u64, Vec<u8>) =
-        dwarf_gt::load_text(&fixture("abi_corpus.stripped.exe")).expect("load stripped");
+    let stripped: Vec<u8> = fixture("abi_corpus.stripped.exe");
+    let (base, text): (u64, Vec<u8>) = dwarf_gt::load_text(&stripped).expect("load stripped");
     assert_eq!(base, unstripped.text_base, "text bases must match");
     assert_eq!(text, unstripped.text, "strip must not alter .text bytes");
     DebugImage {
@@ -26,6 +27,7 @@ fn stripped_input() -> DebugImage {
         text,
         functions: unstripped.functions,
         locations: unstripped.locations,
+        regions: RegionModel::from_image(&stripped),
     }
 }
 

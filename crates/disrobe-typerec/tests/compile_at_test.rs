@@ -12,6 +12,7 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_typerec::dwarf_gt::{self, DebugImage, GroundTruthFunction};
 use disrobe_typerec::dwarf_location::{LocationSurvey, UnlocatedReason};
 use disrobe_typerec::grade::{self, GradeReport};
+use disrobe_typerec::region::RegionModel;
 
 #[path = "support/cc_toolchain.rs"]
 #[allow(
@@ -150,6 +151,7 @@ fn build_and_load(
         text,
         functions: ground_truth.functions,
         locations: ground_truth.locations,
+        regions: RegionModel::from_image(&stripped_bytes),
     }
 }
 

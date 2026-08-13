@@ -39,9 +39,12 @@ pub use grade::{
 };
 pub use import_map::{ImportFormat, ImportMap, ImportRef, ImportSource, ImportSymbol};
 pub use lattice::{Confidence, Sign, TypeClass, TypeVar, Width};
-pub use memssa::{MemSsa, VersionInfo};
-pub use recover::{CIntType, RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
-pub use region::{MemoryAccess, Region, RegionModel, may_alias};
+pub use memssa::{CellAccess, MemSsa, VersionInfo};
+pub use recover::{
+    CIntType, RecoveredObject, RecoveredScalar, TypedFunction, recover_function,
+    recover_function_with_regions,
+};
+pub use region::{CellKey, Locator, MemoryAccess, Region, RegionModel, may_alias};
 pub use sigdb::{Abi, Param, ParamDir, PointerTy, Prototype, ReturnSemantics, SigDb, SigKey, Ty};
 pub use structrec::{
     AccessFlags, FieldNameTier, ParamClass, RecoveredField, RecoveredStruct, recover_structs,

@@ -5,6 +5,7 @@ use disrobe_typerec::dwarf_gt::{self, DebugImage};
 use disrobe_typerec::grade::{self, GradeReport};
 use disrobe_typerec::lattice::{Sign, Width};
 use disrobe_typerec::recover::{RecoveredScalar, TypedFunction};
+use disrobe_typerec::region::RegionModel;
 
 fn fixture(name: &str) -> Vec<u8> {
     let mut path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -17,13 +18,14 @@ fn fixture(name: &str) -> Vec<u8> {
 fn stripped_input() -> DebugImage {
     let unstripped: DebugImage =
         dwarf_gt::load(&fixture("types_corpus.unstripped.exe")).expect("load unstripped");
-    let (base, text): (u64, Vec<u8>) =
-        dwarf_gt::load_text(&fixture("types_corpus.stripped.exe")).expect("load stripped");
+    let stripped: Vec<u8> = fixture("types_corpus.stripped.exe");
+    let (base, text): (u64, Vec<u8>) = dwarf_gt::load_text(&stripped).expect("load stripped");
     DebugImage {
         text_base: base,
         text,
         functions: unstripped.functions,
         locations: unstripped.locations,
+        regions: RegionModel::from_image(&stripped),
     }
 }
 

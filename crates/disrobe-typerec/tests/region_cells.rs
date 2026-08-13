@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use disrobe_typerec::CellStore;
 use disrobe_typerec::cfg::{self, Cfg};
 use disrobe_typerec::decode::decode_all;
+use disrobe_typerec::dwarf_gt::{self, DebugImage};
+use disrobe_typerec::grade::{self, GradeReport};
 use disrobe_typerec::import_map::ImportMap;
 use disrobe_typerec::lattice::TypeVar;
 use disrobe_typerec::memssa::{self, CellAccess, MemSsa};
@@ -359,6 +361,46 @@ fn every_region_the_function_touches_reaches_memory_ssa() {
     assert!(
         !conflated.is_disjoint(&global_cells),
         "a store through an unclassified pointer must conservatively reach every foreign region",
+    );
+}
+
+#[test]
+fn the_debug_image_carries_its_region_model_into_recovery() {
+    let bytes: Vec<u8> = fixture("region_corpus.unstripped.elf");
+    let names: BTreeMap<String, u64> = symbol_addresses(&bytes);
+    let image: DebugImage = dwarf_gt::load(&bytes).expect("load region corpus");
+    assert_eq!(
+        image
+            .regions
+            .region_of(ground_truth_address(&names, "g_counter")),
+        Region::Global,
+        "the loaded image must carry the seeded region model",
+    );
+
+    let report: GradeReport = grade::grade_image(&image);
+    eprintln!(
+        "region corpus O0: total={} mapped={} width correct={}/{} sign predicted={} correct={}",
+        report.total_vars,
+        report.mapped_vars,
+        report.width.correct,
+        report.width.predicted,
+        report.sign.predicted,
+        report.sign.correct,
+    );
+    assert_eq!(report.total_vars, 3, "committed corpus variable count");
+    assert_eq!(
+        report.mapped_vars, report.total_vars,
+        "every declared variable must map to a recovered slot",
+    );
+    assert!(
+        report.width_mismatches.is_empty(),
+        "no width may be wrong: {:?}",
+        report.width_mismatches,
+    );
+    assert!(
+        report.sign_mismatches.is_empty(),
+        "no signedness may be wrong: {:?}",
+        report.sign_mismatches,
     );
 }
 

@@ -8,7 +8,9 @@ use crate::dwarf_gt::{
 };
 use crate::import_map::ImportMap;
 use crate::lattice::Width;
-use crate::recover::{RecoveredObject, RecoveredScalar, TypedFunction, recover_function};
+use crate::recover::{
+    RecoveredObject, RecoveredScalar, TypedFunction, recover_function_with_regions,
+};
 use crate::sigdb::{Abi, SigDb};
 use crate::structrec::{FieldNameTier, RecoveredField, RecoveredStruct};
 
@@ -98,7 +100,9 @@ pub fn recover_image(image: &DebugImage) -> Vec<TypedFunction> {
         .map(|function: &GroundTruthFunction| {
             image
                 .function_bytes(function)
-                .map(|bytes: &[u8]| recover_function(bytes, function.low_pc))
+                .map(|bytes: &[u8]| {
+                    recover_function_with_regions(bytes, function.low_pc, &image.regions)
+                })
                 .unwrap_or_default()
         })
         .collect()
