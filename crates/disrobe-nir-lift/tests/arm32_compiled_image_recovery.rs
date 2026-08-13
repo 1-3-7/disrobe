@@ -6,9 +6,9 @@ use disrobe_nir::{
     HirFunction, NirFunction, NirInstr, NirOp, SurfaceFunction, ValueOp, emit_pseudo_source,
     structurize_function, surfacify_function,
 };
-use disrobe_nir_lift::{ArchLift, PcodeArch, lower_arm32};
+use disrobe_nir_lift::{ArchLift, LiftError, LiftGaps, PcodeArch, block_gaps, lower_arm32};
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language};
-use disrobe_sleigh::pcode::PcodeInstr;
+use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
 
 const A32_ORACLE_TEXT: &[u8] =
     include_bytes!("../../disrobe-sleigh/tests/corpus/arm32_a32_oracle_o2.text");
@@ -108,13 +108,15 @@ fn lift(label: &str, mode: ArmMode, text: &[u8]) -> ArchLift {
         .unwrap_or_else(|error| panic!("{label} must lift: {error}"))
 }
 
-fn decoded_addresses(label: &str, mode: ArmMode, text: &[u8]) -> Vec<u64> {
+fn decode(label: &str, mode: ArmMode, text: &[u8]) -> DecodedBlock {
     let arch: PcodeArch = PcodeArch::for_language(Language::Arm32(mode))
         .unwrap_or_else(|| panic!("{label} must resolve through the architecture table"));
-    let block: DecodedBlock = arch
-        .decode(text, IMAGE_BASE)
-        .unwrap_or_else(|error| panic!("{label} must decode: {error}"));
-    block
+    arch.decode(text, IMAGE_BASE)
+        .unwrap_or_else(|error| panic!("{label} must decode: {error}"))
+}
+
+fn decoded_addresses(label: &str, mode: ArmMode, text: &[u8]) -> Vec<u64> {
+    decode(label, mode, text)
         .instructions
         .iter()
         .map(|instruction: &PcodeInstr| instruction.address)
@@ -244,6 +246,92 @@ fn a_program_counter_read_carries_the_pipeline_bias_its_mode_defines() {
         assert!(
             !words.contains("0x1000"),
             "{label} must not read the program counter as the instruction address: {words:?}"
+        );
+    }
+}
+
+#[test]
+fn a_stream_that_ends_mid_instruction_names_its_tail_instead_of_dropping_it() {
+    for (label, mode, bytes, tail) in [
+        (
+            "a32-half-word-tail",
+            ArmMode::A32,
+            [0x1e, 0xff, 0x2f, 0xe1, 0x00, 0x00].as_slice(),
+            2_usize,
+        ),
+        ("a32-only-a-tail", ArmMode::A32, [0xe1].as_slice(), 1),
+        (
+            "thumb-half-of-a-wide-instruction",
+            ArmMode::Thumb,
+            [0x78, 0x46, 0x41, 0xf2].as_slice(),
+            2,
+        ),
+        ("thumb-odd-length", ArmMode::Thumb, [0x46].as_slice(), 1),
+    ] {
+        let block: DecodedBlock = decode(label, mode, bytes);
+        assert_eq!(
+            block.consumed,
+            bytes.len(),
+            "{label} must account for every byte it was given"
+        );
+        let last: &PcodeInstr = block
+            .instructions
+            .last()
+            .unwrap_or_else(|| panic!("{label} must still split into instruction slots"));
+        assert_eq!(
+            last.length, tail,
+            "{label} must end on a slot holding exactly the undecodable tail"
+        );
+        assert_eq!(
+            last.status,
+            DecodeStatus::Truncated,
+            "{label} must name its tail as truncated rather than claim it decoded"
+        );
+        let gaps: LiftGaps = block_gaps(&block);
+        assert!(
+            gaps.total() >= 1,
+            "{label} must report the tail it could not decode"
+        );
+        let refusal: LiftError = lower_arm32(bytes, IMAGE_BASE, "recovered", mode)
+            .expect_err("a machine instruction without semantics is refused, not guessed");
+        assert!(
+            matches!(refusal, LiftError::InvalidPcode { .. }),
+            "{label} must refuse with a typed p-code error, got {refusal}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_encoding_becomes_a_gap_without_costing_its_neighbours() {
+    let bytes: [u8; 8] = [0xff, 0xff, 0xff, 0xf7, 0x1e, 0xff, 0x2f, 0xe1];
+    let lifted: ArchLift = lift("a32-unknown-word", ArmMode::A32, &bytes);
+    assert_eq!(lifted.consumed, bytes.len());
+    assert_eq!(
+        lifted.gaps.total(),
+        1,
+        "one undecodable word is one gap: {:?}",
+        lifted.gaps.mnemonics()
+    );
+    assert!(
+        lifted
+            .function
+            .instructions
+            .iter()
+            .any(|instruction: &NirInstr| matches!(instruction.op, NirOp::Return)),
+        "the word after the gap must still recover: {:?}",
+        lifted.function.instructions
+    );
+}
+
+#[test]
+fn lifting_the_same_image_twice_produces_the_same_function() {
+    for image in &COMPILED_IMAGES {
+        let first: ArchLift = lift(image.label, image.mode, image.text);
+        let second: ArchLift = lift(image.label, image.mode, image.text);
+        assert_eq!(
+            first, second,
+            "{} must lower deterministically",
+            image.label
         );
     }
 }
