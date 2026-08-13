@@ -765,6 +765,49 @@ mod tests {
     }
 
     #[test]
+    fn a_v3_plain_pointer_keeps_every_bit_of_its_43_bit_address_field() {
+        let (target, auth): (u64, Option<PointerAuth>) = decode_v3(0x0000_07FF_FFFF_FFFF, 0);
+        assert_eq!(
+            target, 0x0000_07FF_FFFF_FFFF,
+            "a narrower address mask would drop the top bit of the 43-bit field"
+        );
+        assert!(auth.is_none());
+    }
+
+    #[test]
+    fn a_v3_authenticated_pointer_keeps_every_bit_of_its_32_bit_cache_offset() {
+        let (target, auth): (u64, Option<PointerAuth>) =
+            decode_v3(0x8000_0000_FFFF_FFFF, 0x1_8000_0000);
+        assert_eq!(
+            target, 0x2_7FFF_FFFF,
+            "a narrower offset mask would drop the top bit of the 32-bit cache offset"
+        );
+        let auth: PointerAuth = auth.expect("bit 63 marks an authenticated pointer");
+        assert_eq!(auth.diversity, 0);
+        assert_eq!(auth.key, 0);
+    }
+
+    #[test]
+    fn a_v5_pointer_keeps_every_bit_of_its_34_bit_runtime_offset() {
+        let (regular, regular_auth): (u64, Option<PointerAuth>) =
+            decode_v5(0x0000_0002_ABCD_1234, 0x1_8000_0000);
+        assert_eq!(
+            regular, 0x4_2BCD_1234,
+            "a narrower runtime-offset mask would drop bit 33 of the offset"
+        );
+        assert!(regular_auth.is_none());
+        let (authed, auth): (u64, Option<PointerAuth>) =
+            decode_v5(0x8000_0003_FFFF_FFFF, 0x1_8000_0000);
+        assert_eq!(
+            authed, 0x5_7FFF_FFFF,
+            "the widest 34-bit runtime offset must survive an authenticated decode"
+        );
+        let auth: PointerAuth = auth.expect("bit 63 marks an authenticated pointer");
+        assert_eq!(auth.diversity, 0);
+        assert!(!auth.address_diversity);
+    }
+
+    #[test]
     fn v5_authenticated_pointer_reports_the_data_key() {
         let (target, auth): (u64, Option<PointerAuth>) =
             decode_v5(0x800E_AF34_0000_1234, 0x1_8000_0000);
