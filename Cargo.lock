@@ -2415,6 +2415,7 @@ name = "disrobe-pass-nativelang"
 version = "0.10.5"
 dependencies = [
  "blake3",
+ "disrobe-bytes",
  "disrobe-core",
  "disrobe-nir",
  "disrobe-pass-native",

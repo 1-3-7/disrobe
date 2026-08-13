@@ -349,11 +349,48 @@ fn match_outer_brace_escaped(s: &str) -> Option<usize> {
 
 #[must_use]
 pub fn parse_lua_string_literals(body: &str) -> Vec<String> {
+    parse_lua_string_literals_inner(body, None).literals
+}
+
+pub(crate) struct LuaStringLiteralLimitExceeded {
+    pub count: usize,
+    pub limit: usize,
+}
+
+pub(crate) fn parse_lua_string_literals_bounded(
+    body: &str,
+    max_entries: usize,
+) -> core::result::Result<Vec<String>, LuaStringLiteralLimitExceeded> {
+    let parsed: ParsedLuaStringLiterals = parse_lua_string_literals_inner(body, Some(max_entries));
+    match parsed.limit_exceeded_at {
+        Some(count) => Err(LuaStringLiteralLimitExceeded {
+            count,
+            limit: max_entries,
+        }),
+        None => Ok(parsed.literals),
+    }
+}
+
+struct ParsedLuaStringLiterals {
+    literals: Vec<String>,
+    limit_exceeded_at: Option<usize>,
+}
+
+fn parse_lua_string_literals_inner(
+    body: &str,
+    max_entries: Option<usize>,
+) -> ParsedLuaStringLiterals {
     let bytes: &[u8] = body.as_bytes();
     let mut out: Vec<String> = Vec::new();
     let mut i: usize = 0;
     while i < bytes.len() {
         if bytes[i] == b'"' {
+            if max_entries.is_some_and(|limit: usize| out.len() >= limit) {
+                return ParsedLuaStringLiterals {
+                    limit_exceeded_at: Some(out.len().saturating_add(1)),
+                    literals: out,
+                };
+            }
             let mut s: String = String::new();
             i += 1;
             while i < bytes.len() && bytes[i] != b'"' {
@@ -385,7 +422,10 @@ pub fn parse_lua_string_literals(body: &str) -> Vec<String> {
         }
         i += 1;
     }
-    out
+    ParsedLuaStringLiterals {
+        literals: out,
+        limit_exceeded_at: None,
+    }
 }
 
 #[must_use]

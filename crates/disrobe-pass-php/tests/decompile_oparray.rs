@@ -199,6 +199,8 @@ fn every_opcode_constant_is_named_with_its_zend_mnemonic_in_this_table() {
     assert_eq!(opcode_name(op::RETURN), "ZEND_RETURN");
     assert_eq!(opcode_name(op::INIT_FCALL), "ZEND_INIT_FCALL");
     assert_eq!(opcode_name(op::FE_FETCH_R), "ZEND_FE_FETCH_R");
+    assert_eq!(opcode_name(op::YIELD_FROM), "ZEND_YIELD_FROM");
+    assert_eq!(opcode_name(op::GENERATOR_CREATE), "ZEND_GENERATOR_CREATE");
 }
 
 #[test]
@@ -237,6 +239,155 @@ fn rejects_bad_magic_and_truncation_without_panic() {
     short.push(K_MAIN);
     let err3 = parse_oparray(&short).expect_err("truncated body");
     assert!(format!("{err3}").contains("DR-PHP-0092"), "{err3}");
+}
+
+#[test]
+fn generator_yield_forms_recover_as_php_expressions() {
+    let mut generator: OpArrayBuilder = OpArrayBuilder::function("values", 1);
+    generator.var("items");
+    generator.var("received");
+    let label: u32 = generator.lit_str("label");
+    generator.op(op::YIELD, T_CONST, T_UNUSED, T_UNUSED, label, 0, 0, 0, 2);
+    generator.op(op::YIELD, T_CV, T_CONST, T_TMP, 0, label, 4, 0, 3);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 4, 0, 0, 3);
+    generator.op(op::YIELD_FROM, T_CV, T_UNUSED, T_TMP, 0, 0, 5, 0, 4);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 5, 0, 0, 4);
+    generator.op(
+        op::GENERATOR_RETURN,
+        T_CV,
+        T_UNUSED,
+        T_UNUSED,
+        1,
+        0,
+        0,
+        0,
+        5,
+    );
+
+    let parsed: disrobe_pass_php::OpArray =
+        parse_oparray(&generator.build_container()).expect("parse generator op array");
+    let recovered: Decompilation = decompile_oparray(&parsed);
+
+    assert!(
+        recovered.php_skeleton.contains("yield 'label';"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$received = yield 'label' => $items;"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$received = yield from $items;"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert!(
+        recovered.php_skeleton.contains("return $received;"),
+        "{}",
+        recovered.php_skeleton
+    );
+}
+
+#[test]
+fn reused_temporary_before_yield_does_not_consume_the_yield_result() {
+    let mut generator: OpArrayBuilder = OpArrayBuilder::function("values", 0);
+    let value: u32 = generator.lit_str("value");
+    generator.op(op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP, value, 0, 7, 0, 2);
+    generator.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 7, 0, 0, 0, 2);
+    generator.op(op::YIELD, T_CONST, T_UNUSED, T_TMP, value, 0, 7, 0, 3);
+    generator.op(op::FREE, T_TMP, T_UNUSED, T_UNUSED, 7, 0, 0, 0, 3);
+    generator.op(
+        op::GENERATOR_RETURN,
+        T_UNUSED,
+        T_UNUSED,
+        T_UNUSED,
+        0,
+        0,
+        0,
+        0,
+        4,
+    );
+
+    let parsed: disrobe_pass_php::OpArray =
+        parse_oparray(&generator.build_container()).expect("parse reused temporary op array");
+    let recovered: Decompilation = decompile_oparray(&parsed);
+
+    assert!(
+        recovered.php_skeleton.contains("yield 'value';"),
+        "{}",
+        recovered.php_skeleton
+    );
+}
+
+#[test]
+fn multiply_consumed_yield_result_is_spilled_once() {
+    let mut generator: OpArrayBuilder = OpArrayBuilder::function("values", 0);
+    generator.var("_disrobe_yield_0");
+    generator.var("first");
+    generator.var("second");
+    generator.var("items");
+    let value: u32 = generator.lit_str("token");
+    generator.op(op::YIELD, T_CONST, T_UNUSED, T_TMP, value, 0, 4, 0, 2);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 4, 0, 0, 3);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 2, 4, 0, 0, 4);
+    generator.op(op::YIELD_FROM, T_CV, T_UNUSED, T_TMP, 3, 0, 5, 0, 5);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 5, 0, 0, 6);
+    generator.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 2, 5, 0, 0, 7);
+    generator.op(
+        op::GENERATOR_RETURN,
+        T_UNUSED,
+        T_UNUSED,
+        T_UNUSED,
+        0,
+        0,
+        0,
+        0,
+        8,
+    );
+
+    let parsed: disrobe_pass_php::OpArray =
+        parse_oparray(&generator.build_container()).expect("parse shared yield result op array");
+    let recovered: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(recovered.php_skeleton.matches("yield 'token'").count(), 1);
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$_disrobe_yield_0_1 = yield 'token';"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$first = $_disrobe_yield_0_1;"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$second = $_disrobe_yield_0_1;"),
+        "{}",
+        recovered.php_skeleton
+    );
+    assert_eq!(
+        recovered.php_skeleton.matches("yield from $items").count(),
+        1
+    );
+    assert!(
+        recovered
+            .php_skeleton
+            .contains("$_disrobe_yield_3 = yield from $items;"),
+        "{}",
+        recovered.php_skeleton
+    );
 }
 
 #[test]

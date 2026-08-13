@@ -35,32 +35,35 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 8] = [
+const PINNED_SAMPLES: [&str; 9] = [
     "arithmetic",
     "closures",
     "control_flow",
     "do_while",
     "functions",
+    "generators",
     "keyed_foreach",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 6] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 7] = [
     "arithmetic",
     "control_flow",
     "do_while",
     "functions",
+    "generators",
     "keyed_foreach",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 8] = [
+const OPCODE_NAMING_SAMPLES: [&str; 9] = [
     "arithmetic",
     "closures",
     "control_flow",
     "do_while",
     "functions",
+    "generators",
     "keyed_foreach",
     "variable_variable",
     "versioned",
@@ -275,6 +278,13 @@ fn behavioral_roundtrip(sample: &str) {
     }
 
     let bytes: Vec<u8> = std::fs::read(&dzoa).expect("read dzoa");
+    if sample == "generators" {
+        assert_eq!(
+            bytes,
+            include_bytes!("fixtures/oparray_generator/generators.dzoa"),
+            "the committed generator op array must reproduce byte-for-byte from its tracked PHP source and emitter"
+        );
+    }
     let parsed = parse_oparray(&bytes).expect("disrobe parse real op_array");
     let decomp: Decompilation = decompile_oparray(&parsed);
     let recovered_source: &str = &decomp.php_skeleton;
@@ -375,6 +385,11 @@ fn control_flow_oparray_roundtrips_behaviorally() {
 #[test]
 fn functions_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("functions");
+}
+
+#[test]
+fn generator_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("generators");
 }
 
 #[test]

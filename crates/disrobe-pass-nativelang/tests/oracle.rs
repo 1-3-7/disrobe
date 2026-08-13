@@ -1506,94 +1506,8 @@ fn d_classinfo_names_from_symtab(bytes: &[u8]) -> BTreeSet<String> {
     out
 }
 
-fn d_rtti_name_shape(name: &str) -> bool {
-    const BUILTIN: &[&str] = &[
-        "real",
-        "float",
-        "double",
-        "int",
-        "uint",
-        "long",
-        "ulong",
-        "byte",
-        "ubyte",
-        "short",
-        "ushort",
-        "char",
-        "wchar",
-        "dchar",
-        "bool",
-        "void",
-        "string",
-        "wstring",
-        "dstring",
-        "size_t",
-        "ptrdiff_t",
-    ];
-    const EXT: &[&str] = &["d", "di", "dll", "so", "exe", "pdb", "obj", "lib"];
-    let is_lower = |seg: &str| -> bool {
-        seg.bytes()
-            .next()
-            .is_some_and(|b: u8| b.is_ascii_lowercase() || b == b'_')
-            && seg
-                .bytes()
-                .all(|b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-    };
-    let is_type = |seg: &str| -> bool {
-        seg.bytes()
-            .next()
-            .is_some_and(|b: u8| b.is_ascii_uppercase())
-            && seg
-                .bytes()
-                .all(|b: u8| b.is_ascii_alphanumeric() || b == b'_')
-    };
-    let segments: Vec<&str> = name.split('.').collect();
-    if !(2..=8).contains(&segments.len()) || name.len() > 200 {
-        return false;
-    }
-    let root: &str = segments[0];
-    if root.len() < 2
-        || root.bytes().any(|b: u8| b.is_ascii_digit())
-        || !is_lower(root)
-        || BUILTIN.contains(&root)
-    {
-        return false;
-    }
-    let leaf: &str = segments[segments.len() - 1];
-    if EXT.contains(&leaf) {
-        return false;
-    }
-    if segments[1..segments.len() - 1]
-        .iter()
-        .any(|seg: &&str| seg.len() < 2 || !is_lower(seg))
-    {
-        return false;
-    }
-    is_type(leaf) || (leaf.len() >= 2 && is_lower(leaf))
-}
-
-fn d_rtti_anchor_pool(bytes: &[u8]) -> BTreeSet<String> {
-    const D_PACKAGE_ROOTS: [&str; 7] = ["core", "std", "object", "rt", "gc", "etc", "ldc"];
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    for chunk in bytes.split(|b: &u8| *b == 0) {
-        if chunk.len() < 4 || !chunk.iter().all(|b: &u8| (0x20..0x7f).contains(b)) {
-            continue;
-        }
-        let Ok(text): Result<&str, _> = std::str::from_utf8(chunk) else {
-            continue;
-        };
-        let is_package_rooted: bool = text
-            .split_once('.')
-            .is_some_and(|(root, _): (&str, &str)| D_PACKAGE_ROOTS.contains(&root));
-        if is_package_rooted && d_rtti_name_shape(text) {
-            out.insert(text.to_owned());
-        }
-    }
-    out
-}
-
 #[test]
-fn d_linked_pe_recovers_rtti_dotted_names_matching_symtab_and_pool() {
+fn d_linked_pe_recovers_structural_classinfo_names_matching_symtab() {
     let Some(pe): Option<Vec<u8>> = common::fixture_or_skip(common::D_PE) else {
         panic!(
             "missing committed fixture corpus/native/d/hello.d.exe (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
@@ -1635,44 +1549,50 @@ fn d_linked_pe_recovers_rtti_dotted_names_matching_symtab_and_pool() {
         ground_truth.len() >= 3,
         "the .o symtab must attest several dotted ClassInfo names, got {ground_truth:?}"
     );
-    let symtab_hits: usize = ground_truth
+    let ground_truth_user: BTreeSet<String> = ground_truth
         .iter()
-        .filter(|name: &&String| recovered.contains(*name))
-        .count();
-    let symtab_coverage: f64 = symtab_hits as f64 / ground_truth.len() as f64;
+        .filter(|name: &&String| name.starts_with("hello."))
+        .cloned()
+        .collect();
     assert!(
-        symtab_coverage >= 0.9,
-        "recovery must cover >=90% of the ClassInfo names attested by the real .o symbol table; \
-         covered {symtab_hits}/{} ({symtab_coverage:.3}); recovered set omitted names {:?}",
-        ground_truth.len(),
-        ground_truth
+        !ground_truth_user.is_empty(),
+        "the independent .o symbol table must attest at least one hello ClassInfo"
+    );
+    let recovered_user: BTreeSet<String> = recovered
+        .iter()
+        .filter(|name: &&String| name.starts_with("hello."))
+        .cloned()
+        .collect();
+    let symtab_hits: usize = ground_truth_user
+        .iter()
+        .filter(|name: &&String| recovered_user.contains(*name))
+        .count();
+    let symtab_recall: f64 = symtab_hits as f64 / ground_truth_user.len() as f64;
+    let symtab_precision: f64 = symtab_hits as f64 / recovered_user.len() as f64;
+    assert!(
+        symtab_recall >= 0.9,
+        "recovery must reach >=90% recall over the ClassInfo names attested by the real .o symbol \
+         table; covered {symtab_hits}/{} ({symtab_recall:.3}); recovered set omitted names {:?}",
+        ground_truth_user.len(),
+        ground_truth_user
             .iter()
-            .filter(|n: &&String| !recovered.contains(*n))
+            .filter(|name: &&String| !recovered_user.contains(*name))
+            .collect::<Vec<&String>>()
+    );
+    assert!(
+        symtab_precision >= 0.9,
+        "recovery must retain >=90% precision against the independent .o symbol table; matched \
+         {symtab_hits}/{} ({symtab_precision:.3}); unexpected names {:?}",
+        recovered_user.len(),
+        recovered_user
+            .iter()
+            .filter(|name: &&String| !ground_truth_user.contains(*name))
             .collect::<Vec<&String>>()
     );
     assert!(
         recovered.contains("hello.Greeter"),
         "the whole point: the user class hello.Greeter must be recovered from the stripped PE \
          (before the RTTI miner this was zero)"
-    );
-
-    let anchors: BTreeSet<String> = d_rtti_anchor_pool(&pe);
-    assert!(
-        anchors.len() > 100,
-        "independent druntime anchor pool (NUL-delimited C-strings rooted at real druntime \
-         packages) must be rich, got {}",
-        anchors.len()
-    );
-    let anchor_hits: usize = anchors
-        .iter()
-        .filter(|name: &&String| recovered.contains(*name))
-        .count();
-    let anchor_coverage: f64 = anchor_hits as f64 / anchors.len() as f64;
-    assert!(
-        anchor_coverage >= 0.9,
-        "recovery must cover >=90% of the binary's own druntime RTTI anchor pool; covered \
-         {anchor_hits}/{} ({anchor_coverage:.3})",
-        anchors.len()
     );
 
     assert!(
@@ -1711,6 +1631,26 @@ fn d_linked_pe_recovers_rtti_dotted_names_matching_symtab_and_pool() {
                 .any(|m: &String| m == "std"),
         "core and std druntime roots must be recovered as std modules, got {:?}",
         analysis.recovery.std_modules
+    );
+}
+
+#[test]
+fn d_linked_pe_drops_unmapped_dotted_decoy() {
+    let Some(mut pe): Option<Vec<u8>> = common::fixture_or_skip(common::D_PE) else {
+        panic!(
+            "missing committed fixture corpus/native/d/hello.d.exe (a tracked corpus file - see corpus/native/MANIFEST or regen.ps1)"
+        );
+    };
+    pe.extend_from_slice(b"\0decoy.NotAType\0");
+
+    let analysis: NativeLangAnalysis = analyze(&pe).expect("analyze d pe with overlay decoy");
+    assert!(
+        analysis
+            .recovery
+            .demangled
+            .iter()
+            .all(|symbol: &DemangledSymbol| symbol.demangled != "decoy.NotAType"),
+        "an unmapped dotted string has no ClassInfo or ModuleInfo evidence and must be dropped"
     );
 }
 

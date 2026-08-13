@@ -8,6 +8,7 @@ use disrobe_pass_php::chain_detector::{PHP_PASS, PhpDetectorImpl};
 use disrobe_pass_php::{PhpKind, detect_php};
 
 const HELLO_DZOA: &[u8] = include_bytes!("fixtures/protector_oparray/hello.dzoa");
+const GENERATOR_DZOA: &[u8] = include_bytes!("fixtures/oparray_generator/generators.dzoa");
 
 const fn context(bytes: &[u8]) -> DetectContext<'_> {
     DetectContext {
@@ -53,6 +54,26 @@ fn registered_pass_rejects_a_truncated_oparray_with_the_parser_code() {
         error.to_string().contains("DR-PHP-0092"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn registered_pass_recovers_generator_yield_and_delegation() {
+    let verdict: DetectVerdict = Detector::detect(&PhpDetectorImpl, &context(GENERATOR_DZOA))
+        .expect("the registered PHP detector must recognize the generator op array");
+    assert_eq!(verdict.pass_id, "php.peel");
+    assert_eq!(verdict.format_tag, "php-oparray");
+
+    let input: Artifact = Artifact::new(Rung::Raw, GENERATOR_DZOA.to_vec(), [0x73; 32]);
+    let output: Artifact = PHP_PASS
+        .run(&input)
+        .expect("the registered pass must recover the generator op array");
+    let source: &str =
+        std::str::from_utf8(&output.envelope).expect("recovered source must be UTF-8");
+
+    assert_eq!(output.rung, Rung::Surface);
+    assert!(source.contains("yield 'first';"), "{source}");
+    assert!(source.contains("yield 'label' => 'keyed';"), "{source}");
+    assert!(source.contains("yield from $items;"), "{source}");
 }
 
 #[test]

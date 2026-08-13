@@ -627,6 +627,48 @@ const CORPUS: &[(&str, &str)] = &[
 const PROMETHEUS_VMIFY_CLEAN: &str = include_str!("../../../corpus/lua/prometheus/vmify/clean.lua");
 const PROMETHEUS_VMIFY_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify/obfuscated.lua");
+const PROMETHEUS_WEAK_CLEAN: &str = include_str!("../../../corpus/lua/prometheus/weak/clean.lua");
+const PROMETHEUS_WEAK_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/weak/obfuscated.lua");
+
+#[test]
+fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_WEAK_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on the tracked Weak preset fixture");
+    assert!(
+        peeled
+            .passes_run
+            .iter()
+            .any(|pass: &String| pass == "prometheus-vmify-container-devirt"),
+        "the pinned Weak-equivalent order must reach Vmify recovery after ConstantArray and WrapInFunction; passes={:?}, residual={:?}",
+        peeled.passes_run,
+        peeled.residual_markers
+    );
+
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_weak_clean",
+        PROMETHEUS_WEAK_CLEAN,
+    )
+    .expect("the tracked clean Weak-preset input must run under real Lua 5.1");
+    let actual: String = run_source(&tc.lua, &dir, "prometheus_weak_recovered", &recovered_src)
+        .expect("the recovered Weak-preset source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "Weak-preset recovery must preserve runtime output under real Lua 5.1"
+    );
+}
 
 #[test]
 fn prometheus_vmify_recovers_and_reexecutes_identically_to_the_original() {

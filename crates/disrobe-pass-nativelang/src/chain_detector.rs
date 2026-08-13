@@ -395,6 +395,25 @@ mod tests {
     }
 
     #[test]
+    fn pass_run_surfaces_structural_d_rtti_names() {
+        let Some(bytes): Option<Vec<u8>> = read_fixture("d/hello.d.exe") else {
+            eprintln!("SKIP: d corpus fixture missing");
+            return;
+        };
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let output: Artifact = NATIVELANG_PASS.run(&artifact).expect("d run must succeed");
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.envelope).expect("report must be valid json");
+        let symbols: &[serde_json::Value] = report["demangled_symbols"]
+            .as_array()
+            .map(Vec::as_slice)
+            .expect("report must expose recovered symbol records");
+        assert!(symbols.iter().any(|symbol: &serde_json::Value| {
+            symbol["demangled"].as_str() == Some("hello.Greeter")
+        }));
+    }
+
+    #[test]
     fn catalog_lists_all_four_languages_with_partial_quality() {
         let entries: Vec<&'static dyn CatalogEntry> =
             ObfuscatorCatalog::catalog(&NativeLangDetector);

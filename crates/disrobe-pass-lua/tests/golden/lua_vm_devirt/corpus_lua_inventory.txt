@@ -36,3 +36,6 @@ prometheus/vmify_nested/clean.lua
 prometheus/vmify_nested/obfuscated.lua
 prometheus/vmify_simple/clean.lua
 prometheus/vmify_simple/obfuscated.lua
+prometheus/weak/clean.lua
+prometheus/weak/config.lua
+prometheus/weak/obfuscated.lua

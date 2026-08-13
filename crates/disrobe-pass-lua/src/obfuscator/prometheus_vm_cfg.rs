@@ -9,7 +9,7 @@ use crate::debug::{dbg_kv, dbg_section};
 use crate::error::{Error, Result};
 use crate::obfuscator::prometheus_vm_ast::{
     AssignTarget, BinOp, Block, Expr, ExprKind, LocalId, Parser, Span, Stat, StatKind, TableField,
-    Var,
+    UnOp, Var,
 };
 
 const MAX_DISPATCH_DEPTH: u32 = 96;
@@ -17,6 +17,7 @@ const MAX_FUNCTION_BLOCKS: usize = 1 << 14;
 const MAX_FUNCTIONS: usize = 1 << 10;
 const MAX_REACHABILITY_STEPS: usize = 1 << 18;
 const MAX_RECOVERY_DEPTH: usize = 6;
+const MAX_CONSTANT_POOL_RESOLVERS: usize = 8;
 
 fn refuse(reason: &str) -> Error {
     Error::PrometheusVmifyRefused(reason.to_owned())
@@ -238,26 +239,192 @@ fn walk_exprs_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-fn collect_locals_used(block: &Block, out: &mut BTreeSet<LocalId>) {
-    let mut exprs: Vec<&Expr> = Vec::new();
-    walk_exprs(block, &mut exprs);
-    for e in exprs {
-        if let ExprKind::Var(Var::Local(id)) = &e.kind {
+fn collect_expr_locals(expr: &Expr, subst: &BTreeMap<u64, String>, out: &mut BTreeSet<LocalId>) {
+    if subst.contains_key(&span_key(expr.span)) {
+        return;
+    }
+    match &expr.kind {
+        ExprKind::Var(Var::Local(id)) => {
             out.insert(*id);
         }
-    }
-    for stat in &block.stats {
-        if let StatKind::Assign { targets, .. } = &stat.kind {
-            for t in targets {
-                if let AssignTarget::Var(Var::Local(id), _) = t {
-                    out.insert(*id);
+        ExprKind::Index(base, key) => {
+            collect_expr_locals(base, subst, out);
+            collect_expr_locals(key, subst, out);
+        }
+        ExprKind::Call { base, args } => {
+            collect_expr_locals(base, subst, out);
+            for argument in args {
+                collect_expr_locals(argument, subst, out);
+            }
+        }
+        ExprKind::MethodCall { base, args, .. } => {
+            collect_expr_locals(base, subst, out);
+            for argument in args {
+                collect_expr_locals(argument, subst, out);
+            }
+        }
+        ExprKind::Function { body, .. } => collect_block_locals(body, subst, out),
+        ExprKind::Table(fields) => {
+            for field in fields {
+                match field {
+                    TableField::Positional(value) | TableField::Named(_, value) => {
+                        collect_expr_locals(value, subst, out);
+                    }
+                    TableField::Indexed(key, value) => {
+                        collect_expr_locals(key, subst, out);
+                        collect_expr_locals(value, subst, out);
+                    }
                 }
             }
         }
-        if let StatKind::Local { targets, .. } = &stat.kind {
-            for id in targets {
-                out.insert(*id);
+        ExprKind::Binary(_, left, right) => {
+            collect_expr_locals(left, subst, out);
+            collect_expr_locals(right, subst, out);
+        }
+        ExprKind::Unary(_, inner) | ExprKind::Paren(inner) => {
+            collect_expr_locals(inner, subst, out);
+        }
+        ExprKind::Nil
+        | ExprKind::True
+        | ExprKind::False
+        | ExprKind::Vararg
+        | ExprKind::Number(_)
+        | ExprKind::Str
+        | ExprKind::Var(Var::Global(_)) => {}
+    }
+}
+
+fn collect_target_locals(
+    target: &AssignTarget,
+    subst: &BTreeMap<u64, String>,
+    out: &mut BTreeSet<LocalId>,
+) {
+    match target {
+        AssignTarget::Var(Var::Local(id), _) => {
+            out.insert(*id);
+        }
+        AssignTarget::Var(Var::Global(_), _) => {}
+        AssignTarget::Index(base, key, _) => {
+            collect_expr_locals(base, subst, out);
+            collect_expr_locals(key, subst, out);
+        }
+    }
+}
+
+fn collect_stat_locals(stat: &Stat, subst: &BTreeMap<u64, String>, out: &mut BTreeSet<LocalId>) {
+    match &stat.kind {
+        StatKind::Local { targets, values } => {
+            out.extend(targets.iter().copied());
+            for value in values {
+                collect_expr_locals(value, subst, out);
             }
+        }
+        StatKind::Assign { targets, values } => {
+            for target in targets {
+                collect_target_locals(target, subst, out);
+            }
+            for value in values {
+                collect_expr_locals(value, subst, out);
+            }
+        }
+        StatKind::ExprStat(expr) => collect_expr_locals(expr, subst, out),
+        StatKind::Do(block) => collect_block_locals(block, subst, out),
+        StatKind::While { cond, body } | StatKind::Repeat { body, cond } => {
+            collect_expr_locals(cond, subst, out);
+            collect_block_locals(body, subst, out);
+        }
+        StatKind::If { arms, else_body } => {
+            for (condition, body) in arms {
+                collect_expr_locals(condition, subst, out);
+                collect_block_locals(body, subst, out);
+            }
+            if let Some(body) = else_body {
+                collect_block_locals(body, subst, out);
+            }
+        }
+        StatKind::NumericFor {
+            var,
+            start,
+            stop,
+            step,
+            body,
+        } => {
+            out.insert(*var);
+            collect_expr_locals(start, subst, out);
+            collect_expr_locals(stop, subst, out);
+            if let Some(step) = step {
+                collect_expr_locals(step, subst, out);
+            }
+            collect_block_locals(body, subst, out);
+        }
+        StatKind::GenericFor { vars, exprs, body } => {
+            out.extend(vars.iter().copied());
+            for expr in exprs {
+                collect_expr_locals(expr, subst, out);
+            }
+            collect_block_locals(body, subst, out);
+        }
+        StatKind::Return(values) => {
+            for value in values {
+                collect_expr_locals(value, subst, out);
+            }
+        }
+        StatKind::Break => {}
+    }
+}
+
+fn collect_block_locals(block: &Block, subst: &BTreeMap<u64, String>, out: &mut BTreeSet<LocalId>) {
+    for stat in &block.stats {
+        collect_stat_locals(stat, subst, out);
+    }
+}
+
+fn collect_rendered_locals(
+    leaf: &Block,
+    pos_local: LocalId,
+    return_local: LocalId,
+    plan: &LeafPlan,
+    captures: &BTreeMap<u64, String>,
+    subst: &BTreeMap<u64, String>,
+    out: &mut BTreeSet<LocalId>,
+) {
+    for stat in &leaf.stats {
+        if captures.contains_key(&span_key(stat.span)) {
+            if let StatKind::Assign { values, .. } = &stat.kind {
+                for value in values {
+                    collect_expr_locals(value, subst, out);
+                }
+            } else {
+                collect_stat_locals(stat, subst, out);
+            }
+            continue;
+        }
+        if plan.numeric_chain_spans.contains(&stat.span) {
+            continue;
+        }
+        let StatKind::Assign { targets, values } = &stat.kind else {
+            collect_stat_locals(stat, subst, out);
+            continue;
+        };
+        for (target, value) in targets.iter().zip(values.iter()) {
+            let target_local: Option<LocalId> = match target {
+                AssignTarget::Var(Var::Local(id), _) => Some(*id),
+                _ => None,
+            };
+            let strips_pos: bool = (stat.span == plan.pos_terminal_span
+                || Some(stat.span) == plan.pos_chain_span)
+                && target_local == Some(pos_local);
+            let strips_return: bool =
+                Some(stat.span) == plan.return_span && target_local == Some(return_local);
+            if strips_pos {
+                continue;
+            }
+            if strips_return {
+                collect_expr_locals(value, subst, out);
+                continue;
+            }
+            collect_target_locals(target, subst, out);
+            collect_expr_locals(value, subst, out);
         }
     }
 }
@@ -630,11 +797,29 @@ fn last_target_value(stats: &[Stat], target: LocalId) -> Option<&Expr> {
     nth_last_target_value(stats, target, 0)
 }
 
-fn is_exit_shape(rhs: &Expr) -> bool {
-    matches!(&rhs.kind, ExprKind::Index(_, key) if matches!(key.kind, ExprKind::Str))
+fn is_exit_shape(rhs: &Expr, substitutions: &BTreeMap<u64, String>) -> bool {
+    matches!(
+        &rhs.kind,
+        ExprKind::Index(_, key)
+            if matches!(key.kind, ExprKind::Str)
+                || substitutions.contains_key(&span_key(key.span))
+    )
 }
 
-fn find_return_local(dispatch_root: &Block, pos_local: LocalId) -> Result<LocalId> {
+fn static_number_value(expr: &Expr) -> Option<f64> {
+    match &expr.kind {
+        ExprKind::Number(value) => Some(*value),
+        ExprKind::Unary(UnOp::Neg, inner) => static_number_value(inner).map(|value: f64| -value),
+        ExprKind::Paren(inner) => static_number_value(inner),
+        _ => None,
+    }
+}
+
+fn find_return_local(
+    dispatch_root: &Block,
+    pos_local: LocalId,
+    substitutions: &BTreeMap<u64, String>,
+) -> Result<LocalId> {
     let mut leaves: Vec<&Block> = Vec::new();
     collect_all_leaves(dispatch_root, pos_local, &mut leaves, 0)?;
     let mut votes: BTreeMap<LocalId, usize> = BTreeMap::new();
@@ -643,7 +828,7 @@ fn find_return_local(dispatch_root: &Block, pos_local: LocalId) -> Result<LocalI
         let Some(pos_rhs) = last_target_value(&leaf.stats, pos_local) else {
             continue;
         };
-        if !is_exit_shape(pos_rhs) {
+        if !is_exit_shape(pos_rhs, substitutions) {
             continue;
         }
         exit_leaves_seen += 1;
@@ -826,11 +1011,12 @@ fn expr_contains_local_decl(expr: &Expr) -> bool {
     }
 }
 
-fn terminal_transfer(
-    leaf: &Block,
+fn terminal_transfer<'a>(
+    leaf: &'a Block,
     pos_local: LocalId,
     return_local: LocalId,
-) -> Result<(Transfer<'_>, LeafPlan)> {
+    substitutions: &BTreeMap<u64, String>,
+) -> Result<(Transfer<'a>, LeafPlan)> {
     if contains_local_decl_anywhere(leaf) {
         return Err(refuse(
             "a reachable leaf carries a real local declaration, directly or inside a nested closure it builds; this is the shape of a nested Vmify layer's own bootstrap code and is not yet peeled through a second recognizer pass",
@@ -903,7 +1089,7 @@ fn terminal_transfer(
                 },
             ))
         }
-        _ if is_exit_shape(rhs) => {
+        _ if is_exit_shape(rhs, substitutions) => {
             let return_span: Option<Span> =
                 nth_last_target_stmt(&leaf.stats, return_local, 0).map(|(s, _): (Span, &Expr)| s);
             Ok((
@@ -1043,7 +1229,7 @@ fn recover_function(
         visited.insert(key, leaf);
         order.push(key);
         let (transfer, _plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local)?;
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst)?;
         match transfer {
             Transfer::Return => {}
             Transfer::Goto(n) => pending.push(n),
@@ -1092,7 +1278,7 @@ fn recover_function(
         let node_id: u32 = node_of[&key];
         leaf_of_node[node_id as usize] = leaf;
         let (transfer, plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local)?;
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst)?;
         let term: Terminator = match transfer {
             Transfer::Return => Terminator::Return,
             Transfer::Goto(n) => {
@@ -1200,8 +1386,16 @@ fn recover_function(
     let outcome: Option<CnsOutcome> = structure_with_cns(&cfg, budget);
 
     let mut used_locals: BTreeSet<LocalId> = BTreeSet::new();
-    for leaf in &leaf_of_node {
-        collect_locals_used(leaf, &mut used_locals);
+    for (leaf, plan) in leaf_of_node.iter().zip(&plan_of_node) {
+        collect_rendered_locals(
+            leaf,
+            ctx.pos_local,
+            ctx.return_local,
+            plan,
+            &captures,
+            subst,
+            &mut used_locals,
+        );
     }
     used_locals.remove(&ctx.args_local);
 
@@ -1653,7 +1847,157 @@ fn render_dispatch_fallback(
     out
 }
 
+fn pool_resolver_shape(expr: &Expr, pool_locals: &BTreeSet<LocalId>) -> Option<f64> {
+    let ExprKind::Function {
+        params,
+        is_vararg,
+        body,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if *is_vararg || params.len() != 1 {
+        return None;
+    }
+    let [stat]: &[Stat] = body.stats.as_slice() else {
+        return None;
+    };
+    let StatKind::Return(values) = &stat.kind else {
+        return None;
+    };
+    let [value]: &[Expr] = values.as_slice() else {
+        return None;
+    };
+    let ExprKind::Index(base, key) = &value.kind else {
+        return None;
+    };
+    if !matches!(&base.kind, ExprKind::Var(Var::Local(id)) if pool_locals.contains(id)) {
+        return None;
+    }
+    match &key.kind {
+        ExprKind::Binary(BinOp::Add, left, right) if is_bare_local(left, params[0]) => {
+            static_number_value(right)
+        }
+        ExprKind::Binary(BinOp::Add, left, right) if is_bare_local(right, params[0]) => {
+            static_number_value(left)
+        }
+        ExprKind::Binary(BinOp::Sub, left, right) if is_bare_local(left, params[0]) => {
+            static_number_value(right).map(|value: f64| -value)
+        }
+        _ => None,
+    }
+}
+
+fn constant_pool_substitutions(
+    text: &str,
+    chunk: &Block,
+    all_exprs: &[&Expr],
+    function_exprs: &[&Expr],
+    strings: &[String],
+    resolved_entries: &[bool],
+    pool_binding: Option<&str>,
+) -> Result<BTreeMap<u64, String>> {
+    let mut substitutions: BTreeMap<u64, String> = BTreeMap::new();
+    let Some(pool_binding): Option<&str> = pool_binding else {
+        return Ok(substitutions);
+    };
+    if strings.is_empty() {
+        return Ok(substitutions);
+    }
+    if strings.len() != resolved_entries.len() {
+        return Err(refuse(
+            "the recovered string pool and resolution mask have different lengths",
+        ));
+    }
+    let marker: String = format!("local {pool_binding}={{");
+    let Some(table_start): Option<usize> = text
+        .find(&marker)
+        .and_then(|start: usize| start.checked_add(marker.len() - 1))
+    else {
+        return Ok(substitutions);
+    };
+    let pool_locals: BTreeSet<LocalId> = all_exprs
+        .iter()
+        .filter_map(|expr: &&Expr| {
+            let ExprKind::Table(fields) = &expr.kind else {
+                return None;
+            };
+            if expr.span.start as usize == table_start && fields.len() == strings.len() {
+                find_local_binding(chunk, expr.span)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut resolvers: BTreeMap<LocalId, f64> = BTreeMap::new();
+    let mut resolver_shapes: usize = 0;
+    for expr in function_exprs {
+        let Some(offset): Option<f64> = pool_resolver_shape(expr, &pool_locals) else {
+            continue;
+        };
+        resolver_shapes += 1;
+        if resolver_shapes > MAX_CONSTANT_POOL_RESOLVERS {
+            return Err(refuse(
+                "the ConstantArray resolver count exceeds the recovery budget",
+            ));
+        }
+        let Some(local): Option<LocalId> = find_local_binding(chunk, expr.span) else {
+            continue;
+        };
+        resolvers.insert(local, offset);
+    }
+    let mut replacement_bytes: usize = 0;
+    for expr in all_exprs {
+        let ExprKind::Call { base, args } = &expr.kind else {
+            continue;
+        };
+        let ExprKind::Var(Var::Local(resolver)) = &base.kind else {
+            continue;
+        };
+        let Some(offset): Option<&f64> = resolvers.get(resolver) else {
+            continue;
+        };
+        let [argument]: &[Expr] = args.as_slice() else {
+            continue;
+        };
+        let Some(argument): Option<f64> = static_number_value(argument) else {
+            continue;
+        };
+        let one_based: f64 = argument + offset;
+        if !one_based.is_finite() || one_based.fract() != 0.0 || one_based < 1.0 {
+            return Err(refuse("a static ConstantArray lookup has an invalid index"));
+        }
+        let index: usize = one_based as usize;
+        let value: &String = strings.get(index - 1).ok_or_else(|| {
+            refuse("a static ConstantArray lookup exceeds the recovered string pool")
+        })?;
+        if !resolved_entries[index - 1] {
+            continue;
+        }
+        let replacement: String = crate::decompile::lift::quote_lua_string(value);
+        replacement_bytes = replacement_bytes
+            .checked_add(replacement.len())
+            .ok_or_else(|| refuse("ConstantArray substitutions exceed the output byte budget"))?;
+        if replacement_bytes > crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES {
+            return Err(refuse(
+                "ConstantArray substitutions exceed the output byte budget",
+            ));
+        }
+        substitutions.insert(span_key(expr.span), replacement);
+    }
+    Ok(substitutions)
+}
+
 pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
+    recover_with_string_pool(text, &[], &[], None)
+}
+
+pub fn recover_with_string_pool(
+    text: &str,
+    strings: &[String],
+    resolved_entries: &[bool],
+    pool_binding: Option<&str>,
+) -> Result<Option<VmifyRecovery>> {
     dbg_section("lua.prometheus_vmify.recover");
     if text.len() > crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES {
         return Err(refuse("source exceeds the Vmify recovery byte budget"));
@@ -1668,6 +2012,15 @@ pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
         .copied()
         .filter(|e: &&Expr| matches!(e.kind, ExprKind::Function { .. }))
         .collect();
+    let mut subst: BTreeMap<u64, String> = constant_pool_substitutions(
+        text,
+        &chunk,
+        &all_exprs,
+        &function_exprs,
+        strings,
+        resolved_entries,
+        pool_binding,
+    )?;
 
     let mut containers: Vec<ContainerShape<'_>> = function_exprs
         .iter()
@@ -1708,7 +2061,8 @@ pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
     dbg_kv("prometheus_vmify.creation_calls", || {
         all_creation_calls.len().to_string()
     });
-    let return_local: LocalId = find_return_local(container.dispatch_root, container.pos_local)?;
+    let return_local: LocalId =
+        find_return_local(container.dispatch_root, container.pos_local, &subst)?;
     dbg_kv("prometheus_vmify.pos_local", || {
         container.pos_local.to_string()
     });
@@ -1737,7 +2091,6 @@ pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
     };
 
     let top_entry: f64 = find_top_level_entry(&ctx)?;
-    let mut subst: BTreeMap<u64, String> = BTreeMap::new();
     let mut stats: GlobalStats = GlobalStats::default();
     let recovered: RecoveredFunction =
         recover_function(&ctx, top_entry, 0, &mut subst, &mut stats)?;
@@ -1766,7 +2119,9 @@ pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
     let mut targeted: BTreeSet<u64> = BTreeSet::new();
     let mut unclassified_leaves: usize = 0;
     for leaf in &all_leaves {
-        let Ok((transfer, _plan)) = terminal_transfer(leaf, ctx.pos_local, ctx.return_local) else {
+        let Ok((transfer, _plan)) =
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, &subst)
+        else {
             if !leaf.stats.is_empty() {
                 unclassified_leaves += 1;
             }
@@ -1868,6 +2223,106 @@ pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn constant_pool_substitutions_for(
+        source: &str,
+        strings: &[String],
+        resolved_entries: &[bool],
+        binding: Option<&str>,
+    ) -> Result<BTreeMap<u64, String>> {
+        let mut parser: Parser<'_> = Parser::new(source)?;
+        let chunk: Block = parser.parse_chunk()?;
+        let mut expressions: Vec<&Expr> = Vec::new();
+        walk_exprs(&chunk, &mut expressions);
+        let functions: Vec<&Expr> = expressions
+            .iter()
+            .copied()
+            .filter(|expression: &&Expr| matches!(expression.kind, ExprKind::Function { .. }))
+            .collect();
+        constant_pool_substitutions(
+            source,
+            &chunk,
+            &expressions,
+            &functions,
+            strings,
+            resolved_entries,
+            binding,
+        )
+    }
+
+    #[test]
+    fn substitutes_only_exact_static_constant_pool_resolvers() {
+        let source: &str = concat!(
+            "local pool={\"encoded-a\", \"encoded-b\"}\n",
+            "local resolve = function(index) return pool[index + 2] end\n",
+            "local value = resolve(-1)\n",
+        );
+        let strings: Vec<String> = vec!["first".to_owned(), "second".to_owned()];
+        let resolved_entries: Vec<bool> = vec![true, true];
+        let substitutions: BTreeMap<u64, String> =
+            constant_pool_substitutions_for(source, &strings, &resolved_entries, Some("pool"))
+                .expect("substitute");
+        assert_eq!(
+            substitutions
+                .values()
+                .map(String::as_str)
+                .collect::<Vec<&str>>(),
+            vec!["\"first\""]
+        );
+
+        let wrong_binding: BTreeMap<u64, String> =
+            constant_pool_substitutions_for(source, &strings, &resolved_entries, Some("other"))
+                .expect("reject unrelated pool");
+        assert!(wrong_binding.is_empty());
+
+        let unresolved: Vec<bool> = vec![false, true];
+        let unresolved_substitutions: BTreeMap<u64, String> =
+            constant_pool_substitutions_for(source, &strings, &unresolved, Some("pool"))
+                .expect("skip unresolved entry");
+        assert!(unresolved_substitutions.is_empty());
+
+        let mismatched: Error =
+            constant_pool_substitutions_for(source, &strings, &[true], Some("pool"))
+                .expect_err("mismatched resolution metadata must refuse recovery");
+        assert!(mismatched.to_string().contains("different lengths"));
+    }
+
+    #[test]
+    fn refuses_out_of_range_static_constant_pool_lookups() {
+        let source: &str = concat!(
+            "local pool={\"encoded-a\", \"encoded-b\"}\n",
+            "local resolve = function(index) return pool[index + 2] end\n",
+            "local value = resolve(8)\n",
+        );
+        let strings: Vec<String> = vec!["first".to_owned(), "second".to_owned()];
+        let resolved_entries: Vec<bool> = vec![true, true];
+        let error: Error =
+            constant_pool_substitutions_for(source, &strings, &resolved_entries, Some("pool"))
+                .expect_err("out-of-range lookup must refuse recovery");
+        assert!(
+            error
+                .to_string()
+                .contains("exceeds the recovered string pool")
+        );
+
+        let output_source: &str = concat!(
+            "local pool={\"encoded-a\", \"encoded-b\"}\n",
+            "local resolve = function(index) return pool[index + 2] end\n",
+            "local value = resolve(-1)\n",
+        );
+        let oversized_strings: Vec<String> = vec![
+            "a".repeat(crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES),
+            "second".to_owned(),
+        ];
+        let oversized: Error = constant_pool_substitutions_for(
+            output_source,
+            &oversized_strings,
+            &resolved_entries,
+            Some("pool"),
+        )
+        .expect_err("oversized substitutions must refuse recovery");
+        assert!(oversized.to_string().contains("output byte budget"));
+    }
 
     #[test]
     fn non_vmify_source_yields_no_recovery() {

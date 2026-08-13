@@ -2,6 +2,7 @@ use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
 
 use crate::NativeLangAnalysis;
+use crate::demangle::DemangledSymbol;
 use crate::disasm::DisasmListing;
 use crate::dwarf::DwarfAggregate;
 use crate::dwarf_types::{ReconstructedTypeReport, SourceGrade};
@@ -27,6 +28,8 @@ pub struct NativeLangPassReport {
     pub disasm: DisasmListing,
     pub nir: NirModule,
     pub demangled_count: u32,
+    #[serde(default)]
+    pub demangled_symbols: Vec<DemangledSymbol>,
     pub user_module_count: u32,
     pub std_symbol_count: u32,
     pub gc_kind: Option<String>,
@@ -67,6 +70,7 @@ pub fn build_report(source_path: String, analysis: NativeLangAnalysis) -> Native
         disasm: analysis.disasm,
         nir: analysis.nir,
         demangled_count: u32::try_from(analysis.recovery.demangled.len()).unwrap_or(u32::MAX),
+        demangled_symbols: analysis.recovery.demangled,
         user_module_count: u32::try_from(analysis.recovery.user_modules.len()).unwrap_or(u32::MAX),
         std_symbol_count: u32::try_from(analysis.recovery.std_symbol_count).unwrap_or(u32::MAX),
         gc_kind: analysis.recovery.gc.gc_kind,

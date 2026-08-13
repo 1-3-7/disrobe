@@ -160,6 +160,15 @@ generator = "levno-710/Prometheus@HEAD cli.lua --preset Weak --Lua51"
 input = "megafile/edge_cases.lua"
 
 [[obfuscators.fixtures]]
+path = "prometheus/weak/obfuscated.lua"
+kind = "lua-source-obfuscated"
+size_bytes = 3829
+sha256 = "0f5b58358e495cd1bb9d79d3c34f7e584a1181c1d06ee911b71d4c0a7561f45b"
+generator = 'levno-710/Prometheus@a4efc5f381c50ae2a111bdbb9272fa3203685be3 from its checkout root: lua5.1 cli.lua --config "$DISROBE_ROOT/corpus/lua/prometheus/weak/config.lua" --Lua51 --nocolors --out "$DISROBE_ROOT/corpus/lua/prometheus/weak/obfuscated.lua" "$DISROBE_ROOT/corpus/lua/prometheus/weak/clean.lua"'
+input = "prometheus/weak/clean.lua"
+notes = "Weak-equivalent configuration derived from the pinned upstream Weak preset. It preserves Vmify, ConstantArray with Threshold=1 and StringsOnly=true, then WrapInFunction. Seed=1337 replaces the upstream random Seed=0. Target=Lua51. DISROBE_ROOT is the repository root. input_sha256=69f10c4a0fd71643cc63200e6029835ea5ef00a2c5cd3b2361d05a91c4435c34; config_sha256=2a45bdbcb3e908e07e6dc2cb238c7b10d65c164961c69294875b5ec3377d67dd; output_sha256=0f5b58358e495cd1bb9d79d3c34f7e584a1181c1d06ee911b71d4c0a7561f45b. Three independent invocations produced byte-identical output."
+
+[[obfuscators.fixtures]]
 path = "obfuscators/luaobfuscator_com/sample_default_obf_v1.lua"
 kind = "lua-source-obfuscated"
 size_bytes = 33112

@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::obfuscator::string_decode::{
     apply_segment_reversals, decode_base85_variant, discover_base64_alphabets,
     discover_base85_alphabets, extract_named_table_body, first_wrapped_table_name,
-    parse_constarray_rotation, parse_lua_string_literals,
+    parse_constarray_rotation, parse_lua_string_literals_bounded,
 };
 use crate::obfuscator::{DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult};
 
@@ -21,6 +21,24 @@ const COMMENT_MARKERS: &[&[u8]] = &[
 
 const STRUCT_WRAP_PREFIX: &[u8] = b"return(function(...)local ";
 const STRUCT_IPAIRS_SUFFIX: &[u8] = b" in ipairs(";
+const MAX_CONSTANT_ARRAY_ENTRIES: usize = 1 << 14;
+const MAX_CONSTANT_ARRAY_DECODED_BYTES: usize = 4 << 20;
+const _: () = assert!(
+    MAX_CONSTANT_ARRAY_DECODED_BYTES < crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES
+);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConstantArrayBudget {
+    max_source_bytes: usize,
+    max_entries: usize,
+    max_decoded_bytes: usize,
+}
+
+const CONSTANT_ARRAY_BUDGET: ConstantArrayBudget = ConstantArrayBudget {
+    max_source_bytes: crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES,
+    max_entries: MAX_CONSTANT_ARRAY_ENTRIES,
+    max_decoded_bytes: MAX_CONSTANT_ARRAY_DECODED_BYTES,
+};
 
 pub fn detect(src: &[u8]) -> Option<ObfuscatorDetection> {
     let mut found: Vec<String> = Vec::new();
@@ -70,13 +88,36 @@ pub fn detect(src: &[u8]) -> Option<ObfuscatorDetection> {
     })
 }
 
-pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
+pub fn peel(src: &[u8], opts: &DeobfOptions) -> Result<PeelResult> {
+    peel_with_budget(src, opts, CONSTANT_ARRAY_BUDGET)
+}
+
+fn peel_with_budget(
+    src: &[u8],
+    _opts: &DeobfOptions,
+    budget: ConstantArrayBudget,
+) -> Result<PeelResult> {
     if detect(src).is_none() {
         return Err(Error::NoObfuscatorSignature("Prometheus"));
     }
+    if src.len() > budget.max_source_bytes {
+        return Err(limit_exceeded(
+            "Prometheus source bytes",
+            src.len(),
+            budget.max_source_bytes,
+        ));
+    }
     let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(src);
-    let (mut result, string_pool_recovered): (PeelResult, bool) = match decode_string_pool(&text) {
-        Some(decoded) => (decoded, true),
+    let (mut result, string_pool_binding, resolved_pool_entries): (
+        PeelResult,
+        Option<String>,
+        Vec<bool>,
+    ) = match decode_string_pool(&text, budget)? {
+        Some(decoded) => (
+            decoded.result,
+            Some(decoded.binding),
+            decoded.resolved_entries,
+        ),
         None => (
             PeelResult::passthrough(
                 src,
@@ -84,16 +125,27 @@ pub fn peel(src: &[u8], _opts: &DeobfOptions) -> Result<PeelResult> {
                     "prometheus: no static encoded constant-array present (minify-only shape leaves source strings in cleartext)".to_owned(),
                 ],
             ),
-            false,
+            None,
+            Vec::new(),
         ),
     };
-    apply_vmlift(&text, &mut result, string_pool_recovered);
+    apply_vmlift(
+        &text,
+        &resolved_pool_entries,
+        &mut result,
+        string_pool_binding.as_deref(),
+    );
     Ok(result)
 }
 
 const MAX_NESTED_VMIFY_PASSES: usize = 4;
 
-fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool) {
+fn apply_vmlift(
+    text: &str,
+    resolved_pool_entries: &[bool],
+    result: &mut PeelResult,
+    string_pool_binding: Option<&str>,
+) {
     use crate::obfuscator::prometheus_vmlift::{
         analyze_dispatch, count_arithmetic_operators, fold_numeric_expressions,
     };
@@ -112,7 +164,16 @@ fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool
         ));
     }
 
-    if let Some(vmify_summary) = apply_vmify_devirt(&folded, result) {
+    let recovered_strings: Vec<String> = core::mem::take(&mut result.recovered_strings);
+    let vmify_summary: Option<String> = apply_vmify_devirt(
+        &folded,
+        &recovered_strings,
+        resolved_pool_entries,
+        string_pool_binding,
+        result,
+    );
+    result.recovered_strings = recovered_strings;
+    if let Some(vmify_summary) = vmify_summary {
         result.residual_markers.push(vmify_summary);
         return;
     }
@@ -132,7 +193,7 @@ fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool
     });
 
     if folded_count > 0 {
-        if string_pool_recovered {
+        if string_pool_binding.is_some() {
             result.residual_markers.push(
                 "prometheus: emitted artifact is the decoded constant-array string pool; the NumbersToExpressions fold above is a separately verified runtime-equivalent transform over the VM wrapper, not re-applied to the emitted pool".to_owned(),
             );
@@ -145,15 +206,26 @@ fn apply_vmlift(text: &str, result: &mut PeelResult, string_pool_recovered: bool
     }));
 }
 
-fn apply_vmify_devirt(folded: &str, result: &mut PeelResult) -> Option<String> {
-    use crate::obfuscator::prometheus_vm_cfg::{VmifyRecovery, recover};
+fn apply_vmify_devirt(
+    folded: &str,
+    recovered_strings: &[String],
+    resolved_pool_entries: &[bool],
+    string_pool_binding: Option<&str>,
+    result: &mut PeelResult,
+) -> Option<String> {
+    use crate::obfuscator::prometheus_vm_cfg::{VmifyRecovery, recover_with_string_pool};
 
     let mut current: String = folded.to_owned();
     let mut passes: usize = 0;
     let mut last: Option<VmifyRecovery> = None;
     let mut refusal: Option<String> = None;
     while passes < MAX_NESTED_VMIFY_PASSES {
-        match recover(&current) {
+        match recover_with_string_pool(
+            &current,
+            recovered_strings,
+            resolved_pool_entries,
+            string_pool_binding,
+        ) {
             Ok(Some(recovery)) => {
                 current.clone_from(&recovery.source);
                 passes += 1;
@@ -215,12 +287,33 @@ fn ratio_pct(num: usize, den: usize) -> u8 {
     u8::try_from(pct.min(100)).unwrap_or(100)
 }
 
-fn decode_string_pool(text: &str) -> Option<PeelResult> {
-    let pool_name: char = first_wrapped_table_name(text)?;
-    let pool_body: &str = extract_named_table_body(text, &pool_name.to_string())?;
-    let encoded: Vec<String> = parse_lua_string_literals(pool_body);
+struct DecodedStringPool {
+    result: PeelResult,
+    binding: String,
+    resolved_entries: Vec<bool>,
+}
+
+fn decode_string_pool(
+    text: &str,
+    budget: ConstantArrayBudget,
+) -> Result<Option<DecodedStringPool>> {
+    let Some(pool_name): Option<char> = first_wrapped_table_name(text) else {
+        return Ok(None);
+    };
+    let Some(pool_body): Option<&str> = extract_named_table_body(text, &pool_name.to_string())
+    else {
+        return Ok(None);
+    };
+    let encoded: Vec<String> = parse_lua_string_literals_bounded(pool_body, budget.max_entries)
+        .map_err(|exceeded| {
+            limit_exceeded(
+                "Prometheus constant-array entries",
+                exceeded.count,
+                exceeded.limit,
+            )
+        })?;
     if encoded.is_empty() {
-        return None;
+        return Ok(None);
     }
     let base64_maps: Vec<(char, BTreeMap<char, u8>)> = discover_base64_alphabets(text);
     let base64: Vec<(char, CustomBase64Alphabet<'_>)> = base64_maps
@@ -232,36 +325,44 @@ fn decode_string_pool(text: &str) -> Option<PeelResult> {
         .collect();
     let base85: Vec<(char, BTreeMap<char, u8>)> = discover_base85_alphabets(text);
     if base64.is_empty() && base85.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut recovered: Vec<String> = Vec::with_capacity(encoded.len());
+    let mut resolved_entries: Vec<bool> = Vec::with_capacity(encoded.len());
     let mut decoded_b64: usize = 0;
     let mut decoded_b85: usize = 0;
+    let mut decoded_bytes: usize = 0;
     let mut residual_count: usize = 0;
     for enc in &encoded {
         match decode_pool_entry(enc, &base64, &base85) {
             Some((plain, Encoding::Base64)) => {
+                decoded_bytes = add_decoded_bytes(decoded_bytes, plain.len(), budget)?;
                 decoded_b64 += 1;
                 recovered.push(plain);
+                resolved_entries.push(true);
             }
             Some((plain, Encoding::Base85)) => {
+                decoded_bytes = add_decoded_bytes(decoded_bytes, plain.len(), budget)?;
                 decoded_b85 += 1;
                 recovered.push(plain);
+                resolved_entries.push(true);
             }
             None => {
                 residual_count += 1;
                 recovered.push(enc.clone());
+                resolved_entries.push(false);
             }
         }
     }
     let decoded_count: usize = decoded_b64 + decoded_b85;
     if decoded_count == 0 {
-        return None;
+        return Ok(None);
     }
 
     if let Some(pairs) = parse_constarray_rotation(text) {
         apply_segment_reversals(&mut recovered, &pairs);
+        apply_segment_reversals(&mut resolved_entries, &pairs);
     }
 
     let mut out: String = String::new();
@@ -294,13 +395,48 @@ fn decode_string_pool(text: &str) -> Option<PeelResult> {
             "prometheus: {residual_count} constant-array entries are the original program's binary string data (non-printable bytes), kept in their raw encoded form"
         ));
     }
-    Some(PeelResult {
-        deobfuscated: out.into_bytes(),
-        passes_run,
-        residual_markers,
-        recovered_strings: recovered,
-        fully_recovered: false,
-    })
+    Ok(Some(DecodedStringPool {
+        result: PeelResult {
+            deobfuscated: out.into_bytes(),
+            passes_run,
+            residual_markers,
+            recovered_strings: recovered,
+            fully_recovered: false,
+        },
+        binding: pool_name.to_string(),
+        resolved_entries,
+    }))
+}
+
+fn add_decoded_bytes(
+    decoded_bytes: usize,
+    entry_bytes: usize,
+    budget: ConstantArrayBudget,
+) -> Result<usize> {
+    let next: usize = decoded_bytes.checked_add(entry_bytes).ok_or_else(|| {
+        limit_exceeded(
+            "Prometheus constant-array decoded bytes",
+            usize::MAX,
+            budget.max_decoded_bytes,
+        )
+    })?;
+    if next > budget.max_decoded_bytes {
+        return Err(limit_exceeded(
+            "Prometheus constant-array decoded bytes",
+            next,
+            budget.max_decoded_bytes,
+        ));
+    }
+    Ok(next)
+}
+
+fn limit_exceeded(section: &'static str, count: usize, limit: usize) -> Error {
+    let count: u64 = count as u64;
+    Error::LimitExceeded {
+        section,
+        count,
+        limit,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,4 +560,70 @@ fn matches_vmify_container_shape(src: &[u8]) -> bool {
         crate::obfuscator::prometheus_vm_cfg::recover(&text),
         Ok(None)
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const WEAK_EQUIVALENT: &[u8] =
+        include_bytes!("../../../../corpus/lua/prometheus/weak/obfuscated.lua");
+
+    #[test]
+    fn refuses_source_before_constant_array_parsing() {
+        let mut source: Vec<u8> = WEAK_EQUIVALENT.to_vec();
+        source.resize(
+            crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES + 1,
+            b' ',
+        );
+        let error: Error = peel(&source, &DeobfOptions::default())
+            .expect_err("the source budget must be enforced before pool parsing");
+        assert!(matches!(
+            error,
+            Error::LimitExceeded {
+                section: "Prometheus source bytes",
+                count,
+                limit: crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES,
+            } if count == u64::try_from(source.len()).expect("test input length must fit u64")
+        ));
+    }
+
+    #[test]
+    fn refuses_constant_array_entry_count_over_budget() {
+        let budget: ConstantArrayBudget = ConstantArrayBudget {
+            max_source_bytes: usize::MAX,
+            max_entries: 12,
+            max_decoded_bytes: usize::MAX,
+        };
+        let error: Error = peel_with_budget(WEAK_EQUIVALENT, &DeobfOptions::default(), budget)
+            .expect_err("the thirteenth constant-array entry must exceed the budget");
+        assert!(matches!(
+            error,
+            Error::LimitExceeded {
+                section: "Prometheus constant-array entries",
+                count: 13,
+                limit: 12,
+            }
+        ));
+    }
+
+    #[test]
+    fn refuses_constant_array_decoded_bytes_over_budget() {
+        let budget: ConstantArrayBudget = ConstantArrayBudget {
+            max_source_bytes: usize::MAX,
+            max_entries: usize::MAX,
+            max_decoded_bytes: 0,
+        };
+        let error: Error = peel_with_budget(WEAK_EQUIVALENT, &DeobfOptions::default(), budget)
+            .expect_err("the first decoded byte must exceed the budget");
+        assert!(matches!(
+            error,
+            Error::LimitExceeded {
+                section: "Prometheus constant-array decoded bytes",
+                limit: 0,
+                ..
+            }
+        ));
+    }
 }

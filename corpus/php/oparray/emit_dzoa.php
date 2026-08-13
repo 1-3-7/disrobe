@@ -109,6 +109,7 @@ const OPMAP = [
     'JMP_SET' => 152,
     'YIELD' => 160,
     'GENERATOR_RETURN' => 161,
+    'YIELD_FROM' => 166,
     'COALESCE' => 169,
     'SWITCH_LONG' => 187,
     'SWITCH_STRING' => 188,
@@ -118,6 +119,7 @@ const OPMAP = [
     'COUNT' => 211,
     'VERIFY_RETURN_TYPE' => 212,
     'FE_FREE' => 213,
+    'GENERATOR_CREATE' => 214,
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
 ];

@@ -299,6 +299,7 @@ pub mod op {
     pub const JMP_SET: u8 = 152;
     pub const YIELD: u8 = 160;
     pub const GENERATOR_RETURN: u8 = 161;
+    pub const YIELD_FROM: u8 = 166;
     pub const DO_ICALL: u8 = 129;
     pub const DO_UCALL: u8 = 130;
     pub const DO_FCALL_BY_NAME: u8 = 131;
@@ -322,6 +323,7 @@ pub mod op {
     pub const COUNT: u8 = 211;
     pub const VERIFY_RETURN_TYPE: u8 = 212;
     pub const FE_FREE: u8 = 213;
+    pub const GENERATOR_CREATE: u8 = 214;
     pub const OP_DATA: u8 = 137;
 }
 
@@ -413,6 +415,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         152 => "ZEND_JMP_SET",
         160 => "ZEND_YIELD",
         161 => "ZEND_GENERATOR_RETURN",
+        166 => "ZEND_YIELD_FROM",
         169 => "ZEND_COALESCE",
         187 => "ZEND_SWITCH_LONG",
         188 => "ZEND_SWITCH_STRING",
@@ -423,6 +426,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         211 => "ZEND_COUNT",
         212 => "ZEND_VERIFY_RETURN_TYPE",
         213 => "ZEND_FE_FREE",
+        214 => "ZEND_GENERATOR_CREATE",
         other => unknown_name(other),
     }
 }
@@ -1023,6 +1027,8 @@ struct Lifter<'a> {
     slots: BTreeMap<(OperandType, u32), Expr>,
     call_stack: Vec<PendingCall>,
     back_jump_targets: BTreeSet<u32>,
+    result_use_counts: Vec<u32>,
+    reserved_names: BTreeSet<String>,
 }
 
 impl<'a> Lifter<'a> {
@@ -1034,6 +1040,45 @@ impl<'a> Lifter<'a> {
                     .then_some(op.op2)
             })
             .collect();
+        let mut live_uses: BTreeMap<(OperandType, u32), u32> = BTreeMap::new();
+        let mut result_use_counts: Vec<u32> = vec![0; ops.len()];
+        let reversed_ops: std::iter::Rev<std::iter::Enumerate<std::slice::Iter<'_, Op>>> =
+            ops.iter().enumerate().rev();
+        for (idx, op) in reversed_ops {
+            let result_key: (OperandType, u32) = (op.result_type, op.result);
+            if op.result_type == OperandType::TmpVar || op.result_type == OperandType::Var {
+                result_use_counts[idx] = live_uses.remove(&result_key).unwrap_or(0);
+            }
+            if op.opcode != op::FREE {
+                for key in [(op.op1_type, op.op1), (op.op2_type, op.op2)] {
+                    if key.0 == OperandType::TmpVar || key.0 == OperandType::Var {
+                        let count: &mut u32 = live_uses.entry(key).or_default();
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
+        }
+        let mut reserved_names: BTreeSet<String> = var_names
+            .iter()
+            .flatten()
+            .filter(|name: &&String| is_valid_php_ident(name))
+            .cloned()
+            .collect();
+        for op in ops {
+            for key in [
+                (op.op1_type, op.op1),
+                (op.op2_type, op.op2),
+                (op.result_type, op.result),
+            ] {
+                if key.0 == OperandType::TmpVar || key.0 == OperandType::Var {
+                    reserved_names.insert(
+                        slot_fallback(key.0, key.1)
+                            .trim_start_matches('$')
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         Self {
             ops,
             literals,
@@ -1041,6 +1086,8 @@ impl<'a> Lifter<'a> {
             slots: BTreeMap::new(),
             call_stack: Vec::new(),
             back_jump_targets,
+            result_use_counts,
+            reserved_names,
         }
     }
 
@@ -1375,7 +1422,7 @@ impl<'a> Lifter<'a> {
         let op: Op = self.ops.get(idx as usize)?.clone();
         let op: &Op = &op;
         match op.opcode {
-            o if o == op::OP_DATA => None,
+            o if o == op::OP_DATA || o == op::GENERATOR_CREATE => None,
             o if is_binary(o) => {
                 self.fold_binary(op);
                 None
@@ -1541,7 +1588,16 @@ impl<'a> Lifter<'a> {
                 let v: Expr = self.operand_expr(op.op1_type, op.op1)?;
                 Some(format!("{}--;", v.text))
             }
-            o if o == op::RETURN || o == op::RETURN_BY_REF || o == op::GENERATOR_RETURN => {
+            o if o == op::YIELD => self.fold_yield(idx, op),
+            o if o == op::YIELD_FROM => self.fold_yield_from(idx, op),
+            o if o == op::GENERATOR_RETURN => {
+                if op.op1_type == OperandType::Unused {
+                    return Some("return;".to_owned());
+                }
+                self.operand_expr(op.op1_type, op.op1)
+                    .map(|value: Expr| format!("return {};", value.text))
+            }
+            o if o == op::RETURN || o == op::RETURN_BY_REF => {
                 if op.op1_type == OperandType::Unused {
                     return Some("return;".to_owned());
                 }
@@ -1591,6 +1647,63 @@ impl<'a> Lifter<'a> {
                 format!("{} {} {}", l.wrapped(left_prec), sym, r.wrapped(right_prec));
             self.store_result(op, Expr { text, prec });
         }
+    }
+
+    fn fold_yield(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let value: Expr = self
+            .operand_expr(op.op1_type, op.op1)
+            .unwrap_or_else(|| Expr::atom("null".to_owned()));
+        let text: String = self.operand_expr(op.op2_type, op.op2).map_or_else(
+            || format!("yield {}", value.text),
+            |key: Expr| format!("yield {} => {}", key.text, value.text),
+        );
+        self.store_expression_or_statement(idx, op, text)
+    }
+
+    fn fold_yield_from(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let source: Expr = self.operand_expr(op.op1_type, op.op1)?;
+        self.store_expression_or_statement(idx, op, format!("yield from {}", source.text))
+    }
+
+    fn store_expression_or_statement(&mut self, idx: u32, op: &Op, text: String) -> Option<String> {
+        let use_count: u32 = self
+            .result_use_counts
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(0);
+        if op.result_type == OperandType::Unused || use_count == 0 {
+            return Some(format!("{text};"));
+        }
+        if use_count > 1 {
+            let spill_name: String = self.reserve_yield_spill(idx);
+            self.store_result(op, Expr::atom(format!("${spill_name}")));
+            return Some(format!("${spill_name} = {text};"));
+        }
+        self.store_result(
+            op,
+            Expr {
+                text,
+                prec: PREC_COALESCE,
+            },
+        );
+        None
+    }
+
+    fn reserve_yield_spill(&mut self, idx: u32) -> String {
+        let base: String = format!("_disrobe_yield_{idx}");
+        if self.reserved_names.insert(base.clone()) {
+            return base;
+        }
+        let candidate_count: usize = self.reserved_names.len().saturating_add(1);
+        for suffix in 1..=candidate_count {
+            let candidate: String = format!("{base}_{suffix}");
+            if self.reserved_names.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+        let fallback: String = format!("{base}_{}", candidate_count.saturating_add(1));
+        self.reserved_names.insert(fallback.clone());
+        fallback
     }
 
     fn fold_unary_call(&mut self, op: &Op, name: &str) {

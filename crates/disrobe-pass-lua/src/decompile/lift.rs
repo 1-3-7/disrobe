@@ -198,7 +198,7 @@ pub fn fmt_number(n: f64, as_float: bool) -> String {
 }
 
 #[must_use]
-fn quote_lua_string(s: &str) -> String {
+pub(crate) fn quote_lua_string(s: &str) -> String {
     let mut out: String = String::with_capacity(s.len() + 2);
     out.push('"');
     let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();

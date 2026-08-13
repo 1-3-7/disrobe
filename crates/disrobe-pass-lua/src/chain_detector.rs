@@ -787,6 +787,33 @@ mod tests {
     }
 
     #[test]
+    fn chain_run_recovers_pinned_prometheus_weak_configuration() {
+        let bytes: Vec<u8> =
+            include_bytes!("../../../corpus/lua/prometheus/weak/obfuscated.lua").to_vec();
+        let verdict: DetectVerdict =
+            Detector::detect(&LuaDetector, &ctx(&bytes)).expect("Weak preset must detect");
+        assert_eq!(verdict.format_tag, "lua-obf-prometheus");
+        let input: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let output: Artifact = LUA_PASS
+            .run(&input)
+            .expect("lua.deob must recover the pinned Weak-equivalent ordering");
+        assert_eq!(output.rung, Rung::Surface);
+        let recovered: &str =
+            std::str::from_utf8(&output.envelope).expect("recovered source must be UTF-8");
+        assert!(
+            recovered.contains("print")
+                && recovered.contains("\"A\"")
+                && recovered.contains("\"B\"")
+                && recovered.contains("\"F\""),
+            "the chain caller must expose the recovered program body: {recovered}"
+        );
+        assert!(
+            !recovered.contains("while x do"),
+            "the chain caller must not return the Weak-preset dispatcher"
+        );
+    }
+
+    #[test]
     fn chain_run_recovers_real_hercules_loader() {
         let Ok(bytes): std::io::Result<Vec<u8>> =
             std::fs::read(corpus("lua/hercules/gauntlet/gauntlet_obfuscated.lua"))
