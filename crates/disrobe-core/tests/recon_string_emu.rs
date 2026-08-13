@@ -315,6 +315,28 @@ fn utf32_runs_in_both_endiannesses_record_their_encoding() {
 }
 
 #[test]
+fn an_invalid_code_unit_ends_a_run_without_ending_the_scan() {
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
+    buffer.extend_from_slice(&0x0011_0000_u32.to_le_bytes());
+    buffer.extend_from_slice(&0x0000_D800_u32.to_le_bytes());
+    buffer.extend_from_slice(&utf32le(C2));
+    let runs: Vec<DecodedString> =
+        text_runs(&buffer, 0, StringEncoding::Utf32Le, &RunLimits::default());
+    let hit: &DecodedString = runs
+        .iter()
+        .find(|s: &&DecodedString| s.text.as_deref() == Some(C2))
+        .unwrap_or_else(|| {
+            panic!("a run behind three unrepresentable code units was lost: {runs:?}")
+        });
+    assert_eq!(
+        hit.address, 12,
+        "the surviving run must be anchored past the unrepresentable units"
+    );
+    assert_eq!(hit.encoding, StringEncoding::Utf32Le);
+}
+
+#[test]
 fn a_wide_run_is_not_recovered_by_the_opposite_endianness() {
     let encoded: Vec<u8> = utf16be(C2);
     let wrong: Vec<DecodedString> =

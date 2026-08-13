@@ -676,19 +676,23 @@ fn unit_runs_wide(
                 return out;
             }
             let position: usize = reader.position();
-            let Some(scalar): Option<char> = read_wide_unit(&mut reader, encoding) else {
+            let scalar: Option<char> = read_wide_unit(&mut reader, encoding);
+            if reader.position() == position {
                 break;
-            };
-            if is_printable_ascii_scalar(scalar) && chars.len() * unit < limits.max_run_bytes {
-                if run_start.is_none() {
-                    run_start = Some(position);
-                }
-                chars.push(scalar);
-            } else {
+            }
+            let accepted: Option<char> = scalar
+                .filter(|&candidate: &char| is_printable_ascii_scalar(candidate))
+                .filter(|_| chars.len() * unit < limits.max_run_bytes);
+            let Some(candidate): Option<char> = accepted else {
                 push_wide_run(base, encoding, run_start, &chars, limits, out.as_mut());
                 run_start = None;
                 chars.clear();
+                continue;
+            };
+            if run_start.is_none() {
+                run_start = Some(position);
             }
+            chars.push(candidate);
         }
         push_wide_run(base, encoding, run_start, &chars, limits, out.as_mut());
     }
