@@ -146,3 +146,33 @@ The generator disassembles every selected byte slice with the matching pypcode l
 - `multiarch_pypcode.tsv`: `F11F9130A0F1D7D7E8F0EEA8141605C554C9639C2230D7EB9DBBFA07EC1DF386`
 
 `tests/pcode_oracle.rs` independently normalizes this crate's ordered P-code stream and compares every record with the pypcode-derived table.
+
+# AArch64 word sweep reference
+
+`aarch64_word_sweep.llvm` records the LLVM 19.1.7 disassembly of every word in a bounded AArch64 sweep. LLVM does not read the vendored Ghidra language files, so it grades the decoder instead of restating the same specification. clang 19.1.7 assembles each word with a `.inst` directive into one `aarch64-none-elf` object and llvm-objdump 19.1.7 disassembles that object. Word `i` sits at offset `4 * i`, so the reference branch and address targets compare directly with the decoder run at the same address.
+
+Executable SHA-256 records:
+
+- `clang.exe`: `56EF1ABD0DF11A3B1B77822193E927C6345078C24511567AE10B3AFD803D03A3`
+- `llvm-objdump.exe`: `4259892272528EFEB292ED8E852967902CF1E5919CF7EA744BD40074CC82B022`
+
+The sweep holds 2830 distinct words from three sources. The first source is every four-byte word of the committed `aarch64_forms`, `aarch64_oracle_o0`, and `aarch64_oracle_o2` `.text` files. The second source is field-boundary variants of each distinct corpus word, where each of seven declared fields is forced to all zeros and to all ones. Those seven fields are the three five-bit register fields at bit 0, bit 5, and bit 16, the six-bit fields at bit 10 and bit 16, the twelve-bit immediate at bit 10, and the two-bit selector at bit 22, so the variants reach register 31, an immediate of all zeros and all ones, and a shift of zero and of its maximum. The third source is 192 seeded random words for each of the nine top-level encoding groups selected by bits 28 to 25, so a rare group is not drowned out. The seed is `0x5150202406127a11` and the sequence is SplitMix64. `tests/word_sweep.rs` regenerates the same list and fails when the committed reference does not cover exactly those words in the same order.
+
+Two normalizations apply to each disassembled line. The `<.text+0x...>` symbol annotation and the trailing `//` comment restate the container offset and the decimal value of an immediate that the line already prints, so both are removed. Runs of whitespace collapse to one space. A word that the reference rejects is stored as `<unknown>`.
+
+llvm-objdump decodes the extension spaces by default for this container. `19010440` decodes as `cpyfp` and `f8bfc041` decodes as `ldapr`, while `--mcpu=all` is rejected as an unknown processor and disables those extensions rather than enabling them. A remaining `<unknown>` is therefore an unallocated encoding and not a disabled extension.
+
+Every corpus word is graded as an instruction by two independent disassemblers. The committed GNU objdump 2.45.1 listings and LLVM 19.1.7 agree on all 203 corpus mnemonics, so the committed `.text` files hold no literal pool or jump table that the sweep would count as a decode failure.
+
+At this base the decoder matched a constructor for 1315 of the 2830 words. 1272 of those 1315 mnemonics agree with LLVM 19.1.7 after one declared alias equivalence, 39 disagree in nine recorded classes, and 4 are encodings that LLVM rejects. A further 235 words that the decoder declines are accepted by LLVM, counted separately from agreement. All 206 comparable branch and address targets match exactly.
+
+- `generate_aarch64_word_sweep.py`: `5C00AB9817897E18B72D2EB1C0C37953DE545E1EF42D8C3D99ABDBBAA266376B`
+- `aarch64_word_sweep.llvm`: `7FBB4EE6092B7B3A054E003E9CB03963E89B71D92E7312CB7D36A7A09AED721D`
+
+The generator is reproducible from the crate directory:
+
+```text
+python tests/fixtures/generate_aarch64_word_sweep.py
+```
+
+`tests/word_sweep.rs` always grades the committed reference. When clang and llvm-objdump 19.1.7 are installed it also re-derives the disassembly and compares it with the committed file.
