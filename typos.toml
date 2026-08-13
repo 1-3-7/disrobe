@@ -133,6 +133,7 @@ extend-exclude = [
     "fuzz/corpus/**",
     "docs/book/book/**",
     "crates/disrobe-sleigh/vendor/**",
+    "crates/disrobe-cli/tests/schemas/*.schema.json",
     "target/**",
     "**/*.dr",
     "**/*.lock",
