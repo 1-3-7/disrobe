@@ -843,12 +843,7 @@ fn disassembler_matches_cpython_dis_across_versions() {
         .iter()
         .any(|&(major, minor): &(u8, u8)| major < 3 || (major == 3 && minor < 11));
     if has_pre_311 {
-        for opname in [
-            "LOAD_DEREF",
-            "STORE_DEREF",
-            "LOAD_CLOSURE",
-            "LOAD_CLASSDEREF",
-        ] {
+        for opname in ["LOAD_DEREF", "STORE_DEREF", "LOAD_CLOSURE"] {
             let tally: ArgreprTally = tallies.get(opname).copied().unwrap_or_default();
             assert!(
                 tally.checked > 0,
@@ -861,6 +856,18 @@ fn disassembler_matches_cpython_dis_across_versions() {
             pre_311_mixed_cell_and_free_codes > 0,
             "no pre-3.11 code object carried both cellvars and freevars, so the cell-before-free \
              index order is unverified; add a three-level closure to the corpus"
+        );
+    }
+    let has_classderef_era: bool = checked
+        .iter()
+        .any(|&(major, minor): &(u8, u8)| major == 3 && (4..=10).contains(&minor));
+    if has_classderef_era {
+        let tally: ArgreprTally = tallies.get("LOAD_CLASSDEREF").copied().unwrap_or_default();
+        assert!(
+            tally.checked > 0,
+            "corpus never produced LOAD_CLASSDEREF on a 3.4 through 3.10 interpreter, so the \
+             class-body free-variable name is unverified; matched/checked: {}",
+            tally_line(&tallies)
         );
     }
     let has_super_attr_opcode: bool = checked
