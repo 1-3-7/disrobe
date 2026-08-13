@@ -99,7 +99,8 @@ pub use bcc::{
     SourceIdentity, link_bcc_from_unpack, link_bcc_module,
 };
 pub use bcc_lift::{
-    BccLiftOutput, FunctionId, PseudoCFunction, lift_bcc_code_region, lift_bcc_native,
+    BccLiftOutput, FunctionId, FunctionNameSource, PseudoCFunction, lift_bcc_code_region,
+    lift_bcc_native,
 };
 pub use descriptor_cache::{DescriptorCache, DescriptorCacheConfig, DescriptorCacheStats};
 pub use detect::{

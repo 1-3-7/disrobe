@@ -4,7 +4,8 @@ use std::num::TryFromIntError;
 
 #[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
-    Arch, DisasmInsn, LeafRecovery, PseudoAbi, disassemble, recover_leaf_function_abi,
+    Arch, DisasmInsn, LeafRecovery, PseudoAbi, ResolvedCall, disassemble,
+    recover_leaf_function_abi, recover_leaf_function_with_calls,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,6 +29,16 @@ const MAX_FUNCTIONS: usize = 4096;
 const MAX_DISASM_LINES: usize = 4096;
 #[cfg(not(target_arch = "wasm32"))]
 const MIN_STRING_LEN: usize = 4;
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CALL_TARGETS_SCANNED: usize = 1024;
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_RESOLVED_CALLS: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FunctionNameSource {
+    DispatchDescriptor,
+    EntryAddress,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FunctionId {
@@ -44,6 +55,8 @@ pub struct PseudoCFunction {
     pub parameter_count: u32,
     pub modeled: bool,
     pub note: Option<String>,
+    pub name_source: FunctionNameSource,
+    pub resolved_callees: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,29 +116,33 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
             modeled_count: 0,
             unmodeled_count: 0,
             strings: Vec::new(),
-            notes: vec![format!(
-                "BCC body targets {}; unsupported architecture for the in-crate pseudo-C lift, which models x86-64 only; image is surfaced but not lifted",
-                arch.label()
-            )],
+            notes: vec![unsupported_architecture_note(arch)],
         });
     };
 
     let image: ExecutableImage = extract_executable_image(blob)?;
-    let functions: Vec<PseudoCFunction> = lift_code_region(&image.code, image.base, abi);
+    let roster: Vec<RosterEntry> = roster_from_dispatch(blob, arch, image.base, image.code.len());
+    let functions: Vec<PseudoCFunction> =
+        lift_code_region_with_roster(&image.code, image.base, abi, &roster);
 
-    let mut modeled_count: usize = 0;
-    let mut unmodeled_count: usize = 0;
+    let carved_count: usize = functions.len();
     let mut map: BTreeMap<FunctionId, PseudoCFunction> = BTreeMap::new();
     for func in functions {
-        if func.modeled {
-            modeled_count += 1;
-        } else {
-            unmodeled_count += 1;
-        }
         map.insert(func.id.clone(), func);
     }
+    let modeled_count: usize = map
+        .values()
+        .filter(|func: &&PseudoCFunction| func.modeled)
+        .count();
+    let unmodeled_count: usize = map.len().saturating_sub(modeled_count);
 
     let mut notes: Vec<String> = Vec::new();
+    let collapsed: usize = carved_count.saturating_sub(map.len());
+    if collapsed > 0 {
+        notes.push(format!(
+            "{collapsed} carved BCC function(s) shared an entry address with an earlier function and are not surfaced separately"
+        ));
+    }
     if modeled_count == 0 && unmodeled_count > 0 {
         notes.push(
             "every discovered BCC function delegates to the PyArmor/CPython runtime dispatch table via indirect calls; native disassembly is surfaced per function, but the object semantics are resolved at load time and are not statically standalone-recompilable"
@@ -152,6 +169,34 @@ pub fn lift_bcc_code_region(code: &[u8], base: u64, arch: BccArch) -> Vec<Pseudo
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<PseudoCFunction> {
+    lift_code_region_with_roster(code, base, abi, &[])
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RosterEntry {
+    pub(crate) entry_va: u64,
+    pub(crate) end_va: u64,
+    pub(crate) name: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct FunctionSite {
+    entry_va: u64,
+    name: String,
+    name_source: FunctionNameSource,
+    insn_start: usize,
+    insn_end: usize,
+    window: Option<(usize, usize, u32)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn lift_code_region_with_roster(
+    code: &[u8],
+    base: u64,
+    abi: PseudoAbi,
+    roster: &[RosterEntry],
+) -> Vec<PseudoCFunction> {
     let Ok(insns): std::result::Result<Vec<DisasmInsn>, _> = disassemble(Arch::X86_64, base, code)
     else {
         return Vec::new();
@@ -159,95 +204,300 @@ pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<Ps
     if insns.is_empty() {
         return Vec::new();
     }
-    let bounds: Vec<(usize, usize)> = discover_functions(&insns);
-    let mut out: Vec<PseudoCFunction> = Vec::with_capacity(bounds.len());
-    for (start_idx, end_idx) in bounds {
-        let entry_va: u64 = insns[start_idx].address;
-        let last: &DisasmInsn = &insns[end_idx - 1];
-        let Some((slice, size)): Option<(&[u8], u32)> =
-            function_byte_window(code, base, entry_va, last)
-        else {
+    let sites: Vec<FunctionSite> = if roster.is_empty() {
+        sites_from_linear_scan(&insns, code, base, 0, insns.len())
+    } else {
+        sites_from_roster(roster, &insns, code, base)
+    };
+
+    let mut probes: BTreeMap<u64, std::result::Result<LeafRecovery, String>> = BTreeMap::new();
+    for site in &sites {
+        let Some((start_off, end_off, _)): Option<(usize, usize, u32)> = site.window else {
+            continue;
+        };
+        let Some(slice): Option<&[u8]> = code.get(start_off..end_off) else {
+            continue;
+        };
+        let outcome: std::result::Result<LeafRecovery, String> =
+            recover_leaf_function_abi(slice, site.entry_va, abi).map_err(|e| format!("{e}"));
+        probes.insert(site.entry_va, outcome);
+    }
+
+    let names: BTreeMap<u64, &str> = sites
+        .iter()
+        .map(|site: &FunctionSite| (site.entry_va, site.name.as_str()))
+        .collect();
+
+    let mut out: Vec<PseudoCFunction> = Vec::with_capacity(sites.len());
+    for site in &sites {
+        let insns_slice: &[DisasmInsn] = insns
+            .get(site.insn_start..site.insn_end)
+            .unwrap_or_default();
+        let Some((start_off, end_off, size)): Option<(usize, usize, u32)> = site.window else {
             out.push(render_declined_function(
-                entry_va,
+                site,
                 0,
-                &insns[start_idx..end_idx],
+                insns_slice,
                 "BCC function address range exceeds input bytes".to_owned(),
             ));
             continue;
         };
-        out.push(render_function(
-            slice,
-            entry_va,
-            size,
-            abi,
-            &insns[start_idx..end_idx],
-        ));
+        let Some(slice): Option<&[u8]> = code.get(start_off..end_off) else {
+            out.push(render_declined_function(
+                site,
+                0,
+                insns_slice,
+                "BCC function address range exceeds input bytes".to_owned(),
+            ));
+            continue;
+        };
+        let Some(Ok(probe)): Option<&std::result::Result<LeafRecovery, String>> =
+            probes.get(&site.entry_va)
+        else {
+            let reason: String = probes.get(&site.entry_va).map_or_else(
+                || "BCC function body was not probed".to_owned(),
+                |outcome: &std::result::Result<LeafRecovery, String>| {
+                    outcome.as_ref().err().cloned().unwrap_or_default()
+                },
+            );
+            out.push(render_declined_function(site, size, insns_slice, reason));
+            continue;
+        };
+        let resolved: Vec<ResolvedCall> = resolve_sibling_calls(probe, &names, &probes);
+        if resolved.is_empty() {
+            out.push(render_modeled_function(site, probe, size, &[], None));
+            continue;
+        }
+        let callees: Vec<String> = resolved
+            .iter()
+            .filter_map(|call: &ResolvedCall| call.name.clone())
+            .collect();
+        match recover_leaf_function_with_calls(slice, site.entry_va, abi, &resolved) {
+            Ok(linked) => out.push(render_modeled_function(site, &linked, size, &callees, None)),
+            Err(e) => out.push(render_modeled_function(
+                site,
+                probe,
+                size,
+                &[],
+                Some(format!(
+                    "sibling-resolved recovery declined ({e}); the unresolved recovery is surfaced instead"
+                )),
+            )),
+        }
     }
     out
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_function(
-    slice: &[u8],
-    entry_va: u64,
-    size: u32,
-    abi: PseudoAbi,
+fn resolve_sibling_calls(
+    probe: &LeafRecovery,
+    names: &BTreeMap<u64, &str>,
+    probes: &BTreeMap<u64, std::result::Result<LeafRecovery, String>>,
+) -> Vec<ResolvedCall> {
+    let mut resolved: Vec<ResolvedCall> = Vec::new();
+    let mut seen: Vec<u64> = Vec::new();
+    for target in probe.call_targets.iter().take(MAX_CALL_TARGETS_SCANNED) {
+        if resolved.len() >= MAX_RESOLVED_CALLS {
+            break;
+        }
+        if seen.contains(target) {
+            continue;
+        }
+        seen.push(*target);
+        let Some(name): Option<&&str> = names.get(target) else {
+            continue;
+        };
+        let Some(Ok(callee)): Option<&std::result::Result<LeafRecovery, String>> =
+            probes.get(target)
+        else {
+            continue;
+        };
+        resolved.push(ResolvedCall {
+            target: *target,
+            name: Some((*name).to_owned()),
+            signature: callee.signature.clone(),
+        });
+    }
+    resolved
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sites_from_linear_scan(
     insns: &[DisasmInsn],
+    code: &[u8],
+    base: u64,
+    offset: usize,
+    limit: usize,
+) -> Vec<FunctionSite> {
+    let Some(window): Option<&[DisasmInsn]> = insns.get(offset..limit) else {
+        return Vec::new();
+    };
+    let bounds: Vec<(usize, usize)> = discover_functions(window);
+    let mut out: Vec<FunctionSite> = Vec::with_capacity(bounds.len());
+    for (start_idx, end_idx) in bounds {
+        let Some(first): Option<&DisasmInsn> = window.get(start_idx) else {
+            continue;
+        };
+        let Some(last): Option<&DisasmInsn> =
+            end_idx.checked_sub(1).and_then(|i: usize| window.get(i))
+        else {
+            continue;
+        };
+        let entry_va: u64 = first.address;
+        out.push(FunctionSite {
+            entry_va,
+            name: format!("sub_{entry_va:x}"),
+            name_source: FunctionNameSource::EntryAddress,
+            insn_start: offset.saturating_add(start_idx),
+            insn_end: offset.saturating_add(end_idx),
+            window: byte_window_from_last(code, base, entry_va, last),
+        });
+    }
+    out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sites_from_roster(
+    roster: &[RosterEntry],
+    insns: &[DisasmInsn],
+    code: &[u8],
+    base: u64,
+) -> Vec<FunctionSite> {
+    let region_end: u64 = base.saturating_add(u64::try_from(code.len()).unwrap_or(u64::MAX));
+    let mut ordered: Vec<&RosterEntry> = roster
+        .iter()
+        .filter(|entry: &&RosterEntry| {
+            entry.entry_va >= base && entry.entry_va < region_end && entry.end_va > entry.entry_va
+        })
+        .collect();
+    ordered.sort_by_key(|entry: &&RosterEntry| entry.entry_va);
+    ordered.dedup_by_key(|entry: &mut &RosterEntry| entry.entry_va);
+    ordered.truncate(MAX_FUNCTIONS);
+
+    let mut sites: Vec<FunctionSite> = Vec::with_capacity(ordered.len());
+    let mut cursor: u64 = base;
+    for (index, entry) in ordered.iter().enumerate() {
+        if sites.len() >= MAX_FUNCTIONS {
+            break;
+        }
+        let next_start: u64 = ordered
+            .get(index + 1)
+            .map_or(region_end, |next: &&RosterEntry| next.entry_va);
+        let end_va: u64 = entry.end_va.min(next_start).min(region_end);
+        if end_va <= entry.entry_va {
+            continue;
+        }
+        if entry.entry_va > cursor {
+            let gap_start: usize = insn_index_at_or_after(insns, cursor);
+            let gap_end: usize = insn_index_at_or_after(insns, entry.entry_va);
+            sites.extend(sites_from_linear_scan(
+                insns, code, base, gap_start, gap_end,
+            ));
+        }
+        sites.push(FunctionSite {
+            entry_va: entry.entry_va,
+            name: entry.name.clone(),
+            name_source: FunctionNameSource::DispatchDescriptor,
+            insn_start: insn_index_at_or_after(insns, entry.entry_va),
+            insn_end: insn_index_at_or_after(insns, end_va),
+            window: byte_window_from_range(code, base, entry.entry_va, end_va),
+        });
+        cursor = end_va;
+    }
+    if cursor < region_end {
+        let gap_start: usize = insn_index_at_or_after(insns, cursor);
+        sites.extend(sites_from_linear_scan(
+            insns,
+            code,
+            base,
+            gap_start,
+            insns.len(),
+        ));
+    }
+    sites.sort_by_key(|site: &FunctionSite| site.entry_va);
+    sites.dedup_by_key(|site: &mut FunctionSite| site.entry_va);
+    sites.truncate(MAX_FUNCTIONS);
+    sites
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn insn_index_at_or_after(insns: &[DisasmInsn], va: u64) -> usize {
+    insns.partition_point(|insn: &DisasmInsn| insn.address < va)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_modeled_function(
+    site: &FunctionSite,
+    recovery: &LeafRecovery,
+    size: u32,
+    callees: &[String],
+    note: Option<String>,
 ) -> PseudoCFunction {
-    let name: String = format!("sub_{entry_va:x}");
-    match recover_leaf_function_abi(slice, entry_va, abi) {
-        Ok(recovery) => {
-            let parameter_count: u32 = saturating_u32_len(recovery.signature.callable_arity());
-            let pseudo_c: String = rename_recovered(&recovery, &name);
-            let signature: String = extract_signature(&pseudo_c, &name);
-            PseudoCFunction {
-                id: FunctionId { entry_va, name },
-                signature,
-                pseudo_c,
-                size,
-                parameter_count,
-                modeled: true,
-                note: None,
-            }
-        }
-        Err(e) => {
-            let reason: String = format!("{e}");
-            render_declined_function(entry_va, size, insns, reason)
-        }
+    let parameter_count: u32 = saturating_u32_len(recovery.signature.callable_arity());
+    let pseudo_c: String = rename_recovered(recovery, &site.name);
+    let signature: String = extract_signature(&pseudo_c, &site.name);
+    let mut resolved_callees: Vec<String> = callees.to_vec();
+    resolved_callees.sort_unstable();
+    resolved_callees.dedup();
+    PseudoCFunction {
+        id: FunctionId {
+            entry_va: site.entry_va,
+            name: site.name.clone(),
+        },
+        signature,
+        pseudo_c,
+        size,
+        parameter_count,
+        modeled: true,
+        note,
+        name_source: site.name_source,
+        resolved_callees,
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn function_byte_window<'a>(
-    code: &'a [u8],
+fn byte_window_from_last(
+    code: &[u8],
     base: u64,
     entry_va: u64,
     last: &DisasmInsn,
-) -> Option<(&'a [u8], u32)> {
+) -> Option<(usize, usize, u32)> {
     let last_len: u64 = u64::try_from(last.bytes.len()).ok()?;
     let end_va: u64 = last.address.checked_add(last_len)?;
+    byte_window_from_range(code, base, entry_va, end_va)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn byte_window_from_range(
+    code: &[u8],
+    base: u64,
+    entry_va: u64,
+    end_va: u64,
+) -> Option<(usize, usize, u32)> {
     let size: u32 = saturating_u32(end_va.checked_sub(entry_va)?);
     let start_delta: u64 = entry_va.checked_sub(base)?;
     let end_delta: u64 = end_va.checked_sub(base)?;
     let start_off: usize = usize::try_from(start_delta).ok()?;
     let end_off: usize = usize::try_from(end_delta).ok()?;
-    let slice: &[u8] = code.get(start_off..end_off)?;
-    Some((slice, size))
+    if end_off > code.len() || start_off >= end_off {
+        return None;
+    }
+    Some((start_off, end_off, size))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn render_declined_function(
-    entry_va: u64,
+    site: &FunctionSite,
     size: u32,
     insns: &[DisasmInsn],
     reason: String,
 ) -> PseudoCFunction {
-    let name: String = format!("sub_{entry_va:x}");
-    let pseudo_c: String = render_unmodeled(&name, entry_va, insns, &reason);
+    let name: &str = site.name.as_str();
+    let pseudo_c: String = render_unmodeled(name, site.entry_va, insns, &reason);
     PseudoCFunction {
         id: FunctionId {
-            entry_va,
-            name: name.clone(),
+            entry_va: site.entry_va,
+            name: site.name.clone(),
         },
         signature: format!("void {name}(void)"),
         pseudo_c,
@@ -255,7 +505,35 @@ fn render_declined_function(
         parameter_count: 0,
         modeled: false,
         note: Some(reason),
+        name_source: site.name_source,
+        resolved_callees: Vec::new(),
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn roster_from_dispatch(
+    blob: &[u8],
+    arch: BccArch,
+    base: u64,
+    code_len: usize,
+) -> Vec<RosterEntry> {
+    let region_end: u64 = base.saturating_add(u64::try_from(code_len).unwrap_or(u64::MAX));
+    crate::bcc::dispatch::parse_dispatch(blob, arch, 0)
+        .into_iter()
+        .filter(|entry: &crate::bcc::dispatch::DispatchEntry| {
+            entry.code_offset >= base && entry.code_offset < region_end
+        })
+        .map(|entry: crate::bcc::dispatch::DispatchEntry| RosterEntry {
+            entry_va: entry.code_offset,
+            end_va: entry
+                .code_offset
+                .saturating_add(entry.size)
+                .min(region_end)
+                .max(entry.code_offset.saturating_add(1)),
+            name: entry.name,
+        })
+        .take(MAX_FUNCTIONS)
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -424,6 +702,17 @@ const fn arch_to_abi(arch: BccArch) -> Option<PseudoAbi> {
         BccArch::LinuxX64 => Some(PseudoAbi::SysV),
         BccArch::DarwinArm64 | BccArch::Other(_) => None,
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn unsupported_architecture_note(arch: BccArch) -> String {
+    let target: String = match arch {
+        BccArch::WinX64 | BccArch::LinuxX64 | BccArch::DarwinArm64 => arch.label().to_owned(),
+        BccArch::Other(id) => format!("an unrecognized architecture id {id:#x}"),
+    };
+    format!(
+        "BCC body targets {target}; unsupported architecture for the in-crate pseudo-C lift, which models x86-64 only; image is surfaced but not lifted"
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -624,6 +913,11 @@ mod tests {
             out.notes
                 .iter()
                 .any(|n: &String| n.contains("unsupported architecture"))
+        );
+        assert!(
+            out.notes.iter().any(|n: &String| n.contains("0xdead")),
+            "the refusal must name the unrecognized architecture id: {:?}",
+            out.notes
         );
     }
 

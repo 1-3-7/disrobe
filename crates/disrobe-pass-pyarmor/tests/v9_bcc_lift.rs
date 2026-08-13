@@ -69,7 +69,7 @@ fn real_bcc_body_is_surfaced_as_pseudo_c_in_crate() {
     assert_eq!(lift.architecture, BccArch::WinX64);
     assert!(
         lift.functions.len() >= 4,
-        "the four authored functions (mix_add/clamp/poly/main) plus module bootstrap are recovered as distinct native functions; got {}",
+        "the four functions the BCC dispatch descriptor table lists for this build are recovered as distinct native functions; got {}",
         lift.functions.len()
     );
 

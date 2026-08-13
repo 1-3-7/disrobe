@@ -8,7 +8,7 @@ use crate::v8v9::BccBlob;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod body_recover;
-mod dispatch;
+pub(crate) mod dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch_recover;
 mod join;
