@@ -1169,10 +1169,7 @@ pub(crate) fn resolve_reported_names(
             });
             let mut out: BTreeMap<String, String> = BTreeMap::new();
             for batch in ordered.chunks(DEMANGLE_BATCH) {
-                for (mangled, demangled) in batch
-                    .iter()
-                    .zip(demangle_batch(demangler, batch))
-                {
+                for (mangled, demangled) in batch.iter().zip(demangle_batch(demangler, batch)) {
                     out.insert(mangled.clone(), demangled);
                 }
             }
