@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use disrobe_nir::{NirBlock, NirFunction, NirInstr, NirModule, NirOp, basic_blocks};
+use disrobe_nir::{NirBlock, NirFunction, NirInstr, NirModule, NirOp, SourceLang, basic_blocks};
+
+use crate::summary::{SummaryDecline, SymbolicSummary, symbolic_summary};
 
 pub const MAX_FUNCTIONS_PER_MODULE: usize = 50_000;
 pub const MAX_PROPAGATION_ROUNDS: u32 = 8;
@@ -10,6 +12,7 @@ pub const MAX_PROPAGATION_ROUNDS: u32 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchTier {
     LeafExact,
+    SymbolicSummary,
     Propagated { round: u32 },
 }
 
@@ -20,6 +23,7 @@ pub enum Indeterminate {
     RoundBudgetExhausted,
     FunctionCountCapExceeded,
     DuplicateAddress,
+    SourceLanguageMismatch { base: SourceLang, other: SourceLang },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +38,8 @@ pub struct StructuralMatchReport {
     pub matches: Vec<StructuralPair>,
     pub unmatched_base: Vec<(u64, Indeterminate)>,
     pub unmatched_other: Vec<(u64, Indeterminate)>,
+    pub summary_declines_base: Vec<(u64, SummaryDecline)>,
+    pub summary_declines_other: Vec<(u64, SummaryDecline)>,
     pub rounds_run: u32,
 }
 
@@ -44,6 +50,22 @@ impl StructuralMatchReport {
             .iter()
             .find(|pair: &&StructuralPair| pair.base_address == base_address)
             .map(|pair: &StructuralPair| pair.other_address)
+    }
+
+    #[must_use]
+    pub fn matched_tier(&self, base_address: u64) -> Option<MatchTier> {
+        self.matches
+            .iter()
+            .find(|pair: &&StructuralPair| pair.base_address == base_address)
+            .map(|pair: &StructuralPair| pair.tier)
+    }
+
+    #[must_use]
+    pub fn summary_decline_base(&self, address: u64) -> Option<SummaryDecline> {
+        self.summary_declines_base
+            .iter()
+            .find(|&&(candidate, _): &&(u64, SummaryDecline)| candidate == address)
+            .map(|&(_, decline): &(u64, SummaryDecline)| decline)
     }
 
     #[must_use]
@@ -358,23 +380,45 @@ impl MatchState {
     }
 }
 
-fn capped_report(base: &NirModule, other: &NirModule) -> StructuralMatchReport {
+fn refused_report(
+    base: &NirModule,
+    other: &NirModule,
+    reason: Indeterminate,
+) -> StructuralMatchReport {
     let unmatched_base: Vec<(u64, Indeterminate)> = base
         .functions
         .iter()
-        .map(|function: &NirFunction| (function.address, Indeterminate::FunctionCountCapExceeded))
+        .map(|function: &NirFunction| (function.address, reason))
         .collect();
     let unmatched_other: Vec<(u64, Indeterminate)> = other
         .functions
         .iter()
-        .map(|function: &NirFunction| (function.address, Indeterminate::FunctionCountCapExceeded))
+        .map(|function: &NirFunction| (function.address, reason))
         .collect();
     StructuralMatchReport {
         matches: Vec::new(),
         unmatched_base,
         unmatched_other,
+        summary_declines_base: Vec::new(),
+        summary_declines_other: Vec::new(),
         rounds_run: 0,
     }
+}
+
+fn summarize_module(
+    functions: &BTreeMap<u64, &NirFunction>,
+) -> (BTreeMap<u64, SymbolicSummary>, Vec<(u64, SummaryDecline)>) {
+    let mut summaries: BTreeMap<u64, SymbolicSummary> = BTreeMap::new();
+    let mut declines: Vec<(u64, SummaryDecline)> = Vec::new();
+    for (&address, function) in functions {
+        match symbolic_summary(function) {
+            Ok(summary) => {
+                summaries.insert(address, summary);
+            }
+            Err(decline) => declines.push((address, decline)),
+        }
+    }
+    (summaries, declines)
 }
 
 fn classify_unmatched(
@@ -403,10 +447,20 @@ fn has_unresolved_internal_call(tokens: &[CalleeToken]) -> bool {
 
 #[must_use]
 pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchReport {
+    if base.lang != other.lang {
+        return refused_report(
+            base,
+            other,
+            Indeterminate::SourceLanguageMismatch {
+                base: base.lang,
+                other: other.lang,
+            },
+        );
+    }
     if base.functions.len() > MAX_FUNCTIONS_PER_MODULE
         || other.functions.len() > MAX_FUNCTIONS_PER_MODULE
     {
-        return capped_report(base, other);
+        return refused_report(base, other, Indeterminate::FunctionCountCapExceeded);
     }
 
     let (base_functions, base_collided_addresses): (BTreeMap<u64, &NirFunction>, Vec<u64>) =
@@ -427,6 +481,32 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
         .map(|(&addr, function): (&u64, &&NirFunction)| (addr, leaf_signature(function)))
         .collect();
     state.promote_unique_buckets(&leaf_sig_base, &leaf_sig_other, MatchTier::LeafExact);
+
+    let (summary_base, summary_declines_base): (
+        BTreeMap<u64, SymbolicSummary>,
+        Vec<(u64, SummaryDecline)>,
+    ) = summarize_module(&base_functions);
+    let (summary_other, summary_declines_other): (
+        BTreeMap<u64, SymbolicSummary>,
+        Vec<(u64, SummaryDecline)>,
+    ) = summarize_module(&other_functions);
+    let pending_summary_base: BTreeMap<u64, SymbolicSummary> = summary_base
+        .into_iter()
+        .filter(|(address, _): &(u64, SymbolicSummary)| {
+            !state.confirmed_base_to_other.contains_key(address)
+        })
+        .collect();
+    let pending_summary_other: BTreeMap<u64, SymbolicSummary> = summary_other
+        .into_iter()
+        .filter(|(address, _): &(u64, SymbolicSummary)| {
+            !state.confirmed_other_to_base.contains_key(address)
+        })
+        .collect();
+    state.promote_unique_buckets(
+        &pending_summary_base,
+        &pending_summary_other,
+        MatchTier::SymbolicSummary,
+    );
 
     let cfg_key_base: BTreeMap<u64, CfgShapeKey> = base_functions
         .iter()
@@ -560,6 +640,8 @@ pub fn structural_match(base: &NirModule, other: &NirModule) -> StructuralMatchR
         matches,
         unmatched_base,
         unmatched_other,
+        summary_declines_base,
+        summary_declines_other,
         rounds_run,
     }
 }
