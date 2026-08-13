@@ -18,6 +18,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
         "provenance_lookup",
         "ioc",
         "behavior",
+        "coverage",
         "strings",
         "call_graph",
         "xrefs",
@@ -30,7 +31,7 @@ fn tools_list_exposes_real_tools_with_object_schemas() {
     for expected in ["auto", "decompile"] {
         assert!(names.contains(&expected), "missing chain tool {expected}");
     }
-    let expected_count: usize = if cfg!(feature = "chain") { 13 } else { 11 };
+    let expected_count: usize = if cfg!(feature = "chain") { 14 } else { 12 };
     assert_eq!(
         tools.len(),
         expected_count,

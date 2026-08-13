@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use disrobe_binfmt::{ByteCoverage, CoverageRegion, file_byte_coverage};
 use disrobe_core::chain::{ChainPassRecovery, ChainRecoveryReport};
 use disrobe_core::provenance_map::{LineProvenance, ProvenanceMap};
 use disrobe_core::recovery::ConfidenceTier;
@@ -216,6 +217,72 @@ pub struct DecompileOut {
 #[schemars(crate = "rmcp::schemars")]
 pub struct IocParams {
     pub bytes_b64: String,
+}
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CoverageParams {
+    pub bytes_b64: String,
+}
+
+const MAX_COVERAGE_REGIONS: usize = 512;
+
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CoverageRegionOut {
+    pub start: u64,
+    pub end: u64,
+    pub class: String,
+    pub claimant: Option<String>,
+}
+
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CoverageOut {
+    pub format: String,
+    pub file_len: u64,
+    pub claimed_bytes: u64,
+    pub slack_bytes: u64,
+    pub unclaimed_bytes: u64,
+    pub truncated_bytes: u64,
+    pub coverage_ratio: f64,
+    pub complete: bool,
+    pub overlap_detected: bool,
+    pub region_count: usize,
+    pub regions_truncated: bool,
+    pub regions: Vec<CoverageRegionOut>,
+}
+
+impl From<ByteCoverage> for CoverageOut {
+    fn from(c: ByteCoverage) -> Self {
+        let region_count: usize = c.regions.len();
+        let regions: Vec<CoverageRegionOut> = c
+            .regions
+            .iter()
+            .take(MAX_COVERAGE_REGIONS)
+            .map(|region: &CoverageRegion| CoverageRegionOut {
+                start: region.start,
+                end: region.end,
+                class: region.class.label().to_owned(),
+                claimant: region.claimant.clone(),
+            })
+            .collect();
+        Self {
+            format: format!("{:?}", c.format),
+            file_len: c.file_len,
+            claimed_bytes: c.claimed_bytes,
+            slack_bytes: c.slack_bytes,
+            unclaimed_bytes: c.unclaimed_bytes,
+            truncated_bytes: c.truncated_bytes,
+            coverage_ratio: c.coverage_ratio,
+            complete: c.complete,
+            overlap_detected: c.overlap_detected,
+            region_count,
+            regions_truncated: region_count > MAX_COVERAGE_REGIONS,
+            regions,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
@@ -646,6 +713,24 @@ impl DisrobeMcp {
         Ok(Json(BehaviorOut::from(analyze_behavior(
             &bytes, &p.imports,
         ))))
+    }
+
+    #[rmcp::tool(
+        name = "coverage",
+        description = "Account for every byte of an inline base64 PE / ELF / Mach-O image against the structures its format declares: bytes a structure claims, alignment slack, bytes nothing claims (where an appended overlay shows up), bytes a structure declares past the end of the file, and structures that overlap. Never reads disk."
+    )]
+    fn coverage(
+        &self,
+        Parameters(p): Parameters<CoverageParams>,
+    ) -> Result<Json<CoverageOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let mapped: ByteCoverage = file_byte_coverage(&bytes).map_err(|e| {
+            ErrorData::invalid_params(
+                format!("DR-MCP-0660: cannot account for the bytes of this input: {e}"),
+                None,
+            )
+        })?;
+        Ok(Json(CoverageOut::from(mapped)))
     }
 
     #[rmcp::tool(
@@ -1193,6 +1278,7 @@ mod tests {
             "provenance_lookup",
             "ioc",
             "behavior",
+            "coverage",
             "strings",
             "call_graph",
             "xrefs",
@@ -1205,7 +1291,7 @@ mod tests {
         for expected in ["auto", "decompile"] {
             assert!(names.contains(&expected), "missing chain tool {expected}");
         }
-        let expected_count: usize = if cfg!(feature = "chain") { 13 } else { 11 };
+        let expected_count: usize = if cfg!(feature = "chain") { 14 } else { 12 };
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
@@ -1462,6 +1548,83 @@ mod tests {
             bytes_b64: "!!!".to_owned(),
         })));
         assert!(garbage.message.contains("DR-MCP-0181"));
+    }
+
+    #[test]
+    fn coverage_accounts_for_every_byte_of_a_real_image() {
+        let image: Vec<u8> = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/native/formats/hello.pe64.exe"),
+        )
+        .expect("this case accounts for a committed image, so its absence is a damaged checkout");
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let Json(out): Json<CoverageOut> = mcp
+            .coverage(Parameters(CoverageParams {
+                bytes_b64: b64(&image),
+            }))
+            .unwrap();
+        assert_eq!(
+            out.file_len,
+            u64::try_from(image.len()).expect("length fits an address")
+        );
+        assert!(out.claimed_bytes > 0, "a real image claims bytes");
+        assert_eq!(
+            out.claimed_bytes
+                .saturating_add(out.unclaimed_bytes)
+                .saturating_add(out.slack_bytes),
+            out.file_len,
+            "every byte belongs to a claimed region, an unclaimed one, or alignment slack"
+        );
+        assert!(!out.regions.is_empty(), "the map must carry its regions");
+        assert!(
+            !out.regions_truncated,
+            "a small committed image must not exceed the region cap"
+        );
+    }
+
+    #[test]
+    fn coverage_reports_an_appended_overlay_as_bytes_nothing_claims() {
+        let mut image: Vec<u8> = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../corpus/native/formats/hello.pe64.exe"),
+        )
+        .expect("committed image");
+        let clean: u64 = u64::try_from(image.len()).expect("length fits an address");
+        image.extend_from_slice(&[0xA5_u8; 4096]);
+
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let Json(out): Json<CoverageOut> = mcp
+            .coverage(Parameters(CoverageParams {
+                bytes_b64: b64(&image),
+            }))
+            .unwrap();
+        assert!(
+            out.unclaimed_bytes >= 4096,
+            "4096 appended bytes belong to no declared structure, got {}",
+            out.unclaimed_bytes
+        );
+        assert!(
+            !out.complete,
+            "an image carrying an overlay is not complete"
+        );
+        assert!(
+            out.regions
+                .iter()
+                .any(|r: &CoverageRegionOut| r.class == "unclaimed" && r.start == clean),
+            "the unclaimed run must begin where the original image ended, at {clean:#x}"
+        );
+    }
+
+    #[test]
+    fn coverage_refuses_bytes_that_are_not_an_image() {
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let err: ErrorData = expect_err(mcp.coverage(Parameters(CoverageParams {
+            bytes_b64: b64(&[0x00_u8; 64]),
+        })));
+        assert!(
+            format!("{err:?}").contains("DR-MCP-0660"),
+            "the refusal must carry its typed code, got {err:?}"
+        );
     }
 
     #[test]
