@@ -161,6 +161,7 @@ struct LoopTargets {
     irep_index: u32,
     condition: usize,
     body: usize,
+    exit: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,6 +183,7 @@ impl LoopContext {
 enum LoopControl {
     Next,
     Redo,
+    Break { value_reg: Option<u32> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +210,7 @@ enum Region {
     While {
         condition: usize,
         body: usize,
+        exit: usize,
         exit_branch: usize,
         back_jmp: usize,
         cond_reg: u32,
@@ -661,6 +664,7 @@ impl Lifter<'_> {
         let Region::While {
             condition,
             body,
+            exit,
             exit_branch,
             back_jmp,
             cond_reg,
@@ -692,6 +696,7 @@ impl Lifter<'_> {
                 irep_index: frame.irep_index,
                 condition: *condition,
                 body: *body,
+                exit: *exit,
             }));
             let body_result: Result<()> =
                 self.lift_regions(frame, body_regions, regs, pending, inner, out);
@@ -1234,6 +1239,10 @@ impl Lifter<'_> {
             MrubyOp::JmpUw => match self.loop_control(frame, i) {
                 Some(LoopControl::Next) => push_line(out, format_args!("{pad}next")),
                 Some(LoopControl::Redo) => push_line(out, format_args!("{pad}redo")),
+                Some(LoopControl::Break { value_reg }) => {
+                    let carried: RegVal = value_reg.map_or(RegVal::Nil, |reg: u32| regs.get(reg));
+                    emit_keyword_value("break", &carried, &pad, out);
+                }
                 None => self.mark(instr, &pad, out),
             },
             MrubyOp::Karg => regs.set(a, RegVal::Local(symbol(rec, b))),
@@ -1351,7 +1360,7 @@ impl Lifter<'_> {
         match target {
             target if target == current.condition => Some(LoopControl::Next),
             target if target == current.body => Some(LoopControl::Redo),
-            _ => None,
+            target => while_break_control(frame.ins, current.exit, target),
         }
     }
 
@@ -1494,6 +1503,34 @@ fn structurable(rec: &IrepRecord, ins: &[MrubyInstruction]) -> bool {
             .any(|i| matches!(i.op, MrubyOp::Except | MrubyOp::Rescue | MrubyOp::RaiseIf))
 }
 
+fn while_break_control(
+    ins: &[MrubyInstruction],
+    exit: usize,
+    target: usize,
+) -> Option<LoopControl> {
+    if target == exit {
+        return Some(LoopControl::Break { value_reg: None });
+    }
+    if Some(target) != exit.checked_add(1) {
+        return None;
+    }
+    let landing: &MrubyInstruction = ins.get(exit)?;
+    if landing.op != MrubyOp::LoadNil {
+        return None;
+    }
+    let value_reg: u32 = landing.operands.first().copied()?;
+    if last_return_slot(ins) != Some(target) {
+        return None;
+    }
+    let tail: &MrubyInstruction = ins.get(target)?;
+    if tail.op != MrubyOp::Return || tail.operands.first().copied() != Some(value_reg) {
+        return None;
+    }
+    Some(LoopControl::Break {
+        value_reg: Some(value_reg),
+    })
+}
+
 fn jump_target_index(ins: &[MrubyInstruction], k: usize) -> Option<usize> {
     let instr: &MrubyInstruction = ins.get(k)?;
     let offset_raw: u32 = match instr.op {
@@ -1583,6 +1620,7 @@ fn try_structure_at(
                 let region: Region = Region::While {
                     condition: head,
                     body: i.saturating_add(1),
+                    exit: exit_idx,
                     exit_branch: i,
                     back_jmp,
                     cond_reg,
@@ -2677,6 +2715,109 @@ mod tests {
             output.source
         );
         assert!(output.source.contains("  next"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn jmpuw_to_the_current_while_exit_renders_a_bare_break() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 6]),
+            ("JMPUW", &[3]),
+            ("JMP", &[65_524]),
+            ("RETURN", &[0]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 0, "got: {}", output.source);
+        assert!(
+            output.source.contains("while true"),
+            "got: {}",
+            output.source
+        );
+        assert!(
+            output.source.contains("  break\n"),
+            "got: {}",
+            output.source
+        );
+    }
+
+    #[test]
+    fn jmpuw_past_a_loop_exit_carries_the_value_the_method_returns() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 8]),
+            ("LOADI_5", &[2]),
+            ("JMPUW", &[5]),
+            ("JMP", &[65_522]),
+            ("LOADNIL", &[2]),
+            ("RETURN", &[2]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_opcodes, 0, "got: {}", output.source);
+        assert!(output.source.contains("break 5"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn jmpuw_past_a_loop_exit_whose_value_is_returned_elsewhere_stays_unmodeled() {
+        let iseq: Vec<u8> = asm(&[
+            ("LOADT", &[1]),
+            ("JMPNOT", &[1, 8]),
+            ("LOADI_5", &[2]),
+            ("JMPUW", &[5]),
+            ("JMP", &[65_522]),
+            ("LOADNIL", &[2]),
+            ("RETURN", &[3]),
+        ]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(output.unmodeled_mnemonics, vec!["JMPUW"]);
+        assert!(!output.source.contains("break"), "got: {}", output.source);
+    }
+
+    #[test]
+    fn while_break_control_refuses_an_exit_outside_the_instruction_stream() {
+        let ins: Vec<MrubyInstruction> =
+            disassemble_iseq(&asm(&[("LOADNIL", &[2]), ("RETURN", &[2])])).expect("disasm");
+
+        assert_eq!(
+            while_break_control(&ins, ins.len(), ins.len().saturating_add(1)),
+            None,
+            "an exit index one past the stream has no landing instruction to read"
+        );
+        assert_eq!(
+            while_break_control(&ins, usize::MAX, 0),
+            None,
+            "exit + 1 must not wrap when the exit index is the largest representable usize"
+        );
+        assert_eq!(
+            while_break_control(&[], 0, 1),
+            None,
+            "an empty instruction stream has no loop exit to break out of"
+        );
+        assert_eq!(
+            while_break_control(&ins, 0, 1),
+            Some(LoopControl::Break { value_reg: Some(2) }),
+            "a LOADNIL landing whose register the tail RETURN reads is the value-carrying form"
+        );
     }
 
     #[test]

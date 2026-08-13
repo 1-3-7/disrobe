@@ -24,9 +24,19 @@ const GRADED: &str = "the mrbc recompile and mruby output comparison over the br
 
 const STRAIGHT_LINE_SET: &[&str] = &["arith", "strings", "coll", "klass", "advanced"];
 const EQUIVALENT_SET: &[&str] = &[
-    "arith", "strings", "coll", "klass", "control", "blocks", "advanced", "jumps",
+    "arith",
+    "strings",
+    "coll",
+    "klass",
+    "control",
+    "blocks",
+    "advanced",
+    "jumps",
+    "loopbreak",
+    "whilebreak",
+    "untilbreak",
 ];
-const WITHHELD_SET: &[&str] = &["exceptions", "loopbreak", "kwargs", "ensurecase"];
+const WITHHELD_SET: &[&str] = &["exceptions", "kwargs", "ensurecase", "loopvalue"];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -40,6 +50,9 @@ const BREADTH_SET: &[&str] = &[
     "loopbreak",
     "kwargs",
     "ensurecase",
+    "whilebreak",
+    "untilbreak",
+    "loopvalue",
 ];
 
 const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
@@ -52,9 +65,12 @@ const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
     ("exceptions", 22, 27),
     ("advanced", 138, 138),
     ("jumps", 63, 63),
-    ("loopbreak", 34, 35),
+    ("loopbreak", 35, 35),
     ("kwargs", 30, 31),
     ("ensurecase", 29, 33),
+    ("whilebreak", 54, 54),
+    ("untilbreak", 64, 64),
+    ("loopvalue", 29, 30),
 ];
 
 const UNMODELED_REASONS: &[(&str, &str)] = &[
@@ -70,9 +86,10 @@ const UNMODELED_REASONS: &[(&str, &str)] = &[
     ),
     (
         "JMPUW",
-        "inside a structurally wrapped loop body, condition and body targets encode operand-free next \
-         and redo; condition-region jumps remain unmodeled because no loop wrapper has been emitted, \
-         while an exit-target break remains unmodeled until its preceding result flow is proven",
+        "an unwinding jump whose target is neither the loop condition, the loop body, the loop \
+         exit, nor the slot after a loop exit that loads nil into the register the enclosing method \
+         returns; mruby leaves the while-expression value in that register, so a break that hands \
+         it to any other consumer cannot be rendered without inventing where the value goes",
     ),
     (
         "RAISEIF",
@@ -304,6 +321,98 @@ fn rescue_control_flow_withholds_partial_reconstruction() {
         body.lines()
             .all(|line: &str| line.trim().is_empty() || line.trim_start().starts_with('#')),
         "withheld reconstruction must not contain executable ruby: {body}"
+    );
+}
+
+#[test]
+fn while_break_recovers_both_the_bare_and_the_value_carrying_form() {
+    let statement_position: String = reconstructed_body(&recover("whilebreak"));
+    assert!(
+        statement_position
+            .lines()
+            .any(|line: &str| line.trim() == "break"),
+        "a break whose loop value is discarded must render as a bare break: {statement_position}"
+    );
+    assert_eq!(
+        statement_position
+            .lines()
+            .filter(|line: &&str| line.trim() == "break")
+            .count(),
+        2,
+        "whilebreak carries one break in a flat loop and one in a nested inner loop: \
+         {statement_position}"
+    );
+
+    let carried: String = reconstructed_body(&recover("untilbreak"));
+    assert!(
+        carried.contains("until ("),
+        "the until form must survive the break lowering: {carried}"
+    );
+    for expected in ["break (t3 * 10)", "break :\"small\"", "break :\"big\""] {
+        assert!(
+            carried.contains(expected),
+            "expected `{expected}` in the recovered until/while breaks: {carried}"
+        );
+    }
+
+    let tail_valued: String = reconstructed_body(&recover("loopbreak"));
+    assert!(
+        tail_valued.contains("break arg0[t4]"),
+        "a break whose value becomes the enclosing method result must keep that value: \
+         {tail_valued}"
+    );
+}
+
+#[test]
+fn a_while_value_handed_to_a_further_consumer_is_refused_not_guessed() {
+    let dec: MrubyDecompiled = recover("loopvalue");
+    assert!(
+        !dec.has_body,
+        "the while-expression value is assigned to a local, so the loop result is not the method \
+         result and the break value has nowhere provable to go"
+    );
+    assert_eq!(
+        dec.unmodeled_mnemonics,
+        vec!["JMPUW".to_owned()],
+        "the refusal must be recorded against the jump that could not be lowered"
+    );
+    let body: String = reconstructed_body(&dec);
+    assert!(
+        !body.contains("break"),
+        "a refused break must not leak a partial lowering: {body}"
+    );
+    assert!(
+        !body.contains("= nil"),
+        "the refusal exists because rendering the loop value as nil would be wrong: {body}"
+    );
+}
+
+#[test]
+fn redo_carries_no_value_in_the_mruby_grammar() {
+    let mrbc: Option<ToolchainBanner> = require_with_requirement(
+        &MRBC,
+        Some(MRUBY_MEASURED_SERIES),
+        GRADED,
+        ToolchainRequirement::Mandatory,
+    );
+    assert!(mrbc.is_some(), "the pinned mrbc probe must succeed");
+
+    let (_bare_scratch, bare_path): (ScratchFile, PathBuf) = write_temp(
+        "redo_bare",
+        "i = 0\nwhile i < 1\n  i += 1\n  redo if false\nend\n",
+    );
+    assert!(
+        mrbc_recompiles(&bare_path),
+        "a bare redo must compile, or this probe is not testing what it claims"
+    );
+
+    let (_valued_scratch, valued_path): (ScratchFile, PathBuf) =
+        write_temp("redo_valued", "while true\n  redo 1\nend\n");
+    assert!(
+        !mrbc_recompiles(&valued_path),
+        "mruby 3.3.0 rejects `redo 1` with `syntax error, unexpected integer literal`; redo is a \
+         valueless keyword in the Ruby grammar, so there is no value-carrying redo encoding for \
+         the lifter to recover and none may be invented"
     );
 }
 

@@ -22,6 +22,9 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 "mruby/breadth/loopbreak.rb" = { kind = "source", description = "value-carrying break inside a while loop, compiled through JMPUW rather than the dedicated BREAK opcode" }
 "mruby/breadth/kwargs.rb" = { kind = "source", description = "an optional keyword argument with a literal default, compiled through KEY_P" }
 "mruby/breadth/ensurecase.rb" = { kind = "source", description = "begin/rescue/else/ensure breadth" }
+"mruby/breadth/whilebreak.rb" = { kind = "source", description = "a break whose while-loop value is discarded, in statement position and again inside a nested inner while; mrbc emits no loop-exit LOADNIL for either, so the JMPUW lands on the exit index itself" }
+"mruby/breadth/untilbreak.rb" = { kind = "source", description = "value-carrying break out of an until loop, and two breaks carrying different symbol values out of one while loop" }
+"mruby/breadth/loopvalue.rb" = { kind = "source", description = "a value-carrying break in a while loop whose value is assigned to a local rather than returned; the break value has no provable destination, so the recovered source must stay withheld" }
 "mruby/legacy/greet_rite0004.rb" = { kind = "source", description = "greet(name) source recompiled unmodified through a real mruby 1.4.1 toolchain to produce a RITE0004 binary, the catch-field-absent branch of version_layout" }
 "megafile/edge_cases.rb" = { kind = "source", description = "1677-LOC Ruby 1.9-3.4 feature megafile: blocks/procs/lambdas, &-operator, Symbol#to_proc, splat/double-splat, keyword args, pattern matching (all kinds), endless methods, hash short syntax, safe-nav, rescue modifier, retry, ensure, BEGIN/END, refinements, Struct/Data class, Comparable/Enumerable mixins, lazy enumerators, fibers, ractors, ObjectSpace, GC.stat, method_missing, define_method, class_eval, instance_eval, singleton class, include vs prepend, ancestors, frozen string literal, magic comments, Threading mutex/queue, beginless/endless ranges, heredocs, percent literals, forward-all (...), heredocs with interp" }
 "mri/yarv/literals.rb" = { kind = "source", description = "focused literal-pool coverage: frozen array/string constants, shareable_constant_value magic comment, true/false/nil immediates, symbol-keyed hash, inclusive/exclusive/beginless/endless ranges, opt_newarray_send (.max), endless methods" }
@@ -227,6 +230,42 @@ magic = "RITE"
 format_version = "0300"
 size_bytes = 271
 notes = "real mruby 3.3.0 RITE binary; begin/rescue/else/ensure, catch_count > 0 withholds the whole file"
+
+[[fixtures]]
+path = "mruby/breadth/whilebreak.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o whilebreak.mrb whilebreak.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 342
+notes = "real mruby 3.3.0 RITE binary; when the while-expression value is discarded mrbc emits no loop-exit LOADNIL and a break jumps to the exit index itself, the encoding the value-carrying form does not use"
+
+[[fixtures]]
+path = "mruby/breadth/untilbreak.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o untilbreak.mrb untilbreak.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 367
+notes = "real mruby 3.3.0 RITE binary; an until loop and a while loop each leave a break value in the register the loop-exit LOADNIL writes, and the JMPUW jumps one slot past that exit"
+
+[[fixtures]]
+path = "mruby/breadth/loopvalue.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o loopvalue.mrb loopvalue.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 226
+notes = "real mruby 3.3.0 RITE binary; the while-expression value is moved into a local instead of returned, so the break value has no provable destination and the JMPUW stays unmodeled"
 
 [[fixtures]]
 path = "mruby/legacy/greet_rite0004.mrb"
