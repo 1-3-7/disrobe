@@ -710,9 +710,65 @@ struct Lifter<'a> {
     short_circuits: Vec<ShortCircuit>,
     branch_marks: Vec<BranchMark>,
     hoisted_temporaries: u32,
+    incoming_stacks: BTreeMap<usize, Vec<Vec<Expr>>>,
+    untracked_stack_entries: BTreeSet<usize>,
+    tracked_stack_nodes: usize,
+    stack_tracking_exhausted: bool,
+    switch_direction_refusals: BTreeSet<usize>,
+    switch_budget_refusals: BTreeSet<usize>,
 }
 
 impl Lifter<'_> {
+    fn record_edge_stack(&mut self, target: usize) {
+        const MAX_TRACKED_PREDECESSORS: usize = 256;
+        const MAX_TRACKED_STACK_NODES: usize = 65_536;
+        if self.stack_tracking_exhausted {
+            return;
+        }
+        if self.stack.len() > STACK_SENTINEL_DEPTH || self.untracked_stack_entries.contains(&target)
+        {
+            self.untracked_stack_entries.insert(target);
+            self.incoming_stacks.remove(&target);
+            return;
+        }
+        if self
+            .incoming_stacks
+            .get(&target)
+            .is_some_and(|entries: &Vec<Vec<Expr>>| {
+                entries.iter().any(|entry: &Vec<Expr>| entry == &self.stack)
+            })
+        {
+            return;
+        }
+        if self
+            .incoming_stacks
+            .get(&target)
+            .is_some_and(|entries: &Vec<Vec<Expr>>| entries.len() == MAX_TRACKED_PREDECESSORS)
+        {
+            self.untracked_stack_entries.insert(target);
+            self.incoming_stacks.remove(&target);
+            return;
+        }
+        let remaining: usize = MAX_TRACKED_STACK_NODES.saturating_sub(self.tracked_stack_nodes);
+        let nodes: usize = self
+            .stack
+            .iter()
+            .fold(0usize, |total: usize, value: &Expr| {
+                total.saturating_add(expr_node_count_capped(value, remaining.saturating_add(1)))
+            });
+        if nodes > remaining {
+            self.incoming_stacks.clear();
+            self.untracked_stack_entries.clear();
+            self.stack_tracking_exhausted = true;
+            return;
+        }
+        self.tracked_stack_nodes = self.tracked_stack_nodes.saturating_add(nodes);
+        self.incoming_stacks
+            .entry(target)
+            .or_default()
+            .push(self.stack.clone());
+    }
+
     fn nearest_with(&self) -> Option<&Expr> {
         self.scope_stack
             .iter()
@@ -767,7 +823,8 @@ impl Lifter<'_> {
             })
     }
 
-    fn resolve_short_circuits(&mut self, label: usize) {
+    fn resolve_short_circuits(&mut self, label: usize) -> bool {
+        let mut resolved: bool = false;
         while let Some(position) = self
             .short_circuits
             .iter()
@@ -787,13 +844,15 @@ impl Lifter<'_> {
                 self.remove_statement(discard);
             }
             self.remove_statement(pending.branch_index);
+            resolved = true;
         }
+        resolved
     }
 
-    fn resolve_ternary(&mut self, label: usize) {
+    fn resolve_ternary(&mut self, label: usize) -> bool {
         let len: usize = self.statements.len();
         if len < 4 {
-            return;
+            return false;
         }
         let branch_index: usize = len - 4;
         let Some(position): Option<usize> = self
@@ -801,7 +860,7 @@ impl Lifter<'_> {
             .iter()
             .rposition(|m: &BranchMark| m.stmt_index == branch_index)
         else {
-            return;
+            return false;
         };
         let jump_matches: bool = matches!(
             self.statements[len - 3],
@@ -820,7 +879,7 @@ impl Lifter<'_> {
             || else_label == label
             || self.stack.len() != mark_height + 2
         {
-            return;
+            return false;
         }
         let else_value: Expr = self.pop();
         let then_value: Expr = self.pop();
@@ -832,6 +891,7 @@ impl Lifter<'_> {
         });
         self.remove_statement(len - 3);
         self.remove_statement(branch_index);
+        true
     }
 
     fn push(&mut self, e: Expr) {
@@ -861,7 +921,28 @@ impl Lifter<'_> {
         }
     }
 
-    fn reconcile_entry_height(&mut self, offset: usize, entry_height: usize, is_exc_target: bool) {
+    fn reconcile_entry_height(
+        &mut self,
+        offset: usize,
+        entry_height: usize,
+        is_exc_target: bool,
+        replace_values: bool,
+    ) {
+        if replace_values {
+            self.stack = (0..entry_height)
+                .map(|slot: usize| {
+                    if is_exc_target && slot == 0 {
+                        Expr::CaughtException
+                    } else {
+                        Expr::Phi {
+                            block: offset,
+                            slot,
+                        }
+                    }
+                })
+                .collect();
+            return;
+        }
         let have: usize = self.stack.len();
         if have >= entry_height {
             return;
@@ -880,6 +961,91 @@ impl Lifter<'_> {
         }
         seeded.append(&mut self.stack);
         self.stack = seeded;
+    }
+
+    fn enter_label(&mut self, offset: usize, stack_analysis: &StackAnalysis, is_exc_target: bool) {
+        let pending_value_arm: bool = self
+            .branch_marks
+            .iter()
+            .any(|mark: &BranchMark| mark.else_label == offset);
+        self.statements.push(Stmt::Label(offset));
+        let resolved_value: bool =
+            self.resolve_short_circuits(offset) | self.resolve_ternary(offset);
+        if pending_value_arm {
+            return;
+        }
+        if let Some(&height) = stack_analysis.entry_heights.get(&offset) {
+            let untracked_entry: bool = self.untracked_stack_entries.remove(&offset);
+            if stack_analysis.value_joins.contains(&offset)
+                && (self.stack_tracking_exhausted || untracked_entry)
+            {
+                self.statements
+                    .push(Stmt::Comment(STACK_CONFLICT_MARKER.to_owned()));
+            }
+            let entries: Vec<Vec<Expr>> = self.incoming_stacks.remove(&offset).unwrap_or_default();
+            let tracked_values: Option<Vec<Expr>> = if resolved_value
+                || self.stack_tracking_exhausted
+                || untracked_entry
+                || !stack_analysis.forward_entries.contains(&offset)
+                || !(stack_analysis.switch_entries.contains(&offset)
+                    || stack_analysis.value_joins.contains(&offset))
+            {
+                None
+            } else {
+                let mut entries: Vec<Vec<Expr>> = entries;
+                if !stack_analysis.disconnected_entries.contains(&offset) {
+                    entries.push(self.stack.clone());
+                }
+                if entries.is_empty()
+                    || entries
+                        .iter()
+                        .any(|entry: &Vec<Expr>| entry.len() != height)
+                {
+                    None
+                } else {
+                    Some(
+                        (0..height)
+                            .map(|slot: usize| {
+                                let first: &Expr = &entries[0][slot];
+                                if entries
+                                    .iter()
+                                    .all(|entry: &Vec<Expr>| &entry[slot] == first)
+                                {
+                                    first.clone()
+                                } else {
+                                    Expr::Phi {
+                                        block: offset,
+                                        slot,
+                                    }
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+            };
+            if let Some(values) = tracked_values {
+                self.stack = values;
+                return;
+            }
+            let replace_values: bool = !resolved_value
+                && (stack_analysis.value_joins.contains(&offset)
+                    || stack_analysis.switch_entries.contains(&offset));
+            self.reconcile_entry_height(offset, height, is_exc_target, replace_values);
+        } else if stack_analysis.unreconciled.contains(&offset) {
+            self.stack.clear();
+            self.opaque_operands = self.opaque_operands.saturating_add(1);
+            self.statements
+                .push(Stmt::Comment(STACK_CONFLICT_MARKER.to_owned()));
+            if stack_analysis.height_conflicts.contains(&offset) {
+                self.statements
+                    .push(Stmt::Comment(STACK_HEIGHT_CONFLICT_MARKER.to_owned()));
+            }
+        } else if stack_analysis.height_conflicts.contains(&offset) {
+            self.stack.clear();
+            self.opaque_operands = self.opaque_operands.saturating_add(1);
+            self.statements
+                .push(Stmt::Comment(STACK_HEIGHT_CONFLICT_MARKER.to_owned()));
+        }
     }
 
     fn pop_n(&mut self, n: usize) -> Vec<Expr> {
@@ -1128,6 +1294,11 @@ fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSe
 }
 
 const STACK_SENTINEL_DEPTH: usize = 256;
+const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
+const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
+const SWITCH_DIRECTION_REFUSAL_MARKER: &str = "switch dispatch is backward or mixed";
+const SWITCH_ANALYSIS_BUDGET_MARKER: &str = "switch analysis budget exhausted";
+const MAX_SWITCH_ANALYSIS_FUEL: usize = 65_536;
 
 fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> {
     scratch.stack.truncate(STACK_SENTINEL_DEPTH);
@@ -1146,6 +1317,10 @@ fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> 
     if !scratch.dropped_opcodes.is_empty() {
         scratch.dropped_opcodes.clear();
     }
+    scratch.incoming_stacks.clear();
+    scratch.untracked_stack_entries.clear();
+    scratch.tracked_stack_nodes = 0;
+    scratch.stack_tracking_exhausted = false;
     scratch.opaque_operands = 0;
     step(scratch, line, line.offset + 1, line.offset + 1);
     if scratch.opaque_operands > 0 {
@@ -1242,6 +1417,90 @@ impl HeightCell {
     }
 }
 
+struct StackAnalysis {
+    entry_heights: BTreeMap<usize, usize>,
+    value_joins: BTreeSet<usize>,
+    switch_entries: BTreeSet<usize>,
+    forward_entries: BTreeSet<usize>,
+    disconnected_entries: BTreeSet<usize>,
+    unreconciled: BTreeSet<usize>,
+    height_conflicts: BTreeSet<usize>,
+    switch_direction_refusals: BTreeSet<usize>,
+    switch_budget_refusals: BTreeSet<usize>,
+}
+
+struct SwitchAnalysisFuel {
+    remaining: usize,
+    exhausted: bool,
+}
+
+impl SwitchAnalysisFuel {
+    fn new() -> Self {
+        Self {
+            remaining: MAX_SWITCH_ANALYSIS_FUEL,
+            exhausted: false,
+        }
+    }
+
+    fn charge(&mut self, units: usize) -> bool {
+        if self.exhausted || units > self.remaining {
+            self.remaining = 0;
+            self.exhausted = true;
+            return false;
+        }
+        self.remaining -= units;
+        true
+    }
+}
+
+fn reaches_forward_join(
+    successors: &BTreeMap<usize, Vec<usize>>,
+    start: usize,
+    join: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> Option<bool> {
+    if !fuel.charge(1) {
+        return None;
+    }
+    let mut pending: Vec<usize> = Vec::with_capacity(1);
+    pending.push(start);
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    while let Some(offset) = pending.pop() {
+        if !fuel.charge(1) {
+            return None;
+        }
+        if offset == join {
+            return Some(true);
+        }
+        if offset > join {
+            continue;
+        }
+        if !fuel.charge(1) || !visited.insert(offset) {
+            if fuel.exhausted {
+                return None;
+            }
+            continue;
+        }
+        if let Some(targets) = successors.get(&offset) {
+            let eligible: usize = targets
+                .iter()
+                .filter(|target: &&usize| **target <= join)
+                .count();
+            if !fuel.charge(targets.len()) || !fuel.charge(eligible) {
+                return None;
+            }
+            pending.reserve(eligible);
+            pending.extend(
+                targets
+                    .iter()
+                    .copied()
+                    .filter(|target: &usize| *target <= join),
+            );
+        }
+    }
+    Some(false)
+}
+
 fn block_entry_heights(
     abc: &AbcFile,
     lines: &[DisasmLine],
@@ -1249,9 +1508,19 @@ fn block_entry_heights(
     names: &LocalNames,
     slot_names: &BTreeMap<u32, String>,
     exceptions: &[ExceptionInfo],
-) -> BTreeMap<usize, usize> {
+) -> StackAnalysis {
     if labels.is_empty() {
-        return BTreeMap::new();
+        return StackAnalysis {
+            entry_heights: BTreeMap::new(),
+            value_joins: BTreeSet::new(),
+            switch_entries: BTreeSet::new(),
+            forward_entries: BTreeSet::new(),
+            disconnected_entries: BTreeSet::new(),
+            unreconciled: BTreeSet::new(),
+            height_conflicts: BTreeSet::new(),
+            switch_direction_refusals: BTreeSet::new(),
+            switch_budget_refusals: BTreeSet::new(),
+        };
     }
     let next_offset: BTreeMap<usize, usize> = lines
         .windows(2)
@@ -1274,6 +1543,12 @@ fn block_entry_heights(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        incoming_stacks: BTreeMap::new(),
+        untracked_stack_entries: BTreeSet::new(),
+        tracked_stack_nodes: 0,
+        stack_tracking_exhausted: false,
+        switch_direction_refusals: BTreeSet::new(),
+        switch_budget_refusals: BTreeSet::new(),
     };
     let mut line_by_offset: BTreeMap<usize, &DisasmLine> = BTreeMap::new();
     let mut succs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -1284,6 +1559,135 @@ fn block_entry_heights(
     }
     let mut deltas: BTreeMap<usize, i64> = BTreeMap::new();
     let valid_offsets: BTreeSet<usize> = lines.iter().map(|l: &DisasmLine| l.offset).collect();
+    let mut predecessors: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (source, targets) in &succs {
+        for target in targets {
+            if valid_offsets.contains(target) {
+                predecessors.entry(*target).or_default().insert(*source);
+            }
+        }
+    }
+    let mut value_joins: BTreeSet<usize> = BTreeSet::new();
+    let mut unverifiable_joins: BTreeSet<usize> = BTreeSet::new();
+    let switch_entries: BTreeSet<usize> = lines
+        .iter()
+        .filter(|line: &&DisasmLine| line.opcode == 0x1B)
+        .filter_map(|line: &DisasmLine| succs.get(&line.offset))
+        .flatten()
+        .copied()
+        .filter(|target: &usize| valid_offsets.contains(target))
+        .collect();
+    let switch_offsets: BTreeSet<usize> = lines
+        .iter()
+        .filter(|line: &&DisasmLine| line.opcode == 0x1B)
+        .map(|line: &DisasmLine| line.offset)
+        .collect();
+    let mut switch_direction_refusals: BTreeSet<usize> = BTreeSet::new();
+    let mut switch_budget_refusals: BTreeSet<usize> = BTreeSet::new();
+    let mut switch_fuel: SwitchAnalysisFuel = SwitchAnalysisFuel::new();
+    'switches: for line in lines
+        .iter()
+        .filter(|line: &&DisasmLine| line.opcode == 0x1B)
+    {
+        if !switch_fuel.charge(1) {
+            switch_budget_refusals.extend(&switch_offsets);
+            break;
+        }
+        let Some(targets) = succs.get(&line.offset) else {
+            continue;
+        };
+        if !switch_fuel.charge(targets.len()) {
+            switch_budget_refusals.extend(&switch_offsets);
+            break;
+        }
+        if targets.is_empty() {
+            continue;
+        }
+        if targets.iter().any(|target: &usize| *target <= line.offset) {
+            switch_direction_refusals.insert(line.offset);
+            continue;
+        }
+        let Some(last_entry): Option<usize> = targets.iter().copied().max() else {
+            continue;
+        };
+        let Some(first_entry): Option<usize> = targets.iter().copied().min() else {
+            continue;
+        };
+        let mut merge_candidates: BTreeSet<usize> = BTreeSet::new();
+        for (source, candidate_line) in line_by_offset.range(first_entry..last_entry) {
+            if !switch_fuel.charge(1) {
+                switch_budget_refusals.extend(&switch_offsets);
+                break 'switches;
+            }
+            if candidate_line.opcode != 0x10 {
+                continue;
+            }
+            let Some(candidate_targets) = succs.get(source) else {
+                continue;
+            };
+            if !switch_fuel.charge(candidate_targets.len()) {
+                switch_budget_refusals.extend(&switch_offsets);
+                break 'switches;
+            }
+            for candidate in candidate_targets {
+                if *candidate <= last_entry
+                    || predecessors
+                        .get(candidate)
+                        .is_none_or(|sources: &BTreeSet<usize>| sources.len() <= 1)
+                {
+                    continue;
+                }
+                if !switch_fuel.charge(1) {
+                    switch_budget_refusals.extend(&switch_offsets);
+                    break 'switches;
+                }
+                merge_candidates.insert(*candidate);
+            }
+        }
+        for candidate in merge_candidates {
+            let mut all_reach: bool = true;
+            for target in targets {
+                match reaches_forward_join(&succs, *target, candidate, &mut switch_fuel) {
+                    Some(true) => {}
+                    Some(false) => {
+                        all_reach = false;
+                        break;
+                    }
+                    None => {
+                        unverifiable_joins.insert(candidate);
+                        all_reach = false;
+                        if switch_fuel.exhausted {
+                            switch_budget_refusals.extend(&switch_offsets);
+                            break 'switches;
+                        }
+                        break;
+                    }
+                }
+            }
+            if all_reach {
+                value_joins.insert(candidate);
+                break;
+            }
+        }
+    }
+    let forward_entries: BTreeSet<usize> = predecessors
+        .iter()
+        .filter(|(target, sources): &(&usize, &BTreeSet<usize>)| {
+            sources.iter().all(|source: &usize| source < *target)
+        })
+        .map(|(target, _): (&usize, &BTreeSet<usize>)| *target)
+        .collect();
+    let disconnected_entries: BTreeSet<usize> = lines
+        .windows(2)
+        .filter_map(|pair: &[DisasmLine]| {
+            let previous: &DisasmLine = &pair[0];
+            let current: &DisasmLine = &pair[1];
+            let flows_from_previous: bool = succs
+                .get(&previous.offset)
+                .is_some_and(|targets: &Vec<usize>| targets.contains(&current.offset));
+            (!flows_from_previous).then_some(current.offset)
+        })
+        .collect();
     let exc_targets: BTreeSet<usize> = exceptions
         .iter()
         .map(|e: &ExceptionInfo| e.target as usize)
@@ -1367,16 +1771,39 @@ fn block_entry_heights(
             }
         }
     }
-    let mut unreconciled: BTreeSet<usize> = poisoned;
-    unreconciled.extend(barrier);
-    labels
+    let height_conflicts: BTreeSet<usize> = entry
         .iter()
-        .filter(|off: &&usize| !unreconciled.contains(off))
+        .filter_map(|(offset, cell): (&usize, &HeightCell)| {
+            matches!(cell, HeightCell::Conflict).then_some(*offset)
+        })
+        .collect();
+    let mut invalid_entries: BTreeSet<usize> = poisoned;
+    invalid_entries.extend(barrier);
+    let mut unreconciled: BTreeSet<usize> = invalid_entries
+        .iter()
+        .copied()
+        .filter(|offset: &usize| switch_entries.contains(offset) || value_joins.contains(offset))
+        .collect();
+    unreconciled.extend(unverifiable_joins);
+    let entry_heights: BTreeMap<usize, usize> = labels
+        .iter()
+        .filter(|off: &&usize| !invalid_entries.contains(off))
         .filter_map(|off: &usize| match entry.get(off) {
-            Some(HeightCell::Height(h)) if *h > 0 => Some((*off, *h as usize)),
+            Some(HeightCell::Height(h)) if *h >= 0 => Some((*off, *h as usize)),
             _ => None,
         })
-        .collect()
+        .collect();
+    StackAnalysis {
+        entry_heights,
+        value_joins,
+        switch_entries,
+        forward_entries,
+        disconnected_entries,
+        unreconciled,
+        height_conflicts,
+        switch_direction_refusals,
+        switch_budget_refusals,
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2188,11 +2615,15 @@ fn emit_branch(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_
     let rel: i64 = lifter.operand(&line.operands, 0);
     let target: usize = relative_target(after, rel);
     match line.opcode {
-        0x10 => lifter.statements.push(Stmt::Jump {
-            target_label: target,
-        }),
+        0x10 => {
+            lifter.record_edge_stack(target);
+            lifter.statements.push(Stmt::Jump {
+                target_label: target,
+            });
+        }
         OP_IFTRUE | OP_IFFALSE => {
             let value: Expr = lifter.pop();
+            lifter.record_edge_stack(target);
             if let Some(op) = lifter
                 .idioms
                 .short_circuit_branches
@@ -2223,6 +2654,7 @@ fn emit_branch(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_
             if let Some(cmp) = compare_branch_op(other) {
                 let rhs: Expr = lifter.pop();
                 let lhs: Expr = lifter.pop();
+                lifter.record_edge_stack(target);
                 let cond: Expr = Expr::Binary {
                     op: cmp,
                     lhs: Box::new(lhs),
@@ -2303,6 +2735,20 @@ fn emit_switch(lifter: &mut Lifter<'_>, line: &DisasmLine, _next_off: usize, _en
         .iter()
         .map(|rel: &i64| relative_target(line.offset, *rel))
         .collect();
+    lifter.record_edge_stack(default_label);
+    for target in &case_labels {
+        lifter.record_edge_stack(*target);
+    }
+    if lifter.switch_direction_refusals.contains(&line.offset) {
+        lifter
+            .statements
+            .push(Stmt::Comment(SWITCH_DIRECTION_REFUSAL_MARKER.to_owned()));
+    }
+    if lifter.switch_budget_refusals.contains(&line.offset) {
+        lifter
+            .statements
+            .push(Stmt::Comment(SWITCH_ANALYSIS_BUDGET_MARKER.to_owned()));
+    }
     lifter.statements.push(Stmt::Switch {
         selector,
         case_labels,
@@ -3167,6 +3613,20 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
     else {
         return None;
     };
+    if sw
+        .checked_sub(1)
+        .and_then(|index: usize| stmts.get(index))
+        .is_some_and(|statement: &Stmt| {
+            matches!(
+                statement,
+                Stmt::Comment(reason)
+                    if reason == SWITCH_DIRECTION_REFUSAL_MARKER
+                        || reason == SWITCH_ANALYSIS_BUDGET_MARKER
+            )
+        })
+    {
+        return None;
+    }
     let plan: SwitchPlan = plan_switch(stmts, sw, case_labels, *default_label)?;
     let first_start: usize = *plan.label_pos.get(plan.ordered_targets.first()?)?;
     if first_start != sw + 1 {
@@ -3174,6 +3634,18 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
     }
     let last_start: usize = *plan.label_pos.get(plan.ordered_targets.last()?)?;
     let merge_pos: usize = switch_merge_pos(stmts, &plan, last_start);
+    let conflict_end: usize = merge_pos.saturating_add(2).min(stmts.len());
+    if stmts[sw + 1..conflict_end].iter().any(|statement: &Stmt| {
+        matches!(
+            statement,
+            Stmt::Comment(reason)
+                if reason == STACK_CONFLICT_MARKER
+                    || reason == STACK_HEIGHT_CONFLICT_MARKER
+                    || reason == SWITCH_ANALYSIS_BUDGET_MARKER
+        )
+    }) {
+        return None;
+    }
     let merge_label: Option<usize> = match stmts.get(merge_pos) {
         Some(Stmt::Label(l)) => Some(*l),
         _ => None,
@@ -4389,7 +4861,7 @@ fn lift_raw(
     let end_off: usize = lines.last().map_or(0, |l: &DisasmLine| {
         next_offset.get(&l.offset).copied().unwrap_or(l.offset + 1)
     });
-    let entry_heights: BTreeMap<usize, usize> =
+    let stack_analysis: StackAnalysis =
         block_entry_heights(abc, &lines, &labels, &names, &slot_names, &body.exceptions);
     let exc_targets: BTreeSet<usize> = body
         .exceptions
@@ -4410,6 +4882,12 @@ fn lift_raw(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        incoming_stacks: BTreeMap::new(),
+        untracked_stack_entries: BTreeSet::new(),
+        tracked_stack_nodes: 0,
+        stack_tracking_exhausted: false,
+        switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
+        switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
     };
     let reachable: BTreeSet<usize> =
         reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
@@ -4418,12 +4896,11 @@ fn lift_raw(
             continue;
         }
         if labels.contains(&line.offset) {
-            lifter.statements.push(Stmt::Label(line.offset));
-            lifter.resolve_short_circuits(line.offset);
-            lifter.resolve_ternary(line.offset);
-        }
-        if let Some(&height) = entry_heights.get(&line.offset) {
-            lifter.reconcile_entry_height(line.offset, height, exc_targets.contains(&line.offset));
+            lifter.enter_label(
+                line.offset,
+                &stack_analysis,
+                exc_targets.contains(&line.offset),
+            );
         }
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
@@ -4479,7 +4956,7 @@ pub fn lift_body(
     let end_off: usize = lines.last().map_or(0, |l: &DisasmLine| {
         next_offset.get(&l.offset).copied().unwrap_or(l.offset + 1)
     });
-    let entry_heights: BTreeMap<usize, usize> =
+    let stack_analysis: StackAnalysis =
         block_entry_heights(abc, &lines, &labels, &names, &slot_names, &body.exceptions);
     let exc_targets: BTreeSet<usize> = body
         .exceptions
@@ -4500,6 +4977,12 @@ pub fn lift_body(
         short_circuits: Vec::new(),
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
+        incoming_stacks: BTreeMap::new(),
+        untracked_stack_entries: BTreeSet::new(),
+        tracked_stack_nodes: 0,
+        stack_tracking_exhausted: false,
+        switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
+        switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
     };
     let reachable: BTreeSet<usize> =
         reachable_offsets(&lines, &next_offset, end_off, &body.exceptions);
@@ -4508,12 +4991,11 @@ pub fn lift_body(
             continue;
         }
         if labels.contains(&line.offset) {
-            lifter.statements.push(Stmt::Label(line.offset));
-            lifter.resolve_short_circuits(line.offset);
-            lifter.resolve_ternary(line.offset);
-        }
-        if let Some(&height) = entry_heights.get(&line.offset) {
-            lifter.reconcile_entry_height(line.offset, height, exc_targets.contains(&line.offset));
+            lifter.enter_label(
+                line.offset,
+                &stack_analysis,
+                exc_targets.contains(&line.offset),
+            );
         }
         let next_off: usize = next_offset.get(&line.offset).copied().unwrap_or(end_off);
         step(&mut lifter, line, next_off, end_off);
@@ -5380,6 +5862,182 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_non_switch_entry_keeps_legacy_stack_value() {
+        let code: Vec<u8> = vec![
+            0x24, 0x01, 0x10, 0x06, 0x00, 0x00, 0x47, 0x02, 0x02, 0x02, 0x02, 0x47, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let returned: &Expr = lifted
+            .statements
+            .iter()
+            .find_map(|statement: &Stmt| match statement {
+                Stmt::Return(Some(value)) => Some(value),
+                _ => None,
+            })
+            .expect("disconnected target returns its incoming value");
+        assert_eq!(returned, &Expr::IntLit(1));
+        assert!(
+            !lifted
+                .statements
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::Comment(reason) if reason == STACK_CONFLICT_MARKER)),
+            "a non-switch disconnected entry must not synthesize a switch merge marker: {:?}",
+            lifted.statements
+        );
+    }
+
+    #[test]
+    fn non_switch_height_conflict_emits_a_local_partial_marker() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x11, 0x06, 0x00, 0x00, 0x24, 0x01, 0x10, 0x08, 0x00, 0x00, 0x24, 0x02,
+            0x24, 0x03, 0x10, 0x00, 0x00, 0x00, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert!(
+            lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == STACK_HEIGHT_CONFLICT_MARKER
+            )),
+            "a non-switch height disagreement must leave a local typed marker: {:?}",
+            lifted.statements
+        );
+    }
+
+    #[test]
+    fn non_switch_join_does_not_truncate_the_legacy_stack() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x11, 0x07, 0x00, 0x00, 0x24, 0x01, 0x02, 0x10, 0x06, 0x00, 0x00, 0x24,
+            0x02, 0x10, 0x00, 0x00, 0x00, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let returned: &Expr = lifted
+            .statements
+            .iter()
+            .find_map(|statement: &Stmt| match statement {
+                Stmt::Return(Some(value)) => Some(value),
+                _ => None,
+            })
+            .expect("non-switch join returns a value");
+        assert_eq!(returned, &Expr::IntLit(2));
+    }
+
+    #[test]
+    fn backward_switch_exposes_a_named_refusal() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x1B, 0xFE, 0xFF, 0xFF, 0x01, 0xFE, 0xFF, 0xFF, 0xFE, 0xFF, 0xFF, 0x47,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert!(
+            lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_DIRECTION_REFUSAL_MARKER
+            )),
+            "a backward switch must expose its refusal reason: {:?}",
+            lifted.statements
+        );
+    }
+
+    #[test]
+    fn switch_analysis_budget_refusal_is_local_and_named() {
+        const SWITCHES: usize = 33_000;
+        let mut code: Vec<u8> = Vec::with_capacity(SWITCHES * 8 + 1);
+        for _ in 0..SWITCHES {
+            code.extend_from_slice(&[0x1B, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00]);
+        }
+        code.push(0x47);
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert!(
+            lifted.statements.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_ANALYSIS_BUDGET_MARKER
+            )),
+            "a cumulative switch-analysis budget must leave a local named marker"
+        );
+    }
+
+    #[test]
+    fn switch_join_with_distinct_equal_height_values_uses_a_phi() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x1B, 0x17, 0x00, 0x00, 0x01, 0x0B, 0x00, 0x00, 0x11, 0x00, 0x00, 0x24,
+            0x0A, 0x10, 0x08, 0x00, 0x00, 0x24, 0x14, 0x10, 0x02, 0x00, 0x00, 0x24, 0x1E, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let returned: &Expr = lifted
+            .statements
+            .iter()
+            .find_map(|statement: &Stmt| match statement {
+                Stmt::Return(Some(value)) => Some(value),
+                _ => None,
+            })
+            .expect("switch merge returns a value");
+        assert_eq!(
+            returned,
+            &Expr::Phi { block: 27, slot: 0 },
+            "three distinct case values must merge instead of selecting the last linear case"
+        );
+        assert_eq!(lifted.opaque_operands, 1);
+        assert!(!lifted.structurally_recovered);
+    }
+
+    #[test]
+    fn switch_join_preserves_an_identical_value_from_every_predecessor() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x1B, 0x17, 0x00, 0x00, 0x01, 0x0B, 0x00, 0x00, 0x11, 0x00, 0x00, 0x24,
+            0x0A, 0x10, 0x08, 0x00, 0x00, 0x24, 0x0A, 0x10, 0x02, 0x00, 0x00, 0x24, 0x0A, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        let returned: &Expr = lifted
+            .statements
+            .iter()
+            .find_map(|statement: &Stmt| match statement {
+                Stmt::Return(Some(value)) => Some(value),
+                _ => None,
+            })
+            .expect("switch merge returns a value");
+        assert_eq!(returned, &Expr::IntLit(10));
+        assert_eq!(lifted.opaque_operands, 0);
+        assert!(lifted.structurally_recovered);
+    }
+
+    #[test]
+    fn switch_join_with_different_stack_heights_stays_unstructured() {
+        let code: Vec<u8> = vec![
+            0x24, 0x00, 0x1B, 0x19, 0x00, 0x00, 0x01, 0x0B, 0x00, 0x00, 0x11, 0x00, 0x00, 0x24,
+            0x0A, 0x10, 0x0A, 0x00, 0x00, 0x24, 0x14, 0x24, 0x15, 0x10, 0x02, 0x00, 0x00, 0x24,
+            0x1E, 0x48,
+        ];
+        let abc: AbcFile = bare_abc();
+        let body: MethodBody = body_with_code(code);
+        let lifted: LiftedBody = lift_body(&abc, &body, None).expect("lift");
+        assert!(
+            !lifted.fully_structured,
+            "a switch whose predecessors disagree on stack height must retain its raw CFG"
+        );
+        assert!(
+            lifted
+                .statements
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::Switch { .. })),
+            "the unproven switch must not be rewritten as a structured switch"
+        );
+        assert!(!lifted.structurally_recovered);
+    }
+
+    #[test]
     fn dup_into_a_local_reuses_the_local_instead_of_repeating_the_value() {
         let code: Vec<u8> = vec![0x60, 0x00, 0x2A, 0xD5, 0x48];
         let abc: AbcFile = bare_abc();
@@ -5586,6 +6244,12 @@ mod tests {
             short_circuits: Vec::new(),
             branch_marks: Vec::new(),
             hoisted_temporaries: 0,
+            incoming_stacks: BTreeMap::new(),
+            untracked_stack_entries: BTreeSet::new(),
+            tracked_stack_nodes: 0,
+            stack_tracking_exhausted: false,
+            switch_direction_refusals: BTreeSet::new(),
+            switch_budget_refusals: BTreeSet::new(),
         };
         let line: DisasmLine = DisasmLine {
             offset: 0,

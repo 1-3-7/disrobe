@@ -8,7 +8,7 @@
 |---|---|
 | Container | Every SWF tag, with its TagCode, byte offset, and payload size |
 | Bytecode | Every `DoABC` and `DoABCDefine` block, disassembled per instruction |
-| Source lift | Class skeletons with property access, calls, arithmetic, and `if` / `goto` control flow |
+| Source lift | Class skeletons with expressions, calls, loops, conditionals, `lookupswitch`, exception regions, and residual `goto` control flow |
 | Obfuscator detection | secureSWF, DoSWF, Kindi, Irrfuscator, swfLock, each finding with a confidence score |
 
 ## Commands
@@ -38,7 +38,7 @@ as3 disasm: OK
 
 ## Coverage and fidelity
 
-The source lifter reconstructs class skeletons with property access, calls, arithmetic, and `if` / `goto` control flow by abstractly interpreting the operand stack. A `/// DR-AS3-PARTIAL:` line identifies an unsupported opcode, opaque operand, dropped code, or internal control-flow residue detected by the lifter. Absence of that line means only that these internal checks found none; it does not establish independent semantic or reference equivalence.
+The source lifter reconstructs class skeletons with expressions, calls, loops, conditionals, forward `lookupswitch` regions, exception regions, and residual `goto` control flow by abstractly interpreting the operand stack. At each tracked forward `lookupswitch` join, it compares the stack height and values from every predecessor. Equal-height predecessors preserve an identical value or produce a named merge value and mark the method partial. Conflicting heights keep the raw control-flow form instead of selecting a value from the last case visited. A `/// DR-AS3-PARTIAL:` line identifies an unsupported opcode, opaque operand, dropped code, or internal control-flow residue detected by the lifter. Absence of that line means only that these internal checks found none; it does not establish independent semantic or reference equivalence.
 
 `disrobe` fingerprints commercial AS3 obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) and flags techniques: string encryption, name mangling, control-flow flattening, register and stack shuffle, string-pool-rebuild candidates. Each finding carries a confidence score.
 

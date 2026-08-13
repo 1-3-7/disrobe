@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use disrobe_pass_as3::abc::{AbcFile, ClassInfo, InstanceInfo, MethodBody, MethodInfo, TraitInfo};
+use disrobe_pass_as3::abc::{
+    AbcFile, ClassInfo, DisasmLine, InstanceInfo, MethodBody, MethodInfo, TraitInfo, disasm,
+};
 use disrobe_pass_as3::lifter::{
     CaseLabel, CatchClause, Expr, LiftedBody, LocalNames, Stmt, SwitchCase, lift_body,
     local_names_for, render_body,
@@ -24,6 +26,9 @@ use disrobe_pass_as3::{abc, swf};
 const TRAIT_KIND_METHOD: u8 = 1;
 const TRAIT_KIND_GETTER: u8 = 2;
 const TRAIT_KIND_SETTER: u8 = 3;
+const SWITCH_FIXTURE_SOURCE: &str = include_str!("fixtures/SwitchMerge.hx");
+const SWITCH_FIXTURE_PROVENANCE: &str = include_str!("fixtures/switch_merge.provenance");
+const SWITCH_FIXTURE_SWF: &[u8] = include_bytes!("fixtures/switch_merge.swf");
 
 const CONTROL_KEYWORDS: [&str; 26] = [
     "if",
@@ -1179,9 +1184,11 @@ fn measure(dimensions: GradedDimensions) -> Option<Measurement> {
     };
     let mut swfs: Vec<PathBuf> = entries
         .flatten()
-        .map(|e: std::fs::DirEntry| e.path())
-        .filter(|p: &PathBuf| {
-            p.extension().and_then(|e: &std::ffi::OsStr| e.to_str()) == Some("swf")
+        .map(|entry: std::fs::DirEntry| entry.path())
+        .filter(|path: &PathBuf| {
+            path.extension()
+                .and_then(|extension: &std::ffi::OsStr| extension.to_str())
+                == Some("swf")
         })
         .collect();
     swfs.sort();
@@ -1503,6 +1510,96 @@ fn assert_population(m: &Measurement) {
         m.tally.ungraded_reference_failed,
         m.tally.graded
     );
+}
+
+#[test]
+fn compiler_switch_fixture_preserves_bytecode_layout_order() {
+    const EXPECTED_SOURCE: &str = "class SwitchMerge {\n    static function choose(selector:Int):Int {\n        var value:Int = switch (selector) {\n            case 0: 10;\n            case 1: 20;\n            case 2: 30;\n            default: 40;\n        };\n        return value + 1;\n    }\n\n    static function main():Void {\n        trace(choose(1));\n    }\n}\n";
+    const EXPECTED_PROVENANCE: &str = "compiler=haxe 4.3.7\ncommand=haxe -cp crates/disrobe-pass-as3/tests/fixtures -main SwitchMerge -swf crates/disrobe-pass-as3/tests/fixtures/switch_merge.swf\ngenerated=2026-08-11\n";
+    assert_eq!(SWITCH_FIXTURE_SOURCE, EXPECTED_SOURCE);
+    assert_eq!(SWITCH_FIXTURE_PROVENANCE, EXPECTED_PROVENANCE);
+    assert_eq!(SWITCH_FIXTURE_SWF.get(..3), Some(b"CWS".as_slice()));
+
+    let parsed_swf: Swf = swf::parse(SWITCH_FIXTURE_SWF).expect("compiler SWF must parse");
+    let blocks: Vec<DoAbc> = parsed_swf.collect_do_abc();
+    assert_eq!(blocks.len(), 1);
+    let abc: AbcFile = abc::parse(&blocks[0].abc_bytes).expect("compiler ABC must parse");
+    let class_index: usize = abc
+        .instances
+        .iter()
+        .position(|instance: &InstanceInfo| {
+            abc.cpool
+                .render_multiname(instance.name_index)
+                .is_ok_and(|name: String| name == "SwitchMerge")
+        })
+        .expect("compiler fixture must define SwitchMerge");
+    let class: &ClassInfo = &abc.classes[class_index];
+    let method_trait: &TraitInfo = class
+        .traits
+        .iter()
+        .find(|trait_info: &&TraitInfo| {
+            trait_info.kind & 0x0f == TRAIT_KIND_METHOD
+                && abc
+                    .cpool
+                    .render_multiname_property(trait_info.name_index)
+                    .is_ok_and(|name: String| name == "choose")
+        })
+        .expect("compiler fixture must define SwitchMerge.choose");
+    let body: &MethodBody = abc
+        .method_bodies
+        .iter()
+        .find(|body: &&MethodBody| body.method == method_trait.method_index)
+        .expect("compiler fixture method must have one body");
+    let lines: Vec<DisasmLine> = disasm(&body.code).expect("compiler method must disassemble");
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line: &&DisasmLine| line.mnemonic == "lookupswitch")
+            .count(),
+        1
+    );
+    let method_index: usize = usize::try_from(method_trait.method_index).expect("method index");
+    let info: &MethodInfo = &abc.methods[method_index];
+    let lifted: LiftedBody = lift_body(&abc, body, Some(info)).expect("compiler method must lift");
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    let structured: &Vec<SwitchCase> = lifted
+        .statements
+        .iter()
+        .find_map(|statement: &Stmt| match statement {
+            Stmt::StructuredSwitch { cases, .. } => Some(cases),
+            _ => None,
+        })
+        .expect("compiler lookupswitch must remain a structured switch");
+    let labels: Vec<CaseLabel> = structured
+        .iter()
+        .flat_map(|case: &SwitchCase| case.labels.iter().cloned())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            CaseLabel::Default,
+            CaseLabel::Value(0),
+            CaseLabel::Value(1),
+            CaseLabel::Value(2),
+        ]
+    );
+    let values: Vec<i64> = structured
+        .iter()
+        .map(|case: &SwitchCase| match case.body.as_slice() {
+            [
+                Stmt::Assign {
+                    value: Expr::Coerce { operand, ty },
+                    ..
+                },
+            ] if ty == "int" => match operand.as_ref() {
+                Expr::IntLit(value) => *value,
+                other => panic!("compiler case must assign one integer literal: {other:?}"),
+            },
+            other => panic!("compiler case must contain one assignment: {other:?}"),
+        })
+        .collect();
+    assert_eq!(values, vec![40, 10, 20, 30]);
 }
 
 #[test]

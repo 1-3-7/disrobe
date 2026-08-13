@@ -2,6 +2,8 @@
 use std::time::Duration;
 
 use disrobe_pass_as3::abc;
+use disrobe_pass_as3::abc::{AbcFile, MethodBody};
+use disrobe_pass_as3::lift_body;
 use disrobe_pass_as3::swf;
 use disrobe_testkit::{
     CorpusEntry, ReachTally, SeedReach, ShapelessSeed, StressCase, StressConfig, XorShift64,
@@ -198,5 +200,69 @@ fn the_constructed_swf_seed_reads_as_an_uncompressed_swf() {
     assert!(
         parsed.is_ok(),
         "the constructed swf header must parse, or every swf-shaped case is inert: {parsed:?}"
+    );
+}
+
+fn bare_abc() -> AbcFile {
+    AbcFile {
+        minor: abc::ABC_MINOR,
+        major: abc::ABC_MAJOR,
+        cpool: disrobe_pass_as3::ConstantPool::default(),
+        methods: Vec::new(),
+        metadata_count: 0,
+        instances: Vec::new(),
+        classes: Vec::new(),
+        scripts: Vec::new(),
+        method_bodies: Vec::new(),
+    }
+}
+
+const fn body(code: Vec<u8>) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 1,
+        local_count: 1,
+        init_scope_depth: 0,
+        max_scope_depth: 0,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
+#[test]
+fn zero_case_lookupswitch_reaches_lift_body_without_panicking() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x47,
+    ];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_ok(),
+        "zero-case lookupswitch must be handled: {lifted:?}"
+    );
+}
+
+#[test]
+fn out_of_range_lookupswitch_targets_are_rejected_without_panicking() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0xFF, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0x7F, 0x47,
+    ];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_ok(),
+        "out-of-range lookupswitch targets must be rejected locally: {lifted:?}"
+    );
+}
+
+#[test]
+fn malformed_lookupswitch_case_count_is_rejected_by_the_parser_path() {
+    let code: Vec<u8> = vec![0x24, 0x00, 0x1B, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    let lifted: disrobe_pass_as3::Result<disrobe_pass_as3::LiftedBody> =
+        lift_body(&bare_abc(), &body(code), None);
+    assert!(
+        lifted.is_err(),
+        "a truncated case table must fail closed in the production parser: {lifted:?}"
     );
 }
