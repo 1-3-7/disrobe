@@ -8,11 +8,45 @@
     clippy::doc_markdown
 )]
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+mod common;
 
-const HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
-const PINNED_MODULES: &str = "tests/harness/pinned_modules_314.txt";
+use std::io::Write;
+use std::path::PathBuf;
+
+use common::band_gate::{
+    BandRelease, BandRequirement, CPYTHON_SERIES, FIRST_CACHED_SERIES, PINNED_MODULE_LIST,
+    REQUIRE_EVERY_BAND_VAR, SeriesMagic, magic_hex, parse_magic, requirement_from_values,
+    resolve_band_interpreter,
+};
+use common::stdlib_measure::{
+    HarnessRun, MEASURE_HARNESS, find_disrobe, interpreter_stdlib, interpreter_version,
+    manifest_dir, run_strict_measure, workspace_target,
+};
+
+const FIRST_PINNED_SERIES: (u8, u8) = (3, 10);
+const EXCLUDED_DIMENSIONS: &str = "co_filename,co_linetable,co_firstlineno";
+const DEPTH_LIMIT_KEY: &str = "strict_dim_co_consts_depth_limit";
+const THIN_SAMPLE_MODULES: u64 = 100;
+const THIN_SAMPLE_OBJECTS: u64 = 1_000;
+
+const DIMENSION_KEYS: [&str; 16] = [
+    "strict_dim_co_code",
+    "strict_dim_co_argcount",
+    "strict_dim_co_posonlyargcount",
+    "strict_dim_co_kwonlyargcount",
+    "strict_dim_co_nlocals",
+    "strict_dim_co_stacksize",
+    "strict_dim_co_flags",
+    "strict_dim_co_name",
+    "strict_dim_co_names",
+    "strict_dim_co_varnames",
+    "strict_dim_co_freevars",
+    "strict_dim_co_cellvars",
+    "strict_dim_co_qualname",
+    "strict_dim_co_exceptiontable",
+    "strict_dim_co_consts",
+    DEPTH_LIMIT_KEY,
+];
 
 #[derive(Debug)]
 struct StrictMeasurement {
@@ -20,213 +54,340 @@ struct StrictMeasurement {
     code_objects: u64,
     objects_ok: u64,
     object_pct: f64,
+    optimize_level: u64,
     strict_recompile_equivalent: u64,
     strict_byte_identical: u64,
     strict_byte_identical_pct: f64,
+    strict_population_total: u64,
+    strict_population_pct: f64,
+    strict_firstlineno_ok: u64,
     strict_position_lines_ok: u64,
     strict_position_lines_total: u64,
     strict_position_lines_pct: f64,
     strict_position_full_ok: u64,
     strict_position_full_total: u64,
     strict_position_full_pct: f64,
+    strict_position_full_supported: bool,
     strict_alignment_coverage_pct: f64,
     strict_no_debug_ranges_objects: u64,
+    strict_inline_cache_units: u64,
+    strict_unknown_opcode_units: u64,
+    strict_excluded_dimensions: String,
+    dimension_hits: Vec<(&'static str, u64)>,
     cpython_version: String,
     magic_number: String,
 }
 
-fn manifest_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn field<'a>(doc: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
+    doc.get(key)
+        .unwrap_or_else(|| panic!("the strict-tier measurement carries no `{key}`: {doc}"))
 }
 
-fn workspace_target() -> PathBuf {
-    manifest_dir().join("../../target")
+fn count(doc: &serde_json::Value, key: &str) -> u64 {
+    field(doc, key)
+        .as_u64()
+        .unwrap_or_else(|| panic!("measurement field `{key}` is not an unsigned integer"))
 }
 
-#[must_use]
-fn find_disrobe() -> Option<PathBuf> {
-    let exe: &str = if cfg!(windows) {
-        "disrobe.exe"
-    } else {
-        "disrobe"
-    };
-    let target: PathBuf = workspace_target();
-    for profile in ["release", "debug"] {
-        let candidate: PathBuf = target.join(profile).join(exe);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+fn ratio(doc: &serde_json::Value, key: &str) -> f64 {
+    field(doc, key)
+        .as_f64()
+        .unwrap_or_else(|| panic!("measurement field `{key}` is not a number"))
 }
 
-#[must_use]
-fn interpreter_hidden(alias: &str) -> bool {
-    std::env::var("DISROBE_TEST_HIDE_PY").is_ok_and(|hidden: String| {
-        hidden
-            .split(',')
-            .map(str::trim)
-            .any(|entry: &str| entry == alias)
-    })
+fn text(doc: &serde_json::Value, key: &str) -> String {
+    field(doc, key)
+        .as_str()
+        .unwrap_or_else(|| panic!("measurement field `{key}` is not a string"))
+        .to_owned()
 }
 
-#[must_use]
-fn find_python_314() -> Option<PathBuf> {
-    if interpreter_hidden("3.14") {
-        return None;
-    }
-    if let Some(output) = Command::new("uv")
-        .args(["python", "find", "3.14"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        && output.status.success()
-    {
-        let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let path: PathBuf = PathBuf::from(raw);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let candidates: [PathBuf; 3] = [
-        PathBuf::from("C:/Python314/python.exe"),
-        PathBuf::from("/usr/bin/python3.14"),
-        PathBuf::from("/usr/local/bin/python3.14"),
-    ];
-    candidates.into_iter().find(|p: &PathBuf| p.is_file())
-}
-
-fn interpreter_version(python: &Path) -> Option<(u8, u8)> {
-    let output: std::process::Output = Command::new(python)
-        .args([
-            "-c",
-            "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let (maj, min): (&str, &str) = raw.split_once('.')?;
-    Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?))
-}
-
-fn interpreter_stdlib(python: &Path) -> Option<PathBuf> {
-    let output: std::process::Output = Command::new(python)
-        .args(["-c", "import sysconfig;print(sysconfig.get_path('stdlib'))"])
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let path: PathBuf = PathBuf::from(raw);
-    if path.is_dir() { Some(path) } else { None }
-}
-
-fn json_scalar<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
-    let needle: String = format!("\"{key}\"");
-    let after_key: &str = line
-        .find(&needle)
-        .map(|i| &line[i + needle.len()..])
-        .ok_or_else(|| format!("missing field {key} in {line}"))?;
-    let after_colon: &str = after_key
-        .find(':')
-        .map(|i| after_key[i + 1..].trim_start())
-        .ok_or_else(|| format!("malformed field {key} in {line}"))?;
-    let end: usize = after_colon
-        .find([',', '}'])
-        .ok_or_else(|| format!("unterminated field {key} in {line}"))?;
-    Ok(after_colon[..end].trim().trim_matches('"'))
-}
-
-fn parse_strict_measurement(stdout: &str) -> Result<StrictMeasurement, String> {
+fn parse_strict_measurement(stdout: &str) -> StrictMeasurement {
     let line: &str = stdout
         .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .ok_or_else(|| format!("no JSON object on harness stdout:\n{stdout}"))?;
-    let get_u64 = |key: &str| -> Result<u64, String> {
-        json_scalar(line, key)?
-            .parse::<u64>()
-            .map_err(|e| format!("field {key} is not u64: {e} in {line}"))
-    };
-    let get_f64 = |key: &str| -> Result<f64, String> {
-        json_scalar(line, key)?
-            .parse::<f64>()
-            .map_err(|e| format!("field {key} is not f64: {e} in {line}"))
-    };
-    let get_str = |key: &str| -> Result<String, String> { Ok(json_scalar(line, key)?.to_owned()) };
-    Ok(StrictMeasurement {
-        modules: get_u64("modules")?,
-        code_objects: get_u64("code_objects")?,
-        objects_ok: get_u64("objects_ok")?,
-        object_pct: get_f64("object_pct")?,
-        strict_recompile_equivalent: get_u64("strict_recompile_equivalent")?,
-        strict_byte_identical: get_u64("strict_byte_identical")?,
-        strict_byte_identical_pct: get_f64("strict_byte_identical_pct")?,
-        strict_position_lines_ok: get_u64("strict_position_lines_ok")?,
-        strict_position_lines_total: get_u64("strict_position_lines_total")?,
-        strict_position_lines_pct: get_f64("strict_position_lines_pct")?,
-        strict_position_full_ok: get_u64("strict_position_full_ok")?,
-        strict_position_full_total: get_u64("strict_position_full_total")?,
-        strict_position_full_pct: get_f64("strict_position_full_pct")?,
-        strict_alignment_coverage_pct: get_f64("strict_alignment_coverage_pct")?,
-        strict_no_debug_ranges_objects: get_u64("strict_no_debug_ranges_objects")?,
-        cpython_version: get_str("cpython_version")?,
-        magic_number: get_str("magic_number")?,
-    })
+        .find(|entry: &&str| entry.trim_start().starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON object on the harness stdout:\n{stdout}"));
+    let doc: serde_json::Value = serde_json::from_str(line)
+        .unwrap_or_else(|e: serde_json::Error| panic!("parse strict measurement: {e}\n{line}"));
+    StrictMeasurement {
+        modules: count(&doc, "modules"),
+        code_objects: count(&doc, "code_objects"),
+        objects_ok: count(&doc, "objects_ok"),
+        object_pct: ratio(&doc, "object_pct"),
+        optimize_level: count(&doc, "optimize_level"),
+        strict_recompile_equivalent: count(&doc, "strict_recompile_equivalent"),
+        strict_byte_identical: count(&doc, "strict_byte_identical"),
+        strict_byte_identical_pct: ratio(&doc, "strict_byte_identical_pct"),
+        strict_population_total: count(&doc, "strict_population_total"),
+        strict_population_pct: ratio(&doc, "strict_population_pct"),
+        strict_firstlineno_ok: count(&doc, "strict_firstlineno_ok"),
+        strict_position_lines_ok: count(&doc, "strict_position_lines_ok"),
+        strict_position_lines_total: count(&doc, "strict_position_lines_total"),
+        strict_position_lines_pct: ratio(&doc, "strict_position_lines_pct"),
+        strict_position_full_ok: count(&doc, "strict_position_full_ok"),
+        strict_position_full_total: count(&doc, "strict_position_full_total"),
+        strict_position_full_pct: ratio(&doc, "strict_position_full_pct"),
+        strict_position_full_supported: count(&doc, "strict_position_full_supported") == 1,
+        strict_alignment_coverage_pct: ratio(&doc, "strict_alignment_coverage_pct"),
+        strict_no_debug_ranges_objects: count(&doc, "strict_no_debug_ranges_objects"),
+        strict_inline_cache_units: count(&doc, "strict_inline_cache_units"),
+        strict_unknown_opcode_units: count(&doc, "strict_unknown_opcode_units"),
+        strict_excluded_dimensions: text(&doc, "strict_excluded_dimensions"),
+        dimension_hits: DIMENSION_KEYS
+            .iter()
+            .map(|key: &&'static str| (*key, count(&doc, key)))
+            .collect(),
+        cpython_version: text(&doc, "cpython_version"),
+        magic_number: text(&doc, "magic_number"),
+    }
+}
+
+fn announce_unmeasurable(defect: &str) {
+    let blanket: Option<std::ffi::OsString> = std::env::var_os(REQUIRE_EVERY_BAND_VAR);
+    assert!(
+        requirement_from_values(None, blanket.as_deref()) == BandRequirement::Optional,
+        "{REQUIRE_EVERY_BAND_VAR} makes every band mandatory for this run, so the byte-identical \
+         and line-table tiers measured nothing and this case must not report success: {defect}"
+    );
+    let line: String = format!(
+        "\nNOT MEASURED: the byte-identical and line-table tiers compared nothing, because \
+         {defect}. Set {REQUIRE_EVERY_BAND_VAR}=1 to fail instead of announcing when the tiers \
+         cannot be re-derived on this machine.\n"
+    );
+    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
+    drop(sink.write_all(line.as_bytes()));
+    drop(sink.flush());
+}
+
+fn required_magic(band: BandRelease) -> Option<String> {
+    match band.magic {
+        SeriesMagic::Released(value) => Some(magic_hex(value)),
+        SeriesMagic::PreRelease => None,
+    }
+}
+
+fn assert_band_invariants(band: BandRelease, measurement: &StrictMeasurement) {
+    let series: String = format!("{}.{}", band.version.0, band.version.1);
+    let release: &str = &measurement.cpython_version;
+
+    assert_eq!(
+        measurement.optimize_level, 0,
+        "CPython {release} measured the {series} band at optimize {}; -O strips asserts and -OO \
+         strips docstrings, so a recovery that always drops them scores perfectly under those \
+         flags and the published figure has to be the optimize 0 one",
+        measurement.optimize_level
+    );
+
+    assert_eq!(
+        measurement.strict_recompile_equivalent, measurement.objects_ok,
+        "the strict tier graded {} code objects while the normalized tier passed {}; a strict tier \
+         that walks fewer objects than the tier it sits on top of reports a flattering rate over a \
+         population nobody published",
+        measurement.strict_recompile_equivalent, measurement.objects_ok
+    );
+    assert_eq!(
+        measurement.strict_population_total, measurement.code_objects,
+        "the strict tier reports over {} code objects while the normalized tier walked {}; both \
+         tiers have to answer on one denominator or their percentages cannot be compared",
+        measurement.strict_population_total, measurement.code_objects
+    );
+    assert!(
+        measurement.strict_byte_identical <= measurement.strict_recompile_equivalent,
+        "byte-identical count {} passes its own denominator {}",
+        measurement.strict_byte_identical,
+        measurement.strict_recompile_equivalent
+    );
+    assert!(
+        measurement.strict_firstlineno_ok <= measurement.strict_recompile_equivalent,
+        "co_firstlineno match count {} passes its own denominator {}",
+        measurement.strict_firstlineno_ok,
+        measurement.strict_recompile_equivalent
+    );
+    assert!(
+        measurement.strict_position_lines_ok <= measurement.strict_position_lines_total,
+        "position line-match count {} passes its own denominator {}",
+        measurement.strict_position_lines_ok,
+        measurement.strict_position_lines_total
+    );
+    assert!(
+        measurement.strict_position_full_ok <= measurement.strict_position_full_total,
+        "position full-match count {} passes its own denominator {}",
+        measurement.strict_position_full_ok,
+        measurement.strict_position_full_total
+    );
+
+    assert!(
+        measurement.strict_recompile_equivalent > 0,
+        "the {series} band handed the strict tier no code object at all, so every count below it \
+         is zero over zero and every leg of this case passes without comparing anything; a band \
+         that recovers nothing must fail here rather than report a tier it never ran"
+    );
+    assert!(
+        measurement.strict_position_lines_total > 0,
+        "the {series} band aligned no instruction pairs, so the line tier scored nothing and its \
+         percentage is vacuous"
+    );
+
+    assert!(
+        measurement.modules >= THIN_SAMPLE_MODULES
+            && measurement.code_objects >= THIN_SAMPLE_OBJECTS,
+        "the {series} band measured {} modules and {} code objects, too thin a sample for the \
+         strict tier to say anything about this interpreter",
+        measurement.modules,
+        measurement.code_objects
+    );
+
+    assert_eq!(
+        measurement.strict_excluded_dimensions, EXCLUDED_DIMENSIONS,
+        "the byte tier excludes {} on this run and {EXCLUDED_DIMENSIONS} in this gate; a field may \
+         only leave the comparison together with a recorded reason",
+        measurement.strict_excluded_dimensions
+    );
+    assert_eq!(
+        measurement.strict_unknown_opcode_units, 0,
+        "{} compared code units carry an opcode absent from dis.opmap, which is what an adaptive \
+         or instrumented opcode looks like; the strict tier compares freshly compiled objects only",
+        measurement.strict_unknown_opcode_units
+    );
+
+    let depth_limited: u64 = measurement
+        .dimension_hits
+        .iter()
+        .find(|(key, _): &&(&str, u64)| *key == DEPTH_LIMIT_KEY)
+        .map_or(0, |(_, hits): &(&str, u64)| *hits)
+        .to_owned();
+    assert_eq!(
+        depth_limited, 0,
+        "{depth_limited} objects hit the constant-nesting ceiling instead of being compared, so \
+         their verdicts mean nothing"
+    );
+
+    let unequal: u64 = measurement.strict_recompile_equivalent - measurement.strict_byte_identical;
+    let hits: u64 = measurement
+        .dimension_hits
+        .iter()
+        .map(|(_, count): &(&str, u64)| *count)
+        .sum();
+    assert!(
+        hits >= unequal,
+        "{unequal} objects were not byte-identical but only {hits} dimension hits were recorded; \
+         every object the byte tier rejects has to name at least one field it rejected it on"
+    );
+
+    let cached: bool = band.version >= FIRST_CACHED_SERIES;
+    assert_eq!(
+        measurement.strict_position_full_supported, cached,
+        "CPython {release} reports co_positions() support {}, expected {cached}; before 3.11 there \
+         are no column ranges, and a band scored line-only must say so rather than publish a full \
+         position rate it cannot measure",
+        measurement.strict_position_full_supported
+    );
+    if cached {
+        assert!(
+            measurement.strict_inline_cache_units > 0,
+            "CPython {release} compared {} code objects and found no CACHE code unit in any of \
+             them; inline caches are part of co_code from 3.11 and the byte tier compares co_code \
+             raw, so a run that sees none is not comparing what it claims to",
+            measurement.strict_recompile_equivalent
+        );
+    } else {
+        assert_eq!(
+            measurement.strict_inline_cache_units, 0,
+            "CPython {release} reports {} inline cache units, but the CACHE opcode does not exist \
+             before 3.11",
+            measurement.strict_inline_cache_units
+        );
+    }
+
+    let magic: u16 = parse_magic(&measurement.magic_number).unwrap_or_else(|complaint: String| {
+        panic!("CPython {release} reported a pyc magic this gate cannot read: {complaint}")
+    });
+    if let SeriesMagic::Released(expected) = band.magic {
+        assert_eq!(
+            magic, expected,
+            "CPython {release} stamps pyc magic {magic}, but the {series} series was released with \
+             {expected}; the counts above would be attributed to a band this interpreter does not \
+             belong to"
+        );
+    }
+    assert!(
+        measurement.cpython_version.starts_with(&series),
+        "the harness measured CPython {release} under the {series} band"
+    );
+}
+
+fn report_band(band: BandRelease, measurement: &StrictMeasurement) {
+    let series: String = format!("{}.{}", band.version.0, band.version.1);
+    println!(
+        "band {series} (CPython {}, pyc magic {}):",
+        measurement.cpython_version, measurement.magic_number
+    );
+    println!(
+        "  normalized recompile-equivalence {} / {} code objects ({:.2}%) over {} modules at \
+         optimize {}",
+        measurement.objects_ok,
+        measurement.code_objects,
+        measurement.object_pct,
+        measurement.modules,
+        measurement.optimize_level
+    );
+    println!(
+        "  byte tier {} / {} of the recompile-equivalent objects ({:.2}%), and {} / {} of the \
+         whole normalized population ({:.2}%)",
+        measurement.strict_byte_identical,
+        measurement.strict_recompile_equivalent,
+        measurement.strict_byte_identical_pct,
+        measurement.strict_byte_identical,
+        measurement.strict_population_total,
+        measurement.strict_population_pct
+    );
+    println!(
+        "  line tier co_firstlineno {} / {}, positions lines {} / {} ({:.2}%), full {} / {} \
+         ({:.2}%), alignment coverage {:.2}%, {} objects scored lines-only",
+        measurement.strict_firstlineno_ok,
+        measurement.strict_recompile_equivalent,
+        measurement.strict_position_lines_ok,
+        measurement.strict_position_lines_total,
+        measurement.strict_position_lines_pct,
+        measurement.strict_position_full_ok,
+        measurement.strict_position_full_total,
+        measurement.strict_position_full_pct,
+        measurement.strict_alignment_coverage_pct,
+        measurement.strict_no_debug_ranges_objects
+    );
+    println!(
+        "  inline cache units in the compared streams {}, opcode units absent from dis.opmap {}",
+        measurement.strict_inline_cache_units, measurement.strict_unknown_opcode_units
+    );
+    for (key, hits) in &measurement.dimension_hits {
+        if *hits > 0 {
+            println!("  fidelity lost on {key}: {hits} objects");
+        }
+    }
 }
 
 #[test]
-fn byte_identical_tier_over_pinned_corpus() {
+fn byte_identical_tier_over_every_measured_band() {
+    println!("=== BYTE-IDENTICAL AND LINE-TABLE TIERS (MEASUREMENT, NON-GATING) ===");
+    println!(
+        "These tiers report; they gate nothing and they never lower the normalized floor the \
+         arbitrary_recompile_gate_* cases enforce. What is asserted here is the bookkeeping: one \
+         denominator shared with the normalized tier, an optimize level that cannot flatter a \
+         recovery, a pyc magic that belongs to the band, and inline caches inside the compared \
+         bytes rather than stripped out of them."
+    );
+
     let Some(disrobe): Option<PathBuf> = find_disrobe() else {
-        eprintln!(
-            "skip: disrobe binary not found under {}/(release|debug); this is an optional \
-             measurement tier, not a gate - build the CLI first with \
-             `cargo build -p disrobe-cli --bin disrobe` to run it",
+        announce_unmeasurable(&format!(
+            "no disrobe binary sits under {}/(release|debug), and these tiers grade the real CLI's \
+             recovered source (build it with `cargo build --release -p disrobe-cli --bin disrobe`)",
             workspace_target().display()
-        );
+        ));
         return;
     };
 
-    let Some(python): Option<PathBuf> = find_python_314() else {
-        eprintln!(
-            "skip: no CPython 3.14 interpreter found (uv python find 3.14 / known install \
-             paths); the byte-identical tier is an optional measurement, not enforced here"
-        );
-        return;
-    };
-
-    let Some((maj, min)): Option<(u8, u8)> = interpreter_version(&python) else {
-        eprintln!(
-            "skip: could not read version of interpreter at {}",
-            python.display()
-        );
-        return;
-    };
-    if (maj, min) != (3, 14) {
-        eprintln!(
-            "skip: resolved interpreter at {} is {maj}.{min}, not 3.14; the pinned corpus is \
-             3.14-specific",
-            python.display()
-        );
-        return;
-    }
-
-    let Some(lib): Option<PathBuf> = interpreter_stdlib(&python) else {
-        eprintln!(
-            "skip: could not resolve the stdlib Lib directory of {}",
-            python.display()
-        );
-        return;
-    };
-
-    let harness: PathBuf = manifest_dir().join(HARNESS);
-    let modules: PathBuf = manifest_dir().join(PINNED_MODULES);
+    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let modules: PathBuf = manifest_dir().join(PINNED_MODULE_LIST);
     assert!(
         harness.is_file(),
         "harness missing at {}",
@@ -238,90 +399,113 @@ fn byte_identical_tier_over_pinned_corpus() {
         modules.display()
     );
 
-    let output: std::process::Output = Command::new(&python)
-        .arg(&harness)
-        .arg("--disrobe")
-        .arg(&disrobe)
-        .arg("--lib")
-        .arg(&lib)
-        .arg("--modules")
-        .arg(&modules)
-        .arg("--strict-tier")
-        .stdin(Stdio::null())
-        .output()
-        .expect("spawn byte-identical tier harness");
+    let mut measured: Vec<(u8, u8)> = Vec::new();
+    for band in CPYTHON_SERIES {
+        if band.version < FIRST_PINNED_SERIES {
+            continue;
+        }
+        let series: String = format!("{}.{}", band.version.0, band.version.1);
+        let graded: String =
+            format!("the byte-identical and line-table tiers over the CPython {series} band");
+        let Some(python): Option<PathBuf> = resolve_band_interpreter(&band.toolchain, &graded)
+        else {
+            continue;
+        };
+        let Some(resolved): Option<(u8, u8)> = interpreter_version(&python) else {
+            panic!(
+                "could not read the version of the interpreter at {}",
+                python.display()
+            );
+        };
+        assert_eq!(
+            resolved,
+            band.version,
+            "`uv python find {}` resolved {}, which reports {}.{}",
+            band.toolchain.alias,
+            python.display(),
+            resolved.0,
+            resolved.1
+        );
+        let Some(lib): Option<PathBuf> = interpreter_stdlib(&python) else {
+            panic!(
+                "could not resolve the stdlib Lib directory of {}",
+                python.display()
+            );
+        };
 
-    let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
-    println!("=== BYTE-IDENTICAL TIER (OPTIONAL, NON-GATING) ===");
-    println!("interpreter : {} ({maj}.{min})", python.display());
-    println!("lib         : {}", lib.display());
-    println!("disrobe     : {}", disrobe.display());
-    println!("--- harness taxonomy (stderr) ---\n{stderr}");
+        let magic: Option<String> = required_magic(band);
+        let run: HarnessRun =
+            run_strict_measure(&python, &disrobe, &lib, &modules, &series, magic.as_deref());
+        println!("--- CPython {series} harness taxonomy ---\n{}", run.stderr);
+        assert!(
+            run.success,
+            "the strict-tier harness exited {:?} on the {series} band\nstdout:\n{}\nstderr:\n{}",
+            run.code, run.stdout, run.stderr
+        );
+
+        let measurement: StrictMeasurement = parse_strict_measurement(&run.stdout);
+        report_band(band, &measurement);
+        assert_band_invariants(band, &measurement);
+        measured.push(band.version);
+    }
 
     assert!(
-        output.status.success(),
-        "harness exited {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status.code()
+        !measured.is_empty(),
+        "a disrobe binary was found but no CPython between {}.{} and 3.15 could be resolved, so \
+         the strict tiers graded nothing on any band",
+        FIRST_PINNED_SERIES.0,
+        FIRST_PINNED_SERIES.1
     );
-
-    let m: StrictMeasurement = parse_strict_measurement(&stdout).expect("parse strict measurement");
-    println!("cpython {} (magic {})", m.cpython_version, m.magic_number);
     println!(
-        "normalized recompile-equivalence: {}/{} code objects ({:.2}%) across {} modules",
-        m.objects_ok, m.code_objects, m.object_pct, m.modules
+        "bands measured by the strict tiers: {}",
+        measured
+            .iter()
+            .map(|(major, minor): &(u8, u8)| format!("{major}.{minor}"))
+            .collect::<Vec<String>>()
+            .join(" ")
     );
-    println!(
-        "{} recompile-equivalent; of those, {} byte-identical ({:.2}%); positions: lines \
-         {:.2}%, full {:.2}% (alignment coverage {:.2}%, {} objects scored lines-only, no debug \
-         ranges)",
-        m.strict_recompile_equivalent,
-        m.strict_byte_identical,
-        m.strict_byte_identical_pct,
-        m.strict_position_lines_pct,
-        m.strict_position_full_pct,
-        m.strict_alignment_coverage_pct,
-        m.strict_no_debug_ranges_objects
-    );
-    println!(
-        "counts: byte_identical {}/{}, position_lines {}/{}, position_full {}/{}",
-        m.strict_byte_identical,
-        m.strict_recompile_equivalent,
-        m.strict_position_lines_ok,
-        m.strict_position_lines_total,
-        m.strict_position_full_ok,
-        m.strict_position_full_total
-    );
+}
 
-    assert!(
-        m.modules >= 180,
-        "only {} of the 200 pinned modules were measured; the corpus has drifted too far from \
-         this Lib to be representative for the strict tier either",
-        m.modules
+#[test]
+fn every_band_the_normalized_tier_measures_is_a_band_the_strict_tier_reaches() {
+    let pinned: Vec<(u8, u8)> = CPYTHON_SERIES
+        .iter()
+        .map(|band: &BandRelease| band.version)
+        .filter(|version: &(u8, u8)| *version >= FIRST_PINNED_SERIES)
+        .collect();
+    let gates: [(u8, u8); 6] = [(3, 10), (3, 11), (3, 12), (3, 13), (3, 14), (3, 15)];
+    assert_eq!(
+        pinned, gates,
+        "the strict tiers walk {pinned:?} while the crate publishes normalized band gates for \
+         {gates:?}; the strict tier has to run wherever the normalized tier runs, so a new band \
+         gate has to appear on both lists at once"
     );
-    assert!(
-        m.strict_recompile_equivalent >= 4000,
-        "only {} code objects entered the strict tier (normalized recompile-equivalent \
-         subset); expected several thousand from the pinned corpus, the sample is too thin to \
-         report a meaningful measurement",
-        m.strict_recompile_equivalent
-    );
-    assert!(
-        m.strict_byte_identical <= m.strict_recompile_equivalent,
-        "byte-identical count {} exceeds its own denominator {} - measurement is broken",
-        m.strict_byte_identical,
-        m.strict_recompile_equivalent
-    );
-    assert!(
-        m.strict_position_lines_ok <= m.strict_position_lines_total,
-        "position line-match count {} exceeds its own denominator {} - measurement is broken",
-        m.strict_position_lines_ok,
-        m.strict_position_lines_total
-    );
-    assert!(
-        m.strict_position_full_ok <= m.strict_position_full_total,
-        "position full-match count {} exceeds its own denominator {} - measurement is broken",
-        m.strict_position_full_ok,
-        m.strict_position_full_total
-    );
+    for version in gates {
+        let band: &BandRelease = CPYTHON_SERIES
+            .iter()
+            .find(|entry: &&BandRelease| entry.version == version)
+            .unwrap_or_else(|| panic!("no series entry for CPython {}.{}", version.0, version.1));
+        match band.magic {
+            SeriesMagic::Released(value) => {
+                let hex: String = magic_hex(value);
+                assert_eq!(
+                    parse_magic(&hex),
+                    Ok(value),
+                    "the magic this gate demands of CPython {}.{} does not survive a round trip \
+                     through its own hex form, so the harness would be handed a demand it can \
+                     never satisfy",
+                    version.0,
+                    version.1
+                );
+            }
+            SeriesMagic::PreRelease => assert_eq!(
+                version,
+                (3, 15),
+                "CPython {}.{} is recorded as pre-release, but only 3.15 is unreleased; a released \
+                 series with no recorded magic lets a band run on the wrong interpreter unnoticed",
+                version.0,
+                version.1
+            ),
+        }
+    }
 }

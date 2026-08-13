@@ -166,6 +166,43 @@ pub(crate) fn run_measure_with_ledger(
 }
 
 #[must_use]
+pub(crate) fn run_strict_measure(
+    python: &Path,
+    disrobe: &Path,
+    lib: &Path,
+    modules: &Path,
+    require_version: &str,
+    require_magic: Option<&str>,
+) -> HarnessRun {
+    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let mut command: Command = Command::new(python);
+    command
+        .arg(&harness)
+        .arg("--disrobe")
+        .arg(disrobe)
+        .arg("--lib")
+        .arg(lib)
+        .arg("--modules")
+        .arg(modules)
+        .arg("--strict-tier")
+        .arg("--require-version")
+        .arg(require_version);
+    if let Some(magic) = require_magic {
+        command.arg("--require-magic").arg(magic);
+    }
+    let output: std::process::Output = command
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn the strict-tier recompile-equivalence harness");
+    HarnessRun {
+        success: output.status.success(),
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+#[must_use]
 pub(crate) fn run_family(python: &Path, disrobe: &Path, lib: &Path, modules: &Path) -> HarnessRun {
     let harness: PathBuf = manifest_dir().join(FAMILY_HARNESS);
     let output: std::process::Output = Command::new(python)

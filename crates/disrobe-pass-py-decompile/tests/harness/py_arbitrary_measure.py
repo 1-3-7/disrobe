@@ -23,10 +23,25 @@ Usage:
 Emits a single JSON object on the first line of stdout, then a human-readable taxonomy on stderr.
 
 Pass --strict-tier to additionally measure, on top of the normalized recompile-equivalence
-oracle above, byte-identical faithfulness (co_code plus every co_* structural field, compared
-recursively through nested code objects in co_consts) and co_positions() fidelity (line-level and
-full lineno/col granularity). The strict tier runs only on code objects that already pass the
-normalized oracle above; it is a pure measurement and asserts nothing on its own.
+oracle above, two further tiers on the same population.
+
+Byte tier: co_code compared raw, plus every structural co_* field in STRUCTURAL_ATTRS and
+VERSIONED_ATTRS, recursively through nested code objects in co_consts. Inline caches are NOT
+stripped: co_code is compared byte for byte, so the 3.11+ CACHE code units are part of the
+compared stream, and inline_cache_units() reports how many of them there were so a run can prove
+the comparison saw them. Specialisation cannot leak in either: co_code returns the de-optimised
+bytes, every compared object is freshly compiled and never executed, and unknown_opcode_units()
+counts any code unit whose opcode is absent from dis.opmap, which is what an adaptive or
+instrumented opcode would look like.
+
+Line tier: co_firstlineno equality plus co_positions() fidelity at line granularity and at full
+lineno/col granularity. Interpreters older than 3.11 have no co_positions(); code_positions()
+falls back to co_lines() or dis.findlinestarts() there, which carries lines but no column ranges,
+so those bands report position_full_supported = 0 and score the line leg only.
+
+EXCLUDED_ATTRS names the fields deliberately left out of the byte tier and why. The strict tier
+runs only on code objects that already pass the normalized oracle above; it is a pure measurement
+and asserts nothing on its own.
 """
 
 from __future__ import annotations
@@ -46,7 +61,7 @@ import sys
 import tempfile
 import types
 import warnings
-from typing import Literal
+from typing import Iterator, Literal, Optional, Sequence, Tuple
 
 NOOP = {
     "NOP",
@@ -167,17 +182,56 @@ def own_equiv(a, b):
     return True, ""
 
 
-Position = tuple[int | None, int | None, int | None, int | None]
+Position = Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]
 MAX_ALIGN_INSTRS = 6000
+MAX_CONST_DEPTH = 64
+
+STRUCTURAL_ATTRS = (
+    "co_argcount",
+    "co_posonlyargcount",
+    "co_kwonlyargcount",
+    "co_nlocals",
+    "co_stacksize",
+    "co_flags",
+    "co_name",
+    "co_names",
+    "co_varnames",
+    "co_freevars",
+    "co_cellvars",
+)
+VERSIONED_ATTRS = ("co_qualname", "co_exceptiontable")
+EXCLUDED_ATTRS = (
+    ("co_filename", "recovered source is written to a different path by construction"),
+    ("co_linetable", "encoded line table is compared semantically by the position legs"),
+    ("co_firstlineno", "line-table tier, counted apart from byte identity"),
+)
+BYTE_DIMENSIONS = ("co_code",) + STRUCTURAL_ATTRS + VERSIONED_ATTRS + ("co_consts",)
+DEPTH_LIMIT_DIMENSION = "co_consts_depth_limit"
 
 
-def consts_equal(a: object, b: object) -> bool:
+class ConstDepthExceeded(Exception):
+    """Constant nesting passed MAX_CONST_DEPTH, so the walk refuses rather than recurses."""
+
+
+def zip_exact(
+    left: Sequence[object], right: Sequence[object]
+) -> Iterator[tuple[object, object]]:
+    if len(left) != len(right):
+        raise ValueError(f"length mismatch: {len(left)} vs {len(right)}")
+    return zip(left, right)
+
+
+def consts_equal(a: object, b: object, depth: int = 0) -> bool:
+    if depth > MAX_CONST_DEPTH:
+        raise ConstDepthExceeded(f"constant nesting passed {MAX_CONST_DEPTH} levels")
     if type(a) is not type(b):
         return False
     if isinstance(a, types.CodeType) and isinstance(b, types.CodeType):
-        return byte_identical(a, b)
+        return not strict_diff_dimensions(a, b, depth + 1)
     if isinstance(a, tuple) and isinstance(b, tuple):
-        return len(a) == len(b) and all(consts_equal(x, y) for x, y in zip(a, b, strict=True))
+        return len(a) == len(b) and all(
+            consts_equal(x, y, depth + 1) for x, y in zip_exact(a, b)
+        )
     if isinstance(a, (frozenset, set)) and isinstance(b, (frozenset, set)):
         return a == b
     if isinstance(a, float) and isinstance(b, float):
@@ -185,27 +239,50 @@ def consts_equal(a: object, b: object) -> bool:
             return True
         return a == b and math.copysign(1.0, a) == math.copysign(1.0, b)
     if isinstance(a, complex) and isinstance(b, complex):
-        return consts_equal(a.real, b.real) and consts_equal(a.imag, b.imag)
+        return consts_equal(a.real, b.real, depth + 1) and consts_equal(
+            a.imag, b.imag, depth + 1
+        )
     return a == b
 
 
-def byte_identical(a: types.CodeType, b: types.CodeType) -> bool:
+def strict_diff_dimensions(
+    a: types.CodeType, b: types.CodeType, depth: int = 0
+) -> list[str]:
+    found: list[str] = []
     if a.co_code != b.co_code:
-        return False
-    for attr in (
-        "co_names",
-        "co_varnames",
-        "co_freevars",
-        "co_cellvars",
-        "co_flags",
-        "co_stacksize",
-        "co_exceptiontable",
-    ):
+        found.append("co_code")
+    for attr in STRUCTURAL_ATTRS:
         if getattr(a, attr) != getattr(b, attr):
-            return False
-    if len(a.co_consts) != len(b.co_consts):
-        return False
-    return all(consts_equal(x, y) for x, y in zip(a.co_consts, b.co_consts, strict=True))
+            found.append(attr)
+    for attr in VERSIONED_ATTRS:
+        if getattr(a, attr, None) != getattr(b, attr, None):
+            found.append(attr)
+    try:
+        if len(a.co_consts) != len(b.co_consts) or not all(
+            consts_equal(x, y, depth + 1) for x, y in zip_exact(a.co_consts, b.co_consts)
+        ):
+            found.append("co_consts")
+    except ConstDepthExceeded:
+        found.append(DEPTH_LIMIT_DIMENSION)
+    return found
+
+
+def byte_identical(a: types.CodeType, b: types.CodeType) -> bool:
+    return not strict_diff_dimensions(a, b)
+
+
+def inline_cache_units(code: types.CodeType) -> int:
+    cache_op: Optional[int] = dis.opmap.get("CACHE")
+    if cache_op is None:
+        return 0
+    raw: bytes = code.co_code
+    return sum(1 for i in range(0, len(raw) - 1, 2) if raw[i] == cache_op)
+
+
+def unknown_opcode_units(code: types.CodeType) -> int:
+    known: frozenset[int] = frozenset(dis.opmap.values())
+    raw: bytes = code.co_code
+    return sum(1 for i in range(0, len(raw) - 1, 2) if raw[i] not in known)
 
 
 def classify(ins: dis.Instruction) -> tuple[str, object]:
@@ -227,8 +304,36 @@ def classify(ins: dis.Instruction) -> tuple[str, object]:
     return (op, None)
 
 
+def position_full_supported(code: types.CodeType) -> bool:
+    return hasattr(code, "co_positions")
+
+
+def lines_from_line_table(code: types.CodeType) -> list[Optional[int]]:
+    units: int = len(code.co_code) // 2
+    lines: list[Optional[int]] = [None] * units
+    if hasattr(code, "co_lines"):
+        for start, end, line in code.co_lines():
+            first: int = max(0, start // 2)
+            last: int = min(units, -(-end // 2))
+            for idx in range(first, last):
+                lines[idx] = line
+        return lines
+    carried: Optional[int] = None
+    starts: dict[int, int] = dict(dis.findlinestarts(code))
+    for idx in range(units):
+        carried = starts.get(idx * 2, carried)
+        lines[idx] = carried
+    return lines
+
+
+def code_positions(code: types.CodeType) -> list[Position]:
+    if position_full_supported(code):
+        return list(code.co_positions())
+    return [(line, line, None, None) for line in lines_from_line_table(code)]
+
+
 def instr_seq(code: types.CodeType) -> list[tuple[tuple[str, object], Position]]:
-    positions: list[Position] = list(code.co_positions())
+    positions: list[Position] = code_positions(code)
     out: list[tuple[tuple[str, object], Position]] = []
     for ins in dis.get_instructions(code):
         if ins.opname in NOOP:
@@ -240,7 +345,7 @@ def instr_seq(code: types.CodeType) -> list[tuple[tuple[str, object], Position]]
 
 
 def is_no_debug_ranges(code: types.CodeType) -> bool:
-    positions: list[Position] = list(code.co_positions())
+    positions: list[Position] = code_positions(code)
     if not positions:
         return False
     return all(p[2] is None and p[3] is None for p in positions)
@@ -250,9 +355,9 @@ def align_positions(
     a: types.CodeType, b: types.CodeType
 ) -> tuple[list[tuple[Position, Position]], int, int]:
     if a.co_code == b.co_code:
-        pos_a: list[Position] = list(a.co_positions())
-        pos_b: list[Position] = list(b.co_positions())
-        pairs: list[tuple[Position, Position]] = list(zip(pos_a, pos_b, strict=True))
+        pos_a: list[Position] = code_positions(a)
+        pos_b: list[Position] = code_positions(b)
+        pairs: list[tuple[Position, Position]] = list(zip_exact(pos_a, pos_b))
         return pairs, len(pairs), len(pairs)
     seq_a = instr_seq(a)
     seq_b = instr_seq(b)
@@ -289,6 +394,33 @@ def sibling_group_charges(
     return is_sibling_collision, charges
 
 
+def running_magic_hex() -> str:
+    return importlib.util.MAGIC_NUMBER.hex()
+
+
+def running_version() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def interpreter_refusal(
+    required_magic: Optional[str], required_version: Optional[str]
+) -> Optional[str]:
+    if required_version is not None and required_version != running_version():
+        return (
+            f"REFUSED: caller requires CPython {required_version} but this interpreter is "
+            f"{platform.python_version()}; a band measured on the wrong interpreter is a "
+            f"different population, so nothing was measured"
+        )
+    if required_magic is not None and required_magic.lower() != running_magic_hex():
+        return (
+            f"REFUSED: caller requires pyc magic {required_magic.lower()} but this interpreter "
+            f"stamps {running_magic_hex()} (CPython {platform.python_version()}); the .pyc this "
+            f"harness writes would carry a magic the caller did not expect, so nothing was "
+            f"measured"
+        )
+    return None
+
+
 def decompile(disrobe, pyc, outdir):
     r = subprocess.run(
         [disrobe, "py", "decompile", pyc, "--out", outdir],
@@ -320,7 +452,14 @@ def main():
     ap.add_argument("--modules", required=True)
     ap.add_argument("--strict-tier", action="store_true")
     ap.add_argument("--object-ledger", default=None)
+    ap.add_argument("--require-magic", default=None)
+    ap.add_argument("--require-version", default=None)
     args = ap.parse_args()
+
+    refusal: Optional[str] = interpreter_refusal(args.require_magic, args.require_version)
+    if refusal is not None:
+        print(refusal, file=sys.stderr)
+        raise SystemExit(2)
 
     ledger: list[str] = []
 
@@ -352,6 +491,13 @@ def main():
     strict_align_aligned = 0
     strict_align_total = 0
     strict_no_debug_ranges_objects = 0
+    strict_firstlineno_ok = 0
+    strict_inline_cache_units = 0
+    strict_unknown_opcode_units = 0
+    strict_position_full_objects = 0
+    strict_dimension_hits: dict[str, int] = {
+        dimension: 0 for dimension in BYTE_DIMENSIONS + (DEPTH_LIMIT_DIMENSION,)
+    }
 
     for f in files:
         try:
@@ -426,8 +572,22 @@ def main():
                                 mod_ok += 1
                                 if args.strict_tier:
                                     strict_recompile_equivalent += 1
-                                    if byte_identical(ac, bc):
+                                    dimensions: list[str] = strict_diff_dimensions(ac, bc)
+                                    if dimensions:
+                                        for dimension in dimensions:
+                                            strict_dimension_hits[dimension] = (
+                                                strict_dimension_hits.get(dimension, 0) + 1
+                                            )
+                                    else:
                                         strict_byte_identical += 1
+                                    if ac.co_firstlineno == bc.co_firstlineno:
+                                        strict_firstlineno_ok += 1
+                                    strict_inline_cache_units += inline_cache_units(ac)
+                                    strict_unknown_opcode_units += unknown_opcode_units(
+                                        ac
+                                    ) + unknown_opcode_units(bc)
+                                    if position_full_supported(ac):
+                                        strict_position_full_objects += 1
                                     pairs, aligned, tot_align = align_positions(ac, bc)
                                     strict_align_aligned += aligned
                                     strict_align_total += tot_align
@@ -469,8 +629,9 @@ def main():
         "objects_ok": ok_obj,
         "object_pct": round(100.0 * ok_obj / tot_obj, 2) if tot_obj else 0,
         "sibling_collisions": sibling_collisions,
+        "optimize_level": sys.flags.optimize,
         "cpython_version": platform.python_version(),
-        "magic_number": importlib.util.MAGIC_NUMBER.hex(),
+        "magic_number": running_magic_hex(),
     }
     if args.strict_tier:
         strict_byte_identical_pct = (
@@ -489,19 +650,46 @@ def main():
             if strict_align_total
             else 0
         )
+        strict_population_pct = (
+            round(100.0 * strict_byte_identical / tot_obj, 2) if tot_obj else 0
+        )
+        strict_firstlineno_pct = (
+            round(100.0 * strict_firstlineno_ok / strict_recompile_equivalent, 2)
+            if strict_recompile_equivalent
+            else 0
+        )
         result.update(
             {
                 "strict_recompile_equivalent": strict_recompile_equivalent,
                 "strict_byte_identical": strict_byte_identical,
                 "strict_byte_identical_pct": strict_byte_identical_pct,
+                "strict_population_total": tot_obj,
+                "strict_population_pct": strict_population_pct,
+                "strict_firstlineno_ok": strict_firstlineno_ok,
+                "strict_firstlineno_pct": strict_firstlineno_pct,
                 "strict_position_lines_ok": strict_lines_ok,
                 "strict_position_lines_total": strict_lines_total,
                 "strict_position_lines_pct": strict_lines_pct,
                 "strict_position_full_ok": strict_full_ok,
                 "strict_position_full_total": strict_full_total,
                 "strict_position_full_pct": strict_full_pct,
+                "strict_position_full_supported": int(
+                    strict_position_full_objects == strict_recompile_equivalent
+                    and strict_recompile_equivalent > 0
+                ),
                 "strict_alignment_coverage_pct": strict_alignment_coverage_pct,
                 "strict_no_debug_ranges_objects": strict_no_debug_ranges_objects,
+                "strict_inline_cache_units": strict_inline_cache_units,
+                "strict_unknown_opcode_units": strict_unknown_opcode_units,
+                "strict_excluded_dimensions": ",".join(
+                    name for name, _ in EXCLUDED_ATTRS
+                ),
+            }
+        )
+        result.update(
+            {
+                f"strict_dim_{dimension}": count
+                for dimension, count in strict_dimension_hits.items()
             }
         )
         print(json.dumps(result))
@@ -513,6 +701,23 @@ def main():
             f"{strict_no_debug_ranges_objects} objects scored lines-only, no debug ranges)",
             file=sys.stderr,
         )
+        print(
+            f"byte tier over the whole normalized population: {strict_byte_identical} / "
+            f"{tot_obj} ({strict_population_pct}%); co_firstlineno matched "
+            f"{strict_firstlineno_ok} / {strict_recompile_equivalent} "
+            f"({strict_firstlineno_pct}%); inline cache units in the compared streams "
+            f"{strict_inline_cache_units}; opcode units absent from dis.opmap "
+            f"{strict_unknown_opcode_units}",
+            file=sys.stderr,
+        )
+        print("\n=== byte-tier dimensions that lost fidelity ===", file=sys.stderr)
+        for dimension, count in sorted(
+            strict_dimension_hits.items(), key=lambda kv: -kv[1]
+        ):
+            if count:
+                print(f"  {count:5}  {dimension}", file=sys.stderr)
+        for name, reason in EXCLUDED_ATTRS:
+            print(f"  excluded {name}: {reason}", file=sys.stderr)
     else:
         print(json.dumps(result))
 

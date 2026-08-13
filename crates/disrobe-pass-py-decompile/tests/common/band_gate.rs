@@ -29,6 +29,18 @@ pub(crate) struct BandToolchain {
     pub install_hint: &'static str,
 }
 
+pub(crate) const CPYTHON_38: BandToolchain = BandToolchain {
+    alias: "3.8",
+    require_var: "DISROBE_REQUIRE_PY_38",
+    install_hint: "install it with `uv python install 3.8`",
+};
+
+pub(crate) const CPYTHON_39: BandToolchain = BandToolchain {
+    alias: "3.9",
+    require_var: "DISROBE_REQUIRE_PY_39",
+    install_hint: "install it with `uv python install 3.9`",
+};
+
 pub(crate) const CPYTHON_310: BandToolchain = BandToolchain {
     alias: "3.10",
     require_var: "DISROBE_REQUIRE_PY_310",
@@ -53,11 +65,98 @@ pub(crate) const CPYTHON_313: BandToolchain = BandToolchain {
     install_hint: "install it with `uv python install 3.13`",
 };
 
+pub(crate) const CPYTHON_314: BandToolchain = BandToolchain {
+    alias: "3.14",
+    require_var: "DISROBE_REQUIRE_PY_314",
+    install_hint: "install it with `uv python install 3.14`",
+};
+
 pub(crate) const CPYTHON_315: BandToolchain = BandToolchain {
     alias: "3.15",
     require_var: "DISROBE_REQUIRE_PY_315",
     install_hint: "install it with `uv python install 3.15`",
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeriesMagic {
+    Released(u16),
+    PreRelease,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BandRelease {
+    pub version: (u8, u8),
+    pub toolchain: BandToolchain,
+    pub magic: SeriesMagic,
+}
+
+pub(crate) const CPYTHON_SERIES: [BandRelease; 8] = [
+    BandRelease {
+        version: (3, 8),
+        toolchain: CPYTHON_38,
+        magic: SeriesMagic::Released(3413),
+    },
+    BandRelease {
+        version: (3, 9),
+        toolchain: CPYTHON_39,
+        magic: SeriesMagic::Released(3425),
+    },
+    BandRelease {
+        version: (3, 10),
+        toolchain: CPYTHON_310,
+        magic: SeriesMagic::Released(3439),
+    },
+    BandRelease {
+        version: (3, 11),
+        toolchain: CPYTHON_311,
+        magic: SeriesMagic::Released(3495),
+    },
+    BandRelease {
+        version: (3, 12),
+        toolchain: CPYTHON_312,
+        magic: SeriesMagic::Released(3531),
+    },
+    BandRelease {
+        version: (3, 13),
+        toolchain: CPYTHON_313,
+        magic: SeriesMagic::Released(3571),
+    },
+    BandRelease {
+        version: (3, 14),
+        toolchain: CPYTHON_314,
+        magic: SeriesMagic::Released(3627),
+    },
+    BandRelease {
+        version: (3, 15),
+        toolchain: CPYTHON_315,
+        magic: SeriesMagic::PreRelease,
+    },
+];
+
+pub(crate) const FIRST_CACHED_SERIES: (u8, u8) = (3, 11);
+
+#[must_use]
+pub(crate) fn magic_hex(value: u16) -> String {
+    format!("{:02x}{:02x}0d0a", value & 0x00FF, value >> 8)
+}
+
+pub(crate) fn parse_magic(raw: &str) -> Result<u16, String> {
+    if raw.len() != 8 {
+        return Err(format!(
+            "`{raw}` is not the four bytes every pyc magic number is made of"
+        ));
+    }
+    if !raw.ends_with("0d0a") {
+        return Err(format!(
+            "`{raw}` does not end in the CR LF pair every CPython magic number carries"
+        ));
+    }
+    let low: u16 = u16::from_str_radix(&raw[0..2], 16)
+        .map_err(|e: std::num::ParseIntError| format!("`{raw}` low byte: {e}"))?;
+    let high: u16 = u16::from_str_radix(&raw[2..4], 16)
+        .map_err(|e: std::num::ParseIntError| format!("`{raw}` high byte: {e}"))?;
+    Ok(low | (high << 8))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BandRequirement {
