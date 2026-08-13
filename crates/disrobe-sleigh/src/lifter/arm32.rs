@@ -1434,10 +1434,16 @@ fn emit_shift_flags(
         input,
         amount: constant(u64::from(extraction_shift), 4),
     });
+    let masked: Varnode = allocator.allocate(4)?;
     ops.push(PcodeOp::IntAnd {
-        output: carry,
+        output: masked,
         left: shifted,
         right: constant(1, 4),
+    });
+    ops.push(PcodeOp::IntNotEqual {
+        output: carry,
+        left: masked,
+        right: constant(0, 4),
     });
     Some(())
 }
