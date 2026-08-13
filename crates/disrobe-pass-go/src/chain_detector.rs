@@ -602,6 +602,64 @@ mod tests {
     }
 
     #[test]
+    fn pass_run_and_sidecar_both_carry_the_recovered_defer_lowering() {
+        let fixture: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("defer_go126_windows_amd64");
+        let bytes: Vec<u8> = std::fs::read(&fixture).unwrap_or_else(|e| {
+            panic!(
+                "committed defer fixture missing at {}: {e}; regenerate via \
+                 crates/disrobe-pass-go/tests/fixtures/regen.ps1",
+                fixture.display()
+            )
+        });
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let out: Artifact = GO_PASS.run(&a).expect("go analyze must succeed");
+        let report: &str = std::str::from_utf8(&out.envelope).expect("utf8 report");
+        assert!(
+            report.contains("defer open-coded main.OpenCodedOne"),
+            "the chain report must name an open-coded defer function; got {:?}",
+            report.chars().rev().take(600).collect::<String>(),
+        );
+        assert!(
+            report.contains("defer call-based main.LoopDefer"),
+            "the chain report must name a call-based defer function",
+        );
+        assert!(
+            report.contains("runtime hook runtime.deferreturn"),
+            "the chain report must name the recovered runtime defer hooks",
+        );
+
+        let children: Vec<ChildArtifact> = GO_PASS
+            .extract_children(&a)
+            .expect("go children extraction");
+        let sidecar: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == GO_ANALYSIS_SIDECAR)
+            .expect("auto must surface go-analysis.json");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&sidecar.bytes).expect("analysis sidecar is valid json");
+        let defers: &serde_json::Value = parsed
+            .get("defers")
+            .expect("the sidecar must carry the defer report");
+        assert_eq!(
+            defers.get("support").and_then(|s: &serde_json::Value| s
+                .get("state")
+                .and_then(serde_json::Value::as_str)),
+            Some("recovered"),
+        );
+        let listed: usize = defers
+            .get("functions")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len);
+        assert!(
+            listed >= 10,
+            "the sidecar defer listing carries only {listed} functions",
+        );
+    }
+
+    #[test]
     fn pass_run_rejects_loose_pclntab_magic_without_structure() {
         use crate::pclntab::MAGIC_GO118;
         let mut bytes: Vec<u8> = vec![0u8; 128];
