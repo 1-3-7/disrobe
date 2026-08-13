@@ -1,0 +1,925 @@
+{
+  "schema_version": 1,
+  "regeneration": "cargo test -p disrobe-pass-lua --test negative_corpus -- --ignored print_entry_digests",
+  "entry_wall_clock_ms": 20000,
+  "entry_peak_alloc_bytes": 4194304,
+  "worker_threads": 4,
+  "uncovered_shapes": [
+    {
+      "shape": "overlapping_regions",
+      "reason": "Lua 5.1 to 5.4, LuaJIT and Luau bytecode are sequential streams with no offset table and no section table, so two records cannot claim the same bytes. There is no field a producer could point at an earlier region."
+    },
+    {
+      "shape": "header_inside_its_own_payload",
+      "reason": "The same sequential layout applies: no record in these formats carries a file offset, so a header cannot be placed inside a payload it also describes."
+    },
+    {
+      "shape": "directory_entry_into_header",
+      "reason": "None of the Lua bytecode formats has a directory of offsets. Luau and LuaJIT reference children by array index, which is covered by index_equals_container_length instead."
+    },
+    {
+      "shape": "self_referencing_entry",
+      "reason": "A Luau proto can name its own index as a child. The reader substitutes an empty proto for that child rather than refusing, so labelling a refusal here would record wished-for behaviour, and labelling the substitution would publish a silent fabrication as correct. Recorded as follow-up work on reader/luau.rs assemble_proto."
+    },
+    {
+      "shape": "archive_symlink_loop",
+      "reason": "No surface in this crate expands an archive. luvit::extract classifies the container and returns an empty file map, so there is no entry that could name another entry."
+    },
+    {
+      "shape": "self_decompressing_container",
+      "reason": "No Lua surface feeds decompressed output back into the same container reader. The base36 LZW stream decodes to bytes that are never re-entered as a container, so a self-decompressing input cannot be expressed."
+    },
+    {
+      "shape": "metadata_type_reference_cycle",
+      "reason": "Luau type payloads are read as opaque length-prefixed blobs and the type-name table is a flat list, so no type reference can name another type. A cycle needs a resolver, and this reader has none."
+    },
+    {
+      "shape": "absent_optional_structure",
+      "reason": "A stripped but specification-valid chunk must recover, not refuse, so it has no place in a refuse-labelled corpus. Positive coverage lives in luajit_21_strip_decompile.rs and luajit_reader.rs, which read the committed stripped LuaJIT samples."
+    },
+    {
+      "shape": "invalid_utf8_name",
+      "reason": "Lua string constants are byte strings, not UTF-8, so a name with invalid UTF-8 is a conforming chunk. The readers convert with from_utf8_lossy by design and refusal is not specification-mandated, which makes any expected refusal here an invented rule."
+    },
+    {
+      "shape": "traversal_name",
+      "reason": "No surface in this crate resolves a chunk source name, local name or upvalue name to a filesystem path, and no surface writes a file. A traversal name is a string constant here, so a containment assertion would pass for a function that never opens anything."
+    },
+    {
+      "shape": "absolute_path_name",
+      "reason": "Same reason as traversal_name: names are inert string data in this crate. The committed Lua 5.1 and 5.3 samples already carry absolute Windows source paths and recover as ordinary strings."
+    },
+    {
+      "shape": "embedded_nul_name",
+      "reason": "Lua 5.1 to 5.3 store names with a trailing NUL that the reader strips, and an embedded NUL is a legal byte in a Lua string. Refusal is not specification-mandated, so this shape cannot carry a refuse label."
+    }
+  ],
+  "entries": [
+    {
+      "id": "lua51-truncated-at-magic",
+      "shape": "truncation_at_magic",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 2 }],
+        "reason": "real luac 5.1 output cut to two bytes, so the four byte signature cannot be read"
+      },
+      "input_fnv1a64": "08873a07b5332b62",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4 bytes, had 2" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_bytes" },
+      "reason": "A chunk shorter than its signature carries no format claim at all, so the only conforming outcome is a refusal that names the short read."
+    },
+    {
+      "id": "lua51-truncated-mid-header",
+      "shape": "truncation_mid_header",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 8 }],
+        "reason": "cut inside the twelve byte 5.1 header, after the signature and before the size fields"
+      },
+      "input_fnv1a64": "f92b0cc7c81e0aa8",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_u8" },
+      "reason": "The header declares the widths every later field depends on, so a reader that has not seen all of it cannot decode anything and must refuse."
+    },
+    {
+      "id": "lua51-truncated-mid-source-name",
+      "shape": "truncation_mid_record",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 40 }],
+        "reason": "cut inside the sixty nine byte source name string of the main prototype"
+      },
+      "input_fnv1a64": "c4d64fd86833c2f2",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "fn read_string" },
+      "reason": "The name length field promises sixty nine bytes that the file does not contain, so the read must fail rather than return a short name."
+    },
+    {
+      "id": "lua51-truncated-mid-code-array",
+      "shape": "truncation_mid_table",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 105 }],
+        "reason": "cut inside the four instruction code array that starts at offset 101"
+      },
+      "input_fnv1a64": "47c9d4812b73975a",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code count 4 exceeds parser limit 2" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
+      "reason": "A code array with fewer bytes than its declared instruction count cannot be completed, and emitting the instructions that survived would present a partial program as whole. The refusal names four declared instructions against the two the remaining bytes allow, which ties it to this cut rather than to some later quota."
+    },
+    {
+      "id": "lua51-truncated-one-byte-short",
+      "shape": "truncation_one_byte_short",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "drop_last_bytes", "count": 1 }],
+        "reason": "one byte removed from the end, cutting the four byte upvalue count of the main prototype"
+      },
+      "input_fnv1a64": "269ad01c324d9c93",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4 bytes, had 3" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_size" },
+      "reason": "The last field of a 5.1 chunk is the upvalue count, so a file one byte short is incomplete and a reader that returns a chunk anyway has invented the missing field."
+    },
+    {
+      "id": "lua51-code-length-exceeds-file",
+      "shape": "declared_size_exceeds_file",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_u32_le", "offset": 97, "value": 4294967295 }],
+        "reason": "the code length field at offset 97 raised from four to 4294967295"
+      },
+      "input_fnv1a64": "b86056978770b4d1",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
+      "reason": "Four billion instructions cannot fit in a 181 byte file, so the count must be rejected against the remaining bytes before any reservation is made."
+    },
+    {
+      "id": "lua51-code-length-negative-signed",
+      "shape": "negative_signed_widened",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_u32_le", "offset": 97, "value": 2147483648 }],
+        "reason": "the code length field set to 0x80000000, which is negative one as a signed int and two billion once widened"
+      },
+      "input_fnv1a64": "825054f0dda5f345",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn bounded_capacity" },
+      "reason": "Lua writes this count as a C int, so a negative value widened to unsigned is a structural lie and the widened count must still be bounded by the bytes that remain."
+    },
+    {
+      "id": "lua51-constant-count-overflows-entry-size",
+      "shape": "count_times_entry_size_overflows",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_u32_le", "offset": 117, "value": 4294967295 }],
+        "reason": "the constant count field at offset 117 raised from two to 4294967295"
+      },
+      "input_fnv1a64": "163a573d9b098e93",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 constant" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
+      "reason": "The constant count multiplied by the in-memory constant size overflows any real allocation, and the refusal must name the constant section so a quota hit elsewhere cannot be mistaken for this rejection."
+    },
+    {
+      "id": "lua51-prototype-count-huge",
+      "shape": "very_large_entry_count",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_u32_le", "offset": 149, "value": 268435455 }],
+        "reason": "the child prototype count at offset 149 raised from zero to 268435455"
+      },
+      "input_fnv1a64": "e4a7a37ebb5d443d",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 proto" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
+      "reason": "268 million child prototypes cannot follow in 28 remaining bytes, so the count is rejected against the file rather than driving a reservation."
+    },
+    {
+      "id": "lua51-overlong-source-name",
+      "shape": "overlong_name",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_u32_le", "offset": 12, "value": 4294967280 }],
+        "reason": "the source name length at offset 12 raised from sixty nine to 4294967280"
+      },
+      "input_fnv1a64": "3948c2f317d81afb",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4294967280" }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "fn read_string" },
+      "reason": "A four gigabyte name in a 181 byte file is unsatisfiable, and the refusal must name the length that was demanded so a different short read cannot pass for it."
+    },
+    {
+      "id": "lua51-unknown-constant-tag",
+      "shape": "unknown_record_tag",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 121, "bytes_hex": "09" }],
+        "reason": "the first constant tag changed from 4, a string, to 9, which no Lua 5.1 constant uses"
+      },
+      "input_fnv1a64": "8d7467155cc35ec8",
+      "expect": [{ "outcome": "refuse", "error": "bad_constant_tag", "detail_contains": "0x09" }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "BadConstantTag" },
+      "reason": "Lua 5.1 defines constant tags 0, 1, 3 and 4 only, so tag 9 has no decoding and guessing one would invent a constant the compiler never wrote."
+    },
+    {
+      "id": "lua51-integer-width-three",
+      "shape": "invalid_width_field",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 7, "bytes_hex": "03" }],
+        "reason": "the sizeof(int) header field changed from four to three"
+      },
+      "input_fnv1a64": "58b5b6fc1a626902",
+      "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 3" }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "BadIntSize" },
+      "reason": "No Lua build writes a three byte int, so the width is a lie and every later field would be decoded at the wrong stride."
+    },
+    {
+      "id": "lua51-format-byte-not-official",
+      "shape": "unsupported_version_word",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 5, "bytes_hex": "01" }],
+        "reason": "the format byte changed from 0, the official format, to 1"
+      },
+      "input_fnv1a64": "7976c31909f28248",
+      "expect": [{ "outcome": "refuse", "error": "unsupported_format", "detail_contains": "0x01" }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "UnsupportedFormat" },
+      "reason": "A non-zero format byte declares a layout the official reader does not define, so decoding it as the official layout would be a guess."
+    },
+    {
+      "id": "lua51-version-word-five-zero",
+      "shape": "unsupported_version_word",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "50" }],
+        "reason": "the version byte changed from 0x51 to 0x50, naming Lua 5.0"
+      },
+      "input_fnv1a64": "15d9545b91c7d64e",
+      "expect": [{ "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 80 }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "UnsupportedLuaVersion" },
+      "reason": "Lua 5.0 has a different prototype layout, so a 5.1 reader must report the unsupported version it was handed instead of parsing the body."
+    },
+    {
+      "id": "lua51-version-five-zero-auto-dispatch",
+      "shape": "unsupported_version_word",
+      "surface": "read_auto",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "50" }],
+        "reason": "the same 5.0 version byte, routed through the auto dispatcher instead of a named reader"
+      },
+      "input_fnv1a64": "15d9545b91c7d64e",
+      "expect": [
+        { "outcome": "refuse", "error": "bad_signature", "detail_contains": null },
+        { "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 80 }
+      ],
+      "guard": { "file": "src/reader/mod.rs", "symbol": "pub fn read_auto" },
+      "reason": "This is the entry the manifest allows more than one outcome for: the dispatcher may either report that it cannot classify the chunk or forward the unsupported version, and both are refusals, but recovering a chunk is not acceptable."
+    },
+    {
+      "id": "lua51-valid-magic-random-body",
+      "shape": "lookalike_valid_magic_random_body",
+      "surface": "read_auto",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 6841044972672617197,
+        "ops": [{ "op": "randomize_range", "offset": 12, "len": 169 }],
+        "reason": "the twelve byte header kept, everything after it replaced by a seeded splitmix64 stream"
+      },
+      "input_fnv1a64": "25d06e6ca09ab152",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 2580928772" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_len" },
+      "reason": "With this seed the four bytes at offset 12 come out as 04 d9 d5 99, so the source name length field reads 2580928772, which no 181 byte file can satisfy. The reader must refuse with that demanded length rather than accept a file that only looks like Lua."
+    },
+    {
+      "id": "lua51-prototype-nesting-bomb",
+      "shape": "deeply_nested_container",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "lua51_nested_protos", "depth": 400 },
+        "reason": "400 prototypes each declaring one child, built against the 5.1 layout; the control is the same structure four deep"
+      },
+      "input_fnv1a64": "cb49c773245b0a8e",
+      "expect": [{ "outcome": "refuse", "error": "proto_nesting_too_deep", "detail_contains": null }],
+      "guard": { "file": "src/cursor.rs", "symbol": "MAX_PROTO_DEPTH" },
+      "reason": "Prototype nesting is recursive, so an input-controlled depth is an input-controlled stack demand and must hit a declared ceiling instead of the stack guard page."
+    },
+    {
+      "id": "lua51-wide-size-t-name-length",
+      "shape": "offset_plus_length_wraps_u64",
+      "surface": "read_lua51",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "lua51_wide_size_t_huge_string_length" },
+        "reason": "a 5.1 header declaring eight byte int and size_t, with a source name length of 0xFFFFFFFFFFFFFFF0; the control is the same header with a zero length name"
+      },
+      "input_fnv1a64": "9ece29300c140c5d",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 18446744073709551600" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_len" },
+      "reason": "The current offset plus this length wraps a 64 bit counter, so a reader that adds before comparing would compute a small end offset and read the wrong bytes as a name."
+    },
+    {
+      "id": "lua51-decompile-truncated-code-array",
+      "shape": "truncation_mid_table",
+      "surface": "decompile_auto",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_1.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 105 }],
+        "reason": "the same mid code array cut, routed through the decompiler entry point instead of the reader"
+      },
+      "input_fnv1a64": "47c9d4812b73975a",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "lua51 code count 4 exceeds parser limit 2" }],
+      "guard": { "file": "src/decompile/mod.rs", "symbol": "pub fn decompile_auto" },
+      "reason": "The decompiler is the surface an analyst actually calls, so it must fail closed on the same input the reader rejects, with the same identity, rather than emit source for a program it could not read."
+    },
+    {
+      "id": "lua52-truncated-at-magic",
+      "shape": "truncation_at_magic",
+      "surface": "read_lua52",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_2.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 3 }],
+        "reason": "real luac 5.2 output cut one byte short of its signature"
+      },
+      "input_fnv1a64": "b0f2b218e5f23815",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 4 bytes, had 3" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_bytes" },
+      "reason": "Three bytes cannot carry the four byte signature, so there is no format claim to act on."
+    },
+    {
+      "id": "lua52-luac-data-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua52",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_2.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 12, "bytes_hex": "ff" }],
+        "reason": "the first byte of the LUAC_DATA conversion check changed from 0x19 to 0xff"
+      },
+      "input_fnv1a64": "b3f94d81c47977a1",
+      "expect": [{ "outcome": "refuse", "error": "bad_luac_data", "detail_contains": "offset 12" }],
+      "guard": { "file": "src/reader/lua52.rs", "symbol": "LUAC_TAIL_5_2" },
+      "reason": "LUAC_DATA exists so a reader can detect a file damaged in transit, so a reader that ignores it defeats the check the format designers put there."
+    },
+    {
+      "id": "lua52-number-width-five",
+      "shape": "invalid_width_field",
+      "surface": "read_lua52",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_2.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 10, "bytes_hex": "05" }],
+        "reason": "the sizeof(lua_Number) header field changed from eight to five"
+      },
+      "input_fnv1a64": "fea42b6b2ade38e0",
+      "expect": [{ "outcome": "refuse", "error": "bad_number_size", "detail_contains": "number size 5" }],
+      "guard": { "file": "src/reader/lua52.rs", "symbol": "BadNumberSize" },
+      "reason": "Lua numbers are four or eight bytes wide, so a five byte width has no decoding and every number constant after it would be read at the wrong stride."
+    },
+    {
+      "id": "lua52-truncated-one-byte-short",
+      "shape": "truncation_one_byte_short",
+      "surface": "read_lua52",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_2.luac",
+        "seed": 0,
+        "ops": [{ "op": "drop_last_bytes", "count": 1 }],
+        "reason": "one byte removed from the end of real luac 5.2 output"
+      },
+      "input_fnv1a64": "e3a9a4b56fc3b845",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua52.rs", "symbol": "fn read_proto" },
+      "reason": "The debug tables close a 5.2 chunk, so a file one byte short cannot complete the last record and must refuse instead of returning a chunk with a fabricated tail."
+    },
+    {
+      "id": "lua53-truncated-mid-header",
+      "shape": "truncation_mid_header",
+      "surface": "read_lua53",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_3.luac",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 20 }],
+        "reason": "cut inside the eight byte integer conversion check of the 5.3 header"
+      },
+      "input_fnv1a64": "e2d4371958928cd2",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua53.rs", "symbol": "LUAC_INT_5_3" },
+      "reason": "The conversion checks are part of the header, so a file that ends inside them has not established byte order and cannot be decoded further."
+    },
+    {
+      "id": "lua53-size-t-width-six",
+      "shape": "invalid_width_field",
+      "surface": "read_lua53",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_3.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 13, "bytes_hex": "06" }],
+        "reason": "the sizeof(size_t) header field changed from eight to six"
+      },
+      "input_fnv1a64": "07d36962bfecb969",
+      "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 6" }],
+      "guard": { "file": "src/reader/lua53.rs", "symbol": "BadIntSize" },
+      "reason": "size_t in a luac header is four or eight bytes, so a six byte width is a lie that would misalign every string length in the file."
+    },
+    {
+      "id": "lua53-integer-check-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua53",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_3.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 17, "bytes_hex": "79" }],
+        "reason": "the low byte of the 0x5678 integer conversion check changed from 0x78 to 0x79"
+      },
+      "input_fnv1a64": "a1d1c16b269e338a",
+      "expect": [{ "outcome": "refuse", "error": "endian_mismatch", "detail_contains": "5679" }],
+      "guard": { "file": "src/reader/lua53.rs", "symbol": "LUAC_INT_5_3" },
+      "reason": "Lua writes 0x5678 so a reader can prove it agrees with the writer on integer layout; a value that matches in neither byte order means the agreement failed and no integer in the file can be trusted."
+    },
+    {
+      "id": "lua53-float-check-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua53",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_3.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 32, "bytes_hex": "41" }],
+        "reason": "the high byte of the 370.5 float conversion check changed from 0x40 to 0x41"
+      },
+      "input_fnv1a64": "85b42dd86412ad48",
+      "expect": [{ "outcome": "refuse", "error": "float_mismatch", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua53.rs", "symbol": "LUAC_NUM_5_3" },
+      "reason": "The 370.5 probe proves the reader and writer agree on float format, so a mismatch means every number constant would decode to a different value than the compiler wrote."
+    },
+    {
+      "id": "lua54-version-word-five-five",
+      "shape": "unsupported_version_word",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 4, "bytes_hex": "55" }],
+        "reason": "the version byte changed from 0x54 to 0x55, naming a Lua release this reader does not implement"
+      },
+      "input_fnv1a64": "5165253e1687ce6a",
+      "expect": [{ "outcome": "unsupported_version", "error": "unsupported_lua_version", "version": 85 }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "UnsupportedLuaVersion" },
+      "reason": "A reader must not decode a version whose layout it does not know, and the refusal must carry the version byte so the caller can tell which release was demanded."
+    },
+    {
+      "id": "lua54-luac-data-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 8, "bytes_hex": "00" }],
+        "reason": "the carriage return inside LUAC_DATA changed to a NUL, the exact damage the check was designed to catch"
+      },
+      "input_fnv1a64": "6ac828bb13b201b6",
+      "expect": [{ "outcome": "refuse", "error": "bad_luac_data", "detail_contains": "offset 6" }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_DATA_TAIL" },
+      "reason": "LUAC_DATA contains newline and carriage return bytes precisely so text mode transfer damage is detected, so a reader that continues past a broken check throws away the format's own integrity signal."
+    },
+    {
+      "id": "lua54-instruction-width-eight",
+      "shape": "invalid_width_field",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 12, "bytes_hex": "08" }],
+        "reason": "the sizeof(Instruction) header field changed from four to eight"
+      },
+      "input_fnv1a64": "59465013ba895921",
+      "expect": [{ "outcome": "refuse", "error": "bad_int_size", "detail_contains": "integer size 8" }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "size_instr != 4" },
+      "reason": "Lua 5.4 instructions are always four bytes, so an eight byte claim is a lie that would halve the instruction count and read operands from the wrong halves of each word."
+    },
+    {
+      "id": "lua54-integer-check-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 15, "bytes_hex": "79" }],
+        "reason": "the low byte of the 0x5678 integer conversion check changed from 0x78 to 0x79"
+      },
+      "input_fnv1a64": "5698006de479b6c8",
+      "expect": [{ "outcome": "refuse", "error": "endian_mismatch", "detail_contains": "5679" }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_INT_5_4" },
+      "reason": "The integer probe is how a 5.4 reader proves it agrees with the writer on integer width and order, so a failed probe invalidates every integer constant in the chunk."
+    },
+    {
+      "id": "lua54-float-check-corrupt",
+      "shape": "structural_self_check_violation",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 30, "bytes_hex": "41" }],
+        "reason": "the high byte of the 370.5 float conversion check changed from 0x40 to 0x41"
+      },
+      "input_fnv1a64": "c67b53917ae27eca",
+      "expect": [{ "outcome": "refuse", "error": "float_mismatch", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "LUAC_NUM_5_4" },
+      "reason": "A float probe that does not reproduce 370.5 means the file was written by a build with a different float representation, so decoding its numbers would silently produce different values."
+    },
+    {
+      "id": "lua54-truncated-one-byte-short",
+      "shape": "truncation_one_byte_short",
+      "surface": "read_lua54",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luac/hello.5_4.luac",
+        "seed": 0,
+        "ops": [{ "op": "drop_last_bytes", "count": 1 }],
+        "reason": "one byte removed from the end of real luac 5.4 output"
+      },
+      "input_fnv1a64": "956329978f620f31",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/lua54.rs", "symbol": "fn read_proto" },
+      "reason": "The upvalue debug table closes a 5.4 chunk, so a file one byte short is provably incomplete and returning a chunk would present invented data as recovered."
+    },
+    {
+      "id": "luajit-truncated-at-magic",
+      "shape": "truncation_at_magic",
+      "surface": "read_luajit",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luajit/hello.luajit",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 2 }],
+        "reason": "real luajit -b output cut to two bytes, one short of the ESC LJ signature"
+      },
+      "input_fnv1a64": "08873a07b5332b62",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 3 bytes, had 2" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_bytes" },
+      "reason": "Two bytes cannot carry the three byte LuaJIT signature, so the reader has nothing to classify."
+    },
+    {
+      "id": "luajit-unsupported-version",
+      "shape": "unsupported_version_word",
+      "surface": "read_luajit",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luajit/hello.luajit",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 3, "bytes_hex": "03" }],
+        "reason": "the bytecode version byte changed from 2, which is LuaJIT 2.1, to 3"
+      },
+      "input_fnv1a64": "dc85027ff58f7a29",
+      "expect": [{ "outcome": "unsupported_version", "error": "unsupported_luajit_version", "version": 3 }],
+      "guard": { "file": "src/reader/luajit.rs", "symbol": "UnsupportedLuaJitVersion" },
+      "reason": "LuaJIT defines bytecode versions 1 and 2, so version 3 names a layout that does not exist yet and must be reported rather than assumed compatible."
+    },
+    {
+      "id": "luajit-truncated-mid-prototype",
+      "shape": "truncation_mid_record",
+      "surface": "read_luajit",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luajit/hello.luajit",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 20 }],
+        "reason": "cut inside the length-prefixed prototype record of real luajit -b output"
+      },
+      "input_fnv1a64": "e6bfa78382730746",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/luajit.rs", "symbol": "luajit proto length" },
+      "reason": "A LuaJIT prototype declares its own byte length, so a file shorter than that length cannot deliver the record and the reader must not decode whatever bytes happen to be present."
+    },
+    {
+      "id": "luajit-prototype-length-exceeds-file",
+      "shape": "declared_size_exceeds_file",
+      "surface": "read_luajit",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "lua_jit_proto_len_exceeds_file" },
+        "reason": "a stripped LuaJIT dump whose prototype length claims 1048575 bytes over an eleven byte body; the control is the same body with the true length"
+      },
+      "input_fnv1a64": "05480acd5763c784",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": "needed 1048575" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_len" },
+      "reason": "The declared record length is the only bound on the prototype body, so a length larger than the file must refuse rather than clamp to what remains and lift a truncated prototype."
+    },
+    {
+      "id": "luajit-uleb128-overflow",
+      "shape": "varint_overflow",
+      "surface": "read_luajit",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "lua_jit_uleb128_overflow" },
+        "reason": "a stripped LuaJIT dump whose prototype length is a ULEB128 with ten continuation bytes; the control is a valid minimal dump"
+      },
+      "input_fnv1a64": "51f20dd9029e4a72",
+      "expect": [{ "outcome": "refuse", "error": "bad_uleb128", "detail_contains": null }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn read_uleb128" },
+      "reason": "A ULEB128 that shifts past 64 bits cannot be represented, so a reader that keeps shifting either wraps to a small value or loops on attacker-controlled input."
+    },
+    {
+      "id": "luajit-decompile-truncated-prototype",
+      "shape": "truncation_mid_record",
+      "surface": "decompile_luajit_bytes",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luajit/hello.luajit",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 20 }],
+        "reason": "the same mid prototype cut, routed through the LuaJIT decompiler entry point"
+      },
+      "input_fnv1a64": "e6bfa78382730746",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/decompile/luajit_lift.rs", "symbol": "pub fn decompile" },
+      "reason": "The decompiler must fail closed on the same truncated dump the reader rejects, because source emitted from a partial prototype would read as a complete function."
+    },
+    {
+      "id": "luau-version-byte-zero",
+      "shape": "unsupported_version_word",
+      "surface": "read_luau",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luau/hello.luau",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 0, "bytes_hex": "00" }],
+        "reason": "the Luau version byte set to zero, which the compiler emits to signal a compilation error payload"
+      },
+      "input_fnv1a64": "4029ec0c55495250",
+      "expect": [{ "outcome": "refuse", "error": "not_luau", "detail_contains": null }],
+      "guard": { "file": "src/reader/luau.rs", "symbol": "Error::NotLuau" },
+      "reason": "Luau reserves version zero for an error blob rather than bytecode, so treating the remainder as a chunk would decode an error message as a program."
+    },
+    {
+      "id": "luau-unsupported-version-twelve",
+      "shape": "unsupported_version_word",
+      "surface": "read_luau",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luau/hello.luau",
+        "seed": 0,
+        "ops": [{ "op": "set_bytes", "offset": 0, "bytes_hex": "0c" }],
+        "reason": "the Luau version byte raised from 11 to 12, one past the range this reader implements"
+      },
+      "input_fnv1a64": "d8cab72eecd8bafc",
+      "expect": [{ "outcome": "unsupported_version", "error": "unsupported_luau_version", "version": 12 }],
+      "guard": { "file": "src/reader/luau.rs", "symbol": "LUAU_SUPPORTED_MAX" },
+      "reason": "Luau changes its bytecode layout between versions, so a version the reader does not implement must be reported instead of decoded with the previous version's rules."
+    },
+    {
+      "id": "luau-truncated-mid-string-table",
+      "shape": "truncation_mid_table",
+      "surface": "read_luau",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luau/hello.luau",
+        "seed": 0,
+        "ops": [{ "op": "truncate_to", "len": 8 }],
+        "reason": "cut inside the string table of real luau-compile output"
+      },
+      "input_fnv1a64": "a141b0a16dad094b",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/luau.rs", "symbol": "luau string length" },
+      "reason": "Every constant and debug name resolves through the string table, so a table that ends early cannot be completed and the entries that follow would resolve to the wrong strings."
+    },
+    {
+      "id": "luau-truncated-one-byte-short",
+      "shape": "truncation_one_byte_short",
+      "surface": "read_luau",
+      "input": {
+        "kind": "mutation",
+        "base": "corpus/lua/luau/hello.luau",
+        "seed": 0,
+        "ops": [{ "op": "drop_last_bytes", "count": 1 }],
+        "reason": "one byte removed from the end, cutting the main prototype index that closes a Luau module"
+      },
+      "input_fnv1a64": "b0615ac5a74f4689",
+      "expect": [{ "outcome": "refuse", "error": "truncated", "detail_contains": null }],
+      "guard": { "file": "src/reader/luau.rs", "symbol": "fn read_varint" },
+      "reason": "The trailing varint names which prototype is the module entry point, so without it the reader does not know where the module starts and must not pick one."
+    },
+    {
+      "id": "luau-main-proto-index-equals-count",
+      "shape": "index_equals_container_length",
+      "surface": "read_luau",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "luau_main_proto_index_equals_count" },
+        "reason": "a minimal Luau module with one prototype whose main index is 1, one past the last valid index; the control is the same module with index 0"
+      },
+      "input_fnv1a64": "6344a3fcbeb84ae1",
+      "expect": [{ "outcome": "refuse", "error": "luau_main_proto_out_of_range", "detail_contains": "outside proto count 1" }],
+      "guard": { "file": "src/reader/luau.rs", "symbol": "LuauMainProtoOutOfRange" },
+      "reason": "An index equal to the container length is the classic off-by-one lie, and the refusal must report both the index and the count so a caller can see the container was not large enough."
+    },
+    {
+      "id": "luau-string-count-exceeds-file",
+      "shape": "very_large_entry_count",
+      "surface": "read_luau",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "luau_string_count_exceeds_file" },
+        "reason": "a minimal Luau module declaring 16777215 strings in a file of a few dozen bytes; the control declares the one string it contains"
+      },
+      "input_fnv1a64": "2fd837255b0cd9cf",
+      "expect": [{ "outcome": "refuse", "error": "limit_exceeded", "detail_contains": "luau string" }],
+      "guard": { "file": "src/cursor.rs", "symbol": "pub fn checked_count" },
+      "reason": "The string count drives the first reservation the Luau reader makes, so it must be bounded by the bytes that remain, and the refusal must name the string section rather than some later quota."
+    },
+    {
+      "id": "luau-text-file-lookalike",
+      "shape": "lookalike_text_matches_magic",
+      "surface": "read_auto",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "0a2d2d206c756120736f757263652066696c650a7072696e742827686927290a",
+        "reason": "a plain Lua source file that begins with a newline, whose first byte 0x0A falls inside the Luau version range 1 to 11"
+      },
+      "input_fnv1a64": "5a88ca4ea6c10797",
+      "expect": [{ "outcome": "detection_only", "format": "luau", "error": "limit_exceeded" }],
+      "guard": { "file": "src/reader/mod.rs", "symbol": "pub fn detect" },
+      "reason": "Luau bytecode has no magic, only a small version byte, so ordinary text can be classified as Luau. Classification is allowed to be wrong here, but recovery must refuse, otherwise a source file would be reported as a recovered module."
+    },
+    {
+      "id": "luac-header-prepended-to-zip",
+      "shape": "lookalike_two_magics",
+      "surface": "read_auto",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "1b4c75615100010404040800504b03041400000008006e65737465642e7a697020656e747279207061796c6f6164",
+        "reason": "a valid Lua 5.1 header followed by a ZIP local file header, so the file answers to two magics at once"
+      },
+      "input_fnv1a64": "32199861cadc2c7a",
+      "expect": [{ "outcome": "detection_only", "format": "lua51", "error": "truncated" }],
+      "guard": { "file": "src/reader/lua51.rs", "symbol": "fn read_string" },
+      "reason": "The leading header makes detection claim Lua 5.1, but the ZIP bytes that follow decode as a source name length of 67404624, which the file cannot satisfy, so recovery must refuse instead of reporting a Lua chunk for an archive."
+    },
+    {
+      "id": "ironbrew2-marker-without-authorization",
+      "shape": "authorization_gated",
+      "surface": "peel_ironbrew2_unauthorized",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "2d2d2049726f6e4272657732206275696c640a6c6f63616c2061203d20310a72657475726e20610a",
+        "reason": "a Lua file carrying an Ironbrew2 build marker, peeled with the default options that do not assert authorization"
+      },
+      "input_fnv1a64": "fdb9d5aeac6a036e",
+      "expect": [{ "outcome": "refuse", "error": "authorization_required", "detail_contains": "Ironbrew2" }],
+      "guard": { "file": "src/obfuscator/ironbrew2.rs", "symbol": "AuthorizationRequired" },
+      "reason": "The Ironbrew2 path is gated behind an explicit authorization flag, so without the flag the pass must refuse and name the family rather than peel anything."
+    },
+    {
+      "id": "ironbrew2-authorized-without-decodable-bytecode",
+      "shape": "corrupt_packer_stub",
+      "surface": "peel_ironbrew2_authorized",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "2d2d2049726f6e4272657732206275696c640a6c6f63616c2061203d20310a72657475726e20610a",
+        "reason": "the same Ironbrew2 build marker, peeled with authorization asserted, carrying no VM bootstrap that a serialized bytecode string could be read from"
+      },
+      "input_fnv1a64": "fdb9d5aeac6a036e",
+      "expect": [{ "outcome": "partial", "flag": "peel_residual" }],
+      "guard": { "file": "src/obfuscator/ironbrew2.rs", "symbol": "extract_embedded_payload" },
+      "reason": "Passing the authorization gate is not evidence that the artifact can be devirtualized, so a stub with no readable bytecode string must report residual work instead of returning the input as a finished peel."
+    },
+    {
+      "id": "moonsec-v1-without-marker",
+      "shape": "absent_signature",
+      "surface": "peel_moonsec_v1",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "6c6f63616c2078203d20310a7072696e742878290a",
+        "reason": "plain Lua source with no MoonSec marker and no base64 loader structure"
+      },
+      "input_fnv1a64": "46f1f1bdc2e1b992",
+      "expect": [{ "outcome": "refuse", "error": "no_obfuscator_signature", "detail_contains": "MoonSec V1" }],
+      "guard": { "file": "src/obfuscator/moonsec_v1.rs", "symbol": "NoObfuscatorSignature" },
+      "reason": "A pass asked to peel a file it did not recognise must say so, because returning the input as if it had been deobfuscated would report clean source as recovered output."
+    },
+    {
+      "id": "moonsec-v1-marker-without-payload",
+      "shape": "absent_decoder_key",
+      "surface": "peel_moonsec_v1",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "2d2d204d6f6f6e5365632076310a6c6f63616c2061203d20310a72657475726e20610a",
+        "reason": "a MoonSec V1 marker with no VM payload, no encoded string pool and no base64 loader to decode"
+      },
+      "input_fnv1a64": "f412cdea0ad8f56b",
+      "expect": [{ "outcome": "partial", "flag": "peel_residual" }],
+      "guard": { "file": "src/obfuscator/moonsec_v1.rs", "symbol": "PeelResult::passthrough" },
+      "reason": "The marker says the family is present but the artifact carries nothing to decode, so full recovery is impossible for information reasons and the pass must report residual work instead of claiming it finished."
+    },
+    {
+      "id": "moonsec-v3-authorized-without-payload",
+      "shape": "unsupported_protection",
+      "surface": "peel_moonsec_v3_authorized",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "2d2d204d6f6f6e5365632076330a6c6f63616c2061203d20310a72657475726e20610a",
+        "reason": "a MoonSec V3 marker peeled with authorization asserted, carrying no static VM payload"
+      },
+      "input_fnv1a64": "1df6036c713437cd",
+      "expect": [{ "outcome": "partial", "flag": "peel_residual" }],
+      "guard": { "file": "src/obfuscator/moonsec_v3.rs", "symbol": "extract_embedded_payload" },
+      "reason": "MoonSec V3 can key its constant pool from a runtime handshake, so when no static payload is embedded the protection is out of reach for a static tool and the pass must flag residual work rather than guess."
+    },
+    {
+      "id": "luvit-bundle-without-magic",
+      "shape": "absent_signature",
+      "surface": "luvit_extract",
+      "input": {
+        "kind": "authored",
+        "bytes_hex": "74686973206973206e6f742061206c69742062756e646c650a",
+        "reason": "plain text with neither the LIT zip magic, the luvi trailer nor the lit tar prefix"
+      },
+      "input_fnv1a64": "abacd54bc60e03a2",
+      "expect": [{ "outcome": "refuse", "error": "luvit_malformed", "detail_contains": "no lit/luvi magic" }],
+      "guard": { "file": "src/luvit.rs", "symbol": "LuvitMalformed" },
+      "reason": "Without one of the three container markers there is no bundle to extract, so returning an empty bundle would report a container where none exists."
+    },
+    {
+      "id": "ironbrew2-lzw-expansion-bomb",
+      "shape": "declared_output_size_bomb",
+      "surface": "lzw_decompress_base36",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "ironbrew2_lzw_expansion_bomb", "tokens": 20000 },
+        "reason": "a base36 LZW stream under a megabyte whose dictionary references expand quadratically; the control is a two token stream"
+      },
+      "input_fnv1a64": "d3310cba75ba4146",
+      "peak_alloc_bytes_override": 201326592,
+      "expect": [{ "outcome": "refuse", "error": "bootstrap_emulation_failed", "detail_contains": "lzw output exceeds ceiling" }],
+      "guard": { "file": "src/obfuscator/ironbrew2_real.rs", "symbol": "LZW_MAX_OUTPUT" },
+      "reason": "The stream never states its output size, so the decoder must enforce its own ceiling; the allocation cap is raised for this entry alone because the declared ceiling is 64 MiB and the refusal happens at that boundary."
+    },
+    {
+      "id": "ironbrew2-lzw-overlong-token",
+      "shape": "varint_overflow",
+      "surface": "lzw_decompress_base36",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "ironbrew2_lzw_overlong_token", "digits": 20 },
+        "reason": "a base36 LZW stream whose second token header declares twenty digits, far more than a 64 bit accumulator can hold; the control is a two token stream"
+      },
+      "input_fnv1a64": "1a20902a4812b2e4",
+      "expect": [{ "outcome": "refuse", "error": "bootstrap_emulation_failed", "detail_contains": "lzw token overflow" }],
+      "guard": { "file": "src/obfuscator/ironbrew2_real.rs", "symbol": "lzw token overflow" },
+      "reason": "A token length digit is attacker controlled and reaches thirty five, while a u64 holds at most twelve base36 digits, so the accumulator must reject the value instead of wrapping or aborting on overflow."
+    },
+    {
+      "id": "ironbrew2-lzw-truncated-final-token",
+      "shape": "truncation_mid_compressed_stream",
+      "surface": "lzw_decompress_base36",
+      "input": {
+        "kind": "constructed",
+        "builder": { "builder": "ironbrew2_lzw_truncated_final_token" },
+        "reason": "a two token base36 LZW stream with a third token header that promises three digits and supplies one; the control is the same stream without the truncated tail"
+      },
+      "input_fnv1a64": "a6f556060dc632fe",
+      "expect": [{ "outcome": "refuse", "error": "bootstrap_emulation_failed", "detail_contains": "lzw stream truncated" }],
+      "guard": { "file": "src/obfuscator/ironbrew2_real.rs", "symbol": "lzw stream truncated" },
+      "reason": "A token header that promises digits the stream does not contain means the compressed payload was cut, so returning the bytes decoded so far would hand an analyst a prefix of the plaintext as if it were all of it."
+    }
+  ]
+}

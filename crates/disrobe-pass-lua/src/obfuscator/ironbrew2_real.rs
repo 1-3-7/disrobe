@@ -200,25 +200,41 @@ const IB_INSTRUCTION_COUNT_CAP: usize = 1 << 20;
 const IB_FUNCTION_COUNT_CAP: usize = 1 << 16;
 const IB_LINEINFO_COUNT_CAP: usize = 1 << 20;
 
+fn read_lzw_token(chars: &[char], index: &mut usize) -> Result<Option<u64>> {
+    let Some(head): Option<&char> = chars.get(*index) else {
+        return Ok(None);
+    };
+    let Some(declared): Option<u32> = base36_digit(*head) else {
+        return Ok(None);
+    };
+    let declared: usize = declared as usize;
+    if declared == 0 {
+        return Ok(None);
+    }
+    let start: usize = index.saturating_add(1);
+    let end: usize = start.saturating_add(declared);
+    if end > chars.len() {
+        return Err(Error::BootstrapEmulationFailed("lzw stream truncated"));
+    }
+    let mut value: u64 = 0;
+    for digit_char in &chars[start..end] {
+        let digit: u32 =
+            base36_digit(*digit_char).ok_or(Error::BootstrapEmulationFailed("lzw token digit"))?;
+        value = value
+            .checked_mul(36)
+            .and_then(|scaled: u64| scaled.checked_add(u64::from(digit)))
+            .ok_or(Error::BootstrapEmulationFailed("lzw token overflow"))?;
+    }
+    *index = end;
+    Ok(Some(value))
+}
+
 pub fn lzw_decompress_base36(s: &str) -> Result<Vec<u8>> {
     let chars: Vec<char> = s.chars().collect();
     let mut i: usize = 0;
-    let read_token = |i: &mut usize| -> Option<u64> {
-        let len: usize = base36_digit(*chars.get(*i)?)? as usize;
-        *i += 1;
-        if len == 0 || *i + len > chars.len() {
-            return None;
-        }
-        let mut value: u64 = 0;
-        for k in 0..len {
-            value = value * 36 + u64::from(base36_digit(chars[*i + k])?);
-        }
-        *i += len;
-        Some(value)
-    };
     let mut dictionary: Vec<Vec<u8>> = (0..256u32).map(|n: u32| vec![n as u8]).collect();
-    let first: u64 =
-        read_token(&mut i).ok_or(Error::BootstrapEmulationFailed("lzw stream malformed"))?;
+    let first: u64 = read_lzw_token(&chars, &mut i)?
+        .ok_or(Error::BootstrapEmulationFailed("lzw stream malformed"))?;
     let first_idx: usize = usize::try_from(first)
         .map_err(|_| Error::BootstrapEmulationFailed("lzw first token range"))?;
     let mut prev: Vec<u8> = dictionary
@@ -227,7 +243,7 @@ pub fn lzw_decompress_base36(s: &str) -> Result<Vec<u8>> {
         .ok_or(Error::BootstrapEmulationFailed("lzw first token undefined"))?;
     let mut out: Vec<u8> = prev.clone();
     while i < chars.len() {
-        let Some(tok): Option<u64> = read_token(&mut i) else {
+        let Some(tok): Option<u64> = read_lzw_token(&chars, &mut i)? else {
             break;
         };
         let k_idx: usize =
