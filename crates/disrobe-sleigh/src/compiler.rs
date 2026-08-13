@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::SleighError;
@@ -10,8 +10,9 @@ const MAX_EVALUATION_DEPTH: usize = 128;
 const MAX_PATTERN_CLAUSES: usize = 4_096;
 const MAX_TABLE_CONSTRUCTORS: usize = 2_048;
 const MAX_DECODE_CONSTRUCTOR_ATTEMPTS: usize = 65_536;
-const MAX_TABLE_CLAUSE_MEMO_ENTRIES: usize = 262_144;
-const MAX_FIXED_BITS_MEMO_ENTRIES: usize = 262_144;
+const MAX_TABLE_CLAUSE_MEMO_ENTRIES: usize = 65_536;
+const MAX_TABLE_CLAUSE_MEMO_CLAUSES: usize = 4_194_304;
+const MAX_FIXED_BITS_MEMO_ENTRIES: usize = 65_536;
 
 type TableClauseKey = (String, usize, usize, BTreeSet<String>);
 type FixedBitsKey = (String, usize, BTreeSet<String>);
@@ -137,6 +138,7 @@ struct ClauseCompiler<'a> {
     registers: &'a BTreeSet<String>,
     tables: &'a BTreeMap<String, Vec<usize>>,
     table_clauses: RefCell<BTreeMap<TableClauseKey, Option<Vec<PatternClause>>>>,
+    table_clause_total: Cell<usize>,
 }
 
 #[derive(Debug)]
@@ -240,6 +242,7 @@ pub fn compile_spec_with_policy(
         registers: &registers,
         tables: &tables,
         table_clauses: RefCell::new(BTreeMap::new()),
+        table_clause_total: Cell::new(0),
     };
     let mut pattern_clauses: Vec<Option<Vec<PatternClause>>> =
         Vec::with_capacity(spec.constructors.len());
@@ -687,15 +690,24 @@ impl ClauseCompiler<'_> {
             self.compile_table_contents(name, position, expanded_depth, visiting);
         visiting.remove(name);
         if let Ok(value) = &result {
-            let mut memo: std::cell::RefMut<
-                '_,
-                BTreeMap<TableClauseKey, Option<Vec<PatternClause>>>,
-            > = self.table_clauses.borrow_mut();
-            if memo.len() < MAX_TABLE_CLAUSE_MEMO_ENTRIES {
-                memo.insert(key, value.clone());
-            }
+            self.remember_table_clauses(key, value.as_deref());
         }
         result
+    }
+
+    fn remember_table_clauses(&self, key: TableClauseKey, value: Option<&[PatternClause]>) {
+        let held: usize = value.map_or(0, <[PatternClause]>::len);
+        let total: usize = self.table_clause_total.get().saturating_add(held);
+        if total > MAX_TABLE_CLAUSE_MEMO_CLAUSES {
+            return;
+        }
+        let mut memo: std::cell::RefMut<'_, BTreeMap<TableClauseKey, Option<Vec<PatternClause>>>> =
+            self.table_clauses.borrow_mut();
+        if memo.len() >= MAX_TABLE_CLAUSE_MEMO_ENTRIES {
+            return;
+        }
+        memo.insert(key, value.map(<[PatternClause]>::to_vec));
+        self.table_clause_total.set(total);
     }
 
     fn compile_table_contents(
