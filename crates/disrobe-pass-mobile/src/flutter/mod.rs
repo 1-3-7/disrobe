@@ -27,7 +27,8 @@ pub mod structured;
 
 pub use aot_lift::{
     AotLiftReport, DartCallKind, DartCallSite, DartCheckKind, DartElidedCheck, DartLiftedFunction,
-    DartPoolLoadForm, DartPoolRef, lift_functions as lift_dart_aot_functions, lift_libapp_aot,
+    DartPoolLoadForm, DartPoolRef, DartUnliftedArm64, lift_functions as lift_dart_aot_functions,
+    lift_libapp_aot,
 };
 pub use arm64_traversal::{
     Arm64TraversalReport, Arm64Unresolved, Arm64UnresolvedKind, traverse as traverse_arm64,

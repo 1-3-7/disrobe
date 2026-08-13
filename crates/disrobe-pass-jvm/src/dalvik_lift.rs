@@ -7,9 +7,11 @@ use crate::dex::{DexFile, FieldId, MethodId};
 
 pub(crate) struct MethodContext<'a> {
     pub(crate) dex: &'a DexFile,
+    pub(crate) desugar: &'a crate::dalvik_desugar::DefaultInterfaceRecovery,
     pub(crate) registers_size: u16,
     pub(crate) ins_size: u16,
     pub(crate) is_static: bool,
+    pub(crate) inline_temporaries: bool,
     pub(crate) param_regs: BTreeMap<u16, String>,
     pub(crate) this_reg: Option<u16>,
 }
@@ -21,6 +23,8 @@ impl<'a> MethodContext<'a> {
         ins_size: u16,
         descriptor: &str,
         is_static: bool,
+        inline_temporaries: bool,
+        desugar: &'a crate::dalvik_desugar::DefaultInterfaceRecovery,
     ) -> Self {
         let parsed: Option<MethodDescriptor> = descriptor::parse_method(descriptor);
         let first_param_reg: u16 = registers_size.saturating_sub(ins_size);
@@ -40,9 +44,11 @@ impl<'a> MethodContext<'a> {
         }
         Self {
             dex,
+            desugar,
             registers_size,
             ins_size,
             is_static,
+            inline_temporaries,
             param_regs,
             this_reg,
         }
@@ -131,7 +137,13 @@ impl RegisterFile {
 
 pub(crate) enum LiftOutcome {
     Statement(String),
+    Statements(Vec<String>),
     None,
+}
+
+pub(crate) struct PendingResult {
+    expr: Expr,
+    materialized_in: Option<u16>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -139,16 +151,31 @@ pub(crate) fn lift_insn(
     ctx: &MethodContext<'_>,
     file: &mut RegisterFile,
     insn: &DalvikInsn,
-    pending_result: &mut Option<Expr>,
+    pending_result: &mut Option<PendingResult>,
 ) -> LiftOutcome {
     let op: u8 = insn.op;
     let regs: &[u16] = &insn.regs;
-    match op {
+    let receiver_consumes_pending: bool = matches!(op, 0x6E..=0x72 | 0x74..=0x78)
+        && pending_result
+            .as_ref()
+            .and_then(|result: &PendingResult| result.materialized_in)
+            .is_some_and(|register: u16| regs.first() == Some(&register));
+    let discarded: Option<String> = if matches!(op, 0x0A..=0x0C) {
+        None
+    } else if receiver_consumes_pending {
+        let _: Option<PendingResult> = pending_result.take();
+        None
+    } else {
+        pending_result
+            .take()
+            .and_then(|result: PendingResult| result.expr.discarded_side_effect())
+    };
+    let outcome: LiftOutcome = match op {
         0x00 | 0x1D | 0x1E => LiftOutcome::None,
         0x01..=0x09 => move_register(ctx, file, regs),
         0x0A..=0x0C => {
             if let (Some(&dest), Some(result)) = (regs.first(), pending_result.take()) {
-                file.write(dest, result);
+                file.write(dest, result.expr);
             }
             LiftOutcome::None
         }
@@ -165,7 +192,7 @@ pub(crate) fn lift_insn(
                 .map_or_else(|| Expr::Opaque("?".to_string()), |&r| file.read(ctx, r));
             LiftOutcome::Statement(format!("return {}", value.render()))
         }
-        0x12..=0x19 => const_value(file, regs, insn),
+        0x12..=0x19 => const_value(ctx, file, regs, insn),
         0x1A | 0x1B => const_string(ctx, file, regs, insn),
         0x1C => const_class(ctx, file, regs, insn),
         0x1F => check_cast(ctx, file, regs, insn),
@@ -197,6 +224,17 @@ pub(crate) fn lift_insn(
         0xD0..=0xD7 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         0xD8..=0xE2 => binary_lit(ctx, file, regs, insn, arith_lit_op(op)),
         _ => LiftOutcome::None,
+    };
+    match (discarded, outcome) {
+        (Some(side_effect), LiftOutcome::Statement(statement)) => {
+            LiftOutcome::Statements(vec![side_effect, statement])
+        }
+        (Some(side_effect), LiftOutcome::Statements(mut statements)) => {
+            statements.insert(0, side_effect);
+            LiftOutcome::Statements(statements)
+        }
+        (Some(side_effect), LiftOutcome::None) => LiftOutcome::Statement(side_effect),
+        (None, outcome) => outcome,
     }
 }
 
@@ -208,10 +246,19 @@ fn move_register(ctx: &MethodContext<'_>, file: &mut RegisterFile, regs: &[u16])
     let value: Expr = file.read(ctx, src);
     let rendered: String = value.render();
     file.write_materialized(dest, value);
-    LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    if ctx.inline_temporaries {
+        LiftOutcome::None
+    } else {
+        LiftOutcome::Statement(format!("{} = {rendered}", ctx.register_lvalue(dest)))
+    }
 }
 
-fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> LiftOutcome {
+fn const_value(
+    ctx: &MethodContext<'_>,
+    file: &mut RegisterFile,
+    regs: &[u16],
+    insn: &DalvikInsn,
+) -> LiftOutcome {
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
@@ -228,7 +275,11 @@ fn const_value(file: &mut RegisterFile, regs: &[u16], insn: &DalvikInsn) -> Lift
         value.to_string()
     };
     file.write_materialized(dest, Expr::Const(literal.clone()));
-    LiftOutcome::Statement(format!("{} = {literal}", lvalue(dest)))
+    if ctx.inline_temporaries {
+        LiftOutcome::None
+    } else {
+        LiftOutcome::Statement(format!("{} = {literal}", lvalue(dest)))
+    }
 }
 
 fn const_string(
@@ -245,7 +296,11 @@ fn const_string(
         .and_then(|i| ctx.string_at(i))
         .map_or_else(|| "\"\"".to_string(), |s| format!("{s:?}"));
     file.write_materialized(dest, Expr::Const(text.clone()));
-    LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
+    if ctx.inline_temporaries {
+        LiftOutcome::None
+    } else {
+        LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
+    }
 }
 
 fn const_class(
@@ -503,25 +558,49 @@ fn invoke(
     ctx: &MethodContext<'_>,
     file: &mut RegisterFile,
     insn: &DalvikInsn,
-    pending_result: &mut Option<Expr>,
+    pending_result: &mut Option<PendingResult>,
 ) -> LiftOutcome {
     let Some(method): Option<&MethodId> = insn.index.and_then(|i| ctx.method_id(i)) else {
         return LiftOutcome::None;
     };
     let is_static: bool = matches!(insn.op, 0x71 | 0x77);
     let is_direct: bool = matches!(insn.op, 0x70 | 0x76);
-    let owner: String = descriptor::binary_to_source(&method.class);
-    let name: String = method.name.clone();
+    let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = insn
+        .index
+        .and_then(|index: u32| ctx.desugar.rewrites_call(index));
+    let owner: String = recovered_default.map_or_else(
+        || descriptor::binary_to_source(&method.class),
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+            descriptor::binary_to_source(&recovered.interface)
+        },
+    );
+    let name: String =
+        recovered_default.map_or_else(|| method.name.clone(), |recovered| recovered.name.clone());
     let returns_void: bool = method.proto.return_type == "V";
 
     let mut reg_iter: std::slice::Iter<'_, u16> = insn.regs.iter();
-    let receiver: Option<Expr> = if is_static {
-        None
+    let receiver_register: Option<u16> = if !is_static || recovered_default.is_some() {
+        insn.regs.first().copied()
     } else {
-        reg_iter.next().map(|&r| file.read(ctx, r))
+        None
     };
-    let mut args: Vec<Expr> = Vec::new();
-    for param in &method.proto.parameters {
+    let receiver: Option<Expr> = if !is_static {
+        reg_iter.next().map(|&r| file.read(ctx, r))
+    } else if recovered_default.is_some() {
+        reg_iter.next().map(|&r| file.read(ctx, r))
+    } else {
+        None
+    };
+    let parameters: &[String] = if recovered_default.is_some() {
+        let Some(parameters): Option<&[String]> = method.proto.parameters.get(1..) else {
+            return LiftOutcome::None;
+        };
+        parameters
+    } else {
+        &method.proto.parameters
+    };
+    let mut args: Vec<Expr> = Vec::with_capacity(parameters.len());
+    for param in parameters {
         let Some(&r): Option<&u16> = reg_iter.next() else {
             break;
         };
@@ -538,9 +617,13 @@ fn invoke(
             .collect::<Vec<String>>()
             .join(", ");
         if let Some(Expr::New(ty)) = &receiver {
-            *pending_result = Some(Expr::Opaque(format!("new {ty}({joined})")));
+            let constructed: Expr = Expr::Opaque(format!("new {ty}({joined})"));
+            *pending_result = Some(PendingResult {
+                expr: constructed.clone(),
+                materialized_in: receiver_register,
+            });
             if let Some(&recv_reg) = insn.regs.first() {
-                file.write(recv_reg, Expr::Opaque(format!("new {ty}({joined})")));
+                file.write(recv_reg, constructed);
             }
             return LiftOutcome::None;
         }
@@ -557,8 +640,25 @@ fn invoke(
     if returns_void {
         return LiftOutcome::Statement(call.render());
     }
-    *pending_result = Some(call);
+    let materialized_in: Option<u16> = receiver_register.filter(|_| returns_receiver(method));
+    if let Some(register) = materialized_in {
+        file.write(register, call.clone());
+    }
+    *pending_result = Some(PendingResult {
+        expr: call,
+        materialized_in,
+    });
     LiftOutcome::None
+}
+
+fn returns_receiver(method: &MethodId) -> bool {
+    matches!(
+        method.class.as_str(),
+        "Ljava/lang/StringBuilder;" | "Ljava/lang/StringBuffer;"
+    ) && matches!(
+        method.name.as_str(),
+        "append" | "appendCodePoint" | "delete" | "deleteCharAt" | "insert" | "replace" | "reverse"
+    ) && method.proto.return_type == method.class
 }
 
 fn unary(
@@ -822,5 +922,41 @@ const fn comparez_op(op: u8) -> &'static str {
         0x3C => ">",
         0x3D => "<=",
         _ => "?",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::returns_receiver;
+    use crate::dex::{MethodId, ProtoId};
+
+    fn method(class: &str, name: &str, returns: &str) -> MethodId {
+        MethodId {
+            class: class.to_string(),
+            proto: ProtoId {
+                shorty: String::new(),
+                return_type: returns.to_string(),
+                parameters: Vec::new(),
+            },
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn only_mutable_builder_methods_thread_the_receiver_expression() {
+        let append: MethodId = method(
+            "Ljava/lang/StringBuilder;",
+            "append",
+            "Ljava/lang/StringBuilder;",
+        );
+        let concat: MethodId = method("Ljava/lang/String;", "concat", "Ljava/lang/String;");
+        let builder_factory: MethodId = method(
+            "Ljava/lang/StringBuilder;",
+            "newBuilder",
+            "Ljava/lang/StringBuilder;",
+        );
+        assert!(returns_receiver(&append));
+        assert!(!returns_receiver(&concat));
+        assert!(!returns_receiver(&builder_factory));
     }
 }

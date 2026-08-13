@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 mod metadata_records;
 
 pub use metadata_records::{
-    AotMetadataAttribution, AotMetadataStatus, AotMethod, AotType, recover_metadata_attribution,
+    AotMetadataAttribution, AotMetadataStatus, AotMethod, AotMethodSignature, AotType,
+    AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

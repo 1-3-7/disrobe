@@ -42,6 +42,15 @@ const COND_HI: u8 = 8;
 
 const COND_LS: u8 = 9;
 
+const ARM64_BRK_MASK: u32 = 0xFFE0_001F;
+
+const ARM64_BRK_MATCH: u32 = 0xD420_0000;
+
+#[must_use]
+pub(crate) const fn is_arm64_trap(raw: u32) -> bool {
+    raw & ARM64_BRK_MASK == ARM64_BRK_MATCH
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DartCallKind {
@@ -96,6 +105,25 @@ pub struct DartPoolRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DartUnliftedArm64 {
+    pub address: u64,
+    pub bytes: u32,
+    pub text: String,
+}
+
+impl DartUnliftedArm64 {
+    #[must_use]
+    pub fn to_pseudo_dart(&self) -> String {
+        format!(
+            "unliftedArm64(address: {:#010x}, bytes: {:#010x}, text: \"{}\");",
+            self.address,
+            self.bytes,
+            escape_dart_string(&self.text)
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DartLiftedFunction {
     pub offset: usize,
     pub name: Option<String>,
@@ -105,6 +133,8 @@ pub struct DartLiftedFunction {
     pub elided_checks: Vec<DartElidedCheck>,
     pub pool_refs: Vec<DartPoolRef>,
     pub inline_double_literals: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlifted_arm64: Vec<DartUnliftedArm64>,
     pub basic_block_count: usize,
     pub conditional_branch_count: usize,
     pub source_conditional_estimate: usize,
@@ -150,32 +180,25 @@ impl DartLiftedFunction {
         if self.has_loop_back_edge {
             let _ = writeln!(out, "  loop over {} basic blocks", self.basic_block_count);
         }
-        for call in &self.calls {
-            match call.kind {
-                DartCallKind::Static => {
-                    let target: &str = call.target_name.as_deref().unwrap_or("<unnamed>");
-                    let recursion: &str = if call.is_self_recursive {
-                        " (self-recursive)"
-                    } else {
-                        ""
-                    };
-                    let _ = writeln!(out, "  {target}(){recursion};");
+        let mut call_index: usize = 0;
+        let mut residue_index: usize = 0;
+        while call_index < self.calls.len() || residue_index < self.unlifted_arm64.len() {
+            let call: Option<&DartCallSite> = self.calls.get(call_index);
+            let residue: Option<&DartUnliftedArm64> = self.unlifted_arm64.get(residue_index);
+            match (call, residue) {
+                (Some(call), Some(residue)) if call.address <= residue.address => {
+                    render_call(&mut out, call);
+                    call_index = call_index.saturating_add(1);
                 }
-                DartCallKind::InstanceSwitchable => {
-                    let _ = writeln!(out, "  receiver.selector@pool[{}]();", slot_or_qm(call));
+                (_, Some(residue)) => {
+                    let _ = writeln!(out, "  {}", residue.to_pseudo_dart());
+                    residue_index = residue_index.saturating_add(1);
                 }
-                DartCallKind::TableDispatch => {
-                    let _ = writeln!(out, "  dispatch_table[..]();");
+                (Some(call), None) => {
+                    render_call(&mut out, call);
+                    call_index = call_index.saturating_add(1);
                 }
-                DartCallKind::RuntimeStub => {
-                    let _ = writeln!(out, "  runtime_stub();");
-                }
-                DartCallKind::Closure => {
-                    let _ = writeln!(out, "  closure();");
-                }
-                DartCallKind::UnresolvedIndirect => {
-                    let _ = writeln!(out, "  indirect_call();");
-                }
+                (None, None) => break,
             }
         }
         let _ = writeln!(
@@ -188,6 +211,54 @@ impl DartLiftedFunction {
         out.push('}');
         out
     }
+}
+
+fn render_call(out: &mut String, call: &DartCallSite) {
+    match call.kind {
+        DartCallKind::Static => {
+            let target: &str = call
+                .target_name
+                .as_deref()
+                .map_or("<unnamed>", |name: &str| name);
+            let recursion: &str = if call.is_self_recursive {
+                " (self-recursive)"
+            } else {
+                ""
+            };
+            let _ = writeln!(out, "  {target}(){recursion};");
+        }
+        DartCallKind::InstanceSwitchable => {
+            let _ = writeln!(out, "  receiver.selector@pool[{}]();", slot_or_qm(call));
+        }
+        DartCallKind::TableDispatch => {
+            let _ = writeln!(out, "  dispatch_table[..]();");
+        }
+        DartCallKind::RuntimeStub => {
+            let _ = writeln!(out, "  runtime_stub();");
+        }
+        DartCallKind::Closure => {
+            let _ = writeln!(out, "  closure();");
+        }
+        DartCallKind::UnresolvedIndirect => {
+            let _ = writeln!(out, "  indirect_call();");
+        }
+    }
+}
+
+fn escape_dart_string(text: &str) -> String {
+    let mut escaped: String = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '$' => escaped.push_str("\\$"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 #[must_use]
@@ -438,6 +509,23 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
     let mut elided_checks: Vec<DartElidedCheck> = Vec::new();
     let mut pool_refs: Vec<DartPoolRef> = Vec::new();
     let mut inline_double_literals: Vec<u64> = Vec::new();
+    let unlifted_arm64: Vec<DartUnliftedArm64> = func
+        .instructions
+        .iter()
+        .filter(|instruction: &&Arm64Instruction| {
+            matches!(
+                instruction.flow,
+                Arm64FlowKind::Sequential
+                    | Arm64FlowKind::IndirectBranch
+                    | Arm64FlowKind::DecodeError
+            ) && !is_arm64_trap(instruction.bytes)
+        })
+        .map(|instruction: &Arm64Instruction| DartUnliftedArm64 {
+            address: instruction.address,
+            bytes: instruction.bytes,
+            text: instruction.text.clone(),
+        })
+        .collect();
 
     if abi_resolved {
         pool_refs = resolve_pool_refs(&func.instructions);
@@ -445,10 +533,12 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
         for (i, insn) in func.instructions.iter().enumerate() {
             match insn.flow {
                 Arm64FlowKind::DirectCall => {
-                    calls.push(classify_direct_call(insn, index, start, end));
+                    let call: DartCallSite = classify_direct_call(insn, index, start, end);
+                    calls.push(call);
                 }
                 Arm64FlowKind::IndirectCall => {
-                    calls.push(classify_indirect_call(&func.instructions, i));
+                    let call: DartCallSite = classify_indirect_call(&func.instructions, i);
+                    calls.push(call);
                 }
                 Arm64FlowKind::ConditionalBranch => {
                     if let Some(kind) = classify_guard(&func.instructions, i) {
@@ -462,7 +552,6 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
             }
         }
     }
-
     let source_conditional_estimate: usize =
         conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
@@ -494,6 +583,7 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
         elided_checks,
         pool_refs,
         inline_double_literals,
+        unlifted_arm64,
         basic_block_count,
         conditional_branch_count,
         source_conditional_estimate,
@@ -1036,6 +1126,19 @@ mod tests {
             v.extend_from_slice(&w.to_le_bytes());
         }
         v
+    }
+
+    #[test]
+    fn unlifted_arm64_text_is_a_valid_dart_string_literal() {
+        let residue: DartUnliftedArm64 = DartUnliftedArm64 {
+            address: 0x1000,
+            bytes: 0x9000_0000,
+            text: "adrp x0, $+0x20 \\\"path\\\"\n".to_owned(),
+        };
+        assert_eq!(
+            residue.to_pseudo_dart(),
+            r#"unliftedArm64(address: 0x00001000, bytes: 0x90000000, text: "adrp x0, \$+0x20 \\\"path\\\"\n");"#
+        );
     }
 
     fn bl(from: u64, to: u64) -> u32 {

@@ -14,8 +14,23 @@ const METADATA_SECTION_ID: i32 = 313;
 const METADATA_SIGNATURE: u32 = 0xDEAD_DFFD;
 const SUPPORTED_MAJOR_VERSION: u16 = 10;
 const SUPPORTED_MINOR_VERSION: u16 = 1;
+const HANDLE_ARRAY_SIGNATURE: u8 = 0x01;
+const HANDLE_BY_REFERENCE_SIGNATURE: u8 = 0x02;
+const HANDLE_FUNCTION_POINTER_SIGNATURE: u8 = 0x25;
+const HANDLE_METHOD_SIGNATURE: u8 = 0x2b;
+const HANDLE_METHOD_TYPE_VARIABLE_SIGNATURE: u8 = 0x2c;
 const HANDLE_NAMESPACE_DEFINITION: u8 = 0x2f;
+const HANDLE_NAMESPACE_REFERENCE: u8 = 0x30;
+const HANDLE_POINTER_SIGNATURE: u8 = 0x32;
+const HANDLE_SZ_ARRAY_SIGNATURE: u8 = 0x37;
 const HANDLE_SCOPE_DEFINITION: u8 = 0x38;
+const HANDLE_SCOPE_REFERENCE: u8 = 0x39;
+const HANDLE_MODIFIED_TYPE: u8 = 0x2d;
+const HANDLE_TYPE_DEFINITION: u8 = 0x3a;
+const HANDLE_TYPE_INSTANTIATION_SIGNATURE: u8 = 0x3c;
+const HANDLE_TYPE_REFERENCE: u8 = 0x3d;
+const HANDLE_TYPE_SPECIFICATION: u8 = 0x3e;
+const HANDLE_TYPE_VARIABLE_SIGNATURE: u8 = 0x3f;
 const MAX_METADATA_COLLECTION: usize = 65_536;
 const MAX_METADATA_RECORDS: usize = 65_536;
 const MAX_METADATA_STRING_RECORDS: usize = 131_072;
@@ -23,6 +38,8 @@ const MAX_METADATA_VALUES: usize = 1_048_576;
 const MAX_METADATA_STRING_BYTES: usize = 4_096;
 const MAX_METADATA_STRING_STORAGE_BYTES: usize = 16_777_216;
 const MAX_METADATA_OUTPUT_BYTES: usize = 16_777_216;
+const MAX_METADATA_TYPE_SIGNATURE_DEPTH: usize = 256;
+const MAX_METADATA_TYPE_SIGNATURE_WORK: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotMetadataAttribution {
@@ -86,6 +103,33 @@ pub struct AotType {
 pub struct AotMethod {
     pub record_offset: u32,
     pub name: String,
+    #[serde(default)]
+    pub signature: Option<AotMethodSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotMethodSignature {
+    pub record_offset: u32,
+    pub calling_convention: u32,
+    pub generic_parameter_count: u32,
+    pub return_type: AotTypeSignature,
+    pub parameter_types: Vec<AotTypeSignature>,
+    pub vararg_parameter_types: Vec<AotTypeSignature>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AotTypeSignatureKind {
+    Definition,
+    Reference,
+    Specification,
+    Modified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AotTypeSignature {
+    pub kind: AotTypeSignatureKind,
+    pub record_offset: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -172,6 +216,98 @@ impl<'a> MetadataCursor<'a> {
         self.unsigned()
     }
 
+    fn signed(&mut self) -> crate::error::Result<i32> {
+        let start: usize = self.at;
+        let first: u8 = *self
+            .bytes
+            .get(start)
+            .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+        let (value, width): (i32, usize) = if first & 1 == 0 {
+            (i32::from(i8::from_le_bytes([first])) >> 1, 1)
+        } else if first & 3 == 1 {
+            let second: u8 = *self
+                .bytes
+                .get(start.checked_add(1).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            (
+                i32::from(first >> 2) | (i32::from(i8::from_le_bytes([second])) << 6),
+                2,
+            )
+        } else if first & 7 == 3 {
+            let second: u8 = *self
+                .bytes
+                .get(start.checked_add(1).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            let third: u8 = *self
+                .bytes
+                .get(start.checked_add(2).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            (
+                i32::from(first >> 3)
+                    | (i32::from(second) << 5)
+                    | (i32::from(i8::from_le_bytes([third])) << 13),
+                3,
+            )
+        } else if first & 15 == 7 {
+            let second: u8 = *self
+                .bytes
+                .get(start.checked_add(1).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            let third: u8 = *self
+                .bytes
+                .get(start.checked_add(2).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            let fourth: u8 = *self
+                .bytes
+                .get(start.checked_add(3).ok_or_else(|| {
+                    invalid_metadata(start, "metadata signed value offset overflowed")
+                })?)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            (
+                i32::from(first >> 4)
+                    | (i32::from(second) << 4)
+                    | (i32::from(third) << 12)
+                    | (i32::from(i8::from_le_bytes([fourth])) << 20),
+                4,
+            )
+        } else if first & 31 == 15 {
+            let value_start: usize = start.checked_add(1).ok_or_else(|| {
+                invalid_metadata(start, "metadata signed value offset overflowed")
+            })?;
+            let value_end: usize = value_start
+                .checked_add(4)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value end overflowed"))?;
+            let value_bytes: &[u8] = self
+                .bytes
+                .get(value_start..value_end)
+                .ok_or_else(|| invalid_metadata(start, "metadata signed value is truncated"))?;
+            let value_array: [u8; 4] =
+                <[u8; 4]>::try_from(value_bytes).map_err(|_: std::array::TryFromSliceError| {
+                    invalid_metadata(start, "metadata signed value is truncated")
+                })?;
+            (i32::from_le_bytes(value_array), 5)
+        } else {
+            return Err(invalid_metadata(
+                start,
+                "metadata signed value is malformed",
+            ));
+        };
+        self.at = start
+            .checked_add(width)
+            .ok_or_else(|| invalid_metadata(start, "metadata cursor overflowed"))?;
+        Ok(value)
+    }
+
     fn raw_handle(&mut self) -> crate::error::Result<RawHandle> {
         let start: usize = self.at;
         let value: u32 = self.unsigned()?;
@@ -246,6 +382,26 @@ impl<'a> MetadataCursor<'a> {
         Ok(())
     }
 
+    fn raw_collection(
+        &mut self,
+        budget: &mut MetadataBudget,
+    ) -> crate::error::Result<Vec<RawHandle>> {
+        let count: usize = self.collection_count(budget)?;
+        let mut values: Vec<RawHandle> = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.raw_handle()?);
+        }
+        Ok(values)
+    }
+
+    fn skip_signed_collection(&mut self, budget: &mut MetadataBudget) -> crate::error::Result<()> {
+        let count: usize = self.collection_count(budget)?;
+        for _ in 0..count {
+            let _value: i32 = self.signed()?;
+        }
+        Ok(())
+    }
+
     fn skip_bytes(&mut self) -> crate::error::Result<()> {
         let start: usize = self.at;
         let count: u32 = self.unsigned()?;
@@ -291,7 +447,452 @@ struct TypeRecord {
 struct MethodRecord {
     offset: u32,
     name: String,
+    signature_offset: u32,
+    generic_parameter_count: usize,
     end: usize,
+}
+
+struct MethodSignatureRecord {
+    offset: u32,
+    calling_convention: u32,
+    generic_parameter_count: u32,
+    return_type: RawHandle,
+    parameter_types: Vec<RawHandle>,
+    vararg_parameter_types: Vec<RawHandle>,
+    end: usize,
+}
+
+struct TypeSignatureValidator<'a> {
+    bytes: &'a [u8],
+    types: &'a BTreeMap<u32, TypeRecord>,
+    method_signatures: &'a BTreeMap<u32, MethodSignatureRecord>,
+    strings: &'a mut MetadataStrings,
+    metadata_budget: &'a mut MetadataBudget,
+    record_count: &'a mut usize,
+    work: usize,
+    visiting: BTreeSet<(u8, u32)>,
+    validated: BTreeSet<(u8, u32)>,
+    ranges: Vec<RecordRange>,
+}
+
+impl<'a> TypeSignatureValidator<'a> {
+    const fn new(
+        bytes: &'a [u8],
+        types: &'a BTreeMap<u32, TypeRecord>,
+        method_signatures: &'a BTreeMap<u32, MethodSignatureRecord>,
+        strings: &'a mut MetadataStrings,
+        metadata_budget: &'a mut MetadataBudget,
+        record_count: &'a mut usize,
+    ) -> Self {
+        Self {
+            bytes,
+            types,
+            method_signatures,
+            strings,
+            metadata_budget,
+            record_count,
+            work: 0,
+            visiting: BTreeSet::new(),
+            validated: BTreeSet::new(),
+            ranges: Vec::new(),
+        }
+    }
+
+    fn claim_work(&mut self, raw: RawHandle, depth: usize) -> crate::error::Result<()> {
+        let at: usize = usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value);
+        if depth > MAX_METADATA_TYPE_SIGNATURE_DEPTH {
+            return Err(invalid_metadata(
+                at,
+                "method signature type graph exceeds the depth limit",
+            ));
+        }
+        self.work = self
+            .work
+            .checked_add(1)
+            .ok_or_else(|| invalid_metadata(at, "method signature type work overflowed"))?;
+        if self.work > MAX_METADATA_TYPE_SIGNATURE_WORK {
+            return Err(invalid_metadata(
+                at,
+                "method signature type work exceeds the parser limit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn begin_validation(&mut self, raw: RawHandle) -> crate::error::Result<bool> {
+        let key: (u8, u32) = (raw.kind, raw.offset);
+        if self.visiting.contains(&key) {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "method signature type graph contains a cycle",
+            ));
+        }
+        if self.validated.contains(&key) {
+            return Ok(false);
+        }
+        self.visiting.insert(key);
+        Ok(true)
+    }
+
+    fn begin_record(&mut self, raw: RawHandle) -> crate::error::Result<Option<MetadataCursor<'a>>> {
+        if !self.begin_validation(raw)? {
+            return Ok(None);
+        }
+        claim_record(self.record_count, raw.offset)?;
+        MetadataCursor::new(self.bytes, raw.offset).map(Some)
+    }
+
+    fn finish_validation(&mut self, raw: RawHandle) {
+        let key: (u8, u32) = (raw.kind, raw.offset);
+        self.visiting.remove(&key);
+        self.validated.insert(key);
+    }
+
+    fn finish_record(&mut self, raw: RawHandle, end: usize) {
+        self.finish_validation(raw);
+        self.ranges.push(RecordRange {
+            start: usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+            end,
+        });
+    }
+
+    fn validate_root_method_signature(
+        &mut self,
+        signature: &MethodSignatureRecord,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let raw: RawHandle = RawHandle {
+            kind: HANDLE_METHOD_SIGNATURE,
+            offset: signature.offset,
+        };
+        if !self.begin_validation(raw)? {
+            return Ok(());
+        }
+        self.validate_method_signature_types(signature, depth)?;
+        self.finish_validation(raw);
+        Ok(())
+    }
+
+    fn validate_type(&mut self, raw: RawHandle, depth: usize) -> crate::error::Result<()> {
+        self.claim_work(raw, depth)?;
+        if raw.offset == 0 {
+            return Err(invalid_metadata(0, "method signature type handle is nil"));
+        }
+        match raw.kind {
+            HANDLE_TYPE_DEFINITION => {
+                if !self.types.contains_key(&raw.offset) {
+                    return Err(invalid_metadata(
+                        usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                        "method signature type definition is not reachable",
+                    ));
+                }
+            }
+            HANDLE_TYPE_REFERENCE => self.validate_type_reference(raw, depth)?,
+            HANDLE_TYPE_SPECIFICATION => self.validate_type_specification(raw, depth)?,
+            HANDLE_MODIFIED_TYPE => self.validate_modified_type(raw, depth)?,
+            _ => {
+                return Err(invalid_metadata(
+                    usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                    "method signature uses an unsupported type handle kind",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_type_reference(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let parent: RawHandle = cursor.raw_handle()?;
+        let name: u32 = cursor.typed_handle()?;
+        if !matches!(
+            parent.kind,
+            HANDLE_NAMESPACE_REFERENCE | HANDLE_TYPE_REFERENCE
+        ) {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "type reference parent has an unsupported handle kind",
+            ));
+        }
+        self.strings.validate(self.bytes, name)?;
+        self.validate_reference_parent(parent, next_type_depth(raw.offset, depth)?)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_reference_parent(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        self.claim_work(raw, depth)?;
+        if raw.offset == 0 {
+            return Err(invalid_metadata(0, "type reference parent handle is nil"));
+        }
+        match raw.kind {
+            HANDLE_TYPE_REFERENCE => self.validate_type_reference(raw, depth),
+            HANDLE_NAMESPACE_REFERENCE => self.validate_namespace_reference(raw, depth),
+            HANDLE_SCOPE_REFERENCE => self.validate_scope_reference(raw),
+            _ => Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "type reference parent has an unsupported handle kind",
+            )),
+        }
+    }
+
+    fn validate_namespace_reference(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let parent: RawHandle = cursor.raw_handle()?;
+        let name: u32 = cursor.typed_handle()?;
+        if !matches!(
+            parent.kind,
+            HANDLE_NAMESPACE_REFERENCE | HANDLE_SCOPE_REFERENCE
+        ) {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "namespace reference parent has an unsupported handle kind",
+            ));
+        }
+        self.strings.validate(self.bytes, name)?;
+        self.validate_reference_parent(parent, next_type_depth(raw.offset, depth)?)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_scope_reference(&mut self, raw: RawHandle) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let _flags: u32 = cursor.unsigned()?;
+        let name: u32 = cursor.typed_handle()?;
+        let _major: u32 = cursor.unsigned()?;
+        let _minor: u32 = cursor.unsigned()?;
+        let _build: u32 = cursor.unsigned()?;
+        let _revision: u32 = cursor.unsigned()?;
+        cursor.skip_bytes()?;
+        let culture: u32 = cursor.typed_handle()?;
+        self.strings.validate(self.bytes, name)?;
+        self.strings.validate(self.bytes, culture)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_type_specification(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let signature: RawHandle = cursor.raw_handle()?;
+        self.validate_type_specification_signature(signature, next_type_depth(raw.offset, depth)?)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_type_specification_signature(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        self.claim_work(raw, depth)?;
+        if raw.offset == 0 {
+            return Err(invalid_metadata(
+                0,
+                "type specification signature handle is nil",
+            ));
+        }
+        match raw.kind {
+            HANDLE_TYPE_DEFINITION | HANDLE_TYPE_REFERENCE => self.validate_type(raw, depth),
+            HANDLE_TYPE_INSTANTIATION_SIGNATURE => {
+                self.validate_type_instantiation_signature(raw, depth)
+            }
+            HANDLE_SZ_ARRAY_SIGNATURE
+            | HANDLE_ARRAY_SIGNATURE
+            | HANDLE_POINTER_SIGNATURE
+            | HANDLE_BY_REFERENCE_SIGNATURE => self.validate_unary_type_signature(raw, depth),
+            HANDLE_FUNCTION_POINTER_SIGNATURE => {
+                self.validate_function_pointer_signature(raw, depth)
+            }
+            HANDLE_TYPE_VARIABLE_SIGNATURE | HANDLE_METHOD_TYPE_VARIABLE_SIGNATURE => {
+                self.validate_type_variable_signature(raw)
+            }
+            _ => Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "type specification uses an unsupported signature kind",
+            )),
+        }
+    }
+
+    fn validate_type_instantiation_signature(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let generic_type: RawHandle = cursor.raw_handle()?;
+        if !matches!(
+            generic_type.kind,
+            HANDLE_TYPE_DEFINITION | HANDLE_TYPE_REFERENCE | HANDLE_TYPE_SPECIFICATION
+        ) {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "type instantiation generic type has an unsupported handle kind",
+            ));
+        }
+        let arguments: Vec<RawHandle> = cursor.raw_collection(self.metadata_budget)?;
+        let next_depth: usize = next_type_depth(raw.offset, depth)?;
+        self.validate_type(generic_type, next_depth)?;
+        for argument in arguments {
+            self.validate_type(argument, next_depth)?;
+        }
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_unary_type_signature(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let child: RawHandle = cursor.raw_handle()?;
+        if raw.kind == HANDLE_ARRAY_SIGNATURE {
+            let rank: i32 = cursor.signed()?;
+            if rank < 1 {
+                return Err(invalid_metadata(
+                    usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                    "array signature rank is not positive",
+                ));
+            }
+            cursor.skip_signed_collection(self.metadata_budget)?;
+            cursor.skip_signed_collection(self.metadata_budget)?;
+        }
+        self.validate_type(child, next_type_depth(raw.offset, depth)?)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_function_pointer_signature(
+        &mut self,
+        raw: RawHandle,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let signature_offset: u32 = cursor.typed_handle()?;
+        let signature_raw: RawHandle = RawHandle {
+            kind: HANDLE_METHOD_SIGNATURE,
+            offset: signature_offset,
+        };
+        self.claim_work(signature_raw, next_type_depth(raw.offset, depth)?)?;
+        let Some(mut signature_cursor): Option<MetadataCursor<'a>> =
+            self.begin_record(signature_raw)?
+        else {
+            self.finish_record(raw, cursor.at);
+            return Ok(());
+        };
+        let signature: MethodSignatureRecord = parse_method_signature_from_cursor(
+            &mut signature_cursor,
+            signature_offset,
+            self.metadata_budget,
+        )?;
+        let next_depth: usize = next_type_depth(raw.offset, depth)?;
+        self.validate_method_signature_types(&signature, next_depth)?;
+        if self.method_signatures.contains_key(&signature_offset) {
+            self.finish_validation(signature_raw);
+        } else {
+            self.finish_record(signature_raw, signature.end);
+        }
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_type_variable_signature(&mut self, raw: RawHandle) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let number: i32 = cursor.signed()?;
+        if number < 0 {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "type variable signature number is negative",
+            ));
+        }
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_modified_type(&mut self, raw: RawHandle, depth: usize) -> crate::error::Result<()> {
+        let Some(mut cursor): Option<MetadataCursor<'a>> = self.begin_record(raw)? else {
+            return Ok(());
+        };
+        let is_optional: u32 = cursor.unsigned()?;
+        if is_optional > 1 {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "modified type optional flag is invalid",
+            ));
+        }
+        let modifier: RawHandle = cursor.raw_handle()?;
+        if !matches!(
+            modifier.kind,
+            HANDLE_TYPE_DEFINITION | HANDLE_TYPE_REFERENCE | HANDLE_TYPE_SPECIFICATION
+        ) {
+            return Err(invalid_metadata(
+                usize::try_from(raw.offset).map_or(usize::MAX, |value: usize| value),
+                "modified type modifier has an unsupported handle kind",
+            ));
+        }
+        let modified: RawHandle = cursor.raw_handle()?;
+        let next_depth: usize = next_type_depth(raw.offset, depth)?;
+        self.validate_type(modifier, next_depth)?;
+        self.validate_type(modified, next_depth)?;
+        self.finish_record(raw, cursor.at);
+        Ok(())
+    }
+
+    fn validate_method_signature_types(
+        &mut self,
+        signature: &MethodSignatureRecord,
+        depth: usize,
+    ) -> crate::error::Result<()> {
+        self.validate_type(signature.return_type, depth)?;
+        for raw in signature
+            .parameter_types
+            .iter()
+            .chain(signature.vararg_parameter_types.iter())
+        {
+            self.validate_type(*raw, depth)?;
+        }
+        Ok(())
+    }
+}
+
+fn next_type_depth(offset: u32, depth: usize) -> crate::error::Result<usize> {
+    depth.checked_add(1).ok_or_else(|| {
+        invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "method signature type depth overflowed",
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,9 +1141,12 @@ fn parse_method(
     let _flags: u32 = cursor.unsigned()?;
     let _impl_flags: u32 = cursor.unsigned()?;
     let name_handle: u32 = cursor.typed_handle()?;
-    let _signature: u32 = cursor.typed_handle()?;
+    let signature_offset: u32 = cursor.typed_handle()?;
     cursor.skip_typed_collection(budget)?;
-    cursor.skip_typed_collection(budget)?;
+    let generic_parameter_count: usize = cursor.collection_count(budget)?;
+    for _ in 0..generic_parameter_count {
+        let _generic_parameter: u32 = cursor.typed_handle()?;
+    }
     cursor.skip_typed_collection(budget)?;
     let name: String = owned_metadata_string(bytes, name_handle, budget, strings)?;
     if name.is_empty() {
@@ -554,7 +1158,129 @@ fn parse_method(
     Ok(MethodRecord {
         offset,
         name,
+        signature_offset,
+        generic_parameter_count,
         end: cursor.at,
+    })
+}
+
+fn type_signature(raw: RawHandle) -> crate::error::Result<AotTypeSignature> {
+    if raw.offset == 0 {
+        return Err(invalid_metadata(0, "method signature type handle is nil"));
+    }
+    let record_offset: usize =
+        usize::try_from(raw.offset).map_err(|_: std::num::TryFromIntError| {
+            invalid_metadata(
+                usize::MAX,
+                "method signature type offset does not fit usize",
+            )
+        })?;
+    let kind: AotTypeSignatureKind = match raw.kind {
+        HANDLE_TYPE_DEFINITION => AotTypeSignatureKind::Definition,
+        HANDLE_TYPE_REFERENCE => AotTypeSignatureKind::Reference,
+        HANDLE_TYPE_SPECIFICATION => AotTypeSignatureKind::Specification,
+        HANDLE_MODIFIED_TYPE => AotTypeSignatureKind::Modified,
+        _ => {
+            return Err(invalid_metadata(
+                record_offset,
+                "method signature uses an unsupported type handle kind",
+            ));
+        }
+    };
+    Ok(AotTypeSignature {
+        kind,
+        record_offset: raw.offset,
+    })
+}
+
+fn parse_method_signature(
+    bytes: &[u8],
+    offset: u32,
+    budget: &mut MetadataBudget,
+) -> crate::error::Result<MethodSignatureRecord> {
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    parse_method_signature_from_cursor(&mut cursor, offset, budget)
+}
+
+fn parse_method_signature_from_cursor(
+    cursor: &mut MetadataCursor<'_>,
+    offset: u32,
+    budget: &mut MetadataBudget,
+) -> crate::error::Result<MethodSignatureRecord> {
+    let calling_convention: u32 = cursor.unsigned()?;
+    let convention: u32 = calling_convention & 0x0f;
+    let flags: u32 = calling_convention & !0x0f;
+    if !matches!(convention, 0..=5 | 9) || flags & !0x60 != 0 {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "method signature calling convention is unsupported",
+        ));
+    }
+    if flags & 0x40 != 0 && flags & 0x20 == 0 {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "method signature explicit-this flag lacks has-this",
+        ));
+    }
+    let signed_generic_parameter_count: i32 = cursor.signed()?;
+    let generic_parameter_count: u32 =
+        u32::try_from(signed_generic_parameter_count).map_err(|_: std::num::TryFromIntError| {
+            invalid_metadata(
+                usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+                "method signature generic parameter count is negative",
+            )
+        })?;
+    if usize::try_from(generic_parameter_count)
+        .map_or(true, |count: usize| count > MAX_METADATA_COLLECTION)
+    {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "method signature generic parameter count exceeds parser limit",
+        ));
+    }
+    let return_type: RawHandle = cursor.raw_handle()?;
+    let parameter_types: Vec<RawHandle> = cursor.raw_collection(budget)?;
+    let vararg_parameter_types: Vec<RawHandle> = cursor.raw_collection(budget)?;
+    if !vararg_parameter_types.is_empty() && convention != 5 {
+        return Err(invalid_metadata(
+            usize::try_from(offset).map_or(usize::MAX, |value: usize| value),
+            "method signature has varargs under a non-vararg convention",
+        ));
+    }
+    Ok(MethodSignatureRecord {
+        offset,
+        calling_convention,
+        generic_parameter_count,
+        return_type,
+        parameter_types,
+        vararg_parameter_types,
+        end: cursor.at,
+    })
+}
+
+fn public_method_signature(
+    signature: &MethodSignatureRecord,
+) -> crate::error::Result<AotMethodSignature> {
+    let return_type: AotTypeSignature = type_signature(signature.return_type)?;
+    let parameter_types: Vec<AotTypeSignature> = signature
+        .parameter_types
+        .iter()
+        .copied()
+        .map(type_signature)
+        .collect::<crate::error::Result<Vec<AotTypeSignature>>>()?;
+    let vararg_parameter_types: Vec<AotTypeSignature> = signature
+        .vararg_parameter_types
+        .iter()
+        .copied()
+        .map(type_signature)
+        .collect::<crate::error::Result<Vec<AotTypeSignature>>>()?;
+    Ok(AotMethodSignature {
+        record_offset: signature.offset,
+        calling_convention: signature.calling_convention,
+        generic_parameter_count: signature.generic_parameter_count,
+        return_type,
+        parameter_types,
+        vararg_parameter_types,
     })
 }
 
@@ -597,7 +1323,9 @@ fn validate_graph(
     namespaces: &BTreeMap<u32, NamespaceRecord>,
     types: &BTreeMap<u32, TypeRecord>,
     methods: &BTreeMap<u32, MethodRecord>,
+    signatures: &BTreeMap<u32, MethodSignatureRecord>,
     strings: &MetadataStrings,
+    type_signature_ranges: &[RecordRange],
     root_end: usize,
 ) -> crate::error::Result<()> {
     let mut type_owner_counts: BTreeMap<u32, u8> = BTreeMap::new();
@@ -750,8 +1478,39 @@ fn validate_graph(
             }
         }
     }
+    for method in methods.values() {
+        let signature: &MethodSignatureRecord =
+            signatures.get(&method.signature_offset).ok_or_else(|| {
+                invalid_metadata(
+                    usize::try_from(method.offset).map_or(usize::MAX, |value: usize| value),
+                    "method signature is not reachable",
+                )
+            })?;
+        let signature_generic_count: usize = usize::try_from(signature.generic_parameter_count)
+            .map_err(|_: std::num::TryFromIntError| {
+                invalid_metadata(
+                    usize::try_from(signature.offset).map_or(usize::MAX, |value: usize| value),
+                    "method signature generic parameter count does not fit usize",
+                )
+            })?;
+        if signature_generic_count != method.generic_parameter_count {
+            return Err(invalid_metadata(
+                usize::try_from(signature.offset).map_or(usize::MAX, |value: usize| value),
+                "method and signature generic parameter counts disagree",
+            ));
+        }
+    }
     validate_type_containment(types)?;
-    validate_record_ranges(scopes, namespaces, types, methods, strings, root_end)
+    validate_record_ranges(
+        scopes,
+        namespaces,
+        types,
+        methods,
+        signatures,
+        strings,
+        type_signature_ranges,
+        root_end,
+    )
 }
 
 fn claim_type_owner(owners: &mut BTreeMap<u32, u8>, type_offset: u32) -> crate::error::Result<()> {
@@ -807,7 +1566,9 @@ fn validate_record_ranges(
     namespaces: &BTreeMap<u32, NamespaceRecord>,
     types: &BTreeMap<u32, TypeRecord>,
     methods: &BTreeMap<u32, MethodRecord>,
+    signatures: &BTreeMap<u32, MethodSignatureRecord>,
     strings: &MetadataStrings,
+    type_signature_ranges: &[RecordRange],
     root_end: usize,
 ) -> crate::error::Result<()> {
     let record_count: usize = scopes
@@ -815,7 +1576,9 @@ fn validate_record_ranges(
         .checked_add(namespaces.len())
         .and_then(|value: usize| value.checked_add(types.len()))
         .and_then(|value: usize| value.checked_add(methods.len()))
+        .and_then(|value: usize| value.checked_add(signatures.len()))
         .and_then(|value: usize| value.checked_add(strings.records.len()))
+        .and_then(|value: usize| value.checked_add(type_signature_ranges.len()))
         .and_then(|value: usize| value.checked_add(1))
         .ok_or_else(|| invalid_metadata(4, "metadata record range count overflowed"))?;
     let mut ranges: Vec<RecordRange> = Vec::with_capacity(record_count);
@@ -847,9 +1610,16 @@ fn validate_record_ranges(
             end: method.end,
         });
     }
+    for signature in signatures.values() {
+        ranges.push(RecordRange {
+            start: usize::try_from(signature.offset).map_or(usize::MAX, |value: usize| value),
+            end: signature.end,
+        });
+    }
     for record in strings.records.values() {
         ranges.push(record.range);
     }
+    ranges.extend_from_slice(type_signature_ranges);
     ranges.sort_unstable_by_key(|range: &RecordRange| range.start);
     for range in &ranges {
         if range.start >= range.end {
@@ -1093,7 +1863,43 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
         let method: MethodRecord = parse_method(bytes, method_offset, &mut budget, &mut strings)?;
         methods.insert(method_offset, method);
     }
-    validate_graph(&scopes, &namespaces, &types, &methods, &strings, root_end)?;
+    let signatures: BTreeMap<u32, MethodSignatureRecord> = {
+        let mut parsed: BTreeMap<u32, MethodSignatureRecord> = BTreeMap::new();
+        for method in methods.values() {
+            if parsed.contains_key(&method.signature_offset) {
+                continue;
+            }
+            claim_record(&mut record_count, method.signature_offset)?;
+            let signature: MethodSignatureRecord =
+                parse_method_signature(bytes, method.signature_offset, &mut budget)?;
+            parsed.insert(method.signature_offset, signature);
+        }
+        parsed
+    };
+    let type_signature_ranges: Vec<RecordRange> = {
+        let mut validator: TypeSignatureValidator<'_> = TypeSignatureValidator::new(
+            bytes,
+            &types,
+            &signatures,
+            &mut strings,
+            &mut budget,
+            &mut record_count,
+        );
+        for signature in signatures.values() {
+            validator.validate_root_method_signature(signature, 1)?;
+        }
+        validator.ranges
+    };
+    validate_graph(
+        &scopes,
+        &namespaces,
+        &types,
+        &methods,
+        &signatures,
+        &strings,
+        &type_signature_ranges,
+        root_end,
+    )?;
     let qualifications: BTreeMap<u32, Option<String>> =
         namespace_qualifications(&scopes, &namespaces, &mut budget)?;
     let mut type_qualifications: BTreeMap<u32, Option<String>> =
@@ -1121,9 +1927,17 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
     let method_capacity: usize = methods.len();
     let mut attributed_methods: Vec<AotMethod> = Vec::with_capacity(method_capacity);
     for (_, method) in methods {
+        let signature: &MethodSignatureRecord =
+            signatures.get(&method.signature_offset).ok_or_else(|| {
+                invalid_metadata(
+                    usize::try_from(method.offset).map_or(usize::MAX, |value: usize| value),
+                    "validated method signature is absent",
+                )
+            })?;
         attributed_methods.push(AotMethod {
             record_offset: method.offset,
             name: method.name,
+            signature: Some(public_method_signature(signature)?),
         });
     }
     Ok((attributed_types, attributed_methods))
@@ -1227,9 +2041,42 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        MetadataStrings, MethodRecord, NamespaceRecord, ScopeRecord, TypeRecord,
-        validate_record_ranges, validate_type_containment,
+        HANDLE_SZ_ARRAY_SIGNATURE, HANDLE_TYPE_SPECIFICATION, MetadataBudget, MetadataCursor,
+        MetadataStrings, MethodRecord, MethodSignatureRecord, NamespaceRecord, RawHandle,
+        ScopeRecord, TypeRecord, TypeSignatureValidator, validate_record_ranges,
+        validate_type_containment,
     };
+
+    fn encode_unsigned(value: u32) -> Vec<u8> {
+        if value < 1 << 7 {
+            return vec![(value << 1) as u8];
+        }
+        if value < 1 << 14 {
+            return vec![((value << 2) | 1) as u8, (value >> 6) as u8];
+        }
+        if value < 1 << 21 {
+            return vec![
+                ((value << 3) | 3) as u8,
+                (value >> 5) as u8,
+                (value >> 13) as u8,
+            ];
+        }
+        if value < 1 << 28 {
+            return vec![
+                ((value << 4) | 7) as u8,
+                (value >> 4) as u8,
+                (value >> 12) as u8,
+                (value >> 20) as u8,
+            ];
+        }
+        let mut encoded: Vec<u8> = vec![15];
+        encoded.extend_from_slice(&value.to_le_bytes());
+        encoded
+    }
+
+    fn encode_raw_handle(kind: u8, offset: u32) -> Vec<u8> {
+        encode_unsigned((offset << 8) | u32::from(kind))
+    }
 
     fn type_record(offset: u32, enclosing_type: u32, nested_types: Vec<u32>) -> TypeRecord {
         TypeRecord {
@@ -1256,12 +2103,79 @@ mod tests {
     }
 
     #[test]
+    fn recursive_type_specification_cycles_are_rejected() {
+        let mut bytes: Vec<u8> = vec![0; 6];
+        let specification_record: Vec<u8> = encode_raw_handle(HANDLE_SZ_ARRAY_SIGNATURE, 4);
+        let array_record: Vec<u8> = encode_raw_handle(HANDLE_TYPE_SPECIFICATION, 1);
+        bytes[1..3].copy_from_slice(&specification_record);
+        bytes[4..6].copy_from_slice(&array_record);
+        let types: BTreeMap<u32, TypeRecord> = BTreeMap::new();
+        let method_signatures: BTreeMap<u32, MethodSignatureRecord> = BTreeMap::new();
+        let mut strings: MetadataStrings = MetadataStrings::new();
+        let mut budget: MetadataBudget = MetadataBudget::new();
+        let mut record_count: usize = 0;
+        let mut validator: TypeSignatureValidator<'_> = TypeSignatureValidator::new(
+            &bytes,
+            &types,
+            &method_signatures,
+            &mut strings,
+            &mut budget,
+            &mut record_count,
+        );
+        let result: crate::error::Result<()> = validator.validate_type(
+            RawHandle {
+                kind: HANDLE_TYPE_SPECIFICATION,
+                offset: 1,
+            },
+            1,
+        );
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::InvalidAotMetadata { .. })
+        ));
+    }
+
+    #[test]
     fn acyclic_type_containment_is_accepted() {
         let mut types: BTreeMap<u32, TypeRecord> = BTreeMap::new();
         types.insert(10, type_record(10, 0, vec![20]));
         types.insert(20, type_record(20, 10, Vec::new()));
         let result: crate::error::Result<()> = validate_type_containment(&types);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn signed_native_format_values_cover_every_encoded_width() -> crate::error::Result<()> {
+        let cases: [(&[u8], i32); 8] = [
+            (&[0x00], 0),
+            (&[0x02], 1),
+            (&[0xfe], -1),
+            (&[0x01, 0x01], 64),
+            (&[0xfd, 0xff], -1),
+            (&[0x03, 0x00, 0x01], 8_192),
+            (&[0x07, 0x00, 0x00, 0x01], 1_048_576),
+            (&[0x0f, 0x78, 0x56, 0x34, 0x12], 0x1234_5678),
+        ];
+        for (encoded, expected) in cases {
+            let mut cursor: MetadataCursor<'_> = MetadataCursor::new(encoded, 0)?;
+            let actual: i32 = cursor.signed()?;
+            assert_eq!(actual, expected);
+            assert_eq!(cursor.at, encoded.len());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn signed_native_format_values_reject_truncation_and_bad_prefixes() -> crate::error::Result<()>
+    {
+        for encoded in [&[0x01][..], &[0x1f][..]] {
+            let mut cursor: MetadataCursor<'_> = MetadataCursor::new(encoded, 0)?;
+            assert!(matches!(
+                cursor.signed(),
+                Err(crate::error::Error::InvalidAotMetadata { .. })
+            ));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1278,8 +2192,17 @@ mod tests {
         let namespaces: BTreeMap<u32, NamespaceRecord> = BTreeMap::new();
         let types: BTreeMap<u32, TypeRecord> = BTreeMap::new();
         let methods: BTreeMap<u32, MethodRecord> = BTreeMap::new();
-        let result: crate::error::Result<()> =
-            validate_record_ranges(&scopes, &namespaces, &types, &methods, &strings, 8);
+        let signatures: BTreeMap<u32, MethodSignatureRecord> = BTreeMap::new();
+        let result: crate::error::Result<()> = validate_record_ranges(
+            &scopes,
+            &namespaces,
+            &types,
+            &methods,
+            &signatures,
+            &strings,
+            &[],
+            8,
+        );
         assert!(matches!(
             result,
             Err(crate::error::Error::InvalidAotMetadata { .. })

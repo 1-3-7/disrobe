@@ -7,14 +7,12 @@ use disrobe_nir::{
     basic_blocks, structurize_function,
 };
 
-use super::aot_lift::{DartCheckKind, bcond, classify_guard, subs_imm, subs_shifted_reg, tbz_tbnz};
+use super::aot_lift::{
+    DartCheckKind, bcond, classify_guard, is_arm64_trap, subs_imm, subs_shifted_reg, tbz_tbnz,
+};
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
 
 const ARM64_INSN_BYTES: u64 = 4;
-
-const BRK_MASK: u32 = 0xFFE0_001F;
-
-const BRK_MATCH: u32 = 0xD420_0000;
 
 const CBZ_CBNZ_MASK: u32 = 0x7E00_0000;
 
@@ -105,12 +103,17 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
                 return None;
             }
             Arm64FlowKind::Sequential => {
-                if insn.bytes & BRK_MASK == BRK_MATCH {
+                if is_arm64_trap(insn.bytes) {
                     op = NirOp::NoReturnCall { target: None };
                     mnemonic = "trap".to_owned();
                 } else {
                     op = NirOp::Nop;
-                    mnemonic = String::new();
+                    mnemonic = super::aot_lift::DartUnliftedArm64 {
+                        address: insn.address,
+                        bytes: insn.bytes,
+                        text: insn.text.clone(),
+                    }
+                    .to_pseudo_dart();
                 }
             }
         }
@@ -199,7 +202,7 @@ fn predecessor_is_terminator(target: u64, at: usize, insns: &[Arm64Instruction])
             | Arm64FlowKind::DirectBranch
             | Arm64FlowKind::ConditionalBranch
             | Arm64FlowKind::IndirectBranch
-    ) || prev.bytes & BRK_MASK == BRK_MATCH
+    ) || is_arm64_trap(prev.bytes)
 }
 
 const fn in_function(target: Option<u64>, abi: &DartAbi<'_>) -> bool {
@@ -603,6 +606,8 @@ fn render_leaf(instr: &NirInstr) -> Option<String> {
             Some(format!("{callee}(...);"))
         }
         NirOp::IndirectCall => Some("invoke(...);".to_owned()),
+        NirOp::NoReturnCall { .. } if instr.mnemonic == "trap" => Some("trap();".to_owned()),
+        NirOp::Nop if !instr.mnemonic.is_empty() => Some(instr.mnemonic.clone()),
         _ => None,
     }
 }

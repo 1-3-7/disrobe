@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::dalvik::DalvikInsn;
 use crate::dalvik_cfg::{DalvikMethodCfg, build_dalvik_cfg_from_code_item};
 use crate::dalvik_lift::{
-    LiftOutcome, MethodContext, RegisterFile, lift_insn, render_branch_condition,
+    LiftOutcome, MethodContext, PendingResult, RegisterFile, lift_insn, render_branch_condition,
     seed_block_registers,
 };
 use crate::decompile_struct::{
@@ -65,6 +65,8 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
     let items: Vec<CodeItem> = code_report.decoded().to_vec();
+    let desugar: crate::dalvik_desugar::DefaultInterfaceRecovery =
+        crate::dalvik_desugar::DefaultInterfaceRecovery::analyze(dex, bytes, &code_report);
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
         by_class.entry(descriptor_name.clone()).or_default();
@@ -118,6 +120,9 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let mut fallback: usize = 0;
 
     for (class_descriptor, methods) in &by_class {
+        if desugar.suppresses_class(class_descriptor) {
+            continue;
+        }
         let recovery: Option<&crate::dalvik_strdec::DexStringRecovery> =
             string_recovery.get(class_descriptor);
         let rendered: RenderedClass = render_class(
@@ -128,6 +133,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             recovery,
             &cff_by_method,
             &generic_by_method,
+            &desugar,
         );
         source.push_str(&rendered.text);
         source.push('\n');
@@ -214,6 +220,7 @@ fn render_class(
         (String, String),
         Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>,
     >,
+    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
 ) -> RenderedClass {
     let binary: String = descriptor::binary_to_source(class_descriptor);
     let (package, simple): (Option<&str>, &str) = match binary.rfind('.') {
@@ -229,12 +236,24 @@ fn render_class(
     let class_is_abstract: bool = methods
         .iter()
         .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
-    let class_declaration: &str = if class_is_abstract {
+    let class_declaration: &str = if desugar.recovers_interface(class_descriptor) {
+        "public interface"
+    } else if class_is_abstract {
         "public abstract class"
     } else {
         "public class"
     };
-    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple} {{");
+    let implemented: String = match desugar.implemented_interfaces(class_descriptor) {
+        Some(interfaces) if !interfaces.is_empty() => {
+            let names: Vec<String> = interfaces
+                .iter()
+                .map(|interface: &String| descriptor::binary_to_source(interface))
+                .collect();
+            format!(" implements {}", names.join(", "))
+        }
+        _ => String::new(),
+    };
+    let _: std::fmt::Result = writeln!(text, "{class_declaration} {simple}{implemented} {{");
 
     if let Some(rec) = recovery {
         text.push_str(&recovered_strings_annotation(rec));
@@ -244,6 +263,19 @@ fn render_class(
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
     for method in methods {
+        if desugar.suppresses_method(
+            &method.class,
+            &method.method_name,
+            &method.method_descriptor,
+        ) {
+            continue;
+        }
+        let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = desugar
+            .recovered_method(
+                &method.class,
+                &method.method_name,
+                &method.method_descriptor,
+            );
         let item: Option<&CodeItem> = match &method.state {
             DexCodeState::Decoded(index) => decoded.get(*index),
             DexCodeState::Absent | DexCodeState::Refused(_) => None,
@@ -255,8 +287,20 @@ fn render_class(
         ));
         let generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>> =
             generic_by_method.get(&(method.class.clone(), method.method_name.clone()));
-        let rendered: RenderedMethod = match (&method.state, item) {
-            (DexCodeState::Decoded(_), Some(_))
+        let rendered: RenderedMethod = match (&method.state, item, recovered_default) {
+            (_, _, Some(recovered)) => decoded.get(recovered.bridge_item).map_or_else(
+                || {
+                    render_unavailable_method(
+                        simple,
+                        method,
+                        Some("default interface bridge is absent"),
+                    )
+                },
+                |bridge: &CodeItem| {
+                    render_method(dex, simple, bridge, None, None, desugar, Some(recovered))
+                },
+            ),
+            (DexCodeState::Decoded(_), Some(_), None)
                 if method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0 =>
             {
                 render_unavailable_method(
@@ -265,13 +309,13 @@ fn render_class(
                     Some("code item is present on a bodyless declaration"),
                 )
             }
-            (DexCodeState::Decoded(_), Some(item)) => {
-                render_method(dex, simple, item, cff, generic_sites)
+            (DexCodeState::Decoded(_), Some(item), None) => {
+                render_method(dex, simple, item, cff, generic_sites, desugar, None)
             }
-            (DexCodeState::Decoded(_), None) => {
+            (DexCodeState::Decoded(_), None, None) => {
                 render_unavailable_method(simple, method, Some("decoded body is absent"))
             }
-            (DexCodeState::Absent, _) => {
+            (DexCodeState::Absent, _, None) => {
                 let expected_absence: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
                 if expected_absence {
                     render_unavailable_method(simple, method, None)
@@ -279,7 +323,7 @@ fn render_class(
                     render_unavailable_method(simple, method, Some("code item is absent"))
                 }
             }
-            (DexCodeState::Refused(error), _) => {
+            (DexCodeState::Refused(error), _, None) => {
                 let reason: String = error.to_string();
                 render_unavailable_method(simple, method, Some(&reason))
             }
@@ -461,8 +505,18 @@ fn render_method(
     item: &CodeItem,
     cff: Option<&crate::dalvik_dexguard::DalvikMethodCff>,
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
+    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
+    recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod>,
 ) -> RenderedMethod {
-    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&item.method_descriptor);
+    let method_descriptor: &str = recovered_default.map_or(
+        item.method_descriptor.as_str(),
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.descriptor.as_str(),
+    );
+    let method_name: &str = recovered_default.map_or(
+        item.method_name.as_str(),
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.name.as_str(),
+    );
+    let parsed: Option<MethodDescriptor> = descriptor::parse_method(method_descriptor);
     let footprint: u16 = parsed
         .as_ref()
         .map(|md| {
@@ -472,12 +526,15 @@ fn render_method(
                 .sum()
         })
         .unwrap_or(0);
-    let is_constructor: bool = item.method_name == "<init>";
-    let is_clinit: bool = item.method_name == "<clinit>";
-    let is_static: bool = !is_constructor && item.ins_size <= footprint;
+    let is_constructor: bool = method_name == "<init>";
+    let is_clinit: bool = method_name == "<clinit>";
+    let is_static: bool =
+        recovered_default.is_none() && !is_constructor && item.ins_size <= footprint;
 
     let mut signature: String = String::new();
-    let modifier: &str = if is_static {
+    let modifier: &str = if recovered_default.is_some() {
+        "public default "
+    } else if is_static {
         "public static "
     } else {
         "public "
@@ -513,11 +570,18 @@ fn render_method(
         let _ = write!(
             signature,
             "    {modifier}{ret} {}({params})",
-            crate::descriptor::java_writable_identifier(&item.method_name)
+            crate::descriptor::java_writable_identifier(method_name)
         );
     }
 
-    let body: MethodBody = lift_method(dex, item, is_static);
+    let body: MethodBody = lift_method(
+        dex,
+        item,
+        is_static,
+        method_descriptor,
+        recovered_default.is_some(),
+        desugar,
+    );
     let cff_note: String = cff.map_or_else(String::new, cff_annotation);
     let generic_note: String = generic_sites
         .map(
@@ -591,7 +655,14 @@ fn register_mention_blocks(
     out
 }
 
-fn lift_method(dex: &DexFile, item: &CodeItem, is_static: bool) -> MethodBody {
+fn lift_method(
+    dex: &DexFile,
+    item: &CodeItem,
+    is_static: bool,
+    method_descriptor: &str,
+    inline_temporaries: bool,
+    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
+) -> MethodBody {
     if item.insns.is_empty() {
         return MethodBody {
             text: String::new(),
@@ -616,8 +687,10 @@ fn lift_method(dex: &DexFile, item: &CodeItem, is_static: bool) -> MethodBody {
         dex,
         item.registers_size,
         item.ins_size,
-        &item.method_descriptor,
+        method_descriptor,
         is_static,
+        inline_temporaries,
+        desugar,
     );
     let register_blocks: BTreeMap<u16, std::collections::BTreeSet<BlockId>> =
         register_mention_blocks(&built.cfg, &built.insns);
@@ -886,7 +959,7 @@ fn render_block(state: &mut RenderState<'_>, bid: BlockId, out: &mut String, lev
     let (start, end): (usize, usize) = block_insn_range(state, bid);
     let mut file: RegisterFile = RegisterFile::new();
     seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<crate::decompile::Expr> = None;
+    let mut pending: Option<PendingResult> = None;
     for insn in &state.insns[start..end] {
         if insn.is_conditional_branch() || insn.is_unconditional_goto() || insn.is_switch() {
             continue;
@@ -910,7 +983,7 @@ fn render_head_condition(
     let already: bool = !state.rendered_blocks.insert(head);
     let mut file: RegisterFile = RegisterFile::new();
     seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<crate::decompile::Expr> = None;
+    let mut pending: Option<PendingResult> = None;
     for insn in &state.insns[start..body_end] {
         if already {
             let _ = lift_insn(state.ctx, &mut file, insn, &mut pending);
@@ -939,7 +1012,7 @@ fn render_switch_subject(
     let already: bool = !state.rendered_blocks.insert(head);
     let mut file: RegisterFile = RegisterFile::new();
     seed_block_registers(state.ctx, &mut file);
-    let mut pending: Option<crate::decompile::Expr> = None;
+    let mut pending: Option<PendingResult> = None;
     for insn in &state.insns[start..body_end] {
         if already {
             let _ = lift_insn(state.ctx, &mut file, insn, &mut pending);
@@ -961,7 +1034,7 @@ fn emit_insn(
     ctx: &MethodContext<'_>,
     file: &mut RegisterFile,
     insn: &DalvikInsn,
-    pending: &mut Option<crate::decompile::Expr>,
+    pending: &mut Option<PendingResult>,
     out: &mut String,
     level: usize,
 ) {
@@ -969,6 +1042,11 @@ fn emit_insn(
     match lift_insn(ctx, file, insn, pending) {
         LiftOutcome::Statement(s) => {
             let _ = writeln!(out, "{pad}{s};");
+        }
+        LiftOutcome::Statements(statements) => {
+            for statement in statements {
+                let _ = writeln!(out, "{pad}{statement};");
+            }
         }
         LiftOutcome::None => {}
     }

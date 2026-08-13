@@ -9,9 +9,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use disrobe_pass_mobile::flutter::disasm::disassemble_range;
 use disrobe_pass_mobile::{
-    AotLiftReport, DartCallKind, DartKernel, DartLiftedFunction, DartPoolLiteral, KernelClass,
-    lift_libapp_aot, parse_dart_kernel,
+    AotLiftReport, Arm64FlowKind, DartCallKind, DartKernel, DartLiftedFunction, DartPoolLiteral,
+    KernelClass, dart_isolate_instruction_bytes, lift_libapp_aot, parse_dart_kernel,
+    parse_libapp_so,
 };
 
 fn sample_dir() -> PathBuf {
@@ -143,6 +145,136 @@ fn structuring_reports_structured_and_fallback_counts() {
             );
         }
     }
+}
+
+#[test]
+fn real_aot_bodies_retain_exact_unlifted_arm64_residue() {
+    let bytes: Vec<u8> = read_sample("libapp_arm64.so");
+    let layout = parse_libapp_so(&bytes).expect("parse real libapp layout");
+    let instructions: Vec<u8> =
+        dart_isolate_instruction_bytes(&bytes).expect("read real isolate instructions");
+    let symbol = layout
+        .function_symbols
+        .iter()
+        .find(|symbol| symbol.name == "fibonacciStep")
+        .expect("real symbol table carries fibonacciStep");
+    let first_word: u32 = u32::from_le_bytes(
+        instructions[symbol.offset..symbol.offset + 4]
+            .try_into()
+            .expect("fibonacciStep starts on one complete ARM64 word"),
+    );
+    assert_eq!(first_word, 0xa9bf_79fd, "committed artifact changed");
+
+    let report: AotLiftReport = lift_libapp_aot(&bytes).expect("lift real ARM64 AOT");
+    let fib: &DartLiftedFunction =
+        find_lifted(&report, "fibonacciStep").expect("fibonacciStep must lift");
+    let structured: String = fib.best_pseudo_dart();
+    assert!(
+        structured.contains(
+            "unliftedArm64(address: 0x000a8500, bytes: 0xa9bf79fd, text: \"stp x29, x30, [x15, #-0x10]!\")"
+        ),
+        "the structured body must retain the artifact's exact first unlifted instruction, got:\n{structured}"
+    );
+    assert!(
+        fib.unlifted_arm64
+            .windows(2)
+            .all(|pair| pair[0].address < pair[1].address),
+        "unlifted residue must preserve strict instruction order"
+    );
+    let next_offset: usize = layout
+        .function_symbols
+        .iter()
+        .filter_map(|candidate| (candidate.offset > symbol.offset).then_some(candidate.offset))
+        .min()
+        .unwrap_or(instructions.len());
+    let limit: usize = symbol
+        .offset
+        .saturating_add(symbol.size as usize)
+        .min(next_offset)
+        .min(instructions.len());
+    let disassembly = disassemble_range(
+        &instructions,
+        0,
+        symbol.offset,
+        limit,
+        Some(symbol.name.clone()),
+    );
+    let expected_residue = disassembly
+        .instructions
+        .iter()
+        .filter(|instruction| {
+            matches!(
+                instruction.flow,
+                Arm64FlowKind::Sequential
+                    | Arm64FlowKind::IndirectBranch
+                    | Arm64FlowKind::DecodeError
+            ) && instruction.bytes & 0xffe0_001f != 0xd420_0000
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fib.unlifted_arm64.len(),
+        expected_residue.len(),
+        "every non-semantic instruction must remain as residue"
+    );
+    for (residue, instruction) in fib.unlifted_arm64.iter().zip(expected_residue) {
+        assert_eq!(residue.address, instruction.address);
+        assert_eq!(residue.bytes, instruction.bytes);
+        assert_eq!(residue.text, instruction.text);
+        assert!(
+            structured.contains(&residue.to_pseudo_dart()),
+            "structured output omitted residue at {:#x}",
+            residue.address
+        );
+    }
+
+    let fallback: &DartLiftedFunction = report
+        .functions
+        .iter()
+        .find(|function: &&DartLiftedFunction| !function.is_structured())
+        .expect("the real image must retain at least one flat fallback");
+    assert!(
+        fallback.best_pseudo_dart().contains("unliftedArm64("),
+        "flat fallback output must expose its unlifted ARM64 residue"
+    );
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn mobile_chain_pass_exposes_unlifted_arm64_residue() {
+    use disrobe_core::chain::Pass as _;
+    use disrobe_core::{Artifact, Rung};
+    use disrobe_pass_mobile::chain_detector::MOBILE_PASS;
+
+    let input: Artifact = Artifact::new(Rung::Raw, read_sample("libapp_arm64.so"), [0_u8; 32]);
+    let output: Artifact = MOBILE_PASS
+        .run(&input)
+        .expect("mobile pass runs on real Flutter AOT");
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.envelope).expect("mobile pass emits JSON");
+    let functions = json
+        .pointer("/flutter_aot_lift/functions")
+        .and_then(serde_json::Value::as_array)
+        .expect("mobile output carries Flutter AOT functions");
+    let fibonacci = functions
+        .iter()
+        .find(|function: &&serde_json::Value| {
+            function.get("name").and_then(serde_json::Value::as_str) == Some("fibonacciStep")
+        })
+        .expect("mobile output carries fibonacciStep");
+    let residue = fibonacci
+        .get("unlifted_arm64")
+        .and_then(serde_json::Value::as_array)
+        .expect("mobile output carries unlifted ARM64 residue");
+    assert!(
+        residue.iter().any(|instruction: &serde_json::Value| {
+            instruction
+                .get("address")
+                .and_then(serde_json::Value::as_u64)
+                == Some(0x000a_8500)
+                && instruction.get("bytes").and_then(serde_json::Value::as_u64) == Some(0xa9bf_79fd)
+        }),
+        "the registered mobile pass must expose the real artifact's first unlifted instruction"
+    );
 }
 
 #[test]

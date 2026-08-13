@@ -1,5 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::io::Write;
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
@@ -10,7 +12,11 @@ use disrobe_core::chain::{
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
+use serde::Serialize;
 
+use crate::aot::{
+    AotMetadataAttribution, AotMetadataStatus, AotReport, AotType, detect as detect_aot,
+};
 use crate::decompile::{DecompiledAssembly, decompile_assembly};
 use crate::pass::{PassSummary, analyze};
 use crate::pe::{DataDirectory, PeImage, parse as parse_pe};
@@ -24,6 +30,12 @@ use crate::structurize::StructuredMethod;
 pub const PASS_ID: PassId = "dotnet.classify";
 
 const TAG_PE_CLR: &str = "dotnet-pe-clr";
+const TAG_NATIVE_AOT: &str = "dotnet-native-aot";
+const NATIVE_AOT_SYMBOLS_SCHEMA: &str = "disrobe.dotnet.native-aot-symbols/v1";
+const MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_NATIVE_AOT_QUALIFIED_NAME_BYTES: usize = MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES;
+const MAX_NATIVE_AOT_SYMBOL_WORK_ITEMS: usize = 1_048_576;
+const MAX_NATIVE_AOT_TYPE_NESTING_DEPTH: usize = 256;
 
 fn push_format(out: &mut String, args: std::fmt::Arguments<'_>) {
     let result: std::result::Result<(), std::fmt::Error> = std::fmt::write(out, args);
@@ -47,11 +59,14 @@ impl Detector for DotnetDetector {
             return None;
         }
         let pe: PeImage = parse_pe(bytes).ok()?;
-        let dir: DataDirectory = pe.clr_directory()?;
-        if dir.rva == 0 || dir.size == 0 {
-            return None;
+        if let Some(dir) = pe.clr_directory()
+            && dir.rva != 0
+            && dir.size != 0
+        {
+            return Some(verdict_clr(dir));
         }
-        Some(verdict_clr(dir))
+        let report: AotReport = detect_aot(bytes);
+        report.ready_to_run.as_ref().map(verdict_native_aot)
     }
 }
 
@@ -74,7 +89,20 @@ impl Pass for DotnetPass {
     }
 
     #[inline]
-    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+    fn output_kind(&self, output: &Artifact) -> OutputKind {
+        let is_native_aot_symbols: bool = output.envelope.len()
+            <= MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES
+            && serde_json::from_slice::<serde_json::Value>(output.envelope.as_slice())
+                .ok()
+                .is_some_and(|document: serde_json::Value| {
+                    document.get("schema").and_then(serde_json::Value::as_str)
+                        == Some(NATIVE_AOT_SYMBOLS_SCHEMA)
+                });
+        if is_native_aot_symbols {
+            return OutputKind::Mixed {
+                children: Vec::new(),
+            };
+        }
         OutputKind::Source {
             language: Language::CSharp,
             formatted: true,
@@ -86,15 +114,17 @@ impl Pass for DotnetPass {
         let pe: PeImage = parse_pe(bytes).map_err(|e: crate::error::Error| {
             CoreError::PassFailure(format!("DR-DOTNET-0902: PE parse: {e}"))
         })?;
-        let clr: DataDirectory = pe.clr_directory().ok_or_else(|| {
-            CoreError::PassFailure(
-                "DR-DOTNET-0903: dotnet.classify: PE has no CLR data directory".to_string(),
-            )
-        })?;
-        if clr.rva == 0 || clr.size == 0 {
-            return Err(CoreError::PassFailure(
-                "DR-DOTNET-0904: dotnet.classify: empty CLR data directory".to_string(),
-            ));
+        let clr: Option<DataDirectory> = pe.clr_directory();
+        if clr.is_none_or(|directory: DataDirectory| directory.rva == 0 || directory.size == 0) {
+            let report: AotReport = detect_aot(bytes);
+            if report.ready_to_run.is_none() {
+                return Err(CoreError::PassFailure(
+                    "DR-DOTNET-0903: dotnet.classify: PE has no CLR data directory or NativeAOT header"
+                        .to_string(),
+                ));
+            }
+            let output: Vec<u8> = native_aot_symbols_bytes(&report)?;
+            return Ok(Artifact::new(Rung::Surface, output, artifact.root_hash));
         }
         let assembly: DecompiledAssembly =
             decompile_assembly(bytes).map_err(|e: crate::error::Error| {
@@ -130,6 +160,25 @@ impl Pass for DotnetPass {
 
     fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
         let bytes: &[u8] = input.envelope.as_slice();
+        if parse_pe(bytes).ok().is_some_and(|pe: PeImage| {
+            pe.clr_directory()
+                .is_none_or(|directory: DataDirectory| directory.rva == 0 || directory.size == 0)
+        }) {
+            let report: AotReport = detect_aot(bytes);
+            if report.ready_to_run.is_some() {
+                let output: Vec<u8> = native_aot_symbols_bytes(&report)?;
+                let mut children: Vec<ChildArtifact> = Vec::with_capacity(1);
+                push_terminal_child(
+                    &mut children,
+                    format!(
+                        "nativeaot-{}-symbols.json",
+                        aot_runtime_label(report.runtime_label)
+                    ),
+                    output,
+                );
+                return Ok(children);
+            }
+        }
         let raw_stem: String = decompile_assembly(bytes).ok().map_or_else(
             || "dotnet".to_string(),
             |a: DecompiledAssembly| a.module_name,
@@ -371,6 +420,528 @@ fn verdict_clr(dir: DataDirectory) -> DetectVerdict {
             sz = dir.size,
         ),
     )
+}
+
+fn verdict_native_aot(header: &crate::aot::ReadyToRunHeader) -> DetectVerdict {
+    DetectVerdict::new(
+        PASS_ID,
+        TAG_NATIVE_AOT,
+        FAMILY_INTERPRETER_BYTECODE,
+        0.99,
+        35,
+        vec!["PE+NativeAOT-ReadyToRun-header"],
+        format!(
+            "PE NativeAOT image with ReadyToRun version {major}.{minor} and {sections} sections",
+            major = header.major_version,
+            minor = header.minor_version,
+            sections = header.sections.len(),
+        ),
+    )
+}
+
+const fn aot_runtime_label(runtime: crate::aot::AotRuntime) -> &'static str {
+    match runtime {
+        crate::aot::AotRuntime::Net7 => "net7",
+        crate::aot::AotRuntime::Net8 => "net8",
+        crate::aot::AotRuntime::Net9 => "net9",
+        crate::aot::AotRuntime::Net10 => "net10",
+        crate::aot::AotRuntime::Unknown => "unknown",
+    }
+}
+
+struct NativeAotSymbolBudget {
+    work_items: usize,
+    qualified_name_bytes: usize,
+}
+
+impl NativeAotSymbolBudget {
+    const fn new() -> Self {
+        Self {
+            work_items: 0,
+            qualified_name_bytes: 0,
+        }
+    }
+
+    fn claim_work(&mut self, count: usize) -> CoreResult<()> {
+        self.work_items = self.work_items.checked_add(count).ok_or_else(|| {
+            CoreError::PassFailure(
+                "DR-DOTNET-0921: NativeAOT symbol work count overflowed".to_string(),
+            )
+        })?;
+        if self.work_items > MAX_NATIVE_AOT_SYMBOL_WORK_ITEMS {
+            return Err(CoreError::PassFailure(format!(
+                "DR-DOTNET-0921: NativeAOT symbol work exceeds {MAX_NATIVE_AOT_SYMBOL_WORK_ITEMS} items"
+            )));
+        }
+        Ok(())
+    }
+
+    fn claim_qualified_name_bytes(&mut self, count: usize) -> CoreResult<()> {
+        self.qualified_name_bytes =
+            self.qualified_name_bytes
+                .checked_add(count)
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0922: NativeAOT qualified name size overflowed".to_string(),
+                    )
+                })?;
+        if self.qualified_name_bytes > MAX_NATIVE_AOT_QUALIFIED_NAME_BYTES {
+            return Err(CoreError::PassFailure(format!(
+                "DR-DOTNET-0922: NativeAOT qualified names exceed {MAX_NATIVE_AOT_QUALIFIED_NAME_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn native_aot_allocation_error(requested: usize) -> CoreError {
+    CoreError::PassFailure(format!(
+        "DR-DOTNET-0923: NativeAOT symbol allocation of {requested} items or bytes failed"
+    ))
+}
+
+fn preflight_qualified_aot_type_names(
+    types: &[AotType],
+    records: &[(u32, &AotType)],
+    budget: &mut NativeAotSymbolBudget,
+) -> CoreResult<()> {
+    for record in types {
+        let mut qualified_length: usize = record.name.len();
+        if let Some(namespace) = &record.namespace {
+            qualified_length = qualified_length
+                .checked_add(namespace.len())
+                .and_then(|length: usize| length.checked_add(1))
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0922: NativeAOT qualified name size overflowed".to_string(),
+                    )
+                })?;
+        }
+        budget.claim_work(1)?;
+        let mut enclosing: Option<u32> = record.enclosing_type_record_offset;
+        let mut depth: usize = 0;
+        while let Some(offset) = enclosing {
+            depth = depth.checked_add(1).ok_or_else(|| {
+                CoreError::PassFailure(
+                    "DR-DOTNET-0920: NativeAOT type nesting depth overflowed".to_string(),
+                )
+            })?;
+            if depth > MAX_NATIVE_AOT_TYPE_NESTING_DEPTH {
+                return Err(CoreError::PassFailure(format!(
+                    "DR-DOTNET-0920: NativeAOT type nesting exceeds {MAX_NATIVE_AOT_TYPE_NESTING_DEPTH} levels"
+                )));
+            }
+            budget.claim_work(2)?;
+            let parent: &AotType = indexed_aot_type(records, offset).ok_or_else(|| {
+                CoreError::PassFailure(format!(
+                    "DR-DOTNET-0913: NativeAOT enclosing type record 0x{offset:x} is absent"
+                ))
+            })?;
+            qualified_length = qualified_length
+                .checked_add(parent.name.len())
+                .and_then(|length: usize| length.checked_add(1))
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0922: NativeAOT qualified name size overflowed".to_string(),
+                    )
+                })?;
+            enclosing = parent.enclosing_type_record_offset;
+        }
+        budget.claim_qualified_name_bytes(qualified_length)?;
+    }
+    Ok(())
+}
+
+fn preflight_native_aot_symbols(
+    attribution: &AotMetadataAttribution,
+) -> CoreResult<Vec<(u32, &AotType)>> {
+    let mut records: Vec<(u32, &AotType)> = Vec::new();
+    records
+        .try_reserve_exact(attribution.types.len())
+        .map_err(|_| native_aot_allocation_error(attribution.types.len()))?;
+    for record in &attribution.types {
+        records.push((record.record_offset, record));
+    }
+    records.sort_unstable_by_key(|(offset, _record): &(u32, &AotType)| *offset);
+    let mut budget: NativeAotSymbolBudget = NativeAotSymbolBudget::new();
+    preflight_qualified_aot_type_names(&attribution.types, &records, &mut budget)?;
+    for record in &attribution.types {
+        budget.claim_work(
+            record
+                .method_record_offsets
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0921: NativeAOT symbol work count overflowed".to_string(),
+                    )
+                })?,
+        )?;
+    }
+    for method in &attribution.methods {
+        let signature_items: usize = method.signature.as_ref().map_or(Ok(0), |signature| {
+            signature
+                .parameter_types
+                .len()
+                .checked_add(signature.vararg_parameter_types.len())
+                .and_then(|count: usize| count.checked_add(1))
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0921: NativeAOT symbol work count overflowed".to_string(),
+                    )
+                })
+        })?;
+        budget.claim_work(signature_items.checked_add(1).ok_or_else(|| {
+            CoreError::PassFailure(
+                "DR-DOTNET-0921: NativeAOT symbol work count overflowed".to_string(),
+            )
+        })?)?;
+    }
+    Ok(records)
+}
+
+fn qualified_aot_type_names(
+    types: &[AotType],
+    records: &[(u32, &AotType)],
+) -> CoreResult<Vec<(u32, String)>> {
+    let mut names: Vec<(u32, String)> = Vec::new();
+    names
+        .try_reserve_exact(types.len())
+        .map_err(|_| native_aot_allocation_error(types.len()))?;
+    for record in types {
+        let mut components: Vec<&str> = Vec::new();
+        components
+            .try_reserve_exact(MAX_NATIVE_AOT_TYPE_NESTING_DEPTH.saturating_add(1))
+            .map_err(|_| {
+                native_aot_allocation_error(MAX_NATIVE_AOT_TYPE_NESTING_DEPTH.saturating_add(1))
+            })?;
+        components.push(record.name.as_str());
+        let mut enclosing: Option<u32> = record.enclosing_type_record_offset;
+        while let Some(offset) = enclosing {
+            let parent: &AotType = indexed_aot_type(records, offset).ok_or_else(|| {
+                CoreError::PassFailure(format!(
+                    "DR-DOTNET-0913: NativeAOT enclosing type record 0x{offset:x} is absent"
+                ))
+            })?;
+            components.push(parent.name.as_str());
+            enclosing = parent.enclosing_type_record_offset;
+        }
+        let component_bytes: usize = components
+            .iter()
+            .try_fold(
+                components.len().saturating_sub(1),
+                |length: usize, component: &&str| length.checked_add(component.len()),
+            )
+            .ok_or_else(|| {
+                CoreError::PassFailure(
+                    "DR-DOTNET-0922: NativeAOT qualified name size overflowed".to_string(),
+                )
+            })?;
+        let qualified_length: usize =
+            record
+                .namespace
+                .as_ref()
+                .map_or(Ok(component_bytes), |namespace: &String| {
+                    component_bytes
+                        .checked_add(namespace.len())
+                        .and_then(|length: usize| length.checked_add(1))
+                        .ok_or_else(|| {
+                            CoreError::PassFailure(
+                                "DR-DOTNET-0922: NativeAOT qualified name size overflowed"
+                                    .to_string(),
+                            )
+                        })
+                })?;
+        let mut qualified_name: String = String::new();
+        qualified_name
+            .try_reserve_exact(qualified_length)
+            .map_err(|_| native_aot_allocation_error(qualified_length))?;
+        if let Some(namespace) = &record.namespace {
+            qualified_name.push_str(namespace);
+            qualified_name.push('.');
+        }
+        for (index, component) in components.iter().rev().enumerate() {
+            if index != 0 {
+                qualified_name.push('+');
+            }
+            qualified_name.push_str(component);
+        }
+        names.push((record.record_offset, qualified_name));
+    }
+    names.sort_unstable_by_key(|(offset, _name): &(u32, String)| *offset);
+    Ok(names)
+}
+
+fn indexed_aot_type<'a>(records: &'a [(u32, &'a AotType)], offset: u32) -> Option<&'a AotType> {
+    records
+        .binary_search_by_key(&offset, |(record_offset, _record): &(u32, &AotType)| {
+            *record_offset
+        })
+        .ok()
+        .and_then(|index: usize| records.get(index))
+        .map(|(_record_offset, record): &(u32, &AotType)| *record)
+}
+
+fn indexed_aot_name(names: &[(u32, String)], offset: u32) -> Option<&str> {
+    names
+        .binary_search_by_key(&offset, |(record_offset, _name): &(u32, String)| {
+            *record_offset
+        })
+        .ok()
+        .and_then(|index: usize| names.get(index))
+        .map(|(_record_offset, name): &(u32, String)| name.as_str())
+}
+
+#[derive(Serialize)]
+struct NativeAotOutputType<'a> {
+    record_offset: u32,
+    qualified_name: &'a str,
+    method_record_offsets: &'a [u32],
+}
+
+#[derive(Serialize)]
+struct NativeAotOutputMethod<'a> {
+    record_offset: u32,
+    declaring_type: Option<&'a str>,
+    declaring_types: Vec<&'a str>,
+    name: &'a str,
+    signature: Option<&'a crate::aot::AotMethodSignature>,
+}
+
+#[derive(Serialize)]
+struct NativeAotSymbolsDocument<'a> {
+    schema: &'static str,
+    runtime: &'static str,
+    metadata_status: &'a AotMetadataStatus,
+    types: Vec<NativeAotOutputType<'a>>,
+    methods: Vec<NativeAotOutputMethod<'a>>,
+}
+
+fn native_aot_symbols_document<'a>(
+    report: &'a AotReport,
+    type_names: &'a [(u32, String)],
+) -> CoreResult<NativeAotSymbolsDocument<'a>> {
+    let attribution: &AotMetadataAttribution = &report.metadata_attribution;
+    let mut owner_counts: Vec<(u32, usize)> = Vec::new();
+    owner_counts
+        .try_reserve_exact(attribution.methods.len())
+        .map_err(|_| native_aot_allocation_error(attribution.methods.len()))?;
+    for method in &attribution.methods {
+        owner_counts.push((method.record_offset, 0));
+    }
+    owner_counts.sort_unstable_by_key(|(offset, _count): &(u32, usize)| *offset);
+    for type_record in &attribution.types {
+        for method_offset in &type_record.method_record_offsets {
+            let count_index: usize = owner_counts
+                .binary_search_by_key(method_offset, |(offset, _count): &(u32, usize)| *offset)
+                .map_err(|_index: usize| {
+                    CoreError::PassFailure(format!(
+                        "DR-DOTNET-0924: NativeAOT method owner record 0x{method_offset:x} is absent"
+                    ))
+                })?;
+            let count: &mut usize = &mut owner_counts
+                .get_mut(count_index)
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0924: NativeAOT method owner index is absent".to_string(),
+                    )
+                })?
+                .1;
+            *count = count.checked_add(1).ok_or_else(|| {
+                CoreError::PassFailure(
+                    "DR-DOTNET-0921: NativeAOT method owner count overflowed".to_string(),
+                )
+            })?;
+        }
+    }
+    let mut method_owners: Vec<(u32, Vec<&str>)> = Vec::new();
+    method_owners
+        .try_reserve_exact(owner_counts.len())
+        .map_err(|_| native_aot_allocation_error(owner_counts.len()))?;
+    for (method_offset, count) in owner_counts {
+        let mut owners: Vec<&str> = Vec::new();
+        owners
+            .try_reserve_exact(count)
+            .map_err(|_| native_aot_allocation_error(count))?;
+        method_owners.push((method_offset, owners));
+    }
+    for type_record in &attribution.types {
+        let qualified_name: &str = indexed_aot_name(type_names, type_record.record_offset)
+            .ok_or_else(|| {
+                CoreError::PassFailure(format!(
+                    "DR-DOTNET-0917: NativeAOT type name for record 0x{:x} is absent",
+                    type_record.record_offset
+                ))
+            })?;
+        for method_offset in &type_record.method_record_offsets {
+            let owner_index: usize = method_owners
+                .binary_search_by_key(method_offset, |(offset, _owners): &(u32, Vec<&str>)| *offset)
+                .map_err(|_index: usize| {
+                    CoreError::PassFailure(format!(
+                        "DR-DOTNET-0924: NativeAOT method owner storage for record 0x{method_offset:x} is absent"
+                    ))
+                })?;
+            let owners: &mut Vec<&str> = &mut method_owners
+                .get_mut(owner_index)
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0924: NativeAOT method owner index is absent".to_string(),
+                    )
+                })?
+                .1;
+            owners.push(qualified_name);
+        }
+    }
+    let mut types: Vec<NativeAotOutputType<'a>> = Vec::new();
+    types
+        .try_reserve_exact(attribution.types.len())
+        .map_err(|_| native_aot_allocation_error(attribution.types.len()))?;
+    for record in &attribution.types {
+        let qualified_name: &str =
+            indexed_aot_name(type_names, record.record_offset).ok_or_else(|| {
+                CoreError::PassFailure(format!(
+                    "DR-DOTNET-0918: NativeAOT output type name for record 0x{:x} is absent",
+                    record.record_offset
+                ))
+            })?;
+        types.push(NativeAotOutputType {
+            record_offset: record.record_offset,
+            qualified_name,
+            method_record_offsets: &record.method_record_offsets,
+        });
+    }
+    let mut methods: Vec<NativeAotOutputMethod<'a>> = Vec::new();
+    methods
+        .try_reserve_exact(attribution.methods.len())
+        .map_err(|_| native_aot_allocation_error(attribution.methods.len()))?;
+    for method in &attribution.methods {
+        let owner_index: usize = method_owners
+            .binary_search_by_key(
+                &method.record_offset,
+                |(offset, _owners): &(u32, Vec<&str>)| *offset,
+            )
+            .map_err(|_index: usize| {
+                CoreError::PassFailure(format!(
+                    "DR-DOTNET-0924: NativeAOT method owner storage for record 0x{:x} is absent",
+                    method.record_offset
+                ))
+            })?;
+        let declaring_types: Vec<&str> = std::mem::take(
+            &mut method_owners
+                .get_mut(owner_index)
+                .ok_or_else(|| {
+                    CoreError::PassFailure(
+                        "DR-DOTNET-0924: NativeAOT method owner index is absent".to_string(),
+                    )
+                })?
+                .1,
+        );
+        let declaring_type: Option<&str> = declaring_types.first().copied();
+        methods.push(NativeAotOutputMethod {
+            record_offset: method.record_offset,
+            declaring_type,
+            declaring_types,
+            name: &method.name,
+            signature: method.signature.as_ref(),
+        });
+    }
+    Ok(NativeAotSymbolsDocument {
+        schema: NATIVE_AOT_SYMBOLS_SCHEMA,
+        runtime: aot_runtime_label(report.runtime_label),
+        metadata_status: &attribution.status,
+        types,
+        methods,
+    })
+}
+
+struct NativeAotJsonSizer {
+    bytes: usize,
+    exceeded: Option<usize>,
+    limit: usize,
+}
+
+impl NativeAotJsonSizer {
+    const fn new(limit: usize) -> Self {
+        Self {
+            bytes: 0,
+            exceeded: None,
+            limit,
+        }
+    }
+}
+
+impl Write for NativeAotJsonSizer {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let required: usize = self.bytes.saturating_add(buffer.len());
+        if required > self.limit {
+            self.exceeded = Some(required);
+            return Err(std::io::Error::other(
+                "NativeAOT symbol artifact limit exceeded",
+            ));
+        }
+        self.bytes = required;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn native_aot_symbols_bytes(report: &AotReport) -> CoreResult<Vec<u8>> {
+    let attribution: &AotMetadataAttribution = &report.metadata_attribution;
+    match &attribution.status {
+        AotMetadataStatus::Recovered | AotMetadataStatus::NotPresent => {}
+        AotMetadataStatus::UnsupportedVersion {
+            major_version,
+            minor_version,
+        } => {
+            return Err(CoreError::PassFailure(format!(
+                "DR-DOTNET-0914: NativeAOT metadata version {major_version}.{minor_version} is unsupported"
+            )));
+        }
+        AotMetadataStatus::Rejected { reason, .. } => {
+            return Err(CoreError::PassFailure(format!(
+                "DR-DOTNET-0916: NativeAOT metadata was rejected: {reason}"
+            )));
+        }
+    }
+    let records: Vec<(u32, &AotType)> = preflight_native_aot_symbols(attribution)?;
+    let type_names: Vec<(u32, String)> = qualified_aot_type_names(&attribution.types, &records)?;
+    let document: NativeAotSymbolsDocument<'_> = native_aot_symbols_document(report, &type_names)?;
+    let mut sizer: NativeAotJsonSizer =
+        NativeAotJsonSizer::new(MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES);
+    if let Err(error) = serde_json::to_writer_pretty(&mut sizer, &document) {
+        return sizer.exceeded.map_or_else(
+            || {
+                Err(CoreError::PassFailure(format!(
+                    "DR-DOTNET-0910: NativeAOT symbol serialization failed: {error}"
+                )))
+            },
+            |actual: usize| {
+                Err(CoreError::PassFailure(format!(
+                    "DR-DOTNET-0919: NativeAOT symbol artifact would reach {actual} bytes, exceeding {MAX_NATIVE_AOT_SYMBOL_ARTIFACT_BYTES} bytes"
+                )))
+            },
+        );
+    }
+    let requested: usize = sizer.bytes;
+    let mut output: Vec<u8> = Vec::new();
+    output
+        .try_reserve_exact(requested)
+        .map_err(|_| native_aot_allocation_error(requested))?;
+    serde_json::to_writer_pretty(&mut output, &document).map_err(|error: serde_json::Error| {
+        CoreError::PassFailure(format!(
+            "DR-DOTNET-0910: NativeAOT symbol serialization failed: {error}"
+        ))
+    })?;
+    if output.len() != requested {
+        return Err(CoreError::PassFailure(
+            "DR-DOTNET-0925: NativeAOT symbol serialization size changed after preflight"
+                .to_string(),
+        ));
+    }
+    Ok(output)
 }
 
 #[derive(Debug)]
@@ -676,6 +1247,85 @@ mod tests {
         let err: CoreError = DOTNET_PASS.run(&a).expect_err("must reject");
         let msg: String = format!("{err}");
         assert!(msg.contains("DR-DOTNET-0902") || msg.contains("DR-DOTNET-0903"));
+    }
+
+    #[test]
+    fn native_aot_type_names_reject_excessive_containment_depth() {
+        let types: Vec<AotType> = (0..258u32)
+            .map(|record_offset: u32| AotType {
+                record_offset,
+                namespace: None,
+                name: format!("Type{record_offset}"),
+                enclosing_type_record_offset: record_offset.checked_sub(1),
+                method_record_offsets: Vec::new(),
+            })
+            .collect();
+        let attribution: AotMetadataAttribution = AotMetadataAttribution {
+            status: AotMetadataStatus::Recovered,
+            types,
+            methods: Vec::new(),
+        };
+        let error: CoreError = preflight_native_aot_symbols(&attribution)
+            .expect_err("NativeAOT type qualification must have a fixed depth bound");
+        assert!(error.to_string().contains("DR-DOTNET-0920"));
+    }
+
+    #[test]
+    fn native_aot_type_names_reject_cumulative_work() {
+        let mut types: Vec<AotType> = (0..256u32)
+            .map(|record_offset: u32| AotType {
+                record_offset,
+                namespace: None,
+                name: "T".to_string(),
+                enclosing_type_record_offset: record_offset.checked_sub(1),
+                method_record_offsets: Vec::new(),
+            })
+            .collect();
+        types.extend((256..4_353u32).map(|record_offset: u32| AotType {
+            record_offset,
+            namespace: None,
+            name: "L".to_string(),
+            enclosing_type_record_offset: Some(255),
+            method_record_offsets: Vec::new(),
+        }));
+        let attribution: AotMetadataAttribution = AotMetadataAttribution {
+            status: AotMetadataStatus::Recovered,
+            types,
+            methods: Vec::new(),
+        };
+        let error: CoreError = preflight_native_aot_symbols(&attribution)
+            .expect_err("NativeAOT type qualification must have a cumulative work bound");
+        assert!(error.to_string().contains("DR-DOTNET-0921"));
+    }
+
+    #[test]
+    fn native_aot_type_names_reject_cumulative_output_bytes() {
+        let types: Vec<AotType> = (0..100u32)
+            .map(|record_offset: u32| AotType {
+                record_offset,
+                namespace: None,
+                name: "N".repeat(4_096),
+                enclosing_type_record_offset: record_offset.checked_sub(1),
+                method_record_offsets: Vec::new(),
+            })
+            .collect();
+        let attribution: AotMetadataAttribution = AotMetadataAttribution {
+            status: AotMetadataStatus::Recovered,
+            types,
+            methods: Vec::new(),
+        };
+        let error: CoreError = preflight_native_aot_symbols(&attribution)
+            .expect_err("NativeAOT type qualification must have a cumulative byte bound");
+        assert!(error.to_string().contains("DR-DOTNET-0922"));
+    }
+
+    #[test]
+    fn native_aot_json_preflight_rejects_the_first_byte_past_limit() {
+        let mut sizer: NativeAotJsonSizer = NativeAotJsonSizer::new(3);
+        let result: std::io::Result<()> = sizer.write_all(b"abcd");
+        assert!(result.is_err());
+        assert_eq!(sizer.bytes, 0);
+        assert_eq!(sizer.exceeded, Some(4));
     }
 
     fn corpus(rel: &str) -> std::path::PathBuf {

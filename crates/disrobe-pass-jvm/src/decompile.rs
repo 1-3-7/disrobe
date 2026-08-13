@@ -1711,7 +1711,7 @@ fn coerce_arg(arg: Expr, want: &JavaType) -> Expr {
 }
 
 impl Expr {
-    fn discarded_side_effect(&self) -> Option<String> {
+    pub(crate) fn discarded_side_effect(&self) -> Option<String> {
         match self {
             Self::Invoke { .. } => Some(self.render()),
             Self::Cast { value, .. } => value.discarded_side_effect(),
