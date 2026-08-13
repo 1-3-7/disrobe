@@ -2719,6 +2719,363 @@ mod tests {
         assert_eq!(clipped.regions[0].len, 600 - 512);
     }
 
+    const PE_REFERENCE_ARTIFACTS: [&str; 2] = [
+        "native/formats/hello.pe64.exe",
+        "native/anti-analysis/large-benign-x86_64-pc-windows-msvc.exe",
+    ];
+    const ELF_REFERENCE_ARTIFACTS: [&str; 2] =
+        ["native/formats/hello.elf64", "native/nim/hello.nim.elf"];
+    const MACHO_REFERENCE_ARTIFACTS: [&str; 2] = [
+        "mobile/macho-mac/SwiftHello.original",
+        "native/formats/hello.macho64.o",
+    ];
+    const REFERENCE_EXECUTABLE_REGIONS: usize = 11;
+
+    type CodeLayoutWalk = fn(&[u8]) -> CodeLayout;
+    type ReferenceWalk = fn(&[u8]) -> ReferenceLayout;
+    type TruncationCase = (&'static str, CodeLayoutWalk, usize);
+
+    #[derive(Debug)]
+    struct ReferenceLayout {
+        regions: Vec<(usize, usize)>,
+        bitness: CodeBitness,
+    }
+
+    fn reference_artifact(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join(relative);
+        std::fs::read(&path).unwrap_or_else(|err: std::io::Error| {
+            panic!(
+                "the reference artifact {} must be readable to grade the code-layout walks: {err}",
+                path.display()
+            )
+        })
+    }
+
+    fn clamped_region(image_len: usize, offset: u64, len: u64) -> Option<(usize, usize)> {
+        let start: usize = usize::try_from(offset).ok()?;
+        if len == 0 || start >= image_len {
+            return None;
+        }
+        let end: usize = usize::try_from(len)
+            .map_or(image_len, |bytes: usize| start.saturating_add(bytes))
+            .min(image_len);
+        if end <= start {
+            return None;
+        }
+        Some((start, end - start))
+    }
+
+    fn observed_regions(layout: &CodeLayout) -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = layout
+            .regions
+            .iter()
+            .map(|region: &CodeRegion| (region.file_offset, region.len))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    fn bitness_of(is_64: bool) -> CodeBitness {
+        if is_64 {
+            CodeBitness::Bits64
+        } else {
+            CodeBitness::Bits32
+        }
+    }
+
+    fn reference_pe_layout(bytes: &[u8]) -> ReferenceLayout {
+        let pe: goblin::pe::PE<'_> =
+            goblin::pe::PE::parse(bytes).unwrap_or_else(|err: goblin::error::Error| {
+                panic!("the reference parser must read this pe: {err}")
+            });
+        let mut regions: Vec<(usize, usize)> = pe
+            .sections
+            .iter()
+            .filter(|section: &&goblin::pe::section_table::SectionTable| {
+                section.characteristics & goblin::pe::section_table::IMAGE_SCN_MEM_EXECUTE != 0
+            })
+            .filter_map(|section: &goblin::pe::section_table::SectionTable| {
+                clamped_region(
+                    bytes.len(),
+                    u64::from(section.pointer_to_raw_data),
+                    u64::from(section.size_of_raw_data),
+                )
+            })
+            .collect();
+        regions.sort_unstable();
+        ReferenceLayout {
+            regions,
+            bitness: bitness_of(pe.is_64),
+        }
+    }
+
+    fn reference_elf_layout(bytes: &[u8]) -> ReferenceLayout {
+        let elf: goblin::elf::Elf<'_> =
+            goblin::elf::Elf::parse(bytes).unwrap_or_else(|err: goblin::error::Error| {
+                panic!("the reference parser must read this elf: {err}")
+            });
+        let mut regions: Vec<(usize, usize)> = elf
+            .section_headers
+            .iter()
+            .filter(|header: &&goblin::elf::SectionHeader| {
+                header.sh_type != goblin::elf::section_header::SHT_NOBITS
+                    && header.sh_flags & u64::from(goblin::elf::section_header::SHF_EXECINSTR) != 0
+            })
+            .filter_map(|header: &goblin::elf::SectionHeader| {
+                clamped_region(bytes.len(), header.sh_offset, header.sh_size)
+            })
+            .collect();
+        regions.sort_unstable();
+        ReferenceLayout {
+            regions,
+            bitness: bitness_of(elf.is_64),
+        }
+    }
+
+    fn reference_macho_layout(bytes: &[u8]) -> ReferenceLayout {
+        let mach: goblin::mach::MachO<'_> =
+            goblin::mach::MachO::parse(bytes, 0).unwrap_or_else(|err: goblin::error::Error| {
+                panic!("the reference parser must read this mach-o: {err}")
+            });
+        let mut regions: Vec<(usize, usize)> = Vec::new();
+        for segment in &mach.segments {
+            let sections: Vec<(
+                goblin::mach::segment::Section,
+                goblin::mach::segment::SectionData<'_>,
+            )> = segment
+                .sections()
+                .unwrap_or_else(|err: goblin::error::Error| {
+                    panic!("the reference parser must read this mach-o segment: {err}")
+                });
+            for (section, _data) in &sections {
+                if section.flags
+                    & (goblin::mach::constants::S_ATTR_PURE_INSTRUCTIONS
+                        | goblin::mach::constants::S_ATTR_SOME_INSTRUCTIONS)
+                    == 0
+                {
+                    continue;
+                }
+                if let Some(region) =
+                    clamped_region(bytes.len(), u64::from(section.offset), section.size)
+                {
+                    regions.push(region);
+                }
+            }
+        }
+        regions.sort_unstable();
+        ReferenceLayout {
+            regions,
+            bitness: bitness_of(mach.is_64),
+        }
+    }
+
+    fn grade_family(
+        artifacts: &[&str],
+        walk: CodeLayoutWalk,
+        reference: ReferenceWalk,
+        totals: &mut (usize, usize),
+    ) {
+        for relative in artifacts {
+            let bytes: Vec<u8> = reference_artifact(relative);
+            let expected: ReferenceLayout = reference(&bytes);
+            assert!(
+                !expected.regions.is_empty(),
+                "{relative} must contribute at least one reference executable region"
+            );
+            let layout: CodeLayout = walk(&bytes);
+            let observed: Vec<(usize, usize)> = observed_regions(&layout);
+            assert_eq!(
+                observed, expected.regions,
+                "{relative}: the executable file regions must match the reference parser"
+            );
+            assert_eq!(
+                layout.bitness,
+                Some(expected.bitness),
+                "{relative}: the bitness must match the reference parser"
+            );
+            totals.0 += expected
+                .regions
+                .iter()
+                .filter(|region: &&(usize, usize)| observed.contains(region))
+                .count();
+            totals.1 += expected.regions.len();
+        }
+    }
+
+    #[test]
+    fn committed_binaries_grade_the_code_layout_walks_against_the_reference_parser() {
+        let mut totals: (usize, usize) = (0, 0);
+        grade_family(
+            &PE_REFERENCE_ARTIFACTS,
+            pe_code_layout,
+            reference_pe_layout,
+            &mut totals,
+        );
+        grade_family(
+            &ELF_REFERENCE_ARTIFACTS,
+            elf_code_layout,
+            reference_elf_layout,
+            &mut totals,
+        );
+        grade_family(
+            &MACHO_REFERENCE_ARTIFACTS,
+            macho_code_layout,
+            reference_macho_layout,
+            &mut totals,
+        );
+        let (matched, expected): (usize, usize) = totals;
+        assert_eq!(
+            matched, expected,
+            "the code-layout walks recovered {matched}/{expected} reference executable regions"
+        );
+        assert_eq!(
+            expected, REFERENCE_EXECUTABLE_REGIONS,
+            "the six committed artifacts no longer hold the recorded number of reference executable regions; re-derive this count from the reference parser after a fixture change, never raise it to match a walk"
+        );
+    }
+
+    fn pe_section_count_offset(bytes: &[u8]) -> usize {
+        let raw: [u8; 4] = bytes[0x3C..0x40].try_into().unwrap();
+        usize::try_from(u32::from_le_bytes(raw)).unwrap() + 6
+    }
+
+    #[test]
+    fn a_crafted_pe_section_count_stays_bounded_and_keeps_the_reference_regions() {
+        let original: Vec<u8> = reference_artifact(PE_REFERENCE_ARTIFACTS[0]);
+        let genuine: Vec<(usize, usize)> = reference_pe_layout(&original).regions;
+        assert!(
+            !genuine.is_empty(),
+            "the unmodified reference pe must yield regions"
+        );
+        let mut crafted: Vec<u8> = original;
+        let count_at: usize = pe_section_count_offset(&crafted);
+        crafted[count_at..count_at + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+        let layout: CodeLayout = pe_code_layout(&crafted);
+        assert_regions_inside(&layout, crafted.len(), "pe with a crafted section count");
+        assert!(
+            layout.regions.len() <= MAX_PARSED_SECTIONS,
+            "a crafted section count admitted {} regions past the {MAX_PARSED_SECTIONS} ceiling",
+            layout.regions.len()
+        );
+        let crafted_regions: Vec<(usize, usize)> = observed_regions(&layout);
+        for region in &genuine {
+            assert!(
+                crafted_regions.contains(region),
+                "a crafted section count must not lose the reference region {region:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crafted_elf_section_count_stays_bounded_and_keeps_the_reference_regions() {
+        let original: Vec<u8> = reference_artifact(ELF_REFERENCE_ARTIFACTS[1]);
+        let genuine: Vec<(usize, usize)> = reference_elf_layout(&original).regions;
+        assert!(
+            !genuine.is_empty(),
+            "the unmodified reference elf must yield regions"
+        );
+
+        let mut crafted: Vec<u8> = original.clone();
+        crafted[0x3C..0x3E].copy_from_slice(&u16::MAX.to_le_bytes());
+        let layout: CodeLayout = elf_code_layout(&crafted);
+        assert_regions_inside(&layout, crafted.len(), "elf with a crafted section count");
+        assert!(
+            layout.regions.len() <= MAX_PARSED_SECTIONS,
+            "a crafted section count admitted {} regions past the {MAX_PARSED_SECTIONS} ceiling",
+            layout.regions.len()
+        );
+        let crafted_regions: Vec<(usize, usize)> = observed_regions(&layout);
+        for region in &genuine {
+            assert!(
+                crafted_regions.contains(region),
+                "a crafted section count must not lose the reference region {region:?}"
+            );
+        }
+
+        let mut dense: Vec<u8> = original;
+        dense[0x3A..0x3C].copy_from_slice(&1u16.to_le_bytes());
+        dense[0x3C..0x3E].copy_from_slice(&u16::MAX.to_le_bytes());
+        let dense_layout: CodeLayout = elf_code_layout(&dense);
+        assert_regions_inside(
+            &dense_layout,
+            dense.len(),
+            "elf with a one-byte section stride",
+        );
+        assert!(
+            dense_layout.regions.len() <= MAX_PARSED_SECTIONS,
+            "a one-byte section stride admitted {} regions past the {MAX_PARSED_SECTIONS} ceiling",
+            dense_layout.regions.len()
+        );
+    }
+
+    #[test]
+    fn a_crafted_macho_command_count_stays_bounded_and_keeps_the_reference_regions() {
+        let original: Vec<u8> = reference_artifact(MACHO_REFERENCE_ARTIFACTS[0]);
+        let genuine: Vec<(usize, usize)> = reference_macho_layout(&original).regions;
+        assert!(
+            !genuine.is_empty(),
+            "the unmodified reference mach-o must yield regions"
+        );
+        let mut crafted: Vec<u8> = original;
+        crafted[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        let layout: CodeLayout = macho_code_layout(&crafted);
+        assert_regions_inside(
+            &layout,
+            crafted.len(),
+            "mach-o with a crafted command count",
+        );
+        assert!(
+            layout.regions.len() <= MAX_MACHO_LOAD_CMDS.saturating_mul(MAX_PARSED_SECTIONS),
+            "a crafted command count admitted {} regions past the walk ceiling",
+            layout.regions.len()
+        );
+        let crafted_regions: Vec<(usize, usize)> = observed_regions(&layout);
+        for region in &genuine {
+            assert!(
+                crafted_regions.contains(region),
+                "a crafted command count must not lose the reference region {region:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_real_binary_still_yields_the_regions_that_survive() {
+        let cases: [TruncationCase; 2] = [
+            (PE_REFERENCE_ARTIFACTS[0], pe_code_layout, 4096),
+            (MACHO_REFERENCE_ARTIFACTS[0], macho_code_layout, 32768),
+        ];
+        for (relative, walk, keep) in cases {
+            let original: Vec<u8> = reference_artifact(relative);
+            let full: Vec<(usize, usize)> = observed_regions(&walk(&original));
+            assert!(
+                !full.is_empty(),
+                "{relative} must yield regions before truncation"
+            );
+            let mut clipped: Vec<u8> = original;
+            clipped.truncate(keep);
+            let layout: CodeLayout = walk(&clipped);
+            assert_regions_inside(&layout, clipped.len(), relative);
+            assert!(
+                !layout.regions.is_empty(),
+                "{relative} truncated to {keep} bytes must still yield partial recovery"
+            );
+            for region in &layout.regions {
+                let survives: bool = full.iter().any(|(start, len): &(usize, usize)| {
+                    *start == region.file_offset && region.len <= *len
+                });
+                assert!(
+                    survives,
+                    "{relative} truncated produced a region at {} of {} byte(s) absent from the full parse",
+                    region.file_offset, region.len
+                );
+            }
+        }
+    }
+
     fn finding(report: &AntiAnalysisReport, technique: Technique) -> Option<&AntiAnalysisFinding> {
         report
             .findings
