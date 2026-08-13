@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1373,
-    "parse_shaped": 570,
+    "entry_points": 1385,
+    "parse_shaped": 571,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 620,
+    "named_by_a_resilience_suite": 622,
     "named_by_a_suite_recording_seed_reach": 126,
-    "named_by_neither": 720
+    "named_by_neither": 730
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,11 +22,11 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 225,
+      "entry_points": 226,
       "parse_shaped": 156,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 151,
+      "named_by_a_resilience_suite": 152,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -123,7 +123,7 @@
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 99,
+      "entry_points": 100,
       "parse_shaped": 15,
       "with_declared_coverage_guided_target": 12,
       "with_replay_proven_semantic_reach": 0,
@@ -195,6 +195,7 @@
         "disrobe-core/src/recon/mod.rs::scan_zip_bytes",
         "disrobe-core/src/recon/secret_scan.rs::scan_bytes",
         "disrobe-core/src/recon/secret_scan.rs::scan_report",
+        "disrobe-core/src/recon/string_emu.rs::text_runs",
         "disrobe-core/src/yara_gen.rs::generate"
       ]
     },
@@ -264,7 +265,7 @@
     },
     {
       "crate": "disrobe-nir-lift",
-      "entry_points": 19,
+      "entry_points": 18,
       "parse_shaped": 1,
       "with_declared_coverage_guided_target": 4,
       "with_replay_proven_semantic_reach": 0,
@@ -276,7 +277,6 @@
         "disrobe-nir-lift/src/beam.rs::lift_beam_module",
         "disrobe-nir-lift/src/lua.rs::lift_lua_chunk",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_arch",
-        "disrobe-nir-lift/src/pcode/arch.rs::lower_for_arch",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_for_arch_with_provenance",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_aarch64",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_arm32",
@@ -990,16 +990,24 @@
     },
     {
       "crate": "disrobe-pass-swift-objc",
-      "entry_points": 37,
-      "parse_shaped": 12,
+      "entry_points": 46,
+      "parse_shaped": 13,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 13,
+      "named_by_a_resilience_suite": 14,
       "named_by_a_suite_recording_seed_reach": 4,
       "named_by_neither": [
         "disrobe-pass-swift-objc/src/dyld_cache.rs::is_dyld_shared_cache",
         "disrobe-pass-swift-objc/src/dyld_cache.rs::reconstruct_all",
+        "disrobe-pass-swift-objc/src/dyld_cache.rs::reconstruct_all_with",
         "disrobe-pass-swift-objc/src/dyld_cache.rs::reconstruct_by_name",
+        "disrobe-pass-swift-objc/src/dyld_cache.rs::reconstruct_by_name_with",
+        "disrobe-pass-swift-objc/src/dyld_cache.rs::reconstruct_image_with",
+        "disrobe-pass-swift-objc/src/dyld_cache/linkedit.rs::u64_field",
+        "disrobe-pass-swift-objc/src/dyld_cache/slide.rs::unapply_range",
+        "disrobe-pass-swift-objc/src/dyld_cache/slide.rs::version_of",
+        "disrobe-pass-swift-objc/src/dyld_cache/subcache.rs::hex_uuid",
+        "disrobe-pass-swift-objc/src/dyld_cache/subcache.rs::parse_entries",
         "disrobe-pass-swift-objc/src/ipa.rs::embedded_images",
         "disrobe-pass-swift-objc/src/ipa.rs::inventory",
         "disrobe-pass-swift-objc/src/macho.rs::detect_magic",
@@ -1158,7 +1166,7 @@
     },
     {
       "crate": "disrobe-typerec",
-      "entry_points": 14,
+      "entry_points": 16,
       "parse_shaped": 5,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
@@ -1176,6 +1184,8 @@
         "disrobe-typerec/src/facts.rs::extract_split",
         "disrobe-typerec/src/import_map.rs::from_image",
         "disrobe-typerec/src/recover.rs::recover_function",
+        "disrobe-typerec/src/recover.rs::recover_function_with_regions",
+        "disrobe-typerec/src/region.rs::from_image",
         "disrobe-typerec/src/structrec.rs::recover_structs"
       ]
     },

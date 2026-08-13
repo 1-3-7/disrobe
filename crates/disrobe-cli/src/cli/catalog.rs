@@ -240,7 +240,7 @@ mod tests {
         );
     }
 
-    const PUBLISHED_FAMILY_TOTAL: usize = 169;
+    const PUBLISHED_FAMILY_TOTAL: usize = 170;
     const CATALOG_REFERENCE: &str = include_str!("../../../../docs/src/cli/reference.md");
     const CATALOG_CHAIN_BUILD_SCOPE: &str =
         "Builds that include the `chain` feature report the registry compiled into that binary.";
@@ -365,7 +365,7 @@ mod tests {
         CatalogExpectation {
             pass: "swift-objc.classify",
             ecosystem: "swift",
-            families: 2,
+            families: 3,
             enabled: cfg!(feature = "swift"),
         },
     ];
