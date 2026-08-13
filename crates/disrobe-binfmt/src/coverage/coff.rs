@@ -19,6 +19,7 @@ const STRING_TABLE_MINIMUM: u64 = 4;
 
 #[derive(Debug, Clone, Copy)]
 struct SectionRecord {
+    virtual_size: u32,
     raw_offset: u32,
     raw_size: u32,
     relocation_offset: u32,
@@ -108,17 +109,23 @@ pub(super) fn map_coff(bytes: &[u8]) -> Result<ByteCoverage> {
         let raw_offset: u64 = u64::from(record.raw_offset);
         let raw_size: u64 = u64::from(record.raw_size);
 
-        if raw_size > 0 {
-            if raw_offset == 0 {
-                claims.unbacked(claimant.clone(), raw_size, UnbackedReason::NoFileOffset);
-            } else {
-                claims.claim_payload(
-                    raw_offset,
-                    raw_size,
-                    section_class(&name, record.characteristics),
+        if raw_size == 0 {
+            if record.virtual_size > 0 {
+                claims.unbacked(
                     claimant.clone(),
-                )?;
+                    u64::from(record.virtual_size),
+                    UnbackedReason::NoFileBytes,
+                );
             }
+        } else if raw_offset == 0 {
+            claims.unbacked(claimant.clone(), raw_size, UnbackedReason::NoFileOffset);
+        } else {
+            claims.claim_payload(
+                raw_offset,
+                raw_size,
+                section_class(&name, record.characteristics),
+                claimant.clone(),
+            )?;
         }
 
         let relocation_count: u64 = resolved_relocation_count(bytes, &record)?;
@@ -224,7 +231,7 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
     reader
         .skip(NAME_FIELD)
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
-    let _virtual_size: u32 = reader
+    let virtual_size: u32 = reader
         .read_u32_le()
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
     let _virtual_address: u32 = reader
@@ -253,6 +260,7 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
 
     Ok(SectionRecord {
+        virtual_size,
         raw_offset,
         raw_size,
         relocation_offset,

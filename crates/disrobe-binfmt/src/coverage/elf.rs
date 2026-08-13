@@ -380,11 +380,10 @@ fn read_program_headers(
         )));
     }
     let declared: u64 = if header.phnum == XINDEX {
-        sections
-            .first()
-            .map_or(u64::from(XINDEX), |first: &SectionHeader| {
-                u64::from(first.info)
-            })
+        sections.first().map_or_else(
+            || u64::from(XINDEX),
+            |first: &SectionHeader| u64::from(first.info),
+        )
     } else {
         u64::from(header.phnum)
     };

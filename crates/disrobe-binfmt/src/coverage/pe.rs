@@ -27,6 +27,7 @@ const PE32_PLUS_DIRECTORY_OFFSET: u64 = 0x70;
 
 #[derive(Debug, Clone, Copy)]
 struct SectionRecord {
+    virtual_size: u32,
     raw_offset: u32,
     raw_size: u32,
     characteristics: u32,
@@ -238,6 +239,13 @@ fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
         let raw_size: u64 = u64::from(record.raw_size);
 
         if raw_size == 0 {
+            if record.virtual_size > 0 {
+                claims.unbacked(
+                    claimant,
+                    u64::from(record.virtual_size),
+                    UnbackedReason::NoFileBytes,
+                );
+            }
             continue;
         }
         if raw_offset == 0 {
@@ -328,7 +336,7 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
     reader
         .skip(8)
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
-    let _virtual_size: u32 = reader
+    let virtual_size: u32 = reader
         .read_u32_le()
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
     let _virtual_address: u32 = reader
@@ -348,6 +356,7 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
 
     Ok(SectionRecord {
+        virtual_size,
         raw_offset,
         raw_size,
         characteristics,
