@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1368,
-    "parse_shaped": 569,
+    "entry_points": 1372,
+    "parse_shaped": 570,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 619,
     "named_by_a_suite_recording_seed_reach": 126,
-    "named_by_neither": 716
+    "named_by_neither": 720
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -250,19 +250,21 @@
     },
     {
       "crate": "disrobe-nir",
-      "entry_points": 1,
-      "parse_shaped": 1,
+      "entry_points": 3,
+      "parse_shaped": 2,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 0,
       "named_by_a_suite_recording_seed_reach": 0,
       "named_by_neither": [
-        "disrobe-nir/src/codec.rs::decode_nir"
+        "disrobe-nir/src/codec.rs::decode_nir",
+        "disrobe-nir/src/codec.rs::decode_nir_artifact",
+        "disrobe-nir/src/types.rs::original_bytes"
       ]
     },
     {
       "crate": "disrobe-nir-lift",
-      "entry_points": 17,
+      "entry_points": 19,
       "parse_shaped": 1,
       "with_declared_coverage_guided_target": 4,
       "with_replay_proven_semantic_reach": 0,
@@ -275,10 +277,12 @@
         "disrobe-nir-lift/src/lua.rs::lift_lua_chunk",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_arch",
         "disrobe-nir-lift/src/pcode/arch.rs::lower_for_arch",
+        "disrobe-nir-lift/src/pcode/arch.rs::lower_for_arch_with_provenance",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_aarch64",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_arm32",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_mips32",
         "disrobe-nir-lift/src/pcode/mod.rs::lower_x86_64",
+        "disrobe-nir-lift/src/pcode/mod.rs::lower_x86_64_with_provenance",
         "disrobe-nir-lift/src/python.rs::lift_pyc",
         "disrobe-nir-lift/src/yarv.rs::lift_ruby_iseq"
       ]

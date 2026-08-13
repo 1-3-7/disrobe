@@ -1,12 +1,12 @@
 use disrobe_lift_x86::decode_block_x86;
-use disrobe_nir::NirFunction;
+use disrobe_nir::{NirArtifact, NirFunction};
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
 use disrobe_sleigh::syntax::Endian;
 
-use crate::error::{LiftError, Result};
+use crate::error::{LiftError, ProvenanceResult, Result};
 
-use super::{PcodeLiftConfig, lower_pcode_block};
+use super::{PcodeLiftConfig, lower_pcode_block, lower_pcode_block_with_provenance};
 
 const MAX_REPORTED_GAPS: usize = 4096;
 
@@ -168,4 +168,15 @@ pub fn lower_for_arch(
     name: &str,
 ) -> Result<NirFunction> {
     lower_arch(arch, bytes, address, name).map(|lift: ArchLift| lift.function)
+}
+
+pub fn lower_for_arch_with_provenance(
+    arch: PcodeArch,
+    bytes: &[u8],
+    address: u64,
+    name: &str,
+) -> ProvenanceResult<NirArtifact> {
+    let config: PcodeLiftConfig = arch.config()?;
+    let block: DecodedBlock = arch.decode(bytes, address)?;
+    lower_pcode_block_with_provenance(&block, name, &config)
 }

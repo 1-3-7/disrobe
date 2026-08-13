@@ -11,7 +11,7 @@ pub mod surface;
 pub mod types;
 
 pub use cfg::{BlockKind, NirBlock, basic_blocks, complexity, control_flow_graph};
-pub use codec::{NirCodecError, decode_nir, encode_nir};
+pub use codec::{NirCodecError, decode_nir, decode_nir_artifact, encode_nir, encode_nir_artifact};
 pub use defuse::{DefUse, ValueId, def_use};
 pub use emit::{EmitError, emit_pseudo_source};
 pub use hir::{
@@ -25,8 +25,10 @@ pub use surface::{
     surfacify_function, surfacify_module,
 };
 pub use types::{
-    BinaryOp, CallOtherEffect, NirClass, NirFunction, NirInstr, NirModule, NirOp, NirSymbol,
-    SourceLang, SourceRef, SymbolKind, ValueOp,
+    BinaryOp, CallOtherEffect, FileSourceOffset, NirArtifact, NirClass, NirFunction, NirInstr,
+    NirModule, NirOp, NirProvenanceError, NirSymbol, SourceBytes, SourceBytesRef, SourceLang,
+    SourceOffset, SourceOffsetUnavailable, SourceRef, SourceUnit, SourceUnitRef, SymbolKind,
+    ValueOp,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
 
 use disrobe_lift_x86::decode_block_x86;
-use disrobe_nir::{NirClass, NirFunction, NirInstr, NirOp, SourceLang, SourceRef};
+use disrobe_nir::{
+    NirArtifact, NirClass, NirFunction, NirInstr, NirModule, NirOp, SourceBytes, SourceBytesRef,
+    SourceLang, SourceOffset, SourceRef, SourceUnit, SourceUnitRef,
+};
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
 use disrobe_sleigh::syntax::Endian;
 
-use crate::error::{LiftError, Result};
+use crate::error::{LiftError, ProvenanceLiftError, ProvenanceResult, Result};
 
 mod arch;
 mod flags;
@@ -14,7 +17,10 @@ mod ops;
 mod spec;
 mod varnode;
 
-pub use arch::{ArchLift, LiftGap, PcodeArch, block_gaps, lower_arch, lower_for_arch};
+pub use arch::{
+    ArchLift, LiftGap, PcodeArch, block_gaps, lower_arch, lower_for_arch,
+    lower_for_arch_with_provenance,
+};
 use spec::{SpecRegisterMap, SpecRegisters};
 pub use varnode::RegisterCell;
 use varnode::VarnodeLowerer;
@@ -280,7 +286,23 @@ impl PcodeLiftConfig {
 
 pub fn lower_x86_64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunction> {
     let block: DecodedBlock = decode_block_x86(bytes, address, 64);
-    lower_pcode_block(&block, name, &PcodeLiftConfig::x86_64())
+    let artifact: NirArtifact =
+        lower_owned_pcode_block_with_provenance(block, name, &PcodeLiftConfig::x86_64())
+            .map_err(provenance_error_as_lift)?;
+    artifact
+        .into_module()
+        .functions
+        .pop()
+        .ok_or(LiftError::Empty)
+}
+
+pub fn lower_x86_64_with_provenance(
+    bytes: &[u8],
+    address: u64,
+    name: &str,
+) -> ProvenanceResult<NirArtifact> {
+    let block: DecodedBlock = decode_block_x86(bytes, address, 64);
+    lower_owned_pcode_block_with_provenance(block, name, &PcodeLiftConfig::x86_64())
 }
 
 pub fn lower_aarch64(bytes: &[u8], address: u64, name: &str) -> Result<NirFunction> {
@@ -369,23 +391,25 @@ pub fn lower_pcode_block(
             .iter()
             .any(|operation: &PcodeOp| matches!(operation, PcodeOp::BranchIndirect { .. }))
     });
-    let scheduled: ScheduledBlock = if config.branch_delay_slots {
-        schedule_delay_slots(&block.instructions)
-    } else {
-        ScheduledBlock {
-            instructions: block.instructions.clone(),
-            consumed_slots: BTreeSet::new(),
-        }
-    };
+    let scheduled: Option<ScheduledBlock> = config
+        .branch_delay_slots
+        .then(|| schedule_delay_slots(&block.instructions));
+    let scheduled_instructions: &[PcodeInstr] = scheduled
+        .as_ref()
+        .map_or(block.instructions.as_slice(), |value: &ScheduledBlock| {
+            value.instructions.as_slice()
+        });
     let mut previous_stops_fallthrough: bool = false;
-    for (index, instruction) in scheduled.instructions.iter().enumerate() {
+    for (index, instruction) in scheduled_instructions.iter().enumerate() {
         let clear_registers: bool = has_indirect_branch
             || previous_stops_fallthrough
             || branch_targets.contains(&instruction.address);
         lowerer.begin_instruction(clear_registers);
         lower_instruction(
             instruction,
-            scheduled.consumed_slots.contains(&index),
+            scheduled
+                .as_ref()
+                .is_some_and(|value: &ScheduledBlock| value.consumed_slots.contains(&index)),
             config,
             &mut lowerer,
             &mut instructions,
@@ -408,6 +432,206 @@ pub fn lower_pcode_block(
         instructions,
         source: SourceRef::new(config.lang, first.address),
     })
+}
+
+pub fn lower_pcode_block_with_provenance(
+    block: &DecodedBlock,
+    name: &str,
+    config: &PcodeLiftConfig,
+) -> ProvenanceResult<NirArtifact> {
+    let lowered: LoweredProvenance = lower_provenance(block, name, config)?;
+    let mut source_units: Vec<SourceUnitRef<'_>> = provenance_vec(block.instructions.len())?;
+    for (source, mapping) in block.instructions.iter().zip(&lowered.mappings) {
+        source_units.push(SourceUnitRef::new(
+            0,
+            mapping.instructions.clone(),
+            SourceBytesRef::Original(&source.bytes),
+            SourceOffset::MemoryImage(source.address),
+        )?);
+    }
+    NirArtifact::from_borrowed(lowered.module(config.lang), &source_units)
+        .map_err(ProvenanceLiftError::from)
+}
+
+#[derive(Debug)]
+struct SourceMapping {
+    instructions: std::ops::Range<u32>,
+}
+
+#[derive(Debug)]
+struct LoweredProvenance {
+    function: NirFunction,
+    mappings: Vec<SourceMapping>,
+    source_hash: [u8; 32],
+}
+
+impl LoweredProvenance {
+    fn module(self, lang: SourceLang) -> NirModule {
+        NirModule {
+            source_hash: self.source_hash,
+            lang,
+            functions: vec![self.function],
+            symbols: Vec::new(),
+        }
+    }
+}
+
+fn lower_owned_pcode_block_with_provenance(
+    block: DecodedBlock,
+    name: &str,
+    config: &PcodeLiftConfig,
+) -> ProvenanceResult<NirArtifact> {
+    let lowered: LoweredProvenance = lower_provenance(&block, name, config)?;
+    let mut source_units: Vec<SourceUnit> = provenance_vec(block.instructions.len())?;
+    for (source, mapping) in block.instructions.into_iter().zip(&lowered.mappings) {
+        source_units.push(SourceUnit::new(
+            0,
+            mapping.instructions.clone(),
+            SourceBytes::Original(source.bytes),
+            SourceOffset::MemoryImage(source.address),
+        )?);
+    }
+    NirArtifact::new(lowered.module(config.lang), source_units).map_err(ProvenanceLiftError::from)
+}
+
+fn lower_provenance(
+    block: &DecodedBlock,
+    name: &str,
+    config: &PcodeLiftConfig,
+) -> ProvenanceResult<LoweredProvenance> {
+    if config.branch_delay_slots {
+        return Err(ProvenanceLiftError::DelaySlots);
+    }
+    if block.instructions.len() > config.max_instructions {
+        return Err(LiftError::PcodeInstructionLimit {
+            limit: config.max_instructions,
+        }
+        .into());
+    }
+    validate_source_layout(block)?;
+    let function: NirFunction = lower_pcode_block(block, name, config)?;
+    let source_hash: [u8; 32] = source_hash(block);
+    let mappings: Vec<SourceMapping> = map_source_instructions(block, &function)?;
+    Ok(LoweredProvenance {
+        function,
+        mappings,
+        source_hash,
+    })
+}
+
+fn validate_source_layout(block: &DecodedBlock) -> ProvenanceResult<()> {
+    let mut expected_address: Option<u64> = None;
+    let mut previous_address: Option<u64> = None;
+    let mut source_bytes: usize = 0;
+    for source in &block.instructions {
+        let actual_length: usize = source.bytes.len();
+        if actual_length != source.length || actual_length == 0 {
+            return Err(ProvenanceLiftError::SourceByteLength {
+                address: source.address,
+                declared: source.length,
+                actual: actual_length,
+            });
+        }
+        if previous_address == Some(source.address) {
+            return Err(ProvenanceLiftError::DuplicateSourceAddress {
+                address: source.address,
+            });
+        }
+        if let Some(expected) = expected_address
+            && source.address != expected
+        {
+            return Err(ProvenanceLiftError::SourceAddressGap {
+                expected,
+                actual: source.address,
+            });
+        }
+        let address_length: u64 = u64::try_from(actual_length).map_err(|_error| {
+            ProvenanceLiftError::SourceByteLength {
+                address: source.address,
+                declared: source.length,
+                actual: actual_length,
+            }
+        })?;
+        expected_address = Some(source.address.checked_add(address_length).ok_or_else(|| {
+            LiftError::InvalidPcode {
+                address: source.address,
+                operation: "BLOCK".to_owned(),
+                reason: "source instruction range overflows its address space".to_owned(),
+            }
+        })?);
+        source_bytes = source_bytes
+            .checked_add(actual_length)
+            .ok_or(ProvenanceLiftError::SourceByteTotalOverflow)?;
+        previous_address = Some(source.address);
+    }
+    if source_bytes != block.consumed {
+        return Err(ProvenanceLiftError::ConsumedBytes {
+            declared: block.consumed,
+            actual: source_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn source_hash(block: &DecodedBlock) -> [u8; 32] {
+    let mut source_hasher: blake3::Hasher = blake3::Hasher::new();
+    for instruction in &block.instructions {
+        source_hasher.update(&instruction.bytes);
+    }
+    *source_hasher.finalize().as_bytes()
+}
+
+fn map_source_instructions(
+    block: &DecodedBlock,
+    function: &NirFunction,
+) -> ProvenanceResult<Vec<SourceMapping>> {
+    let mut mappings: Vec<SourceMapping> = provenance_vec(block.instructions.len())?;
+    let mut instruction_cursor: usize = 0;
+    for source in &block.instructions {
+        let instruction_start: usize = instruction_cursor;
+        while function
+            .instructions
+            .get(instruction_cursor)
+            .is_some_and(|instruction: &NirInstr| instruction.address == source.address)
+        {
+            instruction_cursor = instruction_cursor.saturating_add(1);
+        }
+        let instructions: std::ops::Range<u32> = u32::try_from(instruction_start)
+            .map_err(|_error| disrobe_nir::NirProvenanceError::IndexOverflow)?
+            ..u32::try_from(instruction_cursor)
+                .map_err(|_error| disrobe_nir::NirProvenanceError::IndexOverflow)?;
+        mappings.push(SourceMapping { instructions });
+    }
+    if instruction_cursor != function.instructions.len() {
+        return Err(disrobe_nir::NirProvenanceError::InstructionCoverage {
+            function_index: 0,
+            instruction_index: u32::try_from(instruction_cursor)
+                .map_err(|_error| disrobe_nir::NirProvenanceError::IndexOverflow)?,
+        }
+        .into());
+    }
+    Ok(mappings)
+}
+
+fn provenance_vec<T>(capacity: usize) -> ProvenanceResult<Vec<T>> {
+    let mut values: Vec<T> = Vec::new();
+    values.try_reserve_exact(capacity).map_err(|_error| {
+        disrobe_nir::NirProvenanceError::Allocation {
+            requested: capacity,
+        }
+    })?;
+    Ok(values)
+}
+
+fn provenance_error_as_lift(error: ProvenanceLiftError) -> LiftError {
+    match error {
+        ProvenanceLiftError::Lift(error) => error,
+        other => LiftError::InvalidPcode {
+            address: 0,
+            operation: "PROVENANCE".to_owned(),
+            reason: other.to_string(),
+        },
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
