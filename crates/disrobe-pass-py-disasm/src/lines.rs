@@ -16,6 +16,8 @@ const LOCATION_ONE_LINE_2: u8 = 12;
 const LOCATION_NO_COLUMNS: u8 = 13;
 const LOCATION_LONG_FORM: u8 = 14;
 const LOCATION_NONE: u8 = 15;
+const LOCATION_ONE_LINE_COLUMN_BYTES: usize = 2;
+const LOCATION_SHORT_FORM_COLUMN_BYTES: usize = 1;
 const BYTECODE_UNIT_BYTES: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,12 +271,11 @@ fn decode_location_table(table: &[u8], firstlineno: i32, code_len: usize) -> Vec
             LOCATION_ONE_LINE_0..=LOCATION_ONE_LINE_2 => {
                 let delta: i32 = i32::from(code) - i32::from(LOCATION_ONE_LINE_0);
                 line = line.saturating_add(delta);
-                cursor = skip_location_varint(table, cursor);
-                cursor = skip_location_varint(table, cursor);
+                cursor = cursor.saturating_add(LOCATION_ONE_LINE_COLUMN_BYTES);
                 Some(line.max(0) as u32)
             }
             0..=LOCATION_SHORT_FORM_MAX => {
-                cursor += 1;
+                cursor = cursor.saturating_add(LOCATION_SHORT_FORM_COLUMN_BYTES);
                 Some(line.max(0) as u32)
             }
             _ => Some(line.max(0) as u32),
@@ -344,6 +345,38 @@ mod tests {
         ];
         let (_, pos): (u32, usize) = read_unsigned_location_varint(&table, 0);
         assert_eq!(pos, table.len(), "all continuation bytes consumed");
+    }
+
+    #[test]
+    fn one_line_form_columns_are_raw_bytes_not_varints() {
+        const ONE_LINE0_ONE_UNIT: u8 = 0xD0;
+        const ONE_LINE1_ONE_UNIT: u8 = 0xD8;
+        const COLUMN_WITH_CONTINUATION_BIT: u8 = 68;
+        const END_COLUMN_WITH_CONTINUATION_BIT: u8 = 70;
+        let table: [u8; 6] = [
+            ONE_LINE0_ONE_UNIT,
+            COLUMN_WITH_CONTINUATION_BIT,
+            END_COLUMN_WITH_CONTINUATION_BIT,
+            ONE_LINE1_ONE_UNIT,
+            1,
+            2,
+        ];
+        let regions: Vec<LineRegion> = decode_location_table(&table, 10, 4);
+        assert_eq!(
+            regions,
+            vec![
+                LineRegion {
+                    start: 0,
+                    end: 2,
+                    line: Some(10),
+                },
+                LineRegion {
+                    start: 2,
+                    end: 4,
+                    line: Some(11),
+                },
+            ]
+        );
     }
 
     #[test]

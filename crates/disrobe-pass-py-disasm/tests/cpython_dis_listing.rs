@@ -104,6 +104,58 @@ class Widget:
 
     def render(self):
         return self.name.upper()
+
+
+def closure_maker(seed):
+    accumulated = seed * 2
+
+    def bump(step):
+        nonlocal accumulated
+        accumulated += step
+        return accumulated + seed
+
+    def dropper():
+        nonlocal accumulated
+        accumulated = 0
+        del accumulated
+
+    class Recorder:
+        tag = seed
+        span = accumulated
+
+        def read(self):
+            return seed + accumulated
+
+    return bump, dropper, Recorder
+
+
+def three_level(alpha):
+    def middle(beta):
+        combined = alpha + beta
+
+        def inner(gamma):
+            return alpha + combined + gamma
+
+        return inner, combined
+
+    return middle
+
+
+def wide_expression(alpha, beta, gamma, delta, epsilon, zeta, eta, theta):
+    narrow = alpha + beta
+    medium = (alpha + beta) * (gamma - delta) + (epsilon * zeta) - eta
+    wide = (alpha + beta) * (gamma - delta) + (epsilon * zeta) - (eta / theta) + (alpha * gamma) - (beta * delta) + (epsilon - zeta)
+    return narrow, medium, wide
+
+
+class BaseUnit:
+    def label(self, value):
+        return ("base", value)
+
+
+class DerivedUnit(BaseUnit):
+    def label(self, value):
+        return super().label(value) + super(DerivedUnit, self).label(value)
 "#;
 
 const CORPUS_MATCH: &str = r#"

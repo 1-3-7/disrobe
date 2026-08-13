@@ -396,14 +396,15 @@ fn argrepr(co: &CodeObject, opname: &str, arg: Option<u32>, version: PyVersion) 
         | "DELETE_FAST"
         | "LOAD_FAST_CHECK"
         | "LOAD_FAST_AND_CLEAR"
-        | "LOAD_FAST_BORROW"
-        | "MAKE_CELL"
+        | "LOAD_FAST_BORROW" => local_name(co, arg as usize, version).map(object_label),
+        "MAKE_CELL"
         | "LOAD_CLOSURE"
         | "LOAD_DEREF"
         | "STORE_DEREF"
         | "DELETE_DEREF"
         | "LOAD_CLASSDEREF"
-        | "LOAD_FROM_DICT_OR_DEREF" => local_name(co, arg as usize, version).map(object_label),
+        | "LOAD_FROM_DICT_OR_DEREF" => deref_name(co, arg as usize, version).map(object_label),
+        "LOAD_SUPER_ATTR" => load_super_attr_repr(co, arg, version),
         "COMPARE_OP" => compare_op_repr(arg, version),
         "BINARY_OP" => binary_op_repr(arg, version),
         "IS_OP" => is_op_repr(arg, version),
@@ -482,14 +483,34 @@ fn load_attr_repr(co: &CodeObject, arg: u32, version: PyVersion) -> Option<Strin
 
 #[inline]
 fn decorate_null(name: String, flag: bool, marker: &str, version: PyVersion) -> String {
-    if !flag {
+    if !flag || name.is_empty() {
         return name;
     }
-    if version.major == 3 && version.minor >= 13 {
+    if version.major > 3 || (version.major == 3 && version.minor >= 13) {
         format!("{name} + {marker}")
     } else {
         format!("{marker} + {name}")
     }
+}
+
+fn load_super_attr_repr(co: &CodeObject, arg: u32, version: PyVersion) -> Option<String> {
+    const SUPER_ATTR_NAME_SHIFT: u32 = 2;
+    const SUPER_ATTR_NULL_SELF_BIT: u32 = 0x01;
+    let name: String = co
+        .names
+        .get((arg >> SUPER_ATTR_NAME_SHIFT) as usize)
+        .map(object_label)?;
+    Some(decorate_null(
+        name,
+        arg & SUPER_ATTR_NULL_SELF_BIT != 0,
+        "NULL|self",
+        version,
+    ))
+}
+
+#[inline]
+const fn has_localsplus(version: PyVersion) -> bool {
+    version.major > 3 || (version.major == 3 && version.minor >= 11)
 }
 
 fn local_name(
@@ -497,13 +518,28 @@ fn local_name(
     index: usize,
     version: PyVersion,
 ) -> Option<&disrobe_py_marshal::Object> {
-    if version.major == 3 && version.minor >= 11 {
+    if has_localsplus(version) {
         co.localsplusnames
             .get(index)
             .or_else(|| co.varnames.get(index))
     } else {
         co.varnames.get(index)
     }
+}
+
+fn deref_name(
+    co: &CodeObject,
+    index: usize,
+    version: PyVersion,
+) -> Option<&disrobe_py_marshal::Object> {
+    if has_localsplus(version) {
+        return local_name(co, index, version);
+    }
+    co.cellvars.get(index).or_else(|| {
+        index
+            .checked_sub(co.cellvars.len())
+            .and_then(|free_index: usize| co.freevars.get(free_index))
+    })
 }
 
 const COMMON_CONSTANTS_314: [&str; 5] = [

@@ -80,6 +80,58 @@ def complex_constants():
 def main():
     w = Widget("box")
     return comparisons(1, 2), control_flow(20), comprehensions([1, 2]), w.render()
+
+
+def closure_maker(seed):
+    accumulated = seed * 2
+
+    def bump(step):
+        nonlocal accumulated
+        accumulated += step
+        return accumulated + seed
+
+    def dropper():
+        nonlocal accumulated
+        accumulated = 0
+        del accumulated
+
+    class Recorder:
+        tag = seed
+        span = accumulated
+
+        def read(self):
+            return seed + accumulated
+
+    return bump, dropper, Recorder
+
+
+def three_level(alpha):
+    def middle(beta):
+        combined = alpha + beta
+
+        def inner(gamma):
+            return alpha + combined + gamma
+
+        return inner, combined
+
+    return middle
+
+
+def wide_expression(alpha, beta, gamma, delta, epsilon, zeta, eta, theta):
+    narrow = alpha + beta
+    medium = (alpha + beta) * (gamma - delta) + (epsilon * zeta) - eta
+    wide = (alpha + beta) * (gamma - delta) + (epsilon * zeta) - (eta / theta) + (alpha * gamma) - (beta * delta) + (epsilon - zeta)
+    return narrow, medium, wide
+
+
+class BaseUnit:
+    def label(self, value):
+        return ("base", value)
+
+
+class DerivedUnit(BaseUnit):
+    def label(self, value):
+        return super().label(value) + super(DerivedUnit, self).label(value)
 "#;
 
 const CORPUS_PY2: &str = r"
@@ -109,6 +161,27 @@ def control_flow(n):
 class Widget:
     def render(self):
         return self.name
+
+
+def closure_maker(seed):
+    accumulated = seed * 2
+
+    def bump(step):
+        return accumulated + seed + step
+
+    return bump
+
+
+def three_level(alpha):
+    def middle(beta):
+        combined = alpha + beta
+
+        def inner(gamma):
+            return alpha + combined + gamma
+
+        return inner, combined
+
+    return middle
 ";
 
 const DUMPER: &str = r#"
@@ -484,14 +557,71 @@ fn argrepr_is_checked(opname: &str) -> bool {
             | "SET_FUNCTION_ATTRIBUTE"
             | "LOAD_FAST"
             | "STORE_FAST"
+    ) || argrepr_names_a_binding(opname)
+}
+
+fn argrepr_names_a_binding(opname: &str) -> bool {
+    matches!(
+        opname,
+        "DELETE_ATTR"
+            | "DELETE_DEREF"
+            | "DELETE_FAST"
+            | "DELETE_GLOBAL"
+            | "DELETE_NAME"
+            | "IMPORT_FROM"
+            | "IMPORT_NAME"
+            | "LOAD_CLASSDEREF"
+            | "LOAD_CLOSURE"
+            | "LOAD_DEREF"
+            | "LOAD_FAST_AND_CLEAR"
+            | "LOAD_FAST_BORROW"
+            | "LOAD_FAST_BORROW_LOAD_FAST_BORROW"
+            | "LOAD_FAST_CHECK"
+            | "LOAD_FAST_LOAD_FAST"
+            | "LOAD_FROM_DICT_OR_DEREF"
+            | "LOAD_FROM_DICT_OR_GLOBALS"
+            | "LOAD_METHOD"
+            | "LOAD_SUPER_ATTR"
+            | "MAKE_CELL"
+            | "STORE_ATTR"
+            | "STORE_DEREF"
+            | "STORE_FAST_LOAD_FAST"
+            | "STORE_FAST_STORE_FAST"
+            | "STORE_GLOBAL"
     )
 }
 
-fn run_interpreter(
-    interp: &Interpreter,
-    work: &Path,
-    corpus_path: &Path,
-) -> (Vec<String>, Vec<String>) {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ArgreprTally {
+    checked: usize,
+    matched: usize,
+}
+
+fn merge_tallies(into: &mut BTreeMap<String, ArgreprTally>, from: &BTreeMap<String, ArgreprTally>) {
+    for (opname, tally) in from {
+        let slot: &mut ArgreprTally = into.entry(opname.clone()).or_default();
+        slot.checked += tally.checked;
+        slot.matched += tally.matched;
+    }
+}
+
+fn tally_line(tallies: &BTreeMap<String, ArgreprTally>) -> String {
+    tallies
+        .iter()
+        .map(|(opname, tally): (&String, &ArgreprTally)| {
+            format!("{opname} {}/{}", tally.matched, tally.checked)
+        })
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
+struct InterpreterOutcome {
+    failures: Vec<String>,
+    resolved_ops: Vec<String>,
+    tallies: BTreeMap<String, ArgreprTally>,
+}
+
+fn run_interpreter(interp: &Interpreter, work: &Path, corpus_path: &Path) -> InterpreterOutcome {
     let pyc: PathBuf = work.join(format!(
         "corpus_{}_{}.pyc",
         interp.version.0, interp.version.1
@@ -542,6 +672,7 @@ fn run_interpreter(
 
     let mut failures: Vec<String> = Vec::new();
     let mut resolved_ops: Vec<String> = Vec::new();
+    let mut tallies: BTreeMap<String, ArgreprTally> = BTreeMap::new();
 
     for block in blocks {
         let path: &str = block["path"].as_str().expect("path");
@@ -600,7 +731,11 @@ fn run_interpreter(
 
             if !cpython_hidden && argrepr_is_checked(&exp.opname) {
                 let actual_repr: &str = actual.argrepr.as_deref().unwrap_or("");
-                if actual_repr != exp.argrepr {
+                let tally: &mut ArgreprTally = tallies.entry(exp.opname.clone()).or_default();
+                tally.checked += 1;
+                if actual_repr == exp.argrepr {
+                    tally.matched += 1;
+                } else {
                     failures.push(format!(
                         "{} [{path}] off {} {}: argrepr rust={actual_repr:?} cpython={:?}",
                         interp.label, exp.offset, exp.opname, exp.argrepr
@@ -621,7 +756,11 @@ fn run_interpreter(
         }
     }
 
-    (failures, resolved_ops)
+    InterpreterOutcome {
+        failures,
+        resolved_ops,
+        tallies,
+    }
 }
 
 #[test]
@@ -644,6 +783,7 @@ fn disassembler_matches_cpython_dis_across_versions() {
 
     let mut all_failures: Vec<String> = Vec::new();
     let mut checked: Vec<(u8, u8)> = Vec::new();
+    let mut tallies: BTreeMap<String, ArgreprTally> = BTreeMap::new();
     let mut saw_is_op: bool = false;
     let mut saw_intrinsic: bool = false;
     let mut saw_compare: bool = false;
@@ -655,7 +795,13 @@ fn disassembler_matches_cpython_dis_across_versions() {
         } else {
             &corpus_py2
         };
-        let (failures, ops): (Vec<String>, Vec<String>) = run_interpreter(interp, &work, corpus);
+        let outcome: InterpreterOutcome = run_interpreter(interp, &work, corpus);
+        let InterpreterOutcome {
+            failures,
+            resolved_ops: ops,
+            tallies: interpreter_tallies,
+        }: InterpreterOutcome = outcome;
+        merge_tallies(&mut tallies, &interpreter_tallies);
         if ops.iter().any(|o: &String| o == "IS_OP") {
             saw_is_op = true;
         }
@@ -674,10 +820,43 @@ fn disassembler_matches_cpython_dis_across_versions() {
 
     assert!(
         all_failures.is_empty(),
-        "cross-check mismatches against CPython dis ({} total):\n{}",
+        "cross-check mismatches against CPython dis ({} total), argrepr matched/checked: {}\n{}",
         all_failures.len(),
+        tally_line(&tallies),
         all_failures.join("\n")
     );
+
+    let has_pre_311: bool = checked
+        .iter()
+        .any(|&(major, minor): &(u8, u8)| major < 3 || (major == 3 && minor < 11));
+    if has_pre_311 {
+        for opname in [
+            "LOAD_DEREF",
+            "STORE_DEREF",
+            "LOAD_CLOSURE",
+            "LOAD_CLASSDEREF",
+        ] {
+            let tally: ArgreprTally = tallies.get(opname).copied().unwrap_or_default();
+            assert!(
+                tally.checked > 0,
+                "corpus never produced {opname} on a pre-3.11 interpreter, so the \
+                 cell-and-free name table is unverified there; matched/checked: {}",
+                tally_line(&tallies)
+            );
+        }
+    }
+    let has_super_attr_opcode: bool = checked
+        .iter()
+        .any(|&(major, minor): &(u8, u8)| major > 3 || (major == 3 && minor >= 12));
+    if has_super_attr_opcode {
+        let tally: ArgreprTally = tallies.get("LOAD_SUPER_ATTR").copied().unwrap_or_default();
+        assert!(
+            tally.checked > 0,
+            "corpus never produced LOAD_SUPER_ATTR on a 3.12+ interpreter, so its name and \
+             NULL|self rendering is unverified; matched/checked: {}",
+            tally_line(&tallies)
+        );
+    }
 
     let has_311_plus: bool = checked
         .iter()
