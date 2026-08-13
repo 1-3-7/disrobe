@@ -32,6 +32,7 @@ use disrobe_binfmt::containers::{
     vhdx_materialize_logical_disk, walk_cramfs, walk_ext4, walk_fat, walk_installshield,
     walk_jffs2, walk_minixfs, walk_ntfs, walk_romfs, walk_squashfs, walk_ubifs, walk_yaffs2,
 };
+use disrobe_binfmt::coverage::{ByteCoverage, file_byte_coverage};
 use disrobe_binfmt::error::Result;
 use disrobe_binfmt::structural::{
     locate_zip_central_directory, validate_dex, validate_elf, validate_java_class, validate_macho,
@@ -901,6 +902,7 @@ reached_when_not_empty! {
     MsiExtractable => cabs,
     MsiSummary => tables,
     disrobe_binfmt::native::NativeFile => sections,
+    ByteCoverage => regions,
     NtfsWalk => files,
     disrobe_binfmt::containers::oci::OciIndex => manifests,
     OciManifest => layers,
@@ -1057,7 +1059,35 @@ fn probe_structural(bytes: &[u8]) -> Hits {
     hits.record(native);
     hits.record(parse_elf_dynamic(bytes));
     hits.record(native_lang_fingerprint(bytes));
+    hits.record(probe_byte_coverage(bytes));
     hits
+}
+
+fn probe_byte_coverage(bytes: &[u8]) -> Result<ByteCoverage> {
+    let coverage: ByteCoverage = file_byte_coverage(bytes)?;
+    let mut cursor: u64 = 0;
+    for region in &coverage.regions {
+        assert_eq!(
+            region.start, cursor,
+            "a mutated input must still produce a tiling of the file"
+        );
+        assert!(
+            region.end > region.start,
+            "a mutated input must never produce a zero width region"
+        );
+        cursor = region.end;
+    }
+    assert_eq!(
+        cursor, coverage.file_len,
+        "a mutated input must still be accounted for to its last byte"
+    );
+    assert_eq!(
+        coverage.claimed_bytes + coverage.slack_bytes + coverage.unclaimed_bytes,
+        coverage.file_len,
+        "a mutated input must never inflate or lose its totals"
+    );
+
+    Ok(coverage)
 }
 
 fn probe_container_parsers(bytes: &[u8]) -> Hits {
