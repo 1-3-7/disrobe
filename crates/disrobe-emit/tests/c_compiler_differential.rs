@@ -72,17 +72,31 @@ const fn binary_index(op: BinaryOp) -> usize {
     }
 }
 
-const VALUE_UNARY: [UnaryOp; 4] = [UnaryOp::Neg, UnaryOp::Pos, UnaryOp::Not, UnaryOp::BitNot];
+const ALL_UNARY: [UnaryOp; 8] = [
+    UnaryOp::Neg,
+    UnaryOp::Pos,
+    UnaryOp::Not,
+    UnaryOp::BitNot,
+    UnaryOp::Deref,
+    UnaryOp::AddrOf,
+    UnaryOp::PreInc,
+    UnaryOp::PreDec,
+];
 
-const fn value_unary_index(op: UnaryOp) -> Option<usize> {
+const fn unary_index(op: UnaryOp) -> usize {
     match op {
-        UnaryOp::Neg => Some(0),
-        UnaryOp::Pos => Some(1),
-        UnaryOp::Not => Some(2),
-        UnaryOp::BitNot => Some(3),
-        UnaryOp::Deref | UnaryOp::AddrOf | UnaryOp::PreInc | UnaryOp::PreDec => None,
+        UnaryOp::Neg => 0,
+        UnaryOp::Pos => 1,
+        UnaryOp::Not => 2,
+        UnaryOp::BitNot => 3,
+        UnaryOp::Deref => 4,
+        UnaryOp::AddrOf => 5,
+        UnaryOp::PreInc => 6,
+        UnaryOp::PreDec => 7,
     }
 }
+
+const VALUE_UNARY: [UnaryOp; 4] = [UnaryOp::Neg, UnaryOp::Pos, UnaryOp::Not, UnaryOp::BitNot];
 
 const ALL_ASSIGN: [AssignOp; 11] = [
     AssignOp::Assign,
@@ -238,11 +252,120 @@ const LEAF_VALUES: [u32; 12] = [
 const RADICES: [Radix; 3] = [Radix::Dec, Radix::Hex, Radix::Oct];
 
 #[derive(Default)]
-struct Coverage {
+struct Census {
     binary: [u32; ALL_BINARY.len()],
-    unary: [u32; VALUE_UNARY.len()],
+    unary: [u32; ALL_UNARY.len()],
+    assign: [u32; ALL_ASSIGN.len()],
+    postfix: [u32; ALL_POSTFIX.len()],
     ternary: u32,
+    comma: u32,
     cast: u32,
+    call: u32,
+    index: u32,
+    member: u32,
+    sizeof_expr: u32,
+    sizeof_type: u32,
+}
+
+impl Census {
+    fn record(&mut self, expr: &CExpr) {
+        match expr {
+            CExpr::Int { .. }
+            | CExpr::Float(_)
+            | CExpr::Char(_)
+            | CExpr::Str(_)
+            | CExpr::Ident(_) => {}
+            CExpr::SizeofType(_) => self.sizeof_type += 1,
+            CExpr::Unary { op, operand } => {
+                self.unary[unary_index(*op)] += 1;
+                self.record(operand);
+            }
+            CExpr::Postfix { op, operand } => {
+                self.postfix[postfix_index(*op)] += 1;
+                self.record(operand);
+            }
+            CExpr::Binary { op, lhs, rhs } => {
+                self.binary[binary_index(*op)] += 1;
+                self.record(lhs);
+                self.record(rhs);
+            }
+            CExpr::Assign { op, lhs, rhs } => {
+                self.assign[assign_index(*op)] += 1;
+                self.record(lhs);
+                self.record(rhs);
+            }
+            CExpr::Ternary { cond, then, els } => {
+                self.ternary += 1;
+                self.record(cond);
+                self.record(then);
+                self.record(els);
+            }
+            CExpr::Comma { lhs, rhs } => {
+                self.comma += 1;
+                self.record(lhs);
+                self.record(rhs);
+            }
+            CExpr::Call { callee, args } => {
+                self.call += 1;
+                self.record(callee);
+                for arg in args {
+                    self.record(arg);
+                }
+            }
+            CExpr::Index { base, index } => {
+                self.index += 1;
+                self.record(base);
+                self.record(index);
+            }
+            CExpr::Member { base, .. } => {
+                self.member += 1;
+                self.record(base);
+            }
+            CExpr::Cast { operand, .. } => {
+                self.cast += 1;
+                self.record(operand);
+            }
+            CExpr::SizeofExpr(operand) => {
+                self.sizeof_expr += 1;
+                self.record(operand);
+            }
+        }
+    }
+
+    fn absorb(&mut self, other: &Self) {
+        for (slot, hits) in other.binary.iter().enumerate() {
+            self.binary[slot] += hits;
+        }
+        for (slot, hits) in other.unary.iter().enumerate() {
+            self.unary[slot] += hits;
+        }
+        for (slot, hits) in other.assign.iter().enumerate() {
+            self.assign[slot] += hits;
+        }
+        for (slot, hits) in other.postfix.iter().enumerate() {
+            self.postfix[slot] += hits;
+        }
+        self.ternary += other.ternary;
+        self.comma += other.comma;
+        self.cast += other.cast;
+        self.call += other.call;
+        self.index += other.index;
+        self.member += other.member;
+        self.sizeof_expr += other.sizeof_expr;
+        self.sizeof_type += other.sizeof_type;
+    }
+
+    fn of(corpus: &[CExpr]) -> Self {
+        let mut census: Self = Self::default();
+        for expr in corpus {
+            census.record(expr);
+        }
+        census
+    }
+
+    fn covered(hits: &[u32]) -> usize {
+        hits.iter().filter(|count: &&u32| **count > 0).count()
+    }
 }
 
 fn leaf(rng: &mut Rng) -> CExpr {
@@ -251,30 +374,26 @@ fn leaf(rng: &mut Rng) -> CExpr {
     unsigned_literal(value, radix)
 }
 
-fn value_expr(rng: &mut Rng, depth: u32, seen: &mut Coverage) -> CExpr {
+fn value_expr(rng: &mut Rng, depth: u32) -> CExpr {
     if depth == 0 {
         return leaf(rng);
     }
     match rng.below(8) {
         0..=3 => {
             let op: BinaryOp = ALL_BINARY[rng.below(ALL_BINARY.len())];
-            seen.binary[binary_index(op)] += 1;
-            let lhs: CExpr = value_expr(rng, depth - 1, seen);
-            let rhs: CExpr = value_expr(rng, depth - 1, seen);
+            let lhs: CExpr = value_expr(rng, depth - 1);
+            let rhs: CExpr = value_expr(rng, depth - 1);
             guarded_binary(op, lhs, rhs)
         }
         4 | 5 => {
             let op: UnaryOp = VALUE_UNARY[rng.below(VALUE_UNARY.len())];
-            let slot: usize = value_unary_index(op).expect("value generator uses value unary ops");
-            seen.unary[slot] += 1;
-            let operand: CExpr = value_expr(rng, depth - 1, seen);
+            let operand: CExpr = value_expr(rng, depth - 1);
             guarded_unary(op, operand)
         }
         6 => {
-            seen.ternary += 1;
-            let cond: CExpr = value_expr(rng, depth - 1, seen);
-            let then: CExpr = value_expr(rng, depth - 1, seen);
-            let els: CExpr = value_expr(rng, depth - 1, seen);
+            let cond: CExpr = value_expr(rng, depth - 1);
+            let then: CExpr = value_expr(rng, depth - 1);
+            let els: CExpr = value_expr(rng, depth - 1);
             CExpr::Ternary {
                 cond: Box::new(cond),
                 then: Box::new(then),
@@ -282,8 +401,7 @@ fn value_expr(rng: &mut Rng, depth: u32, seen: &mut Coverage) -> CExpr {
             }
         }
         _ => {
-            seen.cast += 1;
-            let operand: CExpr = value_expr(rng, depth - 1, seen);
+            let operand: CExpr = value_expr(rng, depth - 1);
             to_unsigned(operand)
         }
     }
@@ -344,36 +462,82 @@ fn apply_binary(op: BinaryOp, left: u32, right: u32) -> u32 {
     }
 }
 
-fn value_corpus(seen: &mut Coverage) -> Vec<CExpr> {
+fn value_corpus() -> Vec<CExpr> {
     let mut rng: Rng = Rng::new(0x5f37_2c19_a4b8_0d61);
     let mut corpus: Vec<CExpr> = Vec::new();
     for op in ALL_BINARY {
         for _ in 0..4 {
-            seen.binary[binary_index(op)] += 1;
-            let lhs: CExpr = value_expr(&mut rng, 3, seen);
-            let rhs: CExpr = value_expr(&mut rng, 3, seen);
+            let lhs: CExpr = value_expr(&mut rng, 3);
+            let rhs: CExpr = value_expr(&mut rng, 3);
             corpus.push(guarded_binary(op, lhs, rhs));
         }
     }
     for op in VALUE_UNARY {
         for _ in 0..4 {
-            let slot: usize = value_unary_index(op).expect("value unary op");
-            seen.unary[slot] += 1;
-            let operand: CExpr = value_expr(&mut rng, 3, seen);
+            let operand: CExpr = value_expr(&mut rng, 3);
             corpus.push(guarded_unary(op, operand));
         }
     }
     for _ in 0..160 {
-        corpus.push(value_expr(&mut rng, 4, seen));
+        corpus.push(value_expr(&mut rng, 4));
     }
     corpus
+}
+
+const SUFFIX_PROBE_VALUE: u32 = 63;
+
+fn suffix_matrix() -> Vec<(IntSuffix, &'static str)> {
+    vec![
+        (
+            IntSuffix {
+                unsigned: false,
+                long: LongSuffix::None,
+            },
+            "int",
+        ),
+        (
+            IntSuffix {
+                unsigned: true,
+                long: LongSuffix::None,
+            },
+            "unsigned int",
+        ),
+        (
+            IntSuffix {
+                unsigned: false,
+                long: LongSuffix::Long,
+            },
+            "long",
+        ),
+        (
+            IntSuffix {
+                unsigned: true,
+                long: LongSuffix::Long,
+            },
+            "unsigned long",
+        ),
+        (
+            IntSuffix {
+                unsigned: false,
+                long: LongSuffix::LongLong,
+            },
+            "long long",
+        ),
+        (
+            IntSuffix {
+                unsigned: true,
+                long: LongSuffix::LongLong,
+            },
+            "unsigned long long",
+        ),
+    ]
 }
 
 #[test]
 fn constant_expressions_evaluate_the_same_in_every_host_compiler() {
     let compilers: &[Compiler] = required_compilers();
-    let mut seen: Coverage = Coverage::default();
-    let corpus: Vec<CExpr> = value_corpus(&mut seen);
+    let corpus: Vec<CExpr> = value_corpus();
+    let census: Census = Census::of(&corpus);
     let interner: Interner = Interner::new();
 
     let mut source: String = String::new();
@@ -389,34 +553,51 @@ fn constant_expressions_evaluate_the_same_in_every_host_compiler() {
         .expect("format probe");
     }
 
+    let mut literal_cases: usize = 0;
+    for (suffix_index, (suffix, ctype)) in suffix_matrix().into_iter().enumerate() {
+        for (radix_index, radix) in RADICES.into_iter().enumerate() {
+            let expr: CExpr = CExpr::Int {
+                value: u64::from(SUFFIX_PROBE_VALUE),
+                radix,
+                suffix,
+            };
+            let rendered: String = render_expr(&expr, &interner, WIDE);
+            let label: String = format!("literal {suffix_index} radix {radix_index}");
+            writeln!(
+                source,
+                "_Static_assert(({rendered}) == {SUFFIX_PROBE_VALUE}, \"{label} value\");"
+            )
+            .expect("format probe");
+            writeln!(
+                source,
+                "_Static_assert(sizeof({rendered}) == sizeof({ctype}), \"{label} width\");"
+            )
+            .expect("format probe");
+            let signedness: &str = if suffix.unsigned { ">" } else { "<" };
+            writeln!(
+                source,
+                "_Static_assert(({rendered}) * 0 - 1 {signedness} 0, \"{label} signedness\");"
+            )
+            .expect("format probe");
+            literal_cases += 1;
+        }
+    }
+
     for compiler in compilers {
         syntax_check(compiler, &source, "constant expression");
     }
 
-    for (slot, hits) in seen.binary.iter().enumerate() {
-        assert!(
-            *hits > 0,
-            "binary operator {:?} never reached the compiler",
-            ALL_BINARY[slot]
-        );
-    }
-    for (slot, hits) in seen.unary.iter().enumerate() {
-        assert!(
-            *hits > 0,
-            "unary operator {:?} never reached the compiler",
-            VALUE_UNARY[slot]
-        );
-    }
-    assert!(seen.ternary > 0, "no ternary reached the compiler");
-    assert!(seen.cast > 0, "no cast reached the compiler");
     println!(
-        "constant expressions: {}/{} cases, binary operators {}/{}, unary operators {}/{}, \
-         compilers {}/{}",
+        "constant expressions: {}/{} cases, binary operators {}/{}, value unary operators {}/{}, \
+         literal suffix and radix combinations {literal_cases}/18, compilers {}/{}",
         corpus.len(),
         corpus.len(),
-        seen.binary.iter().filter(|hits: &&u32| **hits > 0).count(),
+        Census::covered(&census.binary),
         ALL_BINARY.len(),
-        seen.unary.iter().filter(|hits: &&u32| **hits > 0).count(),
+        VALUE_UNARY
+            .iter()
+            .filter(|op: &&UnaryOp| census.unary[unary_index(**op)] > 0)
+            .count(),
         VALUE_UNARY.len(),
         compilers.len(),
         compilers.len()
@@ -510,6 +691,299 @@ fn declarator_chains_have_the_type_the_chain_declares() {
         chains.len(),
         compilers.len(),
         compilers.len()
+    );
+}
+
+const POINTER_PREAMBLE: &str = "\
+unsigned int arr[4] = { 10u, 20u, 30u, 40u };
+unsigned int *ptr = arr;
+struct pair { unsigned int lo; unsigned int hi; };
+struct pair pr = { 5u, 9u };
+struct pair *prp = &pr;
+unsigned int twice(unsigned int x) { return x * 2u; }
+unsigned int (*fnp)(unsigned int) = twice;
+_Static_assert(sizeof(arr) == 16, \"abi array width\");
+";
+
+struct PointerCase {
+    expr: CExpr,
+    expected: u32,
+    label: &'static str,
+}
+
+fn pointer_corpus(interner: &mut Interner) -> Vec<PointerCase> {
+    let arr: CExpr = CExpr::ident(interner, "arr");
+    let ptr: CExpr = CExpr::ident(interner, "ptr");
+    let pr: CExpr = CExpr::ident(interner, "pr");
+    let prp: CExpr = CExpr::ident(interner, "prp");
+    let fnp: CExpr = CExpr::ident(interner, "fnp");
+    let twice: CExpr = CExpr::ident(interner, "twice");
+    let lo: Symbol = interner.intern("lo");
+    let hi: Symbol = interner.intern("hi");
+    let deref = |operand: CExpr| CExpr::Unary {
+        op: UnaryOp::Deref,
+        operand: Box::new(operand),
+    };
+    let addr_of = |operand: CExpr| CExpr::Unary {
+        op: UnaryOp::AddrOf,
+        operand: Box::new(operand),
+    };
+    let index = |base: CExpr, at: u32| CExpr::Index {
+        base: Box::new(base),
+        index: Box::new(unsigned_literal(at, Radix::Dec)),
+    };
+    let add = |lhs: CExpr, rhs: u32| CExpr::Binary {
+        op: BinaryOp::Add,
+        lhs: Box::new(lhs),
+        rhs: Box::new(unsigned_literal(rhs, Radix::Dec)),
+    };
+    let member = |base: CExpr, arrow: bool, field: Symbol| CExpr::Member {
+        base: Box::new(base),
+        arrow,
+        field,
+    };
+    let call = |callee: CExpr, arg: CExpr| CExpr::Call {
+        callee: Box::new(callee),
+        args: vec![arg],
+    };
+
+    vec![
+        PointerCase {
+            expr: deref(add(ptr.clone(), 1)),
+            expected: 20,
+            label: "dereference of a pointer sum",
+        },
+        PointerCase {
+            expr: add(deref(ptr.clone()), 1),
+            expected: 11,
+            label: "sum of a dereference",
+        },
+        PointerCase {
+            expr: deref(add(arr.clone(), 3)),
+            expected: 40,
+            label: "dereference of an array sum",
+        },
+        PointerCase {
+            expr: deref(addr_of(index(arr.clone(), 3))),
+            expected: 40,
+            label: "dereference of an address of a subscript",
+        },
+        PointerCase {
+            expr: CExpr::Binary {
+                op: BinaryOp::Sub,
+                lhs: Box::new(addr_of(index(arr.clone(), 2))),
+                rhs: Box::new(arr.clone()),
+            },
+            expected: 2,
+            label: "difference between an address and an array",
+        },
+        PointerCase {
+            expr: index(arr.clone(), 1),
+            expected: 20,
+            label: "plain subscript",
+        },
+        PointerCase {
+            expr: deref(add(addr_of(index(arr.clone(), 0)), 2)),
+            expected: 30,
+            label: "dereference of an address plus an offset",
+        },
+        PointerCase {
+            expr: member(prp.clone(), true, hi),
+            expected: 9,
+            label: "arrow member access",
+        },
+        PointerCase {
+            expr: member(pr.clone(), false, lo),
+            expected: 5,
+            label: "dot member access",
+        },
+        PointerCase {
+            expr: member(deref(prp.clone()), false, hi),
+            expected: 9,
+            label: "dot member access through a dereference",
+        },
+        PointerCase {
+            expr: call(twice.clone(), index(arr.clone(), 1)),
+            expected: 40,
+            label: "call with a subscript argument",
+        },
+        PointerCase {
+            expr: call(deref(fnp.clone()), unsigned_literal(3, Radix::Dec)),
+            expected: 6,
+            label: "call through a dereferenced function pointer",
+        },
+        PointerCase {
+            expr: call(fnp.clone(), unsigned_literal(4, Radix::Dec)),
+            expected: 8,
+            label: "call through a function pointer",
+        },
+        PointerCase {
+            expr: CExpr::SizeofExpr(Box::new(arr.clone())),
+            expected: 16,
+            label: "sizeof an array expression",
+        },
+        PointerCase {
+            expr: CExpr::SizeofExpr(Box::new(index(arr.clone(), 0))),
+            expected: 4,
+            label: "sizeof a subscript expression",
+        },
+        PointerCase {
+            expr: CExpr::SizeofType(TypeName {
+                base: CBaseType::plain(CTypeSpec::UnsignedInt),
+                declarator: DeclaratorChain::Terminal.pointer_to(),
+            }),
+            expected: 8,
+            label: "sizeof a pointer type name",
+        },
+        PointerCase {
+            expr: CExpr::Binary {
+                op: BinaryOp::Mul,
+                lhs: Box::new(CExpr::SizeofExpr(Box::new(index(arr.clone(), 0)))),
+                rhs: Box::new(unsigned_literal(3, Radix::Dec)),
+            },
+            expected: 12,
+            label: "product of a sizeof and a literal",
+        },
+    ]
+}
+
+#[test]
+fn pointer_and_postfix_operators_read_the_memory_the_tree_names() {
+    let compilers: &[Compiler] = required_compilers();
+    let mut interner: Interner = Interner::new();
+    let cases: Vec<PointerCase> = pointer_corpus(&mut interner);
+
+    let mut source: String = String::from(POINTER_PREAMBLE);
+    for (index, case) in cases.iter().enumerate() {
+        let rendered: String = render_expr(&case.expr, &interner, WIDE);
+        writeln!(
+            source,
+            "unsigned int ptr_case{index}(void) {{ return (unsigned int)({rendered}); }}"
+        )
+        .expect("format probe");
+    }
+    source.push_str("int main(void) {\n");
+    for (index, case) in cases.iter().enumerate() {
+        writeln!(
+            source,
+            "    if (ptr_case{index}() != {}u) return {};",
+            case.expected,
+            index + 1
+        )
+        .expect("format probe");
+    }
+    source.push_str("    return 0;\n}\n");
+
+    let roster: String = cases
+        .iter()
+        .enumerate()
+        .map(|(index, case): (usize, &PointerCase)| format!("{}={}", index + 1, case.label))
+        .collect::<Vec<String>>()
+        .join(", ");
+    for compiler in compilers {
+        build_and_run(compiler, &source, &format!("pointer operator ({roster})"));
+    }
+
+    let corpus: Vec<CExpr> = cases
+        .iter()
+        .map(|case: &PointerCase| case.expr.clone())
+        .collect();
+    let census: Census = Census::of(&corpus);
+    assert!(
+        census.unary[unary_index(UnaryOp::Deref)] > 0,
+        "no dereference reached the compiler"
+    );
+    assert!(
+        census.unary[unary_index(UnaryOp::AddrOf)] > 0,
+        "no address-of reached the compiler"
+    );
+    println!(
+        "pointer operators: {}/{} cases, {} dereferences, {} address-of, {} calls, {} subscripts, \
+         {} member accesses, {} sizeof expressions, {} sizeof type names, compilers {}/{}",
+        cases.len(),
+        cases.len(),
+        census.unary[unary_index(UnaryOp::Deref)],
+        census.unary[unary_index(UnaryOp::AddrOf)],
+        census.call,
+        census.index,
+        census.member,
+        census.sizeof_expr,
+        census.sizeof_type,
+        compilers.len(),
+        compilers.len()
+    );
+}
+
+#[test]
+fn every_expression_operator_reaches_a_compiler_graded_corpus() {
+    let mut interner: Interner = Interner::new();
+    let mut total: Census = Census::default();
+    total.absorb(&Census::of(&value_corpus()));
+    total.absorb(&Census::of(
+        &pointer_corpus(&mut interner)
+            .iter()
+            .map(|case: &PointerCase| case.expr.clone())
+            .collect::<Vec<CExpr>>(),
+    ));
+    total.absorb(&Census::of(
+        &seq_corpus(&mut interner)
+            .iter()
+            .map(|case: &SeqCase| case.expr.clone())
+            .collect::<Vec<CExpr>>(),
+    ));
+
+    for (slot, hits) in total.binary.iter().enumerate() {
+        assert!(
+            *hits > 0,
+            "binary operator {:?} is ungraded",
+            ALL_BINARY[slot]
+        );
+    }
+    for (slot, hits) in total.unary.iter().enumerate() {
+        assert!(
+            *hits > 0,
+            "unary operator {:?} is ungraded",
+            ALL_UNARY[slot]
+        );
+    }
+    for (slot, hits) in total.assign.iter().enumerate() {
+        assert!(
+            *hits > 0,
+            "assignment operator {:?} is ungraded",
+            ALL_ASSIGN[slot]
+        );
+    }
+    for (slot, hits) in total.postfix.iter().enumerate() {
+        assert!(
+            *hits > 0,
+            "postfix operator {:?} is ungraded",
+            ALL_POSTFIX[slot]
+        );
+    }
+    for (count, name) in [
+        (total.ternary, "conditional"),
+        (total.comma, "comma"),
+        (total.cast, "cast"),
+        (total.call, "call"),
+        (total.index, "subscript"),
+        (total.member, "member access"),
+        (total.sizeof_expr, "sizeof expression"),
+        (total.sizeof_type, "sizeof type name"),
+    ] {
+        assert!(count > 0, "{name} is ungraded");
+    }
+    println!(
+        "operator census: binary {}/{}, unary {}/{}, assignment {}/{}, postfix {}/{}, and every \
+         one of conditional, comma, cast, call, subscript, member access, sizeof expression and \
+         sizeof type name",
+        Census::covered(&total.binary),
+        ALL_BINARY.len(),
+        Census::covered(&total.unary),
+        ALL_UNARY.len(),
+        Census::covered(&total.assign),
+        ALL_ASSIGN.len(),
+        Census::covered(&total.postfix),
+        ALL_POSTFIX.len()
     );
 }
 
@@ -649,7 +1123,7 @@ struct SeqCase {
     label: String,
 }
 
-fn seq_corpus(interner: &mut Interner) -> (Vec<SeqCase>, [u32; 11], [u32; 2], [u32; 2]) {
+fn seq_corpus(interner: &mut Interner) -> Vec<SeqCase> {
     let vars: Vec<Symbol> = SEQ_VARS
         .iter()
         .map(|name: &&str| interner.intern(name))
@@ -657,12 +1131,8 @@ fn seq_corpus(interner: &mut Interner) -> (Vec<SeqCase>, [u32; 11], [u32; 2], [u
     let var = |index: usize| CExpr::Ident(vars[index]);
     let lit = |value: u32| unsigned_literal(value, Radix::Dec);
     let mut cases: Vec<SeqCase> = Vec::new();
-    let mut assign_hits: [u32; 11] = [0; 11];
-    let mut postfix_hits: [u32; 2] = [0; 2];
-    let mut prefix_hits: [u32; 2] = [0; 2];
 
     for op in ALL_ASSIGN {
-        assign_hits[assign_index(op)] += 1;
         let rhs: CExpr = CExpr::Binary {
             op: BinaryOp::Add,
             lhs: Box::new(lit(2)),
@@ -683,7 +1153,6 @@ fn seq_corpus(interner: &mut Interner) -> (Vec<SeqCase>, [u32; 11], [u32; 2], [u
     }
 
     for op in ALL_POSTFIX {
-        postfix_hits[postfix_index(op)] += 1;
         cases.push(SeqCase {
             expr: CExpr::Binary {
                 op: BinaryOp::Add,
@@ -707,8 +1176,7 @@ fn seq_corpus(interner: &mut Interner) -> (Vec<SeqCase>, [u32; 11], [u32; 2], [u
         });
     }
 
-    for (slot, op) in [UnaryOp::PreInc, UnaryOp::PreDec].into_iter().enumerate() {
-        prefix_hits[slot] += 1;
+    for op in [UnaryOp::PreInc, UnaryOp::PreDec] {
         cases.push(SeqCase {
             expr: CExpr::Binary {
                 op: BinaryOp::Mul,
@@ -818,7 +1286,7 @@ fn seq_corpus(interner: &mut Interner) -> (Vec<SeqCase>, [u32; 11], [u32; 2], [u
         label: "comma sequences a prefix and a postfix".to_owned(),
     });
 
-    (cases, assign_hits, postfix_hits, prefix_hits)
+    cases
 }
 
 fn eval_env(expr: &CExpr, env: &mut BTreeMap<Symbol, u32>) -> u32 {
@@ -913,12 +1381,13 @@ const fn apply_assign(op: AssignOp, current: u32, value: u32) -> u32 {
 fn sequencing_operators_evaluate_as_the_tree_says() {
     let compilers: &[Compiler] = required_compilers();
     let mut interner: Interner = Interner::new();
-    let (cases, assign_hits, postfix_hits, prefix_hits): (
-        Vec<SeqCase>,
-        [u32; 11],
-        [u32; 2],
-        [u32; 2],
-    ) = seq_corpus(&mut interner);
+    let cases: Vec<SeqCase> = seq_corpus(&mut interner);
+    let census: Census = Census::of(
+        &cases
+            .iter()
+            .map(|case: &SeqCase| case.expr.clone())
+            .collect::<Vec<CExpr>>(),
+    );
 
     let mut source: String = String::new();
     source.push_str("_Static_assert(sizeof(unsigned int) == 4, \"abi unsigned int width\");\n");
@@ -986,33 +1455,36 @@ fn sequencing_operators_evaluate_as_the_tree_says() {
         );
     }
 
-    for (slot, hits) in assign_hits.iter().enumerate() {
+    for (slot, hits) in census.assign.iter().enumerate() {
         assert!(
             *hits > 0,
             "assignment operator {:?} never reached the compiler",
             ALL_ASSIGN[slot]
         );
     }
-    for (slot, hits) in postfix_hits.iter().enumerate() {
+    for (slot, hits) in census.postfix.iter().enumerate() {
         assert!(
             *hits > 0,
             "postfix operator {:?} never reached the compiler",
             ALL_POSTFIX[slot]
         );
     }
-    assert!(
-        prefix_hits.iter().all(|hits: &u32| *hits > 0),
-        "both prefix increment operators must reach the compiler"
-    );
+    for op in [UnaryOp::PreInc, UnaryOp::PreDec] {
+        assert!(
+            census.unary[unary_index(op)] > 0,
+            "prefix operator {op:?} never reached the compiler"
+        );
+    }
     println!(
-        "sequencing: {}/{} cases, assignment operators {}/{}, postfix operators {}/{}, \
-         compilers {}/{}",
+        "sequencing: {}/{} cases, assignment operators {}/{}, postfix operators {}/{}, prefix \
+         increments 2/2, comma expressions {}, compilers {}/{}",
         cases.len(),
         cases.len(),
-        assign_hits.iter().filter(|hits: &&u32| **hits > 0).count(),
+        Census::covered(&census.assign),
         ALL_ASSIGN.len(),
-        postfix_hits.iter().filter(|hits: &&u32| **hits > 0).count(),
+        Census::covered(&census.postfix),
         ALL_POSTFIX.len(),
+        census.comma,
         compilers.len(),
         compilers.len()
     );
