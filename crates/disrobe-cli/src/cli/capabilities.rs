@@ -17,7 +17,11 @@ pub(crate) fn run(input: PathBuf, fmt: OutputFormat) -> miette::Result<()> {
     output::emit(fmt, &report, || render_text(&report))
 }
 
-fn build_report(bytes: &[u8], uri: &str, input: &Path) -> miette::Result<CapabilitiesReport> {
+pub(crate) fn build_report(
+    bytes: &[u8],
+    uri: &str,
+    input: &Path,
+) -> miette::Result<CapabilitiesReport> {
     if let Ok(env) = Envelope::decode(bytes) {
         let module: Module = disrobe_query::module_from_envelope(&env).map_err(|e| {
             miette::miette!(

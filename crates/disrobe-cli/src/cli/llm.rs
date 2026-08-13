@@ -334,16 +334,36 @@ pub(crate) fn iso8601_now() -> String {
     let dur: std::time::Duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs: u64 = dur.as_secs();
-    let nanos: u32 = dur.subsec_nanos();
+    iso8601_from_epoch(
+        dur.as_secs(),
+        FractionDigits::Nanoseconds(dur.subsec_nanos()),
+    )
+}
+
+#[must_use]
+pub(crate) fn iso8601_millis_from_epoch(seconds: u64) -> String {
+    iso8601_from_epoch(seconds, FractionDigits::Milliseconds(0))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FractionDigits {
+    Milliseconds(u32),
+    Nanoseconds(u32),
+}
+
+fn iso8601_from_epoch(seconds: u64, fraction: FractionDigits) -> String {
     let seconds_per_day: u64 = 86_400;
-    let days_since_epoch: u64 = secs / seconds_per_day;
-    let time_in_day: u64 = secs % seconds_per_day;
+    let days_since_epoch: u64 = seconds / seconds_per_day;
+    let time_in_day: u64 = seconds % seconds_per_day;
     let hh: u64 = time_in_day / 3600;
     let mm: u64 = (time_in_day % 3600) / 60;
     let ss: u64 = time_in_day % 60;
     let (year, month, day): (i32, u32, u32) = civil_from_days(days_since_epoch as i64);
-    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{nanos:09}Z")
+    let head: String = format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}");
+    match fraction {
+        FractionDigits::Milliseconds(value) => format!("{head}.{value:03}Z"),
+        FractionDigits::Nanoseconds(value) => format!("{head}.{value:09}Z"),
+    }
 }
 
 fn civil_from_days(z: i64) -> (i32, u32, u32) {

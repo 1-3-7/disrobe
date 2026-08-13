@@ -4,6 +4,8 @@ use disrobe_core::behavior::{self, BehaviorReport, Category, CategoryFinding};
 use disrobe_core::ioc::{self, IocReport};
 
 use super::report::{BatchReport, InputIdentity, SingleReport, tier_label};
+#[cfg(test)]
+use super::report::{EvidenceItem, EvidenceRole, HashSource, Reproduction, WallKind, WallView};
 
 const MAX_IOC_ROWS: usize = 200;
 const MAX_BEHAVIOR_EVIDENCE: usize = 6;
@@ -659,6 +661,94 @@ fn trim_signal(signal: &str) -> String {
     }
 }
 
+fn render_walls(report: &SingleReport, out: &mut String) {
+    let total: usize = report.walls.len().saturating_add(report.failures.len());
+    section_open(
+        out,
+        ICON_LOCK,
+        "Walls and failures",
+        Some(total.to_string()),
+    );
+    if total == 0 {
+        out.push_str(
+            "<div class=\"panel\"><div class=\"empty\">no layer stopped short and no layer failed</div></div></section>",
+        );
+        return;
+    }
+    out.push_str(
+        "<div class=\"panel\"><table><thead><tr><th>kind</th><th class=\"r\">node</th>\
+<th>pass</th><th>missing input</th></tr></thead><tbody>",
+    );
+    for wall in &report.walls {
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<tr><td>{k}</td><td class=\"r idx\">{n}</td><td><span class=\"mono\">{p}</span></td><td>{m}</td></tr>",
+            k = status_chip(wall.kind.label(), "var(--warn)"),
+            n = wall.node_id,
+            p = html_escape(wall.pass.as_deref().unwrap_or("terminal")),
+            m = html_escape(&wall.missing)
+        );
+    }
+    for failure in &report.failures {
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<tr><td>{k}</td><td class=\"r idx\">{n}</td><td><span class=\"mono\">{p}</span></td><td>{m}</td></tr>",
+            k = status_chip("failure", "var(--bad)"),
+            n = failure.node_id,
+            p = html_escape(failure.pass.as_deref().unwrap_or("terminal")),
+            m = html_escape(&failure.message)
+        );
+    }
+    out.push_str("</tbody></table></div></section>");
+}
+
+fn render_evidence(report: &SingleReport, out: &mut String) {
+    section_open(
+        out,
+        ICON_KEY,
+        "Evidence",
+        Some(report.evidence.len().to_string()),
+    );
+    out.push_str(
+        "<div class=\"panel\"><table><thead><tr><th>role</th><th>artifact</th>\
+<th class=\"r\">offset</th><th class=\"r\">length</th><th>blake3</th><th>digest source</th></tr></thead><tbody>",
+    );
+    for item in &report.evidence {
+        let _: Result<(), std::fmt::Error> = write!(
+            out,
+            "<tr><td>{role}</td><td><span class=\"mono\">{uri}</span></td>\
+<td class=\"r num\">{off}</td><td class=\"r num\">{len}</td>\
+<td><span class=\"mono\">{hash}</span></td><td>{src}</td></tr>",
+            role = html_escape(item.role.label()),
+            uri = html_escape(&item.uri),
+            off = item.byte_offset,
+            len = item
+                .byte_length
+                .map_or_else(|| "\u{2014}".to_owned(), |l: u64| l.to_string()),
+            hash = html_escape(item.blake3.as_deref().unwrap_or("\u{2014}")),
+            src = html_escape(
+                item.unavailable_reason
+                    .as_deref()
+                    .unwrap_or_else(|| item.hash_source.label())
+            )
+        );
+    }
+    out.push_str("</tbody></table></div></section>");
+}
+
+fn render_reproduction(report: &SingleReport, out: &mut String) {
+    section_open(out, ICON_TERMINAL, "Reproduction", None);
+    let _: Result<(), std::fmt::Error> = write!(
+        out,
+        "<div class=\"panel\"><pre class=\"mono\">{}</pre><ul class=\"note-list\">",
+        html_escape(&report.reproduction.command)
+    );
+    for step in &report.reproduction.steps {
+        let _: Result<(), std::fmt::Error> = write!(out, "<li>{}</li>", html_escape(step));
+    }
+    out.push_str("</ul></div></section>");
+}
+
 fn render_notes(report: &SingleReport, out: &mut String) {
     if report.notes.is_empty() {
         return;
@@ -713,7 +803,10 @@ pub(crate) fn render_single_html(report: &SingleReport, enrichment: &Enrichment)
     render_flow(report, &mut out);
     render_stage_table(report, &mut out);
     render_tier_histogram(report, &mut out);
+    render_walls(report, &mut out);
     render_artifacts(report, &mut out);
+    render_evidence(report, &mut out);
+    render_reproduction(report, &mut out);
 
     if let Some(ioc_report) = enrichment.ioc.as_ref() {
         render_ioc(ioc_report, &mut out);
@@ -868,6 +961,7 @@ mod tests {
             tiers: super::super::report::tier_totals_for_test(0, 1, 0, 0),
             stages: vec![StageView {
                 index: 1,
+                node_id: 1,
                 pass: "py.decompile".to_owned(),
                 verdict: "Complete".to_owned(),
                 confidence: "semantic",
@@ -877,6 +971,33 @@ mod tests {
                 format_out: Some("Python".to_owned()),
                 artifacts: vec!["app.py".to_owned()],
             }],
+            walls: vec![WallView {
+                kind: WallKind::DepthCapReached,
+                node_id: 1,
+                stage_index: Some(1),
+                pass: Some("py.decompile".to_owned()),
+                format_in: Some("pyc-3.11".to_owned()),
+                missing: "the chain reached its depth cap of 8 layers at depth 1".to_owned(),
+                artifact_blake3: "abcd1234".to_owned(),
+                artifact_size: 128,
+            }],
+            failures: Vec::new(),
+            evidence: vec![EvidenceItem {
+                role: EvidenceRole::AnalysisTarget,
+                uri: "app.pyc".to_owned(),
+                display: "app.pyc".to_owned(),
+                blake3: Some("abcd1234".to_owned()),
+                hash_source: HashSource::ChainDocument,
+                byte_offset: 0,
+                byte_length: Some(128),
+                stage_index: None,
+                node_id: Some(0),
+                unavailable_reason: None,
+            }],
+            reproduction: Reproduction {
+                command: "disrobe report out/app-auto".to_owned(),
+                steps: vec!["hash the analysis target with blake3".to_owned()],
+            },
             artifacts: vec!["app.py".to_owned()],
             notes: vec!["semantic-tier recovery".to_owned()],
         }

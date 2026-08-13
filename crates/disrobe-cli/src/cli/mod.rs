@@ -95,6 +95,8 @@ pub(crate) mod rename;
 #[cfg(feature = "chain")]
 pub(crate) mod report;
 #[cfg(feature = "chain")]
+pub(crate) mod report_forensic;
+#[cfg(feature = "chain")]
 pub(crate) mod report_html;
 #[cfg(feature = "ruby")]
 pub(crate) mod ruby;

@@ -1,3 +1,6 @@
+use std::path::Path;
+
+use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
 use serde::Serialize;
 
 #[cfg(feature = "pickle")]
@@ -7,6 +10,22 @@ const SARIF_SCHEMA_URI: &str = "https://raw.githubusercontent.com/oasis-tcs/sari
 const SARIF_VERSION: &str = "2.1.0";
 const DRIVER_NAME: &str = "disrobe";
 const DRIVER_INFO_URI: &str = "https://github.com/1-3-7/disrobe";
+
+pub(crate) fn artifact_uri(input: &Path) -> String {
+    let path: String = input.display().to_string().replace('\\', "/");
+    let encoded: String = percent_encode_str(&path, PercentEncodeSet::SARIF_ARTIFACT_URI);
+    if path.starts_with('/') {
+        return format!("file://{encoded}");
+    }
+    if path
+        .as_bytes()
+        .get(1)
+        .is_some_and(|byte: &u8| *byte == b':')
+    {
+        return format!("file:///{encoded}");
+    }
+    encoded
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +40,55 @@ pub(crate) struct SarifLog {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Run {
     pub(crate) tool: Tool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) automation_details: Option<RunAutomationDetails>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) invocations: Vec<Invocation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) artifacts: Vec<SarifArtifact>,
     pub(crate) results: Vec<SarifResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) properties: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunAutomationDetails {
+    pub(crate) id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Invocation {
+    pub(crate) execution_successful: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) arguments: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) command_line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) end_time_utc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SarifArtifact {
+    pub(crate) location: ArtifactLocation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) length: Option<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) roles: Vec<ArtifactRole>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) hashes: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ArtifactRole {
+    AnalysisTarget,
+    ResultFile,
+    Unmodified,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +115,8 @@ pub(crate) struct ReportingDescriptor {
     pub(crate) name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) short_description: Option<MultiformatMessageString>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) full_description: Option<MultiformatMessageString>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,19 +128,32 @@ pub(crate) struct MultiformatMessageString {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SarifLevel {
+    None,
     Note,
     Warning,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ResultKind {
+    Fail,
+    Review,
+    Informational,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SarifResult {
     pub(crate) rule_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<ResultKind>,
     pub(crate) level: SarifLevel,
     pub(crate) message: Message,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) locations: Vec<Location>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) properties: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,6 +180,21 @@ pub(crate) struct PhysicalLocation {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ArtifactLocation {
     pub(crate) uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) index: Option<usize>,
+}
+
+impl ArtifactLocation {
+    pub(crate) const fn at(uri: String) -> Self {
+        Self { uri, index: None }
+    }
+
+    pub(crate) const fn indexed(uri: String, index: usize) -> Self {
+        Self {
+            uri,
+            index: Some(index),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -113,6 +210,8 @@ pub(crate) struct Region {
     pub(crate) end_column: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) byte_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) byte_length: Option<u64>,
 }
 
 impl Region {
@@ -123,6 +222,7 @@ impl Region {
             end_line: None,
             end_column: None,
             byte_offset: None,
+            byte_length: None,
         }
     }
 
@@ -133,6 +233,18 @@ impl Region {
             end_line: None,
             end_column: None,
             byte_offset: Some(offset),
+            byte_length: None,
+        }
+    }
+
+    pub(crate) const fn byte_span(offset: u64, length: u64) -> Self {
+        Self {
+            start_line: None,
+            start_column: None,
+            end_line: None,
+            end_column: None,
+            byte_offset: Some(offset),
+            byte_length: Some(length),
         }
     }
 
@@ -151,8 +263,21 @@ impl SarifLog {
             version: SARIF_VERSION,
             runs: vec![Run {
                 tool: Tool { driver },
+                automation_details: None,
+                invocations: Vec::new(),
+                artifacts: Vec::new(),
                 results,
+                properties: None,
             }],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn from_run(run: Run) -> Self {
+        Self {
+            schema: SARIF_SCHEMA_URI,
+            version: SARIF_VERSION,
+            runs: vec![run],
         }
     }
 }
@@ -196,12 +321,14 @@ pub(crate) fn from_findings(findings: &[Finding], artifact_uri: &str) -> SarifLo
             id: (*id).to_owned(),
             name: Some((*id).to_owned()),
             short_description: None,
+            full_description: None,
         })
         .collect();
     let results: Vec<SarifResult> = findings
         .iter()
         .map(|f: &Finding| SarifResult {
             rule_id: f.category.clone(),
+            kind: None,
             level: severity_to_level(f.severity),
             message: Message {
                 text: f.offset.map_or_else(
@@ -211,14 +338,13 @@ pub(crate) fn from_findings(findings: &[Finding], artifact_uri: &str) -> SarifLo
             },
             locations: vec![Location {
                 physical_location: PhysicalLocation {
-                    artifact_location: ArtifactLocation {
-                        uri: artifact_uri.to_owned(),
-                    },
+                    artifact_location: ArtifactLocation::at(artifact_uri.to_owned()),
                     region: f
                         .offset
                         .and_then(|off: usize| u64::try_from(off).ok().map(Region::at_byte_offset)),
                 },
             }],
+            properties: None,
         })
         .collect();
     SarifLog::new(Driver::disrobe(rules), results)
@@ -228,6 +354,33 @@ pub(crate) fn from_findings(findings: &[Finding], artifact_uri: &str) -> SarifLo
 impl IntoSarif for SafetyReport {
     fn to_sarif(&self, artifact_uri: &str) -> SarifLog {
         from_findings(&self.findings, artifact_uri)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod uri_tests {
+    use super::artifact_uri;
+    use std::path::Path;
+
+    #[test]
+    fn artifact_uri_preserves_structure_and_encodes_reserved_path_bytes() {
+        assert_eq!(
+            artifact_uri(Path::new(r"C:\Program Files\a#b?.dll")),
+            "file:///C:/Program%20Files/a%23b%3F.dll"
+        );
+        assert_eq!(
+            artifact_uri(Path::new(r"\\server\share\a b")),
+            "file:////server/share/a%20b"
+        );
+        assert_eq!(
+            artifact_uri(Path::new("relative/a b/%")),
+            "relative/a%20b/%25"
+        );
+        assert_eq!(
+            artifact_uri(Path::new("relative/\u{00e9}")),
+            "relative/%C3%A9"
+        );
     }
 }
 

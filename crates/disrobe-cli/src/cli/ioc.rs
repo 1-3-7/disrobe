@@ -88,6 +88,7 @@ fn to_sarif(report: &IocReport, uri: &str, defang: bool) -> SarifLog {
             id: sarif_rule_id(*kind),
             name: Some(kind.label().to_owned()),
             short_description: None,
+            full_description: None,
         })
         .collect();
     let results: Vec<SarifResult> = report
@@ -101,6 +102,7 @@ fn to_sarif(report: &IocReport, uri: &str, defang: bool) -> SarifLog {
             };
             SarifResult {
                 rule_id: sarif_rule_id(ind.kind),
+                kind: None,
                 level: sarif_level(ind.kind),
                 message: Message {
                     text: format!(
@@ -112,12 +114,11 @@ fn to_sarif(report: &IocReport, uri: &str, defang: bool) -> SarifLog {
                 },
                 locations: vec![Location {
                     physical_location: PhysicalLocation {
-                        artifact_location: ArtifactLocation {
-                            uri: uri.to_owned(),
-                        },
+                        artifact_location: ArtifactLocation::at(uri.to_owned()),
                         region: None,
                     },
                 }],
+                properties: None,
             }
         })
         .collect();

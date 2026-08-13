@@ -3,13 +3,14 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc};
+use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc, VerdictDoc};
 use disrobe_core::recovery::ConfidenceTier;
 use serde::Serialize;
 
 use super::batch::{self, BatchManifest, BatchOptions};
 use super::chain_v1::{self, ChainOutcome};
 use super::output::OutputFormat;
+use super::sarif::artifact_uri;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum ReportFormat {
@@ -18,11 +19,13 @@ pub(crate) enum ReportFormat {
     Json,
     Markdown,
     Html,
+    Sarif,
 }
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StageView {
     pub(crate) index: usize,
+    pub(crate) node_id: u32,
     pub(crate) pass: String,
     pub(crate) verdict: String,
     pub(crate) confidence: &'static str,
@@ -31,6 +34,110 @@ pub(crate) struct StageView {
     pub(crate) format_in: Option<String>,
     pub(crate) format_out: Option<String>,
     pub(crate) artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum WallKind {
+    NoPassAccepted,
+    EmptyPassOutput,
+    RepeatedArtifact,
+    DepthCapReached,
+    NotExecuted,
+    BranchesIncomplete,
+}
+
+impl WallKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::NoPassAccepted => "no-pass-accepted",
+            Self::EmptyPassOutput => "empty-pass-output",
+            Self::RepeatedArtifact => "repeated-artifact",
+            Self::DepthCapReached => "depth-cap-reached",
+            Self::NotExecuted => "not-executed",
+            Self::BranchesIncomplete => "branches-incomplete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(crate) struct WallView {
+    pub(crate) kind: WallKind,
+    pub(crate) node_id: u32,
+    pub(crate) stage_index: Option<usize>,
+    pub(crate) pass: Option<String>,
+    pub(crate) format_in: Option<String>,
+    pub(crate) missing: String,
+    pub(crate) artifact_blake3: String,
+    pub(crate) artifact_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(crate) struct FailureView {
+    pub(crate) node_id: u32,
+    pub(crate) stage_index: Option<usize>,
+    pub(crate) pass: Option<String>,
+    pub(crate) message: String,
+    pub(crate) artifact_blake3: String,
+    pub(crate) artifact_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum EvidenceRole {
+    AnalysisTarget,
+    StageInput,
+    StageOutput,
+    RecoveredArtifact,
+}
+
+impl EvidenceRole {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::AnalysisTarget => "analysis-target",
+            Self::StageInput => "stage-input",
+            Self::StageOutput => "stage-output",
+            Self::RecoveredArtifact => "recovered-artifact",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum HashSource {
+    ChainDocument,
+    RecomputedFromFile,
+    Unavailable,
+}
+
+impl HashSource {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ChainDocument => "chain-document",
+            Self::RecomputedFromFile => "recomputed-from-file",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(crate) struct EvidenceItem {
+    pub(crate) role: EvidenceRole,
+    pub(crate) uri: String,
+    pub(crate) display: String,
+    pub(crate) blake3: Option<String>,
+    pub(crate) hash_source: HashSource,
+    pub(crate) byte_offset: u64,
+    pub(crate) byte_length: Option<u64>,
+    pub(crate) stage_index: Option<usize>,
+    pub(crate) node_id: Option<u32>,
+    pub(crate) unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Reproduction {
+    pub(crate) command: String,
+    pub(crate) steps: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,13 +171,17 @@ pub(crate) struct SingleReport {
     pub(crate) recovery_score: f64,
     pub(crate) tiers: TierTotals,
     pub(crate) stages: Vec<StageView>,
+    pub(crate) walls: Vec<WallView>,
+    pub(crate) failures: Vec<FailureView>,
+    pub(crate) evidence: Vec<EvidenceItem>,
+    pub(crate) reproduction: Reproduction,
     pub(crate) artifacts: Vec<String>,
     pub(crate) notes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "report_kind", rename_all = "snake_case")]
-enum ReportDocument {
+pub(crate) enum ReportDocument {
     Single(Box<SingleReport>),
     Batch(Box<BatchReport>),
 }
@@ -127,17 +238,378 @@ fn mean_score(report: &ChainRecoveryReport) -> f64 {
     (sum / report.passes.len() as f64).clamp(0.0, 1.0)
 }
 
-fn node_for_pass<'a>(doc: &'a ChainDocument, pass_name: &str) -> Option<&'a NodeDoc> {
-    doc.nodes
+const TERMINAL_PASS_NAME: &str = "terminal";
+const CONTENT_URI_SCHEME: &str = "ni:///blake3;";
+
+fn node_matches_pass(node: &NodeDoc, pass_name: &str) -> bool {
+    match node.pass.as_deref() {
+        Some(name) => name == pass_name,
+        None => pass_name == TERMINAL_PASS_NAME,
+    }
+}
+
+fn attribute_stages<'doc>(
+    doc: &'doc ChainDocument,
+    recovery: &ChainRecoveryReport,
+) -> Vec<Option<&'doc NodeDoc>> {
+    let positional: bool = doc.nodes.len() == recovery.passes.len().saturating_add(1)
+        && recovery.passes.iter().enumerate().all(
+            |(index, pass): (usize, &disrobe_core::chain::ChainPassRecovery)| {
+                doc.nodes
+                    .get(index.saturating_add(1))
+                    .is_some_and(|node: &NodeDoc| node_matches_pass(node, &pass.name))
+            },
+        );
+    if positional {
+        return (0..recovery.passes.len())
+            .map(|index: usize| doc.nodes.get(index.saturating_add(1)))
+            .collect();
+    }
+    let mut claimed: Vec<bool> = vec![false; doc.nodes.len()];
+    recovery
+        .passes
         .iter()
-        .find(|n: &&NodeDoc| n.pass.as_deref() == Some(pass_name))
+        .map(|pass: &disrobe_core::chain::ChainPassRecovery| {
+            let found: Option<(usize, &NodeDoc)> =
+                doc.nodes
+                    .iter()
+                    .enumerate()
+                    .find(|(index, node): &(usize, &'doc NodeDoc)| {
+                        !claimed[*index] && node_matches_pass(node, &pass.name)
+                    });
+            found.map(|(index, node): (usize, &'doc NodeDoc)| {
+                claimed[index] = true;
+                node
+            })
+        })
+        .collect()
+}
+
+const fn wall_kind_for(node: &NodeDoc) -> Option<WallKind> {
+    match node.verdict {
+        VerdictDoc::Stalled => Some(if node.pass.is_some() {
+            WallKind::EmptyPassOutput
+        } else {
+            WallKind::NoPassAccepted
+        }),
+        VerdictDoc::Cycle => Some(WallKind::RepeatedArtifact),
+        VerdictDoc::CapReached => Some(WallKind::DepthCapReached),
+        VerdictDoc::DryRun => Some(WallKind::NotExecuted),
+        VerdictDoc::FanOutPartial => Some(WallKind::BranchesIncomplete),
+        VerdictDoc::Ok
+        | VerdictDoc::Complete
+        | VerdictDoc::FanOut
+        | VerdictDoc::Extracted
+        | VerdictDoc::Error => None,
+    }
+}
+
+fn missing_input_for(kind: WallKind, node: &NodeDoc, cap: u8) -> String {
+    let format: &str = node.format_tag_in.as_deref().unwrap_or("an unnamed format");
+    match kind {
+        WallKind::NoPassAccepted => format!(
+            "no registered detector claimed the {} byte artifact blake3 {}",
+            node.input_size, node.input_blake3
+        ),
+        WallKind::EmptyPassOutput => format!(
+            "pass `{}` accepted {format} and returned no output bytes",
+            node.pass.as_deref().unwrap_or(TERMINAL_PASS_NAME)
+        ),
+        WallKind::RepeatedArtifact => format!(
+            "the output of this layer repeats an artifact already seen on branch `{}`",
+            node.branch_id
+        ),
+        WallKind::DepthCapReached => {
+            format!(
+                "the chain reached its depth cap of {cap} layers at depth {}",
+                node.depth
+            )
+        }
+        WallKind::NotExecuted => format!(
+            "the run was a dry run, so pass `{}` was selected but never executed",
+            node.pass.as_deref().unwrap_or(TERMINAL_PASS_NAME)
+        ),
+        WallKind::BranchesIncomplete => {
+            "at least one branch of this fan-out did not reach a recovered format".to_string()
+        }
+    }
+}
+
+fn collect_walls(
+    doc: &ChainDocument,
+    stage_nodes: &[Option<&NodeDoc>],
+) -> (Vec<WallView>, Vec<FailureView>) {
+    let stage_of: Vec<Option<usize>> = doc
+        .nodes
+        .iter()
+        .map(|node: &NodeDoc| {
+            stage_nodes
+                .iter()
+                .position(|attached: &Option<&NodeDoc>| {
+                    attached.is_some_and(|other: &NodeDoc| other.id == node.id)
+                })
+                .map(|index: usize| index.saturating_add(1))
+        })
+        .collect();
+    let mut walls: Vec<WallView> = Vec::new();
+    let mut failures: Vec<FailureView> = Vec::new();
+    for (index, node) in doc.nodes.iter().enumerate() {
+        let stage_index: Option<usize> = stage_of.get(index).copied().flatten();
+        if node.verdict == VerdictDoc::Error {
+            failures.push(FailureView {
+                node_id: node.id,
+                stage_index,
+                pass: node.pass.clone(),
+                message: node
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "the layer failed without a recorded message".to_string()),
+                artifact_blake3: node.input_blake3.clone(),
+                artifact_size: node.input_size,
+            });
+            continue;
+        }
+        let Some(kind): Option<WallKind> = wall_kind_for(node) else {
+            continue;
+        };
+        walls.push(WallView {
+            kind,
+            node_id: node.id,
+            stage_index,
+            pass: node.pass.clone(),
+            format_in: node.format_tag_in.clone(),
+            missing: missing_input_for(kind, node, doc.spec.cap),
+            artifact_blake3: node.input_blake3.clone(),
+            artifact_size: node.input_size,
+        });
+    }
+    if walls.is_empty() && failures.is_empty() {
+        let root: Option<&NodeDoc> = doc
+            .nodes
+            .iter()
+            .find(|n: &&NodeDoc| n.id == doc.root_node_id);
+        let kind: Option<WallKind> = document_wall_kind(&doc.verdict);
+        if let (Some(root), Some(kind)) = (root, kind) {
+            walls.push(WallView {
+                kind,
+                node_id: root.id,
+                stage_index: None,
+                pass: None,
+                format_in: root.format_tag_in.clone(),
+                missing: missing_input_for(kind, root, doc.spec.cap),
+                artifact_blake3: root.input_blake3.clone(),
+                artifact_size: root.input_size,
+            });
+        }
+    }
+    walls.sort();
+    failures.sort();
+    (walls, failures)
+}
+
+const fn document_wall_kind(verdict: &VerdictDoc) -> Option<WallKind> {
+    match verdict {
+        VerdictDoc::Stalled => Some(WallKind::NoPassAccepted),
+        VerdictDoc::Cycle => Some(WallKind::RepeatedArtifact),
+        VerdictDoc::CapReached => Some(WallKind::DepthCapReached),
+        VerdictDoc::DryRun => Some(WallKind::NotExecuted),
+        VerdictDoc::FanOutPartial => Some(WallKind::BranchesIncomplete),
+        VerdictDoc::Ok
+        | VerdictDoc::Complete
+        | VerdictDoc::FanOut
+        | VerdictDoc::Extracted
+        | VerdictDoc::Error => None,
+    }
+}
+
+fn content_uri(blake3: &str) -> String {
+    format!("{CONTENT_URI_SCHEME}{blake3}")
+}
+
+fn hash_artifact_file(path: &Path) -> Result<(String, u64), String> {
+    let file: std::fs::File =
+        std::fs::File::open(path).map_err(|e: std::io::Error| e.to_string())?;
+    let length: u64 = file
+        .metadata()
+        .map_err(|e: std::io::Error| e.to_string())?
+        .len();
+    let mut hasher: blake3::Hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(file)
+        .map_err(|e: std::io::Error| e.to_string())?;
+    Ok((hasher.finalize().to_hex().to_string(), length))
+}
+
+fn artifact_evidence(relative: &str, source_dir: Option<&Path>) -> EvidenceItem {
+    let resolved: Option<PathBuf> = source_dir.map(|dir: &Path| dir.join(relative));
+    let existing: Option<PathBuf> = resolved
+        .filter(|p: &PathBuf| p.is_file())
+        .or_else(|| Some(PathBuf::from(relative)).filter(|p: &PathBuf| p.is_file()));
+    match existing {
+        Some(path) => match hash_artifact_file(&path) {
+            Ok((blake3, length)) => EvidenceItem {
+                role: EvidenceRole::RecoveredArtifact,
+                uri: artifact_uri(&path),
+                display: relative.to_string(),
+                blake3: Some(blake3),
+                hash_source: HashSource::RecomputedFromFile,
+                byte_offset: 0,
+                byte_length: Some(length),
+                stage_index: None,
+                node_id: None,
+                unavailable_reason: None,
+            },
+            Err(reason) => EvidenceItem {
+                role: EvidenceRole::RecoveredArtifact,
+                uri: artifact_uri(&path),
+                display: relative.to_string(),
+                blake3: None,
+                hash_source: HashSource::Unavailable,
+                byte_offset: 0,
+                byte_length: None,
+                stage_index: None,
+                node_id: None,
+                unavailable_reason: Some(format!("cannot hash {}: {reason}", path.display())),
+            },
+        },
+        None => EvidenceItem {
+            role: EvidenceRole::RecoveredArtifact,
+            uri: artifact_uri(Path::new(relative)),
+            display: relative.to_string(),
+            blake3: None,
+            hash_source: HashSource::Unavailable,
+            byte_offset: 0,
+            byte_length: None,
+            stage_index: None,
+            node_id: None,
+            unavailable_reason: Some(source_dir.map_or_else(
+                || format!("`{relative}` is not on disk and no run directory was given"),
+                |dir: &Path| format!("`{relative}` is not on disk under {}", dir.display()),
+            )),
+        },
+    }
+}
+
+fn collect_evidence(
+    doc: &ChainDocument,
+    stage_nodes: &[Option<&NodeDoc>],
+    artifacts: &[String],
+    source_dir: Option<&Path>,
+) -> Vec<EvidenceItem> {
+    let mut items: Vec<EvidenceItem> = Vec::new();
+    items.push(EvidenceItem {
+        role: EvidenceRole::AnalysisTarget,
+        uri: doc.input.path.as_deref().map_or_else(
+            || content_uri(&doc.input.blake3),
+            |p: &str| artifact_uri(Path::new(p)),
+        ),
+        display: doc
+            .input
+            .path
+            .clone()
+            .unwrap_or_else(|| content_uri(&doc.input.blake3)),
+        blake3: Some(doc.input.blake3.clone()),
+        hash_source: HashSource::ChainDocument,
+        byte_offset: 0,
+        byte_length: Some(doc.input.size),
+        stage_index: None,
+        node_id: Some(doc.root_node_id),
+        unavailable_reason: None,
+    });
+    for (index, attached) in stage_nodes.iter().enumerate() {
+        let Some(node): Option<&NodeDoc> = *attached else {
+            continue;
+        };
+        let stage_index: Option<usize> = Some(index.saturating_add(1));
+        items.push(EvidenceItem {
+            role: EvidenceRole::StageInput,
+            uri: content_uri(&node.input_blake3),
+            display: format!("node {} input", node.id),
+            blake3: Some(node.input_blake3.clone()),
+            hash_source: HashSource::ChainDocument,
+            byte_offset: 0,
+            byte_length: Some(node.input_size),
+            stage_index,
+            node_id: Some(node.id),
+            unavailable_reason: None,
+        });
+        if let Some(out_hash) = node.output_blake3.as_deref() {
+            items.push(EvidenceItem {
+                role: EvidenceRole::StageOutput,
+                uri: content_uri(out_hash),
+                display: format!("node {} output", node.id),
+                blake3: Some(out_hash.to_string()),
+                hash_source: HashSource::ChainDocument,
+                byte_offset: 0,
+                byte_length: node.output_size,
+                stage_index,
+                node_id: Some(node.id),
+                unavailable_reason: None,
+            });
+        }
+    }
+    for relative in artifacts {
+        items.push(artifact_evidence(relative, source_dir));
+    }
+    items.sort();
+    items.dedup_by(|left: &mut EvidenceItem, right: &mut EvidenceItem| {
+        left.role == right.role
+            && left.uri == right.uri
+            && left.blake3 == right.blake3
+            && left.byte_offset == right.byte_offset
+            && left.byte_length == right.byte_length
+    });
+    items
+}
+
+fn shell_argument(raw: &str) -> String {
+    if !raw.is_empty()
+        && !raw
+            .chars()
+            .any(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+    {
+        return raw.to_string();
+    }
+    format!("\"{}\"", raw.replace('"', "\\\""))
+}
+
+fn reproduction_for(target: &Path, evidence: &[EvidenceItem]) -> Reproduction {
+    let command: String = format!(
+        "disrobe report {}",
+        shell_argument(&target.display().to_string())
+    );
+    let recomputable: usize = evidence
+        .iter()
+        .filter(|item: &&EvidenceItem| item.hash_source == HashSource::RecomputedFromFile)
+        .count();
+    let unavailable: usize = evidence
+        .iter()
+        .filter(|item: &&EvidenceItem| item.hash_source == HashSource::Unavailable)
+        .count();
+    let mut steps: Vec<String> = vec![
+        "hash the analysis target with blake3 and compare it with `input.blake3`".to_string(),
+        format!(
+            "hash each of the {recomputable} evidence entries marked `recomputed-from-file` and compare them with the recorded digest"
+        ),
+        format!("read every `{CONTENT_URI_SCHEME}` evidence entry as the blake3 digest of an intermediate the chain held in memory; it names the artifact a byte range indexes"),
+        format!("re-run `{command}`; text, json, markdown and html output is byte-identical, and sarif output differs only in `generated_at`"),
+        "set SOURCE_DATE_EPOCH to a fixed value to make the sarif `generated_at` byte-identical too".to_string(),
+    ];
+    if unavailable > 0 {
+        steps.push(format!(
+            "{unavailable} evidence entries carry no digest; each one names why in `unavailable_reason`"
+        ));
+    }
+    Reproduction { command, steps }
 }
 
 fn build_single(
     doc: &ChainDocument,
     recovery: &ChainRecoveryReport,
     source_dir: Option<&Path>,
+    target: &Path,
 ) -> SingleReport {
+    let stage_nodes: Vec<Option<&NodeDoc>> = attribute_stages(doc, recovery);
     let mut all_artifacts: Vec<String> = Vec::new();
     let stages: Vec<StageView> = recovery
         .passes
@@ -145,7 +617,7 @@ fn build_single(
         .enumerate()
         .map(
             |(idx, pass): (usize, &disrobe_core::chain::ChainPassRecovery)| {
-                let node: Option<&NodeDoc> = node_for_pass(doc, &pass.name);
+                let node: Option<&NodeDoc> = stage_nodes.get(idx).copied().flatten();
                 let artifacts: Vec<String> = node
                     .map(|n: &NodeDoc| n.artifacts.clone())
                     .unwrap_or_default();
@@ -157,6 +629,7 @@ fn build_single(
                 let score: f64 = pass_score(pass);
                 StageView {
                     index: idx + 1,
+                    node_id: node.map_or(doc.root_node_id, |n: &NodeDoc| n.id),
                     pass: pass.name.clone(),
                     verdict: node.map_or_else(
                         || format!("{:?}", recovery.verdict),
@@ -172,6 +645,10 @@ fn build_single(
             },
         )
         .collect();
+    let (walls, failures): (Vec<WallView>, Vec<FailureView>) = collect_walls(doc, &stage_nodes);
+    let evidence: Vec<EvidenceItem> =
+        collect_evidence(doc, &stage_nodes, &all_artifacts, source_dir);
+    let reproduction: Reproduction = reproduction_for(target, &evidence);
     let mut notes: Vec<String> = Vec::new();
     if recovery.passes.is_empty() {
         notes.push(
@@ -208,6 +685,10 @@ fn build_single(
             total: recovery.histogram.total(),
         },
         stages,
+        walls,
+        failures,
+        evidence,
+        reproduction,
         artifacts: all_artifacts,
         notes,
     }
@@ -327,6 +808,7 @@ fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<Report
                 &doc,
                 &recovery,
                 Some(target),
+                target,
             ))));
         }
         let out_dir: PathBuf = derived_batch_dir(target, base);
@@ -365,6 +847,7 @@ fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<Report
             &outcome.doc,
             &outcome.report,
             Some(&out_dir),
+            target,
         ))));
     }
     Err(miette::miette!(
@@ -419,11 +902,55 @@ fn render_text_single(r: &SingleReport, out: &mut String) {
                 .map_or_else(|| "-".to_string(), |d: u128| format!("{d}ms"))
         );
     }
+    if !r.walls.is_empty() {
+        let _ = writeln!(out, "  walls:");
+        for w in &r.walls {
+            let _ = writeln!(
+                out,
+                "    [{}] node {}: {}",
+                w.kind.label(),
+                w.node_id,
+                w.missing
+            );
+        }
+    }
+    if !r.failures.is_empty() {
+        let _ = writeln!(out, "  failures:");
+        for f in &r.failures {
+            let _ = writeln!(
+                out,
+                "    node {} ({}): {}",
+                f.node_id,
+                f.pass.as_deref().unwrap_or(TERMINAL_PASS_NAME),
+                f.message
+            );
+        }
+    }
     if !r.artifacts.is_empty() {
         let _ = writeln!(out, "  artifacts:");
         for a in &r.artifacts {
             let _ = writeln!(out, "    - {a}");
         }
+    }
+    let _ = writeln!(out, "  evidence:");
+    for e in &r.evidence {
+        let _ = writeln!(
+            out,
+            "    {:<18} {} bytes {}+{} blake3={} ({})",
+            e.role.label(),
+            e.uri,
+            e.byte_offset,
+            e.byte_length
+                .map_or_else(|| "?".to_string(), |l: u64| l.to_string()),
+            e.blake3.as_deref().unwrap_or("-"),
+            e.unavailable_reason
+                .as_deref()
+                .unwrap_or_else(|| e.hash_source.label())
+        );
+    }
+    let _ = writeln!(out, "  reproduce:   {}", r.reproduction.command);
+    for step in &r.reproduction.steps {
+        let _ = writeln!(out, "    - {step}");
     }
     for note in &r.notes {
         let _ = writeln!(out, "  note:        {note}");
@@ -507,6 +1034,39 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
                 .map_or_else(|| "-".to_string(), |d: u128| format!("{d} ms"))
         );
     }
+    if !r.walls.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "## Walls");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| kind | node | pass | missing input |");
+        let _ = writeln!(out, "|---|---:|---|---|");
+        for w in &r.walls {
+            let _ = writeln!(
+                out,
+                "| {} | {} | `{}` | {} |",
+                w.kind.label(),
+                w.node_id,
+                w.pass.as_deref().unwrap_or(TERMINAL_PASS_NAME),
+                w.missing
+            );
+        }
+    }
+    if !r.failures.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "## Failures");
+        let _ = writeln!(out);
+        let _ = writeln!(out, "| node | pass | message |");
+        let _ = writeln!(out, "|---:|---|---|");
+        for f in &r.failures {
+            let _ = writeln!(
+                out,
+                "| {} | `{}` | {} |",
+                f.node_id,
+                f.pass.as_deref().unwrap_or(TERMINAL_PASS_NAME),
+                f.message
+            );
+        }
+    }
     if !r.artifacts.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "## Recovered artifacts");
@@ -514,6 +1074,39 @@ fn render_markdown_single(r: &SingleReport, out: &mut String) {
         for a in &r.artifacts {
             let _ = writeln!(out, "- `{a}`");
         }
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Evidence");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "| role | artifact | byte offset | byte length | blake3 | digest source |"
+    );
+    let _ = writeln!(out, "|---|---|---:|---:|---|---|");
+    for e in &r.evidence {
+        let _ = writeln!(
+            out,
+            "| {} | `{}` | {} | {} | `{}` | {} |",
+            e.role.label(),
+            e.uri,
+            e.byte_offset,
+            e.byte_length
+                .map_or_else(|| "-".to_string(), |l: u64| l.to_string()),
+            e.blake3.as_deref().unwrap_or("-"),
+            e.unavailable_reason
+                .as_deref()
+                .unwrap_or_else(|| e.hash_source.label())
+        );
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Reproduction");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "```");
+    let _ = writeln!(out, "{}", r.reproduction.command);
+    let _ = writeln!(out, "```");
+    let _ = writeln!(out);
+    for step in &r.reproduction.steps {
+        let _ = writeln!(out, "- {step}");
     }
     if !r.notes.is_empty() {
         let _ = writeln!(out);
@@ -570,12 +1163,17 @@ pub(crate) fn run(
     out: Option<PathBuf>,
 ) -> miette::Result<()> {
     let document: ReportDocument = resolve_document(&target, out.as_deref())?;
-    let effective: ReportFormat = if fmt.is_machine() {
+    let effective: ReportFormat = if fmt.is_machine() && format != ReportFormat::Sarif {
         ReportFormat::Json
     } else {
         format
     };
     match effective {
+        ReportFormat::Sarif => {
+            let log: String = super::report_forensic::render_sarif(&document)?;
+            println!("{log}");
+            Ok(())
+        }
         ReportFormat::Json => {
             let s: String = serde_json::to_string_pretty(&document)
                 .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
@@ -728,6 +1326,261 @@ mod tests {
         std::fs::write(dir.join("chain.json"), CHAIN_JSON).expect("w chain");
         std::fs::write(dir.join("recovery.json"), RECOVERY_JSON).expect("w recovery");
         (scratch, dir)
+    }
+
+    const TREE_CHAIN_JSON: &str = r#"{
+      "schema": "disrobe.chain/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "bundle.zip", "blake3": "0000", "size": 256, "detected": ["zip"] },
+      "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
+      "topology": "tree",
+      "root_node_id": 0,
+      "nodes": [
+        { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
+          "pass": null, "format_tag_in": null, "input_blake3": "0000", "input_size": 256,
+          "output_kind": null, "output_blake3": null, "output_size": null,
+          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "verdict": "fan-out", "error": null },
+        { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "a",
+          "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "1111", "input_size": 64,
+          "output_kind": { "kind": "source", "language": "Python", "formatted": true },
+          "output_blake3": "aaaa", "output_size": 32,
+          "duration_ms": 3, "detector_picks": [], "artifacts": ["left.py"], "metadata": {},
+          "verdict": "complete", "error": null },
+        { "id": 2, "parent_id": 0, "depth": 1, "branch_id": "b",
+          "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "2222", "input_size": 96,
+          "output_kind": { "kind": "source", "language": "Python", "formatted": true },
+          "output_blake3": "bbbb", "output_size": 48,
+          "duration_ms": 4, "detector_picks": [], "artifacts": ["right.py"], "metadata": {},
+          "verdict": "complete", "error": null }
+      ],
+      "verdict": "complete",
+      "final_format": "Python",
+      "stats": { "layers": 2, "branches": 2, "total_ms": 7,
+        "max_branch_depth": 1, "detector_calls": 2, "rejected_passes": 0 }
+    }"#;
+
+    const TREE_RECOVERY_JSON: &str = r#"{
+      "schema": "disrobe.recovery/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "bundle.zip", "blake3": "0000", "size": 256 },
+      "passes": [
+        { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
+          "duration_ms": 3, "format_in": "pyc-3.11", "format_out": "Python" },
+        { "name": "py.decompile", "status": "recovered", "confidence": "semantic",
+          "duration_ms": 4, "format_in": "pyc-3.11", "format_out": "Python" }
+      ],
+      "histogram": { "exact": 0, "semantic": 2, "partial": 0, "skeleton": 0 },
+      "total_ms": 7,
+      "verdict": "complete"
+    }"#;
+
+    const STALLED_CHAIN_JSON: &str = r#"{
+      "schema": "disrobe.chain/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "opaque.bin", "blake3": "dead", "size": 512, "detected": [] },
+      "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
+      "topology": "linear",
+      "root_node_id": 0,
+      "nodes": [
+        { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
+          "pass": null, "format_tag_in": null, "input_blake3": "dead", "input_size": 512,
+          "output_kind": null, "output_blake3": null, "output_size": null,
+          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "verdict": "stalled", "error": null }
+      ],
+      "verdict": "stalled",
+      "final_format": null,
+      "stats": { "layers": 0, "branches": 1, "total_ms": 1,
+        "max_branch_depth": 0, "detector_calls": 3, "rejected_passes": 3 }
+    }"#;
+
+    const STALLED_RECOVERY_JSON: &str = r#"{
+      "schema": "disrobe.recovery/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "opaque.bin", "blake3": "dead", "size": 512 },
+      "passes": [],
+      "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 0 },
+      "total_ms": 1,
+      "verdict": "stalled"
+    }"#;
+
+    const DRY_RUN_CHAIN_JSON: &str = r#"{
+      "schema": "disrobe.chain/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
+      "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
+      "topology": "linear",
+      "root_node_id": 0,
+      "nodes": [
+        { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
+          "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
+          "output_kind": null, "output_blake3": null, "output_size": null,
+          "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+          "verdict": "ok", "error": null },
+        { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
+          "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
+          "output_kind": null, "output_blake3": null, "output_size": null,
+          "duration_ms": null, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+          "verdict": "dry-run", "error": null }
+      ],
+      "verdict": "dry-run",
+      "final_format": null,
+      "stats": { "layers": 1, "branches": 1, "total_ms": 0,
+        "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+    }"#;
+
+    const DRY_RUN_RECOVERY_JSON: &str = r#"{
+      "schema": "disrobe.recovery/v1",
+      "tool_version": "0.9.0",
+      "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
+      "passes": [
+        { "name": "py.decompile", "status": "skipped", "confidence": "skeleton",
+          "duration_ms": null, "format_in": "pyc-3.11", "format_out": null }
+      ],
+      "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 1 },
+      "total_ms": 0,
+      "verdict": "dry-run"
+    }"#;
+
+    fn seed_dir(stem: &str, chain: &str, recovery: &str) -> (ScratchDir, PathBuf) {
+        let scratch: ScratchDir = tmp_dir(stem);
+        let dir: PathBuf = scratch.path().to_path_buf();
+        std::fs::write(dir.join("chain.json"), chain).expect("w chain");
+        std::fs::write(dir.join("recovery.json"), recovery).expect("w recovery");
+        (scratch, dir)
+    }
+
+    fn single_of(dir: &Path) -> Box<SingleReport> {
+        match resolve_document(dir, None).expect("resolve") {
+            ReportDocument::Single(s) => s,
+            ReportDocument::Batch(_) => panic!("expected single report"),
+        }
+    }
+
+    #[test]
+    fn a_repeated_pass_name_in_a_tree_attributes_each_stage_to_its_own_node() {
+        let (_scratch, dir): (ScratchDir, PathBuf) =
+            seed_dir("tree", TREE_CHAIN_JSON, TREE_RECOVERY_JSON);
+        let report: Box<SingleReport> = single_of(&dir);
+        assert_eq!(report.stages.len(), 2);
+        assert_eq!(report.stages[0].node_id, 1);
+        assert_eq!(report.stages[1].node_id, 2);
+        assert_eq!(
+            report.stages[0].artifacts,
+            vec!["left.py".to_string()],
+            "stage 1 must carry node 1 artifacts, not the first name match"
+        );
+        assert_eq!(
+            report.stages[1].artifacts,
+            vec!["right.py".to_string()],
+            "stage 2 must carry node 2 artifacts, not the first name match"
+        );
+        let stage_inputs: Vec<&EvidenceItem> = report
+            .evidence
+            .iter()
+            .filter(|e: &&EvidenceItem| e.role == EvidenceRole::StageInput)
+            .collect();
+        assert_eq!(stage_inputs.len(), 2, "{stage_inputs:?}");
+        assert!(
+            stage_inputs
+                .iter()
+                .any(|e: &&EvidenceItem| e.blake3.as_deref() == Some("1111"))
+        );
+        assert!(
+            stage_inputs
+                .iter()
+                .any(|e: &&EvidenceItem| e.blake3.as_deref() == Some("2222"))
+        );
+    }
+
+    #[test]
+    fn a_detect_only_run_reports_the_wall_instead_of_an_empty_success() {
+        let (_scratch, dir): (ScratchDir, PathBuf) =
+            seed_dir("stalled", STALLED_CHAIN_JSON, STALLED_RECOVERY_JSON);
+        let report: Box<SingleReport> = single_of(&dir);
+        assert!(report.stages.is_empty());
+        assert!(report.failures.is_empty(), "a wall is not a failure");
+        assert_eq!(report.walls.len(), 1, "{:?}", report.walls);
+        assert_eq!(report.walls[0].kind, WallKind::NoPassAccepted);
+        assert!(
+            report.walls[0].missing.contains("dead"),
+            "the wall must name the artifact it could not advance: {}",
+            report.walls[0].missing
+        );
+        assert!(
+            report.walls[0].missing.contains("512"),
+            "the wall must name the size of the artifact it could not advance: {}",
+            report.walls[0].missing
+        );
+        assert!(
+            (report.recovery_score - 0.0).abs() < f64::EPSILON,
+            "a detect-only run has no scored stage"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_wall_names_the_pass_that_never_executed() {
+        let (_scratch, dir): (ScratchDir, PathBuf) =
+            seed_dir("dry-run", DRY_RUN_CHAIN_JSON, DRY_RUN_RECOVERY_JSON);
+        let report: Box<SingleReport> = single_of(&dir);
+        assert_eq!(report.walls.len(), 1, "{:?}", report.walls);
+        assert_eq!(report.walls[0].kind, WallKind::NotExecuted);
+        assert_eq!(report.walls[0].stage_index, Some(1));
+        assert!(report.walls[0].missing.contains("py.decompile"));
+        let missing_artifact: &EvidenceItem = report
+            .evidence
+            .iter()
+            .find(|e: &&EvidenceItem| e.role == EvidenceRole::RecoveredArtifact)
+            .expect("a dry run still cites the artifact it would have written");
+        assert_eq!(missing_artifact.hash_source, HashSource::Unavailable);
+        assert!(
+            missing_artifact
+                .unavailable_reason
+                .as_deref()
+                .is_some_and(|r: &str| r.contains("app.py")),
+            "{missing_artifact:?}"
+        );
+    }
+
+    #[test]
+    fn a_recovered_artifact_is_cited_with_a_digest_computed_from_the_file_on_disk() {
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("evidence");
+        std::fs::write(dir.join("app.py"), b"print('hello')\n").expect("w artifact");
+        let report: Box<SingleReport> = single_of(&dir);
+        let cited: &EvidenceItem = report
+            .evidence
+            .iter()
+            .find(|e: &&EvidenceItem| e.role == EvidenceRole::RecoveredArtifact)
+            .expect("the recovered artifact must be cited");
+        assert_eq!(cited.hash_source, HashSource::RecomputedFromFile);
+        assert_eq!(cited.byte_offset, 0);
+        assert_eq!(cited.byte_length, Some(15));
+        assert_eq!(
+            cited.blake3.as_deref(),
+            Some(blake3::hash(b"print('hello')\n").to_hex().as_str()),
+            "the cited digest must be blake3 over the exact file bytes"
+        );
+    }
+
+    #[test]
+    fn the_reproduction_block_names_the_command_that_rebuilds_the_report() {
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("repro");
+        let report: Box<SingleReport> = single_of(&dir);
+        assert!(
+            report.reproduction.command.starts_with("disrobe report "),
+            "{}",
+            report.reproduction.command
+        );
+        assert!(
+            report
+                .reproduction
+                .steps
+                .iter()
+                .any(|s: &String| s.contains("SOURCE_DATE_EPOCH")),
+            "{:?}",
+            report.reproduction.steps
+        );
     }
 
     #[test]

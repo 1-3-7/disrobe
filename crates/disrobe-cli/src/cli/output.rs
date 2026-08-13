@@ -115,7 +115,7 @@ fn sarif_results_from(payload: &serde_json::Value) -> Vec<crate::cli::sarif::Sar
                 .map(|u: &str| {
                     vec![Location {
                         physical_location: PhysicalLocation {
-                            artifact_location: ArtifactLocation { uri: u.to_owned() },
+                            artifact_location: ArtifactLocation::at(u.to_owned()),
                             region,
                         },
                     }]
@@ -123,9 +123,11 @@ fn sarif_results_from(payload: &serde_json::Value) -> Vec<crate::cli::sarif::Sar
                 .unwrap_or_default();
             SarifResult {
                 rule_id,
+                kind: None,
                 level,
                 message: Message { text },
                 locations,
+                properties: None,
             }
         })
         .collect()

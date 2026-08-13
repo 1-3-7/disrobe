@@ -111,6 +111,7 @@ fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
             id,
             name: None,
             short_description: None,
+            full_description: None,
         })
         .collect();
     let results: Vec<SarifResult> = report
@@ -120,6 +121,7 @@ fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
             let short_sha: &str = gf.commit.get(..12).unwrap_or(gf.commit.as_str());
             SarifResult {
                 rule_id: gf.finding.rule_id.clone(),
+                kind: None,
                 level: sarif_level(&gf.finding.severity),
                 message: Message {
                     text: format!(
@@ -132,12 +134,11 @@ fn git_to_sarif(report: &GitHistoryReport) -> SarifLog {
                 },
                 locations: vec![Location {
                     physical_location: PhysicalLocation {
-                        artifact_location: ArtifactLocation {
-                            uri: gf.blob_path.clone(),
-                        },
+                        artifact_location: ArtifactLocation::at(gf.blob_path.clone()),
                         region: Some(finding_region(&gf.finding)),
                     },
                 }],
+                properties: None,
             }
         })
         .collect();
@@ -224,6 +225,7 @@ fn to_sarif(report: &ReconReport) -> SarifLog {
             id,
             name: None,
             short_description: None,
+            full_description: None,
         })
         .collect();
     let results: Vec<SarifResult> = report
@@ -237,16 +239,18 @@ fn to_sarif(report: &ReconReport) -> SarifLog {
                 .unwrap_or_else(|| "input".to_owned());
             SarifResult {
                 rule_id: f.rule_id.clone(),
+                kind: None,
                 level: sarif_level(&f.severity),
                 message: Message {
                     text: format!("{} ({}): {}", f.category.label(), f.rule_id, f.value),
                 },
                 locations: vec![Location {
                     physical_location: PhysicalLocation {
-                        artifact_location: ArtifactLocation { uri },
+                        artifact_location: ArtifactLocation::at(uri),
                         region: Some(finding_region(f)),
                     },
                 }],
+                properties: None,
             }
         })
         .collect();

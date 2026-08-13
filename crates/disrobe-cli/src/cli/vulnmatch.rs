@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use disrobe_core::codec::web_escape::{PercentEncodeSet, percent_encode_str};
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
 use disrobe_nir::{NirModule, decode_nir};
@@ -18,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::cli::output::{self, OutputFormat};
 use crate::cli::sarif::{
     ArtifactLocation, Driver, Location, Message, MultiformatMessageString, PhysicalLocation,
-    ReportingDescriptor, SarifLevel, SarifLog, SarifResult,
+    ReportingDescriptor, SarifLevel, SarifLog, SarifResult, artifact_uri,
 };
 
 const MAX_ANALYSIS_NODES: usize = 50_000;
@@ -308,21 +307,22 @@ fn report_to_sarif(input: &Path, report: &Report) -> SarifLog {
                 short_description: Some(MultiformatMessageString {
                     text: format!("{} vulnerability rule", finding.evidence.cwe),
                 }),
+                full_description: None,
             });
         results.push(SarifResult {
             rule_id: finding.rule_id.clone(),
+            kind: None,
             level: sarif_level(finding.evidence.severity),
             message: Message {
                 text: finding_message(finding, report.complete),
             },
             locations: vec![Location {
                 physical_location: PhysicalLocation {
-                    artifact_location: ArtifactLocation {
-                        uri: artifact_uri.clone(),
-                    },
+                    artifact_location: ArtifactLocation::at(artifact_uri.clone()),
                     region: None,
                 },
             }],
+            properties: None,
         });
     }
     if !report.complete {
@@ -334,20 +334,23 @@ fn report_to_sarif(input: &Path, report: &Report) -> SarifLog {
                 short_description: Some(MultiformatMessageString {
                     text: "vulnmatch analysis did not establish complete coverage".to_owned(),
                 }),
+                full_description: None,
             },
         );
         results.push(SarifResult {
             rule_id: INCOMPLETE_ANALYSIS_RULE_ID.to_owned(),
+            kind: None,
             level: SarifLevel::Note,
             message: Message {
                 text: "vulnmatch analysis incomplete".to_owned(),
             },
             locations: vec![Location {
                 physical_location: PhysicalLocation {
-                    artifact_location: ArtifactLocation { uri: artifact_uri },
+                    artifact_location: ArtifactLocation::at(artifact_uri),
                     region: None,
                 },
             }],
+            properties: None,
         });
     }
     SarifLog::new(Driver::disrobe(rules.into_values().collect()), results)
@@ -377,22 +380,6 @@ fn witness_path(path: Option<&PathWitness>) -> String {
     functions.join(" -> ")
 }
 
-fn artifact_uri(input: &Path) -> String {
-    let path: String = input.display().to_string().replace('\\', "/");
-    let encoded: String = percent_encode_str(&path, PercentEncodeSet::SARIF_ARTIFACT_URI);
-    if path.starts_with('/') {
-        return format!("file://{encoded}");
-    }
-    if path
-        .as_bytes()
-        .get(1)
-        .is_some_and(|byte: &u8| *byte == b':')
-    {
-        return format!("file:///{encoded}");
-    }
-    encoded
-}
-
 const fn tier_label(tier: FindingTier) -> &'static str {
     match tier {
         FindingTier::Unknown => "unknown",
@@ -408,30 +395,5 @@ const fn sarif_level(severity: Severity) -> SarifLevel {
         Severity::Low => SarifLevel::Note,
         Severity::Medium => SarifLevel::Warning,
         Severity::High | Severity::Critical => SarifLevel::Error,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn artifact_uri_preserves_structure_and_encodes_reserved_path_bytes() {
-        assert_eq!(
-            artifact_uri(Path::new(r"C:\Program Files\a#b?.dll")),
-            "file:///C:/Program%20Files/a%23b%3F.dll"
-        );
-        assert_eq!(
-            artifact_uri(Path::new(r"\\server\share\a b")),
-            "file:////server/share/a%20b"
-        );
-        assert_eq!(
-            artifact_uri(Path::new("relative/a b/%")),
-            "relative/a%20b/%25"
-        );
-        assert_eq!(
-            artifact_uri(Path::new("relative/\u{00e9}")),
-            "relative/%C3%A9"
-        );
     }
 }
