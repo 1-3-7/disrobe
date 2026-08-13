@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use super::band::{find_interpreter, interpreter_hidden};
-use super::stdlib_measure::PublishedBar;
+use super::stdlib_measure::{BandReach, PublishedBar, bar_disagreements, published_detail};
 
 pub(crate) const REQUIRE_EVERY_BAND_VAR: &str = "DISROBE_REQUIRE_PY_BANDS";
 
@@ -528,6 +528,215 @@ pub(crate) fn assert_bands_are_distinct_populations(doc: &serde_json::Value, lab
         }
         seen.push((sibling.as_str(), population));
     }
+}
+
+pub(crate) const OPCODES_RETIRED_AFTER_3_8: &[&str] = &[
+    "BEGIN_FINALLY",
+    "BUILD_LIST_UNPACK",
+    "BUILD_MAP_UNPACK",
+    "BUILD_MAP_UNPACK_WITH_CALL",
+    "BUILD_TUPLE_UNPACK_WITH_CALL",
+    "CALL_FINALLY",
+    "END_FINALLY",
+    "POP_FINALLY",
+    "WITH_CLEANUP_FINISH",
+    "WITH_CLEANUP_START",
+];
+
+pub(crate) const OPCODES_INTRODUCED_IN_3_9: &[&str] = &[
+    "CONTAINS_OP",
+    "DICT_MERGE",
+    "DICT_UPDATE",
+    "IS_OP",
+    "JUMP_IF_NOT_EXC_MATCH",
+    "LIST_EXTEND",
+    "LIST_TO_TUPLE",
+    "LOAD_ASSERTION_ERROR",
+    "RERAISE",
+    "SET_UPDATE",
+    "WITH_EXCEPT_START",
+];
+
+pub(crate) fn assert_band_reaches_its_own_bytecode(
+    reach: &BandReach,
+    carried: &[&str],
+    never_carried: &[&str],
+    band: &str,
+) {
+    assert!(
+        !carried.is_empty() && !never_carried.is_empty(),
+        "the {band} reach check was handed {} opcodes the population must carry and {} it must \
+         not; an empty list accepts whatever the population happens to contain and separates this \
+         band from no other",
+        carried.len(),
+        never_carried.len()
+    );
+
+    let overlap: Vec<&str> = carried
+        .iter()
+        .copied()
+        .filter(|op: &&str| never_carried.contains(op))
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "the {band} reach check names {overlap:?} as both carried and never carried, so it can \
+         only ever contradict itself"
+    );
+
+    let absent: Vec<&str> = carried
+        .iter()
+        .copied()
+        .filter(|op: &&str| !reach.opnames.contains(*op))
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "the {band} population never reaches {absent:?}, so the band's measurement grades only \
+         bytecode it shares with its neighbours and the figure says nothing about the constructs \
+         this interpreter version actually compiles differently. It walked {} modules and {} code \
+         objects carrying {} distinct opcodes",
+        reach.modules,
+        reach.code_objects,
+        reach.opnames.len()
+    );
+
+    let intruders: Vec<&str> = never_carried
+        .iter()
+        .copied()
+        .filter(|op: &&str| reach.opnames.contains(*op))
+        .collect();
+    assert!(
+        intruders.is_empty(),
+        "the {band} population carries {intruders:?}, which this interpreter version does not \
+         emit, so the modules were compiled by a different CPython than the one this band names \
+         (measured on CPython {})",
+        reach.cpython_version
+    );
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum BandPublication {
+    Published { label: String, bar: PublishedBar },
+    Unpublished,
+}
+
+fn labels_with_prefix(doc: &serde_json::Value, prefix: &str) -> Vec<String> {
+    let Some(groups): Option<&Vec<serde_json::Value>> =
+        doc.get("groups").and_then(serde_json::Value::as_array)
+    else {
+        panic!("xtask/data/recovery.json carries no groups array");
+    };
+    let mut found: Vec<String> = Vec::new();
+    for group in groups {
+        let Some(bars): Option<&Vec<serde_json::Value>> =
+            group.get("bars").and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for bar in bars {
+            let Some(label): Option<&str> = bar.get("label").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if label.starts_with(prefix) {
+                found.push(label.to_owned());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+#[must_use]
+pub(crate) fn band_publication(doc: &serde_json::Value, prefix: &str) -> BandPublication {
+    let labels: Vec<String> = labels_with_prefix(doc, prefix);
+    match labels.len() {
+        0 => BandPublication::Unpublished,
+        1 => {
+            let label: String = labels
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("a one-element label list yielded nothing"));
+            let bar: PublishedBar = published_band_bar(doc, &label);
+            BandPublication::Published { label, bar }
+        }
+        n => panic!(
+            "xtask/data/recovery.json carries {n} bars whose label starts `{prefix}`: {labels:?}. \
+             One interpreter band publishes one population, so a second bar under the same prefix \
+             means one of the two figures was never measured"
+        ),
+    }
+}
+
+fn announce_unpublished(
+    prefix: &str,
+    expected_label: &str,
+    enforced: &BandPopulation,
+    cpython: &str,
+) {
+    let line: String = format!(
+        "\nNOT PUBLISHED: no bar in xtask/data/recovery.json starts `{prefix}`, so the CPython \
+         {cpython} figure of {} / {} code objects over {} modules lives only in this gate. Nothing \
+         is claimed for this band on the recovery chart or in the docs. Publishing it means adding \
+         a bar labelled `{expected_label}` with those exact counts; this case starts enforcing \
+         equality against it the moment one exists.\n",
+        enforced.objects_ok, enforced.code_objects, enforced.modules,
+    );
+    let mut sink: std::io::StdoutLock<'static> = std::io::stdout().lock();
+    drop(sink.write_all(line.as_bytes()));
+    drop(sink.flush());
+}
+
+pub(crate) fn assert_publication_matches_the_gate(
+    doc: &serde_json::Value,
+    prefix: &str,
+    expected_label: &str,
+    enforced: &BandPopulation,
+    floor: f64,
+    cpython: &str,
+) -> BandPublication {
+    let publication: BandPublication = band_publication(doc, prefix);
+    match &publication {
+        BandPublication::Unpublished => {
+            announce_unpublished(prefix, expected_label, enforced, cpython);
+        }
+        BandPublication::Published { label, bar } => {
+            assert_eq!(
+                label, expected_label,
+                "xtask/data/recovery.json publishes this band as `{label}` and the gate names \
+                 `{expected_label}`. The label carries the module count, so two spellings are two \
+                 different published populations"
+            );
+            let against_floor: Vec<String> = bar_disagreements(bar, floor);
+            assert!(
+                against_floor.is_empty(),
+                "the published `{label}` bar and the floor this gate enforces describe different \
+                 numbers, and the recovery chart renders the JSON: {against_floor:?}"
+            );
+            let against_counts: Vec<String> = population_disagreements(enforced, bar);
+            assert!(
+                against_counts.is_empty(),
+                "the published `{label}` bar reads {} / {} over {} modules, but this gate enforces \
+                 {} / {} over {}: {against_counts:?}",
+                bar.num,
+                bar.den,
+                bar.modules,
+                enforced.objects_ok,
+                enforced.code_objects,
+                enforced.modules
+            );
+            let detail: String =
+                published_detail(doc, label).unwrap_or_else(|e: String| panic!("{e}"));
+            assert_detail_states_its_own_counts(&detail, bar, label);
+            assert!(
+                detail.contains(cpython),
+                "the `{label}` detail never names the interpreter release the counts were measured \
+                 on, so a re-measurement on another patch release cannot be told apart from this \
+                 one: {detail}"
+            );
+            assert_bands_are_distinct_populations(doc, label);
+        }
+    }
+    publication
 }
 
 pub(crate) fn assert_detail_states_its_own_counts(

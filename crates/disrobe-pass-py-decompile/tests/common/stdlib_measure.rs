@@ -9,13 +9,17 @@
     clippy::redundant_pub_crate
 )]
 
+use std::collections::BTreeSet;
+use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use super::band::find_interpreter;
 
 pub(crate) const MEASURE_HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
 pub(crate) const FAMILY_HARNESS: &str = "tests/harness/py_failure_families.py";
+pub(crate) const REACH_HARNESS: &str = "tests/harness/py_band_bytecode_reach.py";
 pub(crate) const RECOVERY_JSON: &str = "../../xtask/data/recovery.json";
 
 pub(crate) const FULL_POPULATION: &str = "full-stdlib-574";
@@ -113,6 +117,19 @@ pub(crate) fn interpreter_version(python: &Path) -> Option<(u8, u8)> {
     Some((maj.parse::<u8>().ok()?, min.parse::<u8>().ok()?))
 }
 
+pub(crate) fn interpreter_release(python: &Path) -> Option<String> {
+    let output: std::process::Output = Command::new(python)
+        .args(["-c", "import platform;print(platform.python_version())"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if raw.is_empty() { None } else { Some(raw) }
+}
+
 pub(crate) fn interpreter_stdlib(python: &Path) -> Option<PathBuf> {
     let output: std::process::Output = Command::new(python)
         .args(["-c", "import sysconfig;print(sysconfig.get_path('stdlib'))"])
@@ -200,6 +217,150 @@ pub(crate) fn run_strict_measure(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+#[must_use]
+pub(crate) fn run_measure_bounded(
+    python: &Path,
+    disrobe: &Path,
+    lib: &Path,
+    modules: &Path,
+    limit: Duration,
+    tag: &str,
+) -> HarnessRun {
+    const POLL: Duration = Duration::from_millis(250);
+
+    let harness: PathBuf = manifest_dir().join(MEASURE_HARNESS);
+    let capture: PathBuf = workspace_target().join("py-band-measure");
+    std::fs::create_dir_all(&capture)
+        .unwrap_or_else(|e: std::io::Error| panic!("create {}: {e}", capture.display()));
+    let out_path: PathBuf = capture.join(format!("{tag}.stdout"));
+    let err_path: PathBuf = capture.join(format!("{tag}.stderr"));
+    let out_file: File = File::create(&out_path)
+        .unwrap_or_else(|e: std::io::Error| panic!("create {}: {e}", out_path.display()));
+    let err_file: File = File::create(&err_path)
+        .unwrap_or_else(|e: std::io::Error| panic!("create {}: {e}", err_path.display()));
+
+    let mut child: Child = Command::new(python)
+        .arg(&harness)
+        .arg("--disrobe")
+        .arg(disrobe)
+        .arg("--lib")
+        .arg(lib)
+        .arg("--modules")
+        .arg(modules)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out_file))
+        .stderr(Stdio::from(err_file))
+        .spawn()
+        .expect("spawn recompile-equivalence harness");
+
+    let deadline: Instant = Instant::now() + limit;
+    let finished: Option<ExitStatus> = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(POLL);
+            }
+            Err(e) => panic!("wait on the recompile-equivalence harness: {e}"),
+        }
+    };
+
+    let stdout: String = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let stderr: String = std::fs::read_to_string(&err_path).unwrap_or_default();
+    match finished {
+        Some(status) => HarnessRun {
+            success: status.success(),
+            code: status.code(),
+            stdout,
+            stderr,
+        },
+        None => HarnessRun {
+            success: false,
+            code: None,
+            stdout,
+            stderr: format!(
+                "{stderr}\nthe recompile-equivalence harness was killed after {} seconds, the wall \
+                 clock this band allows one measurement. A band that cannot finish inside its \
+                 budget has measured no population and must report none",
+                limit.as_secs()
+            ),
+        },
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BandReach {
+    pub cpython_version: String,
+    pub pinned: u64,
+    pub missing_from_lib: u64,
+    pub modules: u64,
+    pub code_objects: u64,
+    pub posonly_objects: u64,
+    pub opnames: BTreeSet<String>,
+}
+
+#[must_use]
+pub(crate) fn run_reach(python: &Path, lib: &Path, modules: &Path) -> HarnessRun {
+    let harness: PathBuf = manifest_dir().join(REACH_HARNESS);
+    let output: std::process::Output = Command::new(python)
+        .arg(&harness)
+        .arg("--lib")
+        .arg(lib)
+        .arg("--modules")
+        .arg(modules)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn band bytecode-reach harness");
+    HarnessRun {
+        success: output.status.success(),
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+pub(crate) fn parse_reach(stdout: &str) -> Result<BandReach, String> {
+    let line: &str = stdout
+        .lines()
+        .find(|l: &&str| l.trim_start().starts_with('{'))
+        .ok_or_else(|| format!("no JSON object on reach harness stdout:\n{stdout}"))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(line).map_err(|e: serde_json::Error| format!("parse {line}: {e}"))?;
+    let scalar = |key: &str| -> Result<u64, String> {
+        doc.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("the reach report carries no {key}: {line}"))
+    };
+    let raw: &Vec<serde_json::Value> = doc
+        .get("opnames")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("the reach report carries no opnames array: {line}"))?;
+    let mut opnames: BTreeSet<String> = BTreeSet::new();
+    for entry in raw {
+        let name: &str = entry
+            .as_str()
+            .ok_or_else(|| format!("an opname entry is not a string: {entry}"))?;
+        opnames.insert(name.to_owned());
+    }
+    Ok(BandReach {
+        cpython_version: doc
+            .get("cpython_version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("the reach report carries no cpython_version: {line}"))?
+            .to_owned(),
+        pinned: scalar("pinned")?,
+        missing_from_lib: scalar("missing_from_lib")?,
+        modules: scalar("modules")?,
+        code_objects: scalar("code_objects")?,
+        posonly_objects: scalar("posonly_objects")?,
+        opnames,
+    })
 }
 
 #[must_use]

@@ -14,7 +14,8 @@ use std::process::{Command, Stdio};
 
 use common::band::band_scratch;
 use common::band_gate::{
-    BandToolchain, CPYTHON_310, CPYTHON_311, CPYTHON_313, resolve_band_interpreter,
+    BandToolchain, CPYTHON_38, CPYTHON_39, CPYTHON_310, CPYTHON_311, CPYTHON_313,
+    resolve_band_interpreter,
 };
 use common::stdlib_measure::{find_disrobe, workspace_target};
 
@@ -198,6 +199,16 @@ fn auto_reaches_py_decompile(toolchain: &BandToolchain) {
             toolchain.alias
         );
     }
+}
+
+#[test]
+fn auto_routes_a_cpython_38_pyc_to_py_decompile() {
+    auto_reaches_py_decompile(&CPYTHON_38);
+}
+
+#[test]
+fn auto_routes_a_cpython_39_pyc_to_py_decompile() {
+    auto_reaches_py_decompile(&CPYTHON_39);
 }
 
 #[test]
