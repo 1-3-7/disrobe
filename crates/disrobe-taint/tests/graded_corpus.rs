@@ -502,7 +502,8 @@ fn expected_group_counts() -> Vec<(juliet_corpus::Category, usize)> {
 #[test]
 fn juliet_corpus_selection_matches_the_declared_population() {
     let case: &str = "juliet_corpus_selection_matches_the_declared_population";
-    let Some(content) = juliet_corpus::load_corpus_content(case) else {
+    let Some(content) = juliet_corpus::load_corpus_content(case, juliet_corpus::CorpusSlice::C)
+    else {
         return;
     };
     let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
@@ -528,10 +529,12 @@ fn juliet_corpus_selection_matches_the_declared_population() {
 
 fn run_juliet_corpus_grading(
     opt_flag: &'static str,
+    slice: juliet_corpus::CorpusSlice,
     case: &str,
 ) -> Option<juliet_corpus::GradedReport> {
-    let content: juliet_corpus::JulietCorpusContent = juliet_corpus::load_corpus_content(case)?;
-    let _compiler: &std::path::Path = juliet_corpus::require_host_compiler(case);
+    let content: juliet_corpus::JulietCorpusContent =
+        juliet_corpus::load_corpus_content(case, slice)?;
+    let _compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
     let config: TaintConfig = juliet_corpus::default_taint_config();
     let report: juliet_corpus::GradedReport =
         juliet_corpus::grade_corpus(&content, opt_flag, &config);
@@ -665,9 +668,11 @@ fn assert_fresh_grade_clears_named_floors(
 
 #[test]
 fn juliet_cwe78_command_injection_precision_recall_o0() {
-    let Some(report): Option<juliet_corpus::GradedReport> =
-        run_juliet_corpus_grading("-O0", "juliet_cwe78_command_injection_precision_recall_o0")
-    else {
+    let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
+        "-O0",
+        juliet_corpus::CorpusSlice::C,
+        "juliet_cwe78_command_injection_precision_recall_o0",
+    ) else {
         return;
     };
     assert_fresh_grade_clears_named_floors(
@@ -677,6 +682,296 @@ fn juliet_cwe78_command_injection_precision_recall_o0() {
         O0_AGGREGATE_TP_FLOOR,
         "aggregate 12 of 190 (6.3%) at -O0, published in docs/src/anti-analysis.md and in the \
          taint-juliet-cwe78 evidence descriptor's note",
+    );
+}
+
+fn expected_cpp_group_counts() -> Vec<(juliet_corpus::Category, usize)> {
+    use juliet_corpus::Category;
+    vec![
+        (Category::DirectFlow, 5),
+        (Category::Field, 10),
+        (Category::ArrayElement, 0),
+        (Category::Container, 15),
+        (Category::Callback, 0),
+        (Category::VirtualCall, 10),
+        (Category::FunctionPointer, 0),
+        (Category::StringOperation, 0),
+        (Category::SanitizerSevers, 0),
+        (Category::ControlDependence, 0),
+        (Category::Loop, 0),
+        (Category::Recursion, 0),
+        (Category::InterproceduralDepthOne, 10),
+        (Category::InterproceduralDepthGtOne, 0),
+        (Category::LibraryBoundary, 0),
+    ]
+}
+
+#[test]
+fn juliet_cpp_corpus_selection_matches_the_declared_population() {
+    let case: &str = "juliet_cpp_corpus_selection_matches_the_declared_population";
+    let Some(content) = juliet_corpus::load_corpus_content(case, juliet_corpus::CorpusSlice::Cpp)
+    else {
+        return;
+    };
+    let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
+        std::collections::BTreeMap::new();
+    let mut by_variant: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for group in &content.groups {
+        *actual.entry(group.category).or_insert(0) += 1;
+        *by_variant.entry(group.variant.clone()).or_insert(0) += 1;
+    }
+    for (category, expected) in expected_cpp_group_counts() {
+        let got: usize = actual.get(&category).copied().unwrap_or(0);
+        assert_eq!(
+            got,
+            expected,
+            "{}: expected {expected} testcase groups selected from the pinned Juliet corpus c++ \
+             slice, found {got}",
+            category.label()
+        );
+    }
+    let variants: Vec<(&str, usize)> = by_variant
+        .iter()
+        .map(|(variant, count): (&String, &usize)| (variant.as_str(), *count))
+        .collect();
+    assert_eq!(
+        variants,
+        vec![
+            ("33", 5),
+            ("43", 5),
+            ("62", 5),
+            ("72", 5),
+            ("73", 5),
+            ("74", 5),
+            ("81", 5),
+            ("82", 5),
+            ("83", 5),
+            ("84", 5),
+        ],
+        "the char/system-sink/.cpp-only CWE-78 slice must select every flow variant Juliet ships \
+         for that combination, five bad-source flavours each"
+    );
+    assert_eq!(
+        content.groups.len(),
+        50,
+        "the char/system-sink/.cpp-only CWE-78 slice must total 50 testcase groups"
+    );
+    for group in &content.groups {
+        assert!(
+            group.namespace.is_some(),
+            "{}: every c++ group must carry the namespace its own sources declare",
+            group.flaw_file
+        );
+        assert_eq!(
+            group.bad_entry, "bad",
+            "{}: Juliet's c++ templates always name the outer bad entry `bad`",
+            group.flaw_file
+        );
+        assert_eq!(
+            group.good_entry, "good",
+            "{}: Juliet's c++ templates always name the outer good entry `good`",
+            group.flaw_file
+        );
+    }
+}
+
+const CPP_O2_AGGREGATE_LABEL: &str = "aggregate (5 populated c++ categories), g++ -O2";
+const CPP_O2_AGGREGATE_GROUPS: u64 = 50;
+const CPP_O2_AGGREGATE_TP_FLOOR: u64 = 10;
+
+const CPP_O2_CATEGORY_FLOORS: [GradeFloor; 5] = [
+    GradeFloor {
+        category: juliet_corpus::Category::DirectFlow,
+        label: "direct flow, g++ -O2",
+        groups: 5,
+        true_positive_floor: 3,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Field,
+        label: "flow through a field, g++ -O2",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Container,
+        label: "flow through a container, g++ -O2",
+        groups: 15,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::VirtualCall,
+        label: "flow across a virtual call, g++ -O2",
+        groups: 10,
+        true_positive_floor: 4,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthOne,
+        label: "inter-procedural flow at depth one, g++ -O2",
+        groups: 10,
+        true_positive_floor: 3,
+    },
+];
+
+const CPP_O0_AGGREGATE_LABEL: &str = "aggregate (5 populated c++ categories), g++ -O0";
+const CPP_O0_AGGREGATE_TP_FLOOR: u64 = 0;
+
+const CPP_O0_CATEGORY_FLOORS: [GradeFloor; 5] = [
+    GradeFloor {
+        category: juliet_corpus::Category::DirectFlow,
+        label: "direct flow, g++ -O0",
+        groups: 5,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Field,
+        label: "flow through a field, g++ -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::Container,
+        label: "flow through a container, g++ -O0",
+        groups: 15,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::VirtualCall,
+        label: "flow across a virtual call, g++ -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+    GradeFloor {
+        category: juliet_corpus::Category::InterproceduralDepthOne,
+        label: "inter-procedural flow at depth one, g++ -O0",
+        groups: 10,
+        true_positive_floor: 0,
+    },
+];
+
+#[test]
+fn juliet_cwe78_cpp_precision_recall_o2() {
+    let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
+        "-O2",
+        juliet_corpus::CorpusSlice::Cpp,
+        "juliet_cwe78_cpp_precision_recall_o2",
+    ) else {
+        return;
+    };
+    assert_fresh_grade_clears_named_floors(
+        &report,
+        &CPP_O2_CATEGORY_FLOORS,
+        CPP_O2_AGGREGATE_GROUPS,
+        CPP_O2_AGGREGATE_TP_FLOOR,
+        CPP_O2_AGGREGATE_LABEL,
+    );
+}
+
+#[test]
+fn juliet_cwe78_cpp_precision_recall_o0() {
+    let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
+        "-O0",
+        juliet_corpus::CorpusSlice::Cpp,
+        "juliet_cwe78_cpp_precision_recall_o0",
+    ) else {
+        return;
+    };
+    assert_fresh_grade_clears_named_floors(
+        &report,
+        &CPP_O0_CATEGORY_FLOORS,
+        CPP_O2_AGGREGATE_GROUPS,
+        CPP_O0_AGGREGATE_TP_FLOOR,
+        CPP_O0_AGGREGATE_LABEL,
+    );
+}
+
+const MATCH_RULE_CONTROL_SCAN_LIMIT: usize = 50;
+
+#[test]
+fn leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss() {
+    let case: &str = "leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss";
+    let slice: juliet_corpus::CorpusSlice = juliet_corpus::CorpusSlice::Cpp;
+    let Some(content): Option<juliet_corpus::JulietCorpusContent> =
+        juliet_corpus::load_corpus_content(case, slice)
+    else {
+        return;
+    };
+    let compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
+    let config: TaintConfig = juliet_corpus::default_taint_config();
+    let support_dir: &std::path::Path = content.testcasesupport_dir.path();
+    assert!(
+        content.groups.len() <= MATCH_RULE_CONTROL_SCAN_LIMIT,
+        "{case}: the c++ selection grew to {} groups, past the {MATCH_RULE_CONTROL_SCAN_LIMIT} this \
+         control is bounded to compile",
+        content.groups.len()
+    );
+
+    let mut control: Option<(&juliet_corpus::TestcaseGroup, juliet_corpus::GroupGrade)> = None;
+    for group in content.groups.iter().take(MATCH_RULE_CONTROL_SCAN_LIMIT) {
+        let grade: juliet_corpus::GroupGrade = juliet_corpus::grade_group(
+            compiler,
+            "-O2",
+            slice,
+            juliet_corpus::NameResolution::Demangled,
+            group,
+            &content.files,
+            support_dir,
+            &config,
+        );
+        if grade.bad_verdict == juliet_corpus::CaseVerdict::TruePositive {
+            control = Some((group, grade));
+            break;
+        }
+    }
+    let Some((group, resolved_grade)): Option<(
+        &juliet_corpus::TestcaseGroup,
+        juliet_corpus::GroupGrade,
+    )> = control
+    else {
+        panic!(
+            "{case}: none of the first {MATCH_RULE_CONTROL_SCAN_LIMIT} c++ groups produced a true \
+             positive under the resolving match rule, so there is no recovered flow whose loss a \
+             wrong rule could demonstrate; a control that cannot be established is never a pass"
+        )
+    };
+    assert_eq!(
+        resolved_grade.good_verdict,
+        juliet_corpus::CaseVerdict::TrueNegative,
+        "{}: the resolving rule must clear the good side of the control before the wrong rule can \
+         be blamed for anything",
+        group.flaw_file
+    );
+
+    let unresolved_grade: juliet_corpus::GroupGrade = juliet_corpus::grade_group(
+        compiler,
+        "-O2",
+        slice,
+        juliet_corpus::NameResolution::AsReported,
+        group,
+        &content.files,
+        support_dir,
+        &config,
+    );
+    assert_eq!(
+        unresolved_grade.reported_flows, resolved_grade.reported_flows,
+        "{}: only the match rule changed, so the engine must report the same number of flows both \
+         ways; a different count means this control compared two different analyses",
+        group.flaw_file
+    );
+    assert_eq!(
+        unresolved_grade.bad_verdict,
+        juliet_corpus::CaseVerdict::FalseNegative,
+        "{}: comparing the raw mangled symbol against the source-level name the corpus declares \
+         must lose the recovered flow, proving the match rule between a report entry and a \
+         manifest entry is what moves this score",
+        group.flaw_file
+    );
+    assert_eq!(
+        unresolved_grade.good_verdict,
+        juliet_corpus::CaseVerdict::FalsePositive,
+        "{}: the same wrong rule must also stop crediting the good side, so it lowers precision as \
+         well as recall",
+        group.flaw_file
     );
 }
 
@@ -738,9 +1033,11 @@ const PUBLISHED_O2_CATEGORY_FLOORS: [GradeFloor; 8] = [
 
 #[test]
 fn juliet_cwe78_command_injection_precision_recall_o2() {
-    let Some(report): Option<juliet_corpus::GradedReport> =
-        run_juliet_corpus_grading("-O2", "juliet_cwe78_command_injection_precision_recall_o2")
-    else {
+    let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
+        "-O2",
+        juliet_corpus::CorpusSlice::C,
+        "juliet_cwe78_command_injection_precision_recall_o2",
+    ) else {
         return;
     };
     assert_fresh_grade_clears_named_floors(

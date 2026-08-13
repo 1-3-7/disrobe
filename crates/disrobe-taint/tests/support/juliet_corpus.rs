@@ -29,12 +29,18 @@ const CWE78_ZIP_PREFIX: &str = "C/testcases/CWE78_OS_Command_Injection/";
 
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(30);
 const ANALYZE_TIMEOUT: Duration = Duration::from_secs(20);
+const DEMANGLE_TIMEOUT: Duration = Duration::from_secs(20);
 const CAPTURE_CAP_BYTES: usize = 1 << 20;
 const CASE_WORKERS: usize = 8;
+const DEMANGLE_BATCH: usize = 64;
 
 const C_COMPILER_CANDIDATES: [&str; 3] = ["cc", "gcc", "clang"];
+const CPP_COMPILER_CANDIDATES: [&str; 3] = ["c++", "g++", "clang++"];
+const DEMANGLER_CANDIDATES: [&str; 2] = ["c++filt", "llvm-cxxfilt"];
 
 static HOST_C_COMPILER: OnceLock<Option<PathBuf>> = OnceLock::new();
+static HOST_CPP_COMPILER: OnceLock<Option<PathBuf>> = OnceLock::new();
+static HOST_DEMANGLER: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn tool_runs(tool: &str) -> bool {
     Command::new(tool)
@@ -43,15 +49,80 @@ fn tool_runs(tool: &str) -> bool {
         .is_ok_and(|probe: std::process::Output| probe.status.success())
 }
 
+fn first_callable(candidates: &'static [&'static str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate: &&'static str| tool_runs(candidate))
+        .map(PathBuf::from)
+}
+
 pub(crate) fn host_c_compiler() -> Option<&'static Path> {
     HOST_C_COMPILER
-        .get_or_init(|| {
-            C_COMPILER_CANDIDATES
-                .into_iter()
-                .find(|candidate: &&'static str| tool_runs(candidate))
-                .map(PathBuf::from)
-        })
+        .get_or_init(|| first_callable(&C_COMPILER_CANDIDATES))
         .as_deref()
+}
+
+fn host_cpp_compiler() -> Option<&'static Path> {
+    HOST_CPP_COMPILER
+        .get_or_init(|| first_callable(&CPP_COMPILER_CANDIDATES))
+        .as_deref()
+}
+
+fn host_demangler() -> Option<&'static Path> {
+    HOST_DEMANGLER
+        .get_or_init(|| first_callable(&DEMANGLER_CANDIDATES))
+        .as_deref()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CorpusSlice {
+    C,
+    Cpp,
+}
+
+impl CorpusSlice {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Cpp => "c++",
+        }
+    }
+
+    const fn flaw_extension(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Cpp => "cpp",
+        }
+    }
+
+    const fn driver_file_name(self) -> &'static str {
+        match self {
+            Self::C => "driver.c",
+            Self::Cpp => "driver.cpp",
+        }
+    }
+
+    const fn compiler_candidates(self) -> &'static [&'static str] {
+        match self {
+            Self::C => &C_COMPILER_CANDIDATES,
+            Self::Cpp => &CPP_COMPILER_CANDIDATES,
+        }
+    }
+
+    fn host_compiler(self) -> Option<&'static Path> {
+        match self {
+            Self::C => host_c_compiler(),
+            Self::Cpp => host_cpp_compiler(),
+        }
+    }
+
+    fn compiles_source(self, name: &str) -> bool {
+        match self {
+            Self::C => has_extension(name, "c"),
+            Self::Cpp => has_extension(name, "c") || has_extension(name, "cpp"),
+        }
+    }
 }
 
 pub(crate) const DEFAULT_SOURCES: &[&str] = &[
@@ -354,10 +425,10 @@ fn has_extension(name: &str, extension: &str) -> bool {
         .is_some_and(|found: &OsStr| found.eq_ignore_ascii_case(extension))
 }
 
-fn is_selected_flaw_file(name: &str) -> bool {
+fn is_selected_flaw_file(name: &str, slice: CorpusSlice) -> bool {
     name.starts_with("CWE78_OS_Command_Injection__char_")
         && name.contains("_system_")
-        && has_extension(name, "c")
+        && has_extension(name, slice.flaw_extension())
 }
 
 #[derive(Debug, Clone)]
@@ -374,20 +445,55 @@ fn starts_with_comment_or_directive(trimmed: &str) -> bool {
         || trimmed.starts_with("//")
 }
 
+const TRAILING_SPECIFIERS: [&str; 4] = ["const", "noexcept", "override", "final"];
+
+fn strip_trailing_specifiers(signature: &str) -> &str {
+    let mut current: &str = signature;
+    'strip: loop {
+        for specifier in TRAILING_SPECIFIERS {
+            if let Some(head) = current.strip_suffix(specifier)
+                && head.ends_with(char::is_whitespace)
+            {
+                current = head.trim_end();
+                continue 'strip;
+            }
+        }
+        return current;
+    }
+}
+
 fn function_signature_name(trimmed: &str) -> Option<String> {
     if trimmed.contains(';') || trimmed.contains('{') || trimmed.contains('}') {
         return None;
     }
-    if !trimmed.ends_with(')') {
+    let signature: &str = strip_trailing_specifiers(trimmed);
+    if !signature.ends_with(')') {
         return None;
     }
-    let paren_pos: usize = trimmed.find('(')?;
-    let before: &str = trimmed[..paren_pos].trim_end();
+    let paren_pos: usize = signature.find('(')?;
+    let before: &str = signature[..paren_pos].trim_end();
     let name: &str = before
-        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':' || c == '~'))
         .next()?;
     let first: char = name.chars().next()?;
-    (!name.is_empty() && (first.is_alphabetic() || first == '_')).then(|| name.to_owned())
+    (first.is_alphabetic() || first == '_' || first == '~').then(|| name.to_owned())
+}
+
+fn declared_namespace(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed: &str = line.trim();
+        let Some(rest): Option<&str> = trimmed.strip_prefix("namespace ") else {
+            continue;
+        };
+        let name: &str = rest.trim().trim_end_matches('{').trim();
+        if !name.is_empty()
+            && name.chars().all(|c: char| c.is_alphanumeric() || c == '_')
+            && !name.chars().next().is_some_and(|c: char| c.is_numeric())
+        {
+            return Some(name.to_owned());
+        }
+    }
+    None
 }
 
 pub(crate) fn top_level_functions(source: &str) -> Vec<FunctionSpan> {
@@ -490,14 +596,16 @@ impl Category {
 
 fn classify_variant(variant: &str) -> Option<Category> {
     match variant {
-        "01" | "31" | "32" => Some(Category::DirectFlow),
-        "34" | "67" => Some(Category::Field),
+        "01" | "31" | "32" | "33" => Some(Category::DirectFlow),
+        "34" | "67" | "83" | "84" => Some(Category::Field),
         "66" => Some(Category::ArrayElement),
+        "72" | "73" | "74" => Some(Category::Container),
+        "81" | "82" => Some(Category::VirtualCall),
         "44" | "65" => Some(Category::FunctionPointer),
         "16" | "17" => Some(Category::Loop),
         "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12" | "13"
         | "14" | "15" | "18" | "21" | "22" => Some(Category::ControlDependence),
-        "41" | "42" | "45" | "51" | "61" | "63" | "64" | "68" => {
+        "41" | "42" | "43" | "45" | "51" | "61" | "62" | "63" | "64" | "68" => {
             Some(Category::InterproceduralDepthOne)
         }
         "52" | "53" | "54" => Some(Category::InterproceduralDepthGtOne),
@@ -522,11 +630,13 @@ pub(crate) struct TestcaseGroup {
     pub(crate) member_paths: Vec<String>,
     pub(crate) bad_entry: String,
     pub(crate) good_entry: String,
+    pub(crate) namespace: Option<String>,
     pub(crate) bad_chain: BTreeSet<String>,
     pub(crate) good_chain: BTreeSet<String>,
 }
 
 pub(crate) struct JulietCorpusContent {
+    pub(crate) slice: CorpusSlice,
     pub(crate) files: BTreeMap<String, Vec<u8>>,
     pub(crate) testcasesupport_dir: ScratchDir,
     pub(crate) groups: Vec<TestcaseGroup>,
@@ -585,15 +695,19 @@ fn read_zip_entries(zip_bytes: &[u8], needed: &BTreeSet<String>) -> BTreeMap<Str
     out
 }
 
-fn outer_entry(spans: &[FunctionSpan], suffix: &str) -> String {
+fn outer_entry(spans: &[FunctionSpan], slice: CorpusSlice, side: &str) -> String {
     let matches: Vec<&FunctionSpan> = spans
         .iter()
-        .filter(|s: &&FunctionSpan| s.name.ends_with(suffix))
+        .filter(|s: &&FunctionSpan| match slice {
+            CorpusSlice::C => s.name.ends_with(&format!("_{side}")),
+            CorpusSlice::Cpp => s.name == side,
+        })
         .collect();
     assert_eq!(
         matches.len(),
         1,
-        "expected exactly one function ending in {suffix}, found {}: {:?}",
+        "expected exactly one {} outer {side} entry, found {}: {:?}",
+        slice.label(),
         matches.len(),
         matches
             .iter()
@@ -608,6 +722,7 @@ fn build_group(
     flaw_file: &str,
     flaw: &ManifestFlaw,
     files: &BTreeMap<String, Vec<u8>>,
+    slice: CorpusSlice,
 ) -> TestcaseGroup {
     assert!(
         flaw.name.contains("CWE-078"),
@@ -653,8 +768,9 @@ fn build_group(
         .map(|f: &ManifestFile| f.path.clone())
         .collect();
     let mut all_spans: Vec<FunctionSpan> = Vec::new();
+    let mut namespaces: BTreeSet<String> = BTreeSet::new();
     for path in &member_paths {
-        if !(has_extension(path, "c") || has_extension(path, "h")) {
+        if !(slice.compiles_source(path) || has_extension(path, "h")) {
             continue;
         }
         let bytes: &[u8] = files
@@ -662,10 +778,31 @@ fn build_group(
             .unwrap_or_else(|| panic!("corpus content missing for member file {path}"));
         let text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(bytes);
         all_spans.extend(top_level_functions(&text));
+        if let Some(name) = declared_namespace(&text) {
+            namespaces.insert(name);
+        }
     }
+    let namespace: Option<String> = match slice {
+        CorpusSlice::C => {
+            assert!(
+                namespaces.is_empty(),
+                "{flaw_file}: the c slice must not declare a namespace, found {namespaces:?}"
+            );
+            None
+        }
+        CorpusSlice::Cpp => {
+            assert_eq!(
+                namespaces.len(),
+                1,
+                "{flaw_file}: the c++ slice must declare exactly one namespace across its member \
+                 files so a driver can name its entries, found {namespaces:?}"
+            );
+            namespaces.iter().next().cloned()
+        }
+    };
 
-    let bad_entry: String = outer_entry(&all_spans, "_bad");
-    let good_entry: String = outer_entry(&all_spans, "_good");
+    let bad_entry: String = outer_entry(&all_spans, slice, "bad");
+    let good_entry: String = outer_entry(&all_spans, slice, "good");
     let mut bad_chain: BTreeSet<String> = BTreeSet::new();
     let mut good_chain: BTreeSet<String> = BTreeSet::new();
     for span in &all_spans {
@@ -685,6 +822,7 @@ fn build_group(
         member_paths,
         bad_entry,
         good_entry,
+        namespace,
         bad_chain,
         good_chain,
     }
@@ -703,7 +841,7 @@ fn read_manifest_bytes(zip_bytes: &[u8]) -> Vec<u8> {
     bytes
 }
 
-pub(crate) fn load_corpus_content(case: &str) -> Option<JulietCorpusContent> {
+pub(crate) fn load_corpus_content(case: &str, slice: CorpusSlice) -> Option<JulietCorpusContent> {
     let zip_bytes: Vec<u8> = ensure_corpus_zip(case)?;
     let manifest_bytes: Vec<u8> = read_manifest_bytes(&zip_bytes);
     let manifest_text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&manifest_bytes);
@@ -713,7 +851,7 @@ pub(crate) fn load_corpus_content(case: &str) -> Option<JulietCorpusContent> {
     for testcase in testcases {
         let flaw_entry: Option<(String, ManifestFlaw)> =
             testcase.files.iter().find_map(|f: &ManifestFile| {
-                if !is_selected_flaw_file(&f.path) || f.flaws.is_empty() {
+                if !is_selected_flaw_file(&f.path, slice) || f.flaws.is_empty() {
                     return None;
                 }
                 assert_eq!(
@@ -755,7 +893,7 @@ pub(crate) fn load_corpus_content(case: &str) -> Option<JulietCorpusContent> {
         .iter()
         .map(
             |(testcase, flaw_file, flaw): &(ManifestTestcase, String, ManifestFlaw)| {
-                build_group(testcase, flaw_file, flaw, &content)
+                build_group(testcase, flaw_file, flaw, &content, slice)
             },
         )
         .collect();
@@ -768,16 +906,33 @@ pub(crate) fn load_corpus_content(case: &str) -> Option<JulietCorpusContent> {
     });
 
     Some(JulietCorpusContent {
+        slice,
         files: content,
         testcasesupport_dir,
         groups,
     })
 }
 
-fn driver_source(good_entry: &str, bad_entry: &str) -> String {
-    format!(
-        "extern void {good_entry}(void);\nextern void {bad_entry}(void);\n\nint main(void)\n{{\n    {good_entry}();\n    {bad_entry}();\n    return 0;\n}}\n"
-    )
+fn driver_source(slice: CorpusSlice, group: &TestcaseGroup) -> String {
+    let good_entry: &str = &group.good_entry;
+    let bad_entry: &str = &group.bad_entry;
+    match slice {
+        CorpusSlice::C => format!(
+            "extern void {good_entry}(void);\nextern void {bad_entry}(void);\n\nint main(void)\n{{\n    {good_entry}();\n    {bad_entry}();\n    return 0;\n}}\n"
+        ),
+        CorpusSlice::Cpp => {
+            let namespace: &str = group.namespace.as_deref().unwrap_or_else(|| {
+                panic!(
+                    "{}: a c++ group needs the namespace its own sources declare before a driver \
+                     can call its entries",
+                    group.flaw_file
+                )
+            });
+            format!(
+                "namespace {namespace}\n{{\nvoid {good_entry}();\nvoid {bad_entry}();\n}}\n\nint main(void)\n{{\n    {namespace}::{good_entry}();\n    {namespace}::{bad_entry}();\n    return 0;\n}}\n"
+            )
+        }
+    }
 }
 
 fn host_executable_name(stem: &str) -> String {
@@ -800,6 +955,7 @@ pub(crate) enum CompileOutcome {
 pub(crate) fn compile_group(
     compiler: &Path,
     opt_flag: &str,
+    slice: CorpusSlice,
     group: &TestcaseGroup,
     files: &BTreeMap<String, Vec<u8>>,
     testcasesupport_dir: &Path,
@@ -818,16 +974,14 @@ pub(crate) fn compile_group(
         if let Err(err) = std::fs::write(&path, bytes) {
             return CompileOutcome::Failed(format!("write {name}: {err}"));
         }
-        if has_extension(name, "c") {
+        if slice.compiles_source(name) {
             source_paths.push(path);
         }
     }
-    let driver_path: PathBuf = dir.join("driver.c");
-    if let Err(err) = std::fs::write(
-        &driver_path,
-        driver_source(&group.good_entry, &group.bad_entry),
-    ) {
-        return CompileOutcome::Failed(format!("write driver.c: {err}"));
+    let driver_name: &str = slice.driver_file_name();
+    let driver_path: PathBuf = dir.join(driver_name);
+    if let Err(err) = std::fs::write(&driver_path, driver_source(slice, group)) {
+        return CompileOutcome::Failed(format!("write {driver_name}: {err}"));
     }
     source_paths.push(driver_path);
     source_paths.push(testcasesupport_dir.join("io.c"));
@@ -936,6 +1090,122 @@ pub(crate) fn any_call_resolves_to(module: &NirModule, candidates: &[&str]) -> b
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameResolution {
+    AsReported,
+    Demangled,
+}
+
+impl NameResolution {
+    pub(crate) const fn for_slice(slice: CorpusSlice) -> Self {
+        match slice {
+            CorpusSlice::C => Self::AsReported,
+            CorpusSlice::Cpp => Self::Demangled,
+        }
+    }
+}
+
+fn demangle_batch(demangler: &Path, batch: &[String]) -> Vec<String> {
+    let mut args: Vec<OsString> = Vec::with_capacity(batch.len() + 1);
+    args.push(OsString::from("--no-strip-underscore"));
+    for name in batch {
+        args.push(OsString::from(name));
+    }
+    let captured: Option<CapturedOutput> =
+        run_captured(demangler, &args, DEMANGLE_TIMEOUT, CAPTURE_CAP_BYTES)
+            .unwrap_or_else(|err: std::io::Error| panic!("spawn {}: {err}", demangler.display()));
+    let Some(captured): Option<CapturedOutput> = captured else {
+        panic!(
+            "{} timed out demangling {} reported names; a demangler that does not answer must \
+             never be absorbed into a grade",
+            demangler.display(),
+            batch.len()
+        )
+    };
+    assert_eq!(
+        captured.exit_code,
+        Some(0),
+        "{} exited {:?}: {}",
+        demangler.display(),
+        captured.exit_code,
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&captured.stdout);
+    let lines: Vec<String> = stdout
+        .lines()
+        .map(|line: &str| line.trim_end().to_owned())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        batch.len(),
+        "{} answered {} lines for {} names; a partial answer would silently mis-attribute a \
+         finding",
+        demangler.display(),
+        lines.len(),
+        batch.len()
+    );
+    lines
+}
+
+pub(crate) fn resolve_reported_names(
+    resolution: NameResolution,
+    reported: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    let ordered: Vec<String> = reported.iter().cloned().collect();
+    match resolution {
+        NameResolution::AsReported => ordered
+            .into_iter()
+            .map(|name: String| (name.clone(), name))
+            .collect(),
+        NameResolution::Demangled => {
+            if ordered.is_empty() {
+                return BTreeMap::new();
+            }
+            let demangler: &Path = host_demangler().unwrap_or_else(|| {
+                panic!(
+                    "no host c++ demangler is callable: tried {}; a c++ grade cannot map a \
+                     mangled symbol onto the name the corpus source declares without one",
+                    DEMANGLER_CANDIDATES.join(", ")
+                )
+            });
+            let mut out: BTreeMap<String, String> = BTreeMap::new();
+            for batch in ordered.chunks(DEMANGLE_BATCH) {
+                for (mangled, demangled) in batch
+                    .iter()
+                    .zip(demangle_batch(demangler, batch))
+                {
+                    out.insert(mangled.clone(), demangled);
+                }
+            }
+            out
+        }
+    }
+}
+
+fn without_signature(demangled: &str) -> &str {
+    let mut template_depth: i64 = 0;
+    for (index, character) in demangled.char_indices() {
+        match character {
+            '<' => template_depth += 1,
+            '>' => template_depth -= 1,
+            '(' if template_depth == 0 => return demangled[..index].trim_end(),
+            _ => {}
+        }
+    }
+    demangled.trim_end()
+}
+
+fn qualified_matches(resolved: &str, declared: &str) -> bool {
+    let bare: &str = without_signature(resolved);
+    bare == declared || bare.ends_with(&format!("::{declared}"))
+}
+
+fn chain_hit(resolved: &str, chain: &BTreeSet<String>) -> bool {
+    chain
+        .iter()
+        .any(|declared: &String| qualified_matches(resolved, declared))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaseVerdict {
     TruePositive,
     FalseNegative,
@@ -956,22 +1226,38 @@ pub(crate) struct GroupGrade {
 
 pub(crate) fn grade_findings(
     findings: &[TaintFinding],
+    resolution: NameResolution,
     bad_chain: &BTreeSet<String>,
     good_chain: &BTreeSet<String>,
     case_label: &str,
 ) -> (CaseVerdict, CaseVerdict) {
+    let reported: BTreeSet<String> = findings
+        .iter()
+        .map(|finding: &TaintFinding| finding.function.clone())
+        .collect();
+    let resolved_names: BTreeMap<String, String> = resolve_reported_names(resolution, &reported);
     let mut bad_matches: usize = 0;
     let mut unexpected: usize = 0;
     for finding in findings {
-        if bad_chain.contains(&finding.function) {
+        let resolved: &str = resolved_names
+            .get(&finding.function)
+            .map_or(finding.function.as_str(), String::as_str);
+        let in_bad: bool = chain_hit(resolved, bad_chain);
+        let in_good: bool = chain_hit(resolved, good_chain);
+        assert!(
+            !(in_bad && in_good),
+            "juliet corpus {case_label}: `{resolved}` matches both the bad chain and the good \
+             chain, so the match rule cannot decide which side this finding scores; a rule that \
+             cannot decide must not be allowed to score"
+        );
+        if in_bad {
             bad_matches += 1;
         } else {
             unexpected += 1;
-            if !good_chain.contains(&finding.function) {
+            if !in_good {
                 eprintln!(
-                    "juliet corpus {case_label}: finding attributed to `{}`, which matches neither \
-                     the bad chain nor the good chain the corpus itself names",
-                    finding.function
+                    "juliet corpus {case_label}: finding attributed to `{resolved}`, which matches \
+                     neither the bad chain nor the good chain the corpus itself names"
                 );
             }
         }
@@ -999,6 +1285,8 @@ fn case_label(group: &TestcaseGroup) -> String {
 pub(crate) fn grade_group(
     compiler: &Path,
     opt_flag: &str,
+    slice: CorpusSlice,
+    resolution: NameResolution,
     group: &TestcaseGroup,
     files: &BTreeMap<String, Vec<u8>>,
     testcasesupport_dir: &Path,
@@ -1010,7 +1298,7 @@ pub(crate) fn grade_group(
          convention never does",
         case_label(group)
     );
-    match compile_group(compiler, opt_flag, group, files, testcasesupport_dir) {
+    match compile_group(compiler, opt_flag, slice, group, files, testcasesupport_dir) {
         CompileOutcome::TimedOut => {
             eprintln!("juliet corpus {}: compile timed out", case_label(group));
             GroupGrade {
@@ -1068,6 +1356,7 @@ pub(crate) fn grade_group(
                 AnalyzeOutcome::Analyzed { module, report } => {
                     let (bad_verdict, good_verdict): (CaseVerdict, CaseVerdict) = grade_findings(
                         report.findings(),
+                        resolution,
                         &group.bad_chain,
                         &group.good_chain,
                         &case_label(group),
@@ -1162,6 +1451,7 @@ impl CategoryTally {
 }
 
 pub(crate) struct GradedReport {
+    pub(crate) slice: CorpusSlice,
     pub(crate) opt_flag: &'static str,
     pub(crate) tallies: BTreeMap<Category, CategoryTally>,
 }
@@ -1169,7 +1459,8 @@ pub(crate) struct GradedReport {
 impl GradedReport {
     pub(crate) fn render(&self) -> String {
         let mut out: String = format!(
-            "juliet cwe-78 char/system corpus grade at {}\n{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7}\n",
+            "juliet cwe-78 char/system {} corpus grade at {}\n{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7}\n",
+            self.slice.label(),
             self.opt_flag,
             "category",
             "groups",
@@ -1211,8 +1502,11 @@ pub(crate) fn grade_corpus(
     opt_flag: &'static str,
     config: &TaintConfig,
 ) -> GradedReport {
-    let compiler: &Path =
-        host_c_compiler().expect("host c compiler must be resolved before grading");
+    let slice: CorpusSlice = content.slice;
+    let compiler: &Path = slice
+        .host_compiler()
+        .expect("host compiler must be resolved before grading");
+    let resolution: NameResolution = NameResolution::for_slice(slice);
     let pool: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
         .num_threads(CASE_WORKERS)
         .build()
@@ -1226,6 +1520,8 @@ pub(crate) fn grade_corpus(
                 grade_group(
                     compiler,
                     opt_flag,
+                    slice,
+                    resolution,
                     group,
                     &content.files,
                     content.testcasesupport_dir.path(),
@@ -1238,14 +1534,19 @@ pub(crate) fn grade_corpus(
     for grade in &grades {
         tallies.entry(grade.category).or_default().absorb(grade);
     }
-    GradedReport { opt_flag, tallies }
+    GradedReport {
+        slice,
+        opt_flag,
+        tallies,
+    }
 }
 
-pub(crate) fn require_host_compiler(case: &str) -> &'static Path {
-    host_c_compiler().unwrap_or_else(|| {
+pub(crate) fn require_host_compiler(case: &str, slice: CorpusSlice) -> &'static Path {
+    slice.host_compiler().unwrap_or_else(|| {
         panic!(
-            "{case}: no host c compiler is callable: tried {}",
-            C_COMPILER_CANDIDATES.join(", ")
+            "{case}: no host {} compiler is callable: tried {}",
+            slice.label(),
+            slice.compiler_candidates().join(", ")
         )
     })
 }
@@ -1257,20 +1558,152 @@ mod tests {
     #[test]
     fn selection_predicate_accepts_only_char_system_dot_c_cwe78_files() {
         assert!(is_selected_flaw_file(
-            "CWE78_OS_Command_Injection__char_console_system_01.c"
+            "CWE78_OS_Command_Injection__char_console_system_01.c",
+            CorpusSlice::C
         ));
         assert!(!is_selected_flaw_file(
-            "CWE78_OS_Command_Injection__char_console_system_33.cpp"
+            "CWE78_OS_Command_Injection__char_console_system_33.cpp",
+            CorpusSlice::C
         ));
         assert!(!is_selected_flaw_file(
-            "CWE78_OS_Command_Injection__wchar_t_console_system_01.c"
+            "CWE78_OS_Command_Injection__wchar_t_console_system_01.c",
+            CorpusSlice::C
         ));
         assert!(!is_selected_flaw_file(
-            "CWE78_OS_Command_Injection__char_console_popen_01.c"
+            "CWE78_OS_Command_Injection__char_console_popen_01.c",
+            CorpusSlice::C
         ));
         assert!(!is_selected_flaw_file(
-            "CWE789_Uncontrolled_Mem_Alloc__malloc_char_rand_32.c"
+            "CWE789_Uncontrolled_Mem_Alloc__malloc_char_rand_32.c",
+            CorpusSlice::C
         ));
+    }
+
+    #[test]
+    fn the_cpp_selection_predicate_takes_the_files_the_c_predicate_rejects() {
+        assert!(is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_system_72b.cpp",
+            CorpusSlice::Cpp
+        ));
+        assert!(is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_listen_socket_system_81_bad.cpp",
+            CorpusSlice::Cpp
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_system_01.c",
+            CorpusSlice::Cpp
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__wchar_t_console_system_72b.cpp",
+            CorpusSlice::Cpp
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_execl_72b.cpp",
+            CorpusSlice::Cpp
+        ));
+    }
+
+    #[test]
+    fn a_trailing_cv_specifier_does_not_hide_a_member_definition() {
+        let source: &str = concat!(
+            "void CWE78_x_81::CWE78_x_81_bad::action(char * data) const\n",
+            "{\n",
+            "    system(data);\n",
+            "}\n",
+        );
+        let spans: Vec<FunctionSpan> = top_level_functions(source);
+        let names: Vec<&str> = spans
+            .iter()
+            .map(|s: &FunctionSpan| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["CWE78_x_81::CWE78_x_81_bad::action"]);
+    }
+
+    #[test]
+    fn a_destructor_keeps_the_tilde_that_distinguishes_it_from_its_constructor() {
+        let source: &str = concat!(
+            "CWE78_x_84_bad::CWE78_x_84_bad(char * dataCopy)\n",
+            "{\n",
+            "    data = dataCopy;\n",
+            "}\n",
+            "\n",
+            "CWE78_x_84_bad::~CWE78_x_84_bad()\n",
+            "{\n",
+            "    system(data);\n",
+            "}\n",
+        );
+        let spans: Vec<FunctionSpan> = top_level_functions(source);
+        let names: Vec<&str> = spans
+            .iter()
+            .map(|s: &FunctionSpan| s.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "CWE78_x_84_bad::CWE78_x_84_bad",
+                "CWE78_x_84_bad::~CWE78_x_84_bad"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unbraced_namespace_line_is_the_declared_namespace_and_a_using_line_is_not() {
+        assert_eq!(
+            declared_namespace("using namespace std;\nnamespace CWE78_x_72\n{\n").as_deref(),
+            Some("CWE78_x_72")
+        );
+        assert_eq!(
+            declared_namespace("namespace CWE78_x_72 {\n").as_deref(),
+            Some("CWE78_x_72")
+        );
+        assert_eq!(declared_namespace("using namespace std;\n"), None);
+        assert_eq!(declared_namespace("int main(void) { return 0; }\n"), None);
+    }
+
+    #[test]
+    fn the_match_rule_accepts_a_namespace_qualified_name_and_rejects_a_sibling() {
+        assert!(qualified_matches("CWE78_x_72::bad()", "bad"));
+        assert!(qualified_matches(
+            "CWE78_x_81::CWE78_x_81_bad::action(char*) const",
+            "CWE78_x_81_bad::action"
+        ));
+        assert!(qualified_matches(
+            "CWE78_x_72::badSink(std::vector<char*, std::allocator<char*> >)",
+            "badSink"
+        ));
+        assert!(!qualified_matches("CWE78_x_72::badSink()", "bad"));
+        assert!(!qualified_matches("CWE78_x_72::goodG2B()", "good"));
+        assert!(!qualified_matches(
+            "CWE78_x_84::CWE78_x_84_bad::~CWE78_x_84_bad()",
+            "CWE78_x_84_bad::CWE78_x_84_bad"
+        ));
+        assert!(qualified_matches(
+            "CWE78_x_84::CWE78_x_84_bad::~CWE78_x_84_bad()",
+            "CWE78_x_84_bad::~CWE78_x_84_bad"
+        ));
+        assert!(qualified_matches("main", "main"));
+    }
+
+    #[test]
+    fn a_template_argument_never_ends_the_qualified_name_early() {
+        assert_eq!(
+            without_signature("N::sink(std::map<int, void (*)(char*)>)"),
+            "N::sink"
+        );
+        assert_eq!(without_signature("N::bad"), "N::bad");
+    }
+
+    #[test]
+    fn the_identity_resolution_leaves_every_reported_name_alone() {
+        let reported: BTreeSet<String> =
+            BTreeSet::from(["taint_entry_bad".to_owned(), "main".to_owned()]);
+        let resolved: BTreeMap<String, String> =
+            resolve_reported_names(NameResolution::AsReported, &reported);
+        assert_eq!(
+            resolved.get("taint_entry_bad").map(String::as_str),
+            Some("taint_entry_bad")
+        );
+        assert_eq!(resolved.get("main").map(String::as_str), Some("main"));
     }
 
     #[test]
@@ -1415,22 +1848,83 @@ mod tests {
         let bad_chain: BTreeSet<String> = BTreeSet::from(["taint_entry_bad".to_owned()]);
         let good_chain: BTreeSet<String> = BTreeSet::from(["taint_entry_good".to_owned()]);
         let matching: Vec<TaintFinding> = vec![sample_finding("taint_entry_bad")];
-        let (bad, good): (CaseVerdict, CaseVerdict) =
-            grade_findings(&matching, &bad_chain, &good_chain, "unit-test-case");
+        let (bad, good): (CaseVerdict, CaseVerdict) = grade_findings(
+            &matching,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
         assert_eq!(bad, CaseVerdict::TruePositive);
         assert_eq!(good, CaseVerdict::TrueNegative);
 
         let unmatched: Vec<TaintFinding> = vec![sample_finding("taint_entry_good")];
-        let (bad, good): (CaseVerdict, CaseVerdict) =
-            grade_findings(&unmatched, &bad_chain, &good_chain, "unit-test-case");
+        let (bad, good): (CaseVerdict, CaseVerdict) = grade_findings(
+            &unmatched,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
         assert_eq!(bad, CaseVerdict::FalseNegative);
         assert_eq!(good, CaseVerdict::FalsePositive);
 
         let none: Vec<TaintFinding> = Vec::new();
-        let (bad, good): (CaseVerdict, CaseVerdict) =
-            grade_findings(&none, &bad_chain, &good_chain, "unit-test-case");
+        let (bad, good): (CaseVerdict, CaseVerdict) = grade_findings(
+            &none,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
         assert_eq!(bad, CaseVerdict::FalseNegative);
         assert_eq!(good, CaseVerdict::TrueNegative);
+    }
+
+    #[test]
+    fn a_mangled_name_scores_as_a_miss_until_it_is_resolved_to_the_declared_name() {
+        let bad_chain: BTreeSet<String> = BTreeSet::from(["bad".to_owned()]);
+        let good_chain: BTreeSet<String> = BTreeSet::from(["goodG2B".to_owned()]);
+        let mangled: Vec<TaintFinding> = vec![sample_finding("_ZN12CWE78_x_82_x3badEv")];
+        let (bad, good): (CaseVerdict, CaseVerdict) = grade_findings(
+            &mangled,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
+        assert_eq!(
+            bad,
+            CaseVerdict::FalseNegative,
+            "the mangled symbol must not match the source-level name the corpus declares"
+        );
+        assert_eq!(good, CaseVerdict::FalsePositive);
+
+        let demangled: Vec<TaintFinding> = vec![sample_finding("CWE78_x_82::bad()")];
+        let (bad, good): (CaseVerdict, CaseVerdict) = grade_findings(
+            &demangled,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
+        assert_eq!(bad, CaseVerdict::TruePositive);
+        assert_eq!(good, CaseVerdict::TrueNegative);
+    }
+
+    #[test]
+    #[should_panic(expected = "matches both the bad chain and the good chain")]
+    fn a_match_rule_that_cannot_decide_a_side_refuses_to_score() {
+        let bad_chain: BTreeSet<String> = BTreeSet::from(["N::ambiguous".to_owned()]);
+        let good_chain: BTreeSet<String> = BTreeSet::from(["ambiguous".to_owned()]);
+        let findings: Vec<TaintFinding> = vec![sample_finding("Outer::N::ambiguous()")];
+        let _: (CaseVerdict, CaseVerdict) = grade_findings(
+            &findings,
+            NameResolution::AsReported,
+            &bad_chain,
+            &good_chain,
+            "unit-test-case",
+        );
     }
 
     fn sample_finding(function: &str) -> TaintFinding {
