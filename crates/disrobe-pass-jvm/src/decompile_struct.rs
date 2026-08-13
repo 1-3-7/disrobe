@@ -552,6 +552,7 @@ pub struct Structurer<'a> {
     next_label: u32,
     depth: usize,
     work: usize,
+    finally_body_depth: usize,
     pub had_irreducible: bool,
     unmodelled_finally: Option<&'static str>,
 }
@@ -619,6 +620,7 @@ impl<'a> Structurer<'a> {
             next_label: 0,
             depth: 0,
             work: 0,
+            finally_body_depth: 0,
             had_irreducible: false,
             unmodelled_finally: None,
         }
@@ -979,6 +981,15 @@ impl<'a> Structurer<'a> {
         }
     }
 
+    fn self_protecting_spans(&self, head: BlockId) -> Vec<(u32, u32)> {
+        let head_pc: u32 = self.cfg.blocks[head.0 as usize].start_pc;
+        self.try_groups
+            .iter()
+            .filter(|group: &&GroupedTry| group.try_start_pc == head_pc)
+            .map(|group: &GroupedTry| (group.try_start_pc, group.try_end_pc))
+            .collect()
+    }
+
     fn next_block_by_pc(&self, current: BlockId) -> Option<BlockId> {
         let start_pc: u32 = self.cfg.blocks[current.0 as usize].start_pc;
         self.cfg
@@ -1025,35 +1036,61 @@ impl<'a> Structurer<'a> {
         self.insns.get(idx + 1).map(|ins: &Instruction| ins.pc)
     }
 
-    fn finally_copy_matches(&self, body: &[Instruction], copy: &[Instruction]) -> bool {
+    fn finally_copy_match(
+        &self,
+        body: &[Instruction],
+        copy: &[Instruction],
+    ) -> Option<FinallyCopyMatch> {
         if body.len() != copy.len() || body.is_empty() {
-            return false;
+            return None;
         }
         let body_end: Option<u32> = self.pc_after_last(body);
         let copy_end: Option<u32> = self.pc_after_last(copy);
-        body.iter()
-            .zip(copy.iter())
-            .all(|(a, b): (&Instruction, &Instruction)| {
-                if a.opcode != b.opcode {
-                    return false;
+        let mut exit_pc: Option<u32> = None;
+        for (a, b) in body.iter().zip(copy.iter()) {
+            if a.opcode != b.opcode {
+                return None;
+            }
+            let (Operands::Branch(_), Operands::Branch(_)) = (&a.operands, &b.operands) else {
+                if a.operands != b.operands {
+                    return None;
                 }
-                let (Operands::Branch(_), Operands::Branch(_)) = (&a.operands, &b.operands) else {
-                    return a.operands == b.operands;
-                };
-                let (Some(a_target), Some(b_target)): (Option<u32>, Option<u32>) =
-                    (branch_target(a), branch_target(b))
-                else {
-                    return false;
-                };
-                match (
-                    body_target_index(body, body_end, a_target),
-                    body_target_index(copy, copy_end, b_target),
-                ) {
-                    (Some(a_idx), Some(b_idx)) => a_idx == b_idx,
-                    (None, None) => a_target == b_target,
-                    _ => false,
+                continue;
+            };
+            let (Some(a_target), Some(b_target)): (Option<u32>, Option<u32>) =
+                (branch_target(a), branch_target(b))
+            else {
+                return None;
+            };
+            let a_index: Option<usize> = body_target_index(body, body_end, a_target);
+            let b_index: Option<usize> = body_target_index(copy, copy_end, b_target);
+            if a_index == Some(body.len()) {
+                if b_index.is_some_and(|index: usize| index < copy.len())
+                    || body_target_index(body, body_end, b_target)
+                        .is_some_and(|index: usize| index < body.len())
+                {
+                    return None;
                 }
-            })
+                match exit_pc {
+                    Some(previous) if previous != b_target => return None,
+                    _ => exit_pc = Some(b_target),
+                }
+                continue;
+            }
+            match (a_index, b_index) {
+                (Some(a_idx), Some(b_idx)) if a_idx == b_idx => {}
+                (None, None) if a_target == b_target => {}
+                _ => return None,
+            }
+        }
+        Some(FinallyCopyMatch { exit_pc })
+    }
+
+    fn finally_copy_matches(&self, body: &[Instruction], copy: &[Instruction]) -> bool {
+        let Some(matched): Option<FinallyCopyMatch> = self.finally_copy_match(body, copy) else {
+            return false;
+        };
+        matched.exit_pc.is_none() || matched.exit_pc == self.pc_after_last(copy)
     }
 
     fn finally_body_instructions(&self, chain: &FinallyChain) -> Option<Vec<Instruction>> {
@@ -1065,7 +1102,6 @@ impl<'a> Structurer<'a> {
             astore_slot(self.block_instructions(*chain.blocks.first()?).first()?)?;
         let tail_return: usize = usize::from(chain.trim == 0);
         let scanned: &[Instruction] = body.get(..body.len() - tail_return)?;
-        let body_end: Option<u32> = self.pc_after_last(&body);
         if scanned
             .iter()
             .enumerate()
@@ -1078,9 +1114,7 @@ impl<'a> Structurer<'a> {
                             .and_then(aload_slot)
                             == Some(exception_slot))
                     || (matches!(ins.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
-                        && branch_target(ins).is_none_or(|target: u32| {
-                            body_target_index(&body, body_end, target).is_none()
-                        }))
+                        && branch_target(ins).is_none())
             })
         {
             return None;
@@ -1088,7 +1122,11 @@ impl<'a> Structurer<'a> {
         Some(body)
     }
 
-    fn finally_inline_blocks(&self, chain: &FinallyChain, start: BlockId) -> Option<Vec<BlockId>> {
+    fn finally_inline_blocks(
+        &self,
+        chain: &FinallyChain,
+        start: BlockId,
+    ) -> Option<(Vec<BlockId>, Option<BlockId>)> {
         let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
         let mut copy: Vec<Instruction> = Vec::new();
         let mut blocks: Vec<BlockId> = Vec::new();
@@ -1107,7 +1145,12 @@ impl<'a> Structurer<'a> {
                 current = self.next_block_by_pc(current)?;
             }
         }
-        self.finally_copy_matches(&body, &copy).then_some(blocks)
+        let matched: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
+        let exit: Option<BlockId> = match matched.exit_pc {
+            Some(pc) => Some(self.cfg.pc_to_block.get(&pc).copied()?),
+            None => None,
+        };
+        Some((blocks, exit))
     }
 
     fn finally_value_return_after_blocks(
@@ -1363,31 +1406,36 @@ impl<'a> Structurer<'a> {
     }
 
     fn outer_loop_jump(&mut self, target: BlockId) -> Option<Region> {
-        if self.loop_stack.len() < 2 {
-            return None;
-        }
-        let outer: &[LoopFrame] = &self.loop_stack[..self.loop_stack.len() - 1];
-        for frame in outer.iter().rev() {
+        let reserved: usize = usize::from(self.finally_body_depth == 0);
+        let visible: usize = self.loop_stack.len().checked_sub(reserved)?;
+        let frames: Vec<LoopFrame> = self.loop_stack.get(..visible)?.to_vec();
+        let innermost: usize = self.loop_stack.len().checked_sub(1)?;
+        for (index, frame) in frames.iter().enumerate().rev() {
+            let label: Option<u32> = (index != innermost).then_some(frame.label);
             if frame.exit == Some(target) {
-                self.labels_used.insert(frame.label);
-                return Some(Region::Break {
-                    label: Some(frame.label),
-                });
+                if let Some(used) = label {
+                    self.labels_used.insert(used);
+                }
+                return Some(Region::Break { label });
             }
-            if let Some(continue_stmts) = self.outer_continue_at(target, frame) {
-                self.labels_used.insert(frame.label);
-                return Some(continue_stmts);
+            if let Some(jump) = self.continue_jump_at(target, frame, label) {
+                if let Some(used) = label {
+                    self.labels_used.insert(used);
+                }
+                return Some(jump);
             }
         }
         None
     }
 
-    fn outer_continue_at(&self, target: BlockId, frame: &LoopFrame) -> Option<Region> {
+    fn continue_jump_at(
+        &self,
+        target: BlockId,
+        frame: &LoopFrame,
+        label: Option<u32>,
+    ) -> Option<Region> {
         if target == frame.header {
-            return Some(Region::Continue {
-                label: Some(frame.label),
-                latch: None,
-            });
+            return Some(Region::Continue { label, latch: None });
         }
         let block: &BasicBlock = &self.cfg.blocks[target.0 as usize];
         let mut normal = block
@@ -1398,13 +1446,10 @@ impl<'a> Structurer<'a> {
             (Some(e), None) => Some(e.target),
             _ => None,
         };
-        if only == Some(frame.header) {
-            return Some(Region::Continue {
-                label: Some(frame.label),
-                latch: Some(target),
-            });
-        }
-        None
+        (only == Some(frame.header)).then_some(Region::Continue {
+            label,
+            latch: Some(target),
+        })
     }
 
     fn synchronized_lock_block(&self, try_start: BlockId) -> Option<(BlockId, u16)> {
@@ -1784,10 +1829,12 @@ impl<'a> Structurer<'a> {
                         }
                         if has_internal_control_flow && let Some(copy_head) = after_try {
                             match self.finally_inline_blocks(&chain, copy_head) {
-                                Some(blocks) if blocks.len() > 1 => {
-                                    let continuation: Option<BlockId> = blocks
-                                        .last()
-                                        .and_then(|last: &BlockId| self.next_block_by_pc(*last));
+                                Some((blocks, exit)) if blocks.len() > 1 => {
+                                    let continuation: Option<BlockId> = exit.or_else(|| {
+                                        blocks
+                                            .last()
+                                            .and_then(|last: &BlockId| self.next_block_by_pc(*last))
+                                    });
                                     for block in blocks {
                                         self.finally_inline_skips
                                             .insert(block, self.block_instructions(block).len());
@@ -1916,7 +1963,20 @@ impl<'a> Structurer<'a> {
                                 for block in &chain.blocks {
                                     self.visited.remove(block);
                                 }
+                                let candidates: Vec<(u32, u32)> = self.self_protecting_spans(head);
+                                let mut reentrant: Vec<(u32, u32)> =
+                                    Vec::with_capacity(candidates.len());
+                                for span in candidates {
+                                    if self.suppressed_spans.insert(span) {
+                                        reentrant.push(span);
+                                    }
+                                }
+                                self.finally_body_depth += 1;
                                 let body: Region = self.structure_at(head, Some(tail));
+                                self.finally_body_depth -= 1;
+                                for span in &reentrant {
+                                    self.suppressed_spans.remove(span);
+                                }
                                 self.visited.insert(tail);
                                 body
                             }
@@ -2058,6 +2118,7 @@ impl<'a> Structurer<'a> {
             next_label: self.next_label,
             depth: self.depth,
             work: self.work,
+            finally_body_depth: 0,
             had_irreducible: false,
             unmodelled_finally: None,
         };
@@ -2523,6 +2584,11 @@ struct TwrResult {
 struct FinallyChain {
     blocks: Vec<BlockId>,
     trim: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FinallyCopyMatch {
+    exit_pc: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

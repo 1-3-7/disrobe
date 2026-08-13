@@ -455,6 +455,153 @@ fn finally_that_throws_recompiles_to_equivalent_bytecode() {
     );
 }
 
+const FINALLY_BREAK_SRC: &str = "public class FinallyBreak {\n\
+    static int CTR = 0;\n\
+    static int forEach(int[] xs) {\n\
+        int acc = 0;\n\
+        for (int x : xs) {\n\
+            try {\n\
+                acc += x;\n\
+            } finally {\n\
+                if (acc > 5) { break; }\n\
+            }\n\
+        }\n\
+        return acc;\n\
+    }\n\
+    static int indexed(int[] xs) {\n\
+        int acc = 0;\n\
+        for (int i = 0; i < xs.length; i++) {\n\
+            try {\n\
+                acc += xs[i];\n\
+            } finally {\n\
+                if (acc > 5) { break; }\n\
+            }\n\
+        }\n\
+        return acc;\n\
+    }\n\
+}\n";
+
+const FINALLY_THROW_VOID_SRC: &str = "public class FinallyThrowVoid {\n\
+    static int CTR = 0;\n\
+    static void run(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+        } finally {\n\
+            if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
+        }\n\
+    }\n\
+}\n";
+
+struct RecompiledClass {
+    source: String,
+    original: Vec<String>,
+    recovered: Vec<String>,
+}
+
+fn recompile_recovered_class(class: &str, source: &str) -> RecompiledClass {
+    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let purpose: String = format!("disrobe_{class}_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let orig_dir: PathBuf = scratch.path().join("orig");
+    let rec_dir: PathBuf = scratch.path().join("rec");
+    std::fs::create_dir_all(&orig_dir).expect("original directory");
+    std::fs::create_dir_all(&rec_dir).expect("recovered directory");
+    let source_path: PathBuf = orig_dir.join(format!("{class}.java"));
+    std::fs::write(&source_path, source).expect("source fixture");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&orig_dir)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let class_bytes: Vec<u8> =
+        std::fs::read(orig_dir.join(format!("{class}.class"))).expect("class fixture");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse class fixture");
+    let decompiled: DecompiledClass = decompile_class(&class_file);
+    let recovered_source: PathBuf = rec_dir.join(format!("{class}.java"));
+    std::fs::write(&recovered_source, &decompiled.source).expect("recovered source");
+    let recompile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&rec_dir)
+        .arg(&recovered_source)
+        .output()
+        .expect("recompile recovered source");
+    assert!(
+        recompile.status.success(),
+        "recovered source failed to compile: {}\n{}",
+        String::from_utf8_lossy(&recompile.stderr),
+        decompiled.source
+    );
+    RecompiledClass {
+        original: normalize_javap(&javap_code(&javap, &orig_dir, class)),
+        recovered: normalize_javap(&javap_code(&javap, &rec_dir, class)),
+        source: decompiled.source,
+    }
+}
+
+fn assert_finally_recovered(source: &str, signature_fragment: &str) -> String {
+    let body: String =
+        method_body(source, signature_fragment).expect("recovered method not present");
+    assert!(
+        !body.contains("not recovered:"),
+        "method {signature_fragment} refused:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "finally became catch in {signature_fragment}:\n{body}"
+    );
+    assert!(
+        !body.contains("stack reset"),
+        "method {signature_fragment} has lifting hole:\n{body}"
+    );
+    assert!(
+        body.contains("finally {"),
+        "finally missing in {signature_fragment}:\n{body}"
+    );
+    body
+}
+
+#[test]
+fn finally_that_breaks_out_of_a_loop_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass = recompile_recovered_class("FinallyBreak", FINALLY_BREAK_SRC);
+    for fragment in [" forEach(", " indexed("] {
+        let body: String = assert_finally_recovered(&recompiled.source, fragment);
+        assert!(
+            body.contains("break;"),
+            "the finally body's loop exit was not recovered as a break in {fragment}:\n{body}"
+        );
+    }
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled finally-break bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_that_throws_from_a_void_method_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyThrowVoid", FINALLY_THROW_VOID_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("throw new IllegalStateException"),
+        "finally throw missing:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled void finally-throw bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     static int CTR = 0;\n\
     static int finallyWithIf(int a) {\n\
@@ -522,10 +669,8 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
 }\n";
 
 const UNMODELLED_FINALLY_METHODS: &[&str] = &[
-    "finallyBreaks",
     "finallyContinues",
     "finallyNestedTry",
-    "finallyThrowsVoid",
     "finallyThrowsAlways",
 ];
 
