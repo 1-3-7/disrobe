@@ -356,11 +356,12 @@ fn decompile_native(
         }));
     }
 
+    let regions: disrobe_typerec::RegionModel = disrobe_typerec::RegionModel::from_image(&bytes);
     let mut typed_functions: Vec<serde_json::Value> = Vec::with_capacity(program_functions.len());
     let mut type_slots_recovered: usize = 0;
     for pf in &program_functions {
         let recovered_types: disrobe_typerec::TypedFunction =
-            disrobe_typerec::recover_function(&pf.code, pf.address);
+            disrobe_typerec::recover_function_with_regions(&pf.code, pf.address, &regions);
         let api_slots: Vec<serde_json::Value> =
             api_slots_json.get(&pf.address).cloned().unwrap_or_default();
         if recovered_types.rbp_slots.is_empty() && api_slots.is_empty() {
