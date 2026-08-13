@@ -619,6 +619,7 @@ struct InterpreterOutcome {
     failures: Vec<String>,
     resolved_ops: Vec<String>,
     tallies: BTreeMap<String, ArgreprTally>,
+    mixed_cell_and_free_codes: usize,
 }
 
 fn run_interpreter(interp: &Interpreter, work: &Path, corpus_path: &Path) -> InterpreterOutcome {
@@ -673,6 +674,12 @@ fn run_interpreter(interp: &Interpreter, work: &Path, corpus_path: &Path) -> Int
     let mut failures: Vec<String> = Vec::new();
     let mut resolved_ops: Vec<String> = Vec::new();
     let mut tallies: BTreeMap<String, ArgreprTally> = BTreeMap::new();
+    let mixed_cell_and_free_codes: usize = codes
+        .iter()
+        .filter(|(_, co): &&(String, &CodeObject)| {
+            !co.cellvars.is_empty() && !co.freevars.is_empty()
+        })
+        .count();
 
     for block in blocks {
         let path: &str = block["path"].as_str().expect("path");
@@ -760,6 +767,7 @@ fn run_interpreter(interp: &Interpreter, work: &Path, corpus_path: &Path) -> Int
         failures,
         resolved_ops,
         tallies,
+        mixed_cell_and_free_codes,
     }
 }
 
@@ -784,6 +792,7 @@ fn disassembler_matches_cpython_dis_across_versions() {
     let mut all_failures: Vec<String> = Vec::new();
     let mut checked: Vec<(u8, u8)> = Vec::new();
     let mut tallies: BTreeMap<String, ArgreprTally> = BTreeMap::new();
+    let mut pre_311_mixed_cell_and_free_codes: usize = 0;
     let mut saw_is_op: bool = false;
     let mut saw_intrinsic: bool = false;
     let mut saw_compare: bool = false;
@@ -800,8 +809,12 @@ fn disassembler_matches_cpython_dis_across_versions() {
             failures,
             resolved_ops: ops,
             tallies: interpreter_tallies,
+            mixed_cell_and_free_codes,
         }: InterpreterOutcome = outcome;
         merge_tallies(&mut tallies, &interpreter_tallies);
+        if interp.version < (3, 11) {
+            pre_311_mixed_cell_and_free_codes += mixed_cell_and_free_codes;
+        }
         if ops.iter().any(|o: &String| o == "IS_OP") {
             saw_is_op = true;
         }
@@ -844,6 +857,11 @@ fn disassembler_matches_cpython_dis_across_versions() {
                 tally_line(&tallies)
             );
         }
+        assert!(
+            pre_311_mixed_cell_and_free_codes > 0,
+            "no pre-3.11 code object carried both cellvars and freevars, so the cell-before-free \
+             index order is unverified; add a three-level closure to the corpus"
+        );
     }
     let has_super_attr_opcode: bool = checked
         .iter()
