@@ -304,11 +304,20 @@ fn collect_target_locals(
             out.insert(*id);
         }
         AssignTarget::Var(Var::Global(_), _) => {}
-        AssignTarget::Index(base, key, _) => {
+        AssignTarget::Index(base, key, span) => {
+            if subst.contains_key(&span_key(*span)) {
+                return;
+            }
             collect_expr_locals(base, subst, out);
             collect_expr_locals(key, subst, out);
         }
     }
+}
+
+fn is_dropped_statement(stat: &Stat, subst: &BTreeMap<u64, String>) -> bool {
+    subst
+        .get(&span_key(stat.span))
+        .is_some_and(|text: &String| text.is_empty())
 }
 
 fn collect_stat_locals(stat: &Stat, subst: &BTreeMap<u64, String>, out: &mut BTreeSet<LocalId>) {
@@ -389,6 +398,9 @@ fn collect_rendered_locals(
     out: &mut BTreeSet<LocalId>,
 ) {
     for stat in &leaf.stats {
+        if is_dropped_statement(stat, subst) {
+            continue;
+        }
         if captures.contains_key(&span_key(stat.span)) {
             if let StatKind::Assign { values, .. } = &stat.kind {
                 for value in values {
@@ -511,6 +523,243 @@ fn collect_declared_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
             | StatKind::Return(_)
             | StatKind::Break => {}
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoxModel {
+    heap: LocalId,
+    alloc: LocalId,
+}
+
+fn is_unit_increment(expr: &Expr, id: LocalId) -> bool {
+    let ExprKind::Binary(BinOp::Add, left, right) = &unwrap_paren(expr).kind else {
+        return false;
+    };
+    (is_bare_local(left, id) && static_number_value(right) == Some(1.0))
+        || (is_bare_local(right, id) && static_number_value(left) == Some(1.0))
+}
+
+fn is_indexed_slot(expr: &Expr, table: LocalId, slot: LocalId) -> bool {
+    let ExprKind::Index(base, key) = &unwrap_paren(expr).kind else {
+        return false;
+    };
+    is_bare_local(base, table) && is_bare_local(key, slot)
+}
+
+fn is_zero_slot_test(cond: &Expr, table: LocalId, slot: LocalId) -> bool {
+    let ExprKind::Binary(BinOp::Eq, left, right) = &unwrap_paren(cond).kind else {
+        return false;
+    };
+    (is_indexed_slot(left, table, slot) && static_number_value(right) == Some(0.0))
+        || (is_indexed_slot(right, table, slot) && static_number_value(left) == Some(0.0))
+}
+
+fn as_box_allocator(func_expr: &Expr) -> Option<(LocalId, LocalId)> {
+    let ExprKind::Function {
+        params,
+        is_vararg,
+        body,
+    } = &func_expr.kind
+    else {
+        return None;
+    };
+    if *is_vararg || !params.is_empty() {
+        return None;
+    }
+    let [bump, mark, tail]: &[Stat] = body.stats.as_slice() else {
+        return None;
+    };
+    let StatKind::Assign {
+        targets: bump_targets,
+        values: bump_values,
+    } = &bump.kind
+    else {
+        return None;
+    };
+    let ([AssignTarget::Var(Var::Local(counter), _)], [bump_value]): (&[AssignTarget], &[Expr]) =
+        (bump_targets.as_slice(), bump_values.as_slice())
+    else {
+        return None;
+    };
+    if !is_unit_increment(bump_value, *counter) {
+        return None;
+    }
+    let StatKind::Assign {
+        targets: mark_targets,
+        values: mark_values,
+    } = &mark.kind
+    else {
+        return None;
+    };
+    let ([AssignTarget::Index(refcount_base, refcount_key, _)], [mark_value]): (
+        &[AssignTarget],
+        &[Expr],
+    ) = (mark_targets.as_slice(), mark_values.as_slice()) else {
+        return None;
+    };
+    if static_number_value(mark_value) != Some(1.0) || !is_bare_local(refcount_key, *counter) {
+        return None;
+    }
+    let ExprKind::Var(Var::Local(refcount)) = &unwrap_paren(refcount_base).kind else {
+        return None;
+    };
+    let StatKind::Return(returned) = &tail.kind else {
+        return None;
+    };
+    let [returned]: &[Expr] = returned.as_slice() else {
+        return None;
+    };
+    if !is_bare_local(returned, *counter) {
+        return None;
+    }
+    Some((*counter, *refcount))
+}
+
+fn as_box_releaser(func_expr: &Expr) -> Option<(LocalId, LocalId)> {
+    let ExprKind::Function {
+        params,
+        is_vararg,
+        body,
+    } = &func_expr.kind
+    else {
+        return None;
+    };
+    if *is_vararg {
+        return None;
+    }
+    let [slot]: &[LocalId] = params.as_slice() else {
+        return None;
+    };
+    let [drop_stat, clear_stat]: &[Stat] = body.stats.as_slice() else {
+        return None;
+    };
+    let StatKind::Assign {
+        targets: drop_targets,
+        values: drop_values,
+    } = &drop_stat.kind
+    else {
+        return None;
+    };
+    let ([AssignTarget::Index(refcount_base, refcount_key, _)], [drop_value]): (
+        &[AssignTarget],
+        &[Expr],
+    ) = (drop_targets.as_slice(), drop_values.as_slice()) else {
+        return None;
+    };
+    let ExprKind::Var(Var::Local(refcount)) = &unwrap_paren(refcount_base).kind else {
+        return None;
+    };
+    if !is_bare_local(refcount_key, *slot) {
+        return None;
+    }
+    let ExprKind::Binary(BinOp::Sub, decrement_base, decrement_step) =
+        &unwrap_paren(drop_value).kind
+    else {
+        return None;
+    };
+    if !is_indexed_slot(decrement_base, *refcount, *slot)
+        || static_number_value(decrement_step) != Some(1.0)
+    {
+        return None;
+    }
+    let StatKind::If { arms, else_body } = &clear_stat.kind else {
+        return None;
+    };
+    if else_body.is_some() {
+        return None;
+    }
+    let [(cond, then_body)]: &[(Expr, Block)] = arms.as_slice() else {
+        return None;
+    };
+    if !is_zero_slot_test(cond, *refcount, *slot) {
+        return None;
+    }
+    let [clear]: &[Stat] = then_body.stats.as_slice() else {
+        return None;
+    };
+    let StatKind::Assign {
+        targets: clear_targets,
+        values: clear_values,
+    } = &clear.kind
+    else {
+        return None;
+    };
+    let (
+        [
+            AssignTarget::Index(first_base, first_key, _),
+            AssignTarget::Index(second_base, second_key, _),
+        ],
+        [first_value, second_value],
+    ): (&[AssignTarget], &[Expr]) = (clear_targets.as_slice(), clear_values.as_slice())
+    else {
+        return None;
+    };
+    if !matches!(first_value.kind, ExprKind::Nil) || !matches!(second_value.kind, ExprKind::Nil) {
+        return None;
+    }
+    if !is_bare_local(first_base, *refcount)
+        || !is_bare_local(first_key, *slot)
+        || !is_bare_local(second_key, *slot)
+    {
+        return None;
+    }
+    let ExprKind::Var(Var::Local(heap)) = &unwrap_paren(second_base).kind else {
+        return None;
+    };
+    Some((*refcount, *heap))
+}
+
+fn derive_box_model(chunk: &Block, function_exprs: &[&Expr]) -> Option<BoxModel> {
+    let mut allocators: Vec<(LocalId, Span)> = Vec::new();
+    let mut releasers: Vec<(LocalId, LocalId)> = Vec::new();
+    for candidate in function_exprs {
+        if let Some((_, refcount)) = as_box_allocator(candidate) {
+            allocators.push((refcount, candidate.span));
+        }
+        if let Some((refcount, heap)) = as_box_releaser(candidate) {
+            releasers.push((refcount, heap));
+        }
+    }
+    let [(refcount, alloc_span)]: &[(LocalId, Span)] = allocators.as_slice() else {
+        return None;
+    };
+    let heaps: BTreeSet<LocalId> = releasers
+        .iter()
+        .filter(|(candidate, _): &&(LocalId, LocalId)| candidate == refcount)
+        .map(|(_, heap): &(LocalId, LocalId)| *heap)
+        .collect();
+    let unique_heaps: Vec<LocalId> = heaps.into_iter().collect();
+    let [heap]: &[LocalId] = unique_heaps.as_slice() else {
+        return None;
+    };
+    let alloc: LocalId = find_local_binding(chunk, *alloc_span)?;
+    Some(BoxModel { heap: *heap, alloc })
+}
+
+fn walk_assign_targets<'a>(block: &'a Block, out: &mut Vec<&'a AssignTarget>) {
+    for stat in &block.stats {
+        walk_assign_targets_stat(stat, out);
+    }
+}
+
+fn walk_assign_targets_stat<'a>(stat: &'a Stat, out: &mut Vec<&'a AssignTarget>) {
+    match &stat.kind {
+        StatKind::Assign { targets, .. } => out.extend(targets.iter()),
+        StatKind::Do(body)
+        | StatKind::While { body, .. }
+        | StatKind::Repeat { body, .. }
+        | StatKind::NumericFor { body, .. }
+        | StatKind::GenericFor { body, .. } => walk_assign_targets(body, out),
+        StatKind::If { arms, else_body } => {
+            for (_, body) in arms {
+                walk_assign_targets(body, out);
+            }
+            if let Some(body) = else_body {
+                walk_assign_targets(body, out);
+            }
+        }
+        StatKind::Local { .. } | StatKind::ExprStat(_) | StatKind::Return(_) | StatKind::Break => {}
     }
 }
 
@@ -1140,6 +1389,8 @@ struct GlobalStats {
     functions_attempted: usize,
     functions_fully_structured: usize,
     reached: BTreeSet<u64>,
+    next_box: u32,
+    boxes_bound: usize,
 }
 
 #[derive(Debug)]
@@ -1157,12 +1408,266 @@ struct Ctx<'a> {
     src: &'a str,
     pos_local: LocalId,
     args_local: LocalId,
+    upvals_local: LocalId,
     return_local: LocalId,
     dispatch_root: &'a Block,
     container_span: Span,
     container_scope: BTreeSet<LocalId>,
     upvalue_bindings: BTreeMap<LocalId, Span>,
     all_creation_calls: Vec<(&'a Expr, LocalId, &'a Expr, &'a Expr)>,
+    box_model: Option<BoxModel>,
+}
+
+#[derive(Debug, Default)]
+struct FunctionBoxes {
+    names: BTreeMap<LocalId, String>,
+    declarations: Vec<String>,
+}
+
+fn is_alloc_call(expr: &Expr, alloc: LocalId) -> bool {
+    let ExprKind::Call { base, args } = &unwrap_paren(expr).kind else {
+        return false;
+    };
+    args.is_empty() && is_bare_local(base, alloc)
+}
+
+fn successors_of(term: &Terminator, out: &mut Vec<u32>) {
+    match term {
+        Terminator::Return | Terminator::Unreachable => {}
+        Terminator::Goto(next) => out.push(*next),
+        Terminator::Branch {
+            taken, not_taken, ..
+        } => {
+            out.push(*taken);
+            out.push(*not_taken);
+        }
+        Terminator::Switch { cases, default, .. } => {
+            for (_, target) in cases {
+                out.push(*target);
+            }
+            if let Some(target) = default {
+                out.push(*target);
+            }
+        }
+    }
+}
+
+fn node_lies_on_a_cycle(terms: &[Terminator], start: u32, budget: &mut usize) -> Result<bool> {
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    let mut frontier: Vec<u32> = Vec::new();
+    let mut next: Vec<u32> = Vec::new();
+    let Some(term) = terms.get(start as usize) else {
+        return Err(refuse(
+            "a Vmify upvalue-box allocation sits in a block outside the recovered control-flow graph",
+        ));
+    };
+    successors_of(term, &mut frontier);
+    while let Some(node) = frontier.pop() {
+        *budget = budget.checked_sub(1).ok_or_else(|| {
+            refuse("upvalue-box loop analysis exceeds the reachability step budget")
+        })?;
+        if node == start {
+            return Ok(true);
+        }
+        if !seen.insert(node) {
+            continue;
+        }
+        let Some(term) = terms.get(node as usize) else {
+            continue;
+        };
+        next.clear();
+        successors_of(term, &mut next);
+        frontier.extend(next.iter().copied());
+    }
+    Ok(false)
+}
+
+fn insert_box_subst(subst: &mut BTreeMap<u64, String>, span: Span, text: String) -> Result<()> {
+    match subst.get(&span_key(span)) {
+        Some(existing) if *existing != text => Err(refuse_owned(format!(
+            "the expression at byte {} is bound to two different recovered values, so one dispatch leaf is shared by two closures with different captured variables",
+            span.start
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            subst.insert(span_key(span), text);
+            Ok(())
+        }
+    }
+}
+
+fn box_slot_name(
+    ctx: &Ctx<'_>,
+    key: &Expr,
+    names: &BTreeMap<LocalId, String>,
+    upvalue_boxes: &[String],
+) -> Result<String> {
+    let key: &Expr = unwrap_paren(key);
+    if let ExprKind::Var(Var::Local(id)) = &key.kind {
+        return names.get(id).cloned().ok_or_else(|| {
+            refuse_owned(format!(
+                "the upvalue-box slot read at byte {} is indexed by a register this function never allocated a box into, so the captured variable it names cannot be identified",
+                key.span.start
+            ))
+        });
+    }
+    if let ExprKind::Index(base, slot) = &key.kind
+        && is_bare_local(base, ctx.upvals_local)
+        && let Some(position) = static_number_value(slot)
+    {
+        if !position.is_finite() || position.fract() != 0.0 || position < 1.0 {
+            return Err(refuse_owned(format!(
+                "the captured-variable index at byte {} is not a positive whole number",
+                slot.span.start
+            )));
+        }
+        let index: usize = position as usize;
+        return upvalue_boxes.get(index - 1).cloned().ok_or_else(|| {
+            refuse_owned(format!(
+                "the function body reads captured variable {index} but its closure-creation call supplies only {} captured variable(s)",
+                upvalue_boxes.len()
+            ))
+        });
+    }
+    Err(refuse_owned(format!(
+        "the upvalue-box slot at byte {} is indexed by an expression shape this pass does not recognize",
+        key.span.start
+    )))
+}
+
+fn bind_function_boxes(
+    ctx: &Ctx<'_>,
+    order: &[u64],
+    visited: &BTreeMap<u64, &Block>,
+    node_of: &BTreeMap<u64, u32>,
+    terms: &[Terminator],
+    upvalue_boxes: &[String],
+    subst: &mut BTreeMap<u64, String>,
+    stats: &mut GlobalStats,
+) -> Result<FunctionBoxes> {
+    let Some(model): Option<BoxModel> = ctx.box_model else {
+        return Ok(FunctionBoxes::default());
+    };
+
+    let mut allocations: Vec<(LocalId, Span, Span, u32)> = Vec::new();
+    for &key in order {
+        let leaf: &Block = visited[&key];
+        let node: u32 = node_of[&key];
+        for stat in &leaf.stats {
+            let StatKind::Assign { targets, values } = &stat.kind else {
+                continue;
+            };
+            let ([AssignTarget::Var(Var::Local(id), _)], [value]): (&[AssignTarget], &[Expr]) =
+                (targets.as_slice(), values.as_slice())
+            else {
+                continue;
+            };
+            if !is_alloc_call(value, model.alloc) {
+                continue;
+            }
+            allocations.push((*id, stat.span, value.span, node));
+        }
+    }
+
+    let mut names: BTreeMap<LocalId, String> = BTreeMap::new();
+    let mut declarations: Vec<String> = Vec::new();
+    let mut cycle_budget: usize = MAX_REACHABILITY_STEPS;
+    for (id, stat_span, _, node) in &allocations {
+        if names.contains_key(id) {
+            return Err(refuse_owned(format!(
+                "the register at byte {} receives a second upvalue box inside one recovered function, so a captured variable cannot be given one stable name",
+                stat_span.start
+            )));
+        }
+        if node_lies_on_a_cycle(terms, *node, &mut cycle_budget)? {
+            return Err(refuse_owned(format!(
+                "the upvalue box allocated at byte {} sits inside a loop, so each iteration captures a fresh variable and a single function-scope declaration would alias them",
+                stat_span.start
+            )));
+        }
+        let name: String = format!("__vu{}", stats.next_box);
+        stats.next_box = stats.next_box.checked_add(1).ok_or_else(|| {
+            refuse("the program allocates more captured variables than this pass can name")
+        })?;
+        declarations.push(name.clone());
+        names.insert(*id, name);
+    }
+    stats.boxes_bound = stats.boxes_bound.saturating_add(allocations.len());
+
+    for (_, stat_span, _, _) in &allocations {
+        insert_box_subst(subst, *stat_span, String::new())?;
+    }
+
+    for &key in order {
+        let leaf: &Block = visited[&key];
+        let mut exprs: Vec<&Expr> = Vec::new();
+        walk_exprs(leaf, &mut exprs);
+        for expr in &exprs {
+            if let ExprKind::Var(Var::Local(id)) = &expr.kind
+                && *id == model.alloc
+                && !allocations
+                    .iter()
+                    .any(|(_, _, call_span, _): &(LocalId, Span, Span, u32)| {
+                        expr.span.start >= call_span.start && expr.span.end <= call_span.end
+                    })
+            {
+                return Err(refuse_owned(format!(
+                    "the upvalue-box allocator is referenced at byte {} outside a plain allocation assignment, a use this pass cannot account for",
+                    expr.span.start
+                )));
+            }
+            let ExprKind::Index(base, index_key) = &expr.kind else {
+                continue;
+            };
+            if !is_bare_local(base, model.heap) {
+                continue;
+            }
+            let name: String = box_slot_name(ctx, index_key, &names, upvalue_boxes)?;
+            insert_box_subst(subst, expr.span, name)?;
+        }
+        let mut targets: Vec<&AssignTarget> = Vec::new();
+        walk_assign_targets(leaf, &mut targets);
+        for target in targets {
+            let AssignTarget::Index(base, index_key, span) = target else {
+                continue;
+            };
+            if !is_bare_local(base, model.heap) {
+                continue;
+            }
+            let name: String = box_slot_name(ctx, index_key, &names, upvalue_boxes)?;
+            insert_box_subst(subst, *span, name)?;
+        }
+    }
+
+    Ok(FunctionBoxes {
+        names,
+        declarations,
+    })
+}
+
+fn closure_upvalue_names(
+    ctx: &Ctx<'_>,
+    upvals_arg: &Expr,
+    boxes: &FunctionBoxes,
+    own_upvalues: &[String],
+) -> Result<Vec<String>> {
+    let ExprKind::Table(fields) = &unwrap_paren(upvals_arg).kind else {
+        return Err(refuse_owned(format!(
+            "the closure-creation call at byte {} supplies its captured variables through an expression that is not a table constructor",
+            upvals_arg.span.start
+        )));
+    };
+    let mut out: Vec<String> = Vec::with_capacity(fields.len());
+    for field in fields {
+        let TableField::Positional(value) = field else {
+            return Err(refuse_owned(format!(
+                "the closure-creation call at byte {} supplies a keyed captured-variable entry, which carries no stable position",
+                upvals_arg.span.start
+            )));
+        };
+        out.push(box_slot_name(ctx, value, &boxes.names, own_upvalues)?);
+    }
+    Ok(out)
 }
 
 fn find_top_level_entry(ctx: &Ctx<'_>) -> Result<f64> {
@@ -1193,6 +1698,7 @@ fn recover_function(
     ctx: &Ctx<'_>,
     entry: f64,
     depth: usize,
+    upvalue_boxes: &[String],
     subst: &mut BTreeMap<u64, String>,
     stats: &mut GlobalStats,
 ) -> Result<RecoveredFunction> {
@@ -1340,6 +1846,18 @@ fn recover_function(
         plan_of_node[node_id as usize] = plan;
     }
 
+    let terms: Vec<Terminator> = nodes.iter().map(|n: &CfgNode| n.term.clone()).collect();
+    let boxes: FunctionBoxes = bind_function_boxes(
+        ctx,
+        &order,
+        &visited,
+        &node_of,
+        &terms,
+        upvalue_boxes,
+        subst,
+        stats,
+    )?;
+
     for (call_expr, creator, entry_arg, upvals_arg) in &ctx.all_creation_calls {
         let call_key: u64 = span_key(call_expr.span);
         if subst.contains_key(&call_key) {
@@ -1355,28 +1873,19 @@ fn recover_function(
             continue;
         }
         let _ = creator;
-        let non_empty_upvals: bool =
-            matches!(&upvals_arg.kind, ExprKind::Table(fields) if !fields.is_empty());
-        if non_empty_upvals {
-            subst.insert(
-                call_key,
-                "(function(...) error(\"prometheus-vmify: closures that capture an upvalue are not recovered by this pass\") end)".to_owned(),
-            );
-            continue;
-        }
         let Some(nested_entry) = number_of(entry_arg) else {
-            subst.insert(
-                call_key,
-                "(function(...) error(\"prometheus-vmify: closure entry point is not a static literal\") end)".to_owned(),
-            );
-            continue;
+            return Err(refuse_owned(format!(
+                "the closure-creation call at byte {} takes a non-literal entry point, so the closure body cannot be located in the dispatch tree",
+                call_expr.span.start
+            )));
         };
+        let nested_upvalues: Vec<String> =
+            closure_upvalue_names(ctx, upvals_arg, &boxes, upvalue_boxes)?;
         let recovered: RecoveredFunction =
-            recover_function(ctx, nested_entry, depth + 1, subst, stats)?;
+            recover_function(ctx, nested_entry, depth + 1, &nested_upvalues, subst, stats)?;
         subst.insert(call_key, recovered.text);
     }
 
-    let terms: Vec<Terminator> = nodes.iter().map(|n: &CfgNode| n.term.clone()).collect();
     let cfg: Cfg = Cfg::new(0, nodes).map_err(|e: disrobe_cfg::CfgError| {
         refuse_owned(format!(
             "recovered control-flow graph rejected by the structurer: {e:?}"
@@ -1398,6 +1907,46 @@ fn recover_function(
         );
     }
     used_locals.remove(&ctx.args_local);
+
+    let mut leaked: Vec<String> = Vec::new();
+    note_machinery_leak(
+        ctx,
+        &used_locals,
+        ctx.upvals_local,
+        "captured-variable table",
+        &mut leaked,
+    );
+    if let Some(model) = ctx.box_model {
+        note_machinery_leak(
+            ctx,
+            &used_locals,
+            model.heap,
+            "captured-variable store",
+            &mut leaked,
+        );
+        note_machinery_leak(
+            ctx,
+            &used_locals,
+            model.alloc,
+            "captured-variable allocator",
+            &mut leaked,
+        );
+    }
+    for id in boxes.names.keys() {
+        note_machinery_leak(
+            ctx,
+            &used_locals,
+            *id,
+            "captured-variable slot register",
+            &mut leaked,
+        );
+    }
+    if !leaked.is_empty() {
+        return Err(refuse_owned(format!(
+            "the recovered body still names the Vmify captured-variable machinery ({}), so at least one captured-variable access was not resolved to a real Lua variable",
+            leaked.join(", ")
+        )));
+    }
 
     let args_text: &str =
         local_display_span(ctx.dispatch_root, ctx.args_local, ctx.src).unwrap_or("__args");
@@ -1428,6 +1977,11 @@ fn recover_function(
     if !register_names.is_empty() {
         prelude.push_str("local ");
         prelude.push_str(&register_names.join(", "));
+        prelude.push_str(";\n");
+    }
+    if !boxes.declarations.is_empty() {
+        prelude.push_str("local ");
+        prelude.push_str(&boxes.declarations.join(", "));
         prelude.push_str(";\n");
     }
 
@@ -1497,6 +2051,20 @@ fn recover_function(
     Ok(RecoveredFunction { text })
 }
 
+fn note_machinery_leak(
+    ctx: &Ctx<'_>,
+    used_locals: &BTreeSet<LocalId>,
+    id: LocalId,
+    role: &str,
+    leaked: &mut Vec<String>,
+) {
+    if !used_locals.contains(&id) {
+        return;
+    }
+    let name: &str = local_display_span(ctx.dispatch_root, id, ctx.src).unwrap_or("<unnamed>");
+    leaked.push(format!("{role} '{name}'"));
+}
+
 fn local_display_span<'a>(scope_root: &Block, id: LocalId, src: &'a str) -> Option<&'a str> {
     let mut exprs: Vec<&Expr> = Vec::new();
     walk_exprs(scope_root, &mut exprs);
@@ -1555,6 +2123,9 @@ fn render_leaf_body(
 ) -> String {
     let mut out: String = String::new();
     for stat in &leaf.stats {
+        if is_dropped_statement(stat, subst) {
+            continue;
+        }
         if let Some(capture_text) = captures.get(&span_key(stat.span)) {
             out.push_str(capture_text);
             out.push('\n');
@@ -2078,22 +2649,37 @@ pub fn recover_with_string_pool(
     let upvalue_bindings: BTreeMap<LocalId, Span> = wrapper_upvalue_bindings(&chunk, wrapper_span)
         .ok_or_else(|| refuse("could not resolve the wrapper closure's own call-site arguments"))?;
 
+    let box_model: Option<BoxModel> = derive_box_model(&chunk, &function_exprs);
+    let captures_upvalues: bool = all_creation_calls.iter().any(
+        |(_, _, _, upvals_arg): &(&Expr, LocalId, &Expr, &Expr)| {
+            matches!(&upvals_arg.kind, ExprKind::Table(fields) if !fields.is_empty())
+        },
+    );
+    if captures_upvalues && box_model.is_none() {
+        return Err(refuse(
+            "this program creates a closure that captures a variable, but the Vmify reference-counted capture helpers could not be fingerprinted in this chunk, so no captured variable can be resolved to a real Lua variable",
+        ));
+    }
+    dbg_kv("prometheus_vmify.box_model", || format!("{box_model:?}"));
+
     let ctx: Ctx<'_> = Ctx {
         src: text,
         pos_local: container.pos_local,
         args_local: container.args_local,
+        upvals_local: container.upvals_local,
         return_local,
         dispatch_root: container.dispatch_root,
         container_span: container.whole_span,
         container_scope,
         upvalue_bindings,
         all_creation_calls,
+        box_model,
     };
 
     let top_entry: f64 = find_top_level_entry(&ctx)?;
     let mut stats: GlobalStats = GlobalStats::default();
     let recovered: RecoveredFunction =
-        recover_function(&ctx, top_entry, 0, &mut subst, &mut stats)?;
+        recover_function(&ctx, top_entry, 0, &[], &mut subst, &mut stats)?;
 
     let mut all_leaves: Vec<&Block> = Vec::new();
     collect_all_leaves(
@@ -2160,12 +2746,7 @@ pub fn recover_with_string_pool(
             "{unclassified_leaves} dispatch-tree leaf(ves) could not be classified for their jump targets (they carry a nested closure's own local declarations) while {unreached_structural_leaves} leaf(ves) remain unreached; whether any unreached leaf is a real jump target of an unclassified leaf cannot be proven, so full recovery is refused rather than assumed"
         )));
     }
-    for (_call_expr, _creator, entry_arg, upvals_arg) in &ctx.all_creation_calls {
-        let non_empty_upvals: bool =
-            matches!(&upvals_arg.kind, ExprKind::Table(fields) if !fields.is_empty());
-        if non_empty_upvals {
-            continue;
-        }
+    for (_call_expr, _creator, entry_arg, _upvals_arg) in &ctx.all_creation_calls {
         let Some(entry) = number_of(entry_arg) else {
             continue;
         };
@@ -2175,7 +2756,7 @@ pub fn recover_with_string_pool(
         };
         if !entry_leaf.stats.is_empty() && !stats.reached.contains(&leaf_ident(entry_leaf)) {
             return Err(refuse_owned(format!(
-                "a discovered closure-creation call targets instruction pointer {entry}, which resolves to a real dispatch leaf, but that leaf was never visited by any recovery pass despite carrying no captured upvalue and a static entry, the shape this pass would ordinarily recurse into"
+                "a discovered closure-creation call targets instruction pointer {entry}, which resolves to a real dispatch leaf, but that leaf was never visited by any recovery pass despite carrying a static entry, the shape this pass would ordinarily recurse into"
             )));
         }
     }
@@ -2361,14 +2942,78 @@ mod tests {
         let src: &str =
             include_str!("../../../../corpus/lua/prometheus/vmify_nested/obfuscated.lua");
         let err: Error = recover(src).expect_err(
-            "the second Vmify pass shares its dispatch tree with leaves the first pass's bootstrap \
-             calls into, so most of the tree is only reachable through an entry point this single \
-             pass never discovers; it must name that reason rather than report full recovery",
+            "the inner Vmify layer reuses one dispatch register both as a captured-variable slot \
+             and as a plain scratch register, so a single name per register cannot identify which \
+             captured variable a slot read means; it must name that reason rather than report full \
+             recovery",
         );
         let message: String = err.to_string();
         assert!(
-            message.contains("never reached from any discovered function entry"),
+            message.contains("still names the Vmify captured-variable machinery"),
             "the refusal must name the real cause, got: {message}"
+        );
+        assert!(
+            message.contains("captured-variable slot register"),
+            "the refusal must name which part of the capture machinery could not be resolved, got: {message}"
+        );
+    }
+
+    #[test]
+    fn recovers_a_real_vmify_closure_that_captures_a_local() {
+        let src: &str =
+            include_str!("../../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");
+        let out: VmifyRecovery = recover(src)
+            .expect("recover")
+            .expect("must detect as Vmify");
+        assert_eq!(
+            (out.functions_recovered, out.functions_total),
+            (3, 3),
+            "the sample defines the chunk, the factory and the captured-variable closure, and all three must reach clean structuring"
+        );
+        assert_eq!(
+            (out.handlers_recovered, out.handlers_total),
+            (3, 3),
+            "the closure's own dispatch leaf must be walked, not left unreached"
+        );
+        assert_eq!(
+            out.unreached_structural_leaves, 0,
+            "no dispatch leaf may be written off as dead when it is a closure body"
+        );
+        assert!(out.fully_recovered);
+        assert!(
+            !out.source.contains("prometheus-vmify:"),
+            "a fully recovered program must carry none of this pass's own refusal stubs: {}",
+            out.source
+        );
+        let captured: usize = out.source.matches("__vu0").count();
+        assert_eq!(
+            captured, 5,
+            "the captured variable must be declared once in the factory and read or written four times across the factory and the closure it returns: {}",
+            out.source
+        );
+        let declaration: usize = out.source.matches("local __vu0;").count();
+        assert_eq!(
+            declaration, 1,
+            "the captured variable must be declared exactly once, in the scope that allocates it, so the closure captures it by reference: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn refuses_a_vmify_capture_whose_reference_counted_helpers_are_absent() {
+        let src: &str =
+            include_str!("../../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");
+        let stripped: String = src.replace("X[K]=X[K]-1 if X[K]==0 then X[K],x[K]=nil,nil end", "");
+        assert_ne!(
+            stripped, src,
+            "the release helper must be present in the fixture for this test to mean anything"
+        );
+        let err: Error = recover(&stripped)
+            .expect_err("a chunk that captures a variable but has no fingerprintable capture helpers must refuse");
+        assert!(
+            err.to_string()
+                .contains("the Vmify reference-counted capture helpers could not be fingerprinted"),
+            "the refusal must name the missing helper rather than emit a stub, got: {err}"
         );
     }
 

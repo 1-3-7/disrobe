@@ -810,9 +810,104 @@ fn prometheus_vmify_nested_double_layer_sample_never_claims_a_false_success() {
     assert!(
         peeled.residual_markers.iter().any(|m: &String| m
             .contains("refused rather than emitted partly wrong")
-            && m.contains("never reached from any discovered function entry")),
+            && m.contains("still names the Vmify captured-variable machinery")),
         "the refusal reason must reach a consumer-visible surface, naming the real cause rather \
          than silently discarding it; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    let emitted: String =
+        String::from_utf8(peeled.deobfuscated).expect("emitted artifact must be UTF-8");
+    assert!(
+        !emitted.contains("prometheus-vmify:"),
+        "a refused sample must not leave one of this pass's own stubs in the emitted artifact"
+    );
+}
+
+const PROMETHEUS_VMIFY_UPVALUE_CLEAN: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_upvalue/clean.lua");
+const PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");
+
+#[test]
+fn prometheus_vmify_upvalue_fixtures_already_agree() {
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_upvalue_fixture_clean",
+        PROMETHEUS_VMIFY_UPVALUE_CLEAN,
+    )
+    .expect("clean fixture must run under real Lua 5.1");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_upvalue_fixture_obfuscated",
+        PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED,
+    )
+    .expect("real Prometheus Vmify output must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "the committed upvalue-closure obfuscated fixture must be a faithful Prometheus Vmify transform of the committed clean fixture"
+    );
+}
+
+#[test]
+fn prometheus_vmify_upvalue_closure_recovers_and_reexecutes_identically() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on a real Vmify sample whose source captures an upvalue");
+    assert!(
+        peeled
+            .passes_run
+            .iter()
+            .any(|p: &String| p == "prometheus-vmify-container-devirt"),
+        "the Vmify container-devirt pass must run on the upvalue-closure sample; passes_run={:?}",
+        peeled.passes_run
+    );
+
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_upvalue_orig",
+        PROMETHEUS_VMIFY_UPVALUE_CLEAN,
+    )
+    .expect("the clean upvalue-closure source must run under real Lua 5.1");
+    let actual: String = run_source(&tc.lua, &dir, "vmify_upvalue_recovered", &recovered_src)
+        .expect("the recovered upvalue-closure source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "a Vmify'd closure that captures a local must recover to source that re-executes identically under real Lua 5.1\n--- recovered ---\n{recovered_src}"
+    );
+}
+
+#[test]
+fn prometheus_vmify_never_reports_full_recovery_while_emitting_an_unrecovered_closure() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on a real Vmify sample whose source captures an upvalue");
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let carries_stub: bool = recovered_src.contains("prometheus-vmify:");
+    assert!(
+        !(peeled.fully_recovered && carries_stub),
+        "the pass reported full recovery while the emitted source still carries one of its own \
+         not-recovered stubs, which is a false success: a consumer would run source that silently \
+         differs from the original. residual_markers={:?}\n--- recovered ---\n{recovered_src}",
         peeled.residual_markers
     );
 }
