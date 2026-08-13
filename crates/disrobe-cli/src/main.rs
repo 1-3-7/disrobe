@@ -512,6 +512,11 @@ enum Cmd {
     Identify {
         #[arg(value_name = "PATH")]
         path: PathBuf,
+        #[arg(
+            long,
+            help = "also account for every byte of the file against the structures its format declares, reporting unclaimed, slack, overlapping, unbacked and missing bytes"
+        )]
+        coverage: bool,
     },
     #[cfg(feature = "chain")]
     #[command(
@@ -1758,7 +1763,7 @@ fn main() -> miette::Result<()> {
             no_decode,
         } => strings_cmd::run(path, min_len, no_decode, fmt),
         Cmd::Behavior { path } => behavior::run(path, fmt),
-        Cmd::Identify { path } => identify::run(path, fmt),
+        Cmd::Identify { path, coverage } => identify::run(path, fmt, coverage),
         #[cfg(feature = "chain")]
         Cmd::Detect { input } => detect::run(input),
         #[cfg(feature = "chain")]
