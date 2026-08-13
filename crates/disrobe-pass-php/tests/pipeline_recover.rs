@@ -96,6 +96,76 @@ fn pipeline_decompiles_raw_oparray_container_to_skeleton() {
     assert_eq!(decomp.literal_count, 1);
 }
 
+fn build_oparray_with_unmodelled_opcode(literal: &str) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(4);
+    body.extend_from_slice(&(literal.len() as u32).to_le_bytes());
+    body.extend_from_slice(literal.as_bytes());
+    body.extend_from_slice(&3u32.to_le_bytes());
+    push_op(&mut body, op::SWITCH_LONG, 0, 0, 0, 0, 2, 0, 0, 1);
+    push_op(&mut body, op::ECHO, 1, 0, 0, 0, 0, 0, 0, 2);
+    push_op(&mut body, op::RETURN, 1, 0, 0, 0, 0, 0, 0, 3);
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+#[test]
+fn pipeline_reports_every_opcode_the_lifter_refused() {
+    let bytes: Vec<u8> = build_oparray_with_unmodelled_opcode("still echoed");
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover");
+    assert_eq!(report.stage, RecoveryStage::OpArrayDecompiled);
+    let decomp = report
+        .decompilation
+        .as_ref()
+        .expect("decompilation present");
+    assert_eq!(decomp.unrecovered_total, 1);
+    assert!(
+        report.notes.iter().any(|note: &String| note
+            .contains("1 of 3 opcodes were refused rather than guessed")
+            && note.contains("switch and match dispatch is not reconstructed")),
+        "a caller reading only the report must learn the recovered source is incomplete; notes: \
+         {:?}",
+        report.notes
+    );
+    assert!(
+        report
+            .output
+            .contains("// disrobe: unrecovered ZEND_SWITCH_LONG at op 0"),
+        "output: {}",
+        report.output
+    );
+}
+
+#[test]
+fn pipeline_records_no_refusal_when_every_opcode_is_modelled() {
+    let bytes: Vec<u8> = build_oparray_echo("from oparray");
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover");
+    let decomp = report
+        .decompilation
+        .as_ref()
+        .expect("decompilation present");
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|note: &String| note.contains("refused")),
+        "notes: {:?}",
+        report.notes
+    );
+}
+
 #[test]
 fn pipeline_plain_source_is_passthrough() {
     let src: &[u8] = b"<?php function plain() { return 1; }";

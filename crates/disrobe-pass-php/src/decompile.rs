@@ -18,6 +18,7 @@ const SANE_CHILD_CAP: u32 = 1 << 16;
 const SANE_NEST_DEPTH: u32 = 64;
 const MAX_PREALLOC: usize = 1 << 16;
 const SANE_LIFT_DEPTH: u32 = 256;
+const MAX_UNRECOVERED_RECORDS: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -218,12 +219,23 @@ pub enum Fidelity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnrecoveredOp {
+    pub container: String,
+    pub index: u32,
+    pub opcode: u8,
+    pub mnemonic: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decompilation {
     pub fidelity: Fidelity,
     pub php_skeleton: String,
     pub op_array_count: usize,
     pub op_count: usize,
     pub literal_count: usize,
+    pub unrecovered: Vec<UnrecoveredOp>,
+    pub unrecovered_total: usize,
 }
 
 pub mod op {
@@ -235,6 +247,7 @@ pub mod op {
     pub const DIV: u8 = 4;
     pub const MOD: u8 = 5;
     pub const CONCAT: u8 = 8;
+    pub const BW_NOT: u8 = 13;
     pub const IS_IDENTICAL: u8 = 16;
     pub const IS_NOT_IDENTICAL: u8 = 17;
     pub const IS_EQUAL: u8 = 18;
@@ -256,6 +269,7 @@ pub mod op {
     pub const JMPZ_EX: u8 = 46;
     pub const JMPNZ_EX: u8 = 47;
     pub const CASE: u8 = 48;
+    pub const CAST: u8 = 51;
     pub const BOOL: u8 = 52;
     pub const INIT_FCALL_BY_NAME: u8 = 59;
     pub const DO_FCALL: u8 = 60;
@@ -282,8 +296,13 @@ pub mod op {
     pub const FETCH_CONSTANT: u8 = 99;
     pub const THROW: u8 = 108;
     pub const FETCH_CLASS: u8 = 109;
+    pub const CLONE: u8 = 110;
     pub const INIT_METHOD_CALL: u8 = 112;
     pub const INIT_STATIC_METHOD_CALL: u8 = 113;
+    pub const ISSET_ISEMPTY_VAR: u8 = 114;
+    pub const ISSET_ISEMPTY_DIM_OBJ: u8 = 115;
+    pub const ISSET_ISEMPTY_PROP_OBJ: u8 = 148;
+    pub const ISSET_ISEMPTY_CV: u8 = 154;
     pub const SEND_VAL_EX: u8 = 116;
     pub const SEND_VAR: u8 = 117;
     pub const RETURN_BY_REF: u8 = 111;
@@ -343,6 +362,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         10 => "ZEND_BW_AND",
         11 => "ZEND_BW_XOR",
         12 => "ZEND_POW",
+        13 => "ZEND_BW_NOT",
         14 => "ZEND_BOOL_NOT",
         16 => "ZEND_IS_IDENTICAL",
         17 => "ZEND_IS_NOT_IDENTICAL",
@@ -365,6 +385,7 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         46 => "ZEND_JMPZ_EX",
         47 => "ZEND_JMPNZ_EX",
         48 => "ZEND_CASE",
+        51 => "ZEND_CAST",
         52 => "ZEND_BOOL",
         59 => "ZEND_INIT_FCALL_BY_NAME",
         60 => "ZEND_DO_FCALL",
@@ -393,9 +414,12 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         107 => "ZEND_CATCH",
         108 => "ZEND_THROW",
         109 => "ZEND_FETCH_CLASS",
+        110 => "ZEND_CLONE",
         111 => "ZEND_RETURN_BY_REF",
         112 => "ZEND_INIT_METHOD_CALL",
         113 => "ZEND_INIT_STATIC_METHOD_CALL",
+        114 => "ZEND_ISSET_ISEMPTY_VAR",
+        115 => "ZEND_ISSET_ISEMPTY_DIM_OBJ",
         116 => "ZEND_SEND_VAL_EX",
         117 => "ZEND_SEND_VAR",
         125 => "ZEND_FE_RESET_RW",
@@ -411,8 +435,10 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         144 => "ZEND_DECLARE_CLASS",
         145 => "ZEND_DECLARE_CLASS_DELAYED",
         146 => "ZEND_DECLARE_ANON_CLASS",
+        148 => "ZEND_ISSET_ISEMPTY_PROP_OBJ",
         149 => "ZEND_HANDLE_EXCEPTION",
         152 => "ZEND_JMP_SET",
+        154 => "ZEND_ISSET_ISEMPTY_CV",
         160 => "ZEND_YIELD",
         161 => "ZEND_GENERATOR_RETURN",
         166 => "ZEND_YIELD_FROM",
@@ -761,12 +787,16 @@ pub fn decompile(root: &OpArray) -> Decompilation {
     let mut emitter: SkeletonEmitter = SkeletonEmitter::default();
     emitter.emit_oparray(root, 0);
     let (op_array_count, op_count, literal_count): (usize, usize, usize) = count_totals(root);
+    let unrecovered: Vec<UnrecoveredOp> = std::mem::take(&mut emitter.unrecovered);
+    let unrecovered_total: usize = emitter.unrecovered_total;
     Decompilation {
         fidelity: Fidelity::Partial,
         php_skeleton: emitter.finish(),
         op_array_count,
         op_count,
         literal_count,
+        unrecovered,
+        unrecovered_total,
     }
 }
 
@@ -787,6 +817,8 @@ fn count_totals(node: &OpArray) -> (usize, usize, usize) {
 struct SkeletonEmitter {
     out: String,
     emitted_open_tag: bool,
+    unrecovered: Vec<UnrecoveredOp>,
+    unrecovered_total: usize,
 }
 
 impl SkeletonEmitter {
@@ -872,8 +904,40 @@ impl SkeletonEmitter {
     fn emit_body(&mut self, node: &OpArray, indent: usize) {
         let mut lifter: Lifter<'_> = Lifter::new(&node.ops, &node.literals, &node.var_names);
         let stmts: Vec<Stmt> = lifter.lift();
+        let container: String = Self::container_label(node);
+        self.unrecovered_total = self.unrecovered_total.saturating_add(lifter.refused.len());
+        let mut refused: Vec<(u32, u8, &'static str)> = std::mem::take(&mut lifter.unrecovered);
+        refused.sort_unstable_by_key(|(index, _, _): &(u32, u8, &'static str)| *index);
+        for (index, opcode, reason) in refused {
+            if self.unrecovered.len() >= MAX_UNRECOVERED_RECORDS {
+                break;
+            }
+            self.unrecovered.push(UnrecoveredOp {
+                container: container.clone(),
+                index,
+                opcode,
+                mnemonic: opcode_name(opcode).to_owned(),
+                reason: reason.to_owned(),
+            });
+        }
         for stmt in &stmts {
             stmt.render_into(self, indent);
+        }
+    }
+
+    fn container_label(node: &OpArray) -> String {
+        match node.kind {
+            OpArrayKind::Main => "$_main".to_owned(),
+            OpArrayKind::Function => node
+                .name
+                .clone()
+                .unwrap_or_else(|| "{anonymous function}".to_owned()),
+            OpArrayKind::Closure => node.name.clone().unwrap_or_else(|| "{closure}".to_owned()),
+            OpArrayKind::Method => format!(
+                "{}::{}",
+                node.class_name.as_deref().unwrap_or("UnknownClass"),
+                node.name.as_deref().unwrap_or("method")
+            ),
         }
     }
 }
@@ -915,6 +979,9 @@ const PREC_BITAND: u8 = 45;
 const PREC_BITXOR: u8 = 44;
 const PREC_BITOR: u8 = 43;
 const PREC_COALESCE: u8 = 35;
+const PREC_TERNARY: u8 = 30;
+const PREC_UNARY: u8 = 78;
+const PREC_INSTANCEOF: u8 = 75;
 
 impl Expr {
     fn atom(text: String) -> Self {
@@ -1018,6 +1085,7 @@ struct PendingCall {
     object: Option<String>,
     is_static: bool,
     args: Vec<String>,
+    result: Option<(OperandType, u32, u32)>,
 }
 
 struct Lifter<'a> {
@@ -1029,6 +1097,8 @@ struct Lifter<'a> {
     back_jump_targets: BTreeSet<u32>,
     result_use_counts: Vec<u32>,
     reserved_names: BTreeSet<String>,
+    refused: BTreeSet<u32>,
+    unrecovered: Vec<(u32, u8, &'static str)>,
 }
 
 impl<'a> Lifter<'a> {
@@ -1088,7 +1158,19 @@ impl<'a> Lifter<'a> {
             back_jump_targets,
             result_use_counts,
             reserved_names,
+            refused: BTreeSet::new(),
+            unrecovered: Vec::new(),
         }
+    }
+
+    fn refuse(&mut self, idx: u32, opcode: u8, reason: &'static str) -> String {
+        if self.refused.insert(idx) && self.unrecovered.len() < MAX_UNRECOVERED_RECORDS {
+            self.unrecovered.push((idx, opcode, reason));
+        }
+        format!(
+            "// disrobe: unrecovered {} at op {idx} ({reason})",
+            opcode_name(opcode)
+        )
     }
 
     fn cv(&self, slot: u32) -> String {
@@ -1126,6 +1208,7 @@ impl<'a> Lifter<'a> {
                 self.structure_foreach(i, end, depth)
             }
             o if o == op::JMPZ_EX || o == op::JMPNZ_EX => self.fold_short_circuit(i, end),
+            o if o == op::COALESCE || o == op::JMP_SET => self.fold_default_join(i, end),
             o if o == op::JMP => self.structure_while(i, end, depth),
             o if o == op::JMPZ => self
                 .structure_ternary(i, end)
@@ -1236,6 +1319,35 @@ impl<'a> Lifter<'a> {
                 },
             },
         );
+        Some((Vec::new(), join))
+    }
+
+    fn fold_default_join(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let gate: Op = self.ops.get(i as usize)?.clone();
+        let join: u32 = gate.op2;
+        if join <= i || join > end || gate.result_type == OperandType::Unused {
+            return None;
+        }
+        let result_key: (OperandType, u32) = (gate.result_type, gate.result);
+        let lhs: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        let mut k: u32 = i + 1;
+        while k < join {
+            self.eval_op(k);
+            k += 1;
+        }
+        let rhs: Expr = self.slots.get(&result_key).cloned()?;
+        let (connector, prec): (&str, u8) = if gate.opcode == op::COALESCE {
+            ("??", PREC_COALESCE)
+        } else {
+            ("?:", PREC_TERNARY)
+        };
+        let text: String = format!(
+            "{} {} {}",
+            lhs.wrapped(prec + 1),
+            connector,
+            rhs.wrapped(prec)
+        );
+        self.slots.insert(result_key, Expr { text, prec });
         Some((Vec::new(), join))
     }
 
@@ -1451,6 +1563,114 @@ impl<'a> Lifter<'a> {
                 self.fold_fetch_dim(op);
                 None
             }
+            o if o == op::FETCH_OBJ_R => {
+                let text: String = self.property_access(op);
+                self.store_result(
+                    op,
+                    Expr {
+                        text,
+                        prec: PREC_ATOM,
+                    },
+                );
+                None
+            }
+            o if o == op::ASSIGN_OBJ => {
+                let target: String = self.property_access(op);
+                let value: Expr = self
+                    .ops
+                    .get(idx as usize + 1)
+                    .filter(|n: &&Op| n.opcode == op::OP_DATA)
+                    .and_then(|data: &Op| self.operand_expr(data.op1_type, data.op1))
+                    .unwrap_or_else(|| Expr::atom("null".to_owned()));
+                if op.result_type != OperandType::Unused {
+                    self.store_result(op, Expr::atom(target.clone()));
+                }
+                Some(format!("{target} = {};", value.text))
+            }
+            o if o == op::FETCH_CONSTANT => {
+                let Some(name): Option<String> = self.constant_name(op) else {
+                    return Some(self.refuse(idx, o, REASON_CONSTANT_NAME));
+                };
+                self.store_result(
+                    op,
+                    Expr {
+                        text: constant_reference(&name),
+                        prec: PREC_ATOM,
+                    },
+                );
+                None
+            }
+            o if o == op::DECLARE_CONST => {
+                let name: Expr = self.operand_expr(op.op1_type, op.op1)?;
+                let value: Expr = self.operand_expr(op.op2_type, op.op2)?;
+                Some(format!("define({}, {});", name.text, value.text))
+            }
+            o if o == op::INSTANCEOF => {
+                let value: Expr = self.operand_expr(op.op1_type, op.op1)?;
+                let class: String = self
+                    .operand_expr(op.op2_type, op.op2)
+                    .map_or_else(|| "stdClass".to_owned(), |e: Expr| strip_quotes(&e.text));
+                self.store_result(
+                    op,
+                    Expr {
+                        text: format!("{} instanceof {class}", value.wrapped(PREC_INSTANCEOF + 1)),
+                        prec: PREC_INSTANCEOF,
+                    },
+                );
+                None
+            }
+            o if o == op::CAST => {
+                let Some(symbol): Option<&'static str> = cast_symbol(op.extended_value) else {
+                    return Some(self.refuse(idx, o, REASON_CAST_KIND));
+                };
+                let value: Expr = self.operand_expr(op.op1_type, op.op1)?;
+                self.store_result(
+                    op,
+                    Expr {
+                        text: format!("{symbol} {}", value.wrapped(PREC_UNARY)),
+                        prec: PREC_UNARY,
+                    },
+                );
+                None
+            }
+            o if o == op::BW_NOT || o == op::CLONE => {
+                let value: Expr = self.operand_expr(op.op1_type, op.op1)?;
+                let text: String = if o == op::BW_NOT {
+                    format!("~{}", value.wrapped(PREC_UNARY))
+                } else {
+                    format!("clone {}", value.wrapped(PREC_UNARY))
+                };
+                self.store_result(
+                    op,
+                    Expr {
+                        text,
+                        prec: PREC_UNARY,
+                    },
+                );
+                None
+            }
+            o if is_isset_isempty(o) => {
+                let Some(probe): Option<&'static str> = isset_probe(op.extended_value) else {
+                    return Some(self.refuse(idx, o, REASON_ISSET_MODE));
+                };
+                let subject: String = if o == op::ISSET_ISEMPTY_PROP_OBJ {
+                    self.property_access(op)
+                } else if o == op::ISSET_ISEMPTY_DIM_OBJ {
+                    let base: Expr = self.operand_expr(op.op1_type, op.op1)?;
+                    let index: Expr = self.operand_expr(op.op2_type, op.op2)?;
+                    format!("{}[{}]", base.wrapped(PREC_CALL), index.text)
+                } else {
+                    self.operand_expr(op.op1_type, op.op1)?.text
+                };
+                self.store_result(
+                    op,
+                    Expr {
+                        text: format!("{probe}({subject})"),
+                        prec: PREC_CALL,
+                    },
+                );
+                None
+            }
             o if o == op::FETCH_R || o == op::FETCH_W || o == op::FETCH_RW => {
                 self.fold_variable_variable(op);
                 None
@@ -1468,13 +1688,17 @@ impl<'a> Lifter<'a> {
                     object: None,
                     is_static: false,
                     args: Vec::new(),
+                    result: None,
                 });
                 None
             }
             o if o == op::INIT_METHOD_CALL => {
-                let object: String = self
-                    .operand_expr(op.op1_type, op.op1)
-                    .map_or_else(|| "$object".to_owned(), |e: Expr| e.text);
+                let object: String = match op.op1_type {
+                    OperandType::Unused => "$this".to_owned(),
+                    ty => self
+                        .operand_expr(ty, op.op1)
+                        .map_or_else(|| "$this".to_owned(), |e: Expr| e.text),
+                };
                 let method: String = self
                     .operand_expr(op.op2_type, op.op2)
                     .map_or_else(|| "method".to_owned(), |e: Expr| strip_quotes(&e.text));
@@ -1484,6 +1708,7 @@ impl<'a> Lifter<'a> {
                     object: Some(object),
                     is_static: false,
                     args: Vec::new(),
+                    result: None,
                 });
                 None
             }
@@ -1500,6 +1725,7 @@ impl<'a> Lifter<'a> {
                     object: Some(class),
                     is_static: true,
                     args: Vec::new(),
+                    result: None,
                 });
                 None
             }
@@ -1516,7 +1742,7 @@ impl<'a> Lifter<'a> {
                 || o == op::DO_UCALL
                 || o == op::DO_FCALL_BY_NAME =>
             {
-                self.finish_call(op)
+                self.finish_call(idx, op)
             }
             o if o == op::NEW => {
                 let cls: String = self
@@ -1528,6 +1754,11 @@ impl<'a> Lifter<'a> {
                     object: None,
                     is_static: false,
                     args: Vec::new(),
+                    result: (op.result_type != OperandType::Unused).then_some((
+                        op.result_type,
+                        op.result,
+                        idx,
+                    )),
                 });
                 None
             }
@@ -1629,8 +1860,39 @@ impl<'a> Lifter<'a> {
                     .unwrap_or_else(|| Expr::atom("''".to_owned()));
                 Some(format!("{} {};", include_kind(op.extended_value), arg.text))
             }
-            _ => None,
+            other => Some(self.refuse(idx, other, refusal_reason(other))),
         }
+    }
+
+    fn property_access(&self, op: &Op) -> String {
+        let base: String = match op.op1_type {
+            OperandType::Unused => "$this".to_owned(),
+            ty => self
+                .operand_expr(ty, op.op1)
+                .map_or_else(|| "$this".to_owned(), |e: Expr| e.wrapped(PREC_CALL)),
+        };
+        match self.literal_string(op.op2_type, op.op2) {
+            Some(name) if is_valid_php_ident(&name) => format!("{base}->{name}"),
+            _ => self.operand_expr(op.op2_type, op.op2).map_or_else(
+                || format!("{base}->{{null}}"),
+                |e: Expr| format!("{base}->{{{}}}", e.text),
+            ),
+        }
+    }
+
+    fn literal_string(&self, ty: OperandType, value: u32) -> Option<String> {
+        if ty != OperandType::Const {
+            return None;
+        }
+        self.literals
+            .get(value as usize)
+            .and_then(Literal::as_str)
+            .map(str::to_owned)
+    }
+
+    fn constant_name(&self, op: &Op) -> Option<String> {
+        self.literal_string(op.op2_type, op.op2)
+            .or_else(|| self.literal_string(op.op1_type, op.op1))
     }
 
     fn fold_binary(&mut self, op: &Op) {
@@ -1796,27 +2058,43 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn finish_call(&mut self, op: &Op) -> Option<String> {
+    fn finish_call(&mut self, idx: u32, op: &Op) -> Option<String> {
         let call: PendingCall = self.call_stack.pop()?;
         let args: String = call.args.join(", ");
         let text: String = if call.is_method {
             let sep: &str = if call.is_static { "::" } else { "->" };
-            let object: String = call.object.unwrap_or_else(|| "$object".to_owned());
+            let object: String = call.object.unwrap_or_else(|| "$this".to_owned());
             format!("{object}{sep}{}({args})", call.callee)
         } else {
             format!("{}({args})", call.callee)
         };
-        if op.result_type == OperandType::Unused {
-            return Some(format!("{text};"));
-        }
-        self.store_result(
-            op,
-            Expr {
-                text,
-                prec: PREC_CALL,
+        let (target, producer): (Option<(OperandType, u32)>, u32) = call.result.map_or_else(
+            || {
+                (
+                    (op.result_type != OperandType::Unused).then_some((op.result_type, op.result)),
+                    idx,
+                )
             },
+            |(ty, slot, produced_at): (OperandType, u32, u32)| (Some((ty, slot)), produced_at),
         );
-        None
+        let uses: u32 = self
+            .result_use_counts
+            .get(producer as usize)
+            .copied()
+            .unwrap_or(0);
+        match target {
+            Some(key) if uses > 0 => {
+                self.slots.insert(
+                    key,
+                    Expr {
+                        text,
+                        prec: PREC_CALL,
+                    },
+                );
+                None
+            }
+            _ => Some(format!("{text};")),
+        }
     }
 
     fn store_result(&mut self, op: &Op, expr: Expr) {
@@ -1842,6 +2120,83 @@ impl<'a> Lifter<'a> {
                 .or_else(|| Some(Expr::atom(slot_fallback(ty, value)))),
         }
     }
+}
+
+const REASON_CAST_KIND: &str = "the cast target type is not a php 8 cast";
+const REASON_ISSET_MODE: &str = "the isset or empty mode flag is not a php 8 mode";
+const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
+const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
+const REASON_DISPATCH: &str = "switch and match dispatch is not reconstructed";
+const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";
+const REASON_DECLARATION: &str = "the declared body is not carried in this op array";
+const REASON_UNMODELLED: &str = "the expression lifter does not model this opcode";
+
+#[must_use]
+const fn refusal_reason(opcode: u8) -> &'static str {
+    match opcode {
+        op::JMP
+        | op::JMPZ
+        | op::JMPNZ
+        | op::JMPZ_EX
+        | op::JMPNZ_EX
+        | op::JMP_SET
+        | op::JMP_NULL
+        | op::COALESCE => REASON_JUMP,
+        op::SWITCH_LONG | op::SWITCH_STRING | op::MATCH | op::CASE => REASON_DISPATCH,
+        op::CATCH => REASON_EXCEPTION,
+        op::DECLARE_FUNCTION
+        | op::DECLARE_LAMBDA_FUNCTION
+        | op::DECLARE_CLASS
+        | op::DECLARE_CLASS_DELAYED
+        | op::DECLARE_ANON_CLASS => REASON_DECLARATION,
+        _ => REASON_UNMODELLED,
+    }
+}
+
+#[must_use]
+const fn cast_symbol(extended_value: u32) -> Option<&'static str> {
+    match extended_value {
+        4 => Some("(int)"),
+        5 => Some("(float)"),
+        6 => Some("(string)"),
+        7 => Some("(array)"),
+        8 => Some("(object)"),
+        18 => Some("(bool)"),
+        _ => None,
+    }
+}
+
+#[must_use]
+const fn isset_probe(extended_value: u32) -> Option<&'static str> {
+    match extended_value {
+        0 => Some("isset"),
+        1 => Some("empty"),
+        _ => None,
+    }
+}
+
+#[must_use]
+const fn is_isset_isempty(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        op::ISSET_ISEMPTY_CV
+            | op::ISSET_ISEMPTY_VAR
+            | op::ISSET_ISEMPTY_DIM_OBJ
+            | op::ISSET_ISEMPTY_PROP_OBJ
+    )
+}
+
+#[must_use]
+fn constant_reference(name: &str) -> String {
+    let unqualified: &str = name.trim_start_matches('\\');
+    if !unqualified.is_empty()
+        && unqualified
+            .split('\\')
+            .all(|segment: &str| is_valid_php_ident(segment))
+    {
+        return format!("\\{unqualified}");
+    }
+    format!("constant('{}')", name.replace('\\', "\\\\"))
 }
 
 #[must_use]
@@ -1912,7 +2267,6 @@ const fn binary_symbol(opcode: u8) -> (&'static str, u8) {
         op::IS_NOT_EQUAL => ("!=", PREC_CMP),
         op::IS_SMALLER => ("<", PREC_REL),
         op::IS_SMALLER_OR_EQUAL => ("<=", PREC_REL),
-        op::COALESCE => ("??", PREC_COALESCE),
         _ => ("/* op */", PREC_ATOM),
     }
 }

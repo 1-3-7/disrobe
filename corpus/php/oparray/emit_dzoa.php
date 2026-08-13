@@ -36,6 +36,7 @@ const OPMAP = [
     'BW_AND' => 10,
     'BW_XOR' => 11,
     'POW' => 12,
+    'BW_NOT' => 13,
     'BOOL_NOT' => 14,
     'IS_IDENTICAL' => 16,
     'IS_NOT_IDENTICAL' => 17,
@@ -58,6 +59,7 @@ const OPMAP = [
     'JMPZ_EX' => 46,
     'JMPNZ_EX' => 47,
     'CASE' => 48,
+    'CAST' => 51,
     'BOOL' => 52,
     'INIT_FCALL_BY_NAME' => 59,
     'DO_FCALL' => 60,
@@ -86,9 +88,12 @@ const OPMAP = [
     'CATCH' => 107,
     'THROW' => 108,
     'FETCH_CLASS' => 109,
+    'CLONE' => 110,
     'RETURN_BY_REF' => 111,
     'INIT_METHOD_CALL' => 112,
     'INIT_STATIC_METHOD_CALL' => 113,
+    'ISSET_ISEMPTY_VAR' => 114,
+    'ISSET_ISEMPTY_DIM_OBJ' => 115,
     'SEND_VAL_EX' => 116,
     'SEND_VAR' => 117,
     'FE_RESET_RW' => 125,
@@ -105,8 +110,10 @@ const OPMAP = [
     'DECLARE_CLASS' => 144,
     'DECLARE_CLASS_DELAYED' => 145,
     'DECLARE_ANON_CLASS' => 146,
+    'ISSET_ISEMPTY_PROP_OBJ' => 148,
     'HANDLE_EXCEPTION' => 149,
     'JMP_SET' => 152,
+    'ISSET_ISEMPTY_CV' => 154,
     'YIELD' => 160,
     'GENERATOR_RETURN' => 161,
     'YIELD_FROM' => 166,
@@ -122,6 +129,27 @@ const OPMAP = [
     'GENERATOR_CREATE' => 214,
     'SEND_VAR_NO_REF_EX' => 117,
     'SEND_FUNC_ARG' => 117,
+];
+
+const CAST_TYPE_MAP = [
+    'null' => 1,
+    'bool' => 18,
+    'long' => 4,
+    'double' => 5,
+    'string' => 6,
+    'array' => 7,
+    'object' => 8,
+];
+
+const ISSET_FLAG_MAP = [
+    'isset' => 0,
+    'empty' => 1,
+];
+
+const ARG_COUNT_PREFIXED = [
+    'INIT_METHOD_CALL' => 2,
+    'INIT_STATIC_METHOD_CALL' => 2,
+    'NEW' => 1,
 ];
 
 const ASSIGN_OP_MAP = [
@@ -571,6 +599,38 @@ function parse_dump(string $text): array
             continue;
         }
 
+        if (isset(ARG_COUNT_PREFIXED[$mnemonic])) {
+            $operandCount = ARG_COUNT_PREFIXED[$mnemonic];
+            $countTok = array_shift($tokens);
+            if (!is_numeric($countTok)) {
+                fail("$mnemonic at line $addr does not lead with an argument count: '$countTok'");
+            }
+            if (count($tokens) !== $operandCount) {
+                fail("$mnemonic at line $addr carries " . count($tokens) . " operands, expected $operandCount");
+            }
+            $op = build_op($mnemonic, $resultTok, $tokens, $current['oa'], $addr + 1);
+            $op->ext = (int) $countTok;
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
+        if ($mnemonic === 'CAST' || str_starts_with($mnemonic, 'ISSET_ISEMPTY_')) {
+            $flagTok = array_shift($tokens);
+            if ($flagTok === null || !preg_match('/^\(([a-z_]+)\)$/', $flagTok, $fm)) {
+                fail("$mnemonic at line $addr does not lead with a parenthesized mode: '" . (string) $flagTok . "'");
+            }
+            $table = $mnemonic === 'CAST' ? CAST_TYPE_MAP : ISSET_FLAG_MAP;
+            if (!isset($table[$fm[1]])) {
+                fail("$mnemonic at line $addr uses unmapped mode '{$fm[1]}'");
+            }
+            $op = build_op($mnemonic, $resultTok, $tokens, $current['oa'], $addr + 1);
+            $op->ext = $table[$fm[1]];
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
+
         $isSend = str_starts_with($mnemonic, 'SEND_');
         if ($isSend) {
             $valueTok = $tokens[0] ?? '';
@@ -601,7 +661,7 @@ function parse_dump(string $text): array
             continue;
         }
 
-        $isJmp = in_array($mnemonic, ['JMP', 'JMPZ', 'JMPNZ', 'JMPZ_EX', 'JMPNZ_EX'], true);
+        $isJmp = in_array($mnemonic, ['JMP', 'JMPZ', 'JMPNZ', 'JMPZ_EX', 'JMPNZ_EX', 'COALESCE', 'JMP_SET', 'JMP_NULL'], true);
         $isLoopCtl = in_array($mnemonic, ['FE_RESET_R', 'FE_RESET_RW', 'FE_FETCH_R', 'FE_FETCH_RW', 'FE_FREE'], true);
 
         $op = build_op($mnemonic, $resultTok, $tokens, $current['oa'], $addr + 1);

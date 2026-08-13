@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 9] = [
+const PINNED_SAMPLES: [&str; 10] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -43,21 +43,23 @@ const PINNED_SAMPLES: [&str; 9] = [
     "functions",
     "generators",
     "keyed_foreach",
+    "objects",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 7] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 8] = [
     "arithmetic",
     "control_flow",
     "do_while",
     "functions",
     "generators",
     "keyed_foreach",
+    "objects",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 9] = [
+const OPCODE_NAMING_SAMPLES: [&str; 10] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -65,6 +67,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 9] = [
     "functions",
     "generators",
     "keyed_foreach",
+    "objects",
     "variable_variable",
     "versioned",
 ];
@@ -239,6 +242,32 @@ fn normalize(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
 
+const SLOT_FALLBACK_PREFIXES: [&str; 3] = ["$tmp", "$var", "$slot"];
+
+fn leaked_slot_names(source: &str) -> Vec<String> {
+    let bytes: &[u8] = source.as_bytes();
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    for prefix in SLOT_FALLBACK_PREFIXES {
+        let mut from: usize = 0;
+        while let Some(hit) = source[from..].find(prefix) {
+            let start: usize = from + hit;
+            let mut end: usize = start + prefix.len();
+            while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+            let digits: usize = end - start - prefix.len();
+            let boundary: bool = bytes
+                .get(end)
+                .is_none_or(|byte: &u8| !byte.is_ascii_alphanumeric() && *byte != b'_');
+            if digits > 0 && boundary {
+                found.insert(source[start..end].to_owned());
+            }
+            from = start + prefix.len();
+        }
+    }
+    found.into_iter().collect()
+}
+
 fn behavioral_roundtrip(sample: &str) {
     let graded: String = format!("the {sample} op_array decompile differential");
     let Some(php): Option<PathBuf> = find_php(&graded) else {
@@ -288,6 +317,19 @@ fn behavioral_roundtrip(sample: &str) {
     let parsed = parse_oparray(&bytes).expect("disrobe parse real op_array");
     let decomp: Decompilation = decompile_oparray(&parsed);
     let recovered_source: &str = &decomp.php_skeleton;
+    assert!(
+        decomp.unrecovered.is_empty(),
+        "{sample} is graded as a recovered sample, so every opcode in it must be modelled; these \
+         were refused: {:?}\n--- recovered source ---\n{recovered_source}",
+        decomp.unrecovered
+    );
+    let leaked: Vec<String> = leaked_slot_names(recovered_source);
+    assert!(
+        leaked.is_empty(),
+        "{sample} recovered with generated slot names still in the source, which means data flow \
+         did not reach those values: {leaked:?}\n--- recovered source \
+         ---\n{recovered_source}"
+    );
 
     let Some(recovered_output): Option<String> = run_php_source(&php, recovered_source) else {
         panic!("recovered {sample}.php did not execute; source:\n{recovered_source}");
@@ -405,6 +447,11 @@ fn keyed_foreach_oparray_roundtrips_behaviorally() {
 #[test]
 fn variable_variable_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("variable_variable");
+}
+
+#[test]
+fn objects_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("objects");
 }
 
 const EMITTER_SEND_FAMILY_TARGET: &str = "ZEND_SEND_VAL";

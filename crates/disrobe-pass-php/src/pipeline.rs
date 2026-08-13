@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use crate::key_extractor::{KeyProvenance, KeyScan, scan, xor_decrypt};
 use crate::peel::{PeelOptions, PeelReport, peel};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 const SKELETON_PREVIEW_LINES: usize = 40;
 
@@ -271,6 +272,9 @@ fn decompile_if_container(
         total_named_params(&parsed).to_string()
     });
     notes.push("decrypted payload is a Zend op_array container; lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned());
+    if let Some(refusal) = unrecovered_note(&decomp) {
+        notes.push(refusal);
+    }
     Ok(Some(RecoveryReport {
         stage: RecoveryStage::OpArrayDecompiled,
         php_kind: "Encoder".to_owned(),
@@ -314,6 +318,12 @@ fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
             dbg_line(|| format!("skeleton| {line}"));
         }
     }
+    let mut notes: Vec<String> = vec![
+        "raw Zend op_array container lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned(),
+    ];
+    if let Some(refusal) = unrecovered_note(&decomp) {
+        notes.push(refusal);
+    }
     Ok(Some(RecoveryReport {
         stage: RecoveryStage::OpArrayDecompiled,
         php_kind: "OpArray".to_owned(),
@@ -322,10 +332,28 @@ fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
         output: decomp.php_skeleton.clone(),
         decompilation: Some(decomp),
         residual_ciphertext_len: 0,
-        notes: vec![
-            "raw Zend op_array container lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned(),
-        ],
+        notes,
     }))
+}
+
+fn unrecovered_note(decomp: &Decompilation) -> Option<String> {
+    if decomp.unrecovered_total == 0 {
+        return None;
+    }
+    let mut families: BTreeSet<&str> = BTreeSet::new();
+    for entry in &decomp.unrecovered {
+        families.insert(entry.reason.as_str());
+    }
+    let listed: Vec<String> = families
+        .into_iter()
+        .map(|reason: &str| format!("`{reason}`"))
+        .collect();
+    Some(format!(
+        "{} of {} opcodes were refused rather than guessed and are marked in place in the recovered source: {}",
+        decomp.unrecovered_total,
+        decomp.op_count,
+        listed.join(", ")
+    ))
 }
 
 fn try_eval_chain_or_plain(bytes: &[u8]) -> RecoveryReport {

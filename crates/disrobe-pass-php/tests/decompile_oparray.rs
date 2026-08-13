@@ -14,8 +14,8 @@
 
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
-    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, OperandType, build_cfg,
-    decompile_oparray, opcode_name, parse_oparray,
+    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, OperandType, UnrecoveredOp,
+    build_cfg, decompile_oparray, opcode_name, parse_oparray,
 };
 
 const T_UNUSED: u8 = 0;
@@ -712,6 +712,226 @@ fn relational_binds_tighter_than_equality_forces_parens() {
             "emitted expression must match relational-tighter semantics"
         );
     }
+}
+
+fn decompiled(build: impl FnOnce(&mut OpArrayBuilder)) -> Decompilation {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    build(&mut b);
+    let bytes: Vec<u8> = b.build_container();
+    let parsed = parse_oparray(&bytes).expect("parse oparray");
+    decompile_oparray(&parsed)
+}
+
+#[test]
+fn an_opcode_the_lifter_does_not_model_is_named_instead_of_vanishing() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("k");
+        let one: u32 = b.lit_long(1);
+        b.op(op::SWITCH_LONG, T_CV, T_UNUSED, T_UNUSED, 0, 2, 0, 0, 1);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 3);
+    });
+
+    assert_eq!(
+        decomp.unrecovered_total, 1,
+        "the switch dispatch is the only opcode this lifter cannot model here; recovered source: \
+         {}",
+        decomp.php_skeleton
+    );
+    let entry: &UnrecoveredOp = decomp
+        .unrecovered
+        .first()
+        .expect("a refused opcode must be recorded, not dropped");
+    assert_eq!(entry.container, "$_main");
+    assert_eq!(entry.index, 0);
+    assert_eq!(entry.opcode, op::SWITCH_LONG);
+    assert_eq!(entry.mnemonic, "ZEND_SWITCH_LONG");
+    assert_eq!(
+        entry.reason,
+        "switch and match dispatch is not reconstructed"
+    );
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("// disrobe: unrecovered ZEND_SWITCH_LONG at op 0"),
+        "the refusal must be marked where it happened so the reader cannot mistake the recovered \
+         source for a complete lift: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_modelled_op_array_reports_no_refusal_at_all() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("total");
+        let two: u32 = b.lit_long(2);
+        b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, two, 0, 0, 1);
+        b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 2);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, two, 0, 0, 0, 3);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(decomp.unrecovered.is_empty());
+    assert!(
+        !decomp.php_skeleton.contains("unrecovered"),
+        "a fully modelled body must carry no refusal marker: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_cast_to_a_type_php_8_cannot_spell_is_refused_rather_than_guessed() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("raw");
+        let text: u32 = b.lit_str("12");
+        b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, text, 0, 0, 1);
+        b.op(op::CAST, T_CV, T_UNUSED, T_TMP, 0, 0, 1, 99, 2);
+        b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 3);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, text, 0, 0, 0, 4);
+    });
+
+    let entry: &UnrecoveredOp = decomp
+        .unrecovered
+        .first()
+        .expect("an unmapped cast target must be refused");
+    assert_eq!(entry.mnemonic, "ZEND_CAST");
+    assert_eq!(entry.index, 1);
+    assert_eq!(entry.reason, "the cast target type is not a php 8 cast");
+    assert!(
+        !decomp.php_skeleton.contains("(int)"),
+        "guessing a cast target would put a wrong byte in recovered source: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_cast_php_can_spell_recovers_as_that_cast() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("raw");
+        b.var("n");
+        let text: u32 = b.lit_str("12");
+        b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, text, 0, 0, 1);
+        b.op(op::CAST, T_CV, T_UNUSED, T_TMP, 0, 0, 1, 4, 2);
+        b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 1, 0, 0, 3);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, text, 0, 0, 0, 4);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(
+        decomp.php_skeleton.contains("$n = (int) $raw;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_constructed_object_nobody_consumes_stays_a_statement() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        let class: u32 = b.lit_str("Worker");
+        let one: u32 = b.lit_long(1);
+        b.op(op::NEW, T_CONST, T_UNUSED, T_VAR, class, 0, 0, 0, 1);
+        b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::FREE, T_VAR, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(
+        decomp.php_skeleton.contains("new Worker();"),
+        "a constructor still runs when its object is discarded, so dropping the statement would \
+         change behaviour: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_constructed_object_someone_assigns_becomes_the_right_hand_side() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("worker");
+        let class: u32 = b.lit_str("Worker");
+        let one: u32 = b.lit_long(1);
+        b.op(op::NEW, T_CONST, T_UNUSED, T_VAR, class, 0, 0, 0, 1);
+        b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::ASSIGN, T_CV, T_VAR, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(
+        decomp.php_skeleton.contains("$worker = new Worker();"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+    assert!(
+        !decomp.php_skeleton.contains("$var0"),
+        "the object must not leak the slot name it was built in: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_property_read_through_an_unnamed_receiver_is_the_current_object() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        let prop: u32 = b.lit_str("count");
+        b.op(op::FETCH_OBJ_R, T_UNUSED, T_CONST, T_TMP, 0, prop, 0, 0, 1);
+        b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, prop, 0, 0, 0, 2);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0);
+    assert!(
+        decomp.php_skeleton.contains("echo $this->count;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn a_property_named_by_a_value_stays_a_computed_property() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("obj");
+        b.var("field");
+        let one: u32 = b.lit_long(1);
+        b.op(op::FETCH_OBJ_R, T_CV, T_CV, T_TMP, 0, 1, 0, 0, 1);
+        b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+    });
+
+    assert!(
+        decomp.php_skeleton.contains("echo $obj->{$field};"),
+        "a property whose name is a runtime value must stay computed rather than be guessed as an \
+         identifier: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn two_decompiles_of_one_container_produce_the_same_bytes_and_the_same_refusals() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("k");
+    let one: u32 = b.lit_long(1);
+    b.op(op::SWITCH_STRING, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 1);
+    b.op(op::MATCH, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 2);
+    b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 3);
+    b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 4);
+    let bytes: Vec<u8> = b.build_container();
+    let parsed = parse_oparray(&bytes).expect("parse oparray");
+
+    let first: Decompilation = decompile_oparray(&parsed);
+    let second: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(first.php_skeleton, second.php_skeleton);
+    assert_eq!(first.unrecovered, second.unrecovered);
+    assert_eq!(first.unrecovered_total, 2);
+    let indices: Vec<u32> = first
+        .unrecovered
+        .iter()
+        .map(|entry: &UnrecoveredOp| entry.index)
+        .collect();
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "refusals are reported in op order so two runs cannot disagree on their order"
+    );
 }
 
 #[test]
