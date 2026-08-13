@@ -495,28 +495,10 @@ fn scalar_fp_half_precision_to_integer_uses_bounded_conversion() {
 
 #[test]
 fn fp_forms_requiring_unmodeled_architectural_state_reject_distinctly() {
-    let cases: [(u32, &str); 5] = [
-        (
-            0x1e28_4000,
-            "32-bit integral rounding requires FPSR semantics",
-        ),
-        (
-            0x1e28_c000,
-            "32-bit integral rounding requires FPSR semantics",
-        ),
-        (
-            0x1e69_4000,
-            "64-bit integral rounding requires FPSR semantics",
-        ),
-        (
-            0x1e69_c000,
-            "64-bit integral rounding requires FPSR semantics",
-        ),
-        (
-            0x1e7e_0000,
-            "JavaScript conversion requires FJCVTZS semantics",
-        ),
-    ];
+    let cases: [(u32, &str); 1] = [(
+        0x1e7e_0000,
+        "javascript float-to-integer conversion needs a modular wrap policy and an exact-result flag definition",
+    )];
     for (word, reason) in cases {
         let mut code: Vec<u8> = word.to_le_bytes().to_vec();
         code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);

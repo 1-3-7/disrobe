@@ -35,6 +35,8 @@ const EXPECTED_ABSTENTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+const PSEUDO_RUST_GAPS: &[&str] = &["i_ldr_post_d"];
+
 const GATED_ENCODINGS: &[&str] = &[
     "fjcvtzs",
     "frint32x",
@@ -118,11 +120,23 @@ fn no_scalar_form_abstains_through_a_generic_catch_all() {
     }
 }
 
+fn mentions_a_vector_register(reference: &str) -> bool {
+    reference
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token: &str| match token.split_at_checked(1) {
+            Some(("q" | "v", digits)) => {
+                !digits.is_empty() && digits.bytes().all(|byte: u8| byte.is_ascii_digit())
+            }
+            _ => false,
+        })
+}
+
 #[test]
 fn recovered_scalar_forms_reach_both_emitted_backends() {
     let expected: BTreeMap<&'static str, &'static str> =
         EXPECTED_ABSTENTIONS.iter().copied().collect();
     let mut recovered: usize = 0;
+    let mut scalar_with_rust: usize = 0;
     for (name, bytes, reference) in SWEEP_CASES {
         if expected.contains_key(name) {
             continue;
@@ -134,9 +148,29 @@ fn recovered_scalar_forms_reach_both_emitted_backends() {
             "{name} recovered without emitted c"
         );
         recovered += 1;
+        if mentions_a_vector_register(reference) {
+            continue;
+        }
+        let Some(rust): Option<&str> = recovery.rust_source.as_deref() else {
+            assert!(
+                PSEUDO_RUST_GAPS.contains(name),
+                "{name} ({reference}) recovered c but no pseudo-rust, and is not a recorded gap"
+            );
+            continue;
+        };
+        assert!(
+            !PSEUDO_RUST_GAPS.contains(name),
+            "{name} now reaches pseudo-rust; drop it from the recorded gaps"
+        );
+        assert!(!rust.is_empty(), "{name} recovered an empty pseudo-rust");
+        scalar_with_rust += 1;
     }
     assert!(
         recovered + EXPECTED_ABSTENTIONS.len() == SWEEP_CASES.len(),
         "every sweep case must be classified"
+    );
+    assert!(
+        scalar_with_rust >= 80,
+        "only {scalar_with_rust} scalar forms reached pseudo-rust; the second backend regressed"
     );
 }
