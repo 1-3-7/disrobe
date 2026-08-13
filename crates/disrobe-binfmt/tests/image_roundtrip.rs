@@ -1024,6 +1024,79 @@ fn a_load_command_table_past_the_input_is_refused() {
 }
 
 #[test]
+fn a_non_standard_program_header_size_is_refused_by_name() {
+    let mut bytes: Vec<u8> = required_corpus("native/formats/hello.elf64");
+    bytes[54..56].copy_from_slice(&57u16.to_le_bytes());
+
+    let error: Error = plan_native_image(&bytes)
+        .expect_err("a program header this writer cannot model must be refused");
+    let rendered: String = error.to_string();
+    assert!(
+        matches!(error, Error::RewriteUnsupported { .. }),
+        "an unmodellable construct must be an unsupported refusal, not `{rendered}`"
+    );
+    assert!(
+        rendered.contains("phentsize"),
+        "the refusal must name the construct it could not model, got `{rendered}`"
+    );
+}
+
+const BIGOBJ_CLASS_ID: [u8; 16] = [
+    0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
+];
+
+#[test]
+fn an_extended_coff_object_header_is_refused_by_name() {
+    let mut bytes: Vec<u8> = required_corpus("native/formats/hello.coff.x64.o");
+    bytes[0..2].copy_from_slice(&0x0000u16.to_le_bytes());
+    bytes[2..4].copy_from_slice(&0xFFFFu16.to_le_bytes());
+    bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+    bytes[12..28].copy_from_slice(&BIGOBJ_CLASS_ID);
+
+    let error: Error =
+        plan_native_image(&bytes).expect_err("the extended COFF header must be refused");
+    let rendered: String = error.to_string();
+    assert!(
+        matches!(error, Error::RewriteUnsupported { .. }),
+        "an unmodellable construct must be an unsupported refusal, not `{rendered}`"
+    );
+    assert!(
+        rendered.contains("bigobj"),
+        "the refusal must name the construct it could not model, got `{rendered}`"
+    );
+}
+
+#[test]
+fn a_structure_that_no_longer_fits_its_planned_span_is_refused_rather_than_emitted() {
+    let bytes: Vec<u8> = required_corpus("native/formats/hello.pe64.exe");
+    let mut plan: ImagePlan = plan_native_image(&bytes).expect("plan a PE32+ image");
+
+    let mut widened: bool = false;
+    for structure in plan.structures_mut() {
+        if let Structure::CoffSectionTable(table) = structure.body_mut()
+            && let Some(first) = table.sections.first().copied()
+        {
+            table.sections.push(first);
+            widened = true;
+        }
+    }
+    assert!(widened, "the fixture must carry a section table to widen");
+
+    let error: Error = plan
+        .emit(&bytes)
+        .expect_err("a structure that outgrew its planned span must not be emitted");
+    let rendered: String = error.to_string();
+    assert!(
+        matches!(error, Error::RewriteUnsupported { .. }),
+        "an unreproducible plan must be an unsupported refusal, not `{rendered}`"
+    );
+    assert!(
+        rendered.contains("coff-section-table"),
+        "the refusal must name the structure that no longer fits, got `{rendered}`"
+    );
+}
+
+#[test]
 fn a_truncated_image_is_refused_at_every_prefix() {
     let bytes: Vec<u8> = required_corpus("native/formats/hello.elf64");
     for length in [1usize, 15, 51, 63, 100, 300] {
