@@ -71,7 +71,43 @@ fn run_match(args: &[&str]) -> Run {
         "the command panicked: {}",
         run.stderr
     );
+    assert!(
+        !run.stdout.contains("withheld listing rows: 0"),
+        "a listing that withheld nothing must stay silent about it: {}",
+        run.stdout
+    );
     run
+}
+
+fn listing_rows_of(report: &Value) -> u64 {
+    let from_a: u64 = verdicts_of(report, "a_verdicts")
+        .iter()
+        .filter(|verdict: &&Value| kind_of(verdict) != "unmatched")
+        .count() as u64;
+    let from_b: u64 = verdicts_of(report, "b_verdicts")
+        .iter()
+        .filter(|verdict: &&Value| kind_of(verdict) == "ambiguous")
+        .count() as u64;
+    from_a + from_b
+}
+
+fn printed_rows(stdout: &str) -> u64 {
+    stdout
+        .lines()
+        .filter(|line: &&str| line.starts_with("    a 0x") || line.starts_with("    b 0x"))
+        .count() as u64
+}
+
+fn withheld_of(stdout: &str) -> u64 {
+    stdout
+        .lines()
+        .find_map(|line: &str| line.trim().strip_prefix("withheld listing rows: "))
+        .map_or(0, |count: &str| {
+            count
+                .trim()
+                .parse::<u64>()
+                .expect("the withheld count must be a number")
+        })
 }
 
 fn fixture(relative: &str) -> Option<PathBuf> {
@@ -269,7 +305,7 @@ fn a_refusal_is_reported_with_its_candidates_rather_than_dropped() {
 }
 
 #[test]
-fn text_listing_controls_bound_rows_select_verdicts_and_leave_json_complete() {
+fn text_listing_controls_bound_rows_and_select_verdicts() {
     let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
         (fixture(CLEAN), fixture(VARIANT))
     else {
@@ -393,8 +429,277 @@ fn text_listing_controls_bound_rows_select_verdicts_and_leave_json_complete() {
         variant.to_str().expect("utf-8"),
     ]);
     assert_eq!(json_run.code, 0, "stderr: {}", json_run.stderr);
-    let filtered_json: Value = serde_json::from_str(&json_run.stdout).expect("json report");
-    assert_eq!(filtered_json, report, "--json must keep every verdict");
+    let counts_only: Value = serde_json::from_str(&json_run.stdout).expect("json report");
+    assert!(
+        verdicts_of(&counts_only, "a_verdicts").is_empty(),
+        "{counts_only}"
+    );
+    assert!(
+        verdicts_of(&counts_only, "b_verdicts").is_empty(),
+        "{counts_only}"
+    );
+    assert_eq!(counts_only["listing"]["shown"], 0, "{counts_only}");
+    assert_eq!(counts_only["listing"]["limit"], 0, "{counts_only}");
+    assert_eq!(counts_only["listing"]["stage"], "refused", "{counts_only}");
+    let refusals: u64 = report["a_side"]["refused"].as_u64().expect("refused")
+        + report["b_side"]["refused"].as_u64().expect("refused");
+    assert_eq!(
+        counts_only["listing"]["withheld"]
+            .as_u64()
+            .expect("withheld"),
+        refusals,
+        "a limit of zero must count every row it declined to build: {counts_only}"
+    );
+    assert_eq!(
+        counts_only["pairs"], report["pairs"],
+        "bounding the rows must not change the counts"
+    );
+    assert_eq!(counts_only["a_side"], report["a_side"], "{counts_only}");
+    assert_eq!(counts_only["b_side"], report["b_side"], "{counts_only}");
+}
+
+#[test]
+fn the_default_machine_report_carries_every_verdict_and_says_so() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let report: Value = report_of(&clean, &variant);
+    assert_eq!(report["schema"], "disrobe.native.match/v2");
+    assert!(
+        report["listing"]["limit"].is_null(),
+        "{}",
+        report["listing"]
+    );
+    assert!(
+        report["listing"]["stage"].is_null(),
+        "{}",
+        report["listing"]
+    );
+    assert!(
+        report["listing"]["function"].is_null(),
+        "{}",
+        report["listing"]
+    );
+    assert_eq!(report["listing"]["withheld"], 0, "{}", report["listing"]);
+    let subjects: u64 = verdicts_of(&report, "a_verdicts").len() as u64
+        + verdicts_of(&report, "b_verdicts").len() as u64;
+    assert_eq!(
+        report["listing"]["shown"].as_u64().expect("shown"),
+        subjects,
+        "an unbounded report must say it holds every row it carries"
+    );
+    for (side, rows) in [("a", "a_verdicts"), ("b", "b_verdicts")] {
+        for verdict in verdicts_of(&report, rows) {
+            assert_eq!(
+                verdict["side"], side,
+                "every row must name the side it came from: {verdict}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_withheld_count_accounts_for_every_row_the_listing_omits() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let report: Value = report_of(&clean, &variant);
+    let total: u64 = listing_rows_of(&report);
+    assert!(total > 3, "the fixture pair must fill a listing: {total}");
+    for limit in ["1", "3", "0"] {
+        let run: Run = run_match(&[
+            clean.to_str().expect("utf-8"),
+            variant.to_str().expect("utf-8"),
+            "--limit",
+            limit,
+        ]);
+        assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+        let shown: u64 = printed_rows(&run.stdout);
+        let withheld: u64 = withheld_of(&run.stdout);
+        assert_eq!(
+            shown + withheld,
+            total,
+            "--limit {limit} must account for every listing row: {}",
+            run.stdout
+        );
+        assert!(
+            shown <= limit.parse::<u64>().expect("limit"),
+            "--limit {limit} printed {shown} rows: {}",
+            run.stdout
+        );
+    }
+    let default_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(default_run.code, 0, "stderr: {}", default_run.stderr);
+    assert_eq!(
+        printed_rows(&default_run.stdout) + withheld_of(&default_run.stdout),
+        total,
+        "the default listing must account for every row too: {}",
+        default_run.stdout
+    );
+}
+
+#[test]
+fn a_function_query_names_the_side_of_every_correspondence_it_returns() {
+    let Some(clean): Option<PathBuf> = fixture(CLEAN) else {
+        return;
+    };
+    let report: Value = report_of(&clean, &clean);
+    let paired: &Value = verdicts_of(&report, "a_verdicts")
+        .iter()
+        .find(|verdict: &&Value| STAGES.contains(&kind_of(verdict)))
+        .expect("a self match pairs at least one function");
+    let subject: u64 = paired["subject"].as_u64().expect("subject");
+    let address: String = format!("0x{subject:x}");
+
+    let run: Run = run_match(&[
+        "--json",
+        "--function",
+        &address,
+        clean.to_str().expect("utf-8"),
+        clean.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    let filtered: Value = serde_json::from_str(&run.stdout).expect("json report");
+    assert_eq!(filtered["listing"]["function"], subject, "{filtered}");
+    assert!(filtered["listing"]["limit"].is_null(), "{filtered}");
+    assert_eq!(filtered["listing"]["withheld"], 0, "{filtered}");
+    for (side, rows) in [("a", "a_verdicts"), ("b", "b_verdicts")] {
+        let selected: &Vec<Value> = verdicts_of(&filtered, rows);
+        assert!(
+            !selected.is_empty(),
+            "a self match must answer for {side}: {filtered}"
+        );
+        for verdict in selected {
+            assert_eq!(verdict["subject"], subject, "{verdict}");
+            assert_eq!(verdict["side"], side, "{verdict}");
+        }
+    }
+
+    let text_run: Run = run_match(&[
+        "--limit",
+        "0",
+        "--function",
+        &address,
+        clean.to_str().expect("utf-8"),
+        clean.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(text_run.code, 0, "stderr: {}", text_run.stderr);
+    assert!(
+        text_run
+            .stdout
+            .contains(&format!("function {address} on a:")),
+        "a point query must ignore the listing limit: {}",
+        text_run.stdout
+    );
+    assert!(
+        text_run
+            .stdout
+            .contains(&format!("function {address} on b:")),
+        "{}",
+        text_run.stdout
+    );
+}
+
+#[test]
+fn a_function_absent_from_both_inputs_is_refused_in_the_machine_path_too() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    for format in ["--json", "--ndjson"] {
+        let run: Run = run_match(&[
+            format,
+            "--function",
+            "0xffffffffffffffff",
+            clean.to_str().expect("utf-8"),
+            variant.to_str().expect("utf-8"),
+        ]);
+        assert_ne!(run.code, 0, "{format} stdout: {}", run.stdout);
+        assert!(run.stderr.contains("DR-NATIVE-0208"), "{}", run.stderr);
+    }
+}
+
+#[test]
+fn a_bounded_report_file_says_what_it_left_out() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let dir: ScratchDir = scratch();
+    let out: PathBuf = dir.path().join("bounded.json");
+    let run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--limit",
+        "2",
+        "--out",
+        out.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    let written: String = std::fs::read_to_string(&out).expect("the report must be on disk");
+    let report: Value = serde_json::from_str(&written).expect("the written report must be json");
+    let rows: u64 = verdicts_of(&report, "a_verdicts").len() as u64
+        + verdicts_of(&report, "b_verdicts").len() as u64;
+    assert_eq!(rows, 2, "{report}");
+    assert_eq!(report["listing"]["limit"], 2, "{report}");
+    assert_eq!(report["listing"]["shown"], 2, "{report}");
+    assert!(
+        report["listing"]["withheld"].as_u64().expect("withheld") > 0,
+        "{report}"
+    );
+
+    let unbounded: PathBuf = dir.path().join("unbounded.json");
+    let full_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--out",
+        unbounded.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(full_run.code, 0, "stderr: {}", full_run.stderr);
+    let full: Value = serde_json::from_str(
+        &std::fs::read_to_string(&unbounded).expect("the report must be on disk"),
+    )
+    .expect("json");
+    assert_eq!(
+        full["listing"]["withheld"], 0,
+        "a report file with no limit must stay complete: {full}"
+    );
+    assert!(
+        full_run.stdout.contains("withheld listing rows:"),
+        "the text listing stays bounded even when the report file is complete: {}",
+        full_run.stdout
+    );
+}
+
+#[test]
+fn a_dry_run_names_the_report_it_would_write_without_writing_it() {
+    let (Some(clean), Some(variant)): (Option<PathBuf>, Option<PathBuf>) =
+        (fixture(CLEAN), fixture(VARIANT))
+    else {
+        return;
+    };
+    let dir: ScratchDir = scratch();
+    let out: PathBuf = dir.path().join("skipped").join("match.json");
+    let run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--out",
+        out.to_str().expect("utf-8"),
+        "--dry-run",
+    ]);
+    assert_eq!(run.code, 0, "stderr: {}", run.stderr);
+    assert!(run.stdout.contains("would write:"), "{}", run.stdout);
+    assert!(!run.stdout.contains("wrote:"), "{}", run.stdout);
+    assert!(!out.exists(), "a dry run must not write the report");
 }
 
 #[test]
@@ -457,6 +762,21 @@ fn malformed_listing_selectors_are_diagnostics_not_panics() {
         "{}",
         stage_run.stderr
     );
+
+    let both_run: Run = run_match(&[
+        clean.to_str().expect("utf-8"),
+        variant.to_str().expect("utf-8"),
+        "--function",
+        "0x140001030",
+        "--stage",
+        "refused",
+    ]);
+    assert_ne!(both_run.code, 0, "stdout: {}", both_run.stdout);
+    assert!(
+        both_run.stderr.contains("cannot be used with"),
+        "a point query and a stage selector must not be silently combined: {}",
+        both_run.stderr
+    );
 }
 
 #[test]
@@ -513,7 +833,7 @@ fn the_report_is_written_when_an_out_path_is_given() {
     assert!(run.stdout.contains("wrote:"), "{}", run.stdout);
     let written: String = std::fs::read_to_string(&out).expect("the report must be on disk");
     let report: Value = serde_json::from_str(&written).expect("the written report must be json");
-    assert_eq!(report["schema"], "disrobe.native.match/v1");
+    assert_eq!(report["schema"], "disrobe.native.match/v2");
 }
 
 #[test]

@@ -1517,21 +1517,17 @@ enum NativeCmd {
         b: PathBuf,
         #[arg(short, long, help = "output path for the match report JSON")]
         out: Option<PathBuf>,
-        #[arg(
-            long,
-            value_name = "N",
-            default_value_t = native_match::DEFAULT_LISTING_LIMIT,
-            help = "maximum text rows to show"
-        )]
-        limit: usize,
+        #[arg(long, value_name = "N", help = native_match::LIMIT_HELP)]
+        limit: Option<usize>,
         #[arg(
             long,
             value_name = "ADDRESS",
             value_parser = parse_u64_auto,
-            help = "show one function verdict (accepts 0x-prefixed hex)"
+            conflicts_with = "stage",
+            help = native_match::FUNCTION_HELP
         )]
         function: Option<u64>,
-        #[arg(long, value_enum, help = "show one match stage or refused rows")]
+        #[arg(long, value_enum, help = native_match::STAGE_HELP)]
         stage: Option<native_match::ListingStage>,
     },
 }
