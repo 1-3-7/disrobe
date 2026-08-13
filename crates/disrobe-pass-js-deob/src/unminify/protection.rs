@@ -1,7 +1,9 @@
+use std::ops::Range;
+
 use regex::{Captures, Regex};
 use serde::Serialize;
 
-use crate::scan_utils::replace_in_code;
+use crate::scan_utils::{literal_and_comment_ranges, replace_in_code};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize)]
 pub(super) struct ProtectionStripStats {
@@ -80,13 +82,50 @@ fn remove_if_false_blocks(source: &str) -> (String, usize) {
     (stage2, count + without_else_count)
 }
 
+fn enclosing_skip(skips: &[Range<usize>], index: usize) -> Option<&Range<usize>> {
+    let position: usize = skips.partition_point(|range: &Range<usize>| range.start <= index);
+    let candidate: &Range<usize> = skips.get(position.checked_sub(1)?)?;
+    (index < candidate.end).then_some(candidate)
+}
+
+fn starts_a_statement(source: &str, skips: &[Range<usize>], start: usize) -> bool {
+    let bytes: &[u8] = source.as_bytes();
+    let mut index: usize = start;
+    while index > 0 {
+        index -= 1;
+        if let Some(range) = enclosing_skip(skips, index) {
+            let opens_comment: bool = bytes.get(range.start) == Some(&b'/')
+                && matches!(bytes.get(range.start + 1), Some(&b'/' | &b'*'));
+            if !opens_comment {
+                return false;
+            }
+            index = range.start;
+            continue;
+        }
+        let byte: u8 = bytes[index];
+        if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
+            continue;
+        }
+        return matches!(byte, b';' | b'{' | b'}');
+    }
+    true
+}
+
+fn remove_statements_matching(source: &str, re: &Regex) -> (String, usize) {
+    let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
+    replace_in_code(source, re, |caps: &Captures<'_>| {
+        let whole: regex::Match<'_> = caps.get(0)?;
+        starts_a_statement(source, &skips, whole.start()).then(String::new)
+    })
+}
+
 fn remove_debugger_setinterval(source: &str) -> (String, usize) {
     let Ok(re): Result<Regex, regex::Error> = Regex::new(
         r"(?ms)setInterval\s*\(\s*function\s*\(\s*\)\s*\{\s*debugger\s*;?\s*\}\s*,\s*[^)]+\)\s*;?",
     ) else {
         return (source.to_owned(), 0);
     };
-    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
+    remove_statements_matching(source, &re)
 }
 
 fn remove_function_debugger_call(source: &str) -> (String, usize) {
@@ -95,7 +134,7 @@ fn remove_function_debugger_call(source: &str) -> (String, usize) {
     ) else {
         return (source.to_owned(), 0);
     };
-    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
+    remove_statements_matching(source, &re)
 }
 
 fn remove_lone_debugger_iife(source: &str) -> (String, usize) {
@@ -104,7 +143,7 @@ fn remove_lone_debugger_iife(source: &str) -> (String, usize) {
     else {
         return (source.to_owned(), 0);
     };
-    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
+    remove_statements_matching(source, &re)
 }
 
 fn remove_self_defending_iife(source: &str) -> (String, usize) {
@@ -113,7 +152,7 @@ fn remove_self_defending_iife(source: &str) -> (String, usize) {
     ) else {
         return (source.to_owned(), 0);
     };
-    replace_in_code(source, &re, |_: &Captures<'_>| Some(String::new()))
+    remove_statements_matching(source, &re)
 }
 
 #[cfg(test)]
@@ -132,6 +171,30 @@ mod tests {
         let (out, stats): (String, ProtectionStripStats) = strip_protection(commented);
         assert_eq!(out, commented);
         assert_eq!(stats.set_interval_watchdogs_removed, 0);
+    }
+
+    #[test]
+    fn a_guard_shaped_call_whose_value_is_consumed_survives() {
+        let assigned: &str =
+            "var handle = setInterval(function () { debugger; }, 4000);\nuse(handle);";
+        let (out, n): (String, usize) = remove_debugger_setinterval(assigned);
+        assert_eq!(out, assigned);
+        assert_eq!(n, 0);
+        let returned: &str =
+            "function local(setInterval) { return setInterval(function () { debugger; }, 7); }";
+        let (out, n): (String, usize) = remove_debugger_setinterval(returned);
+        assert_eq!(out, returned);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn a_guard_after_a_comment_is_still_a_statement() {
+        let src: &str = "// keep scanning\nsetInterval(function(){debugger;}, 4000);\nreal();";
+        let (out, n): (String, usize) = remove_debugger_setinterval(src);
+        assert_eq!(n, 1);
+        assert!(out.contains("// keep scanning"));
+        assert!(out.contains("real();"));
+        assert!(!out.contains("setInterval"));
     }
 
     #[test]

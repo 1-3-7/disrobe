@@ -4,7 +4,7 @@ use std::ops::Range;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::scan_utils::{find_brace_close, skip_string};
+use crate::scan_utils::{find_brace_close, literal_and_comment_ranges, skip_string, span_is_code};
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct ControlFlowSwitchResult {
@@ -20,6 +20,7 @@ pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchRe
         return passthrough(source);
     };
     let bytes: &[u8] = source.as_bytes();
+    let skips: Vec<Range<usize>> = literal_and_comment_ranges(source);
     let mut edits: Vec<(Range<usize>, Option<String>)> = Vec::new();
     let mut count: usize = 0;
 
@@ -27,6 +28,9 @@ pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchRe
         let Some(whole): Option<regex::Match<'_>> = caps.get(0) else {
             continue;
         };
+        if !span_is_code(&skips, whole.start(), whole.end()) {
+            continue;
+        }
         let Some(seq_name): Option<&str> = caps.get(1).map(|m: regex::Match<'_>| m.as_str()) else {
             continue;
         };
@@ -44,7 +48,8 @@ pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchRe
             continue;
         };
         let switch_body: &str = &source[switch_open + 1..switch_close];
-        let cases: BTreeMap<String, String> = parse_switch_cases(switch_body);
+        let cases: BTreeMap<String, String> =
+            parse_switch_cases(switch_body, switch_open + 1, &skips);
         if cases.is_empty() {
             continue;
         }
@@ -109,12 +114,17 @@ fn locate_switch(source: &str, seq_name: &str, after_seq: usize) -> Option<(Stri
     Some((iter_name, switch_open_abs, iter_end))
 }
 
-fn parse_switch_cases(body: &str) -> BTreeMap<String, String> {
+fn parse_switch_cases(body: &str, base: usize, skips: &[Range<usize>]) -> BTreeMap<String, String> {
     let mut out: BTreeMap<String, String> = BTreeMap::new();
     let Ok(re): Result<Regex, regex::Error> = Regex::new(r#"case\s*['"]([0-9]+)['"]\s*:"#) else {
         return out;
     };
-    let matches: Vec<regex::Match<'_>> = re.find_iter(body).collect();
+    let matches: Vec<regex::Match<'_>> = re
+        .find_iter(body)
+        .filter(|found: &regex::Match<'_>| {
+            span_is_code(skips, base + found.start(), base + found.end())
+        })
+        .collect();
     if matches.is_empty() {
         return out;
     }
@@ -214,5 +224,40 @@ mod tests {
         let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
         assert_eq!(r.switches_unflattened, 0);
         assert_eq!(r.rewritten_source, src);
+    }
+
+    #[test]
+    fn a_dispatcher_shape_quoted_in_a_literal_never_starts_a_splice() {
+        let src: &str = "console.log(\"var _s = '0|1'['split']('|'); var _i = 0;\");\nconst _s='1|0'['split']('|');let _i=0;while(!![]){switch(_s[_i++]){case '0':console.log('a');continue;case '1':console.log('b');continue;}break;}";
+        let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
+        assert_eq!(r.switches_unflattened, 1);
+        let out: &str = &r.rewritten_source;
+        assert!(
+            out.contains("console.log(\"var _s = '0|1'['split']('|'); var _i = 0;\");"),
+            "quoted dispatcher text was spliced: {out}"
+        );
+        let a: Option<usize> = out.find("console.log('a')");
+        let b: Option<usize> = out.find("console.log('b')");
+        assert!(b < a, "order wrong: {out}");
+    }
+
+    #[test]
+    fn a_quoted_dispatcher_that_binds_to_a_later_iterator_never_starts_a_splice() {
+        let src: &str = "var _s;\n_s='1|0'['split']('|');\nconsole.log(\"var _s = '0|1'['split']('|');\");\nlet _i=0;while(!![]){switch(_s[_i++]){case '0':console.log('a');continue;case '1':console.log('b');continue;}break;}";
+        let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
+        assert_eq!(r.switches_unflattened, 0);
+        assert_eq!(r.rewritten_source, src);
+    }
+
+    #[test]
+    fn a_case_label_quoted_inside_a_case_body_does_not_invent_a_case() {
+        let src: &str = "const _s='0|1'['split']('|');let _i=0;while(!![]){switch(_s[_i++]){case '0':console.log(\"case '1':\");continue;case '1':console.log('b');continue;}break;}";
+        let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
+        assert_eq!(r.switches_unflattened, 1);
+        let out: &str = &r.rewritten_source;
+        let quoted: Option<usize> = out.find("console.log(\"case '1':\")");
+        let b: Option<usize> = out.find("console.log('b')");
+        assert!(quoted.is_some() && b.is_some(), "case bodies lost: {out}");
+        assert!(quoted < b, "order wrong: {out}");
     }
 }

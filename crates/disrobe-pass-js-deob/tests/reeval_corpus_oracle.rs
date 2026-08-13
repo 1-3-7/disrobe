@@ -2476,6 +2476,1115 @@ static FAMILY_WITNESSES: &[FamilyWitness] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Hazard {
+    StringLiteral,
+    InertContexts,
+    LineBreak,
+    UnicodeIdentifiers,
+    SecondOccurrenceOtherScope,
+    Shadowing,
+}
+
+const HAZARDS: &[Hazard] = &[
+    Hazard::StringLiteral,
+    Hazard::InertContexts,
+    Hazard::LineBreak,
+    Hazard::UnicodeIdentifiers,
+    Hazard::SecondOccurrenceOtherScope,
+    Hazard::Shadowing,
+];
+
+const PROXY_STRING_CLEAN: &str = r#"
+function calculate(op, a, b) {
+  console.log("doc: _0xw1['poLyL'](1, 2)");
+  if (op === 'add') { return a + b; }
+  if (op === 'sub') { return a - b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+"#;
+
+const PROXY_STRING_OBF: &str = r#"
+function calculate(op, a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; }, 'FatOg': function (x, y) { return x - y; } };
+  var _0xw2 = { 'kZzQr': function (x, y) { return x * y; } };
+  console.log("doc: _0xw1['poLyL'](1, 2)");
+  if (op === 'add') { return _0xw1['poLyL'](a, b); }
+  if (op === 'sub') { return _0xw1['FatOg'](a, b); }
+  return _0xw2['kZzQr'](a, b);
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+"#;
+
+const PROXY_STRING_WRONG: &str = r#"
+function calculate(op, a, b) {
+  console.log("doc: 1 + 2");
+  if (op === 'add') { return a + b; }
+  if (op === 'sub') { return a - b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+console.log(calculate('mul', 7, 3));
+"#;
+
+const PROXY_INERT_CLEAN: &str = r"
+function calculate(op, a, b) {
+  console.log(`tpl: _0xw1['poLyL'](1, 2)`);
+  console.log(`expr: _0xw1['poLyL'](3, 4) ${1 + 1}`);
+  console.log(/_0xw1['poLyL'](1, 2)/.source);
+  // note: _0xw1['poLyL'](5, 6)
+  console.log('after-comment');
+  if (op === 'add') { return a + b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const PROXY_INERT_OBF: &str = r"
+function calculate(op, a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  var _0xw2 = { 'kZzQr': function (x, y) { return x * y; } };
+  console.log(`tpl: _0xw1['poLyL'](1, 2)`);
+  console.log(`expr: _0xw1['poLyL'](3, 4) ${1 + 1}`);
+  console.log(/_0xw1['poLyL'](1, 2)/.source);
+  // note: _0xw1['poLyL'](5, 6)
+  console.log('after-comment');
+  if (op === 'add') { return _0xw1['poLyL'](a, b); }
+  return _0xw2['kZzQr'](a, b);
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const PROXY_INERT_WRONG: &str = r"
+function calculate(op, a, b) {
+  console.log(`tpl: 1 + 2`);
+  console.log(`expr: 3 + 4 ${1 + 1}`);
+  console.log(/1 + 2/.source);
+  // note: 5 + 6
+  if (op === 'add') { return a + b; }
+  return a * b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('mul', 7, 3));
+";
+
+const PROXY_LINE_BREAK_CLEAN: &str = r"
+function calculate(op, a, b) {
+  if (op === 'add') {
+    return a + b;
+  }
+  return a - b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_LINE_BREAK_OBF: &str = r"
+function calculate(op, a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; }, 'FatOg': function (x, y) { return x - y; } };
+  if (op === 'add') {
+    return _0xw1
+      ['poLyL'](a, b);
+  }
+  return _0xw1['FatOg'](a, b);
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_LINE_BREAK_WRONG: &str = r"
+function calculate(op, a, b) {
+  if (op === 'add') {
+    return a - b;
+  }
+  return a + b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_UNICODE_CLEAN: &str = r"
+function calculate(op, a, b) {
+  var café = 2;
+  var naïve = 3;
+  if (op === 'add') { return a + b + café + naïve; }
+  return a - b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_UNICODE_OBF: &str = r"
+function calculate(op, a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; }, 'FatOg': function (x, y) { return x - y; } };
+  var café = 2;
+  var naïve = 3;
+  if (op === 'add') { return _0xw1['poLyL'](a, b) + café + naïve; }
+  return _0xw1['FatOg'](a, b);
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_UNICODE_WRONG: &str = r"
+function calculate(op, a, b) {
+  var café = 2;
+  var naïve = 3;
+  if (op === 'add') { return a + b + caf + naïve; }
+  return a - b;
+}
+console.log(calculate('add', 7, 3));
+console.log(calculate('sub', 7, 3));
+";
+
+const PROXY_TWO_SCOPES_CLEAN: &str = r"
+function first(a, b) {
+  return a + b;
+}
+function second(a, b) {
+  return a - b;
+}
+console.log(first(7, 3));
+console.log(second(7, 3));
+";
+
+const PROXY_TWO_SCOPES_OBF: &str = r"
+function first(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  return _0xw1['poLyL'](a, b);
+}
+function second(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x - y; } };
+  return _0xw1['poLyL'](a, b);
+}
+console.log(first(7, 3));
+console.log(second(7, 3));
+";
+
+const PROXY_TWO_SCOPES_WRONG: &str = r"
+function first(a, b) {
+  return a + b;
+}
+function second(a, b) {
+  return a + b;
+}
+console.log(first(7, 3));
+console.log(second(7, 3));
+";
+
+const PROXY_SHADOW_CLEAN: &str = r"
+var multiply = function (x, y) { return x * y; };
+function inner(a, b) {
+  return a + b;
+}
+console.log(inner(7, 3));
+console.log(multiply(7, 3));
+";
+
+const PROXY_SHADOW_OBF: &str = r"
+var _0xw1 = { 'poLyL': function (x, y) { return x * y; } };
+function inner(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  return _0xw1['poLyL'](a, b);
+}
+console.log(inner(7, 3));
+console.log(_0xw1['poLyL'](7, 3));
+";
+
+const PROXY_SHADOW_WRONG: &str = r"
+var multiply = function (x, y) { return x * y; };
+function inner(a, b) {
+  return a * b;
+}
+console.log(inner(7, 3));
+console.log(multiply(7, 3));
+";
+
+const DISPATCH_STRING_CLEAN: &str = r#"
+function compute() {
+  var acc = 0;
+  console.log("legacy: var order = '0|1'['split']('|'); var ptr = 0;");
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+"#;
+
+const DISPATCH_STRING_OBF: &str = r#"
+function compute() {
+  var acc = 0;
+  console.log("legacy: var order = '0|1'['split']('|'); var ptr = 0;");
+  var order = '0|1|2'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+      case '2': acc = acc - 2; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+"#;
+
+const DISPATCH_STRING_WRONG: &str = r#"
+function compute() {
+  var acc = 0;
+  console.log("legacy: acc = acc + 5; acc = acc * 3;");
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+"#;
+
+const DISPATCH_INERT_CLEAN: &str = r"
+function compute() {
+  var acc = 0;
+  console.log(`tpl: var order = '0|1'['split']('|'); var ptr = 0;`);
+  console.log(`expr: var order = '0|1'['split']('|'); var ptr = 0; ${1 + 1}`);
+  console.log(/var order = '0|1'['split']('|'); var ptr = 0;/.source);
+  // note: var order = '0|1'['split']('|'); var ptr = 0;
+  console.log('after-comment');
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_INERT_OBF: &str = r"
+function compute() {
+  var acc = 0;
+  console.log(`tpl: var order = '0|1'['split']('|'); var ptr = 0;`);
+  console.log(`expr: var order = '0|1'['split']('|'); var ptr = 0; ${1 + 1}`);
+  console.log(/var order = '0|1'['split']('|'); var ptr = 0;/.source);
+  // note: var order = '0|1'['split']('|'); var ptr = 0;
+  console.log('after-comment');
+  var order = '0|1|2'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+      case '2': acc = acc - 2; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_INERT_WRONG: &str = r"
+function compute() {
+  var acc = 0;
+  console.log(`tpl: acc = acc + 5;`);
+  console.log(`expr: acc = acc + 5; ${1 + 1}`);
+  console.log(/acc = acc + 5;/.source);
+  // note: acc = acc + 5;
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_LINE_BREAK_CLEAN: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_LINE_BREAK_OBF: &str = r"
+function compute() {
+  var acc = 0;
+  var order = '0|1|2'
+    ['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (
+      order[ptr++]
+    ) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+      case '2': acc = acc - 2; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_LINE_BREAK_WRONG: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc * 3;
+  acc = acc + 5;
+  acc = acc - 2;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_UNICODE_CLEAN: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  acc = acc * 2;
+  acc = acc - 1;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_UNICODE_OBF: &str = r"
+function compute() {
+  var acc = 0;
+  var ordré = '0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (ordré[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  var ordère = '1|0'['split']('|');
+  var idx = 0;
+  while (true) {
+    switch (ordère[idx++]) {
+      case '0': acc = acc - 1; continue;
+      case '1': acc = acc * 2; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_UNICODE_WRONG: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc * 3;
+  acc = acc + 5;
+  acc = acc * 2;
+  acc = acc - 1;
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_TWO_SCOPES_CLEAN: &str = r"
+function first() {
+  var acc = 1;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+function second() {
+  var acc = 1;
+  acc = acc * 3;
+  acc = acc + 5;
+  return acc;
+}
+console.log(first());
+console.log(second());
+";
+
+const DISPATCH_TWO_SCOPES_OBF: &str = r"
+function first() {
+  var acc = 1;
+  var order = '0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  return acc;
+}
+function second() {
+  var acc = 1;
+  var order = '1|0'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(first());
+console.log(second());
+";
+
+const DISPATCH_TWO_SCOPES_WRONG: &str = r"
+function first() {
+  var acc = 1;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+function second() {
+  var acc = 1;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+console.log(first());
+console.log(second());
+";
+
+const DISPATCH_SHADOW_CLEAN: &str = r"
+var order = 'outer';
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+console.log(compute());
+console.log(order);
+";
+
+const DISPATCH_SHADOW_OBF: &str = r"
+var order = 'outer';
+function compute() {
+  var acc = 0;
+  var order = '0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+console.log(order);
+";
+
+const DISPATCH_SHADOW_WRONG: &str = r"
+var order = '0|1';
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+console.log(compute());
+console.log(order);
+";
+
+const GUARD_STRING_CLEAN: &str = r#"
+function report() {
+  var total = 0;
+  console.log("guard: setInterval(function () { debugger; }, 4000);");
+  total = total + 11;
+  return total;
+}
+console.log(report());
+"#;
+
+const GUARD_STRING_OBF: &str = r#"
+function report() {
+  var total = 0;
+  console.log("guard: setInterval(function () { debugger; }, 4000);");
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+console.log(report());
+"#;
+
+const GUARD_STRING_WRONG: &str = r#"
+function report() {
+  var total = 0;
+  console.log("guard: ");
+  total = total + 11;
+  return total;
+}
+console.log(report());
+"#;
+
+const GUARD_INERT_CLEAN: &str = r"
+function report() {
+  var total = 0;
+  console.log(`tpl: setInterval(function () { debugger; }, 4000);`);
+  console.log(`expr: setInterval(function () { debugger; }, 900); ${1 + 1}`);
+  console.log(/setInterval(function () { debugger; }, 4000);/.source);
+  // note: setInterval(function () { debugger; }, 4000);
+  console.log('after-comment');
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_INERT_OBF: &str = r"
+function report() {
+  var total = 0;
+  console.log(`tpl: setInterval(function () { debugger; }, 4000);`);
+  console.log(`expr: setInterval(function () { debugger; }, 900); ${1 + 1}`);
+  console.log(/setInterval(function () { debugger; }, 4000);/.source);
+  // note: setInterval(function () { debugger; }, 4000);
+  console.log('after-comment');
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_INERT_WRONG: &str = r"
+function report() {
+  var total = 0;
+  console.log(`tpl: `);
+  console.log(`expr:  ${1 + 1}`);
+  console.log(/(?:)/.source);
+  // note:
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_LINE_BREAK_CLEAN: &str = r"
+function report() {
+  var total = 0;
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_LINE_BREAK_OBF: &str = r"
+function report() {
+  var total = 0;
+  setInterval(function () {
+    debugger;
+  }, 4000);
+  total = total + 11;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_LINE_BREAK_WRONG: &str = r"
+function report() {
+  var total = 0;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_UNICODE_CLEAN: &str = r"
+function report() {
+  var verzögerung = 4000;
+  var café = 3;
+  var total = 0;
+  console.log(verzögerung);
+  total = total + café;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_UNICODE_OBF: &str = r"
+function report() {
+  var verzögerung = 4000;
+  var café = 3;
+  var total = 0;
+  setInterval(function () { debugger; }, verzögerung);
+  console.log(verzögerung);
+  total = total + café;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_UNICODE_WRONG: &str = r"
+function report() {
+  var verzögerung = 4000;
+  var café = 3;
+  var total = 0;
+  console.log(verzögerung);
+  total = total + caf;
+  return total;
+}
+console.log(report());
+";
+
+const GUARD_TWO_SCOPES_CLEAN: &str = r"
+function first() {
+  var total = 1;
+  total = total + 11;
+  return total;
+}
+function second() {
+  var total = 2;
+  total = total * 5;
+  return total;
+}
+console.log(first());
+console.log(second());
+";
+
+const GUARD_TWO_SCOPES_OBF: &str = r"
+function first() {
+  var total = 1;
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+function second() {
+  var total = 2;
+  setInterval(function () { debugger; }, 900);
+  total = total * 5;
+  return total;
+}
+console.log(first());
+console.log(second());
+";
+
+const GUARD_TWO_SCOPES_WRONG: &str = r"
+function first() {
+  var total = 1;
+  total = total + 11;
+  return total;
+}
+function second() {
+  var total = 2;
+  return total;
+}
+console.log(first());
+console.log(second());
+";
+
+const GUARD_SHADOW_CLEAN: &str = r"
+function report() {
+  var total = 0;
+  total = total + 11;
+  return total;
+}
+function local() {
+  var setInterval = function (fn, ms) { return ms + 1; };
+  return setInterval(function () { debugger; }, 7);
+}
+console.log(report());
+console.log(local());
+";
+
+const GUARD_SHADOW_OBF: &str = r"
+function report() {
+  var total = 0;
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+function local() {
+  var setInterval = function (fn, ms) { return ms + 1; };
+  return setInterval(function () { debugger; }, 7);
+}
+console.log(report());
+console.log(local());
+";
+
+const GUARD_SHADOW_WRONG: &str = r"
+function report() {
+  var total = 0;
+  total = total + 11;
+  return total;
+}
+function local() {
+  var setInterval = function (fn, ms) { return ms + 1; };
+  return;
+}
+console.log(report());
+console.log(local());
+";
+
+struct HazardCase {
+    family: RewriterFamily,
+    hazard: Hazard,
+    clean: &'static str,
+    obfuscated: &'static str,
+    wrong_rewrite: &'static str,
+    trace_marker: Option<&'static str>,
+    probe: ActivityProbe,
+    obfuscation_is_trace_neutral: bool,
+}
+
+const PROXY_PROBE: ActivityProbe =
+    |activity: &RewriteActivity| activity.control_flow_objects_merged;
+const DISPATCH_PROBE: ActivityProbe =
+    |activity: &RewriteActivity| activity.control_flow_switches_unflattened;
+const GUARD_PROBE: ActivityProbe = |activity: &RewriteActivity| activity.unminify_protection;
+
+static HAZARD_CASES: &[HazardCase] = &[
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::StringLiteral,
+        clean: PROXY_STRING_CLEAN,
+        obfuscated: PROXY_STRING_OBF,
+        wrong_rewrite: PROXY_STRING_WRONG,
+        trace_marker: Some("doc: _0xw1['poLyL'](1, 2)"),
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::InertContexts,
+        clean: PROXY_INERT_CLEAN,
+        obfuscated: PROXY_INERT_OBF,
+        wrong_rewrite: PROXY_INERT_WRONG,
+        trace_marker: Some("tpl: _0xw1['poLyL'](1, 2)"),
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::LineBreak,
+        clean: PROXY_LINE_BREAK_CLEAN,
+        obfuscated: PROXY_LINE_BREAK_OBF,
+        wrong_rewrite: PROXY_LINE_BREAK_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::UnicodeIdentifiers,
+        clean: PROXY_UNICODE_CLEAN,
+        obfuscated: PROXY_UNICODE_OBF,
+        wrong_rewrite: PROXY_UNICODE_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::SecondOccurrenceOtherScope,
+        clean: PROXY_TWO_SCOPES_CLEAN,
+        obfuscated: PROXY_TWO_SCOPES_OBF,
+        wrong_rewrite: PROXY_TWO_SCOPES_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::Shadowing,
+        clean: PROXY_SHADOW_CLEAN,
+        obfuscated: PROXY_SHADOW_OBF,
+        wrong_rewrite: PROXY_SHADOW_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::StringLiteral,
+        clean: DISPATCH_STRING_CLEAN,
+        obfuscated: DISPATCH_STRING_OBF,
+        wrong_rewrite: DISPATCH_STRING_WRONG,
+        trace_marker: Some("legacy: var order = '0|1'['split']('|'); var ptr = 0;"),
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::InertContexts,
+        clean: DISPATCH_INERT_CLEAN,
+        obfuscated: DISPATCH_INERT_OBF,
+        wrong_rewrite: DISPATCH_INERT_WRONG,
+        trace_marker: Some("tpl: var order = '0|1'['split']('|'); var ptr = 0;"),
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::LineBreak,
+        clean: DISPATCH_LINE_BREAK_CLEAN,
+        obfuscated: DISPATCH_LINE_BREAK_OBF,
+        wrong_rewrite: DISPATCH_LINE_BREAK_WRONG,
+        trace_marker: None,
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::UnicodeIdentifiers,
+        clean: DISPATCH_UNICODE_CLEAN,
+        obfuscated: DISPATCH_UNICODE_OBF,
+        wrong_rewrite: DISPATCH_UNICODE_WRONG,
+        trace_marker: None,
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::SecondOccurrenceOtherScope,
+        clean: DISPATCH_TWO_SCOPES_CLEAN,
+        obfuscated: DISPATCH_TWO_SCOPES_OBF,
+        wrong_rewrite: DISPATCH_TWO_SCOPES_WRONG,
+        trace_marker: None,
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::Shadowing,
+        clean: DISPATCH_SHADOW_CLEAN,
+        obfuscated: DISPATCH_SHADOW_OBF,
+        wrong_rewrite: DISPATCH_SHADOW_WRONG,
+        trace_marker: Some("outer"),
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::StringLiteral,
+        clean: GUARD_STRING_CLEAN,
+        obfuscated: GUARD_STRING_OBF,
+        wrong_rewrite: GUARD_STRING_WRONG,
+        trace_marker: Some("guard: setInterval(function () { debugger; }, 4000);"),
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::InertContexts,
+        clean: GUARD_INERT_CLEAN,
+        obfuscated: GUARD_INERT_OBF,
+        wrong_rewrite: GUARD_INERT_WRONG,
+        trace_marker: Some("tpl: setInterval(function () { debugger; }, 4000);"),
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::LineBreak,
+        clean: GUARD_LINE_BREAK_CLEAN,
+        obfuscated: GUARD_LINE_BREAK_OBF,
+        wrong_rewrite: GUARD_LINE_BREAK_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::UnicodeIdentifiers,
+        clean: GUARD_UNICODE_CLEAN,
+        obfuscated: GUARD_UNICODE_OBF,
+        wrong_rewrite: GUARD_UNICODE_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::SecondOccurrenceOtherScope,
+        clean: GUARD_TWO_SCOPES_CLEAN,
+        obfuscated: GUARD_TWO_SCOPES_OBF,
+        wrong_rewrite: GUARD_TWO_SCOPES_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::Shadowing,
+        clean: GUARD_SHADOW_CLEAN,
+        obfuscated: GUARD_SHADOW_OBF,
+        wrong_rewrite: GUARD_SHADOW_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+    },
+];
+
+const HAZARD_CASE_COUNT: usize = 18;
+
+fn trace_mentions(outcome: &EvalOutcome, needle: &str) -> bool {
+    outcome.trace.iter().any(|event: &TraceEvent| {
+        event
+            .arguments
+            .iter()
+            .any(|argument: &ObservedValue| argument.value.contains(needle))
+    })
+}
+
+#[test]
+fn hazard_roster_covers_every_named_family_and_edge_case() {
+    assert_eq!(
+        HAZARD_CASES.len(),
+        HAZARD_CASE_COUNT,
+        "the hazard case count is pinned by equality so growing the roster cannot dilute it"
+    );
+    assert_eq!(
+        HAZARD_CASE_COUNT,
+        NAMED_FAMILIES.len() * HAZARDS.len(),
+        "every named family must carry every text-rewrite hazard exactly once"
+    );
+    let mut seen: BTreeSet<(RewriterFamily, Hazard)> = BTreeSet::new();
+    for case in HAZARD_CASES {
+        assert!(
+            NAMED_FAMILIES.contains(&case.family),
+            "{:?} is not one of the families this item names",
+            case.family
+        );
+        assert!(
+            seen.insert((case.family, case.hazard)),
+            "{:?}/{:?} appears twice in the hazard roster",
+            case.family,
+            case.hazard
+        );
+    }
+    for family in NAMED_FAMILIES {
+        for hazard in HAZARDS {
+            assert!(
+                seen.contains(&(*family, *hazard)),
+                "{family:?} has no case for {hazard:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn text_rewrite_hazards_preserve_behavior_in_each_named_family() {
+    let mut graded: usize = 0;
+    let mut aggregate: RewriteActivity = RewriteActivity::default();
+    for case in HAZARD_CASES {
+        let family: RewriterFamily = case.family;
+        let hazard: Hazard = case.hazard;
+        let label: String = format!("{family:?}/{hazard:?}");
+        let want: EvalOutcome = single_outcome(case.clean, &format!("{label} clean"));
+        assert!(
+            matches!(want.terminal, Terminal::Completed(_)),
+            "{label}: the clean reference must run to completion; got {want:?}"
+        );
+        let before: EvalOutcome = single_outcome(case.obfuscated, &format!("{label} obfuscated"));
+        if case.obfuscation_is_trace_neutral {
+            assert_eq!(
+                want, before,
+                "{label}: the hazard fixture must be behaviorally faithful before recovery"
+            );
+        } else {
+            assert_ne!(
+                want, before,
+                "{label}: the guard this family strips must be visible in the trace before recovery"
+            );
+        }
+        if let Some(marker) = case.trace_marker {
+            assert!(
+                trace_mentions(&want, marker),
+                "{label}: the clean reference must observe {marker:?}, otherwise a corrupted decoy is invisible"
+            );
+        }
+        let recovery: Recovery = recover_with(Pipeline::ObfuscatorIo, case.obfuscated)
+            .unwrap_or_else(|reason: String| panic!("{label}: recovery failed: {reason}"));
+        aggregate.merge(&recovery.activity);
+        let fired: u64 = (case.probe)(&recovery.activity);
+        assert!(
+            fired > 0,
+            "{label}: the hazard fixture no longer exercises its family, so it grades nothing; recovered source:\n{}",
+            recovery.source
+        );
+        let got: EvalOutcome = single_outcome(&recovery.source, &format!("{label} recovered"));
+        assert_eq!(
+            want, got,
+            "{label}: recovered behavior diverged from the clean original\n--recovered src--\n{}",
+            recovery.source
+        );
+        let wrong: EvalOutcome = single_outcome(case.wrong_rewrite, &format!("{label} wrong"));
+        assert!(
+            !matches!(wrong.terminal, Terminal::ParseFailed { .. }),
+            "{label}: the deliberately wrong rewrite must fail on behavior, not on a parse error; got {wrong:?}"
+        );
+        assert_ne!(
+            want, wrong,
+            "{label}: a deliberately wrong rewrite of this hazard produced the original trace, so the differential cannot detect it"
+        );
+        if let Some(marker) = case.trace_marker {
+            assert!(
+                !trace_mentions(&wrong, marker),
+                "{label}: the wrong rewrite still observes {marker:?}, so the divergence is not the corrupted decoy"
+            );
+        }
+        graded += 1;
+        eprintln!(
+            "  {label}: behavior preserved, probe fired {fired} time(s), wrong rewrite rejected"
+        );
+    }
+    assert_eq!(
+        graded, HAZARD_CASE_COUNT,
+        "every hazard case must be graded, never skipped"
+    );
+    eprintln!(
+        "text-rewrite hazard differential: {graded} of {HAZARD_CASE_COUNT} cases graded, families exercised {:?}",
+        aggregate.families()
+    );
+}
+
+#[test]
+fn the_frozen_environment_still_exposes_a_behavior_difference() {
+    let baseline: EvalOutcome =
+        eval_outcome("console.log(Math.random() + Date.now() + performance.now());")
+            .expect("frozen environment probe must evaluate");
+    let repeated: EvalOutcome =
+        eval_outcome("console.log(Math.random() + Date.now() + performance.now());")
+            .expect("frozen environment probe must evaluate twice");
+    assert_eq!(
+        baseline, repeated,
+        "the freeze must make repeated evaluation of one program byte-identical"
+    );
+    let arithmetic_changed: EvalOutcome =
+        eval_outcome("console.log(Math.random() + Date.now() + performance.now() + 1);")
+            .expect("changed arithmetic probe must evaluate");
+    assert_ne!(
+        baseline, arithmetic_changed,
+        "the frozen values must still propagate into the observed result, otherwise the freeze hides a difference"
+    );
+    let call_count_changed: EvalOutcome =
+        eval_outcome("Math.random(); console.log(Math.random() + Date.now() + performance.now());")
+            .expect("changed call count probe must evaluate");
+    assert_ne!(
+        baseline, call_count_changed,
+        "the freeze must not hide a changed number of calls into the frozen environment"
+    );
+}
+
 fn single_outcome(program: &str, label: &str) -> EvalOutcome {
     match eval_batch_guarded(program, NO_ARGS) {
         GuardedBatch::Completed(mut evaluations) => {
