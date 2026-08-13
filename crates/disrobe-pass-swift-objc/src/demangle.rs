@@ -39,6 +39,13 @@ pub fn demangle(symbol: &str) -> Result<String> {
     let node: NodeRef = dem
         .demangle_global()
         .ok_or_else(|| Error::Demangle(symbol.to_owned()))?;
+    if dem.pos != dem.src.len() {
+        return Err(Error::DemangleResidue {
+            symbol: symbol.to_owned(),
+            consumed: dem.pos,
+            total: dem.src.len(),
+        });
+    }
     let rendered: String = print_node(&node, Mode::Symbol);
     if rendered.is_empty() || rendered.bytes().any(|b: u8| b < 0x20) {
         return Err(Error::Demangle(symbol.to_owned()));
@@ -201,6 +208,12 @@ enum Kind {
     DistributedAccessor,
     ObjCAttribute,
     NonObjCAttribute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpecializationParam {
+    Unmodified,
+    Effects(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -562,6 +575,14 @@ impl<'a> Demangler<'a> {
 
     fn try_demangle_extension_then_entity(&mut self, base: &NodeRef) -> Option<NodeRef> {
         let cp: Checkpoint = self.checkpoint();
+        if let Some(node) = self.demangle_extension_then_entity_inner(base) {
+            return Some(node);
+        }
+        self.restore(cp);
+        None
+    }
+
+    fn demangle_extension_then_entity_inner(&mut self, base: &NodeRef) -> Option<NodeRef> {
         let module: NodeRef = match self.peek()? {
             b'A' => self.demangle_substitution()?,
             b's' => {
@@ -577,7 +598,6 @@ impl<'a> Demangler<'a> {
         };
         let generic_sig: Option<NodeRef> = self.try_demangle_extension_generic_signature();
         if !self.next_if(b'E') {
-            self.restore(cp);
             return None;
         }
         let mut children: Vec<NodeRef> = vec![module, base.clone()];
@@ -803,9 +823,20 @@ impl<'a> Demangler<'a> {
         attached_name: &NodeRef,
     ) -> Option<NodeRef> {
         let cp: Checkpoint = self.checkpoint();
+        if let Some(node) = self.demangle_macro_expansion_inner(context, attached_name) {
+            return Some(node);
+        }
+        self.restore(cp);
+        None
+    }
+
+    fn demangle_macro_expansion_inner(
+        &mut self,
+        context: &NodeRef,
+        attached_name: &NodeRef,
+    ) -> Option<NodeRef> {
         let macro_name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
         if !(self.next_if(b'f') && self.next_if(b'M')) {
-            self.restore(cp);
             return None;
         }
         let role: &'static str = match self.next() {
@@ -817,10 +848,7 @@ impl<'a> Demangler<'a> {
             Some(b'e') => "extension",
             Some(b'q') => "preamble",
             Some(b'b') => "body",
-            _ => {
-                self.restore(cp);
-                return None;
-            }
+            _ => return None,
         };
         let discriminator: u32 = self.demangle_index()?;
         Some(Node::branch_with_text(
@@ -890,6 +918,7 @@ impl<'a> Demangler<'a> {
             let Some(c): Option<u8> = self.peek() else {
                 return Some(node);
             };
+            let cp: Checkpoint = self.checkpoint();
             let consumed: Option<NodeRef> = match c {
                 b'N' => {
                     self.pos += 1;
@@ -927,10 +956,11 @@ impl<'a> Demangler<'a> {
                     .try_demangle_specialization(&node)
                     .or_else(|| self.try_demangle_keypath_thunk(&node)),
             };
-            match consumed {
-                Some(next) => node = next,
-                None => return Some(node),
-            }
+            let Some(next): Option<NodeRef> = consumed else {
+                self.restore(cp);
+                return Some(node);
+            };
+            node = next;
         }
     }
 
@@ -1135,12 +1165,77 @@ impl<'a> Demangler<'a> {
             }
             b'o' => Some(Node::unary(Kind::ObjCAttribute, base)),
             b'O' => Some(Node::unary(Kind::NonObjCAttribute, base)),
+            b'f' => self.demangle_function_signature_specialization(base),
             b'D' | b'd' | b'V' | b'I' | b'X' | b'F' | b'c' => Some(base),
-            _ => {
-                self.skip_to_end();
-                Some(base)
+            _ => None,
+        }
+    }
+
+    fn demangle_function_signature_specialization(&mut self, base: NodeRef) -> Option<NodeRef> {
+        let serialized: bool = self.next_if(b'q');
+        if !self.peek().is_some_and(|c: u8| c.is_ascii_digit()) {
+            return None;
+        }
+        self.pos += 1;
+        let mut entries: Vec<NodeRef> = Vec::new();
+        if serialized {
+            entries.push(Node::leaf(Kind::Identifier, "serialized".to_owned()));
+        }
+        let mut index: usize = 0;
+        while !self.next_if(b'_') {
+            self.spend()?;
+            let param: SpecializationParam = self.demangle_specialization_param()?;
+            if let SpecializationParam::Effects(effects) = param {
+                entries.push(Node::leaf(
+                    Kind::Identifier,
+                    format!("Arg[{index}] = {effects}"),
+                ));
+            }
+            index = index.checked_add(1)?;
+        }
+        if !self.next_if(b'n') {
+            let param: SpecializationParam = self.demangle_specialization_param()?;
+            if let SpecializationParam::Effects(effects) = param {
+                entries.push(Node::leaf(Kind::Identifier, format!("Return = {effects}")));
             }
         }
+        let mut children: Vec<NodeRef> = Vec::with_capacity(entries.len() + 1);
+        children.push(base);
+        children.extend(entries);
+        Some(Node::branch_with_text(
+            Kind::GenericSpecialization,
+            "function signature specialization".to_owned(),
+            children,
+        ))
+    }
+
+    fn demangle_specialization_param(&mut self) -> Option<SpecializationParam> {
+        let mut effects: Vec<&'static str> = Vec::new();
+        match self.next()? {
+            b'n' => return Some(SpecializationParam::Unmodified),
+            b'd' => {
+                effects.push("Dead");
+                if self.next_if(b'G') {
+                    effects.push("Owned To Guaranteed");
+                }
+                if self.next_if(b'X') {
+                    effects.push("Exploded");
+                }
+            }
+            b'g' => {
+                effects.push("Owned To Guaranteed");
+                if self.next_if(b'X') {
+                    effects.push("Exploded");
+                }
+            }
+            b'o' => effects.push("Guaranteed To Owned"),
+            b'x' => effects.push("Exploded"),
+            b'i' => effects.push("Value Promoted from Box"),
+            b's' => effects.push("Stack Promoted from Box"),
+            b'r' => effects.push("InOut Converted to Out"),
+            _ => return None,
+        }
+        Some(SpecializationParam::Effects(effects.join(" and ")))
     }
 
     fn demangle_runtime_record(&mut self, base: NodeRef) -> NodeRef {
@@ -1157,10 +1252,6 @@ impl<'a> Demangler<'a> {
             name.to_owned(),
             vec![base],
         ))
-    }
-
-    const fn skip_to_end(&mut self) {
-        self.pos = self.src.len();
     }
 
     fn demangle_entity_or_type(&mut self) -> Option<NodeRef> {
@@ -1616,6 +1707,14 @@ impl<'a> Demangler<'a> {
 
     fn try_demangle_extension_context(&mut self, base: &NodeRef) -> Option<NodeRef> {
         let cp: Checkpoint = self.checkpoint();
+        if let Some(node) = self.demangle_extension_context_inner(base) {
+            return Some(node);
+        }
+        self.restore(cp);
+        None
+    }
+
+    fn demangle_extension_context_inner(&mut self, base: &NodeRef) -> Option<NodeRef> {
         let module: NodeRef = match self.peek()? {
             b'A' => self.demangle_substitution()?,
             b's' => {
@@ -1630,7 +1729,6 @@ impl<'a> Demangler<'a> {
             _ => return None,
         };
         if !self.next_if(b'E') {
-            self.restore(cp);
             return None;
         }
         Some(Node::branch(
@@ -1945,7 +2043,10 @@ impl<'a> Demangler<'a> {
         }
         let first: NodeRef = self.demangle_type()?;
         let first: NodeRef = self.apply_param_flags(first);
-        if self.peek_at(1) == Some(b't') && self.peek() == Some(b'_') {
+        if self.pending_substitutions.is_empty()
+            && self.peek_at(1) == Some(b't')
+            && self.peek() == Some(b'_')
+        {
             self.pos += 2;
             return Some(Node::branch(
                 Kind::Tuple,
@@ -1960,13 +2061,30 @@ impl<'a> Demangler<'a> {
 
     fn peek_param_is_type_after_y(&mut self) -> bool {
         let cp: Checkpoint = self.checkpoint();
-        let parsed: bool = self.demangle_type().is_some()
-            && matches!(
-                self.peek(),
-                Some(b'_' | b't' | b'K' | b'Y' | b'F' | b'Z' | b'u') | None
-            );
+        let parsed: bool = self.demangle_type().is_some() && self.at_param_list_terminator();
         self.restore(cp);
         parsed
+    }
+
+    fn at_param_list_terminator(&mut self) -> bool {
+        let saved: usize = self.pos;
+        self.skip_param_flags();
+        let terminated: bool = matches!(
+            self.peek(),
+            Some(b'_' | b't' | b'K' | b'Y' | b'F' | b'Z' | b'u') | None
+        ) || self.consume_extended_function_kind().is_some();
+        self.pos = saved;
+        terminated
+    }
+
+    fn skip_param_flags(&mut self) {
+        loop {
+            match self.peek() {
+                Some(b'z' | b'h' | b'n' | b'd') => self.pos += 1,
+                Some(b'Y') if self.peek_at(1) == Some(b'i') => self.pos += 2,
+                _ => return,
+            }
+        }
     }
 
     fn demangle_param_tuple_tail(&mut self, first: NodeRef) -> Option<NodeRef> {
@@ -1974,7 +2092,7 @@ impl<'a> Demangler<'a> {
         self.pos += 1;
         let mut elements: Vec<NodeRef> = vec![Node::unary(Kind::TupleElement, first.clone())];
         loop {
-            if self.next_if(b't') {
+            if self.pending_substitutions.is_empty() && self.next_if(b't') {
                 return Some(Node::branch(Kind::Tuple, elements));
             }
             self.depth = self.depth.checked_add(1)?;
@@ -2124,19 +2242,14 @@ impl<'a> Demangler<'a> {
         let cp: Checkpoint = self.checkpoint();
         self.pos += 1;
         let result: NodeRef = Node::branch(Kind::Tuple, Vec::new());
-        if self.peek() == Some(b'y')
-            && self
-                .peek_at(1)
-                .is_some_and(|c: u8| matches!(c, b'c' | b'X'))
+        let after_result: usize = self.pos;
+        if self.next_if(b'y')
+            && let Some(convention) = self.consume_function_kind()
         {
-            self.pos += 1;
-            if let Some(convention) = self.consume_function_kind() {
-                let params: NodeRef = Node::branch(Kind::Tuple, Vec::new());
-                return Some(make_function_type(params, result, convention));
-            }
-            self.restore(cp);
-            return None;
+            let params: NodeRef = Node::branch(Kind::Tuple, Vec::new());
+            return Some(make_function_type(params, result, convention));
         }
+        self.pos = after_result;
         let params: Option<NodeRef> = self.demangle_params();
         if let Some(params) = params {
             let annotations: Vec<NodeRef> = self.consume_function_annotations();
@@ -2177,7 +2290,7 @@ impl<'a> Demangler<'a> {
         let mut elements: Vec<NodeRef> = Vec::new();
         let mut saw_separator: bool = false;
         loop {
-            if self.peek() == Some(b't') {
+            if self.pending_substitutions.is_empty() && self.peek() == Some(b't') {
                 break;
             }
             self.depth = self.depth.checked_add(1)?;

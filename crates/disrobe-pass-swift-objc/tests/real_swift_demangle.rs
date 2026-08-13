@@ -34,6 +34,41 @@ fn tracked_slice(fixture: CorpusFixture) -> (Vec<u8>, ParsedSlice) {
     first_slice(fixture, &bytes)
 }
 
+const UNREADABLE_BY_REFERENCE: [&str; 2] = [
+    "_$ss23_ContiguousArrayStorageCyypGMR",
+    "_$ss23_ContiguousArrayStorageCyypGMd",
+];
+
+const READABILITY_GRADED: &str =
+    "the set of committed-fixture symbols the real swift-demangle itself refuses to read";
+
+fn readable_population(fixture_name: &str, symbols: &[String]) -> usize {
+    for unreadable in UNREADABLE_BY_REFERENCE {
+        assert!(
+            symbols.iter().any(|s: &String| s == unreadable),
+            "{unreadable} is excluded from {fixture_name}'s recovery denominator because the \
+             reference demangler cannot read it, so it must still be present in that symbol \
+             table; a stale exclusion silently shrinks what the recovery rate is measured against"
+        );
+    }
+    symbols.len() - UNREADABLE_BY_REFERENCE.len()
+}
+
+fn assert_recovery_rate(fixture_name: &str, symbols: &[String]) {
+    let population: usize = readable_population(fixture_name, symbols);
+    let demangled: usize = symbols
+        .iter()
+        .filter(|s: &&String| !UNREADABLE_BY_REFERENCE.contains(&s.as_str()))
+        .filter(|s: &&String| demangle::demangle(s).is_ok())
+        .count();
+    let ratio: f64 = demangled as f64 / population as f64;
+    assert!(
+        ratio >= 0.95,
+        "demangler must recover >=95% of {fixture_name}'s readable symbols, got {demangled}/{population} = {:.1}%",
+        ratio * 100.0
+    );
+}
+
 #[test]
 fn swift_hello_symbol_table_demangles_above_threshold() {
     let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(SWIFT_HELLO_ORIGINAL);
@@ -45,18 +80,37 @@ fn swift_hello_symbol_table_demangles_above_threshold() {
         symbols.len()
     );
 
-    let demangled: usize = symbols
-        .iter()
-        .filter(|s: &&String| demangle::demangle(s).is_ok())
-        .count();
-    let ratio: f64 = demangled as f64 / symbols.len() as f64;
-    assert!(
-        ratio >= 0.95,
-        "demangler must recover >=95% of the binary's own symbols, got {}/{} = {:.1}%",
-        demangled,
-        symbols.len(),
-        ratio * 100.0
-    );
+    assert_recovery_rate("SwiftHello.original", &symbols);
+}
+
+#[test]
+fn the_unreadable_exclusion_list_is_exactly_what_the_reference_refuses() {
+    let Some(demangler): Option<ReferenceDemangler> =
+        resolve_reference_demangler(READABILITY_GRADED)
+    else {
+        return;
+    };
+    for fixture in [SWIFT_HELLO_ORIGINAL, SWIFT_HELLO_OBFUSCATED] {
+        let (slice, parsed): (Vec<u8>, ParsedSlice) = tracked_slice(fixture);
+        let symbols: Vec<String> = swift_mangled_symbols(&slice, &parsed);
+        let borrowed: Vec<&str> = symbols.iter().map(String::as_str).collect();
+        let live: Vec<String> = reference_demangle(&demangler, &borrowed);
+        let refused: Vec<&str> = borrowed
+            .iter()
+            .zip(live.iter())
+            .filter(|(symbol, answer): &(&&str, &String)| *answer == **symbol)
+            .map(|(symbol, _): (&&str, &String)| *symbol)
+            .collect();
+        assert_eq!(
+            refused,
+            UNREADABLE_BY_REFERENCE.to_vec(),
+            "the recovery denominator excludes exactly the symbols {} cannot read in {}; an \
+             exclusion the reference actually reads would hide a real recovery gap. {}",
+            demangler.tool.display(),
+            fixture.name,
+            provenance_note(&demangler.identity)
+        );
+    }
 }
 
 #[test]
@@ -108,8 +162,9 @@ fn swift_hello_demangle_recovers_entity_kinds_and_descriptors() {
         "expected a recovered deallocating destructor entity"
     );
     assert!(
-        rendered.contains("(class)"),
-        "expected at least one bare nominal class rendered with its kind"
+        rendered.contains("function signature specialization <Arg[0] = Dead> of static "),
+        "expected an optimizer-specialized entity read all the way through its Tf suffix rather \
+         than reported as the unspecialized function it wraps"
     );
 }
 
@@ -427,16 +482,5 @@ fn swift_hello_obfuscated_symbol_table_still_demangles_structurally() {
         "obfuscated binary still carries 30+ mangled symbols, got {}",
         symbols.len()
     );
-    let demangled: usize = symbols
-        .iter()
-        .filter(|s: &&String| demangle::demangle(s).is_ok())
-        .count();
-    let ratio: f64 = demangled as f64 / symbols.len() as f64;
-    assert!(
-        ratio >= 0.95,
-        "demangler structure-recovers obfuscated symbols too: {}/{} = {:.1}%",
-        demangled,
-        symbols.len(),
-        ratio * 100.0
-    );
+    assert_recovery_rate("SwiftHello.obfuscated", &symbols);
 }

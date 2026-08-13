@@ -54,4 +54,14 @@ pub enum Error {
 
     #[error("DR-IOS-0016: dyld shared cache malformed: {0}")]
     BadDyldCache(String),
+
+    #[error(
+        "DR-IOS-0017: Swift demangle of '{symbol}' read {consumed} of {total} bytes and left the \
+         rest unread, so the recovered text is not a complete reading of the symbol"
+    )]
+    DemangleResidue {
+        symbol: String,
+        consumed: usize,
+        total: usize,
+    },
 }

@@ -38,7 +38,7 @@ const PINNED: [PinnedSymbol; 37] = [
     PinnedSymbol {
         mangled: "_$s10SwiftHello0B11RunnerEntryV4mainyyFZTf4d_n",
         reference: "function signature specialization <Arg[0] = Dead> of static SwiftHello.HelloRunnerEntry.main() -> ()",
-        ours: "static SwiftHello.HelloRunnerEntry.main() -> ()",
+        ours: "function signature specialization <Arg[0] = Dead> of static SwiftHello.HelloRunnerEntry.main() -> ()",
     },
     PinnedSymbol {
         mangled: "_$s10SwiftHello0B9GreetableMp",
@@ -208,26 +208,21 @@ const PINNED: [PinnedSymbol; 37] = [
     PinnedSymbol {
         mangled: "_$ss23_ContiguousArrayStorageCyypGMR",
         reference: "_$ss23_ContiguousArrayStorageCyypGMR",
-        ours: "Swift._ContiguousArrayStorage (class)",
+        ours: "_$ss23_ContiguousArrayStorageCyypGMR",
     },
     PinnedSymbol {
         mangled: "_$ss23_ContiguousArrayStorageCyypGMd",
         reference: "_$ss23_ContiguousArrayStorageCyypGMd",
-        ours: "Swift._ContiguousArrayStorage (class)",
+        ours: "_$ss23_ContiguousArrayStorageCyypGMd",
     },
     PinnedSymbol {
         mangled: "_$ss5print_9separator10terminatoryypd_S2StF",
         reference: "Swift.print(_: Any..., separator: Swift.String, terminator: Swift.String) -> ()",
-        ours: "Swift.print()",
+        ours: "Swift.print(_: Any..., separator: Swift.String, terminator: Swift.String) -> ()",
     },
 ];
 
-const REFERENCE_DIVERGENCES: [&str; 4] = [
-    "_$s10SwiftHello0B11RunnerEntryV4mainyyFZTf4d_n",
-    "_$ss23_ContiguousArrayStorageCyypGMR",
-    "_$ss23_ContiguousArrayStorageCyypGMd",
-    "_$ss5print_9separator10terminatoryypd_S2StF",
-];
+const REFERENCE_DIVERGENCES: [&str; 0] = [];
 
 const REFERENCE_AGREEMENT_FLOOR: usize = PINNED.len() - REFERENCE_DIVERGENCES.len();
 
