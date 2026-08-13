@@ -845,6 +845,84 @@ fn every_file_of_a_batch_run_leaves_its_own_citable_report() {
     }
 }
 
+const DRY_RUN_CHAIN_JSON: &str = r#"{
+  "schema": "disrobe.chain/v1",
+  "tool_version": "0.9.0",
+  "input": { "path": "app.pyc", "blake3": "abcd", "size": 128, "detected": ["pyc-3.11"] },
+  "spec": { "raw": "auto:8", "kind": "auto", "cap": 8 },
+  "topology": "linear",
+  "root_node_id": 0,
+  "nodes": [
+    { "id": 0, "parent_id": null, "depth": 0, "branch_id": "root",
+      "pass": null, "format_tag_in": null, "input_blake3": "abcd", "input_size": 128,
+      "output_kind": null, "output_blake3": null, "output_size": null,
+      "duration_ms": null, "detector_picks": [], "artifacts": [], "metadata": {},
+      "verdict": "ok", "error": null },
+    { "id": 1, "parent_id": 0, "depth": 1, "branch_id": "root",
+      "pass": "py.decompile", "format_tag_in": "pyc-3.11", "input_blake3": "abcd", "input_size": 128,
+      "output_kind": null, "output_blake3": null, "output_size": null,
+      "duration_ms": null, "detector_picks": [], "artifacts": ["app.py"], "metadata": {},
+      "verdict": "dry-run", "error": null }
+  ],
+  "verdict": "dry-run",
+  "final_format": null,
+  "stats": { "layers": 1, "branches": 1, "total_ms": 0,
+    "max_branch_depth": 1, "detector_calls": 1, "rejected_passes": 0 }
+}"#;
+
+const DRY_RUN_RECOVERY_JSON: &str = r#"{
+  "schema": "disrobe.recovery/v1",
+  "tool_version": "0.9.0",
+  "input": { "path": "app.pyc", "blake3": "abcd", "size": 128 },
+  "passes": [
+    { "name": "py.decompile", "status": "skipped", "confidence": "skeleton",
+      "duration_ms": null, "format_in": "pyc-3.11", "format_out": null }
+  ],
+  "histogram": { "exact": 0, "semantic": 0, "partial": 0, "skeleton": 1 },
+  "total_ms": 0,
+  "verdict": "dry-run"
+}"#;
+
+#[test]
+fn a_dry_run_whose_artifacts_never_reached_disk_still_produces_a_valid_document() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-dry-run");
+    let out: PathBuf = scratch.path().to_path_buf();
+    write(&out.join("chain.json"), DRY_RUN_CHAIN_JSON.as_bytes());
+    write(&out.join("recovery.json"), DRY_RUN_RECOVERY_JSON.as_bytes());
+
+    let log: Value = report_sarif(&out);
+    assert_valid(&sarif_validator(), &log, "the dry-run forensic report");
+    let document: &Value = &log["runs"][0]["properties"]["disrobe"];
+    let walls: &Vec<Value> = document["walls"].as_array().expect("walls");
+    assert_eq!(walls.len(), 1, "{walls:#?}");
+    assert_eq!(walls[0]["kind"], serde_json::json!("not-executed"));
+    let missing: &Value = document["evidence"]
+        .as_array()
+        .expect("evidence")
+        .iter()
+        .find(|e: &&Value| e["role"] == serde_json::json!("recovered-artifact"))
+        .expect("a dry run still cites the artifact it would have written");
+    assert_eq!(missing["hash_source"], serde_json::json!("unavailable"));
+    assert!(
+        missing["unavailable_reason"]
+            .as_str()
+            .is_some_and(|r: &str| r.contains("app.py")),
+        "an artifact that never reached disk must name why it carries no digest: {missing}"
+    );
+    let evidence_results: Vec<&Value> = log["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .filter(|r: &&Value| r["ruleId"] == serde_json::json!("disrobe.evidence"))
+        .collect();
+    assert!(
+        evidence_results
+            .iter()
+            .any(|r: &&Value| r["kind"] == serde_json::json!("review")),
+        "an undigested artifact is a review result, not a silent omission"
+    );
+}
+
 #[test]
 fn the_excluded_standards_are_named_rather_than_silently_dropped() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
