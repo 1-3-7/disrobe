@@ -64,4 +64,23 @@ pub enum Error {
         consumed: usize,
         total: usize,
     },
+
+    #[error("DR-IOS-0018: dyld shared cache header layout '{layout}' is not supported: {reason}")]
+    UnsupportedDyldLayout { layout: String, reason: String },
+
+    #[error(
+        "DR-IOS-0019: dyld shared cache slide-info version {0} is not supported; supported \
+         versions are 1, 2, 3, 4 and 5"
+    )]
+    UnsupportedDyldSlideInfo(u32),
+
+    #[error(
+        "DR-IOS-0020: dyld sub-cache file suffix '{suffix}' is refused because {reason}; sibling \
+         files are located by computed name relative to the primary cache and never by a path \
+         taken from cache content"
+    )]
+    DyldSubCachePathRejected { suffix: String, reason: String },
+
+    #[error("DR-IOS-0021: dyld shared cache image '{image}' cannot be reconstructed: {reason}")]
+    DyldImageUnsupported { image: String, reason: String },
 }
