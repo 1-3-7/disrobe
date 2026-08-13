@@ -143,8 +143,7 @@ fn d_pe_report_is_terminal_and_never_re_detected_as_javascript() {
 
     let files: Vec<PathBuf> = extracted_files(out.path());
     let carries_rtti: bool = files.iter().any(|p: &PathBuf| {
-        std::fs::read(p)
-            .is_ok_and(|b: Vec<u8>| b.windows(13).any(|w: &[u8]| w == b"hello.Greeter"))
+        std::fs::read(p).is_ok_and(|b: Vec<u8>| b.windows(13).any(|w: &[u8]| w == b"hello.Greeter"))
     });
     assert!(
         carries_rtti,

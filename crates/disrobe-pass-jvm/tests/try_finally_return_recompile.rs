@@ -636,7 +636,8 @@ fn an_author_written_throwable_catch_still_renders_as_a_catch() {
         String::from_utf8_lossy(&compile.stderr)
     );
 
-    let class_bytes: Vec<u8> = std::fs::read(dir.join("AuthorThrowable.class")).expect("read class");
+    let class_bytes: Vec<u8> =
+        std::fs::read(dir.join("AuthorThrowable.class")).expect("read class");
     let cf: ClassFile = parse_classfile(&class_bytes).expect("parse");
     let decompiled: DecompiledClass = decompile_class(&cf);
 
