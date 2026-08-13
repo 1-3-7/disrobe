@@ -340,6 +340,7 @@ pub(crate) fn iso8601_now() -> String {
     )
 }
 
+#[cfg(feature = "chain")]
 #[must_use]
 pub(crate) fn iso8601_millis_from_epoch(seconds: u64) -> String {
     iso8601_from_epoch(seconds, FractionDigits::Milliseconds(0))
@@ -347,6 +348,7 @@ pub(crate) fn iso8601_millis_from_epoch(seconds: u64) -> String {
 
 #[derive(Debug, Clone, Copy)]
 enum FractionDigits {
+    #[cfg(feature = "chain")]
     Milliseconds(u32),
     Nanoseconds(u32),
 }
@@ -361,6 +363,7 @@ fn iso8601_from_epoch(seconds: u64, fraction: FractionDigits) -> String {
     let (year, month, day): (i32, u32, u32) = civil_from_days(days_since_epoch as i64);
     let head: String = format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}");
     match fraction {
+        #[cfg(feature = "chain")]
         FractionDigits::Milliseconds(value) => format!("{head}.{value:03}Z"),
         FractionDigits::Nanoseconds(value) => format!("{head}.{value:09}Z"),
     }
