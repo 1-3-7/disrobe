@@ -9,10 +9,8 @@
     clippy::nursery
 )]
 
-use std::path::PathBuf;
-use std::process::Command;
+mod common;
 
-use disrobe_core::scratch::ScratchFile;
 use disrobe_emit::c::Cx;
 use disrobe_emit::c::ast::{
     AggregateKind, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CItem, CParam, CStmt,
@@ -21,6 +19,10 @@ use disrobe_emit::c::ast::{
 use disrobe_emit::c::print::{render_declaration, render_file, render_item};
 use disrobe_emit::{Interner, Symbol};
 use proptest::prelude::*;
+
+use common::{
+    Compiler, WIDE, build_and_run, int_param, required_compilers, syntax_check, walk_assertions,
+};
 
 fn int_type() -> CBaseType {
     CBaseType::plain(CTypeSpec::Int)
@@ -33,14 +35,6 @@ fn named_int_decl(interner: &mut Interner, name: &str, chain: DeclaratorChain) -
         name: Some(interner.intern(name)),
         declarator: chain,
         init: None,
-    }
-}
-
-fn int_param() -> CParam {
-    CParam {
-        base: int_type(),
-        name: None,
-        declarator: DeclaratorChain::Terminal,
     }
 }
 
@@ -99,43 +93,9 @@ fn declarator_spiral_golden() {
     }
 }
 
-fn cc() -> Option<String> {
-    for candidate in ["cc", "gcc", "clang"] {
-        if Command::new(candidate)
-            .arg("--version")
-            .output()
-            .is_ok_and(|out: std::process::Output| out.status.success())
-        {
-            return Some(candidate.to_owned());
-        }
-    }
-    None
-}
-
-fn syntax_ok(compiler: &str, source: &str) -> Result<(), String> {
-    let (scratch, handle): (ScratchFile, std::fs::File) =
-        ScratchFile::create("disrobe-emit-cc", "c").expect("create scratch file");
-    drop(handle);
-    let path: PathBuf = scratch.path().to_path_buf();
-    std::fs::write(&path, source).expect("write probe");
-    let output: std::process::Output = Command::new(compiler)
-        .args(["-fsyntax-only", "-w", "-std=c11"])
-        .arg(&path)
-        .output()
-        .map_err(|err: std::io::Error| err.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).into_owned())
-    }
-}
-
 #[test]
-fn declarations_and_items_compile() {
-    let Some(compiler): Option<String> = cc() else {
-        eprintln!("skipping cc syntax oracle: no host c compiler found");
-        return;
-    };
+fn declarations_and_items_run_as_written() {
+    let compilers: &[Compiler] = required_compilers();
     let mut interner: Interner = Interner::new();
 
     let golden_decls: [DeclaratorChain; 6] = [
@@ -161,19 +121,52 @@ fn declarations_and_items_compile() {
             .pointer_to(),
     ];
     let mut source: String = String::new();
-    for (index, chain) in golden_decls.into_iter().enumerate() {
-        let decl: CDecl = named_int_decl(&mut interner, &format!("g{index}"), chain);
+    for (index, chain) in golden_decls.iter().enumerate() {
+        let name: String = format!("g{index}");
+        let decl: CDecl = named_int_decl(&mut interner, &name, chain.clone());
         source.push_str(&render_declaration(&decl, &interner, 80));
         source.push('\n');
+        let mut walk: Vec<String> = Vec::new();
+        walk_assertions(chain, &name, &format!("golden {index}"), &mut walk);
+        for line in walk {
+            source.push_str(&line);
+            source.push('\n');
+        }
     }
     let program: CFile = sample_program(&mut interner);
     source.push_str(&render_file(&program, &interner, 80));
     source.push('\n');
-
-    if let Err(stderr) = syntax_ok(&compiler, &source) {
-        panic!("cc rejected emitted source:\n{source}\n--- stderr ---\n{stderr}");
+    source.push_str("int main(void) {\n");
+    for (index, (call, expected)) in BEHAVIOUR_EXPECTATIONS.iter().enumerate() {
+        source.push_str(&format!(
+            "    if ({call} != {expected}) return {};\n",
+            index + 1
+        ));
     }
+    source.push_str("    return 0;\n}\n");
+
+    for compiler in compilers {
+        build_and_run(compiler, &source, "emitted sample program");
+    }
+    println!(
+        "sample program: {}/{} golden declarators, {}/{} behaviour checks, compilers {}/{}",
+        golden_decls.len(),
+        golden_decls.len(),
+        BEHAVIOUR_EXPECTATIONS.len(),
+        BEHAVIOUR_EXPECTATIONS.len(),
+        compilers.len(),
+        compilers.len()
+    );
 }
+
+const BEHAVIOUR_EXPECTATIONS: [(&str, i32); 6] = [
+    ("clamp(5, 1, 3)", 3),
+    ("clamp(0, 1, 3)", 1),
+    ("clamp(2, 1, 3)", 2),
+    ("sum_to(0)", 0),
+    ("sum_to(1)", 0),
+    ("sum_to(5)", 10),
+];
 
 fn sample_program(interner: &mut Interner) -> CFile {
     let mut cx: Cx<'_> = Cx::new(interner);
@@ -374,17 +367,23 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn random_valid_declarators_compile(script in prop::collection::vec(any::<u8>(), 0..10)) {
-        let Some(compiler): Option<String> = cc() else {
-            return Ok(());
-        };
+    fn random_valid_declarators_keep_their_type(
+        script in prop::collection::vec(any::<u8>(), 0..10),
+    ) {
+        let compilers: &[Compiler] = required_compilers();
         let mut interner: Interner = Interner::new();
         let mut cursor: usize = 0;
         let chain: DeclaratorChain = build_chain(&script, &mut cursor, Role::Any, 5);
-        let decl: CDecl = named_int_decl(&mut interner, "probe", chain);
-        let source: String = format!("{}\n", render_declaration(&decl, &interner, 80));
-        if let Err(stderr) = syntax_ok(&compiler, &source) {
-            prop_assert!(false, "cc rejected {source:?}: {stderr}");
+        let decl: CDecl = named_int_decl(&mut interner, "probe", chain.clone());
+        let mut source: String = format!("{}\n", render_declaration(&decl, &interner, WIDE));
+        let mut walk: Vec<String> = Vec::new();
+        walk_assertions(&chain, "probe", "random chain", &mut walk);
+        for line in walk {
+            source.push_str(&line);
+            source.push('\n');
+        }
+        for compiler in compilers {
+            syntax_check(compiler, &source, "random declarator chain");
         }
     }
 }

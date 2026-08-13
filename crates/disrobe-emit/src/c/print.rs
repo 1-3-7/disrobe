@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::fmt::Write as _;
 
 use pretty::{Arena, DocAllocator, DocBuilder};
 
@@ -231,8 +230,8 @@ fn expr_doc<'a>(ctx: &Ctx<'a>, expr: &'a CExpr) -> Doc<'a> {
             suffix,
         } => arena.text(format_int(*value, *radix, *suffix)),
         CExpr::Float(text) => arena.text(text.as_ref()),
-        CExpr::Char(value) => arena.text(format!("'{}'", escape_char(*value))),
-        CExpr::Str(value) => arena.text(format!("\"{}\"", escape_string(value))),
+        CExpr::Char(value) => arena.text(char_literal(*value)),
+        CExpr::Str(value) => arena.text(string_literal(value)),
         CExpr::Ident(symbol) => arena.text(ident_text(ctx.interner, *symbol)),
         CExpr::Unary { op, operand } => unary_doc(ctx, *op, operand),
         CExpr::Postfix { op, operand } => {
@@ -334,7 +333,13 @@ fn leading_char(interner: &Interner, expr: &CExpr) -> char {
             Radix::Hex | Radix::Oct => '0',
         },
         CExpr::Float(text) => first_char_of(text),
-        CExpr::Char(_) => '\'',
+        CExpr::Char(value) => {
+            if (*value as u32) > WIDE_CHAR_THRESHOLD {
+                'U'
+            } else {
+                '\''
+            }
+        }
         CExpr::Str(_) => '"',
         CExpr::Ident(symbol) => first_char_of(&ident_text(interner, *symbol)),
         CExpr::Unary { op, .. } => first_char_of(unary_symbol(*op)),
@@ -830,33 +835,62 @@ fn format_int(value: u64, radix: Radix, suffix: IntSuffix) -> String {
     text
 }
 
-fn escape_char(value: char) -> String {
-    match value {
-        '\'' => "\\'".to_owned(),
-        '\\' => "\\\\".to_owned(),
-        '\n' => "\\n".to_owned(),
-        '\t' => "\\t".to_owned(),
-        '\r' => "\\r".to_owned(),
-        '\0' => "\\0".to_owned(),
-        other if other.is_ascii_graphic() || other == ' ' => other.to_string(),
-        other => format!("\\x{:02x}", other as u32 & 0xff),
+const QUESTION: u8 = b'?';
+const PRINTABLE_LOW: u8 = 0x20;
+const PRINTABLE_HIGH: u8 = 0x7e;
+const WIDE_CHAR_THRESHOLD: u32 = 0xff;
+
+const fn simple_escape(byte: u8, delimiter: u8) -> Option<&'static str> {
+    match byte {
+        b'\\' => Some("\\\\"),
+        b'\n' => Some("\\n"),
+        b'\t' => Some("\\t"),
+        b'\r' => Some("\\r"),
+        b'"' if delimiter == b'"' => Some("\\\""),
+        b'\'' if delimiter == b'\'' => Some("\\'"),
+        _ => None,
     }
 }
 
-fn escape_string(value: &str) -> String {
-    let mut out: String = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other if other.is_ascii_graphic() || other == ' ' => out.push(other),
-            other => {
-                write!(out, "\\x{:02x}", other as u32 & 0xff).ok();
-            }
-        }
+fn push_octal_escape(out: &mut String, byte: u8) {
+    out.push('\\');
+    out.push(char::from(b'0' + (byte >> 6)));
+    out.push(char::from(b'0' + ((byte >> 3) & 0b111)));
+    out.push(char::from(b'0' + (byte & 0b111)));
+}
+
+fn push_escaped_byte(out: &mut String, byte: u8, delimiter: u8, next: Option<u8>) {
+    if let Some(escape) = simple_escape(byte, delimiter) {
+        out.push_str(escape);
+        return;
     }
+    let starts_trigraph: bool = byte == QUESTION && next == Some(QUESTION);
+    if starts_trigraph || !(PRINTABLE_LOW..=PRINTABLE_HIGH).contains(&byte) {
+        push_octal_escape(out, byte);
+        return;
+    }
+    out.push(char::from(byte));
+}
+
+fn char_literal(value: char) -> String {
+    let point: u32 = value as u32;
+    if point > WIDE_CHAR_THRESHOLD {
+        return format!("U'\\U{point:08X}'");
+    }
+    let mut out: String = String::with_capacity(6);
+    out.push('\'');
+    push_escaped_byte(&mut out, point as u8, b'\'', None);
+    out.push('\'');
+    out
+}
+
+fn string_literal(value: &str) -> String {
+    let bytes: &[u8] = value.as_bytes();
+    let mut out: String = String::with_capacity(bytes.len() + 2);
+    out.push('"');
+    for (index, byte) in bytes.iter().enumerate() {
+        push_escaped_byte(&mut out, *byte, b'"', bytes.get(index + 1).copied());
+    }
+    out.push('"');
     out
 }
