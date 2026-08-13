@@ -1061,15 +1061,28 @@ impl<'a> Structurer<'a> {
         if body.is_empty() {
             return None;
         }
+        let exception_slot: u16 =
+            astore_slot(self.block_instructions(*chain.blocks.first()?).first()?)?;
         let tail_return: usize = usize::from(chain.trim == 0);
         let scanned: &[Instruction] = body.get(..body.len() - tail_return)?;
-        if scanned.iter().any(|ins: &Instruction| {
-            matches!(ins.opcode, 0xA8..=0xB1 | 0xBF | 0xC9)
-                || (matches!(ins.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
-                    && branch_target(ins).is_none_or(|target: u32| {
-                        body_target_index(&body, self.pc_after_last(&body), target).is_none()
-                    }))
-        }) {
+        let body_end: Option<u32> = self.pc_after_last(&body);
+        if scanned
+            .iter()
+            .enumerate()
+            .any(|(index, ins): (usize, &Instruction)| {
+                matches!(ins.opcode, 0xA8..=0xB1 | 0xC9)
+                    || (ins.opcode == 0xBF
+                        && index
+                            .checked_sub(1)
+                            .and_then(|previous: usize| scanned.get(previous))
+                            .and_then(aload_slot)
+                            == Some(exception_slot))
+                    || (matches!(ins.opcode, 0x99..=0xA7 | 0xC6..=0xC8)
+                        && branch_target(ins).is_none_or(|target: u32| {
+                            body_target_index(&body, body_end, target).is_none()
+                        }))
+            })
+        {
             return None;
         }
         Some(body)

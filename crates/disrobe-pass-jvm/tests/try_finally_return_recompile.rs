@@ -373,6 +373,88 @@ fn finally_if_else_recompiles_to_equivalent_bytecode() {
     );
 }
 
+const FINALLY_THROW_SRC: &str = "public class FinallyThrow {\n\
+    static int CTR = 0;\n\
+    static int run(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
+        }\n\
+    }\n\
+}\n";
+
+#[test]
+fn finally_that_throws_recompiles_to_equivalent_bytecode() {
+    let (javac, javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_throw").expect("scratch");
+    let orig_dir: PathBuf = scratch.path().join("orig");
+    let rec_dir: PathBuf = scratch.path().join("rec");
+    std::fs::create_dir_all(&orig_dir).expect("original directory");
+    std::fs::create_dir_all(&rec_dir).expect("recovered directory");
+    let source_path: PathBuf = orig_dir.join("FinallyThrow.java");
+    std::fs::write(&source_path, FINALLY_THROW_SRC).expect("source fixture");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&orig_dir)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let class_bytes: Vec<u8> =
+        std::fs::read(orig_dir.join("FinallyThrow.class")).expect("class fixture");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse class fixture");
+    let decompiled: DecompiledClass = decompile_class(&class_file);
+    let body: String = method_body(&decompiled.source, " run(").expect("recovered run method");
+
+    assert!(!body.contains("not recovered:"), "method refused:\n{body}");
+    assert!(
+        !body.contains("catch (Throwable"),
+        "finally became catch:\n{body}"
+    );
+    assert!(
+        !body.contains("stack reset"),
+        "method has lifting hole:\n{body}"
+    );
+    assert!(body.contains("finally {"), "finally missing:\n{body}");
+    assert!(
+        body.contains("throw new IllegalStateException"),
+        "finally throw missing:\n{body}"
+    );
+    assert!(body.contains("if ("), "finally condition missing:\n{body}");
+
+    let recovered_source: PathBuf = rec_dir.join("FinallyThrow.java");
+    std::fs::write(&recovered_source, &decompiled.source).expect("recovered source");
+    let recompile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&rec_dir)
+        .arg(&recovered_source)
+        .output()
+        .expect("recompile recovered source");
+    assert!(
+        recompile.status.success(),
+        "recovered source failed to compile: {}\n{}",
+        String::from_utf8_lossy(&recompile.stderr),
+        decompiled.source
+    );
+    let original_code: Vec<String> =
+        normalize_javap(&javap_code(&javap, &orig_dir, "FinallyThrow"));
+    let recovered_code: Vec<String> =
+        normalize_javap(&javap_code(&javap, &rec_dir, "FinallyThrow"));
+    assert_eq!(
+        original_code, recovered_code,
+        "recompiled finally-throw bytecode differs from the original:\n{}",
+        decompiled.source
+    );
+}
+
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     static int CTR = 0;\n\
     static int finallyWithIf(int a) {\n\
@@ -425,12 +507,8 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[&str] = &[
-    "finallyBreaks",
-    "finallyContinues",
-    "finallyNestedTry",
-    "finallyThrows",
-];
+const UNMODELLED_FINALLY_METHODS: &[&str] =
+    &["finallyBreaks", "finallyContinues", "finallyNestedTry"];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {
