@@ -11,6 +11,7 @@ use disrobe_binfmt::rewrite::{
     DerivedKind, FileEdit, IMAGE_PLAN_SCHEMA, ImagePlan, PatchedImage, PlanCoverage, Structure,
     StructureKind, emit_native_image, patch_native_image, plan_native_image,
 };
+use disrobe_testkit::XorShift64;
 
 const FORMATS_DIR: &str = "native/formats";
 const PACKERS_DIR: &str = "native/packers";
@@ -1066,4 +1067,83 @@ fn the_free_function_matches_the_plan_it_wraps() {
     let bytes: Vec<u8> = required_corpus("native/formats/hello.pe64.exe");
     let direct: Vec<u8> = emit_native_image(&bytes).expect("emit through the free function");
     assert_eq!(direct, bytes, "the free function must reproduce the input");
+}
+
+const MUTATION_SEEDS: u64 = 512;
+
+#[test]
+fn a_mutated_image_never_panics_and_never_re_emits_different_bytes() {
+    let mut planned: usize = 0;
+    let mut refused: usize = 0;
+
+    for relative in [
+        "native/formats/hello.pe64.exe",
+        "native/formats/hello.elf64",
+        "native/formats/avr_firmware.elf",
+        "native/formats/hello.macho64.o",
+        "native/formats/hello.coff.x64.o",
+        "mac/megafile/EdgeCases.fat",
+    ] {
+        let bytes: Vec<u8> = required_corpus(relative);
+        let mut rng: XorShift64 = XorShift64::new(0x4E41_5430_3239 ^ bytes.len() as u64);
+
+        for case in 0..MUTATION_SEEDS {
+            let mut mutated: Vec<u8> = bytes.clone();
+            let truncate_to: usize = (rng.below(bytes.len() as u64 + 1)) as usize;
+            if case % 4 == 0 {
+                mutated.truncate(truncate_to);
+            }
+            let smears: u64 = 1 + rng.below(8);
+            for _ in 0..smears {
+                if mutated.is_empty() {
+                    break;
+                }
+                let at: usize = (rng.below(mutated.len() as u64)) as usize;
+                let value: u8 = (rng.next_u64() & 0xFF) as u8;
+                if let Some(slot) = mutated.get_mut(at) {
+                    *slot = value;
+                }
+            }
+
+            match plan_native_image(&mutated) {
+                Ok(plan) => {
+                    planned += 1;
+                    let coverage: PlanCoverage = plan.coverage();
+                    assert!(
+                        coverage.is_complete(),
+                        "{relative} case {case}: a plan must account for every byte it admits"
+                    );
+                    let emitted: Vec<u8> = plan.emit(&mutated).unwrap_or_else(|error: Error| {
+                        panic!("{relative} case {case}: an admitted image must re-emit: {error}")
+                    });
+                    assert!(
+                        emitted == mutated,
+                        "{relative} case {case}: an admitted image must re-emit byte for byte; \
+                         first difference at {:?}",
+                        first_difference(&emitted, &mutated)
+                    );
+                }
+                Err(
+                    Error::Rewrite(_) | Error::RewriteUnsupported { .. } | Error::NativeParse(_),
+                ) => {
+                    refused += 1;
+                }
+                Err(other) => {
+                    panic!("{relative} case {case}: a refusal must be typed, not `{other}`")
+                }
+            }
+        }
+    }
+
+    let total: usize = planned + refused;
+    assert_eq!(
+        total,
+        6 * MUTATION_SEEDS as usize,
+        "every mutated case must reach a typed outcome"
+    );
+    assert!(
+        planned >= 100,
+        "only {planned} of {total} mutated cases were admitted, so the round-trip half of this \
+         case graded almost nothing"
+    );
 }
