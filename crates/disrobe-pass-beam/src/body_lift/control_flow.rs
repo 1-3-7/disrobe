@@ -4,7 +4,7 @@ use super::expr::{AfterClause, BinSegment, CaseArm, CatchArm, Expr, IfArm, Stmt}
 use super::{
     BinMatchState, Block, Env, Flags, Lifter, Reg, TEST_OPS, as_reg, binmatch, body_uses_var,
     catch_value, class_from_guard, class_of_trace, combine_guard, guard, inline_segment,
-    is_reraise, label_of, literal_u32,
+    is_reraise, label_of, literal_u32, receive_clauses,
 };
 
 impl Lifter<'_> {
@@ -202,48 +202,109 @@ impl Lifter<'_> {
         };
         let mut msg_reg: Reg = Reg::X(0);
         let mut loop_rec_at: usize = block.start;
-        let mut after_label: Option<u32> = None;
-        let mut timeout: Option<Expr> = None;
+        let mut wait_label: Option<u32> = None;
         for slot in block.start..block.end {
             let ins: &Instruction = &self.instrs[slot];
-            match ins.name {
-                "loop_rec" => {
-                    loop_rec_at = slot;
-                    if let Some(reg) = as_reg(&ins.operands[1]) {
-                        msg_reg = reg;
-                    }
-                }
-                "wait_timeout" => {
-                    after_label = Some(label_of(&ins.operands[0]));
-                    timeout = Some(self.value(&ins.operands[1], env));
-                }
-                _ => {}
+            if ins.name != "loop_rec" {
+                continue;
             }
+            loop_rec_at = slot;
+            wait_label = ins.operands.first().map(label_of);
+            if let Some(reg) = ins.operands.get(1).and_then(as_reg) {
+                msg_reg = reg;
+            }
+            break;
         }
+        let message: String = flags.fresh_message();
         let mut body_env: Env = env.clone();
-        body_env.set(msg_reg, Expr::Var("Msg".to_owned()));
+        body_env.set(msg_reg, Expr::Var(message.clone()));
         let body_region: Block = Block {
             start: loop_rec_at + 1,
             end: block.end,
         };
+        let degraded_before: bool = flags.degraded;
         let body: Vec<Stmt> = self.walk_synth(body_region, &mut body_env, flags, depth + 1);
-        let arms: Vec<CaseArm> = vec![CaseArm {
-            pattern: Expr::Var("Msg".to_owned()),
-            guard: None,
-            body,
-        }];
-        let after: Option<Box<AfterClause>> = after_label.and_then(|al: u32| {
-            self.blocks.get(&al).copied().and_then(|_| {
-                let after_body: Vec<Stmt> = self.walk(al, &mut env.clone(), flags, depth + 1);
-                (!after_body.is_empty()).then(|| {
-                    Box::new(AfterClause {
-                        timeout: timeout.clone().unwrap_or(Expr::Atom("infinity".to_owned())),
-                        body: after_body,
-                    })
-                })
-            })
-        });
+        let split: receive_clauses::ReceiveArms = if flags.degraded == degraded_before {
+            receive_clauses::split_receive_arms(&body, &message)
+        } else {
+            receive_clauses::ReceiveArms::SingleClause
+        };
+        let arms: Vec<CaseArm> = match split {
+            receive_clauses::ReceiveArms::Split(split_arms) => split_arms,
+            receive_clauses::ReceiveArms::Unsplittable => {
+                flags.degraded = true;
+                vec![CaseArm {
+                    pattern: Expr::Var(message),
+                    guard: None,
+                    body,
+                }]
+            }
+            receive_clauses::ReceiveArms::SingleClause => vec![CaseArm {
+                pattern: Expr::Var(message),
+                guard: None,
+                body,
+            }],
+        };
+        let after: Option<Box<AfterClause>> = wait_label
+            .and_then(|target: u32| self.build_after_clause(target, env, flags, depth))
+            .map(Box::new);
         Expr::Receive { arms, after }
+    }
+
+    fn build_after_clause(
+        &self,
+        wait_label: u32,
+        env: &Env,
+        flags: &mut Flags,
+        depth: u32,
+    ) -> Option<AfterClause> {
+        let block: Block = self.blocks.get(&wait_label).copied()?;
+        for slot in block.start..block.end {
+            let ins: &Instruction = &self.instrs[slot];
+            match ins.name {
+                "line"
+                | "label"
+                | "recv_mark"
+                | "recv_set"
+                | "recv_marker_bind"
+                | "recv_marker_clear"
+                | "recv_marker_reserve"
+                | "recv_marker_use" => {}
+                "wait" => return None,
+                "wait_timeout" => {
+                    let timeout: Expr = self.value(ins.operands.get(1)?, env);
+                    return Some(AfterClause {
+                        timeout,
+                        body: self.after_body(slot + 1, block.end, env, flags, depth),
+                    });
+                }
+                "timeout" => {
+                    return Some(AfterClause {
+                        timeout: Expr::Int(0),
+                        body: self.after_body(slot + 1, block.end, env, flags, depth),
+                    });
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    fn after_body(
+        &self,
+        start: usize,
+        end: usize,
+        env: &Env,
+        flags: &mut Flags,
+        depth: u32,
+    ) -> Vec<Stmt> {
+        let region: Block = Block { start, end };
+        let body: Vec<Stmt> = self.walk_synth(region, &mut env.clone(), flags, depth + 1);
+        if body.is_empty() {
+            flags.degraded = true;
+            return vec![Stmt::Comment("unrecovered receive timeout body".to_owned())];
+        }
+        body
     }
 
     pub(super) fn build_raise(&self, ins: &Instruction, env: &Env) -> Stmt {

@@ -5,6 +5,7 @@ mod codegen;
 pub mod comprehension;
 mod control_flow;
 pub mod expr;
+mod receive_clauses;
 pub mod render;
 pub mod resugar;
 pub mod simplify;
@@ -258,6 +259,7 @@ struct Flags {
     degraded: bool,
     var_counter: u32,
     pat_counter: u32,
+    message_counter: u32,
     in_progress: std::collections::BTreeSet<u32>,
     visit_counts: std::collections::BTreeMap<u32, u32>,
     walk_calls: u32,
@@ -278,6 +280,16 @@ impl Flags {
         let n: u32 = self.pat_counter;
         self.pat_counter += 1;
         format!("B{n}")
+    }
+
+    fn fresh_message(&mut self) -> String {
+        let n: u32 = self.message_counter;
+        self.message_counter = self.message_counter.saturating_add(1);
+        if n == 0 {
+            "Msg".to_owned()
+        } else {
+            format!("Msg{n}")
+        }
     }
 
     fn over_walk_budget(&mut self) -> bool {
