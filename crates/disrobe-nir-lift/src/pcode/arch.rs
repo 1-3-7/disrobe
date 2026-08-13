@@ -174,6 +174,24 @@ pub struct ArchLift {
     pub function: NirFunction,
     pub gaps: LiftGaps,
     pub consumed: usize,
+    pub decoded: usize,
+}
+
+impl ArchLift {
+    #[must_use]
+    pub const fn modelled(&self) -> usize {
+        self.decoded.saturating_sub(self.gaps.total())
+    }
+
+    #[must_use]
+    pub fn modelled_percent(&self) -> f64 {
+        if self.decoded == 0 {
+            return 0.0;
+        }
+        let modelled: f64 = self.modelled() as f64;
+        let decoded: f64 = self.decoded as f64;
+        modelled * 100.0 / decoded
+    }
 }
 
 #[must_use]
@@ -202,12 +220,14 @@ pub fn lower_arch(arch: PcodeArch, bytes: &[u8], address: u64, name: &str) -> Re
     let block: DecodedBlock = arch.decode(bytes, address)?;
     let gaps: LiftGaps = block_gaps(&block);
     let consumed: usize = block.consumed;
+    let decoded: usize = block.instructions.len();
     let function: NirFunction = lower_pcode_block(&block, name, &config)?;
     Ok(ArchLift {
         arch,
         function,
         gaps,
         consumed,
+        decoded,
     })
 }
 

@@ -462,12 +462,32 @@ fn decompile_native(
 }
 
 #[cfg(feature = "nir-lift")]
+pub(crate) struct PcodeRecovery {
+    pub(crate) source: String,
+    pub(crate) structured: bool,
+    pub(crate) devirt_report: serde_json::Value,
+    pub(crate) decoded: usize,
+    pub(crate) modelled: usize,
+}
+
+#[cfg(feature = "nir-lift")]
+impl PcodeRecovery {
+    pub(crate) fn coverage_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "decoded_instructions": self.decoded,
+            "modelled_instructions": self.modelled,
+            "unmodelled_instructions": self.decoded.saturating_sub(self.modelled),
+        })
+    }
+}
+
+#[cfg(feature = "nir-lift")]
 fn aarch64_recover_source(
     code: &[u8],
     address: u64,
     name: &str,
     devirt: bool,
-) -> Result<(String, bool, serde_json::Value), String> {
+) -> Result<PcodeRecovery, String> {
     pcode_recover_source(
         disrobe_nir_lift::PcodeArch::AArch64,
         code,
@@ -484,7 +504,7 @@ pub(crate) fn pcode_recover_source(
     address: u64,
     name: &str,
     devirt: bool,
-) -> Result<(String, bool, serde_json::Value), String> {
+) -> Result<PcodeRecovery, String> {
     use disrobe_nir::{
         HirFunction, NirFunction, SurfaceFunction, emit_pseudo_source, structurize_function,
         surfacify_function,
@@ -497,6 +517,8 @@ pub(crate) fn pcode_recover_source(
             arch.label().unwrap_or("this architecture")
         )
     })?;
+    let decoded: usize = lift.decoded;
+    let modelled: usize = lift.modelled();
     let nir: NirFunction = lift.function;
 
     #[cfg(feature = "devirt")]
@@ -515,7 +537,13 @@ pub(crate) fn pcode_recover_source(
     let surface: SurfaceFunction = surfacify_function(&hir);
     let source: String =
         emit_pseudo_source(&surface).map_err(|e| format!("pseudo-source emit failed: {e}"))?;
-    Ok((source, surface.structured, devirt_report))
+    Ok(PcodeRecovery {
+        source,
+        structured: surface.structured,
+        devirt_report,
+        decoded,
+        modelled,
+    })
 }
 
 #[cfg(feature = "devirt")]
@@ -710,14 +738,15 @@ fn decompile_native_aarch64<'data>(
                 false
             }
         };
-        let lifted: Result<(String, bool, serde_json::Value), String> =
+        let lifted: Result<PcodeRecovery, String> =
             aarch64_recover_source(&code, f.address, &emitted_name, effective_devirt);
-        let fold_wins: bool =
-            lifted
-                .as_ref()
-                .is_ok_and(|(_, _, report): &(String, bool, serde_json::Value)| {
-                    devirt_folded_edges(report) > 0
-                });
+        let decode_coverage: Option<serde_json::Value> = lifted
+            .as_ref()
+            .ok()
+            .map(|recovery: &PcodeRecovery| recovery.coverage_json());
+        let fold_wins: bool = lifted
+            .as_ref()
+            .is_ok_and(|recovery: &PcodeRecovery| devirt_folded_edges(&recovery.devirt_report) > 0);
         let flagship: Option<(String, &'static str)> = if fold_wins {
             None
         } else {
@@ -745,7 +774,12 @@ fn decompile_native_aarch64<'data>(
                     }
                     (source, true, engine, serde_json::Value::Null)
                 }
-                (None, Ok((source, structured, report))) => (source, structured, "nir", report),
+                (None, Ok(recovery)) => (
+                    recovery.source,
+                    recovery.structured,
+                    "nir",
+                    recovery.devirt_report,
+                ),
                 (None, Err(reason)) => {
                     unrecovered.push(serde_json::json!({
                         "name": f.name,
@@ -773,6 +807,9 @@ fn decompile_native_aarch64<'data>(
         let mut entry: serde_json::Value = serde_json::json!({
             "name": f.name, "address": f.address, "emitted_as": emitted_name, "structured": structured, "engine": engine
         });
+        if let Some(coverage) = decode_coverage {
+            entry["decode"] = coverage;
+        }
         if !devirt_report.is_null() {
             match devirt_report
                 .get("status")
@@ -3982,14 +4019,15 @@ mod tests {
         ];
         for (arch, code) in cases {
             let label: &str = arch.label().unwrap_or("unlabelled");
-            let recovered: Result<(String, bool, serde_json::Value), String> =
+            let recovered: Result<PcodeRecovery, String> =
                 pcode_recover_source(arch, code, 0x1000, "recovered", false);
             assert!(
                 recovered.is_ok(),
-                "{label} must recover pseudo-source: {recovered:?}"
+                "{label} must recover pseudo-source: {}",
+                recovered.as_ref().err().map_or("", |e: &String| e.as_str())
             );
             let source: String = recovered
-                .map(|(source, _, _): (String, bool, serde_json::Value)| source)
+                .map(|recovery: PcodeRecovery| recovery.source)
                 .unwrap_or_default();
             assert!(
                 !source.trim().is_empty(),
@@ -4007,13 +4045,10 @@ mod tests {
         let big: String =
             pcode_recover_source(PcodeArch::Mips32Be, MIPS32BE_O2, 0x1000, "m", false)
                 .expect("big-endian mips recovers")
-                .0;
-        let swapped: Result<(String, bool, serde_json::Value), String> =
+                .source;
+        let swapped: Result<PcodeRecovery, String> =
             pcode_recover_source(PcodeArch::Mips32Le, MIPS32BE_O2, 0x1000, "m", false);
-        let differs: bool = swapped
-            .map_or(true, |(other, _, _): (String, bool, serde_json::Value)| {
-                other != big
-            });
+        let differs: bool = swapped.map_or(true, |other: PcodeRecovery| other.source != big);
         assert!(
             differs,
             "reading big-endian mips words as little-endian produced identical source, so the \
@@ -4028,17 +4063,27 @@ mod tests {
             .iter()
             .flat_map(|word: &u32| word.to_le_bytes())
             .collect();
-        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
+        let recovery: PcodeRecovery =
             aarch64_recover_source(&bytes, 0x1000, "arith", false).expect("aarch64 leaf recovers");
-        assert!(structured, "leaf must structure:\n{source}");
+        let source: String = recovery.source;
+        assert!(recovery.structured, "leaf must structure:\n{source}");
         assert!(
             source.contains("return x0"),
             "return value missing:\n{source}"
         );
         assert!(source.contains('+'), "addition missing:\n{source}");
         assert!(
-            devirt_report.is_null(),
-            "devirt off must leave no report: {devirt_report}"
+            recovery.devirt_report.is_null(),
+            "devirt off must leave no report: {}",
+            recovery.devirt_report
+        );
+        assert_eq!(
+            recovery.decoded, 2,
+            "the leaf is two machine instructions, so the decode denominator must say so"
+        );
+        assert_eq!(
+            recovery.modelled, 2,
+            "both instructions are modelled, so none may count as a gap"
         );
     }
 
@@ -4049,8 +4094,11 @@ mod tests {
             .iter()
             .flat_map(|word: &u32| word.to_le_bytes())
             .collect();
-        let (source, structured, devirt_report): (String, bool, serde_json::Value) =
+        let recovery: PcodeRecovery =
             aarch64_recover_source(&bytes, 0x1000, "arith", true).expect("aarch64 leaf recovers");
+        let source: String = recovery.source;
+        let structured: bool = recovery.structured;
+        let devirt_report: serde_json::Value = recovery.devirt_report;
         assert!(
             structured,
             "leaf still structures with devirt on:\n{source}"
