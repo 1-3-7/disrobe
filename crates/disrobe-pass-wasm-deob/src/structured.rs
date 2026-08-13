@@ -876,6 +876,13 @@ impl Translator<'_> {
             return Ok(false);
         };
         if matches!(desc.shape, crate::op_lift::AtomicShape::Fence) {
+            if matches!(self.lang, HighLang::TypeScript) {
+                return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
+                    target: "typescript",
+                    operation: "atomic.fence",
+                }
+                .into());
+            }
             let f: String = self.helper(desc.helper);
             self.emit_stmt(&format!("{f}();"));
             self.coverage.record_translated();

@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 static uint8_t wasm_memory[64 * 1024];
 static int64_t wasm_globals[64];
@@ -663,7 +664,7 @@ static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u(int32_t addr, uint64_t off
 static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffff))) wasm_store_i64_16_a64(addr, offset, replacement); return cur; }
 static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_32u(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffffffff))) wasm_store_i64_32(addr, offset, replacement); return cur; }
 static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffffffff))) wasm_store_i64_32_a64(addr, offset, replacement); return cur; }
-static inline void wasm_atomic_fence(void) { }
+static inline void wasm_atomic_fence(void) { atomic_thread_fence(memory_order_seq_cst); }
 
 typedef struct { int64_t lo; int64_t hi; } wasm_i128_pair;
 

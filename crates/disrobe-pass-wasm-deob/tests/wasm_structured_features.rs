@@ -431,9 +431,8 @@ fn atomic_memory_lift_without_module_context_emits_trapping_refusal() {
 #[test]
 fn atomic_fence_does_not_require_memory_context() {
     const WAT: &str = r#"(module (func (export "fence") atomic.fence))"#;
-    let cases: [(LiftTarget, &str); 3] = [
+    let cases: [(LiftTarget, &str); 2] = [
         (LiftTarget::Rust, "wasm_atomic_fence();"),
-        (LiftTarget::TypeScript, "wasmAtomicFence();"),
         (LiftTarget::C, "wasm_atomic_fence();"),
     ];
     for (target, expected) in cases {
@@ -441,6 +440,17 @@ fn atomic_fence_does_not_require_memory_context() {
         assert!(out.pseudo_source.contains(expected), "{target:?}");
         assert!(out.coverage.fully_recovered(), "{target:?}");
     }
+
+    let bytes: Vec<u8> = wat::parse_str(WAT).expect("wat");
+    let error: Error = try_lift_function_from_module(&bytes, 0, LiftTarget::TypeScript)
+        .expect_err("TypeScript has no standalone sequentially consistent fence");
+    assert!(matches!(
+        error,
+        Error::AtomicMemoryModel(AtomicMemoryRefusal::UnsupportedTarget {
+            target: "typescript",
+            operation: "atomic.fence"
+        })
+    ));
 }
 
 #[test]

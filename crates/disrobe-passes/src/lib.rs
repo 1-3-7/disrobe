@@ -8,6 +8,8 @@ pub fn build_registry() -> PassRegistry {
     r.register(&disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS);
     #[cfg(feature = "native")]
     r.register(&disrobe_pass_native::chain_detector::PACKER_PASS);
+    #[cfg(feature = "native")]
+    r.register(&disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS);
     #[cfg(feature = "py-deob")]
     r.register(&disrobe_pass_py_deob::chain_detector::PY_DEOB_PASS);
     #[cfg(feature = "container")]
@@ -74,6 +76,8 @@ pub fn expected_pass_ids() -> Vec<PassId> {
     ids.push(disrobe_pass_pyarmor::chain_detector::PASS_ID);
     #[cfg(feature = "native")]
     ids.push(disrobe_pass_native::chain_detector::PASS_ID);
+    #[cfg(feature = "native")]
+    ids.push(disrobe_pass_native::chain_detector::IMAGE_PASS_ID);
     #[cfg(feature = "py-deob")]
     ids.push(disrobe_pass_py_deob::chain_detector::PASS_ID);
     #[cfg(feature = "container")]

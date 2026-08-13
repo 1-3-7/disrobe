@@ -45,6 +45,12 @@ impl Detector for JvmDetector {
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let bytes: &[u8] = ctx.bytes;
         if bytes.len() >= 8 && reads_class_magic(bytes) {
+            if matches!(
+                disrobe_binfmt::identify_by_structure(bytes),
+                Some(disrobe_binfmt::StructuralFormat::MachOFat)
+            ) {
+                return None;
+            }
             return Some(verdict_classfile(bytes));
         }
         if bytes.len() >= 8 && &bytes[..4] == DEX_MAGIC_PREFIX.as_slice() && bytes[7] == 0 {

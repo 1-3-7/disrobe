@@ -705,7 +705,6 @@ const wasmI64AtomicRmw16CmpxchgU = (addr: number, offset: number, expected: bigi
 const wasmI64AtomicRmw16CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6416uA64(addr, offset); if (cur === (expected & 0xffffn)) wasmStoreI6416A64(addr, offset, replacement); return cur; };
 const wasmI64AtomicRmw32CmpxchgU = (addr: number, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432u(addr, offset); if (cur === (expected & 0xffff_ffffn)) wasmStoreI6432(addr, offset, replacement); return cur; };
 const wasmI64AtomicRmw32CmpxchgUA64 = (addr: bigint, offset: number, expected: bigint, replacement: bigint): bigint => { const cur = wasmLoadI6432uA64(addr, offset); if (cur === (expected & 0xffff_ffffn)) wasmStoreI6432A64(addr, offset, replacement); return cur; };
-const wasmAtomicFence = (): void => { };
 
 
 const WASM_TABLES: number[][] = Array.from({ length: 8 }, () => []);

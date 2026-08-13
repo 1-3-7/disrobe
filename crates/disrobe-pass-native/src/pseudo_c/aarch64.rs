@@ -136,6 +136,14 @@ struct SwitchDispatch {
     default: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PcRelativeAddressFold {
+    page_index: usize,
+    dest: u8,
+    source: u8,
+    target: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum RelativeLoadKind {
     ByteUnsigned,
@@ -453,10 +461,18 @@ fn recover_with_calls_and_image<'image>(
     let image_context: ImageContext<'_, 'image> = ImageContext { image, relocations };
     let switches: BTreeMap<usize, SwitchDispatch> =
         recover_aarch64_switches(&insns, base, machine_code.len(), &image_context);
+    let address_folds: BTreeMap<usize, PcRelativeAddressFold> =
+        recover_pc_relative_address_folds(&insns);
     let mut ignored_instructions: BTreeSet<usize> = BTreeSet::new();
     for dispatch in switches.values() {
         ignored_instructions.extend(dispatch.ignored_instructions.iter().copied());
     }
+    ignored_instructions.extend(
+        address_folds
+            .values()
+            .filter(|fold: &&PcRelativeAddressFold| fold.dest == fold.source)
+            .map(|fold: &PcRelativeAddressFold| fold.page_index),
+    );
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
     let mut flags: Option<TrackedFlags> = None;
@@ -537,6 +553,27 @@ fn recover_with_calls_and_image<'image>(
             continue;
         }
         if insn.mnemonic == "nop" {
+            continue;
+        }
+        if let Some(fold) = address_folds.get(&index) {
+            let dest: RegRef = aarch64_switch_register(fold.dest)
+                .map(|reg: RegRef| RegRef {
+                    reg: reg.reg,
+                    width: Width::W64,
+                })
+                .ok_or_else(|| reject_at(insn, "pc-relative address destination is unsupported"))?;
+            push_stmts(
+                &mut items,
+                base,
+                index,
+                vec![Stmt::Assign {
+                    dest,
+                    src: Source::Imm(i64::from_ne_bytes(fold.target.to_ne_bytes())),
+                }],
+            )?;
+            if dest.reg == Reg::Rax {
+                return_width = dest.width;
+            }
             continue;
         }
         match insn.mnemonic.as_str() {
@@ -1936,6 +1973,102 @@ fn switch_table_address(
         }
         _ => None,
     }
+}
+
+fn recover_pc_relative_address_folds(
+    insns: &[DisasmInsn],
+) -> BTreeMap<usize, PcRelativeAddressFold> {
+    let decoded: Vec<SwitchInsn> = insns.iter().map(decode_switch_instruction).collect();
+    let block_leaders: Vec<bool> = basic_block_leaders(insns, &decoded);
+    let mut folds: BTreeMap<usize, PcRelativeAddressFold> = BTreeMap::new();
+    for (index, instruction) in decoded.iter().copied().enumerate() {
+        let SwitchInsn::AddImmediate {
+            dest,
+            lhs,
+            immediate,
+        } = instruction
+        else {
+            continue;
+        };
+        if dest > 29 || lhs > 29 {
+            continue;
+        }
+        let Some((
+            page_index,
+            SwitchInsn::Adrp {
+                dest: page_dest,
+                target,
+            },
+        )) = single_block_definition(&decoded, &block_leaders, index, lhs)
+        else {
+            continue;
+        };
+        if page_dest != lhs {
+            continue;
+        }
+        let Some(target) = target.checked_add(u64::from(immediate)) else {
+            continue;
+        };
+        folds.insert(
+            index,
+            PcRelativeAddressFold {
+                page_index,
+                dest,
+                source: lhs,
+                target,
+            },
+        );
+    }
+    folds
+}
+
+fn basic_block_leaders(insns: &[DisasmInsn], decoded: &[SwitchInsn]) -> Vec<bool> {
+    let mut leaders: Vec<bool> = vec![false; decoded.len()];
+    if let Some(first) = leaders.first_mut() {
+        *first = true;
+    }
+    for (index, instruction) in decoded.iter().copied().enumerate() {
+        let target: Option<u64> = match instruction {
+            SwitchInsn::ConditionalBranch { target, .. } | SwitchInsn::DirectBranch { target } => {
+                if let Some(next) = leaders.get_mut(index.saturating_add(1)) {
+                    *next = true;
+                }
+                Some(target)
+            }
+            _ => None,
+        };
+        let Some(target) = target else {
+            continue;
+        };
+        if let Ok(target_index) = insns.binary_search_by_key(&target, |insn| insn.address)
+            && let Some(leader) = leaders.get_mut(target_index)
+        {
+            *leader = true;
+        }
+    }
+    leaders
+}
+
+fn single_block_definition(
+    decoded: &[SwitchInsn],
+    block_leaders: &[bool],
+    before: usize,
+    register: u8,
+) -> Option<(usize, SwitchInsn)> {
+    let bounded_start: usize = before.saturating_sub(MAX_SWITCH_SLICE_INSTRUCTIONS);
+    let block_start: usize = (bounded_start..=before)
+        .rev()
+        .find(|index| block_leaders.get(*index).copied().unwrap_or(false))?;
+    for index in (block_start..before).rev() {
+        let instruction: SwitchInsn = *decoded.get(index)?;
+        if instruction.defines(register) {
+            return Some((index, instruction));
+        }
+        if matches!(instruction, SwitchInsn::Other) {
+            return None;
+        }
+    }
+    None
 }
 
 fn resolve_switch_targets(

@@ -1,8 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use oxc_allocator::Allocator;
 use oxc_ast::Visit;
 use oxc_ast::ast::{
-    BinaryOperator, BindingPatternKind, Expression, ForStatement, ForStatementInit, Statement,
-    TryStatement, UnaryOperator, UpdateOperator, VariableDeclaration, VariableDeclarationKind,
+    AssignmentOperator, BinaryOperator, BindingIdentifier, BindingPatternKind, Expression,
+    ForStatement, ForStatementInit, Function, Statement, TryStatement, UnaryOperator,
+    UpdateOperator, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
@@ -23,10 +26,21 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         return (RuleOutcome::empty(), ForOfStats::default());
     }
 
+    let mut binding_collector: LooseHelperBindingCollector = LooseHelperBindingCollector {
+        counts: BTreeMap::new(),
+    };
+    binding_collector.visit_program(&parsed.program);
+    let mut helper_collector: LooseHelperCollector<'_> = LooseHelperCollector {
+        source,
+        binding_counts: &binding_collector.counts,
+        valid: BTreeSet::new(),
+    };
+    helper_collector.visit_program(&parsed.program);
     let mut collector: Collector = Collector {
         source,
         edits: Vec::new(),
         helper_loops_converted: 0,
+        loose_helpers: helper_collector.valid,
     };
     collector.visit_program(&parsed.program);
 
@@ -50,6 +64,60 @@ struct Collector<'s> {
     source: &'s str,
     edits: Vec<Edit>,
     helper_loops_converted: usize,
+    loose_helpers: BTreeSet<String>,
+}
+
+struct LooseHelperCollector<'s> {
+    source: &'s str,
+    binding_counts: &'s BTreeMap<String, usize>,
+    valid: BTreeSet<String>,
+}
+
+struct LooseHelperBindingCollector {
+    counts: BTreeMap<String, usize>,
+}
+
+impl<'a> Visit<'a> for LooseHelperBindingCollector {
+    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
+        let name: &str = identifier.name.as_str();
+        if is_loose_helper_name(name) {
+            let count: &mut usize = self.counts.entry(name.to_owned()).or_default();
+            *count = count.saturating_add(1);
+        }
+    }
+}
+
+impl<'a> Visit<'a> for LooseHelperCollector<'_> {
+    fn visit_function(&mut self, func: &Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
+        if let Some(id) = &func.id {
+            let name: &str = id.name.as_str();
+            if is_loose_helper_name(name) && self.binding_counts.get(name).copied() == Some(1) {
+                let body_text: &str = func.span.source_text(self.source);
+                if is_babel_loose_helper(body_text, name) {
+                    self.valid.insert(name.to_owned());
+                }
+            }
+        }
+        oxc_ast::visit::walk::walk_function(self, func, flags);
+    }
+}
+
+fn is_loose_helper_name(name: &str) -> bool {
+    matches!(
+        name,
+        "_createForOfIteratorHelperLoose" | "createForOfIteratorHelperLoose"
+    )
+}
+
+fn is_babel_loose_helper(source: &str, name: &str) -> bool {
+    let compact: String = source
+        .chars()
+        .filter(|character: &char| !character.is_whitespace())
+        .collect();
+    let expected: String = format!(
+        "function{name}(o){{varit=typeofSymbol!==\"undefined\"&&o[Symbol.iterator]||o[\"@@iterator\"];if(it)return(it=it.call(o)).next.bind(it);if(Array.isArray(o)){{vari=0;returnfunction(){{if(i>=o.length)return{{done:true}};return{{done:false,value:o[i++]}};}};}}thrownewTypeError(\"notiterable\");}}"
+    );
+    compact == expected
 }
 
 impl<'a> Visit<'a> for Collector<'_> {
@@ -69,6 +137,19 @@ impl<'a> Visit<'a> for Collector<'_> {
         let slice: &[Statement<'a>] = statements.as_slice();
         let mut index: usize = 0;
         while index < slice.len() {
+            if let Statement::ForStatement(for_stmt) = &slice[index]
+                && let Some(edit) = try_convert_loose(
+                    for_stmt,
+                    &slice[index + 1..],
+                    self.source,
+                    &self.loose_helpers,
+                )
+            {
+                self.edits.push(edit);
+                self.helper_loops_converted += 1;
+                index += 1;
+                continue;
+            }
             if let Some(values_edits) = try_convert_values_at(slice, index, self.source) {
                 self.edits.extend(values_edits);
                 self.helper_loops_converted += 1;
@@ -88,6 +169,133 @@ impl<'a> Visit<'a> for Collector<'_> {
             index += 1;
         }
     }
+}
+
+struct LooseMatch<'a> {
+    iterable: &'a Expression<'a>,
+    iterator_name: &'a str,
+    step_name: &'a str,
+    element_kind: VariableDeclarationKind,
+    element: ElementBinding<'a>,
+    body: &'a [Statement<'a>],
+}
+
+fn try_convert_loose(
+    for_stmt: &ForStatement<'_>,
+    tail: &[Statement<'_>],
+    source: &str,
+    loose_helpers: &BTreeSet<String>,
+) -> Option<Edit> {
+    let matched: LooseMatch<'_> = match_loose_loop(for_stmt, loose_helpers)?;
+    if body_uses(matched.body, matched.iterator_name)
+        || body_uses(matched.body, matched.step_name)
+        || body_uses(tail, matched.iterator_name)
+        || body_uses(tail, matched.step_name)
+        || matched
+            .element
+            .temp_ref
+            .is_some_and(|name: &str| body_uses(matched.body, name) || body_uses(tail, name))
+    {
+        return None;
+    }
+    let kind: &str = binding_kind(matched.element_kind, &matched.element, matched.body);
+    let iterable_src: &str = matched.iterable.span().source_text(source);
+    let body_src: String = remaining_body_source(matched.body, source);
+    Some(Edit {
+        start: for_stmt.span.start as usize,
+        end: for_stmt.span.end as usize,
+        replacement: format!(
+            "for ({kind} {element} of {iterable_src}) {{{body_src}}}",
+            element = matched.element.text
+        ),
+    })
+}
+
+fn match_loose_loop<'a>(
+    for_stmt: &'a ForStatement<'a>,
+    loose_helpers: &BTreeSet<String>,
+) -> Option<LooseMatch<'a>> {
+    if for_stmt.update.is_some() {
+        return None;
+    }
+    let Some(ForStatementInit::VariableDeclaration(init)) = &for_stmt.init else {
+        return None;
+    };
+    if init.declarations.len() != 2 || init.declarations[1].init.is_some() {
+        return None;
+    }
+    let iterator_name: &str = declarator_name(init, 0)?;
+    let step_name: &str = declarator_name(init, 1)?;
+    let iterable: &Expression<'_> =
+        loose_helper_argument(init.declarations[0].init.as_ref()?, loose_helpers)?;
+    if !is_loose_helper_test(for_stmt.test.as_ref()?, iterator_name, step_name) {
+        return None;
+    }
+    let Statement::BlockStatement(block) = &for_stmt.body else {
+        return None;
+    };
+    let (element_kind, element, consumed): (VariableDeclarationKind, ElementBinding<'_>, usize) =
+        element_from_step_value(block.body.as_slice(), step_name)?;
+    Some(LooseMatch {
+        iterable,
+        iterator_name,
+        step_name,
+        element_kind,
+        element,
+        body: &block.body.as_slice()[consumed..],
+    })
+}
+
+fn loose_helper_argument<'a>(
+    init: &'a Expression<'a>,
+    loose_helpers: &BTreeSet<String>,
+) -> Option<&'a Expression<'a>> {
+    let Expression::CallExpression(call) = init else {
+        return None;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return None;
+    };
+    if !loose_helpers.contains(callee.name.as_str()) || call.arguments.len() != 1 {
+        return None;
+    }
+    call.arguments[0].as_expression()
+}
+
+fn is_loose_helper_test(test: &Expression<'_>, iterator_name: &str, step_name: &str) -> bool {
+    let Expression::UnaryExpression(unary) = test else {
+        return false;
+    };
+    if unary.operator != UnaryOperator::LogicalNot {
+        return false;
+    }
+    let Expression::StaticMemberExpression(member) = &unary.argument else {
+        return false;
+    };
+    if member.property.name != "done" {
+        return false;
+    }
+    let Expression::ParenthesizedExpression(paren) = &member.object else {
+        return false;
+    };
+    let Expression::AssignmentExpression(assign) = &paren.expression else {
+        return false;
+    };
+    if assign.operator != AssignmentOperator::Assign {
+        return false;
+    }
+    if assign
+        .left
+        .get_identifier()
+        .is_none_or(|name: &str| name != step_name)
+    {
+        return false;
+    }
+    let Expression::CallExpression(call) = &assign.right else {
+        return false;
+    };
+    call.arguments.is_empty()
+        && matches!(&call.callee, Expression::Identifier(id) if id.name == iterator_name)
 }
 
 struct Match<'a> {

@@ -10,7 +10,10 @@ use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
 use disrobe_core::provenance::Language;
 
-use crate::macho::{MachoKind, detect_magic};
+use crate::macho::{
+    DylibReference, FatArchEntry, MachoKind, ParsedSlice, Section, Segment, detect_magic,
+    parse_slice, slice_bytes, walk_fat,
+};
 use crate::pass::{SwiftObjcReport, analyze as analyze_swift_objc};
 
 pub const PASS_ID: PassId = "swift-objc.classify";
@@ -31,7 +34,8 @@ impl Detector for SwiftObjcDetector {
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
         let kind: MachoKind = detect_magic(ctx.bytes)?;
-        Some(verdict_for(kind))
+        let marker: &'static str = semantic_marker(ctx.bytes, kind)?;
+        Some(verdict_for(kind, marker))
     }
 }
 
@@ -117,18 +121,67 @@ fn render_class_dump(report: &SwiftObjcReport) -> Option<String> {
     if emitted == 0 { None } else { Some(out) }
 }
 
-fn verdict_for(kind: MachoKind) -> DetectVerdict {
-    let (tag, marker, confidence): (&'static str, &'static str, f32) = match kind {
-        MachoKind::Fat32 => (TAG_MACHO_FAT32, "fat-magic-32", 0.95),
-        MachoKind::Fat64 => (TAG_MACHO_FAT64, "fat-magic-64", 0.95),
-        MachoKind::Slice32Le | MachoKind::Slice32Be => (TAG_MACHO_SLICE32, "mh-magic-32", 0.95),
-        MachoKind::Slice64Le | MachoKind::Slice64Be => (TAG_MACHO_SLICE64, "mh-magic-64", 0.95),
+fn semantic_marker(bytes: &[u8], kind: MachoKind) -> Option<&'static str> {
+    match kind {
+        MachoKind::Fat32 | MachoKind::Fat64 => walk_fat(bytes)
+            .ok()?
+            .iter()
+            .filter_map(|entry: &FatArchEntry| slice_bytes(bytes, entry))
+            .filter_map(|slice: &[u8]| parse_slice(slice).ok())
+            .find_map(|parsed: ParsedSlice| parsed_semantic_marker(&parsed)),
+        MachoKind::Slice32Le
+        | MachoKind::Slice32Be
+        | MachoKind::Slice64Le
+        | MachoKind::Slice64Be => {
+            let parsed: ParsedSlice = parse_slice(bytes).ok()?;
+            parsed_semantic_marker(&parsed)
+        }
+    }
+}
+
+fn parsed_semantic_marker(parsed: &ParsedSlice) -> Option<&'static str> {
+    let has_swift_section: bool = parsed
+        .segments
+        .iter()
+        .flat_map(|segment: &Segment| segment.sections.iter())
+        .any(|section: &Section| section.name.starts_with("__swift5_"));
+    if has_swift_section {
+        return Some("swift-metadata-section");
+    }
+    let has_objc_section: bool = parsed
+        .segments
+        .iter()
+        .flat_map(|segment: &Segment| segment.sections.iter())
+        .any(|section: &Section| section.name.starts_with("__objc_"));
+    if has_objc_section {
+        return Some("objc-metadata-section");
+    }
+    let has_swift_runtime: bool = parsed
+        .dylibs
+        .iter()
+        .any(|dylib: &DylibReference| dylib.name.starts_with("/usr/lib/swift/libswift"));
+    if has_swift_runtime {
+        return Some("swift-runtime-link");
+    }
+    parsed
+        .dylibs
+        .iter()
+        .any(|dylib: &DylibReference| dylib.name == "/usr/lib/libobjc.A.dylib")
+        .then_some("objc-runtime-link")
+}
+
+fn verdict_for(kind: MachoKind, marker: &'static str) -> DetectVerdict {
+    let tag: &'static str = match kind {
+        MachoKind::Fat32 => TAG_MACHO_FAT32,
+        MachoKind::Fat64 => TAG_MACHO_FAT64,
+        MachoKind::Slice32Le | MachoKind::Slice32Be => TAG_MACHO_SLICE32,
+        MachoKind::Slice64Le | MachoKind::Slice64Be => TAG_MACHO_SLICE64,
     };
     DetectVerdict::new(
         PASS_ID,
         tag,
         FAMILY_NATIVE_FORMAT,
-        confidence,
+        0.95,
         40,
         vec![marker],
         format!("macho kind={tag}"),
@@ -233,11 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn detect_macho_64_le() {
+    fn magic_without_swift_or_objc_evidence_is_not_claimed() {
         let bytes: Vec<u8> = vec![0xCF, 0xFA, 0xED, 0xFE, 0u8, 0u8, 0u8, 0u8];
-        let v: DetectVerdict =
-            Detector::detect(&SwiftObjcDetector, &ctx(&bytes)).expect("must detect");
-        assert!(v.format_tag.starts_with("macho-"));
+        assert!(Detector::detect(&SwiftObjcDetector, &ctx(&bytes)).is_none());
     }
 
     #[test]
@@ -290,11 +341,13 @@ mod tests {
     }
 
     #[test]
-    fn catalog_detect_maps_macho_slice() {
-        let bytes: Vec<u8> = vec![0xCF, 0xFA, 0xED, 0xFE, 0u8, 0u8, 0u8, 0u8];
-        let out: DetectorOutput = ObfuscatorCatalog::detect(&SwiftObjcDetector, &ctx(&bytes))
+    fn catalog_detect_maps_objc_macho_slice() {
+        let bytes: &[u8] =
+            include_bytes!("../tests/fixtures/objc_dispatch/dispatch_sends_x86_64.macho");
+        let out: DetectorOutput = ObfuscatorCatalog::detect(&SwiftObjcDetector, &ctx(bytes))
             .expect("macho catalog detect");
         assert_eq!(out.entry_id, "swift-macho");
+        assert_eq!(out.markers, vec!["objc-metadata-section"]);
     }
 
     #[test]

@@ -61,6 +61,12 @@ pub enum AtomicMemoryRefusal {
 
     #[error("memory.grow may execute for memory {memory_index}")]
     MemoryGrow { memory_index: u32 },
+
+    #[error("target {target} cannot express {operation} with the required semantics")]
+    UnsupportedTarget {
+        target: &'static str,
+        operation: &'static str,
+    },
 }
 
 #[derive(Debug, Error, Diagnostic)]

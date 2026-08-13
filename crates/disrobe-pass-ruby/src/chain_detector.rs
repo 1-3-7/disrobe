@@ -50,6 +50,9 @@ impl Detector for RubyDetector {
                 return Some(verdict_for(Flavor::MrubyBinary));
             }
             if head == JVM_CLASS_MAGIC.as_slice() {
+                if looks_like_macho_fat_header(bytes) {
+                    return None;
+                }
                 return Some(verdict_for(Flavor::JrubyClass));
             }
         }
@@ -67,6 +70,32 @@ impl Detector for RubyDetector {
         }
         None
     }
+}
+
+fn looks_like_macho_fat_header(bytes: &[u8]) -> bool {
+    let Some(header): Option<&[u8]> = bytes.get(..28) else {
+        return false;
+    };
+    let arch_count: u32 = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+    if !(1..=128).contains(&arch_count) {
+        return false;
+    }
+    let first_offset: u32 = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
+    let first_size: u32 = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
+    let Some(table_bytes): Option<u64> = u64::from(arch_count).checked_mul(20) else {
+        return false;
+    };
+    let Some(table_end): Option<u64> = 8_u64.checked_add(table_bytes) else {
+        return false;
+    };
+    let Some(first_end): Option<u64> = u64::from(first_offset).checked_add(u64::from(first_size))
+    else {
+        return false;
+    };
+    let Ok(input_len): Result<u64, std::num::TryFromIntError> = u64::try_from(bytes.len()) else {
+        return false;
+    };
+    u64::from(first_offset) >= table_end && first_size > 0 && first_end <= input_len
 }
 
 #[derive(Debug)]

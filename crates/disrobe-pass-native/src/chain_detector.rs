@@ -1,11 +1,13 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use disrobe_binfmt::{StructuralFormat, identify_by_structure};
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::TERMINAL_HINT;
 use disrobe_core::chain::{
     CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
-    DetectorOutput, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    DetectorOutput, FAMILY_NATIVE_FORMAT, FAMILY_PACKER_ARCHIVE, ObfuscatorCatalog, OutputKind,
+    Pass, SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::PassId;
@@ -23,6 +25,196 @@ use crate::packers::{
 };
 
 pub const PASS_ID: PassId = "native.packer-unpack";
+
+pub const IMAGE_PASS_ID: PassId = "native.image-classify";
+
+const IMAGE_LAST_RESORT_CONFIDENCE: f32 = 0.55;
+
+const IMAGE_SPECIFICITY: u16 = 70;
+
+const _: () = assert!(
+    IMAGE_LAST_RESORT_CONFIDENCE > disrobe_core::chain::SelectionPolicy::DEFAULT_MIN_CONFIDENCE,
+    "a claim at or below the selection floor is dropped before ranking and the input stalls again"
+);
+
+const IMAGE_MANIFEST_PATH: &str = "native-image.manifest.json";
+
+#[derive(Debug)]
+pub struct NativeImageDetector;
+
+impl Detector for NativeImageDetector {
+    #[inline]
+    fn id(&self) -> PassId {
+        IMAGE_PASS_ID
+    }
+
+    fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        let image: StructuralFormat = linked_image_format(ctx.bytes)?;
+        Some(image_verdict_for(image))
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeImagePass;
+
+impl Pass for NativeImagePass {
+    #[inline]
+    fn meta(&self) -> disrobe_core::chain::PassMeta {
+        IMAGE_META
+    }
+
+    #[inline]
+    fn id(&self) -> PassId {
+        IMAGE_PASS_ID
+    }
+
+    #[inline]
+    fn detector(&self) -> &'static dyn Detector {
+        &NativeImageDetector
+    }
+
+    #[inline]
+    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+        OutputKind::Mixed {
+            children: Vec::new(),
+        }
+    }
+
+    fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
+        let image: StructuralFormat = require_linked_image(&artifact.envelope)?;
+        Ok(Artifact::new(
+            Rung::Disasm,
+            render_image_manifest(image, artifact.envelope.len()).into_bytes(),
+            artifact.root_hash,
+        ))
+    }
+
+    fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        let image: StructuralFormat = require_linked_image(&input.envelope)?;
+        build_image_children(image, &input.envelope)
+    }
+}
+
+pub const IMAGE_META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::new(
+    IMAGE_PASS_ID,
+    disrobe_core::chain::Ecosystem::Native,
+    disrobe_core::chain::SupportQuality::Partial,
+    disrobe_core::chain::Determinism::Deterministic,
+    disrobe_core::chain::SafetyClass::Static,
+);
+
+pub static NATIVE_IMAGE_PASS: NativeImagePass = NativeImagePass;
+
+fn linked_image_format(bytes: &[u8]) -> Option<StructuralFormat> {
+    match identify_by_structure(bytes)? {
+        image @ (StructuralFormat::Pe
+        | StructuralFormat::Elf
+        | StructuralFormat::MachO
+        | StructuralFormat::MachOFat) => Some(image),
+        StructuralFormat::Wasm
+        | StructuralFormat::Zip
+        | StructuralFormat::Dex
+        | StructuralFormat::JavaClass => None,
+    }
+}
+
+fn require_linked_image(bytes: &[u8]) -> CoreResult<StructuralFormat> {
+    linked_image_format(bytes).ok_or_else(|| {
+        CoreError::PassFailure(
+            "DR-NAT-0940: native.image-classify: input is not a structurally valid pe, elf or \
+             mach-o image"
+                .to_string(),
+        )
+    })
+}
+
+fn image_verdict_for(image: StructuralFormat) -> DetectVerdict {
+    DetectVerdict::new(
+        IMAGE_PASS_ID,
+        image.label(),
+        FAMILY_NATIVE_FORMAT,
+        IMAGE_LAST_RESORT_CONFIDENCE,
+        IMAGE_SPECIFICITY,
+        vec!["structural-image-header"],
+        format!(
+            "structurally valid {label} image; this claim carries no ecosystem evidence, so it \
+             ranks below every ecosystem detector and wins only when none of them fires",
+            label = image.label()
+        ),
+    )
+}
+
+fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
+    let mut children: Vec<ChildArtifact> = Vec::new();
+    let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(bytes);
+    let manifest: Vec<u8> = serialize_image_report(
+        IMAGE_MANIFEST_PATH,
+        &image_manifest(image, bytes.len(), &identity),
+    )?;
+    push_image_terminal(&mut children, IMAGE_MANIFEST_PATH, manifest)?;
+    let identity_json: Vec<u8> = serialize_image_report("identity.json", &identity)?;
+    push_image_terminal(&mut children, "identity.json", identity_json)?;
+    let signatures: Vec<u8> = serialize_image_report("signatures.json", &signatures_report(bytes))?;
+    push_image_terminal(&mut children, "signatures.json", signatures)?;
+    let symbols: crate::backend_export::SymbolMap =
+        crate::backend_export::collect_recovered_symbols_with_oep(bytes, None).map_err(
+            |error| {
+                CoreError::PassFailure(format!(
+                    "DR-NAT-0942: native.image-classify: recover symbols: {error}"
+                ))
+            },
+        )?;
+    let symbols_json: String =
+        crate::backend_export::render_symbol_map_json(&symbols).map_err(|error| {
+            CoreError::PassFailure(format!(
+                "DR-NAT-0943: native.image-classify: serialize symbols.json: {error}"
+            ))
+        })?;
+    push_image_terminal(&mut children, "symbols.json", symbols_json.into_bytes())?;
+    let recon: ReconReport = report_bytes(bytes, None, &ReconConfig::default());
+    if !recon.findings.is_empty() {
+        let recon_json: Vec<u8> = serialize_image_report("recon.json", &recon)?;
+        push_image_terminal(&mut children, "recon.json", recon_json)?;
+    }
+    Ok(children)
+}
+
+fn serialize_image_report<T: serde::Serialize>(path: &str, value: &T) -> CoreResult<Vec<u8>> {
+    serde_json::to_vec_pretty(value).map_err(|error: serde_json::Error| {
+        CoreError::PassFailure(format!(
+            "DR-NAT-0941: native.image-classify: serialize {path}: {error}"
+        ))
+    })
+}
+
+fn image_manifest(
+    image: StructuralFormat,
+    byte_len: usize,
+    identity: &crate::sig_engine::SigReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema": "disrobe.native.image-classify/v1",
+        "structural_format": image.label(),
+        "image_bytes": byte_len,
+        "compiler": identity.compiler,
+        "linker": identity.linker,
+        "entropy": identity.entropy,
+        "control_flow_recovery_sweep": {
+            "run": false,
+            "reason": "the control-flow recovery sweep costs tens of seconds per megabyte of \
+                       code, so every plain image would pay minutes for it; run \
+                       native.packer-unpack or the dedicated native command when you want it",
+        },
+    })
+}
+
+fn render_image_manifest(image: StructuralFormat, byte_len: usize) -> String {
+    use std::fmt::Write as _;
+    let mut s: String = String::with_capacity(64);
+    s.push_str("native.image-classify\n");
+    let _ = writeln!(s, "format={label} bytes={byte_len}", label = image.label());
+    s
+}
 
 #[derive(Debug)]
 pub struct PackerDetector;
@@ -247,6 +439,20 @@ fn child(index: u32, path: &str, hint: Option<&str>, bytes: Vec<u8>) -> ChildArt
 fn push_terminal(children: &mut Vec<ChildArtifact>, path: &str, bytes: Vec<u8>) {
     let index: u32 = u32::try_from(children.len()).unwrap_or(u32::MAX);
     children.push(child(index, path, Some(TERMINAL_HINT), bytes));
+}
+
+fn push_image_terminal(
+    children: &mut Vec<ChildArtifact>,
+    path: &str,
+    bytes: Vec<u8>,
+) -> CoreResult<()> {
+    let index: u32 = u32::try_from(children.len()).map_err(|error| {
+        CoreError::PassFailure(format!(
+            "DR-NAT-0944: native.image-classify: child count is not representable: {error}"
+        ))
+    })?;
+    children.push(child(index, path, Some(TERMINAL_HINT), bytes));
+    Ok(())
 }
 
 fn signatures_report(bytes: &[u8]) -> serde_json::Value {
@@ -772,6 +978,9 @@ impl ObfuscatorCatalog for PackerDetector {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    use disrobe_core::chain::ConfidenceBand;
 
     use super::*;
     use crate::packers::{
@@ -787,6 +996,236 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../corpus/native/packers/fsg/Hash.packed.fsg.exe"
     ));
+
+    const PLAIN_PE: &str = "native/packers/aspack/AccessEnum.original.exe";
+    const PLAIN_ELF: &str = "native/discovery/disc.unstripped.elf";
+
+    fn image_ctx(bytes: &[u8]) -> DetectContext<'_> {
+        DetectContext {
+            bytes,
+            path_hint: None,
+            parent_hint: None,
+            depth: 0,
+        }
+    }
+
+    fn corpus_path(relative: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join(relative)
+    }
+
+    fn read_fixture(relative: &str) -> Vec<u8> {
+        let path: PathBuf = corpus_path(relative);
+        std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "{} is tracked in git and this case grades nothing without it, so its absence is \
+                 a damaged checkout rather than an optional dependency: {e}",
+                path.display()
+            )
+        })
+    }
+
+    #[test]
+    fn image_detector_id_is_stable() {
+        assert_eq!(NativeImageDetector.id(), IMAGE_PASS_ID);
+        assert_eq!(NATIVE_IMAGE_PASS.id(), IMAGE_PASS_ID);
+        assert_eq!(IMAGE_META.id, IMAGE_PASS_ID);
+    }
+
+    #[test]
+    fn image_detector_claims_a_real_unpacked_pe() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_PE);
+        let v: DetectVerdict = Detector::detect(&NativeImageDetector, &image_ctx(&bytes))
+            .expect("plain pe must be claimed");
+        assert_eq!(v.format_tag, "pe");
+        assert_eq!(v.family, FAMILY_NATIVE_FORMAT);
+    }
+
+    #[test]
+    fn image_detector_claims_a_real_unpacked_elf() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_ELF);
+        let v: DetectVerdict = Detector::detect(&NativeImageDetector, &image_ctx(&bytes))
+            .expect("plain elf must be claimed");
+        assert_eq!(v.format_tag, "elf");
+        assert_eq!(v.family, FAMILY_NATIVE_FORMAT);
+    }
+
+    #[test]
+    fn the_image_verdict_never_short_circuits_the_detector_sweep() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_PE);
+        let v: DetectVerdict = Detector::detect(&NativeImageDetector, &image_ctx(&bytes))
+            .expect("plain pe must be claimed");
+        assert!(
+            v.band != ConfidenceBand::High || v.specificity > 30,
+            "PassRegistry::run_all stops the sweep on the first high-band verdict with \
+             specificity <= 30. This pass sorts before nativelang, scriptlang and swift-objc, so \
+             a decisive verdict here would silence every one of them. Got band={band:?} \
+             specificity={spec}",
+            band = v.band,
+            spec = v.specificity,
+        );
+    }
+
+    #[test]
+    fn a_weaker_ecosystem_claim_still_outranks_the_image_claim() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_PE);
+        let ours: DetectVerdict = Detector::detect(&NativeImageDetector, &image_ctx(&bytes))
+            .expect("plain pe must be claimed");
+        for (rival_id, rival_confidence, rival_specificity) in [
+            ("nativelang.classify", 0.60_f32, 30_u16),
+            ("go.classify", 0.78, 38),
+            ("swift-objc.classify", 0.95, 40),
+            ("dotnet.classify", 0.95, 25),
+        ] {
+            let rival: DetectVerdict = DetectVerdict::new(
+                rival_id,
+                "rival",
+                FAMILY_NATIVE_FORMAT,
+                rival_confidence,
+                rival_specificity,
+                vec![],
+                String::new(),
+            );
+            assert_eq!(
+                disrobe_core::chain::compare(&rival, &ours),
+                std::cmp::Ordering::Greater,
+                "{rival_id} at its weakest published confidence must still beat this fallback",
+            );
+        }
+    }
+
+    #[test]
+    fn the_image_detector_abstains_on_every_other_structural_format() {
+        for (relative, rejected) in [
+            (
+                "jvm/allatori/AllatoriCaller.class",
+                StructuralFormat::JavaClass,
+            ),
+            (
+                "jvm/obfuscators/jbco/Sample-clean.jar",
+                StructuralFormat::Zip,
+            ),
+            ("wasm/wat/function_refs.wasm", StructuralFormat::Wasm),
+            ("jvm/dex/Hello.dex", StructuralFormat::Dex),
+        ] {
+            let bytes: Vec<u8> = read_fixture(relative);
+            assert_eq!(
+                identify_by_structure(&bytes),
+                Some(rejected),
+                "{relative} must still be identified as {rejected:?}; if the fixture stopped \
+                 parsing this case would pass while proving nothing",
+            );
+            assert!(
+                Detector::detect(&NativeImageDetector, &image_ctx(&bytes)).is_none(),
+                "{relative} is not a native image and must not be claimed by this pass",
+            );
+        }
+    }
+
+    #[test]
+    fn the_image_detector_abstains_on_bytes_that_are_no_image_at_all() {
+        for bytes in [vec![0u8; 4096], vec![0x55u8; 1024], b"MZ".to_vec()] {
+            assert!(Detector::detect(&NativeImageDetector, &image_ctx(&bytes)).is_none());
+        }
+    }
+
+    #[test]
+    fn the_image_pass_refuses_bytes_that_are_not_a_native_image() {
+        let a: Artifact = Artifact::new(Rung::Raw, vec![0u8; 512], [0u8; 32]);
+        let err: CoreError = NATIVE_IMAGE_PASS.run(&a).expect_err("must refuse");
+        assert!(format!("{err}").contains("DR-NAT-0940"));
+        let err: CoreError = NATIVE_IMAGE_PASS
+            .extract_children(&a)
+            .expect_err("must refuse");
+        assert!(format!("{err}").contains("DR-NAT-0940"));
+    }
+
+    fn assert_image_sidecars(relative: &str, expected_format: &str) {
+        let bytes: Vec<u8> = read_fixture(relative);
+        let byte_len: usize = bytes.len();
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+
+        let out: Artifact = NATIVE_IMAGE_PASS.run(&a).expect("run must succeed");
+        assert!(!out.envelope.is_empty());
+
+        let children: Vec<ChildArtifact> = NATIVE_IMAGE_PASS
+            .extract_children(&a)
+            .expect("child extraction must succeed");
+        for sidecar in [IMAGE_MANIFEST_PATH, "identity.json", "signatures.json"] {
+            let child: &ChildArtifact = children
+                .iter()
+                .find(|c: &&ChildArtifact| c.handle.relative_path == sidecar)
+                .unwrap_or_else(|| panic!("auto must emit the {sidecar} sidecar for {relative}"));
+            assert_eq!(
+                child.handle.hint.as_deref(),
+                Some(TERMINAL_HINT),
+                "{sidecar} is a report, not a re-chained input; a non-terminal child would feed \
+                 this pass's own output back into the chain",
+            );
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&child.bytes).expect("sidecar must be valid json");
+            assert!(parsed.is_object());
+        }
+        assert!(
+            children
+                .iter()
+                .all(|c: &ChildArtifact| c.handle.hint.as_deref() == Some(TERMINAL_HINT)),
+            "every child must be terminal, otherwise the chain re-detects the same image and the \
+             cycle guard turns a real recovery into a Cycle verdict",
+        );
+
+        let manifest: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == IMAGE_MANIFEST_PATH)
+            .expect("manifest present");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&manifest.bytes).expect("manifest json");
+        assert_eq!(parsed["structural_format"].as_str(), Some(expected_format));
+        assert_eq!(parsed["image_bytes"].as_u64(), Some(byte_len as u64));
+
+        let symbols: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == "symbols.json")
+            .unwrap_or_else(|| {
+                panic!("{relative} carries a symbol table, so symbols.json must be emitted")
+            });
+        assert!(
+            symbols.bytes.len() > 2,
+            "symbols.json must carry the recovered symbol map, not an empty document",
+        );
+    }
+
+    #[test]
+    fn every_image_report_stays_well_under_a_second() {
+        let bytes: Vec<u8> = read_fixture(PLAIN_PE);
+        let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let started: std::time::Instant = std::time::Instant::now();
+        let children: Vec<ChildArtifact> = NATIVE_IMAGE_PASS
+            .extract_children(&a)
+            .expect("child extraction must succeed");
+        let elapsed: std::time::Duration = started.elapsed();
+        assert!(!children.is_empty());
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "this pass claims the widest input class in the tool, so every report it emits must \
+             stay cheap. The control-flow recovery sweep was measured at 47s for this 175 kb \
+             image and 150s for a 2.4 mb image, which is why it is not on this path. Took \
+             {elapsed:?}",
+        );
+    }
+
+    #[test]
+    fn a_real_pe_yields_real_image_sidecars() {
+        assert_image_sidecars(PLAIN_PE, "pe");
+    }
+
+    #[test]
+    fn a_real_elf_yields_real_image_sidecars() {
+        assert_image_sidecars(PLAIN_ELF, "elf");
+    }
 
     #[test]
     fn detector_id_is_stable() {

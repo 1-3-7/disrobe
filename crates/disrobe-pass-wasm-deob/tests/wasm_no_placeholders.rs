@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use disrobe_pass_wasm_deob::{
-    CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, extract_signatures,
-    lift_function_body, lift_module_to_wat,
+    AtomicMemoryRefusal, CalleeNames, Error, FunctionSig, LiftResult, LiftTarget, ModuleSignatures,
+    extract_signatures, lift_function_body, lift_module_to_wat, try_lift_function_from_module,
 };
 use wasmparser::{FunctionBody, Parser, Payload};
 
@@ -17,6 +17,12 @@ const PLACEHOLDERS: &[&str] = &[
     "DR-WASMDEOB: untranslated",
     "__builtin_trap()",
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetCoverage {
+    Complete,
+    TypeScriptFenceRefusal,
+}
 
 fn defined_bodies(bytes: &[u8]) -> Vec<FunctionBody<'_>> {
     let mut out: Vec<FunctionBody<'_>> = Vec::new();
@@ -46,7 +52,7 @@ fn assert_no_placeholders(label: &str, source: &str) {
     }
 }
 
-fn check_corpus(name: &str, wat: &str) {
+fn check_corpus(name: &str, wat: &str, target_coverage: TargetCoverage) {
     let bytes: Vec<u8> = wat::parse_str(wat).unwrap_or_else(|e| panic!("assemble {name}: {e}"));
     let sigs: ModuleSignatures = extract_signatures(&bytes).expect("signatures");
     let defined: &[FunctionSig] = sigs.defined();
@@ -58,6 +64,23 @@ fn check_corpus(name: &str, wat: &str) {
         let sig: &FunctionSig = &defined[i];
         for target in [LiftTarget::Rust, LiftTarget::TypeScript, LiftTarget::C] {
             let lifted: LiftResult = lift_function_body(body, sig, &cs, target);
+            if target_coverage == TargetCoverage::TypeScriptFenceRefusal
+                && target == LiftTarget::TypeScript
+            {
+                let error: Error = try_lift_function_from_module(&bytes, i, target)
+                    .expect_err("TypeScript must refuse atomic.fence");
+                assert!(matches!(
+                    error,
+                    Error::AtomicMemoryModel(AtomicMemoryRefusal::UnsupportedTarget {
+                        target: "typescript",
+                        operation: "atomic.fence"
+                    })
+                ));
+                assert!(lifted.pseudo_source.contains(
+                    "target typescript cannot express atomic.fence with the required semantics"
+                ));
+                continue;
+            }
             assert_no_placeholders(
                 &format!("{name}:{}:{target:?}", sig.name),
                 &lifted.pseudo_source,
@@ -104,25 +127,29 @@ fn check_corpus(name: &str, wat: &str) {
 
 #[test]
 fn simd_corpus_lifts_without_placeholders() {
-    check_corpus("simd", SIMD_CORPUS);
+    check_corpus("simd", SIMD_CORPUS, TargetCoverage::Complete);
 }
 
 #[test]
 fn atomics_corpus_lifts_without_placeholders() {
-    check_corpus("atomics", ATOMICS_CORPUS);
+    check_corpus(
+        "atomics",
+        ATOMICS_CORPUS,
+        TargetCoverage::TypeScriptFenceRefusal,
+    );
 }
 
 #[test]
 fn reftable_corpus_lifts_without_placeholders() {
-    check_corpus("reftable", REFTABLE_CORPUS);
+    check_corpus("reftable", REFTABLE_CORPUS, TargetCoverage::Complete);
 }
 
 #[test]
 fn wide_corpus_lifts_without_placeholders() {
-    check_corpus("wide", WIDE_CORPUS);
+    check_corpus("wide", WIDE_CORPUS, TargetCoverage::Complete);
 }
 
 #[test]
 fn shared_everything_corpus_lifts_without_placeholders() {
-    check_corpus("shared_everything", SHARED_CORPUS);
+    check_corpus("shared_everything", SHARED_CORPUS, TargetCoverage::Complete);
 }

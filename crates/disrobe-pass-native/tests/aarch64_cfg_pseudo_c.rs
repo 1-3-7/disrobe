@@ -85,6 +85,67 @@ fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
 }
 
 #[test]
+fn aarch64_adrp_add_materializes_one_linked_address() {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus low address");
+    assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+    assert!(
+        !recovery.source.contains("2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_split_adrp_add_tracks_the_page_definition() {
+    let bytes: [u8; 24] = [
+        0x00, 0x00, 0x00, 0x90, 0x1f, 0x20, 0x03, 0xd5, 0x1f, 0x20, 0x03, 0xd5, 0x1f, 0x20, 0x03,
+        0xd5, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("split adrp plus low address");
+    assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+    assert!(
+        !recovery.source.contains("2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_adrp_add_does_not_cross_a_base_overwrite() {
+    let bytes: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x90, 0xe0, 0x03, 0x01, 0xaa, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("overwritten adrp base");
+    assert!(
+        !recovery.source.contains("2162979LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_adrp_add_does_not_cross_a_branch_predecessor() {
+    let bytes: [u8; 16] = [
+        0x40, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x90, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("branch-bypassed adrp base");
+    assert!(
+        !recovery.source.contains("2162979LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
 fn aarch64_real_clang_ror_recovers_as_a_shift_or_rotate() {
     let bytes: [u8; 12] = [
         0xe8, 0x03, 0x01, 0x4b, 0x00, 0x2c, 0xc8, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
