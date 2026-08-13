@@ -593,6 +593,114 @@ fn a_batch_of_only_errors_still_produces_a_valid_document() {
     }
 }
 
+fn zip_bundle() -> Vec<u8> {
+    let entries: [(&str, &[u8]); 2] = [
+        ("a/hello.txt", b"hello world\n".as_slice()),
+        ("b/second.txt", b"second payload\n".as_slice()),
+    ];
+    let mut local: Vec<u8> = Vec::new();
+    let mut central: Vec<u8> = Vec::new();
+    for (name, body) in entries {
+        let offset: u32 = u32::try_from(local.len()).expect("offset fits");
+        let crc: u32 = crc32(body);
+        let size: u32 = u32::try_from(body.len()).expect("size fits");
+        let name_len: u16 = u16::try_from(name.len()).expect("name fits");
+        local.extend_from_slice(b"PK\x03\x04");
+        local.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        local.extend_from_slice(&crc.to_le_bytes());
+        local.extend_from_slice(&size.to_le_bytes());
+        local.extend_from_slice(&size.to_le_bytes());
+        local.extend_from_slice(&name_len.to_le_bytes());
+        local.extend_from_slice(&0u16.to_le_bytes());
+        local.extend_from_slice(name.as_bytes());
+        local.extend_from_slice(body);
+        central.extend_from_slice(b"PK\x01\x02");
+        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&name_len.to_le_bytes());
+        central.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&offset.to_le_bytes());
+        central.extend_from_slice(name.as_bytes());
+    }
+    let central_offset: u32 = u32::try_from(local.len()).expect("central offset fits");
+    let central_len: u32 = u32::try_from(central.len()).expect("central length fits");
+    let count: u16 = u16::try_from(entries.len()).expect("entry count fits");
+    let mut out: Vec<u8> = local;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&central_len.to_le_bytes());
+    out.extend_from_slice(&central_offset.to_le_bytes());
+    out.extend_from_slice(&[0, 0]);
+    out
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xffff_ffff;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask: u32 = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[test]
+fn a_real_extracting_run_cites_each_recovered_file_against_the_chain_document() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-extract");
+    let work: PathBuf = scratch.path().to_path_buf();
+    let input: PathBuf = work.join("bundle.zip");
+    write(&input, &zip_bundle());
+    let out: PathBuf = work.join("run");
+    run_auto_into(&input, &out);
+
+    let chain: Value =
+        serde_json::from_slice(&std::fs::read(out.join("chain.json")).expect("chain.json"))
+            .expect("chain json");
+    let node_digests: BTreeSet<String> = chain["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter_map(|n: &Value| n["input_blake3"].as_str().map(str::to_string))
+        .collect();
+
+    let log: Value = report_sarif(&out);
+    let evidence: &Vec<Value> = log["runs"][0]["properties"]["disrobe"]["evidence"]
+        .as_array()
+        .expect("evidence");
+    let recovered: Vec<&Value> = evidence
+        .iter()
+        .filter(|e: &&Value| e["role"] == serde_json::json!("recovered-artifact"))
+        .collect();
+    assert_eq!(
+        recovered.len(),
+        2,
+        "both extracted files must be cited: {evidence:#?}"
+    );
+    for item in recovered {
+        let display: &str = item["display"].as_str().expect("display");
+        let bytes: Vec<u8> = std::fs::read(out.join(display))
+            .unwrap_or_else(|e| panic!("cited file {display} must exist: {e}"));
+        let digest: String = blake3::hash(&bytes).to_hex().to_string();
+        assert_eq!(
+            item["blake3"].as_str(),
+            Some(digest.as_str()),
+            "the cited digest of {display} must be blake3 over its bytes"
+        );
+        assert_eq!(item["byte_length"].as_u64(), Some(bytes.len() as u64));
+        assert!(
+            node_digests.contains(&digest),
+            "the digest of {display} must match a chain node input recorded independently in chain.json"
+        );
+    }
+}
+
 #[test]
 fn a_chain_run_leaves_the_citable_report_without_a_second_command() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =

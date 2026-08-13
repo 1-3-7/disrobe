@@ -494,6 +494,69 @@ fn artifact_evidence(relative: &str, source_dir: Option<&Path>) -> EvidenceItem 
     )
 }
 
+const EXTRACTED_DIR: &str = "extracted";
+const MAX_CITED_ARTIFACTS: usize = 4_096;
+const MAX_ARTIFACT_WALK_DEPTH: u32 = 32;
+
+fn walk_extracted(source_dir: Option<&Path>) -> (Vec<String>, Option<String>) {
+    let Some(root): Option<PathBuf> = source_dir.map(|dir: &Path| dir.join(EXTRACTED_DIR)) else {
+        return (Vec::new(), None);
+    };
+    if !root.is_dir() {
+        return (Vec::new(), None);
+    }
+    let mut pending: Vec<(PathBuf, u32)> = vec![(root.clone(), 0)];
+    let mut found: Vec<String> = Vec::new();
+    let mut truncated: Option<String> = None;
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries): Result<std::fs::ReadDir, std::io::Error> = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<(PathBuf, bool)> = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(kind): Result<std::fs::FileType, std::io::Error> = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            children.push((entry.path(), kind.is_dir()));
+        }
+        children.sort();
+        for (path, is_dir) in children {
+            if is_dir {
+                if depth >= MAX_ARTIFACT_WALK_DEPTH {
+                    truncated = Some(format!(
+                        "the recovered-artifact walk stopped at depth {MAX_ARTIFACT_WALK_DEPTH}; deeper files under `{EXTRACTED_DIR}` are not cited"
+                    ));
+                    continue;
+                }
+                pending.push((path, depth.saturating_add(1)));
+                continue;
+            }
+            if found.len() >= MAX_CITED_ARTIFACTS {
+                truncated = Some(format!(
+                    "the recovered-artifact walk stopped at {MAX_CITED_ARTIFACTS} files; the rest under `{EXTRACTED_DIR}` are not cited"
+                ));
+                break;
+            }
+            if let Some(relative) = path
+                .strip_prefix(root.parent().unwrap_or(&root))
+                .ok()
+                .and_then(|p: &Path| p.to_str())
+            {
+                found.push(relative.replace('\\', "/"));
+            }
+        }
+        if truncated.is_some() && found.len() >= MAX_CITED_ARTIFACTS {
+            break;
+        }
+    }
+    found.sort();
+    found.dedup();
+    (found, truncated)
+}
+
 fn collect_evidence(
     doc: &ChainDocument,
     stage_nodes: &[Option<&NodeDoc>],
@@ -658,10 +721,15 @@ fn build_single(
         )
         .collect();
     let (walls, failures): (Vec<WallView>, Vec<FailureView>) = collect_walls(doc, &stage_nodes);
-    let evidence: Vec<EvidenceItem> =
-        collect_evidence(doc, &stage_nodes, &all_artifacts, source_dir);
+    let (extracted, truncation): (Vec<String>, Option<String>) = walk_extracted(source_dir);
+    let mut cited: Vec<String> = all_artifacts.clone();
+    cited.extend(extracted);
+    let evidence: Vec<EvidenceItem> = collect_evidence(doc, &stage_nodes, &cited, source_dir);
     let reproduction: Reproduction = reproduction_for(target, &evidence);
     let mut notes: Vec<String> = Vec::new();
+    if let Some(note) = truncation {
+        notes.push(note);
+    }
     if recovery.passes.is_empty() {
         notes.push(
             "detect-only: no pass executed (format recognized but not transformed)".to_string(),
