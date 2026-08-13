@@ -7,6 +7,9 @@ use crate::dex::{
 };
 
 const ACC_INTERFACE: u32 = 0x0200;
+const ACC_FINAL: u32 = 0x0010;
+const ACC_SYNTHETIC: u32 = 0x1000;
+const OBJECT_DESCRIPTOR: &str = "Ljava/lang/Object;";
 
 #[derive(Debug, Clone)]
 pub(crate) struct DefaultInterfaceMethod {
@@ -38,6 +41,7 @@ struct ForwarderSite<'a> {
 
 struct ClassDeclaration {
     access_flags: u32,
+    superclass: Option<String>,
     interfaces: Vec<String>,
 }
 
@@ -420,8 +424,18 @@ fn class_declarations(dex: &DexFile, bytes: &[u8]) -> Option<BTreeMap<String, Cl
         let offset: usize = base.checked_add(ordinal.checked_mul(32)?)?;
         let class_index: usize = usize::try_from(read_u32(bytes, offset)?).ok()?;
         let access_flags: u32 = read_u32(bytes, offset + 4)?;
+        let superclass_index: u32 = read_u32(bytes, offset + 8)?;
         let interfaces_offset: usize = usize::try_from(read_u32(bytes, offset + 12)?).ok()?;
         let class: String = dex.type_names.get(class_index)?.clone();
+        let superclass: Option<String> = if superclass_index == crate::dex::DEX_NO_INDEX {
+            None
+        } else {
+            Some(
+                dex.type_names
+                    .get(usize::try_from(superclass_index).ok()?)?
+                    .clone(),
+            )
+        };
         let interfaces: Vec<String> = if interfaces_offset == 0 {
             Vec::new()
         } else {
@@ -450,6 +464,7 @@ fn class_declarations(dex: &DexFile, bytes: &[u8]) -> Option<BTreeMap<String, Cl
                 class,
                 ClassDeclaration {
                     access_flags,
+                    superclass,
                     interfaces,
                 },
             )
@@ -524,6 +539,684 @@ fn is_forwarder(
                 matches!(insns.as_slice(), [_, result, ret] if result.op == move_result && ret.op == return_value && result.regs == ret.regs)
             }
         }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MethodRefKind {
+    Static,
+    UnboundInstance,
+    BoundInstance,
+    Constructor,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RecoveredMethodRef {
+    pub(crate) kind: MethodRefKind,
+    pub(crate) owner: String,
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MethodReferenceRecovery {
+    by_class: BTreeMap<String, RecoveredMethodRef>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DesugarView<'a> {
+    pub(crate) interfaces: &'a DefaultInterfaceRecovery,
+    pub(crate) method_refs: &'a MethodReferenceRecovery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefValue {
+    Receiver,
+    Parameter(usize),
+    Capture(usize),
+    Allocation(u32),
+    Product,
+    Unknown,
+}
+
+#[derive(Debug)]
+struct TargetCall {
+    method_index: u32,
+    receiver: Option<RefValue>,
+    args: Vec<RefValue>,
+    is_constructor: bool,
+    is_static: bool,
+}
+
+const MAX_REFERENCE_BODY_INSNS: usize = 64;
+const BOX_TYPES: [(&str, &str, &str); 8] = [
+    ("Ljava/lang/Boolean;", "booleanValue", "Z"),
+    ("Ljava/lang/Byte;", "byteValue", "B"),
+    ("Ljava/lang/Character;", "charValue", "C"),
+    ("Ljava/lang/Double;", "doubleValue", "D"),
+    ("Ljava/lang/Float;", "floatValue", "F"),
+    ("Ljava/lang/Integer;", "intValue", "I"),
+    ("Ljava/lang/Long;", "longValue", "J"),
+    ("Ljava/lang/Short;", "shortValue", "S"),
+];
+
+impl MethodReferenceRecovery {
+    pub(crate) fn analyze(dex: &DexFile, bytes: &[u8], report: &CodeItemsReport) -> Self {
+        if !report.is_fully_decoded() || dex.call_site_ids_size != 0 || dex.method_handles_size != 0
+        {
+            return Self::default();
+        }
+        let Some(classes): Option<BTreeMap<String, ClassDeclaration>> =
+            class_declarations(dex, bytes)
+        else {
+            return Self::default();
+        };
+        let declared_access: BTreeMap<u32, u32> = report
+            .methods()
+            .iter()
+            .map(|method: &DexMethodCode| (method.method_index, method.access_flags))
+            .collect();
+        let mut owned: BTreeMap<&str, Vec<&DexMethodCode>> = BTreeMap::new();
+        for method in report.methods() {
+            owned.entry(method.class.as_str()).or_default().push(method);
+        }
+        let mut candidates: BTreeMap<String, RecoveredMethodRef> = BTreeMap::new();
+        for (class, declaration) in &classes {
+            if !is_lambda_shaped(declaration) {
+                continue;
+            }
+            let Some(methods): Option<&Vec<&DexMethodCode>> = owned.get(class.as_str()) else {
+                continue;
+            };
+            let Some(recovered): Option<RecoveredMethodRef> = match_lambda_class(
+                dex,
+                report,
+                &classes,
+                &declared_access,
+                class,
+                methods.as_slice(),
+            ) else {
+                continue;
+            };
+            candidates.insert(class.clone(), recovered);
+        }
+        if candidates.is_empty() {
+            return Self::default();
+        }
+        let accepted: BTreeSet<String> =
+            exclusively_constructed(dex, report, &classes, &candidates).unwrap_or_default();
+        Self {
+            by_class: candidates
+                .into_iter()
+                .filter(|(class, _): &(String, RecoveredMethodRef)| accepted.contains(class))
+                .collect(),
+        }
+    }
+
+    pub(crate) fn suppresses_class(&self, class: &str) -> bool {
+        self.by_class.contains_key(class)
+    }
+
+    pub(crate) fn recovered(&self, class: &str) -> Option<&RecoveredMethodRef> {
+        self.by_class.get(class)
+    }
+}
+
+fn is_lambda_shaped(declaration: &ClassDeclaration) -> bool {
+    declaration.access_flags & ACC_SYNTHETIC != 0
+        && declaration.access_flags & ACC_FINAL != 0
+        && declaration.access_flags & ACC_INTERFACE == 0
+        && declaration.access_flags & ACC_ABSTRACT == 0
+        && declaration.superclass.as_deref() == Some(OBJECT_DESCRIPTOR)
+        && declaration.interfaces.len() == 1
+}
+
+fn match_lambda_class(
+    dex: &DexFile,
+    report: &CodeItemsReport,
+    classes: &BTreeMap<String, ClassDeclaration>,
+    declared_access: &BTreeMap<u32, u32>,
+    class: &str,
+    methods: &[&DexMethodCode],
+) -> Option<RecoveredMethodRef> {
+    if methods.len() != 2 {
+        return None;
+    }
+    let first: &DexMethodCode = methods.first().copied()?;
+    let second: &DexMethodCode = methods.get(1).copied()?;
+    let (constructor, implementation): (&DexMethodCode, &DexMethodCode) =
+        match (first.is_direct, second.is_direct) {
+            (true, false) => (first, second),
+            (false, true) => (second, first),
+            _ => return None,
+        };
+    if constructor.method_name != "<init>"
+        || implementation.access_flags & (ACC_STATIC | ACC_ABSTRACT) != 0
+        || implementation.access_flags & ACC_SYNTHETIC != 0
+    {
+        return None;
+    }
+    let DexCodeState::Decoded(constructor_index) = constructor.state else {
+        return None;
+    };
+    let DexCodeState::Decoded(implementation_index) = implementation.state else {
+        return None;
+    };
+    let constructor_item: &CodeItem = report.decoded().get(constructor_index)?;
+    let implementation_item: &CodeItem = report.decoded().get(implementation_index)?;
+    let captures: Vec<u32> = constructor_captures(dex, class, constructor_item)?;
+    match_reference_body(
+        dex,
+        classes,
+        declared_access,
+        implementation_item,
+        &captures,
+    )
+}
+
+fn instance_parameter_layout(item: &CodeItem) -> Option<(u16, Vec<u16>)> {
+    let parsed: MethodDescriptor = crate::descriptor::parse_method(&item.method_descriptor)?;
+    let mut cursor: u16 = item.registers_size.checked_sub(item.ins_size)?;
+    let this_reg: u16 = cursor;
+    cursor = cursor.checked_add(1)?;
+    let mut params: Vec<u16> = Vec::with_capacity(parsed.params.len());
+    for param in &parsed.params {
+        params.push(cursor);
+        cursor = cursor.checked_add(if param.category_two() { 2 } else { 1 })?;
+    }
+    if cursor != item.registers_size {
+        return None;
+    }
+    Some((this_reg, params))
+}
+
+fn constructor_captures(dex: &DexFile, class: &str, item: &CodeItem) -> Option<Vec<u32>> {
+    if !item.tries.is_empty() {
+        return None;
+    }
+    let (this_reg, param_regs): (u16, Vec<u16>) = instance_parameter_layout(item)?;
+    let insns: Vec<DalvikInsn> = decode_method(&item.insns);
+    if insns.len() != param_regs.len().checked_add(2)? {
+        return None;
+    }
+    let opening: &DalvikInsn = insns.first()?;
+    if opening.op != 0x70 || opening.regs.as_slice() != [this_reg] {
+        return None;
+    }
+    let superclass_init: &crate::dex::MethodId = dex.method_ids.get(opening.index? as usize)?;
+    if superclass_init.class != OBJECT_DESCRIPTOR
+        || superclass_init.name != "<init>"
+        || !superclass_init.proto.parameters.is_empty()
+    {
+        return None;
+    }
+    let mut captures: Vec<u32> = Vec::with_capacity(param_regs.len());
+    for (position, &param_reg) in param_regs.iter().enumerate() {
+        let store: &DalvikInsn = insns.get(position.checked_add(1)?)?;
+        if !matches!(store.op, 0x59..=0x5F) || store.regs.as_slice() != [param_reg, this_reg] {
+            return None;
+        }
+        let field_index: u32 = store.index?;
+        let field: &crate::dex::FieldId = dex.field_ids.get(field_index as usize)?;
+        if field.class != class || captures.contains(&field_index) {
+            return None;
+        }
+        captures.push(field_index);
+    }
+    if insns.last()?.op != 0x0E {
+        return None;
+    }
+    Some(captures)
+}
+
+fn is_boxing_adapter(method: &crate::dex::MethodId) -> bool {
+    BOX_TYPES
+        .iter()
+        .any(|&(boxed, unbox, primitive): &(&str, &str, &str)| {
+            if method.class != boxed {
+                return false;
+            }
+            let unboxes: bool = method.name == unbox
+                && method.proto.parameters.is_empty()
+                && method.proto.return_type == primitive;
+            let boxes: bool = method.name == "valueOf"
+                && method.proto.return_type == boxed
+                && method.proto.parameters.len() == 1
+                && method
+                    .proto
+                    .parameters
+                    .first()
+                    .is_some_and(|p: &String| p == primitive);
+            unboxes || boxes
+        })
+}
+
+const fn is_category_two(descriptor: &str) -> bool {
+    matches!(descriptor.as_bytes(), [b'J' | b'D'])
+}
+
+fn match_reference_body(
+    dex: &DexFile,
+    classes: &BTreeMap<String, ClassDeclaration>,
+    declared_access: &BTreeMap<u32, u32>,
+    item: &CodeItem,
+    captures: &[u32],
+) -> Option<RecoveredMethodRef> {
+    if !item.tries.is_empty() {
+        return None;
+    }
+    let parsed: MethodDescriptor = crate::descriptor::parse_method(&item.method_descriptor)?;
+    let (this_reg, param_regs): (u16, Vec<u16>) = instance_parameter_layout(item)?;
+    let insns: Vec<DalvikInsn> = decode_method(&item.insns);
+    if insns.is_empty() || insns.len() > MAX_REFERENCE_BODY_INSNS {
+        return None;
+    }
+    let mut invoke_total: usize = 0;
+    let mut non_adapter: usize = 0;
+    for insn in &insns {
+        if !matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
+            continue;
+        }
+        invoke_total = invoke_total.checked_add(1)?;
+        let method: &crate::dex::MethodId = dex.method_ids.get(insn.index? as usize)?;
+        if !is_boxing_adapter(method) {
+            non_adapter = non_adapter.checked_add(1)?;
+        }
+    }
+    let adapters_transparent: bool = invoke_total > 1;
+    if invoke_total == 0 || (adapters_transparent && non_adapter != 1) {
+        return None;
+    }
+
+    let mut values: BTreeMap<u16, RefValue> = BTreeMap::new();
+    values.insert(this_reg, RefValue::Receiver);
+    for (position, &reg) in param_regs.iter().enumerate() {
+        values.insert(reg, RefValue::Parameter(position));
+    }
+    let mut pending: Option<RefValue> = None;
+    let mut target: Option<TargetCall> = None;
+    let mut exit: Option<Option<RefValue>> = None;
+
+    for (position, insn) in insns.iter().enumerate() {
+        if exit.is_some() {
+            return None;
+        }
+        let last: bool = position.checked_add(1)? == insns.len();
+        match insn.op {
+            0x01..=0x09 => {
+                let (&dest, &src): (&u16, &u16) = (insn.regs.first()?, insn.regs.get(1)?);
+                let value: RefValue = *values.get(&src)?;
+                values.insert(dest, value);
+            }
+            0x0A..=0x0C => {
+                let &dest: &u16 = insn.regs.first()?;
+                values.insert(dest, pending.take()?);
+            }
+            0x0E => {
+                if !last {
+                    return None;
+                }
+                exit = Some(None);
+            }
+            0x0F..=0x11 => {
+                if !last {
+                    return None;
+                }
+                let &reg: &u16 = insn.regs.first()?;
+                exit = Some(Some(*values.get(&reg)?));
+            }
+            0x1F => {
+                let &reg: &u16 = insn.regs.first()?;
+                if !values.contains_key(&reg) {
+                    return None;
+                }
+            }
+            0x22 => {
+                let &dest: &u16 = insn.regs.first()?;
+                values.insert(dest, RefValue::Allocation(insn.index?));
+            }
+            0x52..=0x58 => {
+                let (&dest, &object): (&u16, &u16) = (insn.regs.first()?, insn.regs.get(1)?);
+                if values.get(&object) != Some(&RefValue::Receiver) {
+                    return None;
+                }
+                let field_index: u32 = insn.index?;
+                let slot: usize = captures
+                    .iter()
+                    .position(|&candidate: &u32| candidate == field_index)?;
+                values.insert(dest, RefValue::Capture(slot));
+            }
+            0x6E..=0x72 => {
+                let call: TargetCall = read_invoke(dex, &values, insn)?;
+                let method: &crate::dex::MethodId =
+                    dex.method_ids.get(call.method_index as usize)?;
+                if adapters_transparent && is_boxing_adapter(method) {
+                    pending = Some(adapter_source(&call)?);
+                    continue;
+                }
+                if target.is_some()
+                    || declared_access
+                        .get(&call.method_index)
+                        .is_some_and(|flags: &u32| flags & ACC_SYNTHETIC != 0)
+                    || classes
+                        .get(&method.class)
+                        .is_some_and(|d: &ClassDeclaration| d.access_flags & ACC_SYNTHETIC != 0)
+                {
+                    return None;
+                }
+                match (insn.op, call.is_constructor) {
+                    (0x70, true) => {
+                        let RefValue::Allocation(type_index) = call.receiver? else {
+                            return None;
+                        };
+                        if dex.type_names.get(type_index as usize)? != &method.class {
+                            return None;
+                        }
+                        let &allocated: &u16 = insn.regs.first()?;
+                        values.insert(allocated, RefValue::Product);
+                        pending = None;
+                    }
+                    (0x6E | 0x71 | 0x72, false) => {
+                        pending = if method.proto.return_type == "V" {
+                            None
+                        } else {
+                            Some(RefValue::Product)
+                        };
+                    }
+                    _ => return None,
+                }
+                target = Some(call);
+            }
+            _ => return None,
+        }
+    }
+
+    let target: TargetCall = target?;
+    let method: &crate::dex::MethodId = dex.method_ids.get(target.method_index as usize)?;
+    match (parsed.returns, exit?) {
+        (crate::descriptor::JavaType::Void, None) => {}
+        (crate::descriptor::JavaType::Void, Some(_)) | (_, None) => return None,
+        (_, Some(returned)) => {
+            if returned != RefValue::Product {
+                return None;
+            }
+        }
+    }
+    classify_reference(method, &target, captures.len(), param_regs.len())
+}
+
+fn adapter_source(call: &TargetCall) -> Option<RefValue> {
+    if call.is_static {
+        if call.args.len() != 1 {
+            return None;
+        }
+        return call.args.first().copied();
+    }
+    if !call.args.is_empty() {
+        return None;
+    }
+    call.receiver
+}
+
+fn read_invoke(
+    dex: &DexFile,
+    values: &BTreeMap<u16, RefValue>,
+    insn: &DalvikInsn,
+) -> Option<TargetCall> {
+    let method_index: u32 = insn.index?;
+    let method: &crate::dex::MethodId = dex.method_ids.get(method_index as usize)?;
+    let is_static: bool = insn.op == 0x71;
+    let mut slots: std::slice::Iter<'_, u16> = insn.regs.iter();
+    let receiver: Option<RefValue> = if is_static {
+        None
+    } else {
+        Some(*values.get(slots.next()?)?)
+    };
+    let mut args: Vec<RefValue> = Vec::with_capacity(method.proto.parameters.len());
+    for parameter in &method.proto.parameters {
+        let &reg: &u16 = slots.next()?;
+        args.push(*values.get(&reg).unwrap_or(&RefValue::Unknown));
+        if is_category_two(parameter) {
+            let _: &u16 = slots.next()?;
+        }
+    }
+    if slots.next().is_some() {
+        return None;
+    }
+    Some(TargetCall {
+        method_index,
+        receiver,
+        args,
+        is_constructor: method.name == "<init>",
+        is_static,
+    })
+}
+
+fn args_are_parameters(args: &[RefValue], offset: usize) -> bool {
+    args.iter()
+        .enumerate()
+        .all(|(position, value): (usize, &RefValue)| {
+            position
+                .checked_add(offset)
+                .is_some_and(|expected: usize| *value == RefValue::Parameter(expected))
+        })
+}
+
+fn classify_reference(
+    method: &crate::dex::MethodId,
+    target: &TargetCall,
+    captures: usize,
+    interface_arity: usize,
+) -> Option<RecoveredMethodRef> {
+    let kind: MethodRefKind = if target.is_constructor {
+        if captures != 0
+            || target.args.len() != interface_arity
+            || !args_are_parameters(&target.args, 0)
+        {
+            return None;
+        }
+        MethodRefKind::Constructor
+    } else if target.is_static {
+        if captures != 0
+            || target.args.len() != interface_arity
+            || !args_are_parameters(&target.args, 0)
+        {
+            return None;
+        }
+        MethodRefKind::Static
+    } else {
+        match target.receiver? {
+            RefValue::Parameter(0) => {
+                if captures != 0
+                    || interface_arity == 0
+                    || target.args.len().checked_add(1)? != interface_arity
+                    || !args_are_parameters(&target.args, 1)
+                {
+                    return None;
+                }
+                MethodRefKind::UnboundInstance
+            }
+            RefValue::Capture(0) => {
+                if captures != 1
+                    || target.args.len() != interface_arity
+                    || !args_are_parameters(&target.args, 0)
+                {
+                    return None;
+                }
+                MethodRefKind::BoundInstance
+            }
+            _ => return None,
+        }
+    };
+    let name: String = if target.is_constructor {
+        "new".to_owned()
+    } else {
+        if !crate::name_disambig::is_java_source_identifier(&method.name) {
+            return None;
+        }
+        method.name.clone()
+    };
+    Some(RecoveredMethodRef {
+        kind,
+        owner: method.class.clone(),
+        name,
+    })
+}
+
+fn exclusively_constructed(
+    dex: &DexFile,
+    report: &CodeItemsReport,
+    classes: &BTreeMap<String, ClassDeclaration>,
+    candidates: &BTreeMap<String, RecoveredMethodRef>,
+) -> Option<BTreeSet<String>> {
+    let mut accepted: BTreeSet<String> = candidates.keys().cloned().collect();
+    let types: BTreeMap<u32, String> = dex
+        .type_names
+        .iter()
+        .enumerate()
+        .filter(|(_, name): &(usize, &String)| candidates.contains_key(*name))
+        .filter_map(|(index, name): (usize, &String)| {
+            Some((u32::try_from(index).ok()?, name.clone()))
+        })
+        .collect();
+    let binary_names: BTreeMap<String, String> = candidates
+        .keys()
+        .map(|class: &String| {
+            (
+                class
+                    .trim_start_matches('L')
+                    .trim_end_matches(';')
+                    .replace('/', "."),
+                class.clone(),
+            )
+        })
+        .collect();
+    for declaration in classes.values() {
+        if let Some(superclass) = declaration.superclass.as_ref() {
+            accepted.remove(superclass);
+        }
+        for interface in &declaration.interfaces {
+            accepted.remove(interface);
+        }
+    }
+    for field in &dex.field_ids {
+        accepted.remove(&field.type_name);
+    }
+    for method in &dex.method_ids {
+        accepted.remove(&method.proto.return_type);
+        for parameter in &method.proto.parameters {
+            accepted.remove(parameter);
+        }
+    }
+    for value in &dex.strings {
+        if let Some(class) = binary_names.get(value.as_str()) {
+            accepted.remove(class);
+        }
+    }
+    let mut work: usize = 0;
+    let mut constructed_here: BTreeSet<String> = BTreeSet::new();
+    for item in report.decoded() {
+        if candidates.contains_key(item.class.as_str()) {
+            continue;
+        }
+        let insns: Vec<DalvikInsn> = decode_method(&item.insns);
+        work = work.checked_add(insns.len())?;
+        if work > MAX_DESUGAR_SCAN_INSNS {
+            return None;
+        }
+        let mut live: BTreeMap<u16, String> = BTreeMap::new();
+        for insn in &insns {
+            let constructed: Option<String> = construction_site(dex, candidates, insn);
+            if let Some(class) = constructed {
+                constructed_here.insert(class.clone());
+                let receiver: u16 = *insn.regs.first()?;
+                match live.remove(&receiver) {
+                    Some(pending) if pending == class => {}
+                    Some(pending) => {
+                        accepted.remove(&pending);
+                        accepted.remove(&class);
+                    }
+                    None => {
+                        accepted.remove(&class);
+                    }
+                }
+                for &reg in insn.regs.iter().skip(1) {
+                    if let Some(pending) = live.get(&reg) {
+                        accepted.remove(pending);
+                    }
+                }
+                continue;
+            }
+            if insn.op == 0x22
+                && let Some(class) = insn.index.and_then(|i: u32| types.get(&i))
+            {
+                let dest: u16 = *insn.regs.first()?;
+                if let Some(pending) = live.insert(dest, class.clone()) {
+                    accepted.remove(&pending);
+                }
+                continue;
+            }
+            if !live.is_empty() && transfers_control(insn.op) {
+                for pending in live.values() {
+                    accepted.remove(pending);
+                }
+                live.clear();
+            }
+            for &reg in &insn.regs {
+                if let Some(pending) = live.get(&reg) {
+                    accepted.remove(pending);
+                }
+            }
+            if let Some(class) = referenced_candidate(dex, candidates, &types, insn) {
+                accepted.remove(&class);
+            }
+        }
+        for pending in live.values() {
+            accepted.remove(pending);
+        }
+    }
+    accepted.retain(|class: &String| constructed_here.contains(class));
+    Some(accepted)
+}
+
+const fn transfers_control(op: u8) -> bool {
+    matches!(op, 0x0E..=0x11 | 0x27..=0x2C | 0x32..=0x3D)
+}
+
+fn construction_site(
+    dex: &DexFile,
+    candidates: &BTreeMap<String, RecoveredMethodRef>,
+    insn: &DalvikInsn,
+) -> Option<String> {
+    if insn.op != 0x70 {
+        return None;
+    }
+    let method: &crate::dex::MethodId = dex.method_ids.get(insn.index? as usize)?;
+    if method.name != "<init>" || !candidates.contains_key(&method.class) {
+        return None;
+    }
+    Some(method.class.clone())
+}
+
+fn referenced_candidate(
+    dex: &DexFile,
+    candidates: &BTreeMap<String, RecoveredMethodRef>,
+    types: &BTreeMap<u32, String>,
+    insn: &DalvikInsn,
+) -> Option<String> {
+    let index: u32 = insn.index?;
+    match insn.op {
+        0x1C | 0x1F | 0x20 | 0x22..=0x25 => types.get(&index).cloned(),
+        0x52..=0x6D => dex
+            .field_ids
+            .get(index as usize)
+            .map(|field: &crate::dex::FieldId| field.class.clone())
+            .filter(|class: &String| candidates.contains_key(class)),
+        0x6E..=0x72 | 0x74..=0x78 => dex
+            .method_ids
+            .get(index as usize)
+            .map(|method: &crate::dex::MethodId| method.class.clone())
+            .filter(|class: &String| candidates.contains_key(class)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

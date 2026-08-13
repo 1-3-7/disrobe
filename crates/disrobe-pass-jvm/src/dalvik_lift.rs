@@ -7,7 +7,7 @@ use crate::dex::{DexFile, FieldId, MethodId};
 
 pub(crate) struct MethodContext<'a> {
     pub(crate) dex: &'a DexFile,
-    pub(crate) desugar: &'a crate::dalvik_desugar::DefaultInterfaceRecovery,
+    pub(crate) desugar: crate::dalvik_desugar::DesugarView<'a>,
     pub(crate) registers_size: u16,
     pub(crate) ins_size: u16,
     pub(crate) is_static: bool,
@@ -24,7 +24,7 @@ impl<'a> MethodContext<'a> {
         descriptor: &str,
         is_static: bool,
         inline_temporaries: bool,
-        desugar: &'a crate::dalvik_desugar::DefaultInterfaceRecovery,
+        desugar: crate::dalvik_desugar::DesugarView<'a>,
     ) -> Self {
         let parsed: Option<MethodDescriptor> = descriptor::parse_method(descriptor);
         let first_param_reg: u16 = registers_size.saturating_sub(ins_size);
@@ -567,7 +567,7 @@ fn invoke(
     let is_direct: bool = matches!(insn.op, 0x70 | 0x76);
     let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = insn
         .index
-        .and_then(|index: u32| ctx.desugar.rewrites_call(index));
+        .and_then(|index: u32| ctx.desugar.interfaces.rewrites_call(index));
     let owner: String = recovered_default.map_or_else(
         || descriptor::binary_to_source(&method.class),
         |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
@@ -617,7 +617,14 @@ fn invoke(
             .collect::<Vec<String>>()
             .join(", ");
         if let Some(Expr::New(ty)) = &receiver {
-            let constructed: Expr = Expr::Opaque(format!("new {ty}({joined})"));
+            let reference: Option<String> =
+                ctx.desugar.method_refs.recovered(&method.class).and_then(
+                    |recovered: &crate::dalvik_desugar::RecoveredMethodRef| {
+                        render_method_reference(recovered, &args)
+                    },
+                );
+            let constructed: Expr =
+                Expr::Opaque(reference.unwrap_or_else(|| format!("new {ty}({joined})")));
             *pending_result = Some(PendingResult {
                 expr: constructed.clone(),
                 materialized_in: receiver_register,
@@ -649,6 +656,39 @@ fn invoke(
         materialized_in,
     });
     LiftOutcome::None
+}
+
+fn render_method_reference(
+    recovered: &crate::dalvik_desugar::RecoveredMethodRef,
+    args: &[Expr],
+) -> Option<String> {
+    let name: &str = recovered.name.as_str();
+    if recovered.kind == crate::dalvik_desugar::MethodRefKind::BoundInstance {
+        if args.len() != 1 {
+            return None;
+        }
+        let rendered: String = args.first()?.render();
+        let receiver: String = if is_expression_name(&rendered) {
+            rendered
+        } else {
+            format!("({rendered})")
+        };
+        return Some(format!("{receiver}::{name}"));
+    }
+    if !args.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}::{name}",
+        descriptor::binary_to_source(&recovered.owner)
+    ))
+}
+
+fn is_expression_name(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .split('.')
+            .all(crate::name_disambig::is_java_source_identifier)
 }
 
 fn returns_receiver(method: &MethodId) -> bool {

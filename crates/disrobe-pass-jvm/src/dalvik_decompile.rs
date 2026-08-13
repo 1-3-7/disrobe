@@ -65,8 +65,14 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let code_scan_complete: bool = code_report.is_fully_decoded();
     let decode_error_count: usize = code_report.error_count();
     let items: Vec<CodeItem> = code_report.decoded().to_vec();
-    let desugar: crate::dalvik_desugar::DefaultInterfaceRecovery =
+    let interfaces: crate::dalvik_desugar::DefaultInterfaceRecovery =
         crate::dalvik_desugar::DefaultInterfaceRecovery::analyze(dex, bytes, &code_report);
+    let method_refs: crate::dalvik_desugar::MethodReferenceRecovery =
+        crate::dalvik_desugar::MethodReferenceRecovery::analyze(dex, bytes, &code_report);
+    let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
+        interfaces: &interfaces,
+        method_refs: &method_refs,
+    };
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
         by_class.entry(descriptor_name.clone()).or_default();
@@ -120,7 +126,9 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let mut fallback: usize = 0;
 
     for (class_descriptor, methods) in &by_class {
-        if desugar.suppresses_class(class_descriptor) {
+        if desugar.interfaces.suppresses_class(class_descriptor)
+            || desugar.method_refs.suppresses_class(class_descriptor)
+        {
             continue;
         }
         let recovery: Option<&crate::dalvik_strdec::DexStringRecovery> =
@@ -133,7 +141,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             recovery,
             &cff_by_method,
             &generic_by_method,
-            &desugar,
+            desugar,
         );
         source.push_str(&rendered.text);
         source.push('\n');
@@ -220,7 +228,7 @@ fn render_class(
         (String, String),
         Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>,
     >,
-    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> RenderedClass {
     let binary: String = descriptor::binary_to_source(class_descriptor);
     let (package, simple): (Option<&str>, &str) = match binary.rfind('.') {
@@ -236,14 +244,14 @@ fn render_class(
     let class_is_abstract: bool = methods
         .iter()
         .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
-    let class_declaration: &str = if desugar.recovers_interface(class_descriptor) {
+    let class_declaration: &str = if desugar.interfaces.recovers_interface(class_descriptor) {
         "public interface"
     } else if class_is_abstract {
         "public abstract class"
     } else {
         "public class"
     };
-    let implemented: String = match desugar.implemented_interfaces(class_descriptor) {
+    let implemented: String = match desugar.interfaces.implemented_interfaces(class_descriptor) {
         Some(interfaces) if !interfaces.is_empty() => {
             let names: Vec<String> = interfaces
                 .iter()
@@ -263,15 +271,15 @@ fn render_class(
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
     for method in methods {
-        if desugar.suppresses_method(
+        if desugar.interfaces.suppresses_method(
             &method.class,
             &method.method_name,
             &method.method_descriptor,
         ) {
             continue;
         }
-        let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = desugar
-            .recovered_method(
+        let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> =
+            desugar.interfaces.recovered_method(
                 &method.class,
                 &method.method_name,
                 &method.method_descriptor,
@@ -505,7 +513,7 @@ fn render_method(
     item: &CodeItem,
     cff: Option<&crate::dalvik_dexguard::DalvikMethodCff>,
     generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>>,
-    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
     recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod>,
 ) -> RenderedMethod {
     let method_descriptor: &str = recovered_default.map_or(
@@ -661,7 +669,7 @@ fn lift_method(
     is_static: bool,
     method_descriptor: &str,
     inline_temporaries: bool,
-    desugar: &crate::dalvik_desugar::DefaultInterfaceRecovery,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> MethodBody {
     if item.insns.is_empty() {
         return MethodBody {
