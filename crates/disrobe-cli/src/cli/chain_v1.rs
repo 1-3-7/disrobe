@@ -788,6 +788,11 @@ pub(crate) fn run_chain_to_dir(
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
+    let forensic_bytes: Vec<u8> =
+        serde_json::to_vec_pretty(&super::report::build_forensic(&doc, &report, out_dir))
+            .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
+    std::fs::write(out_dir.join("report.json"), &forensic_bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
     Ok(ChainOutcome { doc, report, anti })
 }
 

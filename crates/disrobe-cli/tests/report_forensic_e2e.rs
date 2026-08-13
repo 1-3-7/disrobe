@@ -399,6 +399,87 @@ fn the_embedded_bundle_validates_object_by_object_against_the_pinned_stix_schema
 }
 
 #[test]
+fn a_cited_indicator_range_reads_back_as_the_indicator_value() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-indicator");
+    let work: PathBuf = scratch.path().to_path_buf();
+    let input: PathBuf = work.join("sample.bin");
+    let mut bytes: Vec<u8> = vec![0x41u8; 64];
+    bytes.extend_from_slice(b"http://malware-example.com/payload.bin");
+    bytes.extend_from_slice(&[0x42u8; 64]);
+    write(&input, &bytes);
+    let out: PathBuf = work.join("run");
+    run_auto_into(&input, &out);
+
+    let log: Value = report_sarif(&out);
+    let artifacts: &Vec<Value> = log["runs"][0]["artifacts"]
+        .as_array()
+        .expect("run.artifacts");
+    let results: &Vec<Value> = log["runs"][0]["results"].as_array().expect("run.results");
+    let indicators: Vec<&Value> = results
+        .iter()
+        .filter(|r: &&Value| r["ruleId"] == serde_json::json!("disrobe.indicator"))
+        .collect();
+    assert!(
+        !indicators.is_empty(),
+        "an input carrying a url must produce at least one cited indicator: {results:#?}"
+    );
+    let target: Vec<u8> = std::fs::read(&input).expect("read the analysis target");
+    let mut read_back: usize = 0;
+    for result in indicators {
+        let properties: &Value = &result["properties"];
+        let value: &str = properties["value"].as_str().expect("indicator value");
+        if properties["encoding"] != serde_json::json!("plain") {
+            continue;
+        }
+        assert_eq!(
+            properties["range_within_target"],
+            serde_json::json!(true),
+            "a plain indicator must cite a range inside the analysis target: {result}"
+        );
+        let physical: &Value = &result["locations"][0]["physicalLocation"];
+        let index: usize = usize::try_from(
+            physical["artifactLocation"]["index"]
+                .as_u64()
+                .expect("index"),
+        )
+        .expect("index fits");
+        let named: &Value = artifacts.get(index).expect("artifact index resolves");
+        assert!(
+            named["roles"]
+                .as_array()
+                .is_some_and(|r: &Vec<Value>| r.contains(&serde_json::json!("analysisTarget"))),
+            "an indicator range must index the analysis target, not a decompressed child: {named}"
+        );
+        let offset: usize = usize::try_from(
+            physical["region"]["byteOffset"]
+                .as_u64()
+                .expect("byteOffset"),
+        )
+        .expect("offset fits");
+        let length: usize = usize::try_from(
+            physical["region"]["byteLength"]
+                .as_u64()
+                .expect("byteLength"),
+        )
+        .expect("length fits");
+        let end: usize = offset.checked_add(length).expect("range does not overflow");
+        let slice: &[u8] = target
+            .get(offset..end)
+            .unwrap_or_else(|| panic!("cited range {offset}+{length} is inside the target"));
+        assert_eq!(
+            std::str::from_utf8(slice).expect("cited bytes are text"),
+            value,
+            "reading the analysis target at the cited range must yield the cited value"
+        );
+        read_back += 1;
+    }
+    assert!(
+        read_back > 0,
+        "at least one plain indicator must be re-readable from the analysis target"
+    );
+}
+
+#[test]
 fn the_maec_package_carries_behavior_objects_or_names_why_it_cannot() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
         completed_run("forensic-maec", &(0u8..96).collect::<Vec<u8>>());
@@ -730,6 +811,38 @@ fn a_chain_run_leaves_the_citable_report_without_a_second_command() {
         left, right,
         "the report `auto` writes and the report the command renders must agree"
     );
+}
+
+#[test]
+fn every_file_of_a_batch_run_leaves_its_own_citable_report() {
+    let scratch: disrobe_core::scratch::ScratchDir = temp_dir("forensic-batch-report");
+    let work: PathBuf = scratch.path().to_path_buf();
+    write(&work.join("samples/a.bin"), &[1u8; 32]);
+    write(&work.join("samples/b.bin"), &[2u8; 32]);
+    let out: PathBuf = work.join("batch-out");
+    let r: Run = run_disrobe(&[
+        "auto",
+        work.join("samples").to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(r.code, 0, "batch setup; stderr={}", r.stderr);
+    for relative in ["a.bin", "b.bin"] {
+        let written: PathBuf = out.join(relative).join("report.json");
+        assert!(
+            written.is_file(),
+            "a batch entry must leave {}",
+            written.display()
+        );
+        let document: Value =
+            serde_json::from_slice(&std::fs::read(&written).expect("read")).expect("json");
+        assert_eq!(document["kind"], serde_json::json!("single"));
+        assert!(document["evidence"].is_array(), "{document}");
+        assert!(
+            document["reproduction"]["command"].is_string(),
+            "{document}"
+        );
+    }
 }
 
 #[test]
