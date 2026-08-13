@@ -25,6 +25,7 @@ ruby = "3.4.9 (2026-03-11 revision 76cca827ab) +PRISM [x64-mingw-ucrt]"
 "mruby/breadth/whilebreak.rb" = { kind = "source", description = "a break whose while-loop value is discarded, in statement position and again inside a nested inner while; mrbc emits no loop-exit LOADNIL for either, so the JMPUW lands on the exit index itself" }
 "mruby/breadth/untilbreak.rb" = { kind = "source", description = "value-carrying break out of an until loop, and two breaks carrying different symbol values out of one while loop" }
 "mruby/breadth/loopvalue.rb" = { kind = "source", description = "a value-carrying break in a while loop whose value is assigned to a local rather than returned; the break value has no provable destination, so the recovered source must stay withheld" }
+"mruby/breadth/kwdefaults.rb" = { kind = "source", description = "a keyword default built from several instructions, a keyword rest hash, and a block parameter; each shape defeats signature reconstruction and must keep the recovered source withheld" }
 "mruby/legacy/greet_rite0004.rb" = { kind = "source", description = "greet(name) source recompiled unmodified through a real mruby 1.4.1 toolchain to produce a RITE0004 binary, the catch-field-absent branch of version_layout" }
 "megafile/edge_cases.rb" = { kind = "source", description = "1677-LOC Ruby 1.9-3.4 feature megafile: blocks/procs/lambdas, &-operator, Symbol#to_proc, splat/double-splat, keyword args, pattern matching (all kinds), endless methods, hash short syntax, safe-nav, rescue modifier, retry, ensure, BEGIN/END, refinements, Struct/Data class, Comparable/Enumerable mixins, lazy enumerators, fibers, ractors, ObjectSpace, GC.stat, method_missing, define_method, class_eval, instance_eval, singleton class, include vs prepend, ancestors, frozen string literal, magic comments, Threading mutex/queue, beginless/endless ranges, heredocs, percent literals, forward-all (...), heredocs with interp" }
 "mri/yarv/literals.rb" = { kind = "source", description = "focused literal-pool coverage: frozen array/string constants, shareable_constant_value magic comment, true/false/nil immediates, symbol-keyed hash, inclusive/exclusive/beginless/endless ranges, opt_newarray_send (.max), endless methods" }
@@ -266,6 +267,18 @@ magic = "RITE"
 format_version = "0300"
 size_bytes = 226
 notes = "real mruby 3.3.0 RITE binary; the while-expression value is moved into a local instead of returned, so the break value has no provable destination and the JMPUW stays unmodeled"
+
+[[fixtures]]
+path = "mruby/breadth/kwdefaults.mrb"
+bucket = "mruby"
+runtime = "mruby"
+runtime_version = "3.3.0"
+generator = "mrbc -o kwdefaults.mrb kwdefaults.rb"
+status = "REAL"
+magic = "RITE"
+format_version = "0300"
+size_bytes = 457
+notes = "real mruby 3.3.0 RITE binary; an array keyword default spans three instructions with no single operand to read, and the keyword rest hash and block parameter have no place in the reconstructed def signature, so KEY_P and ENTER both stay unmodeled"
 
 [[fixtures]]
 path = "mruby/legacy/greet_rite0004.mrb"

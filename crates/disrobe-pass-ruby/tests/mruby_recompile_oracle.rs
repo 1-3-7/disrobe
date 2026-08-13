@@ -35,8 +35,9 @@ const EQUIVALENT_SET: &[&str] = &[
     "loopbreak",
     "whilebreak",
     "untilbreak",
+    "kwargs",
 ];
-const WITHHELD_SET: &[&str] = &["exceptions", "kwargs", "ensurecase", "loopvalue"];
+const WITHHELD_SET: &[&str] = &["exceptions", "ensurecase", "loopvalue", "kwdefaults"];
 const BREADTH_SET: &[&str] = &[
     "arith",
     "strings",
@@ -53,6 +54,7 @@ const BREADTH_SET: &[&str] = &[
     "whilebreak",
     "untilbreak",
     "loopvalue",
+    "kwdefaults",
 ];
 
 const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
@@ -66,11 +68,12 @@ const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
     ("advanced", 138, 138),
     ("jumps", 63, 63),
     ("loopbreak", 35, 35),
-    ("kwargs", 30, 31),
+    ("kwargs", 31, 31),
     ("ensurecase", 29, 33),
     ("whilebreak", 54, 54),
     ("untilbreak", 64, 64),
     ("loopvalue", 29, 30),
+    ("kwdefaults", 57, 60),
 ];
 
 const UNMODELED_REASONS: &[(&str, &str)] = &[
@@ -98,9 +101,17 @@ const UNMODELED_REASONS: &[(&str, &str)] = &[
     ),
     (
         "KEY_P",
-        "tests whether an optional keyword argument was supplied so its default value can be \
-         computed; the result has no Ruby-source expression outside parameter-list syntax, so \
-         rendering it as a body-level branch would fabricate syntax the source never had",
+        "the optional-keyword prologue only folds into a parameter list when the default is one \
+         instruction loading a literal; a default built from several instructions, such as an \
+         array, has no single operand to read and rendering the KEY_P branch in the body would \
+         emit syntax the source never had",
+    ),
+    (
+        "ENTER",
+        "the argument spec declares an optional positional default, a rest or post parameter, a \
+         keyword rest hash, or a block parameter, none of which the reconstructed def signature \
+         can spell; emitting the signature without them would drop a parameter the body still \
+         reads",
     ),
 ];
 
@@ -384,6 +395,44 @@ fn a_while_value_handed_to_a_further_consumer_is_refused_not_guessed() {
     assert!(
         !body.contains("= nil"),
         "the refusal exists because rendering the loop value as nil would be wrong: {body}"
+    );
+}
+
+#[test]
+fn an_optional_keyword_default_folds_back_into_the_def_signature() {
+    let body: String = reconstructed_body(&recover("kwargs"));
+    assert!(
+        body.contains("def greet(name:, greeting: \"hello\")"),
+        "the KEY_P prologue must reconstruct both the required and the defaulted keyword \
+         parameter: {body}"
+    );
+    assert!(
+        !body.contains("KEY_P") && !body.contains("if "),
+        "the prologue must not survive as a body-level branch: {body}"
+    );
+    assert!(
+        body.contains("greeting") && body.contains("name"),
+        "the body must bind the recovered keyword parameters by name: {body}"
+    );
+}
+
+#[test]
+fn a_keyword_signature_the_lifter_cannot_spell_is_refused_not_guessed() {
+    let dec: MrubyDecompiled = recover("kwdefaults");
+    assert!(
+        !dec.has_body,
+        "a multi-instruction keyword default, a keyword rest hash, and a block parameter each \
+         defeat the signature reconstruction, so no source may be handed out"
+    );
+    assert_eq!(
+        dec.unmodeled_mnemonics,
+        vec!["ENTER".to_owned(), "KEY_P".to_owned()],
+        "both refusals must be recorded against the opcode that carries the unspellable shape"
+    );
+    let body: String = reconstructed_body(&dec);
+    assert!(
+        !body.contains("def "),
+        "a refused signature must not leak a partial def line: {body}"
     );
 }
 

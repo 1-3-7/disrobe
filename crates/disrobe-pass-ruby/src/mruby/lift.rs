@@ -8,6 +8,7 @@ use crate::mruby::ops::MrubyOp;
 use crate::yarv::ibf::ruby_string_literal;
 
 const MAX_REGS: usize = 4096;
+const MAX_KEYWORD_PARAMS: usize = 31;
 const MAX_LIFT_DEPTH: u32 = 64;
 const MAX_LIFT_OUTPUT_PREALLOC: usize = 1 << 20;
 const INDENT: &str = "  ";
@@ -156,6 +157,19 @@ struct Frame<'a> {
     is_block: bool,
 }
 
+#[derive(Debug, Clone)]
+struct KeywordParam {
+    name: String,
+    default: Option<String>,
+    reg: u32,
+}
+
+#[derive(Debug, Clone)]
+struct KeywordPrologue {
+    params: Vec<KeywordParam>,
+    end: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LoopTargets {
     irep_index: u32,
@@ -300,7 +314,9 @@ fn tree_has_invalid_references(tree: &IrepTree) -> bool {
                 | MrubyOp::Send
                 | MrubyOp::SendB
                 | MrubyOp::Def => valid_symbol_reference(record, b, SourceSymbolUse::Method),
-                MrubyOp::Karg => valid_symbol_reference(record, b, SourceSymbolUse::Local),
+                MrubyOp::Karg | MrubyOp::KeyP => {
+                    valid_symbol_reference(record, b, SourceSymbolUse::Local)
+                }
                 MrubyOp::Alias => {
                     valid_symbol_reference(record, a, SourceSymbolUse::Method)
                         && valid_symbol_reference(record, b, SourceSymbolUse::Method)
@@ -488,6 +504,24 @@ impl Lifter<'_> {
         for i in 0..nargs {
             regs.set(i.saturating_add(1), RegVal::Local(format!("arg{i}")));
         }
+        let prologue: Option<KeywordPrologue> = if is_block {
+            None
+        } else {
+            keyword_prologue(rec, &ins)
+        };
+        let body_start: usize = match prologue {
+            Some(ref recognised) => {
+                for param in &recognised.params {
+                    regs.set(param.reg, RegVal::Local(param.name.clone()));
+                }
+                self.stats.total = self
+                    .stats
+                    .total
+                    .saturating_add(u32::try_from(recognised.end).unwrap_or(u32::MAX));
+                recognised.end
+            }
+            None => 0,
+        };
         let mut pending: PendingDefs = PendingDefs::new(rec.nregs);
         let frame: Frame<'_> = Frame {
             irep_index: index,
@@ -501,10 +535,10 @@ impl Lifter<'_> {
             is_block,
         };
         let regions: Vec<Region> = if structurable(rec, &ins) {
-            build_regions(&ins)
+            structure_range(&ins, body_start, ins.len())
         } else {
             vec![Region::Linear {
-                start: 0,
+                start: body_start,
                 end: ins.len(),
             }]
         };
@@ -1267,8 +1301,18 @@ impl Lifter<'_> {
                     regs.set(reg, RegVal::Local(local_name(reg, frame.nargs)));
                 }
             }
+            MrubyOp::Enter => {
+                let spellable: bool = frame.is_block
+                    || instr
+                        .operands
+                        .first()
+                        .copied()
+                        .is_some_and(signature_is_spellable);
+                if !spellable {
+                    self.mark(instr, &pad, out);
+                }
+            }
             MrubyOp::Nop
-            | MrubyOp::Enter
             | MrubyOp::KeyEnd
             | MrubyOp::Debug
             | MrubyOp::Stop
@@ -1438,8 +1482,20 @@ impl Lifter<'_> {
         let nargs: u32 = arg_count(rec);
         let mut names: Vec<String> = (0..nargs).map(|i| format!("arg{i}")).collect();
         if let Ok(ins) = disassemble_iseq(&rec.iseq) {
-            for kw in required_kwarg_names(&ins, rec) {
-                names.push(format!("{kw}:"));
+            match keyword_prologue(rec, &ins) {
+                Some(prologue) => {
+                    for param in &prologue.params {
+                        names.push(param.default.as_ref().map_or_else(
+                            || format!("{}:", param.name),
+                            |default: &String| format!("{}: {default}", param.name),
+                        ));
+                    }
+                }
+                None => {
+                    for kw in required_kwarg_names(&ins, rec) {
+                        names.push(format!("{kw}:"));
+                    }
+                }
             }
         }
         if names.is_empty() {
@@ -1476,6 +1532,130 @@ impl Lifter<'_> {
         }
         regs.set(d, val);
     }
+}
+
+fn keyword_prologue(rec: &IrepRecord, ins: &[MrubyInstruction]) -> Option<KeywordPrologue> {
+    let enter: &MrubyInstruction = ins.first()?;
+    if enter.op != MrubyOp::Enter {
+        return None;
+    }
+    let spec: u32 = enter.operands.first().copied()?;
+    let declared: usize = ((spec >> 2) & 0x1f) as usize;
+    if declared == 0 || !signature_is_spellable(spec) {
+        return None;
+    }
+    let mut params: Vec<KeywordParam> = Vec::with_capacity(declared.min(MAX_KEYWORD_PARAMS));
+    let mut at: usize = 1;
+    while params.len() < declared {
+        let (param, next): (KeywordParam, usize) = keyword_parameter(rec, ins, at)?;
+        params.push(param);
+        at = next;
+    }
+    let terminator: &MrubyInstruction = ins.get(at)?;
+    if terminator.op != MrubyOp::KeyEnd {
+        return None;
+    }
+    Some(KeywordPrologue {
+        params,
+        end: at.checked_add(1)?,
+    })
+}
+
+fn keyword_parameter(
+    rec: &IrepRecord,
+    ins: &[MrubyInstruction],
+    at: usize,
+) -> Option<(KeywordParam, usize)> {
+    let head: &MrubyInstruction = ins.get(at)?;
+    let reg: u32 = head.operands.first().copied()?;
+    let name_index: u32 = head.operands.get(1).copied()?;
+    match head.op {
+        MrubyOp::Karg => Some((
+            KeywordParam {
+                name: keyword_name(rec, name_index)?,
+                default: None,
+                reg,
+            },
+            at.checked_add(1)?,
+        )),
+        MrubyOp::KeyP => {
+            let guard: &MrubyInstruction = ins.get(at.checked_add(1)?)?;
+            if guard.op != MrubyOp::JmpIf || guard.operands.first().copied() != Some(reg) {
+                return None;
+            }
+            let fallback: &MrubyInstruction = ins.get(at.checked_add(2)?)?;
+            let skip: &MrubyInstruction = ins.get(at.checked_add(3)?)?;
+            if skip.op != MrubyOp::Jmp {
+                return None;
+            }
+            let supplied_at: usize = at.checked_add(4)?;
+            let resume_at: usize = at.checked_add(5)?;
+            if jump_target_index(ins, at.checked_add(1)?) != Some(supplied_at)
+                || jump_target_index(ins, at.checked_add(3)?) != Some(resume_at)
+            {
+                return None;
+            }
+            let supplied: &MrubyInstruction = ins.get(supplied_at)?;
+            if supplied.op != MrubyOp::Karg
+                || supplied.operands.first().copied() != Some(reg)
+                || supplied.operands.get(1).copied() != Some(name_index)
+            {
+                return None;
+            }
+            if fallback.operands.first().copied() != Some(reg) {
+                return None;
+            }
+            Some((
+                KeywordParam {
+                    name: keyword_name(rec, name_index)?,
+                    default: Some(literal_default(rec, fallback)?),
+                    reg,
+                },
+                resume_at,
+            ))
+        }
+        _ => None,
+    }
+}
+
+const fn signature_is_spellable(spec: u32) -> bool {
+    let optional: u32 = (spec >> 13) & 0x1f;
+    let rest: u32 = (spec >> 12) & 1;
+    let post: u32 = (spec >> 7) & 0x1f;
+    let keyword_rest: u32 = (spec >> 1) & 1;
+    let block: u32 = spec & 1;
+    optional == 0 && rest == 0 && post == 0 && keyword_rest == 0 && block == 0
+}
+
+fn keyword_name(rec: &IrepRecord, index: u32) -> Option<String> {
+    if !valid_symbol_reference(rec, Some(index), SourceSymbolUse::Local) {
+        return None;
+    }
+    Some(symbol(rec, index))
+}
+
+fn literal_default(rec: &IrepRecord, instr: &MrubyInstruction) -> Option<String> {
+    let b: u32 = instr.operands.get(1).copied().unwrap_or(0);
+    let c: u32 = instr.operands.get(2).copied().unwrap_or(0);
+    let value: RegVal = match instr.op {
+        MrubyOp::LoadNil => RegVal::Nil,
+        MrubyOp::LoadT => RegVal::True,
+        MrubyOp::LoadF => RegVal::False,
+        MrubyOp::LoadI => RegVal::Int(i64::from(b)),
+        MrubyOp::LoadINeg => RegVal::Int(-i64::from(b)),
+        MrubyOp::LoadI16 => RegVal::Int(i64::from(b as i16)),
+        MrubyOp::LoadI32 => RegVal::Int(i64::from(((b << 16) | c) as i32)),
+        MrubyOp::LoadISmall(n) => RegVal::Int(i64::from(n)),
+        MrubyOp::LoadL if valid_pool_reference(rec, Some(b)) => pool_value(rec, b),
+        MrubyOp::Strng if valid_string_pool_reference(rec, Some(b)) => {
+            RegVal::Str(pool_string(rec, b))
+        }
+        MrubyOp::LoadSym if valid_symbol_reference(rec, Some(b), SourceSymbolUse::Literal) => {
+            RegVal::Sym(symbol(rec, b))
+        }
+        _ => return None,
+    };
+    Some(value.render())
 }
 
 fn required_kwarg_names(ins: &[MrubyInstruction], rec: &IrepRecord) -> Vec<String> {
@@ -1552,10 +1732,6 @@ const fn split_call_attachment(has_block: bool, value: &RegVal) -> CallAttachmen
         RegVal::BlockProc(child) => CallAttachment::Block(*child),
         _ => CallAttachment::UnresolvedBlock,
     }
-}
-
-fn build_regions(ins: &[MrubyInstruction]) -> Vec<Region> {
-    structure_range(ins, 0, ins.len())
 }
 
 fn structure_range(ins: &[MrubyInstruction], lo: usize, hi: usize) -> Vec<Region> {
@@ -2512,17 +2688,17 @@ mod tests {
     }
 
     #[test]
-    fn build_regions_scales_over_many_branches() {
+    fn structure_range_scales_over_many_branches() {
         let count: usize = 60_000;
         let ins: Vec<MrubyInstruction> = (0..count)
             .map(|k| synthetic_jmpnot(u32::try_from(k * 4).unwrap_or(u32::MAX), 0, 1))
             .collect();
         let start: std::time::Instant = std::time::Instant::now();
-        let regions: Vec<Region> = build_regions(&ins);
+        let regions: Vec<Region> = structure_range(&ins, 0, ins.len());
         let elapsed: std::time::Duration = start.elapsed();
         assert!(
             elapsed < std::time::Duration::from_secs(10),
-            "build_regions took {elapsed:?} for {count} branches"
+            "structure_range took {elapsed:?} for {count} branches"
         );
         assert!(!regions.is_empty());
     }
@@ -2817,6 +2993,90 @@ mod tests {
             while_break_control(&ins, 0, 1),
             Some(LoopControl::Break { value_reg: Some(2) }),
             "a LOADNIL landing whose register the tail RETURN reads is the value-carrying form"
+        );
+    }
+
+    fn keyword_iseq(spec: u32, present_offset: u32) -> Vec<u8> {
+        asm(&[
+            ("ENTER", &[spec]),
+            ("KEY_P", &[1, 0]),
+            ("JMPIF", &[1, present_offset]),
+            ("LOADI_1", &[1]),
+            ("JMP", &[3]),
+            ("KARG", &[1, 0]),
+            ("KEYEND", &[]),
+            ("RETURN", &[1]),
+        ])
+    }
+
+    fn keyword_prologue_of(iseq: &[u8], symbols: Vec<String>) -> Option<KeywordPrologue> {
+        let record: IrepRecord = rec(iseq.to_vec(), vec![], symbols, vec![]);
+        let ins: Vec<MrubyInstruction> = disassemble_iseq(iseq).expect("disasm");
+        keyword_prologue(&record, &ins)
+    }
+
+    #[test]
+    fn keyword_prologue_reads_a_single_instruction_literal_default() {
+        let iseq: Vec<u8> = keyword_iseq(4, 5);
+        let prologue: KeywordPrologue =
+            keyword_prologue_of(&iseq, vec!["greeting".to_owned()]).expect("prologue recognised");
+
+        assert_eq!(prologue.params.len(), 1);
+        assert_eq!(prologue.params[0].name, "greeting");
+        assert_eq!(prologue.params[0].default.as_deref(), Some("1"));
+        assert_eq!(prologue.params[0].reg, 1);
+        assert_eq!(prologue.end, 7);
+    }
+
+    #[test]
+    fn keyword_prologue_refuses_every_shape_it_cannot_prove() {
+        assert!(
+            keyword_prologue_of(&keyword_iseq(4, 5), Vec::new()).is_none(),
+            "a keyword name index past the symbol table must not be given a placeholder name"
+        );
+        assert!(
+            keyword_prologue_of(&keyword_iseq(4, 8), vec!["greeting".to_owned()]).is_none(),
+            "a present-branch target that is not the KARG slot is not this prologue shape"
+        );
+        assert!(
+            keyword_prologue_of(&keyword_iseq(8, 5), vec!["greeting".to_owned()]).is_none(),
+            "an argument spec declaring more keyword parameters than the prologue supplies must \
+             refuse rather than emit a short parameter list"
+        );
+        assert!(
+            keyword_prologue_of(&keyword_iseq(5, 5), vec!["greeting".to_owned()]).is_none(),
+            "a block parameter alongside the keyword parameters cannot be spelled"
+        );
+        assert!(
+            keyword_prologue_of(
+                &asm(&[("ENTER", &[4]), ("KEY_P", &[1, 0])]),
+                vec!["greeting".to_owned()]
+            )
+            .is_none(),
+            "a prologue truncated after KEY_P has no guard branch to read"
+        );
+        assert!(
+            keyword_prologue_of(&asm(&[("RETURN", &[1])]), Vec::new()).is_none(),
+            "a record whose first instruction is not ENTER declares no parameters at all"
+        );
+    }
+
+    #[test]
+    fn an_argument_spec_the_signature_cannot_spell_marks_enter_unmodeled() {
+        let iseq: Vec<u8> = asm(&[("ENTER", &[0x40001]), ("MOVE", &[3, 1]), ("RETURN", &[3])]);
+        let tree: IrepTree = IrepTree {
+            total_insn_bytes: u32::try_from(iseq.len()).unwrap_or(0),
+            total_symbols: 0,
+            total_pool_entries: 0,
+            records: vec![rec(iseq, vec![], vec![], vec![])],
+        };
+        let output: LiftOutput = lift_tree(&tree).expect("lift");
+
+        assert_eq!(
+            output.unmodeled_mnemonics,
+            vec!["ENTER"],
+            "a declared block parameter the def signature cannot spell must refuse: {}",
+            output.source
         );
     }
 
