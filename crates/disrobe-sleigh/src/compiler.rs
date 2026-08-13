@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::SleighError;
@@ -9,6 +10,11 @@ const MAX_EVALUATION_DEPTH: usize = 128;
 const MAX_PATTERN_CLAUSES: usize = 4_096;
 const MAX_TABLE_CONSTRUCTORS: usize = 2_048;
 const MAX_DECODE_CONSTRUCTOR_ATTEMPTS: usize = 65_536;
+const MAX_TABLE_CLAUSE_MEMO_ENTRIES: usize = 262_144;
+const MAX_FIXED_BITS_MEMO_ENTRIES: usize = 262_144;
+
+type TableClauseKey = (String, usize, usize, BTreeSet<String>);
+type FixedBitsKey = (String, usize, BTreeSet<String>);
 
 pub type ContextState = BTreeMap<String, i64>;
 
@@ -130,6 +136,15 @@ struct ClauseCompiler<'a> {
     fields: &'a BTreeMap<String, CompiledField>,
     registers: &'a BTreeSet<String>,
     tables: &'a BTreeMap<String, Vec<usize>>,
+    table_clauses: RefCell<BTreeMap<TableClauseKey, Option<Vec<PatternClause>>>>,
+}
+
+#[derive(Debug)]
+struct FixedBitsResolver<'a> {
+    constructors: &'a [Constructor],
+    fields: &'a BTreeMap<String, CompiledField>,
+    memo: BTreeMap<FixedBitsKey, BTreeMap<u16, bool>>,
+    tables: &'a BTreeMap<String, Vec<usize>>,
 }
 
 enum ComparisonCompilation {
@@ -224,6 +239,7 @@ pub fn compile_spec_with_policy(
         fields: &fields,
         registers: &registers,
         tables: &tables,
+        table_clauses: RefCell::new(BTreeMap::new()),
     };
     let mut pattern_clauses: Vec<Option<Vec<PatternClause>>> =
         Vec::with_capacity(spec.constructors.len());
@@ -252,21 +268,22 @@ pub fn compile_spec_with_policy(
             });
         }
     }
-    let constraints: BTreeMap<usize, BTreeMap<u16, bool>> = roots
-        .iter()
-        .map(|constructor_id: &usize| {
-            let mut visiting: BTreeSet<String> = BTreeSet::new();
-            let bits: BTreeMap<u16, bool> = fixed_bits(
-                &spec.constructors[*constructor_id].pattern,
-                &fields,
-                &tables,
-                &spec.constructors,
-                &mut visiting,
-                0,
-            );
-            (*constructor_id, bits)
-        })
-        .collect();
+    let mut resolver: FixedBitsResolver<'_> = FixedBitsResolver {
+        constructors: &spec.constructors,
+        fields: &fields,
+        memo: BTreeMap::new(),
+        tables: &tables,
+    };
+    let mut constraints: BTreeMap<usize, BTreeMap<u16, bool>> = BTreeMap::new();
+    for constructor_id in &roots {
+        let mut visiting: BTreeSet<String> = BTreeSet::new();
+        let bits: BTreeMap<u16, bool> = resolver.fixed_bits(
+            &spec.constructors[*constructor_id].pattern,
+            &mut visiting,
+            0,
+        );
+        constraints.insert(*constructor_id, bits);
+    }
     let mut nodes: Vec<DecisionNode> = Vec::new();
     let available: BTreeSet<u16> = constraints
         .values()
@@ -656,9 +673,28 @@ impl ClauseCompiler<'_> {
         if !visiting.insert(name.to_owned()) {
             return Ok(None);
         }
+        let key: TableClauseKey = (
+            name.to_owned(),
+            position,
+            expanded_depth,
+            visiting.iter().cloned().collect(),
+        );
+        if let Some(cached) = self.table_clauses.borrow().get(&key) {
+            visiting.remove(name);
+            return Ok(cached.clone());
+        }
         let result: Result<Option<Vec<PatternClause>>, SleighError> =
             self.compile_table_contents(name, position, expanded_depth, visiting);
         visiting.remove(name);
+        if let Ok(value) = &result {
+            let mut memo: std::cell::RefMut<
+                '_,
+                BTreeMap<TableClauseKey, Option<Vec<PatternClause>>>,
+            > = self.table_clauses.borrow_mut();
+            if memo.len() < MAX_TABLE_CLAUSE_MEMO_ENTRIES {
+                memo.insert(key, value.clone());
+            }
+        }
         result
     }
 
@@ -1339,105 +1375,108 @@ fn build_decision_nodes(
     node_id
 }
 
-fn fixed_bits(
-    pattern: &PatternExpr,
-    fields: &BTreeMap<String, CompiledField>,
-    tables: &BTreeMap<String, Vec<usize>>,
-    constructors: &[Constructor],
-    visiting: &mut BTreeSet<String>,
-    depth: usize,
-) -> BTreeMap<u16, bool> {
-    if depth >= MAX_EVALUATION_DEPTH {
-        return BTreeMap::new();
-    }
-    match pattern {
-        PatternExpr::Atom(PatternAtom::Compare {
-            left,
-            op: CompareOp::Equal,
-            right: PatternValue::Integer(value),
-        }) if *value >= 0 => fields.get(left).map_or_else(BTreeMap::new, |field| {
-            let width: u8 = field
-                .high_bit
-                .saturating_sub(field.low_bit)
-                .saturating_add(1);
-            let raw: u64 = u64::try_from(*value).unwrap_or(0) & width_mask(width);
-            (0..width)
-                .map(|relative: u8| {
-                    let logical_bit: u32 = u32::from(field.low_bit.saturating_add(relative));
-                    let bit: u16 = decision_bit(field, logical_bit);
-                    let value: bool = raw & (1_u64 << relative) != 0;
-                    (bit, value)
-                })
-                .collect()
-        }),
-        PatternExpr::Atom(PatternAtom::Symbol(table)) if tables.contains_key(table) => {
-            if !visiting.insert(table.clone()) {
-                return BTreeMap::new();
-            }
-            let alternatives: Vec<BTreeMap<u16, bool>> = tables
-                .get(table)
-                .into_iter()
-                .flatten()
-                .map(|constructor_id: &usize| {
-                    fixed_bits(
-                        &constructors[*constructor_id].pattern,
-                        fields,
-                        tables,
-                        constructors,
-                        visiting,
-                        depth.saturating_add(1),
-                    )
-                })
-                .collect();
-            visiting.remove(table);
-            common_bits(&alternatives)
+impl<'a> FixedBitsResolver<'a> {
+    fn fixed_bits(
+        &mut self,
+        pattern: &PatternExpr,
+        visiting: &mut BTreeSet<String>,
+        depth: usize,
+    ) -> BTreeMap<u16, bool> {
+        if depth >= MAX_EVALUATION_DEPTH {
+            return BTreeMap::new();
         }
-        PatternExpr::True | PatternExpr::Atom(_) => BTreeMap::new(),
-        PatternExpr::All(parts) => {
-            let mut combined: BTreeMap<u16, bool> = BTreeMap::new();
-            for part in parts {
-                for (bit, value) in fixed_bits(
-                    part,
-                    fields,
-                    tables,
-                    constructors,
-                    visiting,
-                    depth.saturating_add(1),
-                ) {
-                    if combined
-                        .get(&bit)
-                        .is_none_or(|current: &bool| *current == value)
-                    {
-                        combined.insert(bit, value);
+        match pattern {
+            PatternExpr::Atom(PatternAtom::Compare {
+                left,
+                op: CompareOp::Equal,
+                right: PatternValue::Integer(value),
+            }) if *value >= 0 => self.compared_field_bits(left, *value),
+            PatternExpr::Atom(PatternAtom::Symbol(table)) if self.tables.contains_key(table) => {
+                self.table_bits(table, visiting, depth)
+            }
+            PatternExpr::True | PatternExpr::Atom(_) => BTreeMap::new(),
+            PatternExpr::All(parts) => {
+                let mut combined: BTreeMap<u16, bool> = BTreeMap::new();
+                for part in parts {
+                    for (bit, value) in self.fixed_bits(part, visiting, depth.saturating_add(1)) {
+                        if combined
+                            .get(&bit)
+                            .is_none_or(|current: &bool| *current == value)
+                        {
+                            combined.insert(bit, value);
+                        }
                     }
                 }
+                combined
             }
-            combined
+            PatternExpr::Any(parts) => {
+                let mut alternatives: Vec<BTreeMap<u16, bool>> = Vec::with_capacity(parts.len());
+                for part in parts {
+                    alternatives.push(self.fixed_bits(part, visiting, depth.saturating_add(1)));
+                }
+                common_bits(&alternatives)
+            }
+            PatternExpr::Next(left, _) => self.fixed_bits(left, visiting, depth.saturating_add(1)),
         }
-        PatternExpr::Any(parts) => {
-            let alternatives: Vec<BTreeMap<u16, bool>> = parts
-                .iter()
-                .map(|part: &PatternExpr| {
-                    fixed_bits(
-                        part,
-                        fields,
-                        tables,
-                        constructors,
-                        visiting,
-                        depth.saturating_add(1),
-                    )
-                })
-                .collect();
-            common_bits(&alternatives)
+    }
+
+    fn compared_field_bits(&self, left: &str, value: i64) -> BTreeMap<u16, bool> {
+        self.fields
+            .get(left)
+            .map_or_else(BTreeMap::new, |field: &CompiledField| {
+                let width: u8 = field
+                    .high_bit
+                    .saturating_sub(field.low_bit)
+                    .saturating_add(1);
+                let raw: u64 = u64::try_from(value).unwrap_or(0) & width_mask(width);
+                (0..width)
+                    .map(|relative: u8| {
+                        let logical_bit: u32 = u32::from(field.low_bit.saturating_add(relative));
+                        let bit: u16 = decision_bit(field, logical_bit);
+                        let set: bool = raw & (1_u64 << relative) != 0;
+                        (bit, set)
+                    })
+                    .collect()
+            })
+    }
+
+    fn table_bits(
+        &mut self,
+        table: &str,
+        visiting: &mut BTreeSet<String>,
+        depth: usize,
+    ) -> BTreeMap<u16, bool> {
+        if !visiting.insert(table.to_owned()) {
+            return BTreeMap::new();
         }
-        PatternExpr::Next(left, _) => fixed_bits(
-            left,
-            fields,
-            tables,
-            constructors,
-            visiting,
-            depth.saturating_add(1),
-        ),
+        let key: FixedBitsKey = (table.to_owned(), depth, visiting.iter().cloned().collect());
+        if let Some(cached) = self.memo.get(&key) {
+            let bits: BTreeMap<u16, bool> = cached.clone();
+            visiting.remove(table);
+            return bits;
+        }
+        let constructors: &'a [Constructor] = self.constructors;
+        let constructor_ids: &'a [usize] = self
+            .tables
+            .get(table)
+            .map_or(&[], |ids: &'a Vec<usize>| ids.as_slice());
+        let mut alternatives: Vec<BTreeMap<u16, bool>> = Vec::with_capacity(constructor_ids.len());
+        for constructor_id in constructor_ids {
+            let Some(constructor) = constructors.get(*constructor_id) else {
+                continue;
+            };
+            alternatives.push(self.fixed_bits(
+                &constructor.pattern,
+                visiting,
+                depth.saturating_add(1),
+            ));
+        }
+        visiting.remove(table);
+        let bits: BTreeMap<u16, bool> = common_bits(&alternatives);
+        if self.memo.len() < MAX_FIXED_BITS_MEMO_ENTRIES {
+            self.memo.insert(key, bits.clone());
+        }
+        bits
     }
 }
 
