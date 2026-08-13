@@ -1371,3 +1371,90 @@ fn a_big_endian_macho_is_covered_end_to_end() {
         coverage.regions
     );
 }
+
+fn class_of(coverage: &ByteCoverage, claimant: &str) -> RegionClass {
+    region_named(coverage, claimant)
+        .unwrap_or_else(|| panic!("the map must carry a {claimant} region"))
+        .class
+}
+
+#[test]
+fn a_pe_region_carries_the_class_its_section_characteristics_declare() {
+    let bytes: Vec<u8> = fixture("hello.pe64.exe");
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a linked PE32+ image");
+
+    assert_eq!(
+        class_of(&coverage, "section:.text"),
+        RegionClass::Code,
+        "a section with IMAGE_SCN_CNT_CODE is code, not undifferentiated data"
+    );
+    assert_eq!(
+        class_of(&coverage, "section:.rdata"),
+        RegionClass::Data,
+        "a read only data section is data, not code"
+    );
+    assert_eq!(
+        class_of(&coverage, "header-padding"),
+        RegionClass::Padding,
+        "the bytes between the section table and SizeOfHeaders are padding"
+    );
+    assert_eq!(
+        class_of(&coverage, "dos-header"),
+        RegionClass::Header,
+        "the DOS header is a header region"
+    );
+    assert_eq!(
+        class_of(&coverage, "section-table"),
+        RegionClass::Table,
+        "the section table is a table region"
+    );
+}
+
+#[test]
+fn an_elf_region_carries_the_class_its_section_type_and_flags_declare() {
+    let bytes: Vec<u8> = fixture("hello.elf64");
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a linked ELF64 image");
+
+    assert_eq!(
+        class_of(&coverage, "section:.text"),
+        RegionClass::Code,
+        "a section carrying SHF_EXECINSTR is code"
+    );
+    assert_eq!(
+        class_of(&coverage, "section:.symtab"),
+        RegionClass::Table,
+        "SHT_SYMTAB is a table, not payload data"
+    );
+    assert_eq!(
+        class_of(&coverage, "section:.strtab"),
+        RegionClass::Table,
+        "SHT_STRTAB is a table, not payload data"
+    );
+    assert_eq!(
+        class_of(&coverage, "section:.comment"),
+        RegionClass::Data,
+        "a non allocated progbits section is data"
+    );
+}
+
+#[test]
+fn a_coff_debug_section_is_classed_as_debug() {
+    let bytes: Vec<u8> = fixture("dwarf_v5.o");
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a COFF object");
+
+    assert_eq!(
+        class_of(&coverage, "section:.debug_info"),
+        RegionClass::Debug,
+        "a DWARF section is debug, not undifferentiated data"
+    );
+    assert_eq!(
+        class_of(&coverage, "section:.text"),
+        RegionClass::Code,
+        "an executable COFF section is code"
+    );
+    assert_eq!(
+        class_of(&coverage, "symbol-table"),
+        RegionClass::Table,
+        "the COFF symbol table is a table region"
+    );
+}
