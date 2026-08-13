@@ -656,7 +656,8 @@ fn reproduction_for(target: &Path, evidence: &[EvidenceItem]) -> Reproduction {
     let mut steps: Vec<String> = vec![
         "hash the analysis target with blake3 and compare it with `input.blake3`".to_string(),
         format!(
-            "hash each of the {recomputable} evidence entries marked `recomputed-from-file` and compare them with the recorded digest"
+            "hash the {recomputable} evidence {} marked `recomputed-from-file` and compare each digest with the recorded one",
+            plural(recomputable, "entry", "entries")
         ),
         format!("read every `{CONTENT_URI_SCHEME}` evidence entry as the blake3 digest of an intermediate the chain held in memory; it names the artifact a byte range indexes"),
         format!("re-run `{command}`; text, json, markdown and html output is byte-identical, and sarif output differs only in `generated_at`"),
@@ -664,10 +665,15 @@ fn reproduction_for(target: &Path, evidence: &[EvidenceItem]) -> Reproduction {
     ];
     if unavailable > 0 {
         steps.push(format!(
-            "{unavailable} evidence entries carry no digest; each one names why in `unavailable_reason`"
+            "{unavailable} evidence {} no digest; each one names why in `unavailable_reason`",
+            plural(unavailable, "entry carries", "entries carry")
         ));
     }
     Reproduction { command, steps }
+}
+
+const fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 { one } else { many }
 }
 
 pub(crate) fn build_forensic(
@@ -1766,6 +1772,33 @@ mod tests {
         render_markdown_batch(&b, &mut buf);
         assert!(buf.contains("# disrobe report (batch)"), "got: {buf}");
         assert!(buf.contains("error"), "errored file must show; got: {buf}");
+    }
+
+    #[test]
+    fn a_truncated_run_document_is_a_typed_error_not_a_panic() {
+        let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("truncated-recovery");
+        std::fs::write(dir.join("recovery.json"), &RECOVERY_JSON[..40]).expect("truncate recovery");
+        let err: miette::Report = resolve_document(&dir, None).expect_err("must error");
+        assert!(
+            format!("{err}").contains("DR-CLI-0354"),
+            "a truncated recovery.json must stay a typed error: {err}"
+        );
+
+        let (_second, other): (ScratchDir, PathBuf) = seed_single_dir("truncated-chain");
+        std::fs::write(other.join("chain.json"), &CHAIN_JSON[..64]).expect("truncate chain");
+        let chain_err: miette::Report = resolve_document(&other, None).expect_err("must error");
+        assert!(
+            format!("{chain_err}").contains("DR-CLI-0352"),
+            "a truncated chain.json must stay a typed error: {chain_err}"
+        );
+
+        let (_third, missing): (ScratchDir, PathBuf) = seed_single_dir("absent-recovery");
+        std::fs::remove_file(missing.join("recovery.json")).expect("remove recovery");
+        let absent: miette::Report = resolve_document(&missing, None).expect_err("must error");
+        assert!(
+            format!("{absent}").contains("DR-CLI-0353"),
+            "an absent recovery.json must stay a typed error: {absent}"
+        );
     }
 
     #[test]
