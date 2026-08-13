@@ -213,6 +213,7 @@ fn run_oracle() -> OracleReport {
 }
 
 const RECOMPILE_FLOOR: usize = 6;
+const RECOMPILE_TOTAL: usize = 6;
 
 #[test]
 fn user_method_recompile_rate_holds_or_climbs() {
@@ -224,6 +225,12 @@ fn user_method_recompile_rate_holds_or_climbs() {
     for (id, ty, err) in &report.failures {
         eprintln!("  FAIL __Host{id} ({ty}): {err}");
     }
+    assert_eq!(
+        report.user_total, RECOMPILE_TOTAL,
+        "this gate hosts every user-authored method Constructs.dll carries, so its denominator is \
+         pinned at {RECOMPILE_TOTAL}; dropping a method would raise the rate by shrinking the \
+         population rather than by recovering anything"
+    );
     assert!(
         report.user_pass >= RECOMPILE_FLOOR,
         "user-method recompile rate regressed below the floor: {}/{} (floor {RECOMPILE_FLOOR}). Failures:\n{}",

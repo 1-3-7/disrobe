@@ -1,7 +1,10 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
 
 use disrobe_pass_dotnet::decompile::{DecompiledAssembly, decompile_assembly};
 use disrobe_pass_dotnet::iterator_reverse::is_unlowered_compiler_construct_refusal;
@@ -113,6 +116,12 @@ const TARGETS: &[Target] = &[
         type_name: "Pipeline",
         is_static: false,
     },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "Money",
+        is_static: false,
+    },
 ];
 
 fn manifest(rel: &str) -> PathBuf {
@@ -128,19 +137,44 @@ fn repository_root() -> PathBuf {
         .expect("canonicalize repository root")
 }
 
-fn checked_output(command: &mut Command, label: &str) -> Result<Output, String> {
-    let output: Output = command
-        .output()
+const TOOL_TIMEOUT: Duration = Duration::from_mins(10);
+const TOOL_CAPTURE_BYTES: usize = 32 * 1024 * 1024;
+
+fn bounded_capture(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
+    let child: Child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?;
-    if output.status.success() {
+    wait_with_output_timeout(child, TOOL_TIMEOUT, TOOL_CAPTURE_BYTES).ok_or_else(|| {
+        format!(
+            "{label} did not finish within {} seconds and was terminated, so no measurement is \
+             available from it",
+            TOOL_TIMEOUT.as_secs()
+        )
+    })
+}
+
+fn checked_output(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
+    let output: CapturedOutput = bounded_capture(command, label)?;
+    if output.exit_code == Some(0) {
         return Ok(output);
     }
     let stdout: String = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr: String = String::from_utf8_lossy(&output.stderr).into_owned();
     Err(format!(
-        "{label} exited {}. stdout:\n{stdout}\nstderr:\n{stderr}",
-        output.status
+        "{label} exited {:?}. stdout:\n{stdout}\nstderr:\n{stderr}",
+        output.exit_code
     ))
+}
+
+fn diagnostics_of(output: &CapturedOutput) -> Vec<String> {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(&output.stderr).lines())
+        .filter(|line: &&str| line.contains(": error "))
+        .map(|line: &str| line.trim().to_owned())
+        .collect()
 }
 
 fn ilspy_command() -> Command {
@@ -158,13 +192,13 @@ fn ilspy_command() -> Command {
 fn require_dotnet() -> Result<(), String> {
     let mut command: Command = Command::new("dotnet");
     command.arg("--version");
-    checked_output(&mut command, "dotnet --version").map(|_: Output| ())
+    checked_output(&mut command, "dotnet --version").map(|_: CapturedOutput| ())
 }
 
 fn require_ilspy() -> Result<(), String> {
     let mut command: Command = ilspy_command();
     command.arg("--version");
-    let output: Output = checked_output(&mut command, "pinned ilspycmd --version").map_err(
+    let output: CapturedOutput = checked_output(&mut command, "pinned ilspycmd --version").map_err(
         |error: String| {
             format!(
                 "{error}\nrestore the pinned comparator with: dotnet tool restore --tool-manifest .config/dotnet-tools.json"
@@ -1109,17 +1143,13 @@ fn write_project(dir: &Path, type_name: &str) {
 
 fn compile_whole_type(dir: &Path, src: &str, type_name: &str) -> (Vec<String>, Option<PathBuf>) {
     std::fs::write(dir.join("host.cs"), src).expect("write source");
-    let out: std::process::Output = Command::new("dotnet")
+    let mut command: Command = Command::new("dotnet");
+    command
         .args(["build", "-c", "Release", "-v", "q", "-nologo"])
-        .current_dir(dir)
-        .output()
-        .expect("dotnet build");
-    let errors: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .chain(String::from_utf8_lossy(&out.stderr).lines())
-        .filter(|l: &&str| l.contains(": error "))
-        .map(|l: &str| l.trim().to_owned())
-        .collect();
+        .current_dir(dir);
+    let out: CapturedOutput = bounded_capture(&mut command, "dotnet build")
+        .unwrap_or_else(|error: String| panic!("{error}"));
+    let errors: Vec<String> = diagnostics_of(&out);
     let dll: PathBuf = dir.join(format!("bin/Release/net9.0/{type_name}.dll"));
     let produced: Option<PathBuf> = dll.exists().then_some(dll);
     (errors, produced)
@@ -1131,7 +1161,7 @@ fn ilspy_il(dll: &Path, namespace: &str, type_name: &str) -> String {
         .args(["-il", "-t"])
         .arg(format!("{namespace}.{type_name}"))
         .arg(dll);
-    let out: Output = checked_output(&mut command, "pinned ilspycmd IL comparison")
+    let out: CapturedOutput = checked_output(&mut command, "pinned ilspycmd IL comparison")
         .unwrap_or_else(|error: String| panic!("{error}"));
     assert!(
         !out.stdout.is_empty(),
@@ -1425,6 +1455,57 @@ fn qualify(target: Target, method: &str) -> String {
     format!("{}.{method}", target.type_name)
 }
 
+fn divergent_overload_groups(
+    orig_il: &str,
+    recomp_il: &str,
+    type_name: &str,
+    methods: &[UserMethod],
+) -> BTreeSet<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for method in methods {
+        *counts.entry(method.name.as_str()).or_default() += 1;
+    }
+    let original: BTreeMap<String, Vec<Vec<String>>> = il_method_blocks(orig_il, type_name);
+    let recompiled: BTreeMap<String, Vec<Vec<String>>> = il_method_blocks(recomp_il, type_name);
+    counts
+        .into_iter()
+        .filter(|(_, count): &(&str, usize)| *count > 1)
+        .filter_map(|(name, _): (&str, usize)| {
+            let left: &Vec<Vec<String>> = original.get(name)?;
+            match recompiled.get(name) {
+                Some(right) if multiset_eq(left, right) => None,
+                _ => Some(name.to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn demote_divergent_overloads(
+    target: Target,
+    divergent: &BTreeSet<String>,
+    equivalent: &mut Vec<String>,
+    mismatched: &mut Vec<String>,
+    branching: &mut Vec<String>,
+    divergence: &mut Vec<String>,
+) {
+    for name in divergent {
+        let qualified: String = qualify(target, name);
+        let graded_as_equivalent: usize = equivalent
+            .iter()
+            .filter(|entry: &&String| *entry == &qualified)
+            .count();
+        equivalent.retain(|entry: &String| entry != &qualified);
+        branching.retain(|entry: &String| entry != &qualified);
+        for _ in 0..graded_as_equivalent {
+            mismatched.push(qualified.clone());
+        }
+        divergence.push(format!(
+            "{qualified}: the overload group compared as a multiset and no assignment matched, so \
+             a single-name lookup had been grading one overload against another overload's body"
+        ));
+    }
+}
+
 fn carries_branch_target(ops: &[String]) -> bool {
     ops.iter().any(|op: &String| op.contains(TARGET_PREFIX))
 }
@@ -1499,6 +1580,16 @@ fn run_target(target: Target) -> Outcome {
                 (Some(_), None) => missing.push(qualify(target, &m.name)),
             }
         }
+        let divergent: BTreeSet<String> =
+            divergent_overload_groups(&orig_il, &recomp_il, target.type_name, &methods);
+        demote_divergent_overloads(
+            target,
+            &divergent,
+            &mut equivalent,
+            &mut mismatched,
+            &mut branching,
+            &mut divergence,
+        );
     }
     Outcome {
         label: target.type_name.to_owned(),
@@ -2349,24 +2440,29 @@ fn write_collection_runner_project(dir: &Path) {
     std::fs::write(dir.join("oracle.csproj"), project).expect("write runner project");
 }
 
-fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> std::process::Output {
+fn run_field_rva_arrays(dir: &Path, head: &str, tail: &str) -> CapturedOutput {
     let runner: String = format!(
         "{PREAMBLE}public static class Program\n{{\n    public static void Main()\n    {{\n        int[] head = {head};\n        int[] tail = {tail};\n        System.IO.File.WriteAllText(\"collection-output.txt\", string.Join(\",\", head.Concat(tail)));\n    }}\n}}\n"
     );
     std::fs::write(dir.join("host.cs"), runner).expect("write runner source");
-    let build: std::process::Output = Command::new("dotnet")
+    let mut build_command: Command = Command::new("dotnet");
+    build_command
         .args(["build", "-c", "Release", "-v", "q", "-nologo"])
-        .current_dir(dir)
-        .output()
-        .expect("build recovered collection program");
-    if !build.status.success() {
+        .current_dir(dir);
+    let build: CapturedOutput = bounded_capture(
+        &mut build_command,
+        "dotnet build for the recovered collection program",
+    )
+    .unwrap_or_else(|error: String| panic!("{error}"));
+    if build.exit_code != Some(0) {
         return build;
     }
-    Command::new("dotnet")
+    let mut run_command: Command = Command::new("dotnet");
+    run_command
         .arg(dir.join("bin/Release/net9.0/oracle.dll"))
-        .current_dir(dir)
-        .output()
-        .expect("run recovered collection program")
+        .current_dir(dir);
+    bounded_capture(&mut run_command, "the recovered collection program")
+        .unwrap_or_else(|error: String| panic!("{error}"))
 }
 
 fn fixed_int32_array_initializers(source: &str) -> Vec<String> {
@@ -2418,10 +2514,10 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
         disrobe_core::scratch::ScratchDir::create("disrobe_collection_field_rva").expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_collection_runner_project(&tmp);
-    let clean: std::process::Output =
-        run_field_rva_arrays(&tmp, &initializers[0], &initializers[1]);
-    assert!(
-        clean.status.success(),
+    let clean: CapturedOutput = run_field_rva_arrays(&tmp, &initializers[0], &initializers[1]);
+    assert_eq!(
+        clean.exit_code,
+        Some(0),
         "recovered CollectionExpression must compile and run:\n{}",
         String::from_utf8_lossy(&clean.stderr)
     );
@@ -2436,10 +2532,10 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
         mutated_head, initializers[0],
         "the element mutation must change recovered source"
     );
-    let mutated_run: std::process::Output =
-        run_field_rva_arrays(&tmp, &mutated_head, &initializers[1]);
-    assert!(
-        mutated_run.status.success(),
+    let mutated_run: CapturedOutput = run_field_rva_arrays(&tmp, &mutated_head, &initializers[1]);
+    assert_eq!(
+        mutated_run.exit_code,
+        Some(0),
         "the one-element mutation must stay compilable:\n{}",
         String::from_utf8_lossy(&mutated_run.stderr)
     );
@@ -2454,14 +2550,267 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
 
-const GRADED_TYPE_COUNT: usize = 18;
-const GRADED_MEMBER_TOTAL: usize = 75;
+const GRADED_TYPE_COUNT: usize = 19;
+const GRADED_MEMBER_TOTAL: usize = 92;
 
 const IL_RESIDUAL: &[&str] = &["Pipeline.RunSteps"];
 
 const REFERENCE_LIMITED: &[&str] = &[];
 
 const NOT_RECOMPILED: &[&str] = &[];
+
+#[derive(Debug, Clone, Copy)]
+enum Coverage {
+    Graded(&'static str),
+    Ungraded(&'static str),
+}
+
+const INPUT_SPACE: &[(&str, Coverage)] = &[
+    ("type shape: class", Coverage::Graded("Guards.Tier")),
+    ("type shape: struct", Coverage::Graded("Money.CompareTo")),
+    ("type shape: sealed class", Coverage::Graded("Cat.Sound")),
+    (
+        "type shape: static class",
+        Coverage::Graded("Constructs.Classify"),
+    ),
+    (
+        "type shape: record class",
+        Coverage::Graded("Point.ToString"),
+    ),
+    (
+        "type shape: attribute class",
+        Coverage::Graded("TraceableAttribute.get_Category"),
+    ),
+    (
+        "type shape: abstract base with an overriding derived type",
+        Coverage::Graded("Dog.Sound"),
+    ),
+    (
+        "type shape: record struct",
+        Coverage::Ungraded(
+            "EdgeCases.Coordinate is the only readonly record struct the corpus carries and \
+             reconstruct_record_decl emits a record class, so a record struct would not round \
+             trip through the whole-type builder",
+        ),
+    ),
+    (
+        "type shape: interface with a default implementation",
+        Coverage::Ungraded("the corpus carries no interface with a default implementation"),
+    ),
+    (
+        "type shape: nested type",
+        Coverage::Ungraded(
+            "is_compiler_generated_type filters every name carrying an angle bracket, and the \
+             whole-type builder emits one top-level type per target, so a nested type has no \
+             declaration site here",
+        ),
+    ),
+    (
+        "type shape: generic type, one and several parameters",
+        Coverage::Ungraded(
+            "graded by generic_type_recompile_oracle.rs, which compiles generic-type methods \
+             with real csc but does not compare IL",
+        ),
+    ),
+    (
+        "type shape: generic constraints",
+        Coverage::Ungraded("graded by generic_type_recompile_oracle.rs, compile only"),
+    ),
+    (
+        "type shape: explicit interface implementation",
+        Coverage::Ungraded(
+            "an explicitly implemented member carries a dotted metadata name that method_name_of \
+             rejects, so it never enters the graded population",
+        ),
+    ),
+    ("member: instance method", Coverage::Graded("Guards.Sign")),
+    (
+        "member: static method",
+        Coverage::Graded("Constructs.Combine"),
+    ),
+    (
+        "member: instance constructor",
+        Coverage::Graded("Money..ctor"),
+    ),
+    (
+        "member: property with a backing field",
+        Coverage::Graded("TraceableAttribute.get_Priority"),
+    ),
+    (
+        "member: property without a backing field",
+        Coverage::Graded("Point.get_EqualityContract"),
+    ),
+    (
+        "member: static property",
+        Coverage::Graded("Money.get_Zero"),
+    ),
+    (
+        "member: operator overload",
+        Coverage::Graded("Money.op_Addition"),
+    ),
+    (
+        "member: equality operator pair",
+        Coverage::Graded("Point.op_Inequality"),
+    ),
+    (
+        "member: method carrying an attribute",
+        Coverage::Graded("Pipeline.RunSteps"),
+    ),
+    (
+        "member: lambda and closure",
+        Coverage::Graded("Constructs.MakeAdder"),
+    ),
+    (
+        "member: iterator returning IEnumerable",
+        Coverage::Graded("Constructs.Evens"),
+    ),
+    (
+        "member: async method",
+        Coverage::Graded("Constructs.SumAsync"),
+    ),
+    (
+        "member: static constructor",
+        Coverage::Ungraded(
+            "user_method_for refuses a .cctor because a recovered class initializer cannot be \
+             re-declared without re-running its side effects",
+        ),
+    ),
+    (
+        "member: finalizer",
+        Coverage::Ungraded(
+            "EdgeCases.StaticFinalizationKit is graded but the finalizer itself lives on a type \
+             the whole-type builder does not emit a destructor for",
+        ),
+    ),
+    (
+        "member: indexer",
+        Coverage::Ungraded("no graded type declares an indexer"),
+    ),
+    (
+        "member: event",
+        Coverage::Ungraded(
+            "EdgeCases.EventSource recompiles in the whole-type recompile fraction but is not an \
+             IL-equivalence target",
+        ),
+    ),
+    (
+        "member: conversion operator",
+        Coverage::Ungraded("no graded type declares a conversion operator"),
+    ),
+    (
+        "member: extension method",
+        Coverage::Ungraded("no graded type declares an extension method"),
+    ),
+    (
+        "member: local function",
+        Coverage::Ungraded(
+            "a local function is lowered to a compiler-generated method that \
+             is_compiler_generated_type filters out of the graded population",
+        ),
+    ),
+    (
+        "member: iterator returning IEnumerator",
+        Coverage::Ungraded("no graded type returns a bare IEnumerator"),
+    ),
+    (
+        "member: async iterator",
+        Coverage::Ungraded(
+            "the async-iterator MoveNext bodies are pinned refusals in \
+             movenext_recompile_oracle.rs, so no async iterator reaches this gate",
+        ),
+    ),
+    (
+        "member: ref, out and in parameters",
+        Coverage::Ungraded(
+            "EdgeCases.RefPlayground carries them but does not recompile standalone",
+        ),
+    ),
+    (
+        "member: params and optional parameters",
+        Coverage::Ungraded("no graded type declares one"),
+    ),
+    (
+        "reverser: closure_reverse",
+        Coverage::Graded("Constructs.MakeAdder"),
+    ),
+    (
+        "reverser: iterator_reverse",
+        Coverage::Graded("Constructs.Evens"),
+    ),
+    (
+        "reverser: lambda_reverse",
+        Coverage::Graded("Constructs.Sumsq"),
+    ),
+    (
+        "reverser: list_switch_reverse",
+        Coverage::Graded("ListMatch.Shape"),
+    ),
+    (
+        "reverser: positional_switch_reverse",
+        Coverage::Graded("PosMatch.Locate"),
+    ),
+    (
+        "reverser: property_switch_reverse",
+        Coverage::Graded("PropMatch.Release"),
+    ),
+    (
+        "reverser: range_switch_reverse",
+        Coverage::Graded("Ranges.Band"),
+    ),
+    (
+        "reverser: switch_expr_reverse",
+        Coverage::Graded("Constructs.Classify"),
+    ),
+    (
+        "reverser: state_machine_reverse",
+        Coverage::Graded("Constructs.SumAsync"),
+    ),
+    ("reverser: records", Coverage::Graded("Point.PrintMembers")),
+    ("reverser: with_reverse", Coverage::Graded("Records.ResetY")),
+    (
+        "reverser: tuple_switch_reverse",
+        Coverage::Ungraded("no graded type switches on a tuple"),
+    ),
+    ("language: C#", Coverage::Graded("Branches.LengthGuard")),
+    (
+        "language: F#",
+        Coverage::Ungraded(
+            "cil_to_fsharp.rs renders recovered IL as F# and is graded against its own expected \
+             output; no F# compiler is provisioned, so it cannot join a recompile comparison",
+        ),
+    ),
+    (
+        "language: VB.NET",
+        Coverage::Ungraded(
+            "cil_to_vbnet.rs renders recovered IL as VB.NET and is graded against its own \
+             expected output; the whole-type builder emits C# only",
+        ),
+    ),
+    (
+        "assembly shape: plain library",
+        Coverage::Graded("Shapes.Grade"),
+    ),
+    (
+        "assembly shape: library carrying generics",
+        Coverage::Ungraded("graded by generic_type_recompile_oracle.rs, compile only"),
+    ),
+    (
+        "assembly shape: ReadyToRun",
+        Coverage::Ungraded(
+            "an R2R image carries the same CIL as its baseline plus precompiled native code, and \
+             r2r.rs recovery is graded by real_r2r.rs",
+        ),
+    ),
+    (
+        "assembly shape: Native AOT",
+        Coverage::Ungraded(
+            "a Native AOT image carries no CIL metadata to recompile, and aot.rs recovery is \
+             graded by real_native_aot.rs and native_aot_names_coverage.rs",
+        ),
+    ),
+];
+
+const INPUT_SPACE_ROWS: usize = 55;
 
 fn sorted(names: &[String]) -> Vec<String> {
     let mut out: Vec<String> = names.to_vec();
@@ -2473,6 +2822,74 @@ fn owned(names: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = names.iter().map(|name: &&str| (*name).to_owned()).collect();
     out.sort_unstable();
     out
+}
+
+fn assert_input_space_is_accounted_for(
+    equivalent: &[String],
+    mismatched: &[String],
+    missing: &[String],
+    reference_limited: &[String],
+) {
+    assert_eq!(
+        INPUT_SPACE.len(),
+        INPUT_SPACE_ROWS,
+        "the declared input space is pinned at {INPUT_SPACE_ROWS} rows so a shape cannot be \
+         dropped from the roster to make coverage look complete"
+    );
+    let labels: BTreeSet<&str> = INPUT_SPACE
+        .iter()
+        .map(|(label, _): &(&str, Coverage)| *label)
+        .collect();
+    assert_eq!(
+        labels.len(),
+        INPUT_SPACE.len(),
+        "every declared input-space row needs its own label, otherwise one row silently answers \
+         for another"
+    );
+    let compared: BTreeSet<&str> = equivalent
+        .iter()
+        .chain(mismatched.iter())
+        .chain(missing.iter())
+        .chain(reference_limited.iter())
+        .map(String::as_str)
+        .collect();
+    let unreached: Vec<(&str, &str)> = INPUT_SPACE
+        .iter()
+        .filter_map(|(label, coverage): &(&str, Coverage)| match coverage {
+            Coverage::Graded(member) if !compared.contains(member) => Some((*label, *member)),
+            Coverage::Graded(_) | Coverage::Ungraded(_) => None,
+        })
+        .collect();
+    assert!(
+        unreached.is_empty(),
+        "these declared input-space rows name a member that is not in the graded population, so \
+         the row claims coverage the gate does not deliver: {unreached:?}"
+    );
+    let ungraded: Vec<(&str, &str)> = INPUT_SPACE
+        .iter()
+        .filter_map(|(label, coverage): &(&str, Coverage)| match coverage {
+            Coverage::Ungraded(reason) => Some((*label, *reason)),
+            Coverage::Graded(_) => None,
+        })
+        .collect();
+    let blank: Vec<&str> = ungraded
+        .iter()
+        .filter(|(_, reason): &&(&str, &str)| reason.trim().is_empty())
+        .map(|(label, _): &(&str, &str)| *label)
+        .collect();
+    assert!(
+        blank.is_empty(),
+        "an ungraded input-space row must carry the reason it is ungraded: {blank:?}"
+    );
+    eprintln!(
+        "  declared input space: {}/{} rows graded, {} listed ungraded",
+        INPUT_SPACE.len() - ungraded.len(),
+        INPUT_SPACE.len(),
+        ungraded.len()
+    );
+    for (label, reason) in &ungraded {
+        eprintln!("    ungraded {label}: {reason}");
+    }
 }
 
 fn percent(numerator: usize, denominator: usize) -> f64 {
@@ -2676,6 +3093,7 @@ fn whole_type_recompiles_to_equivalent_il() {
         "these types failed to compile because a reference the harness does not supply is \
          missing, which is distinct from wrong recovery: {missing_reference_types:?}"
     );
+    assert_input_space_is_accounted_for(&equivalent, &mismatched, &missing, &reference_limited);
     let unpinned: Vec<&String> = mismatched
         .iter()
         .filter(|name: &&String| !IL_RESIDUAL.contains(&name.as_str()))
