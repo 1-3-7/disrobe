@@ -805,8 +805,18 @@ fn a_truncated_header_is_a_typed_refusal() {
 
 #[test]
 fn two_runs_produce_the_same_intervals() {
-    for name in MAPPED_FIXTURES {
-        let bytes: Vec<u8> = fixture(name);
+    let formats: Vec<String> = MAPPED_FIXTURES
+        .iter()
+        .map(|name: &&str| format!("{FORMATS_DIR}/{name}"))
+        .chain(
+            LINKED_PE32_FIXTURES
+                .iter()
+                .map(|relative: &&str| (*relative).to_owned()),
+        )
+        .collect();
+
+    for name in formats {
+        let bytes: Vec<u8> = required_corpus(&name);
         let first: ByteCoverage = file_byte_coverage(&bytes).expect("map a fixture");
         let second: ByteCoverage = file_byte_coverage(&bytes).expect("map a fixture twice");
         assert_eq!(
@@ -984,5 +994,274 @@ fn a_nested_directory_is_described_once_inside_its_section() {
     assert!(
         examined > 0,
         "no committed PE fixture carries a debug directory, so this case graded nothing"
+    );
+}
+
+const LINKED_PE32_FIXTURES: [&str; 3] = [
+    "native/packers/aspack/Clockres.original.exe",
+    "native/packers/mew/Autologon.original.exe",
+    "dotnet/HelloApp.dll",
+];
+
+#[test]
+fn a_linked_pe32_is_covered_end_to_end() {
+    for relative in LINKED_PE32_FIXTURES {
+        let bytes: Vec<u8> = required_corpus(relative);
+        let coverage: ByteCoverage =
+            file_byte_coverage(&bytes).unwrap_or_else(|error: Error| panic!("{relative}: {error}"));
+
+        assert_eq!(
+            coverage.format,
+            NativeFormat::Pe32,
+            "{relative}: this case exists to walk the 32 bit optional header"
+        );
+        assert_partition(&coverage, bytes.len() as u64, relative);
+        assert_eq!(
+            coverage.unclaimed_bytes, 0,
+            "{relative}: a linked 32 bit image accounts for every byte"
+        );
+    }
+}
+
+#[test]
+fn every_section_an_independent_parser_reports_in_a_pe32_is_claimed_under_its_own_name() {
+    let mut checked: usize = 0;
+
+    for relative in LINKED_PE32_FIXTURES {
+        let bytes: Vec<u8> = required_corpus(relative);
+        let coverage: ByteCoverage =
+            file_byte_coverage(&bytes).unwrap_or_else(|error: Error| panic!("{relative}: {error}"));
+        let parsed: object::read::File<'_, &[u8]> = object::read::File::parse(bytes.as_slice())
+            .unwrap_or_else(|error: object::Error| {
+                panic!("{relative}: the reference parser must read this fixture: {error}")
+            });
+
+        for section in parsed.sections() {
+            let Some((offset, size)): Option<(u64, u64)> = section.file_range() else {
+                continue;
+            };
+            if size == 0 {
+                continue;
+            }
+            let section_name: String = section
+                .name()
+                .unwrap_or_else(|error: object::Error| {
+                    panic!("{relative}: a reference section name must decode: {error}")
+                })
+                .to_owned();
+            let end: u64 = offset + size;
+            for claimant in claimants_over(&coverage, offset, end) {
+                assert!(
+                    claimant.starts_with("section:") && claimant.ends_with(&section_name),
+                    "{relative}: the reference parser places {section_name} at {offset}..{end}, \
+                     and the map attributes part of it to {claimant}"
+                );
+            }
+            checked += 1;
+        }
+    }
+
+    assert!(
+        checked >= 10,
+        "the 32 bit differential check must grade a real number of sections, and it graded \
+         {checked}"
+    );
+}
+
+fn pe32_directory(bytes: &[u8], index: usize) -> (u32, u32) {
+    let lfanew: usize = pe_lfanew(bytes);
+    let base: usize = lfanew + 24 + 0x60 + index * 8;
+    (read_u32_le(bytes, base), read_u32_le(bytes, base + 4))
+}
+
+#[test]
+fn an_authenticode_signature_is_claimed_rather_than_left_unaccounted() {
+    let relative: &str = "native/packers/aspack/Clockres.original.exe";
+    let bytes: Vec<u8> = required_corpus(relative);
+    let (offset, size): (u32, u32) =
+        pe32_directory(&bytes, object::pe::IMAGE_DIRECTORY_ENTRY_SECURITY);
+    assert!(
+        offset > 0 && size > 0,
+        "{relative} must carry a certificate table for this case to grade anything"
+    );
+
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a signed PE32");
+    assert_partition(&coverage, bytes.len() as u64, relative);
+
+    let region: &CoverageRegion =
+        region_named(&coverage, "certificate-table").expect("the certificate table is claimed");
+    assert_eq!(
+        (region.start, region.end),
+        (u64::from(offset), u64::from(offset + size)),
+        "the certificate table claim must be the range the directory declares"
+    );
+    assert_eq!(
+        region.class,
+        RegionClass::Signature,
+        "the certificate table is a signature region"
+    );
+    assert_eq!(
+        coverage.unclaimed_bytes, 0,
+        "a signature that follows the last section is a claim, not an unaccounted overlay"
+    );
+}
+
+#[test]
+fn a_packed_image_whose_certificate_table_points_past_the_end_is_recorded() {
+    let relative: &str = "native/packers/aspack/Clockres.packed.aspack.exe";
+    let bytes: Vec<u8> = required_corpus(relative);
+    let file_len: u64 = bytes.len() as u64;
+    let (offset, size): (u32, u32) =
+        pe32_directory(&bytes, object::pe::IMAGE_DIRECTORY_ENTRY_SECURITY);
+    assert!(
+        u64::from(offset) >= file_len,
+        "this case exists because the packer left a certificate table that no longer fits, and \
+         the directory now points at {offset} in a {file_len} byte file"
+    );
+
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a packed PE32");
+    assert_partition(&coverage, file_len, relative);
+
+    let entry: &TruncatedClaim = coverage
+        .truncated
+        .iter()
+        .find(|claim: &&TruncatedClaim| claim.claimant == "certificate-table")
+        .expect("a directory that points past the end must be recorded, not clamped in silence");
+    assert_eq!(entry.start, u64::from(offset));
+    assert_eq!(entry.declared_end, u64::from(offset) + u64::from(size));
+    assert_eq!(entry.present_end, file_len);
+    assert_eq!(entry.missing_bytes, entry.declared_end - file_len);
+    assert!(
+        region_named(&coverage, "certificate-table").is_none(),
+        "a table that lies entirely past the end claims no byte of the file"
+    );
+}
+
+#[test]
+fn a_sixty_four_bit_universal_binary_accounts_for_every_slice() {
+    let first: Vec<u8> = thin_macho(object::Architecture::I386);
+    let second: Vec<u8> = thin_macho(object::Architecture::X86_64);
+    let alignment: usize = 4096;
+    let first_offset: usize = alignment;
+    let second_offset: usize = (first_offset + first.len()).div_ceil(alignment) * alignment;
+    let total: usize = second_offset + second.len();
+
+    let mut bytes: Vec<u8> = vec![0u8; total];
+    bytes[0..4].copy_from_slice(&0xCAFE_BABFu32.to_be_bytes());
+    bytes[4..8].copy_from_slice(&2u32.to_be_bytes());
+    let entries: [(u32, u32, usize, usize); 2] = [
+        (7, 3, first_offset, first.len()),
+        (0x0100_0007, 3, second_offset, second.len()),
+    ];
+    for (index, (cputype, cpusubtype, offset, size)) in entries.iter().enumerate() {
+        let base: usize = 8 + index * 32;
+        bytes[base..base + 4].copy_from_slice(&cputype.to_be_bytes());
+        bytes[base + 4..base + 8].copy_from_slice(&cpusubtype.to_be_bytes());
+        bytes[base + 8..base + 16].copy_from_slice(&(*offset as u64).to_be_bytes());
+        bytes[base + 16..base + 24].copy_from_slice(&(*size as u64).to_be_bytes());
+        bytes[base + 24..base + 28].copy_from_slice(&12u32.to_be_bytes());
+    }
+    bytes[first_offset..first_offset + first.len()].copy_from_slice(&first);
+    bytes[second_offset..second_offset + second.len()].copy_from_slice(&second);
+
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a 64 bit universal binary");
+    assert_eq!(coverage.format, NativeFormat::MachOFat);
+    assert_partition(
+        &coverage,
+        bytes.len() as u64,
+        "universal binary (64 bit table)",
+    );
+    assert_eq!(
+        coverage.unclaimed_bytes, 0,
+        "the 64 bit architecture table must be walked with 64 bit slice offsets"
+    );
+    let table: &CoverageRegion =
+        region_named(&coverage, "fat-arch-table").expect("the architecture table is claimed");
+    assert_eq!(
+        table.len(),
+        64,
+        "two 64 bit architecture entries occupy 64 bytes"
+    );
+}
+
+#[test]
+fn an_elf_without_a_section_table_falls_back_to_its_load_segments() {
+    let mut bytes: Vec<u8> = fixture("hello.elf64");
+    bytes[40..48].copy_from_slice(&0u64.to_le_bytes());
+    bytes[60..62].copy_from_slice(&0u16.to_le_bytes());
+    bytes[62..64].copy_from_slice(&0u16.to_le_bytes());
+
+    let coverage: ByteCoverage =
+        file_byte_coverage(&bytes).expect("map a stripped ELF with no section table");
+    assert_partition(
+        &coverage,
+        bytes.len() as u64,
+        "hello.elf64 without a section table",
+    );
+    assert!(
+        coverage.regions.iter().any(|region: &CoverageRegion| {
+            region
+                .claimant
+                .as_deref()
+                .is_some_and(|claimant: &str| claimant.starts_with("segment:load#"))
+        }),
+        "an image with no section table must be described by its load segments: {:?}",
+        coverage.regions
+    );
+    assert!(
+        !coverage.overlap_detected,
+        "the load segment fallback must not double claim the ELF header or the program headers"
+    );
+    assert!(
+        coverage.unclaimed_bytes > 0,
+        "the bytes only the discarded section table described must surface as unclaimed"
+    );
+}
+
+#[test]
+fn a_nested_directory_in_a_pe32_is_described_once_inside_its_section() {
+    let mut examined: usize = 0;
+
+    for relative in LINKED_PE32_FIXTURES {
+        let bytes: Vec<u8> = required_corpus(relative);
+        let Ok(parsed): Result<object::read::pe::PeFile32<'_, &[u8]>, object::Error> =
+            object::read::pe::PeFile32::parse(bytes.as_slice())
+        else {
+            continue;
+        };
+        let sections: object::read::pe::SectionTable<'_> = parsed.section_table();
+        let Some(directory): Option<&object::pe::ImageDataDirectory> = parsed
+            .data_directories()
+            .get(object::pe::IMAGE_DIRECTORY_ENTRY_DEBUG)
+        else {
+            continue;
+        };
+        let Ok((offset, size)): Result<(u32, u32), object::Error> = directory.file_range(&sections)
+        else {
+            continue;
+        };
+        if size == 0 {
+            continue;
+        }
+        let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a PE32 image");
+        let claimants: Vec<String> =
+            claimants_over(&coverage, u64::from(offset), u64::from(offset + size));
+        assert!(
+            !claimants.is_empty(),
+            "{relative}: the debug directory at {offset} is described by no region"
+        );
+        for claimant in &claimants {
+            assert!(
+                claimant.starts_with("section:"),
+                "{relative}: the debug directory lives inside a section, so the map describes it \
+                 at section granularity and never claims it twice, and it names {claimant}"
+            );
+        }
+        examined += 1;
+    }
+
+    assert!(
+        examined > 0,
+        "no committed 32 bit PE fixture carries a debug directory, so this case graded nothing"
     );
 }

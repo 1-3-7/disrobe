@@ -273,10 +273,12 @@ impl<'data> ClaimSet<'data> {
         let mut unclaimed_bytes: u64 = 0;
         for region in &regions {
             let length: u64 = region.len();
-            match region.class {
-                RegionClass::Alignment => slack_bytes = slack_bytes.saturating_add(length),
-                RegionClass::Unclaimed => unclaimed_bytes = unclaimed_bytes.saturating_add(length),
-                _ => claimed_bytes = claimed_bytes.saturating_add(length),
+            if region.class.is_claimed() {
+                claimed_bytes = claimed_bytes.saturating_add(length);
+            } else if region.class == RegionClass::Alignment {
+                slack_bytes = slack_bytes.saturating_add(length);
+            } else {
+                unclaimed_bytes = unclaimed_bytes.saturating_add(length);
             }
         }
 
