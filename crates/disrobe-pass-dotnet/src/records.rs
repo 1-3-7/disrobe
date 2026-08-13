@@ -74,6 +74,7 @@ mod tests {
             namespace: String::new(),
             name: name.to_owned(),
             full_name: name.to_owned(),
+            metadata_name: name.to_owned(),
             flags: 0,
             base_type: None,
             fields: Vec::new(),

@@ -26,6 +26,8 @@ pub struct TypeModel {
     pub namespace: String,
     pub name: String,
     pub full_name: String,
+    #[serde(default)]
+    pub metadata_name: String,
     pub flags: u32,
     pub base_type: Option<String>,
     pub fields: Vec<FieldModel>,
@@ -2041,9 +2043,16 @@ impl Resolver {
 
     #[must_use]
     fn qualify(ns: String, name: String) -> String {
-        let name: String = strip_generic_arity(&name);
+        Self::join_namespace(&ns, &strip_generic_arity(&name))
+    }
+
+    fn qualify_metadata(ns: &str, name: &str) -> String {
+        Self::join_namespace(ns, name)
+    }
+
+    fn join_namespace(ns: &str, name: &str) -> String {
         if ns.is_empty() {
-            name
+            name.to_owned()
         } else {
             format!("{ns}.{name}")
         }
@@ -2093,12 +2102,14 @@ impl Resolver {
             let namespace: String = self.string(t.namespace);
             let name: String = self.string(t.name);
             let full_name: String = Self::qualify(namespace.clone(), name.clone());
+            let metadata_name: String = Self::qualify_metadata(&namespace, &name);
             let base_type: Option<String> = t.extends.map(|e: RowRef| self.row_ref_name(e));
             types.push(TypeModel {
                 token: (u32::from(TableId::TypeDef.index()) << 24) | type_rid,
                 namespace,
                 name,
                 full_name,
+                metadata_name,
                 flags: t.flags,
                 base_type,
                 fields,
@@ -3308,6 +3319,63 @@ mod tests {
     fn decode_fixed_buffer_info_rejects_a_blob_with_the_wrong_prolog() {
         assert!(decode_fixed_buffer_info(&[0x02, 0x00, 0x00]).is_none());
         assert!(decode_fixed_buffer_info(&[]).is_none());
+    }
+
+    #[test]
+    fn every_generic_type_is_reachable_by_the_name_metadata_stores_for_it() {
+        let resolver: Resolver =
+            resolver_for("../../corpus/dotnet/megafile/EdgeCases.baseline.dll");
+        let model: AssemblyModel = resolver.model();
+        let generics: Vec<&TypeModel> = model
+            .types
+            .iter()
+            .filter(|t: &&TypeModel| t.name.contains('`'))
+            .collect();
+        assert!(
+            !generics.is_empty(),
+            "the fixture must declare at least one generic type or this gate proves nothing"
+        );
+        for ty in &generics {
+            let expected: String = if ty.namespace.is_empty() {
+                ty.name.clone()
+            } else {
+                format!("{}.{}", ty.namespace, ty.name)
+            };
+            assert_eq!(
+                ty.metadata_name, expected,
+                "a generic type must carry the arity suffix the strings heap stores, so a caller \
+                 resolving by metadata name finds it instead of reading absence"
+            );
+            assert!(
+                model
+                    .types
+                    .iter()
+                    .any(|c: &TypeModel| c.metadata_name == expected),
+                "{expected} must be reachable in the model by its own metadata name"
+            );
+        }
+        assert!(
+            generics
+                .iter()
+                .any(|t: &&TypeModel| t.metadata_name == "EdgeCases.IRepository`1"),
+            "the case that exposed this must be among the enumerated generic types"
+        );
+    }
+
+    #[test]
+    fn a_generic_type_and_its_non_generic_namesake_stay_distinct_by_metadata_name() {
+        let namespaced: String = Resolver::qualify_metadata("EdgeCases", "IRepository`1");
+        let bare: String = Resolver::qualify_metadata("EdgeCases", "IRepository");
+        assert_ne!(
+            namespaced, bare,
+            "the metadata name keeps arity, so two distinct types cannot collide on one key"
+        );
+        assert_eq!(
+            Resolver::qualify("EdgeCases".to_owned(), "IRepository`1".to_owned()),
+            "EdgeCases.IRepository",
+            "the rendering name still drops arity, because recovered source spells a generic as \
+             IRepository<T> rather than with the metadata suffix"
+        );
     }
 
     #[test]
