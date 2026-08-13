@@ -129,6 +129,8 @@ corpus/**/*.ipa
 corpus/**/*.swf
 !corpus/flash/swf/synthetic/synthetic_counter_fws.swf
 !corpus/flash/swf/synthetic/synthetic_counter_cws.swf
+!corpus/flash/avm2_disasm_oracle/opcode_breadth.swf
+!corpus/flash/avm2_disasm_oracle/control_shapes.swf
 corpus/**/*.wasm
 !corpus/wasm/wat/function_refs.wasm
 corpus/**/*.msi

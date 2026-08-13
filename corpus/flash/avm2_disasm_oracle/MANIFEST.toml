@@ -1,0 +1,86 @@
+schema = "disrobe-corpus-v1"
+category = "flash.avm2.disasm"
+target_crate = "disrobe-nir-lift"
+fetched_utc = "2026-08-13T00:00:00Z"
+notes = """
+Real AVM2 bytecode and an independent disassembly of it, for the NIR AVM2 lifter completeness
+gate in crates/disrobe-nir-lift/tests/avm2_opcode_completeness.rs.
+
+The programs are compiled from Haxe source by Haxe 4.3.7 targeting SWF. Neither the bytecode
+nor the reference listing comes from this project's own decoder.
+
+  haxe -cp . -main OpcodeBreadth -swf opcode_breadth.swf
+  haxe -cp . -main ControlShapes -swf control_shapes.swf
+
+The reference disassembly is exported by JPEXS Free Flash Decompiler 26.2.1:
+
+  java -jar ffdec.jar -format script:pcode -export script <dir> <program>.swf
+
+Each <program>.pcode.txt is the export directory concatenated in one pass: scripts sorted by
+their relative path, each preceded by a line reading "; script <relative path>", LF endings,
+otherwise the exporter's bytes unchanged.
+
+avm2_instruction_set.txt is the same decompiler's whole one-byte AVM2 opcode space, one row per
+slot. Each row is the two-digit hex opcode, a tab, then the mnemonic, or a single hyphen when the
+slot is unallocated. It gives the gate an opcode denominator that does not come from this project.
+
+The gate hash-pins every file here, so a changed corpus fails rather than rescoring. The Haxe
+sources are committed beside the bytecode so the corpus can be rebuilt.
+"""
+
+[[sample]]
+name = "opcode_breadth.swf"
+source_tool = "haxe 4.3.7 -swf"
+source_file = "OpcodeBreadth.hx"
+size_bytes = 6301
+sha256 = "ef4e99f3894c51818dd5fe2011ff919fe4f1bf7fc7f1eb205026f0250ac86c2d"
+magic = "435753"
+compression = "zlib"
+notes = "Breadth program: arithmetic, bitwise, comparison, dynamic typing, membership, iteration, exceptions, closures, constants, domain memory, vectors, strings, loops, inheritance, and a sparse switch. 115 method bodies, 2821 instructions."
+
+[[sample]]
+name = "opcode_breadth.pcode.txt"
+source_tool = "JPEXS Free Flash Decompiler 26.2.1 -format script:pcode"
+source_file = "opcode_breadth.swf"
+size_bytes = 216398
+sha256 = "063b3d3e1f7d8d9f2640d9e6da09f02acf63898156972b4fe49dd86ca67b5802"
+notes = "Reference disassembly: 96 script-attached method bodies, 2369 instructions. Method bodies reachable only through newfunction are not printed by the script exporter."
+
+[[sample]]
+name = "control_shapes.swf"
+source_tool = "haxe 4.3.7 -swf"
+source_file = "ControlShapes.hx"
+size_bytes = 6477
+sha256 = "e39dd9aa5b3121175dd95b4c1e3f4a808c4fad6dad6f7dfbc15cd378cea6333c"
+magic = "435753"
+compression = "zlib"
+notes = "Control-flow program: nested loops with early exit, string switch, layered try and catch, recursion, nested ternaries, short-circuit chains, maps, nested arrays, and enum matching. 119 method bodies, 2964 instructions."
+
+[[sample]]
+name = "control_shapes.pcode.txt"
+source_tool = "JPEXS Free Flash Decompiler 26.2.1 -format script:pcode"
+source_file = "control_shapes.swf"
+size_bytes = 205822
+sha256 = "8261401295fba91c2de73c549b1a365f234279790f461fffcba55639f12272ed"
+notes = "Reference disassembly: 101 script-attached method bodies, 2519 instructions."
+
+[[sample]]
+name = "avm2_instruction_set.txt"
+source_tool = "JPEXS Free Flash Decompiler 26.2.1 AVM2Code.instructionSet"
+size_bytes = 2745
+sha256 = "13e3dae5f5add1bd74801769c5a75acfa239bb8043b74ba9fafa51aaa059bd7a"
+notes = "Whole one-byte AVM2 opcode space: 206 allocated slots and 50 unallocated slots."
+
+[[fixture]]
+name = "OpcodeBreadth.hx"
+kind = "source"
+provenance = "self-authored"
+size_bytes = 5871
+sha256 = "a0c71bf5b441c8a629d26407e2417d4b0d0e5b3894973fb6fbe744c7a361f63f"
+
+[[fixture]]
+name = "ControlShapes.hx"
+kind = "source"
+provenance = "self-authored"
+size_bytes = 2602
+sha256 = "7a1dd1124b87e81d27129ad10e54093dcc6d93d4bf70af34be8b123ce74a346d"

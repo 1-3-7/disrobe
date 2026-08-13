@@ -419,7 +419,9 @@ fn validate_body_semantics(
     lines: &[DisasmLine],
     sizes: &[usize],
 ) -> Result<()> {
-    let boundaries: BTreeSet<usize> = lines.iter().map(|line: &DisasmLine| line.offset).collect();
+    let mut boundaries: BTreeSet<usize> =
+        lines.iter().map(|line: &DisasmLine| line.offset).collect();
+    boundaries.insert(body.code.len());
     for (ordinal, line) in lines.iter().enumerate() {
         let end_offset: usize = line.offset.saturating_add(sizes[ordinal]);
         match line.opcode {
