@@ -12,8 +12,8 @@ llvm-objcopy --strip-all region_corpus.unstripped.elf region_corpus.stripped.elf
 clang -target x86_64-unknown-linux-gnu -fPIC -ftls-model=initial-exec -O1 -g -gdwarf-4 \
     -fdebug-compilation-dir=. -fno-asynchronous-unwind-tables -fno-builtin \
     -fcf-protection=none -c region_corpus.c -o region_corpus_pic.o
-ld.lld -shared -o region_corpus.pic.unstripped.so region_corpus_pic.o
-llvm-objcopy --strip-all region_corpus.pic.unstripped.so region_corpus.pic.stripped.so
+ld.lld -shared -o region_corpus.pic.unstripped.elf region_corpus_pic.o
+llvm-objcopy --strip-all region_corpus.pic.unstripped.elf region_corpus.pic.stripped.elf
 
 rm -f region_corpus.o region_corpus_pic.o
 

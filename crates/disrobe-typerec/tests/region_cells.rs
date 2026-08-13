@@ -132,7 +132,7 @@ fn elf_thread_local_storage_sections_classify_as_tls() {
 fn every_allocated_data_symbol_leaves_the_unknown_region() {
     for name in [
         "region_corpus.unstripped.elf",
-        "region_corpus.pic.unstripped.so",
+        "region_corpus.pic.unstripped.elf",
         "abi_corpus.unstripped.exe",
     ] {
         let bytes: Vec<u8> = fixture(name);
@@ -406,9 +406,9 @@ fn the_debug_image_carries_its_region_model_into_recovery() {
 
 #[test]
 fn position_independent_build_reaches_the_same_regions() {
-    let unstripped: Vec<u8> = fixture("region_corpus.pic.unstripped.so");
+    let unstripped: Vec<u8> = fixture("region_corpus.pic.unstripped.elf");
     let (base, code): (u64, Vec<u8>) = function_slice(&unstripped, "bump");
-    let model: RegionModel = RegionModel::from_image(&fixture("region_corpus.pic.stripped.so"));
+    let model: RegionModel = RegionModel::from_image(&fixture("region_corpus.pic.stripped.elf"));
     let cells: BTreeMap<u64, (Region, TypeVar)> = regions_at(&code, base, &model);
     let regions: BTreeSet<Region> = cells
         .values()
