@@ -27,11 +27,16 @@ fn manifest(rel: &str) -> PathBuf {
     path
 }
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_dotnet(grader: &str) {
+    let probe: std::io::Result<std::process::Output> =
+        Command::new("dotnet").arg("--version").output();
+    let reached: bool = matches!(&probe, Ok(output) if output.status.success());
+    assert!(
+        reached,
+        "{grader} grades recovered C# with the real csc that ships in the dotnet SDK, so \
+         `dotnet --version` must succeed here. it did not. a grader that cannot reach its \
+         compiler reports no measurement at all rather than passing on an empty population"
+    );
 }
 
 fn decompile() -> DecompiledAssembly {
@@ -204,10 +209,7 @@ const GENERIC_RECOMPILE_FLOOR: usize = 24;
 
 #[test]
 fn generic_type_methods_recompile_against_csc() {
-    if !dotnet_available() {
-        eprintln!("SKIP generic-type recompile oracle: no dotnet SDK on PATH");
-        return;
-    }
+    require_dotnet("the generic-type recompile gate");
     let asm: DecompiledAssembly = decompile();
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_generic_type_recompile_oracle")

@@ -5,11 +5,16 @@ use std::process::Command;
 use disrobe_pass_dotnet::model::{MethodModel, ParamModel};
 use disrobe_pass_dotnet::signature::{MethodSig, TypeSig, TypeSigOrVoid};
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_dotnet(grader: &str) {
+    let probe: std::io::Result<std::process::Output> =
+        Command::new("dotnet").arg("--version").output();
+    let reached: bool = matches!(&probe, Ok(output) if output.status.success());
+    assert!(
+        reached,
+        "{grader} grades recovered C# with the real csc that ships in the dotnet SDK, so \
+         `dotnet --version` must succeed here. it did not. a grader that cannot reach its \
+         compiler reports no measurement at all rather than passing on an empty population"
+    );
 }
 
 const CSPROJ: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Library</OutputType>\n    <TargetFramework>net9.0</TargetFramework>\n    <Nullable>disable</Nullable>\n    <ImplicitUsings>disable</ImplicitUsings>\n    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n    <AssemblyName>kwparamoracle</AssemblyName>\n  </PropertyGroup>\n</Project>\n";
@@ -65,10 +70,7 @@ fn emitted_signature_with_keyword_parameter_recompiles() {
         "emitter must @-escape the keyword parameter; got: {header}"
     );
 
-    if !dotnet_available() {
-        eprintln!("SKIP keyword-parameter recompile oracle: no dotnet SDK on PATH");
-        return;
-    }
+    require_dotnet("the keyword-parameter recompile gate");
 
     let (ok, report): (bool, String) = compiles(&header, "disrobe_kwparam_escaped");
     assert!(ok, "escaped signature failed to compile:\n{report}");

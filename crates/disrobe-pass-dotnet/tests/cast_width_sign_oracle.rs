@@ -19,11 +19,16 @@ impl TokenNamer for StaticNamer {
     }
 }
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_dotnet(grader: &str) {
+    let probe: std::io::Result<std::process::Output> =
+        Command::new("dotnet").arg("--version").output();
+    let reached: bool = matches!(&probe, Ok(output) if output.status.success());
+    assert!(
+        reached,
+        "{grader} grades recovered C# with the real csc that ships in the dotnet SDK, so \
+         `dotnet --version` must succeed here. it did not. a grader that cannot reach its \
+         compiler reports no measurement at all rather than passing on an empty population"
+    );
 }
 
 fn body_from(code: &[u8]) -> MethodBody {
@@ -174,10 +179,7 @@ fn checked_overflow_conversion_emits_checked_context() {
 
 #[test]
 fn cast_width_sign_recompiles_and_evaluates_to_matching_values() {
-    if !dotnet_available() {
-        eprintln!("SKIP cast/width/sign eval oracle: no dotnet SDK on PATH");
-        return;
-    }
+    require_dotnet("the cast, width and sign evaluation gate");
     let cases: Vec<Case> = cases();
     let program: String = assemble_program(&cases);
     let scratch: disrobe_core::scratch::ScratchDir =

@@ -13,11 +13,16 @@ fn manifest(rel: &str) -> PathBuf {
     path
 }
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_dotnet(grader: &str) {
+    let probe: std::io::Result<std::process::Output> =
+        Command::new("dotnet").arg("--version").output();
+    let reached: bool = matches!(&probe, Ok(output) if output.status.success());
+    assert!(
+        reached,
+        "{grader} grades recovered C# with the real csc that ships in the dotnet SDK, so \
+         `dotnet --version` must succeed here. it did not. a grader that cannot reach its \
+         compiler reports no measurement at all rather than passing on an empty population"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -159,10 +164,8 @@ struct OracleReport {
     failures: Vec<(usize, String, String)>,
 }
 
-fn run_oracle() -> Option<OracleReport> {
-    if !dotnet_available() {
-        return None;
-    }
+fn run_oracle() -> OracleReport {
+    require_dotnet("the per-method recompile gate");
     let asm: DecompiledAssembly = decompile_fixture();
     let hosts: Vec<HostMethod> = asm
         .methods
@@ -201,22 +204,19 @@ fn run_oracle() -> Option<OracleReport> {
             })
         })
         .collect();
-    Some(OracleReport {
+    OracleReport {
         user_pass,
         user_total,
         gen_hosts,
         failures,
-    })
+    }
 }
 
 const RECOMPILE_FLOOR: usize = 6;
 
 #[test]
 fn user_method_recompile_rate_holds_or_climbs() {
-    let Some(report): Option<OracleReport> = run_oracle() else {
-        eprintln!("SKIP recompile oracle: no dotnet SDK on PATH");
-        return;
-    };
+    let report: OracleReport = run_oracle();
     eprintln!(
         "RECOMPILE ORACLE (user-authored methods): {}/{} compile clean against csc ({} compiler-generated hosts graded for reading, not recompile)",
         report.user_pass, report.user_total, report.gen_hosts

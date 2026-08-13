@@ -14,11 +14,16 @@ fn manifest(rel: &str) -> PathBuf {
     path
 }
 
-fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o: std::process::Output| o.status.success())
+fn require_dotnet(grader: &str) {
+    let probe: std::io::Result<std::process::Output> =
+        Command::new("dotnet").arg("--version").output();
+    let reached: bool = matches!(&probe, Ok(output) if output.status.success());
+    assert!(
+        reached,
+        "{grader} grades recovered C# with the real csc that ships in the dotnet SDK, so \
+         `dotnet --version` must succeed here. it did not. a grader that cannot reach its \
+         compiler reports no measurement at all rather than passing on an empty population"
+    );
 }
 
 fn decompile() -> DecompiledAssembly {
@@ -886,10 +891,7 @@ fn compiler_exit_failure_without_diagnostic_is_unclassified() {
 
 #[test]
 fn movenext_bodies_recompile_against_csc() {
-    if !dotnet_available() {
-        eprintln!("SKIP movenext recompile oracle: no dotnet SDK on PATH");
-        return;
-    }
+    require_dotnet("the MoveNext compiler gate");
     let asm: DecompiledAssembly = decompile();
     let methods: Vec<&StructuredMethod> = move_next_methods(&asm);
     let scratch: disrobe_core::scratch::ScratchDir =

@@ -662,22 +662,128 @@ const ELEMENT_TYPE_R8: u8 = 0x0D;
 const ELEMENT_TYPE_STRING: u8 = 0x0E;
 const ELEMENT_TYPE_CLASS: u8 = 0x12;
 
-fn field_declarations(bytes: &[u8], target: Target) -> Vec<String> {
+const AUTO_PROPERTY_BACKING_SUFFIX: &str = ">k__BackingField";
+
+#[derive(Debug, Clone)]
+struct AutoProperty {
+    name: String,
+    declaration: String,
+    accessors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TypeMembers {
+    fields: Vec<String>,
+    properties: Vec<AutoProperty>,
+}
+
+impl TypeMembers {
+    const fn is_empty(&self) -> bool {
+        self.fields.is_empty() && self.properties.is_empty()
+    }
+
+    fn accessor_names(&self) -> BTreeSet<&str> {
+        self.properties
+            .iter()
+            .flat_map(|property: &AutoProperty| property.accessors.iter().map(String::as_str))
+            .collect()
+    }
+
+    fn declarations(&self) -> String {
+        self.fields
+            .iter()
+            .cloned()
+            .chain(
+                self.properties
+                    .iter()
+                    .map(|property: &AutoProperty| property.declaration.clone()),
+            )
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+}
+
+fn auto_property_name(metadata_field_name: &str) -> Option<&str> {
+    let inner: &str = metadata_field_name
+        .strip_prefix('<')?
+        .strip_suffix(AUTO_PROPERTY_BACKING_SUFFIX)?;
+    let is_identifier: bool = !inner.is_empty()
+        && inner
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_alphanumeric() || byte == b'_');
+    is_identifier.then_some(inner)
+}
+
+fn auto_property_declaration(
+    resolver: &Resolver,
+    field: &FieldModel,
+    name: &str,
+    has_setter: bool,
+) -> String {
+    let modifiers: &str = if field.flags & FIELD_STATIC == 0 {
+        ""
+    } else {
+        "static "
+    };
+    let property_type: String = resolver.resolve_type_tokens(&field.field_type.render());
+    let is_init_only: bool = field.flags & FIELD_INIT_ONLY != 0;
+    let accessors: &str = match (has_setter, is_init_only) {
+        (false, _) => "get;",
+        (true, false) => "get; set;",
+        (true, true) => "get; init;",
+    };
+    let escaped: String = csharp_escape_identifier(name);
+    format!("    public {modifiers}{property_type} {escaped} {{ {accessors} }}")
+}
+
+fn type_members(bytes: &[u8], target: Target, methods: &[UserMethod]) -> TypeMembers {
     let pe: PeImage = parse(bytes).expect("parse fixture PE");
     let clr: ClrHeader = parse_clr_header(bytes, &pe).expect("parse fixture CLR header");
     let root: MetadataRoot = parse_metadata_root(bytes, &pe, &clr).expect("parse fixture metadata");
     let resolver: Resolver = Resolver::build(bytes, &pe, &clr, &root).expect("build fixture model");
-    let full_name: String = format!("{}.{}", target.origin_namespace, target.type_name);
+    let full_name: String = target_full_name(target);
     let model: AssemblyModel = resolver.model();
     let ty: &TypeModel = model
         .types
         .iter()
         .find(|candidate: &&TypeModel| candidate.full_name == full_name)
         .expect("locate target type metadata");
-    ty.fields
+    let recovered: BTreeSet<&str> = methods
         .iter()
-        .map(|field: &FieldModel| csharp_field_declaration(&resolver, field))
-        .collect()
+        .map(|method: &UserMethod| method.name.as_str())
+        .collect();
+    let mut members: TypeMembers = TypeMembers::default();
+    for field in &ty.fields {
+        let Some(name): Option<&str> = auto_property_name(&field.name) else {
+            members
+                .fields
+                .push(csharp_field_declaration(&resolver, field));
+            continue;
+        };
+        let getter: String = format!("get_{name}");
+        if !recovered.contains(getter.as_str()) {
+            members
+                .fields
+                .push(csharp_field_declaration(&resolver, field));
+            continue;
+        }
+        let setter: String = format!("set_{name}");
+        let has_setter: bool = recovered.contains(setter.as_str());
+        let mut accessors: Vec<String> = vec![getter];
+        if has_setter {
+            accessors.push(setter);
+        }
+        members.properties.push(AutoProperty {
+            name: name.to_owned(),
+            declaration: auto_property_declaration(&resolver, field, name, has_setter),
+            accessors,
+        });
+    }
+    members
+}
+
+fn field_declarations(bytes: &[u8], target: Target) -> Vec<String> {
+    type_members(bytes, target, &[]).fields
 }
 
 fn target_full_name(target: Target) -> String {
@@ -966,13 +1072,15 @@ fn base_support(bytes: &[u8], target: Target, bodies: &str) -> Option<(String, S
 
 fn whole_type_source(
     bytes: &[u8],
-    fields: &[String],
+    members: &TypeMembers,
     methods: &[UserMethod],
     target: Target,
 ) -> String {
-    let declarations: String = fields.join("\n");
+    let declarations: String = members.declarations();
+    let accessors: BTreeSet<&str> = members.accessor_names();
     let bodies: String = methods
         .iter()
+        .filter(|m: &&UserMethod| !accessors.contains(m.name.as_str()))
         .map(|m: &UserMethod| m.source.clone())
         .collect::<Vec<String>>()
         .join("\n");
@@ -1205,6 +1313,41 @@ fn looks_like_method_header(line: &str, method: &str) -> bool {
     after.trim_start().starts_with('(')
 }
 
+const IL_ACCESSIBILITY: &[&str] = &[
+    "public",
+    "private",
+    "family",
+    "assembly",
+    "famandassem",
+    "famorassem",
+    "privatescope",
+];
+
+fn method_accessibility(il: &str, method: &str) -> Option<String> {
+    let mut pending: Option<String> = None;
+    for line in il.lines() {
+        let trimmed: &str = line.trim_start();
+        if trimmed.starts_with(".method") {
+            pending = Some(String::new());
+        }
+        if il_instruction(trimmed).is_some() {
+            pending = None;
+        }
+        let Some(block): Option<&mut String> = pending.as_mut() else {
+            continue;
+        };
+        block.push(' ');
+        block.push_str(trimmed);
+        if line.contains(method) && looks_like_method_header(line, method) {
+            return block
+                .split_whitespace()
+                .find(|word: &&str| IL_ACCESSIBILITY.contains(word))
+                .map(str::to_owned);
+        }
+    }
+    None
+}
+
 fn il_instruction(trimmed: &str) -> Option<(u32, &str)> {
     let (label, after_label): (&str, &str) = trimmed.split_once(':')?;
     let offset: u32 = u32::from_str_radix(label.strip_prefix("IL_")?, 16).ok()?;
@@ -1219,13 +1362,46 @@ struct Outcome {
     equivalent: Vec<String>,
     mismatched: Vec<String>,
     missing: Vec<String>,
+    reference_limited: Vec<String>,
     branching: Vec<String>,
     divergence: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileClassification {
+    Compiled,
+    MissingReference,
+    WrongRecovery,
+}
+
+const MISSING_REFERENCE_CODES: &[&str] = &[
+    "CS0006", "CS0009", "CS0012", "CS0234", "CS0246", "CS1069", "CS7069",
+];
+
 impl Outcome {
     const fn compared(&self) -> usize {
-        self.equivalent.len() + self.mismatched.len() + self.missing.len()
+        self.equivalent.len()
+            + self.mismatched.len()
+            + self.missing.len()
+            + self.reference_limited.len()
+    }
+
+    fn classification(&self) -> CompileClassification {
+        if self.compiled {
+            return CompileClassification::Compiled;
+        }
+        let names_a_missing_reference: bool = self.compile_errors.iter().any(|line: &String| {
+            error_code(line).is_some_and(|code: &str| MISSING_REFERENCE_CODES.contains(&code))
+        });
+        if names_a_missing_reference {
+            CompileClassification::MissingReference
+        } else {
+            CompileClassification::WrongRecovery
+        }
+    }
+
+    const fn is_fully_equivalent(&self) -> bool {
+        self.compiled && self.mismatched.is_empty() && self.missing.is_empty()
     }
 }
 
@@ -1269,6 +1445,7 @@ fn run_target(target: Target) -> Outcome {
             equivalent: Vec::new(),
             mismatched: Vec::new(),
             missing: vec![qualify(target, ".ctor")],
+            reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
         };
@@ -1284,14 +1461,15 @@ fn run_target(target: Target) -> Outcome {
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
     write_project(&tmp, target.type_name);
-    let fields: Vec<String> = field_declarations(&bytes, target);
-    let src: String = whole_type_source(&bytes, &fields, &methods, target);
+    let members: TypeMembers = type_members(&bytes, target, &methods);
+    let src: String = whole_type_source(&bytes, &members, &methods, target);
     let (compile_errors, produced): (Vec<String>, Option<PathBuf>) =
         compile_whole_type(&tmp, &src, target.type_name);
 
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut reference_limited: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
     let mut divergence: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
@@ -1317,7 +1495,8 @@ fn run_target(target: Target) -> Outcome {
                     divergence.push(first_divergence(&qualify(target, &m.name), o, &r));
                     mismatched.push(qualify(target, &m.name));
                 }
-                _ => missing.push(qualify(target, &m.name)),
+                (None, _) => reference_limited.push(qualify(target, &m.name)),
+                (Some(_), None) => missing.push(qualify(target, &m.name)),
             }
         }
     }
@@ -1328,6 +1507,7 @@ fn run_target(target: Target) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        reference_limited,
         branching,
         divergence,
     }
@@ -1458,6 +1638,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
             equivalent: Vec::new(),
             mismatched: Vec::new(),
             missing: vec![target.type_name.to_owned()],
+            reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
         };
@@ -1515,6 +1696,7 @@ fn run_record_target(target: RecordTarget) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        reference_limited: Vec::new(),
         branching,
         divergence,
     }
@@ -1567,6 +1749,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
             equivalent: Vec::new(),
             mismatched: Vec::new(),
             missing: vec![target.class_type.to_owned()],
+            reference_limited: Vec::new(),
             branching: Vec::new(),
             divergence: Vec::new(),
         };
@@ -1596,6 +1779,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut reference_limited: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
     let mut divergence: Vec<String> = Vec::new();
     if let Some(recompiled) = produced.as_ref() {
@@ -1622,7 +1806,8 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
                     divergence.push(first_divergence(&qualified, o, &r));
                     mismatched.push(qualified);
                 }
-                _ => missing.push(qualified),
+                (None, _) => reference_limited.push(qualified),
+                (Some(_), None) => missing.push(qualified),
             }
         }
     }
@@ -1633,6 +1818,7 @@ fn run_record_method_target(target: RecordMethodTarget) -> Outcome {
         equivalent,
         mismatched,
         missing,
+        reference_limited,
         branching,
         divergence,
     }
@@ -1877,8 +2063,8 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
             constructor_refused.push(type_name);
             continue;
         }
-        let fields: Vec<String> = field_declarations(&bytes, target);
-        if methods.is_empty() && fields.is_empty() {
+        let members: TypeMembers = type_members(&bytes, target, &methods);
+        if methods.is_empty() && members.is_empty() {
             residual
                 .entry("no member recovered".to_owned())
                 .or_default()
@@ -1890,7 +2076,7 @@ fn edgecases_whole_type_recompile_fraction_is_published_as_measured() {
                 .expect("mk tmp");
         let tmp: PathBuf = scratch.path().to_path_buf();
         write_project(&tmp, type_name);
-        let src: String = whole_type_source(&bytes, &fields, &methods, target);
+        let src: String = whole_type_source(&bytes, &members, &methods, target);
         let (errors, produced): (Vec<String>, Option<PathBuf>) =
             compile_whole_type(&tmp, &src, type_name);
         if produced.is_some() {
@@ -2081,8 +2267,8 @@ fn whole_type_recompile_check_rejects_deliberately_broken_source() {
     let full_name: String = target_full_name(target);
     let methods: Vec<UserMethod> =
         user_methods_for(&asm.methods, &full_name, target.type_name, policy);
-    let fields: Vec<String> = field_declarations(&bytes, target);
-    let src: String = whole_type_source(&bytes, &fields, &methods, target);
+    let members: TypeMembers = type_members(&bytes, target, &methods);
+    let src: String = whole_type_source(&bytes, &members, &methods, target);
 
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wt_mutation_control").expect("mk tmp");
@@ -2143,7 +2329,8 @@ fn fixed_buffer_field_recompiles_as_a_real_fixed_size_buffer() {
         "expected a real fixed-size buffer declaration; got: {data_field}"
     );
 
-    let src: String = whole_type_source(&bytes, &fields, &[], target);
+    let members: TypeMembers = type_members(&bytes, target, &[]);
+    let src: String = whole_type_source(&bytes, &members, &[], target);
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe_wt_fixed_buffer").expect("mk tmp");
     let tmp: PathBuf = scratch.path().to_path_buf();
@@ -2267,14 +2454,26 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
 
-const IL_RESIDUAL: &[&str] = &[
-    "Dog.Describe",
-    "Dog.get_Breed",
-    "Pipeline.RunSteps",
-    "TraceableAttribute.get_Category",
-    "TraceableAttribute.get_Priority",
-    "TraceableAttribute.set_Priority",
-];
+const GRADED_TYPE_COUNT: usize = 18;
+const GRADED_MEMBER_TOTAL: usize = 75;
+
+const IL_RESIDUAL: &[&str] = &["Pipeline.RunSteps"];
+
+const REFERENCE_LIMITED: &[&str] = &[];
+
+const NOT_RECOMPILED: &[&str] = &[];
+
+fn sorted(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = names.to_vec();
+    out.sort_unstable();
+    out
+}
+
+fn owned(names: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = names.iter().map(|name: &&str| (*name).to_owned()).collect();
+    out.sort_unstable();
+    out
+}
 
 fn percent(numerator: usize, denominator: usize) -> f64 {
     if denominator == 0 {
@@ -2358,26 +2557,67 @@ fn whole_type_recompiles_to_equivalent_il() {
     let mut equivalent: Vec<String> = Vec::new();
     let mut mismatched: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
+    let mut reference_limited: Vec<String> = Vec::new();
     let mut branching: Vec<String> = Vec::new();
     let mut divergence: Vec<String> = Vec::new();
     for outcome in &outcomes {
         assert!(
             outcome.compiled,
-            "recovered whole-type source did not recompile. csc errors:\n{}",
+            "recovered whole-type source for {} did not recompile, classified {:?}. csc errors:\n{}",
+            outcome.label,
+            outcome.classification(),
             outcome.compile_errors.join("\n")
         );
         equivalent.extend(outcome.equivalent.iter().cloned());
         mismatched.extend(outcome.mismatched.iter().cloned());
         missing.extend(outcome.missing.iter().cloned());
+        reference_limited.extend(outcome.reference_limited.iter().cloned());
         branching.extend(outcome.branching.iter().cloned());
         divergence.extend(outcome.divergence.iter().cloned());
     }
     let matched: usize = equivalent.len();
-    let compared: usize = matched + mismatched.len() + missing.len();
+    let compared: usize = matched + mismatched.len() + missing.len() + reference_limited.len();
+    let compiled_types: usize = outcomes
+        .iter()
+        .filter(|outcome: &&Outcome| outcome.compiled)
+        .count();
+    let equivalent_types: usize = outcomes
+        .iter()
+        .filter(|outcome: &&Outcome| outcome.is_fully_equivalent())
+        .count();
+    let missing_reference_types: Vec<&str> = outcomes
+        .iter()
+        .filter(|outcome: &&Outcome| {
+            outcome.classification() == CompileClassification::MissingReference
+        })
+        .map(|outcome: &Outcome| outcome.label.as_str())
+        .collect();
+    let wrong_recovery_types: Vec<&str> = outcomes
+        .iter()
+        .filter(|outcome: &&Outcome| {
+            outcome.classification() == CompileClassification::WrongRecovery
+        })
+        .map(|outcome: &Outcome| outcome.label.as_str())
+        .collect();
     eprintln!(
         "WHOLE-TYPE IL EQUIVALENCE: matched={matched} compared={compared} ({:.2}%) across {} graded types, after standalone csc recompile and an ilspycmd compare against the original assembly",
         percent(matched, compared),
         outcomes.len(),
+    );
+    eprintln!("  types attempted:           {}", outcomes.len());
+    eprintln!("  types compiled:            {compiled_types}");
+    eprintln!("  types IL-equivalent:       {equivalent_types}");
+    eprintln!(
+        "  types missing-reference:   {} {missing_reference_types:?}",
+        missing_reference_types.len()
+    );
+    eprintln!(
+        "  types wrong-recovery:      {} {wrong_recovery_types:?}",
+        wrong_recovery_types.len()
+    );
+    eprintln!(
+        "  members reference-limited: {} {reference_limited:?}",
+        reference_limited.len()
     );
     for outcome in &outcomes {
         eprintln!(
@@ -2403,8 +2643,39 @@ fn whole_type_recompiles_to_equivalent_il() {
         }
     }
     if !missing.is_empty() {
-        eprintln!("  not located in one assembly: {missing:?}");
+        eprintln!("  compiled but absent from the recompiled assembly: {missing:?}");
     }
+    assert_eq!(
+        outcomes.len(),
+        GRADED_TYPE_COUNT,
+        "the graded type population is pinned at {GRADED_TYPE_COUNT}; dropping a target raises \
+         the rate by narrowing the denominator, so the count moves only when a target is added \
+         or removed deliberately"
+    );
+    assert_eq!(
+        compared, GRADED_MEMBER_TOTAL,
+        "the graded member population is pinned at {GRADED_MEMBER_TOTAL}; a member that stops \
+         being recovered leaves the denominator instead of counting against the numerator, so \
+         the total is pinned by equality rather than by a floor"
+    );
+    assert_eq!(
+        sorted(&reference_limited),
+        owned(REFERENCE_LIMITED),
+        "the members ilspycmd does not present from the original assembly are reference-limited, \
+         not disrobe failures, and the set is pinned so a widening reference gap cannot quietly \
+         drain the denominator"
+    );
+    assert_eq!(
+        sorted(&missing),
+        owned(NOT_RECOMPILED),
+        "these members exist in the original assembly but not in the recompiled one, which is a \
+         recovery gap distinct from a reference limit and from a wrong body"
+    );
+    assert!(
+        missing_reference_types.is_empty(),
+        "these types failed to compile because a reference the harness does not supply is \
+         missing, which is distinct from wrong recovery: {missing_reference_types:?}"
+    );
     let unpinned: Vec<&String> = mismatched
         .iter()
         .filter(|name: &&String| !IL_RESIDUAL.contains(&name.as_str()))
@@ -2425,8 +2696,19 @@ fn whole_type_recompiles_to_equivalent_il() {
     );
     assert_eq!(
         compared,
-        matched + mismatched.len() + missing.len(),
-        "the graded population must partition into equivalent, mismatched and missing, so neither the numerator nor the denominator can move quietly"
+        matched + mismatched.len() + missing.len() + reference_limited.len(),
+        "the graded population must partition into equivalent, mismatched, missing and \
+         reference-limited, so neither the numerator nor the denominator can move quietly"
+    );
+    assert_eq!(
+        matched,
+        GRADED_MEMBER_TOTAL
+            .saturating_sub(IL_RESIDUAL.len())
+            .saturating_sub(REFERENCE_LIMITED.len())
+            .saturating_sub(NOT_RECOMPILED.len()),
+        "the numerator is the pinned denominator minus the three pinned exclusion sets, so it is \
+         a ratchet rather than a floor: it cannot fall without one of those sets growing, and it \
+         cannot rise without one of them shrinking in the same change"
     );
     assert!(
         equivalent.len() >= IL_EQUIVALENCE_FLOOR,
@@ -2439,5 +2721,244 @@ fn whole_type_recompiles_to_equivalent_il() {
          comparison no longer separates two methods that differ only in where they jump",
         branching.len(),
         equivalent.len(),
+    );
+}
+
+#[test]
+fn auto_properties_are_recovered_as_properties_not_as_backing_fields() {
+    let path: PathBuf = manifest(EDGECASES_DLL)
+        .canonicalize()
+        .expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile fixture");
+    let target: Target = Target {
+        dll: EDGECASES_DLL,
+        origin_namespace: "EdgeCases",
+        type_name: "TraceableAttribute",
+        is_static: false,
+    };
+    let methods: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        &target_full_name(target),
+        target.type_name,
+        ConstructorPolicy::Refuse,
+    );
+    let members: TypeMembers = type_members(&bytes, target, &methods);
+    let names: Vec<&str> = members
+        .properties
+        .iter()
+        .map(|property: &AutoProperty| property.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Category", "Priority"],
+        "a field the compiler named `<X>k__BackingField` is the lowered form of an \
+         auto-implemented property, so the recovered type must declare the property"
+    );
+    assert_eq!(
+        members
+            .properties
+            .iter()
+            .map(|property: &AutoProperty| property.declaration.clone())
+            .collect::<Vec<String>>(),
+        vec![
+            "    public string Category { get; }".to_owned(),
+            "    public int Priority { get; set; }".to_owned(),
+        ],
+        "an init-only backing field carries a get-only property and a writable one carries a setter"
+    );
+    assert!(
+        members.fields.is_empty(),
+        "every field of this type backs a property, so none may also be declared directly: {:?}",
+        members.fields
+    );
+    let source: String = whole_type_source(&bytes, &members, &methods, target);
+    assert!(
+        !source.contains("k__BackingField"),
+        "the compiler's mangled backing-field name must never reach recovered source:\n{source}"
+    );
+    for accessor in ["get_Category", "get_Priority", "set_Priority"] {
+        assert!(
+            !source.contains(accessor),
+            "{accessor} must be generated by csc from the property declaration rather than \
+             emitted as a hand-written method, otherwise the recovered type declares the member \
+             twice:\n{source}"
+        );
+        assert!(
+            methods
+                .iter()
+                .any(|method: &UserMethod| method.name == accessor),
+            "{accessor} must stay in the graded population even though it leaves the emitted \
+             source, otherwise folding it into a property would narrow the denominator"
+        );
+    }
+}
+
+const KEEP_ALIVE_MUTATION: &str = "    System.GC.KeepAlive(null);\n";
+
+fn demote_declaration(source: &str) -> String {
+    source.replacen("    public ", "    internal ", 1)
+}
+
+fn insert_body_mutation(source: &str) -> String {
+    let open: usize = source
+        .find("{\n")
+        .unwrap_or_else(|| panic!("the recovered member must open a block:\n{source}"));
+    let mut mutated: String = source[..=open].to_owned();
+    mutated.push_str(KEEP_ALIVE_MUTATION);
+    mutated.push_str(&source[open + 1..]);
+    mutated
+}
+
+fn rebuild_subject_ops(
+    bytes: &[u8],
+    target: Target,
+    members: &TypeMembers,
+    methods: &[UserMethod],
+    subject: &str,
+    purpose: &str,
+) -> (Option<Vec<String>>, Option<String>) {
+    let source: String = whole_type_source(bytes, members, methods, target);
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(purpose).expect("mk tmp");
+    let tmp: PathBuf = scratch.path().to_path_buf();
+    write_project(&tmp, target.type_name);
+    let (errors, produced): (Vec<String>, Option<PathBuf>) =
+        compile_whole_type(&tmp, &source, target.type_name);
+    let built: PathBuf = produced.unwrap_or_else(|| {
+        panic!(
+            "{purpose} must recompile before it can be compared. csc errors:\n{}\nsource:\n{source}",
+            errors.join("\n")
+        )
+    });
+    let il: String = ilspy_il(&built, target.origin_namespace, target.type_name);
+    (
+        method_il_ops(&il, subject, target.type_name),
+        method_accessibility(&il, subject),
+    )
+}
+
+#[test]
+fn visibility_promotion_is_tolerated_but_a_changed_body_is_not() {
+    require_whole_type_tools().unwrap_or_else(|error: String| panic!("{error}"));
+    let target: Target = *TARGETS
+        .iter()
+        .find(|candidate: &&Target| candidate.type_name == "Guards")
+        .expect("the graded set carries the Guards target");
+    let dll_path: PathBuf = manifest(target.dll).canonicalize().expect("canonicalize");
+    let bytes: Vec<u8> = std::fs::read(&dll_path).expect("read fixture");
+    let asm: DecompiledAssembly = decompile_assembly(&bytes).expect("decompile fixture");
+    let policy: ConstructorPolicy = constructor_policy_for(&bytes, target);
+    let methods: Vec<UserMethod> = user_methods_for(
+        &asm.methods,
+        &target_full_name(target),
+        target.type_name,
+        policy,
+    );
+    let subject: String = methods
+        .first()
+        .map(|method: &UserMethod| method.name.clone())
+        .expect("the Guards target recovers at least one member");
+    let members: TypeMembers = type_members(&bytes, target, &methods);
+
+    let original_il: String = ilspy_il(&dll_path, target.origin_namespace, target.type_name);
+    let original_ops: Vec<String> = method_il_ops(&original_il, &subject, target.type_name)
+        .unwrap_or_else(|| panic!("the original assembly must present {subject}"));
+
+    let (promoted_ops, promoted_accessibility): (Option<Vec<String>>, Option<String>) =
+        rebuild_subject_ops(
+            &bytes,
+            target,
+            &members,
+            &methods,
+            &subject,
+            "disrobe_wt_visibility_promoted",
+        );
+    assert_eq!(
+        promoted_ops.as_ref(),
+        Some(&original_ops),
+        "the unmutated recovered member must already be IL-equivalent, otherwise this check \
+         proves nothing about the tolerance"
+    );
+
+    let demoted: Vec<UserMethod> = methods
+        .iter()
+        .map(|method: &UserMethod| {
+            if method.name == subject {
+                UserMethod {
+                    name: method.name.clone(),
+                    source: demote_declaration(&method.source),
+                }
+            } else {
+                method.clone()
+            }
+        })
+        .collect();
+    assert_ne!(
+        demoted
+            .iter()
+            .find(|method: &&UserMethod| method.name == subject)
+            .map(|method: &UserMethod| method.source.clone()),
+        methods
+            .iter()
+            .find(|method: &&UserMethod| method.name == subject)
+            .map(|method: &UserMethod| method.source.clone()),
+        "the demotion must actually change the declaration it grades"
+    );
+    let (demoted_ops, demoted_accessibility): (Option<Vec<String>>, Option<String>) =
+        rebuild_subject_ops(
+            &bytes,
+            target,
+            &members,
+            &demoted,
+            &subject,
+            "disrobe_wt_visibility_demoted",
+        );
+    assert_ne!(
+        promoted_accessibility, demoted_accessibility,
+        "promoting a member to public changes the accessibility csc writes into the method \
+         header, so the two builds must differ there; if they do not, this check is not \
+         exercising the tolerance at all. promoted={promoted_accessibility:?} \
+         demoted={demoted_accessibility:?}"
+    );
+    assert_eq!(
+        demoted_ops.as_ref(),
+        Some(&original_ops),
+        "the comparison must tolerate the accessibility that visibility promotion changes, \
+         because that difference lives in the method header and not in the body"
+    );
+
+    let mutated: Vec<UserMethod> = methods
+        .iter()
+        .map(|method: &UserMethod| {
+            if method.name == subject {
+                UserMethod {
+                    name: method.name.clone(),
+                    source: insert_body_mutation(&method.source),
+                }
+            } else {
+                method.clone()
+            }
+        })
+        .collect();
+    let (mutated_ops, _): (Option<Vec<String>>, Option<String>) = rebuild_subject_ops(
+        &bytes,
+        target,
+        &members,
+        &mutated,
+        &subject,
+        "disrobe_wt_visibility_mutated",
+    );
+    let mutated_ops: Vec<String> =
+        mutated_ops.unwrap_or_else(|| panic!("the mutated build must still present {subject}"));
+    assert_ne!(
+        mutated_ops, original_ops,
+        "tolerating the accessibility difference must not tolerate a changed body: adding one \
+         statement to {subject} has to be caught"
+    );
+    let report: String = first_divergence(&subject, &original_ops, &mutated_ops);
+    assert!(
+        report.contains("first difference at"),
+        "a caught mutation must name the first differing instruction; got: {report}"
     );
 }
