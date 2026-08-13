@@ -210,9 +210,8 @@ impl<'data> ClaimSet<'data> {
                 "payload `{claimant}` at {start} overflows the offset space"
             ))
         })?;
-        let present_end: u64 = declared_end.min(self.file_len);
-        let present_start: u64 = start.min(self.file_len);
-        let missing_bytes: u64 = declared_end.saturating_sub(present_end.max(present_start));
+        let present_end: u64 = declared_end.min(self.file_len).max(start);
+        let missing_bytes: u64 = declared_end.saturating_sub(present_end);
 
         if missing_bytes > 0 {
             self.truncated.push(TruncatedClaim {
@@ -223,11 +222,11 @@ impl<'data> ClaimSet<'data> {
                 missing_bytes,
             });
         }
-        if present_end <= present_start {
+        if present_end <= start {
             return Ok(());
         }
         self.record(Claim {
-            start: present_start,
+            start,
             end: present_end,
             class,
             claimant,

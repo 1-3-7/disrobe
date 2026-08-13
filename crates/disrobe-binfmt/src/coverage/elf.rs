@@ -426,32 +426,38 @@ fn read_program_headers(
         let kind: u32 = reader
             .read_u32(header.endian)
             .map_err(|error: ByteReadError| read_error("a program header", error))?;
-        let flags: u32 = if header.wide {
-            reader
+        let program: ProgramHeader = if header.wide {
+            let flags: u32 = reader
                 .read_u32(header.endian)
-                .map_err(|error: ByteReadError| read_error("a program header", error))?
+                .map_err(|error: ByteReadError| read_error("a program header", error))?;
+            let offset: u64 = read_address(&mut reader, header.endian, header.wide, "p_offset")?;
+            let _vaddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_vaddr")?;
+            let _paddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_paddr")?;
+            let filesz: u64 = read_address(&mut reader, header.endian, header.wide, "p_filesz")?;
+            ProgramHeader {
+                kind,
+                flags,
+                offset,
+                filesz,
+            }
         } else {
-            0
-        };
-        let offset: u64 = read_address(&mut reader, header.endian, header.wide, "p_offset")?;
-        let _vaddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_vaddr")?;
-        let _paddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_paddr")?;
-        let filesz: u64 = read_address(&mut reader, header.endian, header.wide, "p_filesz")?;
-        let flags: u32 = if header.wide {
-            flags
-        } else {
+            let offset: u64 = read_address(&mut reader, header.endian, header.wide, "p_offset")?;
+            let _vaddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_vaddr")?;
+            let _paddr: u64 = read_address(&mut reader, header.endian, header.wide, "p_paddr")?;
+            let filesz: u64 = read_address(&mut reader, header.endian, header.wide, "p_filesz")?;
             let _memsz: u64 = read_address(&mut reader, header.endian, header.wide, "p_memsz")?;
-            reader
+            let flags: u32 = reader
                 .read_u32(header.endian)
-                .map_err(|error: ByteReadError| read_error("a program header", error))?
+                .map_err(|error: ByteReadError| read_error("a program header", error))?;
+            ProgramHeader {
+                kind,
+                flags,
+                offset,
+                filesz,
+            }
         };
 
-        programs.push(ProgramHeader {
-            kind,
-            flags,
-            offset,
-            filesz,
-        });
+        programs.push(program);
     }
 
     Ok(programs)

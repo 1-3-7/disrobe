@@ -1129,8 +1129,15 @@ fn a_packed_image_whose_certificate_table_points_past_the_end_is_recorded() {
         .expect("a directory that points past the end must be recorded, not clamped in silence");
     assert_eq!(entry.start, u64::from(offset));
     assert_eq!(entry.declared_end, u64::from(offset) + u64::from(size));
-    assert_eq!(entry.present_end, file_len);
-    assert_eq!(entry.missing_bytes, entry.declared_end - file_len);
+    assert_eq!(
+        entry.present_end, entry.start,
+        "a table that begins past the end has no present byte at all"
+    );
+    assert_eq!(
+        entry.missing_bytes,
+        u64::from(size),
+        "the missing count is the declared table, not the distance to the end of the file"
+    );
     assert!(
         region_named(&coverage, "certificate-table").is_none(),
         "a table that lies entirely past the end claims no byte of the file"
@@ -1263,5 +1270,44 @@ fn a_nested_directory_in_a_pe32_is_described_once_inside_its_section() {
     assert!(
         examined > 0,
         "no committed 32 bit PE fixture carries a debug directory, so this case graded nothing"
+    );
+}
+
+#[test]
+fn a_thirty_two_bit_elf_without_a_section_table_reads_its_load_segment_permissions() {
+    let mut bytes: Vec<u8> = fixture("avr_firmware.elf");
+    bytes[32..36].copy_from_slice(&0u32.to_le_bytes());
+    bytes[48..50].copy_from_slice(&0u16.to_le_bytes());
+    bytes[50..52].copy_from_slice(&0u16.to_le_bytes());
+
+    let coverage: ByteCoverage =
+        file_byte_coverage(&bytes).expect("map a 32 bit ELF with no section table");
+    assert_eq!(coverage.format, NativeFormat::Elf32);
+    assert_partition(
+        &coverage,
+        bytes.len() as u64,
+        "avr_firmware.elf without a section table",
+    );
+
+    let executable: usize = coverage
+        .regions
+        .iter()
+        .filter(|region: &&CoverageRegion| {
+            region.class == RegionClass::Code
+                && region
+                    .claimant
+                    .as_deref()
+                    .is_some_and(|claimant: &str| claimant.starts_with("segment:load#"))
+        })
+        .count();
+    assert!(
+        executable > 0,
+        "a firmware image carries an executable load segment, and the 32 bit program header walk \
+         must read p_flags after p_memsz: {:?}",
+        coverage.regions
+    );
+    assert!(
+        !coverage.overlap_detected,
+        "the 32 bit fallback must not double claim the ELF header or the program headers"
     );
 }
