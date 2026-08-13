@@ -6596,7 +6596,8 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
             lifted_loop: false,
         });
     }
-    if let Some(body) = structure_reducible_cfg(items)? {
+    let mut refusal: Option<&'static str> = None;
+    if let Some(body) = structure_reducible_cfg(items, ExitPolicy::ForwardSkipOnly, &mut refusal)? {
         return Ok(Structured {
             body,
             lifted_split_return: false,
@@ -6606,9 +6607,21 @@ fn structure_items(items: &[Item]) -> Result<Structured> {
     if let Some(structured) = structure_via_regions(items, true) {
         return Ok(structured);
     }
-    Err(Error::LlvmIr(
-        "multiple/early returns not in forward-skip class".to_owned(),
-    ))
+    if let Some(body) =
+        structure_reducible_cfg(items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)?
+    {
+        return Ok(Structured {
+            body,
+            lifted_split_return: false,
+            lifted_loop: true,
+        });
+    }
+    Err(Error::LlvmIr(refusal.map_or_else(
+        || "multiple/early returns not in forward-skip class".to_owned(),
+        |precondition: &'static str| {
+            format!("multiple/early returns not in forward-skip class: {precondition}")
+        },
+    )))
 }
 
 fn reachable_blocks(blocks: &[CfgBlock]) -> std::collections::BTreeSet<usize> {
@@ -9848,7 +9861,7 @@ fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
                 } => {
                     let taken: usize = item_block(resolve(*target)?);
                     let fallthrough: usize = b + 1;
-                    if fallthrough >= leaders.len() {
+                    if fallthrough >= leaders.len() || taken == fallthrough {
                         return None;
                     }
                     term = Some(BlockTerm::Branch {
@@ -9960,10 +9973,85 @@ fn resolve_loop_follow(
     follow
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitPolicy {
+    ForwardSkipOnly,
+    EarlyAndMultipleExits,
+}
+
+impl ExitPolicy {
+    const fn admits_early_exits(self) -> bool {
+        matches!(self, Self::EarlyAndMultipleExits)
+    }
+}
+
+const LOOP_EXIT_TAIL_ABSORPTION_BUDGET: usize = 64;
+
+fn body_exit_targets(
+    blocks: &[CfgBlock],
+    body: &std::collections::BTreeSet<usize>,
+) -> std::collections::BTreeSet<usize> {
+    let mut targets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for &node in body {
+        for succ in blocks[node].successors() {
+            if !body.contains(&succ) {
+                targets.insert(succ);
+            }
+        }
+    }
+    targets
+}
+
+fn body_entered_only_at_header(
+    preds: &[Vec<usize>],
+    body: &std::collections::BTreeSet<usize>,
+    header: usize,
+) -> bool {
+    body.iter().all(|&node: &usize| {
+        node == header || preds[node].iter().all(|pred: &usize| body.contains(pred))
+    })
+}
+
+fn absorb_private_exit_tails(
+    blocks: &[CfgBlock],
+    preds: &[Vec<usize>],
+    headers: &std::collections::BTreeSet<usize>,
+    body: &std::collections::BTreeSet<usize>,
+) -> Option<(std::collections::BTreeSet<usize>, usize)> {
+    let mut extended: std::collections::BTreeSet<usize> = body.clone();
+    for _ in 0..LOOP_EXIT_TAIL_ABSORPTION_BUDGET {
+        let targets: std::collections::BTreeSet<usize> = body_exit_targets(blocks, &extended);
+        match targets.len() {
+            1 => {
+                let follow: usize = targets.into_iter().next()?;
+                return Some((extended, follow));
+            }
+            0 => return None,
+            _ => {}
+        }
+        let absorbable: Vec<usize> = targets
+            .iter()
+            .copied()
+            .filter(|target: &usize| {
+                !headers.contains(target)
+                    && preds[*target]
+                        .iter()
+                        .all(|pred: &usize| extended.contains(pred))
+            })
+            .collect();
+        if absorbable.is_empty() {
+            return None;
+        }
+        extended.extend(absorbable);
+    }
+    None
+}
+
 fn detect_loop_forest(
     blocks: &[CfgBlock],
     preds: &[Vec<usize>],
     flow: &structuring::FlowGraph<usize>,
+    policy: ExitPolicy,
 ) -> Option<Vec<LoopInfo>> {
     use std::collections::BTreeSet;
     let back_edges: Vec<(usize, usize)> = flow.back_edges();
@@ -9978,31 +10066,32 @@ fn detect_loop_forest(
     if by_header.values().any(|count: &usize| *count != 1) {
         return None;
     }
+    let headers: BTreeSet<usize> = by_header.keys().copied().collect();
 
     let mut loops: Vec<LoopInfo> = Vec::with_capacity(back_edges.len());
     for &(latch, header) in &back_edges {
-        let body: BTreeSet<usize> = flow.natural_loop_body(header, &[latch]);
+        let natural: BTreeSet<usize> = flow.natural_loop_body(header, &[latch]);
 
-        for &from in &body {
-            if from == header {
-                continue;
-            }
-            for pred in &preds[from] {
-                if !body.contains(pred) {
-                    return None;
-                }
-            }
+        if !body_entered_only_at_header(preds, &natural, header) {
+            return None;
         }
 
-        let mut exit_targets: BTreeSet<usize> = BTreeSet::new();
-        for &node in &body {
-            for succ in blocks[node].successors() {
-                if !body.contains(&succ) {
-                    exit_targets.insert(succ);
+        let natural_exits: BTreeSet<usize> = body_exit_targets(blocks, &natural);
+        let (body, exit_targets, follow): (BTreeSet<usize>, BTreeSet<usize>, usize) =
+            match resolve_loop_follow(blocks, &natural, &natural_exits) {
+                Some(resolved) => (natural, natural_exits, resolved),
+                None => {
+                    if !policy.admits_early_exits() {
+                        return None;
+                    }
+                    let (extended, single_exit): (BTreeSet<usize>, usize) =
+                        absorb_private_exit_tails(blocks, preds, &headers, &natural)?;
+                    if !body_entered_only_at_header(preds, &extended, header) {
+                        return None;
+                    }
+                    (extended, BTreeSet::from([single_exit]), single_exit)
                 }
-            }
-        }
-        let follow: usize = resolve_loop_follow(blocks, &body, &exit_targets)?;
+            };
         loops.push(LoopInfo {
             header,
             body,
@@ -10058,6 +10147,7 @@ struct CfgCtx<'a> {
     pdom: Vec<std::collections::BTreeSet<usize>>,
     pred_count: Vec<usize>,
     loops: &'a [LoopInfo],
+    policy: ExitPolicy,
 }
 
 impl CfgCtx<'_> {
@@ -10107,8 +10197,13 @@ fn post_dominator_sets(
         .collect()
 }
 
-fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
+fn structure_reducible_cfg(
+    items: &[Item],
+    policy: ExitPolicy,
+    refusal: &mut Option<&'static str>,
+) -> Result<Option<Block>> {
     let Some(blocks): Option<Vec<CfgBlock>> = build_blocks(items) else {
+        *refusal = Some("the instruction stream does not form a bounded block graph");
         return Ok(None);
     };
     if blocks.len() < 2 {
@@ -10116,9 +10211,12 @@ fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
     }
     let preds: Vec<Vec<usize>> = block_predecessors(&blocks);
     let Some(flow): Option<structuring::FlowGraph<usize>> = block_flow(&blocks) else {
+        *refusal = Some("the block graph is not a well-formed flow graph");
         return Ok(None);
     };
-    let Some(loops): Option<Vec<LoopInfo>> = detect_loop_forest(&blocks, &preds, &flow) else {
+    let Some(loops): Option<Vec<LoopInfo>> = detect_loop_forest(&blocks, &preds, &flow, policy)
+    else {
+        *refusal = Some("a loop has no single follow after private exit-tail absorption");
         return Ok(None);
     };
     let idom: Vec<Option<usize>> = immediate_dominators(&flow);
@@ -10130,13 +10228,21 @@ fn structure_reducible_cfg(items: &[Item]) -> Result<Option<Block>> {
         pdom,
         pred_count,
         loops: &loops,
+        policy,
     };
     let mut body: Block = Vec::new();
     let stop: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut visited: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     match emit_region(&ctx, 0, &[], &stop, &mut visited, &mut body) {
         Ok(()) if loop_count(&body) == loops.len() => Ok(Some(body)),
-        _ => Ok(None),
+        Ok(()) => {
+            *refusal = Some("a detected loop did not survive region emission");
+            Ok(None)
+        }
+        Err(error) => {
+            *refusal = Some(error.precondition);
+            Ok(None)
+        }
     }
 }
 
@@ -10155,13 +10261,85 @@ fn loop_count(body: &Block) -> usize {
         .sum()
 }
 
-#[derive(Debug)]
-struct StructureError;
+#[derive(Debug, Clone, Copy)]
+struct StructureError {
+    precondition: &'static str,
+}
+
+impl StructureError {
+    const fn new(precondition: &'static str) -> Self {
+        Self { precondition }
+    }
+}
 
 fn emit_stmts(blocks: &[CfgBlock], block: usize, out: &mut Block) {
     for stmt in &blocks[block].stmts {
         out.push(Node::Stmt(stmt.clone()));
     }
+}
+
+const PURE_TAIL_CLONE_BUDGET: usize = 8;
+
+const fn stmt_is_clonable(stmt: &Stmt) -> bool {
+    !matches!(
+        stmt,
+        Stmt::Store { .. }
+            | Stmt::MemRmw { .. }
+            | Stmt::FpStore { .. }
+            | Stmt::BlockMove { .. }
+            | Stmt::BlockFill { .. }
+            | Stmt::Call { .. }
+            | Stmt::Vector(VecStmt::Store { .. })
+    )
+}
+
+fn emit_cloned_pure_tail(
+    ctx: &CfgCtx<'_>,
+    start: usize,
+    active: Option<usize>,
+    stop: &std::collections::BTreeSet<usize>,
+    out: &mut Block,
+) -> Option<()> {
+    let mut cloned: Block = Vec::new();
+    let mut current: usize = start;
+    for _ in 0..PURE_TAIL_CLONE_BUDGET {
+        if stop.contains(&current) {
+            out.append(&mut cloned);
+            return Some(());
+        }
+        if let Some(top) = active {
+            if ctx.loops[top].exit_targets.contains(&current) {
+                cloned.push(Node::Break);
+                out.append(&mut cloned);
+                return Some(());
+            }
+            if current == ctx.loops[top].header {
+                cloned.push(Node::Continue);
+                out.append(&mut cloned);
+                return Some(());
+            }
+        }
+        if !ctx.in_body_of(active, current) || ctx.child_loop_here(active, current).is_some() {
+            return None;
+        }
+        let block: &CfgBlock = ctx.blocks.get(current)?;
+        if !block.stmts.iter().all(stmt_is_clonable) {
+            return None;
+        }
+        for stmt in &block.stmts {
+            cloned.push(Node::Stmt(stmt.clone()));
+        }
+        match &block.term {
+            BlockTerm::Ret => {
+                cloned.push(Node::Return);
+                out.append(&mut cloned);
+                return Some(());
+            }
+            BlockTerm::Jump(next) | BlockTerm::Fall(next) => current = *next,
+            BlockTerm::Branch { .. } => return None,
+        }
+    }
+    None
 }
 
 fn emit_region(
@@ -10202,16 +10380,27 @@ fn emit_region(
             continue;
         }
         if !ctx.in_body_of(active, current) {
-            return Err(StructureError);
+            return Err(StructureError::new(
+                "an edge leaves the enclosing loop body without a break or return classification",
+            ));
         }
         if !visited.insert(current) {
-            return Err(StructureError);
+            if ctx.policy.admits_early_exits()
+                && emit_cloned_pure_tail(ctx, current, active, stop, out).is_some()
+            {
+                return Ok(());
+            }
+            return Err(StructureError::new(
+                "a join block is reached from two arms without a common follow",
+            ));
         }
         emit_stmts(ctx.blocks, current, out);
         match &ctx.blocks[current].term {
             BlockTerm::Ret => {
-                if active.is_some() {
-                    return Err(StructureError);
+                if active.is_some() && !ctx.policy.admits_early_exits() {
+                    return Err(StructureError::new(
+                        "a return inside a loop body is outside the forward-skip class",
+                    ));
                 }
                 out.push(Node::Return);
                 return Ok(());
@@ -10227,7 +10416,9 @@ fn emit_region(
                     detect_or_chain(ctx, active, current, *kind, flags, *taken, *fallthrough)
                 {
                     if !visited.insert(orc.guard) {
-                        return Err(StructureError);
+                        return Err(StructureError::new(
+                            "a short-circuit guard block is reached more than once",
+                        ));
                     }
                     let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
                     if let Some(f) = orc.follow {
@@ -10268,7 +10459,7 @@ fn emit_region(
                         None => return Ok(()),
                     }
                 }
-                let follow: Option<usize> = branch_follow(ctx, active, current);
+                let follow: Option<usize> = branch_follow(ctx, active, current, stop);
                 let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
                 if let Some(f) = follow {
                     branch_stop.insert(f);
@@ -10316,14 +10507,18 @@ fn emit_loop_body(
     visited: &mut std::collections::BTreeSet<usize>,
     out: &mut Block,
 ) -> std::result::Result<(), StructureError> {
-    let active: usize = *loop_stack.last().ok_or(StructureError)?;
+    let active: usize = *loop_stack
+        .last()
+        .ok_or_else(|| StructureError::new("a loop body was entered without an active loop"))?;
     let header: usize = ctx.loops[active].header;
     if !visited.insert(header) {
-        return Err(StructureError);
+        return Err(StructureError::new(
+            "a loop header is reached more than once",
+        ));
     }
     emit_stmts(ctx.blocks, header, out);
     match &ctx.blocks[header].term {
-        BlockTerm::Ret => Err(StructureError),
+        BlockTerm::Ret => Err(StructureError::new("a loop header returns directly")),
         BlockTerm::Jump(t) | BlockTerm::Fall(t) => {
             emit_region(ctx, *t, loop_stack, stop, visited, out)
         }
@@ -10333,7 +10528,7 @@ fn emit_loop_body(
             taken,
             fallthrough,
         } => {
-            let follow: Option<usize> = branch_follow(ctx, Some(active), header);
+            let follow: Option<usize> = branch_follow(ctx, Some(active), header, stop);
             let mut branch_stop: std::collections::BTreeSet<usize> = stop.clone();
             if let Some(f) = follow {
                 branch_stop.insert(f);
@@ -10372,20 +10567,82 @@ fn emit_loop_body(
     }
 }
 
-fn branch_follow(ctx: &CfgCtx<'_>, active: Option<usize>, branch: usize) -> Option<usize> {
-    ctx.idom
+const TAIL_JOIN_WALK_BUDGET: usize = 4096;
+
+fn branch_follow(
+    ctx: &CfgCtx<'_>,
+    active: Option<usize>,
+    branch: usize,
+    stop: &std::collections::BTreeSet<usize>,
+) -> Option<usize> {
+    let candidates: Vec<usize> = ctx
+        .idom
         .iter()
         .enumerate()
         .filter(|(node, idom): &(usize, &Option<usize>)| {
             **idom == Some(branch)
                 && ctx.pred_count[*node] >= 2
-                && (ctx.pdom[branch].contains(node) || ctx.blocks[*node].successors().is_empty())
                 && ctx.in_body_of(active, *node)
                 && active.is_none_or(|top: usize| *node != ctx.loops[top].header)
                 && ctx.child_loop_here(active, *node).is_none()
         })
         .map(|(node, _): (usize, &Option<usize>)| node)
-        .next()
+        .collect();
+    let post_dominating: Option<usize> = candidates.iter().copied().find(|node: &usize| {
+        ctx.pdom[branch].contains(node) || ctx.blocks[*node].successors().is_empty()
+    });
+    if post_dominating.is_some() || !ctx.policy.admits_early_exits() {
+        return post_dominating;
+    }
+    candidates
+        .into_iter()
+        .find(|node: &usize| joins_every_non_tail_path(ctx, active, branch, *node, stop))
+}
+
+fn joins_every_non_tail_path(
+    ctx: &CfgCtx<'_>,
+    active: Option<usize>,
+    branch: usize,
+    follow: usize,
+    stop: &std::collections::BTreeSet<usize>,
+) -> bool {
+    let mut seen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut pending: Vec<usize> = ctx.blocks[branch].successors();
+    let mut steps: usize = 0;
+    let mut reached: bool = false;
+    while let Some(node) = pending.pop() {
+        steps += 1;
+        if steps > TAIL_JOIN_WALK_BUDGET {
+            return false;
+        }
+        if node == follow {
+            reached = true;
+            continue;
+        }
+        if node == branch || stop.contains(&node) {
+            return false;
+        }
+        if let Some(top) = active
+            && (node == ctx.loops[top].header || ctx.loops[top].exit_targets.contains(&node))
+        {
+            continue;
+        }
+        if matches!(ctx.blocks[node].term, BlockTerm::Ret) {
+            continue;
+        }
+        if !ctx.in_body_of(active, node) {
+            return false;
+        }
+        if !seen.insert(node) {
+            continue;
+        }
+        let successors: Vec<usize> = ctx.blocks[node].successors();
+        if successors.is_empty() {
+            return false;
+        }
+        pending.extend(successors);
+    }
+    reached
 }
 
 struct OrChain {
@@ -24683,11 +24940,232 @@ mod tests {
                 kind: ItemKind::Ret,
             },
         ];
-        let out: Option<Block> = structure_reducible_cfg(&items).expect("no hard error");
+        let mut refusal: Option<&'static str> = None;
+        let out: Option<Block> =
+            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
         assert!(
             out.is_none(),
             "an irreducible two-entry cycle must be soundly rejected, not misstructured"
         );
+        assert!(
+            refusal.is_some(),
+            "a rejected irreducible cycle must name the precondition that failed"
+        );
+    }
+
+    fn conflicting_join_tail_items(tail: Stmt) -> Vec<Item> {
+        let probe: Flags = Flags::Test {
+            operand: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W64,
+            },
+        };
+        vec![
+            Item {
+                address: 0,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe.clone(),
+                    target: 7,
+                },
+            },
+            Item {
+                address: 1,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe.clone(),
+                    target: 4,
+                },
+            },
+            Item {
+                address: 2,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rdx,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(7),
+                }),
+            },
+            Item {
+                address: 3,
+                kind: ItemKind::Jmp { target: 5 },
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe,
+                    target: 7,
+                },
+            },
+            Item {
+                address: 5,
+                kind: ItemKind::Stmt(tail),
+            },
+            Item {
+                address: 6,
+                kind: ItemKind::Jmp { target: 7 },
+            },
+            Item {
+                address: 7,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(11),
+                }),
+            },
+            Item {
+                address: 8,
+                kind: ItemKind::Ret,
+            },
+        ]
+    }
+
+    fn assign_tail() -> Stmt {
+        Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: Source::Imm(3),
+        }
+    }
+
+    fn store_tail() -> Stmt {
+        Stmt::Store {
+            addr: MemRef {
+                base: Some(Reg::Rsp),
+                index: None,
+                disp: 8,
+                width: Width::W64,
+            },
+            src: Source::Imm(3),
+        }
+    }
+
+    fn count_stmt(body: &Block, wanted: &Stmt) -> usize {
+        body.iter()
+            .map(|node: &Node| match node {
+                Node::Stmt(stmt) => usize::from(stmt == wanted),
+                Node::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    count_stmt(then_body, wanted)
+                        + else_body
+                            .as_ref()
+                            .map_or(0, |arm: &Block| count_stmt(arm, wanted))
+                }
+                Node::While { body, .. } | Node::DoWhile { body, .. } => count_stmt(body, wanted),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_pure_conflicting_join_tail_is_cloned_once_per_reaching_arm() {
+        let tail: Stmt = assign_tail();
+        let items: Vec<Item> = conflicting_join_tail_items(tail.clone());
+        let mut refusal: Option<&'static str> = None;
+        let body: Block =
+            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error")
+                .expect("a pure join tail must structure through cloning");
+        assert_eq!(
+            count_stmt(&body, &tail),
+            2,
+            "the pure join tail must appear once on each reaching arm: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn an_impure_conflicting_join_tail_is_refused_rather_than_cloned() {
+        let items: Vec<Item> = conflicting_join_tail_items(store_tail());
+        let mut refusal: Option<&'static str> = None;
+        let out: Option<Block> =
+            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
+        assert!(
+            out.is_none(),
+            "a join tail that stores to memory must not be cloned: {out:#?}"
+        );
+        assert_eq!(
+            refusal,
+            Some("a join block is reached from two arms without a common follow"),
+            "the refusal must name the precondition that failed"
+        );
+    }
+
+    #[test]
+    fn a_guard_chain_beyond_the_clone_budget_abstains_without_exhausting_time_or_memory() {
+        let probe: Flags = Flags::Test {
+            operand: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W64,
+            },
+        };
+        let arms: u64 = 512;
+        let tail_addr: u64 = arms * 3;
+        let mut items: Vec<Item> =
+            Vec::with_capacity(usize::try_from(tail_addr + 2).expect("fits"));
+        for arm in 0..arms {
+            let base: u64 = arm * 3;
+            items.push(Item {
+                address: base,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe.clone(),
+                    target: base + 3,
+                },
+            });
+            items.push(Item {
+                address: base + 1,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(i64::try_from(arm).expect("fits")),
+                }),
+            });
+            items.push(Item {
+                address: base + 2,
+                kind: ItemKind::Jmp { target: tail_addr },
+            });
+        }
+        items.push(Item {
+            address: tail_addr,
+            kind: ItemKind::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rdx,
+                    width: Width::W64,
+                },
+                src: Source::Imm(1),
+            }),
+        });
+        items.push(Item {
+            address: tail_addr + 1,
+            kind: ItemKind::Ret,
+        });
+        let started: std::time::Instant = std::time::Instant::now();
+        let structured: Result<Structured> = structure_items(&items);
+        let elapsed: std::time::Duration = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "a {arms}-arm guard chain must resolve within the bound, took {elapsed:?}"
+        );
+        if let Err(error) = structured {
+            let message: String = error.to_string();
+            assert!(
+                message.contains("forward-skip class"),
+                "an abstention must name the structuring precondition: {message}"
+            );
+        }
     }
 
     fn body_has(body: &Block, want: &dyn Fn(&Node) -> bool) -> bool {
