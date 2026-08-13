@@ -1537,8 +1537,8 @@ fn split_once_exact(mnemonic: &str, separator: char) -> (&str, &str) {
 }
 
 fn cil_dialect(mnemonic: &str) -> Option<(CilEffect, HardEffects)> {
-    const ELEMENT_TYPES: [&str; 14] = [
-        "", "i", "i1", "i2", "i4", "i8", "u", "u1", "u2", "u4", "u8", "r4", "r8", "ref",
+    const ELEMENT_TYPES: [&str; 12] = [
+        "", "i", "i1", "u1", "i2", "u2", "i4", "u4", "i8", "r4", "r8", "ref",
     ];
     let (head, tail): (&str, &str) = split_once_exact(mnemonic, '.');
     let typed: bool = ELEMENT_TYPES.contains(&tail);
@@ -1719,10 +1719,22 @@ fn jvm_dialect(mnemonic: &str) -> Option<(JvmEffect, HardEffects)> {
 }
 
 fn dalvik_dialect(mnemonic: &str) -> Option<(DalvikEffect, HardEffects)> {
+    let ranged: &str = mnemonic.strip_suffix("/range").unwrap_or(mnemonic);
+    let dequicked: &str = ranged.strip_suffix("-quick").unwrap_or(ranged);
+    dequicked.strip_suffix("-volatile").map_or_else(
+        || dalvik_base_dialect(dequicked),
+        |base: &str| {
+            dalvik_base_dialect(base).map(|(dialect, effects): (DalvikEffect, HardEffects)| {
+                (dialect, effects.with(HardEffect::MemoryFence))
+            })
+        },
+    )
+}
+
+fn dalvik_base_dialect(base: &str) -> Option<(DalvikEffect, HardEffects)> {
     const VALUE_SUFFIXES: [&str; 8] = [
         "", "wide", "object", "boolean", "byte", "char", "short", "void",
     ];
-    let base: &str = mnemonic.strip_suffix("/range").unwrap_or(mnemonic);
     let (head, tail): (&str, &str) = split_once_exact(base, '-');
     let typed: bool = VALUE_SUFFIXES.contains(&tail);
     match (head, tail) {
@@ -1782,7 +1794,7 @@ fn dalvik_dialect(mnemonic: &str) -> Option<(DalvikEffect, HardEffects)> {
             DalvikEffect::InvokePolymorphic,
             HardEffects::of(HardEffect::IndirectCall).with(HardEffect::Unmodelled),
         )),
-        ("throw", "") => Some((
+        ("throw", "" | "verification-error") => Some((
             DalvikEffect::Throw,
             HardEffects::of(HardEffect::ExceptionRaise),
         )),
@@ -1817,7 +1829,7 @@ fn wasm_dialect(mnemonic: &str) -> Option<(WasmEffect, HardEffects)> {
         "load8x8_u",
     ];
     const STORE_FORMS: [&str; 5] = ["store", "store8", "store16", "store32", "store64"];
-    const FLAT_LOADS: [&str; 12] = [
+    const FLAT_LOADS: [&str; 14] = [
         "i32load",
         "i64load",
         "f32load",
@@ -1829,7 +1841,9 @@ fn wasm_dialect(mnemonic: &str) -> Option<(WasmEffect, HardEffects)> {
         "i64load8s",
         "i64load8u",
         "i64load16s",
+        "i64load16u",
         "i64load32s",
+        "i64load32u",
     ];
     const FLAT_STORES: [&str; 9] = [
         "i32store",
@@ -2532,9 +2546,9 @@ impl EffectTable {
             return Err(EffectTableError::UnorderedFunctionStart { index: 0 });
         }
         for index in 1..function_starts.len() {
-            let previous: u32 = function_starts
-                .get(index - 1)
-                .copied()
+            let previous: u32 = index
+                .checked_sub(1)
+                .and_then(|prior: usize| function_starts.get(prior).copied())
                 .ok_or(EffectTableError::IndexOverflow)?;
             let current: u32 = function_starts
                 .get(index)
@@ -2601,7 +2615,7 @@ impl EffectTable {
     pub fn function_rows(&self, function_index: u32) -> Option<&[EffectRow]> {
         let index: usize = usize::try_from(function_index).ok()?;
         let start: usize = usize::try_from(*self.function_starts.get(index)?).ok()?;
-        let end: usize = usize::try_from(*self.function_starts.get(index + 1)?).ok()?;
+        let end: usize = usize::try_from(*self.function_starts.get(index.checked_add(1)?)?).ok()?;
         self.rows.get(start..end)
     }
 

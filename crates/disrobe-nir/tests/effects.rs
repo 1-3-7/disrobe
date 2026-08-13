@@ -2,7 +2,7 @@
 
 use disrobe_core::recovery::ConfidenceTier;
 use disrobe_nir::{
-    Avm2Effect, BehaviorAnnotation, BehaviorAnnotations, BehaviorKind, CallOtherEffect,
+    Avm2Effect, BeamEffect, BehaviorAnnotation, BehaviorAnnotations, BehaviorKind, CallOtherEffect,
     CallOtherKey, CallOtherModel, CilEffect, DalvikEffect, DialectEffect, EffectContext,
     EffectProvenance, EffectRow, EffectRowError, EffectTable, EffectTableError, FileSourceOffset,
     HardEffect, HardEffects, ImportEffectModel, ImportKey, JvmEffect, LuaEffect, NativeEffect,
@@ -390,6 +390,114 @@ fn every_source_language_populates_its_own_dialect_vocabulary() {
     );
     assert!(unknown.is_unknown());
     assert_eq!(unknown.dialect(), DialectEffect::None);
+}
+
+#[test]
+fn decoder_spelled_mnemonics_reach_their_dialect_effect() {
+    let cases: [(SourceLang, &str, DialectEffect, HardEffect); 12] = [
+        (
+            SourceLang::Jvm,
+            "aastore",
+            DialectEffect::Jvm(JvmEffect::ArrayStore),
+            HardEffect::MemoryWrite,
+        ),
+        (
+            SourceLang::Jvm,
+            "multianewarray",
+            DialectEffect::Jvm(JvmEffect::NewArray),
+            HardEffect::MemoryWrite,
+        ),
+        (
+            SourceLang::Cil,
+            "ldelem.u2",
+            DialectEffect::Cil(CilEffect::LoadElement),
+            HardEffect::MemoryRead,
+        ),
+        (
+            SourceLang::Cil,
+            "stind.ref",
+            DialectEffect::Cil(CilEffect::StoreIndirect),
+            HardEffect::MemoryWrite,
+        ),
+        (
+            SourceLang::Cil,
+            "localloc",
+            DialectEffect::Cil(CilEffect::StackAllocate),
+            HardEffect::StackWrite,
+        ),
+        (
+            SourceLang::Dalvik,
+            "sput-wide",
+            DialectEffect::Dalvik(DalvikEffect::StaticPut),
+            HardEffect::MemoryWrite,
+        ),
+        (
+            SourceLang::Dalvik,
+            "iget-object-volatile",
+            DialectEffect::Dalvik(DalvikEffect::InstanceGet),
+            HardEffect::MemoryFence,
+        ),
+        (
+            SourceLang::Dalvik,
+            "invoke-virtual-quick/range",
+            DialectEffect::Dalvik(DalvikEffect::InvokeVirtual),
+            HardEffect::Unmodelled,
+        ),
+        (
+            SourceLang::Wasm,
+            "i64load32u",
+            DialectEffect::Wasm(WasmEffect::LinearMemoryLoad),
+            HardEffect::MemoryRead,
+        ),
+        (
+            SourceLang::Avm2,
+            "callproplex",
+            DialectEffect::Avm2(Avm2Effect::CallProperty),
+            HardEffect::Unmodelled,
+        ),
+        (
+            SourceLang::Beam,
+            "call_ext_only",
+            DialectEffect::Beam(BeamEffect::ExternalCall),
+            HardEffect::ImportCall,
+        ),
+        (
+            SourceLang::Lua,
+            "GETUPVAL",
+            DialectEffect::Lua(LuaEffect::UpvalueGet),
+            HardEffect::MemoryRead,
+        ),
+    ];
+
+    for (lang, mnemonic, dialect, effect) in cases {
+        let row: EffectRow =
+            derive_effect_row(&instr(lang, NirOp::Nop, mnemonic), &empty_context());
+        assert_eq!(row.dialect(), dialect, "{mnemonic} lost its dialect");
+        assert!(row.contains(effect), "{mnemonic} lost {}", effect.label());
+        row.validate().expect("decoder mnemonic row is valid");
+    }
+}
+
+#[test]
+fn a_longer_mnemonic_never_inherits_a_shorter_one() {
+    let strangers: [(SourceLang, &str); 6] = [
+        (SourceLang::Jvm, "getfieldx"),
+        (SourceLang::Jvm, "GETFIELD"),
+        (SourceLang::Cil, "ldelem.u8"),
+        (SourceLang::Wasm, "i32.loadx"),
+        (SourceLang::Dalvik, "iget-quantity"),
+        (SourceLang::Yarv, "setinstancevariables"),
+    ];
+    for (lang, mnemonic) in strangers {
+        let row: EffectRow =
+            derive_effect_row(&instr(lang, NirOp::Nop, mnemonic), &empty_context());
+        assert_eq!(
+            row.dialect(),
+            DialectEffect::None,
+            "{mnemonic} inherited a foreign dialect"
+        );
+        assert!(row.is_effect_free(), "{mnemonic} invented an effect");
+    }
 }
 
 #[test]
