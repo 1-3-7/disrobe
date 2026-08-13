@@ -51,7 +51,7 @@ pub(crate) fn decode_blob_anchored(raw: &[u8], cap: u64, anchor: Option<Compress
     let Some(Compression::Brotli) = anchor else {
         return decode_blob(raw, cap);
     };
-    if detect_gzip(raw) || detect_zstd(raw) {
+    if raw.is_empty() || detect_gzip(raw) || detect_zstd(raw) {
         return decode_blob(raw, cap);
     }
     match inflate_brotli(raw, cap) {
@@ -179,6 +179,7 @@ mod tests {
     use super::*;
 
     const AMPLE_CAP: u64 = 8 * 1024 * 1024;
+    const BOMB_PLAIN_LEN: usize = 4 * 1024 * 1024;
 
     fn payload() -> Vec<u8> {
         "export function render(state){return state.items.map(i=>i.id);}"
@@ -452,6 +453,186 @@ mod tests {
             "no codec claims the blob, so it must be reported raw rather than under a codec label"
         );
         assert_eq!(data, raw);
+    }
+
+    #[test]
+    fn an_anchored_brotli_stream_round_trips_the_bytes_the_encoder_was_given() {
+        let raw: Vec<u8> = payload();
+        let blob: Vec<u8> = brotli(&raw);
+        let (data, compression): (Vec<u8>, Compression) = decoded(decode_blob_anchored(
+            &blob,
+            AMPLE_CAP,
+            Some(Compression::Brotli),
+        ));
+        assert_eq!(compression, Compression::Brotli);
+        assert_eq!(
+            data, raw,
+            "the anchored path skips the printable gate, so it must still hand back exactly what \
+             the encoder was given"
+        );
+    }
+
+    #[test]
+    fn an_anchored_brotli_bomb_is_refused_by_the_cap_and_named_as_a_quota_outcome() {
+        let bomb: Vec<u8> = brotli(&vec![0u8; BOMB_PLAIN_LEN]);
+        assert!(
+            bomb.len() < 1024,
+            "the fixture must be tiny on disk to be a bomb at all, got {} bytes for {BOMB_PLAIN_LEN} \
+             plain bytes",
+            bomb.len()
+        );
+        let cap: u64 = bomb.len() as u64 * 100;
+        assert!((cap as usize) < BOMB_PLAIN_LEN);
+        match decode_blob_anchored(&bomb, cap, Some(Compression::Brotli)) {
+            Decoded::QuotaRefused {
+                compression,
+                reason,
+            } => {
+                assert_eq!(compression, Compression::Brotli);
+                assert!(
+                    reason.contains(&cap.to_string()),
+                    "the refusal must name the cap it enforced, got {reason}"
+                );
+            }
+            other => panic!(
+                "a brotli stream declaring {BOMB_PLAIN_LEN} bytes under a {cap} byte cap must be a \
+                 quota outcome, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn an_anchored_stream_landing_exactly_on_the_cap_is_admitted_and_one_byte_over_is_refused() {
+        let raw: Vec<u8> = payload();
+        let blob: Vec<u8> = brotli(&raw);
+        let exact: u64 = raw.len() as u64;
+        let (data, compression): (Vec<u8>, Compression) = decoded(decode_blob_anchored(
+            &blob,
+            exact,
+            Some(Compression::Brotli),
+        ));
+        assert_eq!(compression, Compression::Brotli);
+        assert_eq!(
+            data, raw,
+            "an asset whose decoded size equals the cap is inside the budget and must be returned \
+             whole"
+        );
+        match decode_blob_anchored(&blob, exact - 1, Some(Compression::Brotli)) {
+            Decoded::QuotaRefused {
+                compression,
+                reason,
+            } => {
+                assert_eq!(compression, Compression::Brotli);
+                assert!(
+                    reason.contains(&(exact - 1).to_string()),
+                    "the refusal must name the cap it enforced, got {reason}"
+                );
+            }
+            other => panic!("one byte past the cap must be a quota outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_framed_blob_under_a_brotli_anchor_is_claimed_by_the_codec_its_frame_names() {
+        let raw: Vec<u8> = payload();
+        for (blob, expected) in [
+            (gzip(&raw), Compression::Gzip),
+            (zstd(&raw), Compression::Zstd),
+        ] {
+            let (data, compression): (Vec<u8>, Compression) = decoded(decode_blob_anchored(
+                &blob,
+                AMPLE_CAP,
+                Some(Compression::Brotli),
+            ));
+            assert_eq!(
+                compression, expected,
+                "a framed member inside an otherwise brotli map keeps its own codec, because the \
+                 frame is stronger evidence than the map-wide anchor"
+            );
+            assert_eq!(data, raw);
+        }
+    }
+
+    #[test]
+    fn a_truncated_brotli_stream_under_its_anchor_is_typed_corrupt() {
+        let blob: Vec<u8> = brotli(&payload());
+        for divisor in [2usize, 3, 4] {
+            let truncated: &[u8] = &blob[..blob.len() / divisor];
+            match decode_blob_anchored(truncated, AMPLE_CAP, Some(Compression::Brotli)) {
+                Decoded::Corrupt {
+                    compression,
+                    detail,
+                } => {
+                    assert_eq!(compression, Compression::Brotli);
+                    assert!(!detail.is_empty());
+                }
+                other => panic!(
+                    "a stream cut to {divisor}ths must be typed as corrupt rather than handed back \
+                     as partial bytes under a codec label, got {other:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn an_undecodable_blob_under_a_brotli_anchor_is_never_reported_as_recovered_brotli_bytes() {
+        let stylesheet: Vec<u8> = b"body{margin:0;padding:0}".repeat(40);
+        let image_header: Vec<u8> = b"\x89PNG\r\n\x1a\n".repeat(48);
+        for raw in [stylesheet, image_header] {
+            match decode_blob_anchored(&raw, AMPLE_CAP, Some(Compression::Brotli)) {
+                Decoded::Corrupt { compression, .. } => {
+                    assert_eq!(compression, Compression::Brotli);
+                }
+                Decoded::Bytes { data, compression } => {
+                    assert_eq!(
+                        compression,
+                        Compression::None,
+                        "brotli carries no frame magic, so a blob the anchor cannot inflate must \
+                         never come back labelled brotli"
+                    );
+                    assert_eq!(
+                        data, raw,
+                        "a blob reported as uncompressed must be the input, not an inflation of it"
+                    );
+                }
+                refusal @ Decoded::QuotaRefused { .. } => {
+                    panic!("unexpected refusal {refusal:?}")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_length_blob_under_a_brotli_anchor_stays_the_empty_asset_it_is() {
+        for cap in [0u64, 1, AMPLE_CAP] {
+            let (data, compression): (Vec<u8>, Compression) =
+                decoded(decode_blob_anchored(&[], cap, Some(Compression::Brotli)));
+            assert_eq!(
+                compression,
+                Compression::None,
+                "a zero-length record holds no brotli stream, so the anchor must not claim it"
+            );
+            assert!(
+                data.is_empty(),
+                "a zero-length record must stay zero length under every cap"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_brotli_anchor_changes_the_decision_the_unanchored_path_would_make() {
+        let raw: Vec<u8> = payload();
+        for blob in [gzip(&raw), zstd(&raw), brotli(&raw), raw.clone()] {
+            let plain: Decoded = decode_blob(&blob, AMPLE_CAP);
+            for anchor in [None, Some(Compression::Gzip), Some(Compression::Zstd)] {
+                assert_eq!(
+                    decode_blob_anchored(&blob, AMPLE_CAP, anchor),
+                    plain,
+                    "{anchor:?} must route to the unanchored path, because only brotli needs an \
+                     anchor to be recognised without a frame"
+                );
+            }
+        }
     }
 
     #[test]

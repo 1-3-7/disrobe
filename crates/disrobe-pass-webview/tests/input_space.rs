@@ -156,7 +156,7 @@ const PACKAGED_FORMS: [(&str, Coverage); 7] = [
     ),
 ];
 
-const ENCODINGS: [(&str, Coverage); 6] = [
+const ENCODINGS: [(&str, Coverage); 10] = [
     (
         "uncompressed asset",
         Coverage::GradedBy("a_real_wails_build_recovers_its_frontend_byte_identically"),
@@ -164,6 +164,28 @@ const ENCODINGS: [(&str, Coverage); 6] = [
     (
         "brotli asset, which carries no frame magic",
         Coverage::GradedBy("a_real_tauri_build_recovers_its_frontend_byte_identically"),
+    ),
+    (
+        "whole map encoded with brotli, so only the map-wide anchor can decode any of it",
+        Coverage::GradedBy(
+            "tauri_style_brotli_map_recovers_the_original_tree_without_a_frame_to_detect",
+        ),
+    ),
+    (
+        "zero-length member of a brotli map, which holds no stream to inflate",
+        Coverage::GradedBy(
+            "tauri_style_brotli_map_recovers_the_original_tree_without_a_frame_to_detect",
+        ),
+    ),
+    (
+        "stored member inside an otherwise brotli map",
+        Coverage::GradedBy(
+            "a_raw_member_of_a_brotli_map_is_withheld_rather_than_reported_as_bytes_it_never_held",
+        ),
+    ),
+    (
+        "brotli stream that expands past the quota",
+        Coverage::GradedBy("a_brotli_decompression_bomb_is_refused_by_the_quota"),
     ),
     (
         "zstd asset",

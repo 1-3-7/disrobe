@@ -35,6 +35,42 @@ fn have_cmd(name: &str) -> bool {
     command.output().is_ok_and(|o| o.status.success())
 }
 
+const REQUIRE_GO: &str = "DISROBE_REQUIRE_GO";
+const REQUIRE_NATIVE_TOOLCHAIN: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+
+fn require_var(tool: &str) -> &'static str {
+    if tool == "go" {
+        REQUIRE_GO
+    } else {
+        REQUIRE_NATIVE_TOOLCHAIN
+    }
+}
+
+fn tool_is_optional(var: &str) -> bool {
+    let Some(raw): Option<std::ffi::OsString> = std::env::var_os(var) else {
+        return true;
+    };
+    let text: String = raw.to_string_lossy().trim().to_ascii_lowercase();
+    matches!(
+        text.as_str(),
+        "" | "0" | "false" | "no" | "off" | "optional"
+    )
+}
+
+fn announce_unmeasured(tool: &str, grade: &str, defect: &str) {
+    let var: &'static str = require_var(tool);
+    assert!(
+        tool_is_optional(var),
+        "{var} makes {tool} mandatory for this run, so `{grade}` cannot be measured and must not \
+         report success: {defect}. Install {tool} and put it on PATH, or clear {var} to permit a \
+         run that measures nothing here."
+    );
+    println!(
+        "NOT MEASURED: `{grade}` was skipped because {defect}. Set {var}=1 to fail instead of \
+         skipping when {tool} is absent."
+    );
+}
+
 fn assets_map(report: &CarveReport) -> BTreeMap<String, Vec<u8>> {
     report
         .assets
@@ -81,8 +117,10 @@ fn build_go(
     goarch: Option<&str>,
     pie: bool,
     out_name: &str,
+    grade: &str,
 ) -> Option<Vec<u8>> {
     if !have_cmd("go") {
+        announce_unmeasured("go", grade, "the go toolchain is not callable");
         return None;
     }
     let workdir: PathBuf = unique_dir("webview-go");
@@ -109,11 +147,15 @@ fn build_go(
         .is_ok_and(|o| o.status.success() && out.exists());
     let bytes: Option<Vec<u8>> = if ok { fs::read(&out).ok() } else { None };
     let _ = fs::remove_dir_all(&workdir);
+    if bytes.is_none() {
+        announce_unmeasured("go", grade, "the go build produced no image to grade");
+    }
     bytes
 }
 
-fn clang_static_pie(source: &str, tag: &str) -> Option<Vec<u8>> {
+fn clang_static_pie(source: &str, tag: &str, grade: &str) -> Option<Vec<u8>> {
     if !have_cmd("clang") {
+        announce_unmeasured("clang", grade, "clang is not callable");
         return None;
     }
     let workdir: PathBuf = unique_dir(tag);
@@ -137,6 +179,9 @@ fn clang_static_pie(source: &str, tag: &str) -> Option<Vec<u8>> {
         .is_ok_and(|o| o.status.success() && out.exists());
     let bytes: Option<Vec<u8>> = if ok { fs::read(&out).ok() } else { None };
     let _ = fs::remove_dir_all(&workdir);
+    if bytes.is_none() {
+        announce_unmeasured("clang", grade, "the clang build produced no image to grade");
+    }
     bytes
 }
 
@@ -181,8 +226,7 @@ fn clang_table_expected() -> BTreeMap<String, Vec<u8>> {
 
 #[test]
 fn carves_go_embed_native_pe() {
-    let Some(bytes) = build_go(None, None, false, "app.exe") else {
-        eprintln!("CORPUS: go toolchain unavailable; skipping native go-embed PE grade");
+    let Some(bytes) = build_go(None, None, false, "app.exe", "carves_go_embed_native_pe") else {
         return;
     };
     let report: CarveReport = carve_report(&bytes).expect("carve go pe");
@@ -200,8 +244,13 @@ fn carves_go_embed_native_pe() {
 
 #[test]
 fn wails_markers_promote_the_same_go_embed_image_to_the_wails_family() {
-    let Some(bytes) = build_go(None, None, false, "wailsapp.exe") else {
-        eprintln!("CORPUS: go toolchain unavailable; skipping wails family attribution");
+    let Some(bytes) = build_go(
+        None,
+        None,
+        false,
+        "wailsapp.exe",
+        "wails_markers_promote_the_same_go_embed_image_to_the_wails_family",
+    ) else {
         return;
     };
     let plain: CarveReport = carve_report(&bytes).expect("carve go pe");
@@ -224,8 +273,13 @@ fn wails_markers_promote_the_same_go_embed_image_to_the_wails_family() {
 
 #[test]
 fn carves_go_embed_linux_pie_elf() {
-    let Some(bytes) = build_go(Some("linux"), Some("amd64"), true, "app.elf") else {
-        eprintln!("CORPUS: go toolchain unavailable; skipping cross go-embed PIE ELF grade");
+    let Some(bytes) = build_go(
+        Some("linux"),
+        Some("amd64"),
+        true,
+        "app.elf",
+        "carves_go_embed_linux_pie_elf",
+    ) else {
         return;
     };
     let report: CarveReport = carve_report(&bytes).expect("carve go elf pie");
@@ -243,7 +297,11 @@ const LITTLE_ENDIAN_CONTROLS: [(&str, &str); 2] = [("ppc64le", "64-bit"), ("386"
 #[test]
 fn carves_go_embed_in_both_endiannesses() {
     if !have_cmd("go") {
-        eprintln!("CORPUS: go toolchain unavailable; skipping the endianness grade");
+        announce_unmeasured(
+            "go",
+            "carves_go_embed_in_both_endiannesses",
+            "the go toolchain is not callable",
+        );
         return;
     }
     let expected: BTreeMap<String, Vec<u8>> = expected_embed_map("web/", &web_tree());
@@ -254,6 +312,7 @@ fn carves_go_embed_in_both_endiannesses() {
             Some(goarch),
             false,
             &format!("app-{goarch}.elf"),
+            "carves_go_embed_in_both_endiannesses",
         )
         .unwrap_or_else(|| panic!("go build for linux/{goarch} failed"));
         let report: CarveReport =
@@ -315,14 +374,30 @@ fn universal_macho(magic: u32, slices: &[(u32, &[u8])]) -> Vec<u8> {
 #[test]
 fn carves_thin_and_universal_macho_go_embed() {
     if !have_cmd("go") {
-        eprintln!("CORPUS: go toolchain unavailable; skipping the Mach-O grade");
+        announce_unmeasured(
+            "go",
+            "carves_thin_and_universal_macho_go_embed",
+            "the go toolchain is not callable",
+        );
         return;
     }
     let expected: BTreeMap<String, Vec<u8>> = expected_embed_map("web/", &web_tree());
-    let intel: Vec<u8> = build_go(Some("darwin"), Some("amd64"), false, "app-amd64.macho")
-        .unwrap_or_else(|| panic!("go build for darwin/amd64 failed"));
-    let arm: Vec<u8> = build_go(Some("darwin"), Some("arm64"), false, "app-arm64.macho")
-        .unwrap_or_else(|| panic!("go build for darwin/arm64 failed"));
+    let intel: Vec<u8> = build_go(
+        Some("darwin"),
+        Some("amd64"),
+        false,
+        "app-amd64.macho",
+        "carves_thin_and_universal_macho_go_embed",
+    )
+    .unwrap_or_else(|| panic!("go build for darwin/amd64 failed"));
+    let arm: Vec<u8> = build_go(
+        Some("darwin"),
+        Some("arm64"),
+        false,
+        "app-arm64.macho",
+        "carves_thin_and_universal_macho_go_embed",
+    )
+    .unwrap_or_else(|| panic!("go build for darwin/arm64 failed"));
     for (label, thin) in [("amd64", &intel), ("arm64", &arm)] {
         let report: CarveReport =
             carve_report(thin).unwrap_or_else(|e| panic!("thin Mach-O {label} carve failed: {e}"));
@@ -366,8 +441,11 @@ fn a_universal_binary_whose_slices_carry_nothing_is_refused() {
 
 #[test]
 fn carves_clang_static_pie_elf_via_relocations() {
-    let Some(bytes) = clang_static_pie(CLANG_TABLE_SRC, "webview-clang-table") else {
-        eprintln!("CORPUS: clang cross toolchain unavailable; skipping relocation-path ELF grade");
+    let Some(bytes) = clang_static_pie(
+        CLANG_TABLE_SRC,
+        "webview-clang-table",
+        "carves_clang_static_pie_elf_via_relocations",
+    ) else {
         return;
     };
     let report: CarveReport = carve_report(&bytes).expect("carve clang static-pie elf");
@@ -683,18 +761,26 @@ fn compressed_table_source(entries: &[(&str, Vec<u8>)]) -> String {
     source
 }
 
-fn carve_encoded_tree(encode: fn(&[u8]) -> Vec<u8>, tag: &str) -> Option<Vec<RecoveredAsset>> {
+fn carve_encoded_tree(
+    encode: fn(&[u8]) -> Vec<u8>,
+    tag: &str,
+    grade: &str,
+) -> Option<Vec<RecoveredAsset>> {
     let encoded: Vec<(&str, Vec<u8>)> = compressible_payloads()
         .iter()
         .map(|(name, raw): &(&'static str, Vec<u8>)| (*name, encode(raw)))
         .collect();
-    let image: Vec<u8> = clang_static_pie(&compressed_table_source(&encoded), tag)?;
+    let image: Vec<u8> = clang_static_pie(&compressed_table_source(&encoded), tag, grade)?;
     Some(carve_report(&image).unwrap().assets)
 }
 
-fn assert_encoder_round_trip(encode: fn(&[u8]) -> Vec<u8>, expected: Compression, tag: &str) {
-    let Some(assets): Option<Vec<RecoveredAsset>> = carve_encoded_tree(encode, tag) else {
-        eprintln!("SKIP {tag}: clang is not on PATH, so no embedded image could be built");
+fn assert_encoder_round_trip(
+    encode: fn(&[u8]) -> Vec<u8>,
+    expected: Compression,
+    tag: &str,
+    grade: &str,
+) {
+    let Some(assets): Option<Vec<RecoveredAsset>> = carve_encoded_tree(encode, tag, grade) else {
         return;
     };
     let recovered: BTreeMap<String, &RecoveredAsset> = assets
@@ -833,6 +919,98 @@ fn tauri_style_zstd_map_recovers_the_original_tree() {
     }
     assert_eq!(report.declared, tree.len());
     assert_eq!(report.recovered, tree.len());
+}
+
+#[test]
+fn tauri_style_brotli_map_recovers_the_original_tree_without_a_frame_to_detect() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let encoded: Vec<(&str, Vec<u8>)> = encode_tree(&tree, brotli_encode);
+    let image: Vec<u8> = image_from_entries(&encoded, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve tauri-style brotli map");
+    assert_eq!(report.family, WebviewFamily::Tauri);
+    assert_eq!(
+        assets_map(&report),
+        expected_tauri_map(&tree),
+        "brotli carries no frame magic, so the map-wide anchor is the only thing that can decode \
+         these blobs, and every one must come back byte-identical to the source file"
+    );
+    for asset in &report.assets {
+        let expected: Compression = if asset.bytes.is_empty() {
+            Compression::None
+        } else {
+            Compression::Brotli
+        };
+        assert_eq!(
+            asset.compression, expected,
+            "{}: reported encoding must describe how the bytes were recovered",
+            asset.path
+        );
+    }
+    assert_eq!(report.declared, tree.len());
+    assert_eq!(
+        report.recovered,
+        tree.len(),
+        "a zero-length member of a brotli map holds no stream to inflate, and dropping it would \
+         lose an asset the source tree really has"
+    );
+}
+
+#[test]
+fn a_brotli_decompression_bomb_is_refused_by_the_quota() {
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tauri_asset_tree(), brotli_encode);
+    let bomb: Vec<u8> = brotli_encode(&vec![0u8; 4 * 1024 * 1024]);
+    assert!(
+        bomb.len() < 4096,
+        "the bomb fixture must be small on disk to be a bomb at all, got {}",
+        bomb.len()
+    );
+    entries.push(("/assets/bomb.bin", bomb));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let err: Error = carve_report(&image).expect_err("the bomb must not be admitted");
+    match err {
+        Error::Quota { entry, reason } => {
+            assert_eq!(entry, "assets/bomb.bin");
+            assert!(
+                reason.contains("ratio"),
+                "the refusal must name the expansion ratio, got {reason}"
+            );
+        }
+        other => panic!("expected a quota refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_raw_member_of_a_brotli_map_is_withheld_rather_than_reported_as_bytes_it_never_held() {
+    let tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    let mut entries: Vec<(&str, Vec<u8>)> = encode_tree(&tree, brotli_encode);
+    let stored_raw: Vec<u8> = b".panel{display:flex}".repeat(30);
+    entries.push(("/assets/stored.css", stored_raw.clone()));
+    let image: Vec<u8> = image_from_entries(&entries, TAURI_TRAILER);
+
+    let report: CarveReport = carve_report(&image).expect("carve brotli map holding a raw member");
+    let recovered: BTreeMap<String, Vec<u8>> = assets_map(&report);
+    match recovered.get("assets/stored.css") {
+        None => assert_eq!(
+            report.declared - report.recovered,
+            1,
+            "a member the anchor cannot inflate must still be counted as declared, so coverage \
+             records the loss instead of hiding it"
+        ),
+        Some(bytes) => assert_eq!(
+            *bytes, stored_raw,
+            "a stored member reported at all must carry the bytes it was stored with, never an \
+             inflation of them"
+        ),
+    }
+    for (key, want) in expected_tauri_map(&tree) {
+        assert_eq!(
+            recovered.get(&key),
+            Some(&want),
+            "{key}: one member the anchor cannot inflate must not cost the rest of the map"
+        );
+    }
 }
 
 #[test]
@@ -1015,15 +1193,30 @@ fn a_decompression_bomb_is_refused_by_the_quota() {
 
 #[test]
 fn gzip_embedded_assets_decode_to_what_the_encoder_was_given() {
-    assert_encoder_round_trip(gzip_encode, Compression::Gzip, "webview-gzip");
+    assert_encoder_round_trip(
+        gzip_encode,
+        Compression::Gzip,
+        "webview-gzip",
+        "gzip_embedded_assets_decode_to_what_the_encoder_was_given",
+    );
 }
 
 #[test]
 fn zstd_embedded_assets_decode_to_what_the_encoder_was_given() {
-    assert_encoder_round_trip(zstd_encode, Compression::Zstd, "webview-zstd");
+    assert_encoder_round_trip(
+        zstd_encode,
+        Compression::Zstd,
+        "webview-zstd",
+        "zstd_embedded_assets_decode_to_what_the_encoder_was_given",
+    );
 }
 
 #[test]
 fn brotli_embedded_assets_decode_to_what_the_encoder_was_given() {
-    assert_encoder_round_trip(brotli_encode, Compression::Brotli, "webview-brotli");
+    assert_encoder_round_trip(
+        brotli_encode,
+        Compression::Brotli,
+        "webview-brotli",
+        "brotli_embedded_assets_decode_to_what_the_encoder_was_given",
+    );
 }
