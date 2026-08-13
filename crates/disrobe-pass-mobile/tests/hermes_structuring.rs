@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    DeclineCount, DecompileReport, DecompiledFunction, HERMES_LIFT_VERSION, HermesModule,
-    StructureDecline, decompile_hermes_module, parse_hermes_module,
+    DeclineCount, DecompileReport, DecompiledFunction, HERMES_LIFT_VERSION, HERMES_LIFTED_VERSIONS,
+    HermesModule, StructureDecline, decompile_hermes_module, parse_hermes_module,
 };
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -128,55 +128,56 @@ fn the_counted_loop_recovers_as_a_loop_and_not_as_a_jump_ladder() {
 }
 
 #[test]
-fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
+fn every_function_in_the_older_version_samples_reaches_structured_control_flow() {
     for (file, version) in [("sample.hbc.v84", 84u32), ("sample.hbc.v76", 76)] {
         let report: DecompileReport = report_for(&["sample", file]);
         assert_eq!(report.hermes_version, version);
         assert!(
-            !report.lift_supported,
-            "{file}: only v{HERMES_LIFT_VERSION} has an opcode table here, so no other version may \
-             report lifted bodies"
+            report.lift_supported,
+            "{file}: v{version} carries its own opcode table, so a refusal here is a failure and \
+             never a skip"
         );
         assert_eq!(
             report.function_count, SAMPLE_FUNCTIONS,
-            "{file}: the container still parses"
+            "{file}: the same source compiled at an older version yields the same function count, \
+             so a smaller population here is a container-parse loss and not a better rate"
         );
-        assert_eq!(report.functions_with_body, 0, "{file}");
-        assert_eq!(report.total_reconstructed_ops, 0, "{file}");
-        assert_eq!(report.total_fallback_ops, 0, "{file}");
-        assert_eq!(report.structured_functions, 0, "{file}");
-        let [counted]: &[DeclineCount; 1] = report
-            .structure_declines
-            .as_slice()
-            .try_into()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "{file}: the refusal is counted under one reason; got {:?}",
-                    report.structure_declines
-                )
-            });
+        assert_eq!(report.functions_with_body, SAMPLE_FUNCTIONS, "{file}");
         assert_eq!(
-            counted.reason,
-            StructureDecline::UnsupportedBytecodeVersion,
-            "{file}"
+            report.structured_functions, SAMPLE_FUNCTIONS,
+            "{file}: declines {:?}",
+            report.structure_declines
         );
-        assert_eq!(counted.functions, SAMPLE_FUNCTIONS, "{file}");
+        assert!(
+            report.structure_declines.is_empty(),
+            "{file}: {:?}",
+            report.structure_declines
+        );
+        assert_eq!(
+            report.total_fallback_ops, 0,
+            "{file}: declined {:?}",
+            report.declined_opcodes
+        );
+        assert!(
+            report.total_reconstructed_ops > 0,
+            "{file}: a version that reconstructs no opcode has structured nothing"
+        );
         for recovered in &report.functions {
             assert_eq!(
-                recovered.structure_decline,
-                Some(StructureDecline::UnsupportedBytecodeVersion),
+                recovered.structure_decline, None,
                 "{file}: {}",
                 recovered.name
             );
             assert!(
-                recovered.source.contains(&format!("hbc v{version}")),
-                "{file}: the refusal names the version; src: {}",
+                !recovered.source.contains("goto "),
+                "{file}: {} must reach structured control flow rather than goto edges; src:\n{}",
+                recovered.name,
                 recovered.source
             );
             assert!(
-                !recovered.source.contains("function "),
-                "{file}: a refused version must not emit anything a reader takes for a recovered \
-                 body; src: {}",
+                parses_as_javascript(&recovered.source),
+                "{file}: {} src:\n{}",
+                recovered.name,
                 recovered.source
             );
         }
@@ -186,9 +187,85 @@ fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
                     .functions
                     .iter()
                     .any(|f: &DecompiledFunction| f.name == name),
-                "{file}: container-level name recovery still holds across versions"
+                "{file}: name recovery still holds across versions"
             );
         }
+    }
+}
+
+#[test]
+fn a_bytecode_version_the_opcode_table_does_not_cover_is_refused_by_number() {
+    let unlifted: u32 = 90;
+    assert!(
+        !HERMES_LIFTED_VERSIONS.contains(&unlifted),
+        "v{unlifted} must sit outside the lifted set for this case to exercise the refusal path at \
+         all; the lifted set is {HERMES_LIFTED_VERSIONS:?}"
+    );
+    let path: PathBuf = corpus(&["sample", "sample.hbc.v96"]);
+    let mut bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{} is committed, so a run that cannot read it grades no refusal: {error}",
+            path.display()
+        )
+    });
+    bytes.splice(8..12, unlifted.to_le_bytes());
+
+    let module: HermesModule = parse_hermes_module(&bytes)
+        .unwrap_or_else(|error| panic!("v{unlifted} is inside the accepted band: {error}"));
+    let report: DecompileReport = decompile_hermes_module(&module);
+
+    assert_eq!(report.hermes_version, unlifted);
+    assert!(
+        !report.lift_supported,
+        "v{unlifted} has no opcode table, so lifting it would decode its bytes through another \
+         version's numbering and report the result as recovered JavaScript"
+    );
+    assert_eq!(
+        report.function_count, SAMPLE_FUNCTIONS,
+        "the container still parses"
+    );
+    assert_eq!(report.functions_with_body, 0);
+    assert_eq!(report.total_reconstructed_ops, 0);
+    assert_eq!(report.total_fallback_ops, 0);
+    assert_eq!(report.structured_functions, 0);
+    let [counted]: &[DeclineCount; 1] = report
+        .structure_declines
+        .as_slice()
+        .try_into()
+        .unwrap_or_else(|_| {
+            panic!(
+                "the refusal is counted under one reason; got {:?}",
+                report.structure_declines
+            )
+        });
+    assert_eq!(counted.reason, StructureDecline::UnsupportedBytecodeVersion);
+    assert_eq!(counted.functions, SAMPLE_FUNCTIONS);
+    for recovered in &report.functions {
+        assert_eq!(
+            recovered.structure_decline,
+            Some(StructureDecline::UnsupportedBytecodeVersion),
+            "{}",
+            recovered.name
+        );
+        assert!(
+            recovered.source.contains(&format!("hbc v{unlifted}")),
+            "the refusal names the version; src: {}",
+            recovered.source
+        );
+        assert!(
+            !recovered.source.contains("function "),
+            "a refused version must not emit anything a reader takes for a recovered body; src: {}",
+            recovered.source
+        );
+    }
+    for name in ["add", "sumRange", "greet", "Counter", "main"] {
+        assert!(
+            report
+                .functions
+                .iter()
+                .any(|f: &DecompiledFunction| f.name == name),
+            "container-level name recovery still holds across versions"
+        );
     }
 }
 

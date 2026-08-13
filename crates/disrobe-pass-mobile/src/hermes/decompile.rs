@@ -5,8 +5,9 @@ use std::fmt::Arguments;
 use serde::{Deserialize, Serialize};
 
 use super::literals::{BufferKind, LiteralValue, decode_literals, render_key, render_value};
+use super::opcodes::{OPCODES_HBC96, OpcodeSpec, Operand, opcode_label_in, opcode_specs};
 use super::structure::{StructureDecline, structure_function};
-use super::{HERMES_LIFT_VERSION, HermesExceptionEntry, HermesModule, SmallFunctionHeader};
+use super::{HERMES_LIFTED_VERSIONS, HermesExceptionEntry, HermesModule, SmallFunctionHeader};
 
 const MAX_RENDERED_CALL_ARGS: u64 = 256;
 
@@ -48,260 +49,11 @@ fn push_format_line(output: &mut String, args: Arguments<'_>) {
     output.push('\n');
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Operand {
-    Reg8,
-    Reg32,
-    UInt8,
-    UInt16,
-    UInt32,
-    Imm32,
-    Double,
-    Addr8,
-    Addr32,
-    StringId8,
-    StringId16,
-    StringId32,
-    FunctionId16,
-    FunctionId32,
-    BigIntId16,
-    BigIntId32,
-}
-
-impl Operand {
-    #[must_use]
-    const fn width(self) -> usize {
-        match self {
-            Self::Reg8 | Self::UInt8 | Self::Addr8 | Self::StringId8 => 1,
-            Self::UInt16 | Self::StringId16 | Self::FunctionId16 | Self::BigIntId16 => 2,
-            Self::Reg32
-            | Self::UInt32
-            | Self::Imm32
-            | Self::Addr32
-            | Self::StringId32
-            | Self::FunctionId32
-            | Self::BigIntId32 => 4,
-            Self::Double => 8,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OpcodeSpec {
-    pub name: &'static str,
-    pub operands: &'static [Operand],
-}
-
-macro_rules! op {
-    ($name:literal $(, $o:ident)*) => {
-        OpcodeSpec { name: $name, operands: &[$(Operand::$o),*] }
-    };
-}
-
-#[rustfmt::skip]
-pub(crate) const OPCODES: &[OpcodeSpec] = &[
-    op!("Unreachable"),
-    op!("NewObjectWithBuffer", Reg8, UInt16, UInt16, UInt16, UInt16),
-    op!("NewObjectWithBufferLong", Reg8, UInt16, UInt16, UInt32, UInt32),
-    op!("NewObject", Reg8),
-    op!("NewObjectWithParent", Reg8, Reg8),
-    op!("NewArrayWithBuffer", Reg8, UInt16, UInt16, UInt16),
-    op!("NewArrayWithBufferLong", Reg8, UInt16, UInt16, UInt32),
-    op!("NewArray", Reg8, UInt16),
-    op!("Mov", Reg8, Reg8),
-    op!("MovLong", Reg32, Reg32),
-    op!("Negate", Reg8, Reg8),
-    op!("Not", Reg8, Reg8),
-    op!("BitNot", Reg8, Reg8),
-    op!("TypeOf", Reg8, Reg8),
-    op!("Eq", Reg8, Reg8, Reg8),
-    op!("StrictEq", Reg8, Reg8, Reg8),
-    op!("Neq", Reg8, Reg8, Reg8),
-    op!("StrictNeq", Reg8, Reg8, Reg8),
-    op!("Less", Reg8, Reg8, Reg8),
-    op!("LessEq", Reg8, Reg8, Reg8),
-    op!("Greater", Reg8, Reg8, Reg8),
-    op!("GreaterEq", Reg8, Reg8, Reg8),
-    op!("Add", Reg8, Reg8, Reg8),
-    op!("AddN", Reg8, Reg8, Reg8),
-    op!("Mul", Reg8, Reg8, Reg8),
-    op!("MulN", Reg8, Reg8, Reg8),
-    op!("Div", Reg8, Reg8, Reg8),
-    op!("DivN", Reg8, Reg8, Reg8),
-    op!("Mod", Reg8, Reg8, Reg8),
-    op!("Sub", Reg8, Reg8, Reg8),
-    op!("SubN", Reg8, Reg8, Reg8),
-    op!("LShift", Reg8, Reg8, Reg8),
-    op!("RShift", Reg8, Reg8, Reg8),
-    op!("URshift", Reg8, Reg8, Reg8),
-    op!("BitAnd", Reg8, Reg8, Reg8),
-    op!("BitXor", Reg8, Reg8, Reg8),
-    op!("BitOr", Reg8, Reg8, Reg8),
-    op!("Inc", Reg8, Reg8),
-    op!("Dec", Reg8, Reg8),
-    op!("InstanceOf", Reg8, Reg8, Reg8),
-    op!("IsIn", Reg8, Reg8, Reg8),
-    op!("GetEnvironment", Reg8, UInt8),
-    op!("StoreToEnvironment", Reg8, UInt8, Reg8),
-    op!("StoreToEnvironmentL", Reg8, UInt16, Reg8),
-    op!("StoreNPToEnvironment", Reg8, UInt8, Reg8),
-    op!("StoreNPToEnvironmentL", Reg8, UInt16, Reg8),
-    op!("LoadFromEnvironment", Reg8, Reg8, UInt8),
-    op!("LoadFromEnvironmentL", Reg8, Reg8, UInt16),
-    op!("GetGlobalObject", Reg8),
-    op!("GetNewTarget", Reg8),
-    op!("CreateEnvironment", Reg8),
-    op!("CreateInnerEnvironment", Reg8, Reg8, UInt32),
-    op!("DeclareGlobalVar", StringId32),
-    op!("ThrowIfHasRestrictedGlobalProperty", StringId32),
-    op!("GetByIdShort", Reg8, Reg8, UInt8, StringId8),
-    op!("GetById", Reg8, Reg8, UInt8, StringId16),
-    op!("GetByIdLong", Reg8, Reg8, UInt8, StringId32),
-    op!("TryGetById", Reg8, Reg8, UInt8, StringId16),
-    op!("TryGetByIdLong", Reg8, Reg8, UInt8, StringId32),
-    op!("PutById", Reg8, Reg8, UInt8, StringId16),
-    op!("PutByIdLong", Reg8, Reg8, UInt8, StringId32),
-    op!("TryPutById", Reg8, Reg8, UInt8, StringId16),
-    op!("TryPutByIdLong", Reg8, Reg8, UInt8, StringId32),
-    op!("PutNewOwnByIdShort", Reg8, Reg8, StringId8),
-    op!("PutNewOwnById", Reg8, Reg8, StringId16),
-    op!("PutNewOwnByIdLong", Reg8, Reg8, StringId32),
-    op!("PutNewOwnNEById", Reg8, Reg8, StringId16),
-    op!("PutNewOwnNEByIdLong", Reg8, Reg8, StringId32),
-    op!("PutOwnByIndex", Reg8, Reg8, UInt8),
-    op!("PutOwnByIndexL", Reg8, Reg8, UInt32),
-    op!("PutOwnByVal", Reg8, Reg8, Reg8, UInt8),
-    op!("DelById", Reg8, Reg8, StringId16),
-    op!("DelByIdLong", Reg8, Reg8, StringId32),
-    op!("GetByVal", Reg8, Reg8, Reg8),
-    op!("PutByVal", Reg8, Reg8, Reg8),
-    op!("DelByVal", Reg8, Reg8, Reg8),
-    op!("PutOwnGetterSetterByVal", Reg8, Reg8, Reg8, Reg8, UInt8),
-    op!("GetPNameList", Reg8, Reg8, Reg8, Reg8),
-    op!("GetNextPName", Reg8, Reg8, Reg8, Reg8, Reg8),
-    op!("Call", Reg8, Reg8, UInt8),
-    op!("Construct", Reg8, Reg8, UInt8),
-    op!("Call1", Reg8, Reg8, Reg8),
-    op!("CallDirect", Reg8, UInt8, FunctionId16),
-    op!("Call2", Reg8, Reg8, Reg8, Reg8),
-    op!("Call3", Reg8, Reg8, Reg8, Reg8, Reg8),
-    op!("Call4", Reg8, Reg8, Reg8, Reg8, Reg8, Reg8),
-    op!("CallLong", Reg8, Reg8, UInt32),
-    op!("ConstructLong", Reg8, Reg8, UInt32),
-    op!("CallDirectLongIndex", Reg8, UInt8, FunctionId32),
-    op!("CallBuiltin", Reg8, UInt8, UInt8),
-    op!("CallBuiltinLong", Reg8, UInt8, UInt32),
-    op!("GetBuiltinClosure", Reg8, UInt8),
-    op!("Ret", Reg8),
-    op!("Catch", Reg8),
-    op!("DirectEval", Reg8, Reg8, UInt8),
-    op!("Throw", Reg8),
-    op!("ThrowIfEmpty", Reg8, Reg8),
-    op!("Debugger"),
-    op!("AsyncBreakCheck"),
-    op!("ProfilePoint", UInt16),
-    op!("CreateClosure", Reg8, Reg8, FunctionId16),
-    op!("CreateClosureLongIndex", Reg8, Reg8, FunctionId32),
-    op!("CreateGeneratorClosure", Reg8, Reg8, FunctionId16),
-    op!("CreateGeneratorClosureLongIndex", Reg8, Reg8, FunctionId32),
-    op!("CreateAsyncClosure", Reg8, Reg8, FunctionId16),
-    op!("CreateAsyncClosureLongIndex", Reg8, Reg8, FunctionId32),
-    op!("CreateThis", Reg8, Reg8, Reg8),
-    op!("SelectObject", Reg8, Reg8, Reg8),
-    op!("LoadParam", Reg8, UInt8),
-    op!("LoadParamLong", Reg8, UInt32),
-    op!("LoadConstUInt8", Reg8, UInt8),
-    op!("LoadConstInt", Reg8, Imm32),
-    op!("LoadConstDouble", Reg8, Double),
-    op!("LoadConstBigInt", Reg8, BigIntId16),
-    op!("LoadConstBigIntLongIndex", Reg8, BigIntId32),
-    op!("LoadConstString", Reg8, StringId16),
-    op!("LoadConstStringLongIndex", Reg8, StringId32),
-    op!("LoadConstEmpty", Reg8),
-    op!("LoadConstUndefined", Reg8),
-    op!("LoadConstNull", Reg8),
-    op!("LoadConstTrue", Reg8),
-    op!("LoadConstFalse", Reg8),
-    op!("LoadConstZero", Reg8),
-    op!("CoerceThisNS", Reg8, Reg8),
-    op!("LoadThisNS", Reg8),
-    op!("ToNumber", Reg8, Reg8),
-    op!("ToNumeric", Reg8, Reg8),
-    op!("ToInt32", Reg8, Reg8),
-    op!("AddEmptyString", Reg8, Reg8),
-    op!("GetArgumentsPropByVal", Reg8, Reg8, Reg8),
-    op!("GetArgumentsLength", Reg8, Reg8),
-    op!("ReifyArguments", Reg8),
-    op!("CreateRegExp", Reg8, StringId32, StringId32, UInt32),
-    op!("SwitchImm", Reg8, UInt32, Addr32, UInt32, UInt32),
-    op!("StartGenerator"),
-    op!("ResumeGenerator", Reg8, Reg8),
-    op!("CompleteGenerator"),
-    op!("CreateGenerator", Reg8, Reg8, FunctionId16),
-    op!("CreateGeneratorLongIndex", Reg8, Reg8, FunctionId32),
-    op!("IteratorBegin", Reg8, Reg8),
-    op!("IteratorNext", Reg8, Reg8, Reg8),
-    op!("IteratorClose", Reg8, UInt8),
-    op!("Jmp", Addr8),
-    op!("JmpLong", Addr32),
-    op!("JmpTrue", Addr8, Reg8),
-    op!("JmpTrueLong", Addr32, Reg8),
-    op!("JmpFalse", Addr8, Reg8),
-    op!("JmpFalseLong", Addr32, Reg8),
-    op!("JmpUndefined", Addr8, Reg8),
-    op!("JmpUndefinedLong", Addr32, Reg8),
-    op!("SaveGenerator", Addr8),
-    op!("SaveGeneratorLong", Addr32),
-    op!("JLess", Addr8, Reg8, Reg8),
-    op!("JLessLong", Addr32, Reg8, Reg8),
-    op!("JNotLess", Addr8, Reg8, Reg8),
-    op!("JNotLessLong", Addr32, Reg8, Reg8),
-    op!("JLessN", Addr8, Reg8, Reg8),
-    op!("JLessNLong", Addr32, Reg8, Reg8),
-    op!("JNotLessN", Addr8, Reg8, Reg8),
-    op!("JNotLessNLong", Addr32, Reg8, Reg8),
-    op!("JLessEqual", Addr8, Reg8, Reg8),
-    op!("JLessEqualLong", Addr32, Reg8, Reg8),
-    op!("JNotLessEqual", Addr8, Reg8, Reg8),
-    op!("JNotLessEqualLong", Addr32, Reg8, Reg8),
-    op!("JLessEqualN", Addr8, Reg8, Reg8),
-    op!("JLessEqualNLong", Addr32, Reg8, Reg8),
-    op!("JNotLessEqualN", Addr8, Reg8, Reg8),
-    op!("JNotLessEqualNLong", Addr32, Reg8, Reg8),
-    op!("JGreater", Addr8, Reg8, Reg8),
-    op!("JGreaterLong", Addr32, Reg8, Reg8),
-    op!("JNotGreater", Addr8, Reg8, Reg8),
-    op!("JNotGreaterLong", Addr32, Reg8, Reg8),
-    op!("JGreaterN", Addr8, Reg8, Reg8),
-    op!("JGreaterNLong", Addr32, Reg8, Reg8),
-    op!("JNotGreaterN", Addr8, Reg8, Reg8),
-    op!("JNotGreaterNLong", Addr32, Reg8, Reg8),
-    op!("JGreaterEqual", Addr8, Reg8, Reg8),
-    op!("JGreaterEqualLong", Addr32, Reg8, Reg8),
-    op!("JNotGreaterEqual", Addr8, Reg8, Reg8),
-    op!("JNotGreaterEqualLong", Addr32, Reg8, Reg8),
-    op!("JGreaterEqualN", Addr8, Reg8, Reg8),
-    op!("JGreaterEqualNLong", Addr32, Reg8, Reg8),
-    op!("JNotGreaterEqualN", Addr8, Reg8, Reg8),
-    op!("JNotGreaterEqualNLong", Addr32, Reg8, Reg8),
-    op!("JEqual", Addr8, Reg8, Reg8),
-    op!("JEqualLong", Addr32, Reg8, Reg8),
-    op!("JNotEqual", Addr8, Reg8, Reg8),
-    op!("JNotEqualLong", Addr32, Reg8, Reg8),
-    op!("JStrictEqual", Addr8, Reg8, Reg8),
-    op!("JStrictEqualLong", Addr32, Reg8, Reg8),
-    op!("JStrictNotEqual", Addr8, Reg8, Reg8),
-    op!("JStrictNotEqualLong", Addr32, Reg8, Reg8),
-];
-
 const OPCODE_SLOTS: usize = 256;
 
 #[must_use]
 pub fn opcode_label(opcode: u8) -> Cow<'static, str> {
-    match OPCODES.get(opcode as usize) {
-        Some(spec) => Cow::Borrowed(spec.name),
-        None => Cow::Owned(format!("Unknown_0x{opcode:02x}")),
-    }
+    opcode_label_in(OPCODES_HBC96, opcode)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -335,7 +87,11 @@ impl OpcodeHistogram {
         }
     }
 
-    fn counts(&self, pick: fn(&OpcodeTally) -> u32) -> Vec<OpcodeCount> {
+    fn counts(
+        &self,
+        pick: fn(&OpcodeTally) -> u32,
+        specs: &'static [OpcodeSpec],
+    ) -> Vec<OpcodeCount> {
         let mut out: Vec<OpcodeCount> = self
             .slots
             .iter()
@@ -347,7 +103,7 @@ impl OpcodeHistogram {
                 }
                 let opcode: u8 = u8::try_from(index).ok()?;
                 Some(OpcodeCount {
-                    opcode: opcode_label(opcode).into_owned(),
+                    opcode: opcode_label_in(specs, opcode).into_owned(),
                     occurrences: occurrences as usize,
                 })
             })
@@ -390,13 +146,13 @@ pub(crate) struct Instruction {
 }
 
 #[must_use]
-pub(crate) fn decode_instructions(code: &[u8]) -> Vec<Instruction> {
+pub(crate) fn decode_instructions(code: &[u8], specs: &'static [OpcodeSpec]) -> Vec<Instruction> {
     let cap: usize = (code.len() / 3).min(MAX_DECODED_INSTRUCTIONS);
     let mut out: Vec<Instruction> = Vec::with_capacity(cap);
     let mut pc: usize = 0;
     while pc < code.len() && out.len() < MAX_DECODED_INSTRUCTIONS {
         let opcode: u8 = code[pc];
-        let spec: Option<&OpcodeSpec> = OPCODES.get(opcode as usize);
+        let spec: Option<&OpcodeSpec> = specs.get(opcode as usize);
         let Some(spec): Option<&OpcodeSpec> = spec else {
             out.push(Instruction {
                 offset: pc,
@@ -2105,8 +1861,14 @@ pub struct DecompileReport {
 
 #[must_use]
 pub fn disassemble_function_instructions(module: &HermesModule, index: usize) -> Vec<String> {
+    let version: u32 = module.header.version;
+    let Some(specs): Option<&'static [OpcodeSpec]> = opcode_specs(version) else {
+        return vec![format!(
+            "hbc v{version}: no opcode table, instructions are not decoded at this bytecode version"
+        )];
+    };
     let code: &[u8] = module.function_code(index);
-    decode_instructions(code)
+    decode_instructions(code, specs)
         .iter()
         .map(|i: &Instruction| format!("{:#06x}: {}", i.offset, fallback_disasm(i)))
         .collect()
@@ -2114,8 +1876,11 @@ pub fn disassemble_function_instructions(module: &HermesModule, index: usize) ->
 
 #[must_use]
 pub fn decompile_function(module: &HermesModule, index: usize) -> DecompiledFunction {
+    let Some(specs): Option<&'static [OpcodeSpec]> = opcode_specs(module.header.version) else {
+        return declined_function(module, index);
+    };
     let empty: BTreeMap<u32, String> = BTreeMap::new();
-    decompile_function_inlined(module, index, &empty)
+    decompile_function_inlined(module, index, &empty, specs)
 }
 
 #[must_use]
@@ -2123,8 +1888,9 @@ fn decompile_function_inlined(
     module: &HermesModule,
     index: usize,
     inline_bodies: &BTreeMap<u32, String>,
+    specs: &'static [OpcodeSpec],
 ) -> DecompiledFunction {
-    decompile_function_tallied(module, index, inline_bodies).0
+    decompile_function_tallied(module, index, inline_bodies, specs).0
 }
 
 #[must_use]
@@ -2132,6 +1898,7 @@ fn decompile_function_tallied(
     module: &HermesModule,
     index: usize,
     inline_bodies: &BTreeMap<u32, String>,
+    specs: &'static [OpcodeSpec],
 ) -> (DecompiledFunction, OpcodeHistogram) {
     let header: SmallFunctionHeader =
         module
@@ -2160,7 +1927,7 @@ fn decompile_function_tallied(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("$func{index}"));
     let code: &[u8] = module.function_code(index);
-    let instructions: Vec<Instruction> = decode_instructions(code);
+    let instructions: Vec<Instruction> = decode_instructions(code, specs);
     let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
     let cfg: Cfg = build_cfg(&instructions, code, &exceptions);
 
@@ -2763,10 +2530,10 @@ fn render_block_stmts(
 }
 
 #[must_use]
-fn closure_targets(module: &HermesModule, index: usize) -> Vec<u32> {
+fn closure_targets(module: &HermesModule, index: usize, specs: &'static [OpcodeSpec]) -> Vec<u32> {
     let code: &[u8] = module.function_code(index);
     let mut targets: Vec<u32> = Vec::new();
-    for inst in decode_instructions(code) {
+    for inst in decode_instructions(code, specs) {
         if !inst.name.starts_with("Create") || !inst.name.contains("Closure") {
             continue;
         }
@@ -2783,19 +2550,20 @@ fn inlined_closure_bodies(
     visiting: &mut BTreeSet<usize>,
     cache: &mut BTreeMap<usize, String>,
     depth: usize,
+    specs: &'static [OpcodeSpec],
 ) -> BTreeMap<u32, String> {
     let mut bodies: BTreeMap<u32, String> = BTreeMap::new();
     if depth >= MAX_INLINE_CLOSURE_DEPTH {
         return bodies;
     }
-    for fid in closure_targets(module, index) {
+    for fid in closure_targets(module, index, specs) {
         let Some(child): Option<usize> = usize::try_from(fid).ok() else {
             continue;
         };
         if child >= module.functions.len() || child == index || visiting.contains(&child) {
             continue;
         }
-        let source: String = inlined_source(module, child, visiting, cache, depth + 1);
+        let source: String = inlined_source(module, child, visiting, cache, depth + 1, specs);
         bodies.insert(fid, source);
     }
     bodies
@@ -2807,14 +2575,16 @@ fn inlined_source(
     visiting: &mut BTreeSet<usize>,
     cache: &mut BTreeMap<usize, String>,
     depth: usize,
+    specs: &'static [OpcodeSpec],
 ) -> String {
     if let Some(cached) = cache.get(&index) {
         return cached.clone();
     }
     visiting.insert(index);
     let child_bodies: BTreeMap<u32, String> =
-        inlined_closure_bodies(module, index, visiting, cache, depth);
-    let decompiled: DecompiledFunction = decompile_function_inlined(module, index, &child_bodies);
+        inlined_closure_bodies(module, index, visiting, cache, depth, specs);
+    let decompiled: DecompiledFunction =
+        decompile_function_inlined(module, index, &child_bodies, specs);
     visiting.remove(&index);
     cache.insert(index, decompiled.source.clone());
     decompiled.source
@@ -2833,7 +2603,7 @@ fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction 
         index,
         source: format!(
             "/* hbc v{version}: no opcode table, bodies are not lifted at this bytecode version \
-             (lifting covers v{HERMES_LIFT_VERSION}) */"
+             (lifting covers v{HERMES_LIFTED_VERSIONS:?}) */"
         ),
         name,
         param_count: header.map_or(0, |h: &SmallFunctionHeader| h.param_count),
@@ -2855,7 +2625,9 @@ fn declined_function(module: &HermesModule, index: usize) -> DecompiledFunction 
 
 #[must_use]
 pub fn decompile_module(module: &HermesModule) -> DecompileReport {
-    let lift_supported: bool = module.header.version == HERMES_LIFT_VERSION;
+    let specs: Option<&'static [OpcodeSpec]> = opcode_specs(module.header.version);
+    let lift_supported: bool = specs.is_some();
+    let histogram_specs: &'static [OpcodeSpec] = specs.unwrap_or(OPCODES_HBC96);
     let mut functions: Vec<DecompiledFunction> = Vec::with_capacity(module.functions.len());
     let mut total_reconstructed: usize = 0;
     let mut total_fallback: usize = 0;
@@ -2866,13 +2638,13 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
     let mut cache: BTreeMap<usize, String> = BTreeMap::new();
     let mut histogram: OpcodeHistogram = OpcodeHistogram::new();
     for i in 0..module.functions.len() {
-        let f: DecompiledFunction = if lift_supported {
+        let f: DecompiledFunction = if let Some(specs) = specs {
             let mut visiting: BTreeSet<usize> = BTreeSet::new();
             visiting.insert(i);
             let child_bodies: BTreeMap<u32, String> =
-                inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0);
+                inlined_closure_bodies(module, i, &mut visiting, &mut cache, 0, specs);
             let (decompiled, tally): (DecompiledFunction, OpcodeHistogram) =
-                decompile_function_tallied(module, i, &child_bodies);
+                decompile_function_tallied(module, i, &child_bodies, specs);
             histogram.merge(&tally);
             decompiled
         } else {
@@ -2909,9 +2681,11 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
                 |(reason, functions): (StructureDecline, usize)| DeclineCount { reason, functions },
             )
             .collect(),
-        reconstructed_opcodes: histogram.counts(|tally: &OpcodeTally| tally.reconstructed),
-        declined_opcodes: histogram.counts(|tally: &OpcodeTally| tally.declined),
-        unaccounted_opcodes: histogram.counts(|tally: &OpcodeTally| tally.unaccounted),
+        reconstructed_opcodes: histogram
+            .counts(|tally: &OpcodeTally| tally.reconstructed, histogram_specs),
+        declined_opcodes: histogram.counts(|tally: &OpcodeTally| tally.declined, histogram_specs),
+        unaccounted_opcodes: histogram
+            .counts(|tally: &OpcodeTally| tally.unaccounted, histogram_specs),
         functions,
         regexps,
     }
@@ -2926,7 +2700,7 @@ pub fn decompile_module(module: &HermesModule) -> DecompileReport {
 )]
 mod tests {
     use super::*;
-    use crate::hermes::{HERMES_MAGIC, HermesHeader, HermesStringKind};
+    use crate::hermes::{HERMES_LIFT_VERSION, HERMES_MAGIC, HermesHeader, HermesStringKind};
 
     #[test]
     fn call_window_rejects_argc_above_render_cap() {
@@ -2956,7 +2730,7 @@ mod tests {
     }
 
     fn opcode_byte(name: &str) -> u8 {
-        OPCODES
+        OPCODES_HBC96
             .iter()
             .position(|s: &OpcodeSpec| s.name == name)
             .map(|p: usize| p as u8)
@@ -3032,14 +2806,14 @@ mod tests {
 
     #[test]
     fn opcode_table_anchors() {
-        assert_eq!(OPCODES[0].name, "Unreachable");
+        assert_eq!(OPCODES_HBC96[0].name, "Unreachable");
         assert_eq!(opcode_byte("Add"), 22);
         assert_eq!(opcode_byte("Ret"), 92);
         assert_eq!(opcode_byte("LoadParam"), 108);
         assert_eq!(opcode_byte("GetByIdShort"), 54);
         assert_eq!(opcode_byte("Jmp"), 142);
         assert_eq!(opcode_byte("JStrictNotEqualLong"), 191);
-        assert_eq!(OPCODES.len(), 192);
+        assert_eq!(OPCODES_HBC96.len(), 192);
     }
 
     #[test]
@@ -3130,7 +2904,7 @@ mod tests {
         code.push(0u8);
         code.push(opcode_byte("Ret"));
         code.push(0u8);
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         let cfg: Cfg = build_cfg(&instructions, &code, &[]);
         assert!(cfg.blocks.len() >= 2, "blocks: {}", cfg.blocks.len());
     }
@@ -3187,7 +2961,7 @@ mod tests {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("CallLong"));
         code.push(1u8);
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         assert_eq!(instructions.len(), 1);
         assert!(instructions[0].name.ends_with("<truncated>"));
     }
@@ -3195,7 +2969,7 @@ mod tests {
     #[test]
     fn unknown_opcode_run_decodes_in_bounded_time() {
         let code: Vec<u8> = vec![0xffu8; 100_000];
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         assert_eq!(instructions.len(), 100_000);
         let module: HermesModule = module_with(&["x"], &[], code, 1);
         let f: DecompiledFunction = decompile_function(&module, 0);
@@ -3209,7 +2983,7 @@ mod tests {
         code.push(0x80u8);
         code.push(opcode_byte("Ret"));
         code.push(0u8);
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         let target: usize = match instructions[0].operands.first() {
             Some(OperandValue::Target(t)) => *t,
             other => panic!("expected target operand, got {other:?}"),
@@ -3599,7 +3373,7 @@ mod tests {
     #[test]
     fn an_opcode_outside_the_table_is_named_by_its_byte_and_counted_as_declined() {
         let unknown: u8 =
-            u8::try_from(OPCODES.len()).expect("the table is shorter than 256 entries");
+            u8::try_from(OPCODES_HBC96.len()).expect("the table is shorter than 256 entries");
         let code: Vec<u8> = vec![unknown, opcode_byte("Ret"), 0u8];
         let module: HermesModule = module_with(&["odd"], &[], code, 1);
         let report: DecompileReport = decompile_module(&module);
@@ -3805,7 +3579,7 @@ mod tests {
         code.push(0u8);
         let module: HermesModule = module_with(&["f"], &[], code.clone(), 1);
 
-        let decoded: Vec<Instruction> = decode_instructions(&code);
+        let decoded: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         let call: &Instruction = decoded
             .iter()
             .find(|i: &&Instruction| i.name == "Call")
@@ -4025,14 +3799,14 @@ mod tests {
     fn decode_respects_instruction_cap() {
         const { assert!(MAX_DECODED_INSTRUCTIONS >= 1 << 20) };
         let code: Vec<u8> = vec![opcode_byte("Debugger"); MAX_DECODED_INSTRUCTIONS + 50_000];
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         assert_eq!(instructions.len(), MAX_DECODED_INSTRUCTIONS);
     }
 
     #[test]
     fn opcode_table_coverage_excludes_only_instrumentation() {
         let mut unhandled: Vec<&str> = Vec::new();
-        for spec in OPCODES {
+        for spec in OPCODES_HBC96 {
             let n: &str = spec.name;
             let handled: bool = binop_symbol(n).is_some()
                 || unop_symbol(n).is_some()
@@ -4308,7 +4082,7 @@ mod tests {
     #[test]
     fn switch_imm_case_targets_become_block_leaders() {
         let code: Vec<u8> = switch_imm_fixture();
-        let instructions: Vec<Instruction> = decode_instructions(&code);
+        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
         let cfg: Cfg = build_cfg(&instructions, &code, &[]);
         for leader in [21usize, 26, 31] {
             assert!(
@@ -4390,7 +4164,9 @@ mod tests {
         code.push(opcode_byte("Ret"));
         code.push(1u8);
         let mut module: HermesModule = module_with(&["add"], &[], code, 2);
-        module.header.version = 84;
+        let uncovered: u32 = 90;
+        assert!(!HERMES_LIFTED_VERSIONS.contains(&uncovered));
+        module.header.version = uncovered;
         let report: DecompileReport = decompile_module(&module);
         assert!(!report.lift_supported);
         assert_eq!(report.function_count, 1);
@@ -4403,7 +4179,7 @@ mod tests {
             Some(StructureDecline::UnsupportedBytecodeVersion)
         );
         assert!(
-            report.functions[0].source.contains("hbc v84")
+            report.functions[0].source.contains("hbc v90")
                 && report.functions[0].source.contains("not lifted"),
             "a version the opcode table does not cover states so; src: {}",
             report.functions[0].source

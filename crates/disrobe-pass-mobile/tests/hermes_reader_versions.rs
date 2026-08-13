@@ -13,7 +13,7 @@
 )]
 
 use disrobe_pass_mobile::{
-    DecompileReport, DisassemblyReport, Error, HERMES_LIFT_VERSION, HERMES_MAGIC_LE_BYTES,
+    DecompileReport, DisassemblyReport, Error, HERMES_LIFTED_VERSIONS, HERMES_MAGIC_LE_BYTES,
     HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesHeader, HermesModule, JsLiftReport,
     decompile_hermes_module, disassemble_hermes, header_size_for_version,
     hermes_lift_to_js_surface, parse_hermes_header, parse_hermes_module,
@@ -134,9 +134,9 @@ fn the_layout_probe_reads_every_version_the_reader_accepts() {
         let report: DecompileReport = decompile_hermes_module(&module);
         assert_eq!(
             report.lift_supported,
-            version == HERMES_LIFT_VERSION,
-            "v{version}: only v{HERMES_LIFT_VERSION} carries an opcode table, so every other \
-             version must refuse a body rather than emit one nothing grades"
+            HERMES_LIFTED_VERSIONS.contains(&version),
+            "v{version}: only the versions in {HERMES_LIFTED_VERSIONS:?} carry an opcode table, so \
+             every other version must refuse a body rather than emit one nothing grades"
         );
         probed = probed.saturating_add(1);
     }

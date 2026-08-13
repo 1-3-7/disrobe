@@ -9,15 +9,27 @@
 use std::path::{Path, PathBuf};
 
 use disrobe_pass_mobile::{
-    DeclineCount, DecompileReport, DecompiledFunction, HERMES_LIFT_VERSION, HERMES_MAX_VERSION,
-    HERMES_MIN_VERSION, HermesModule, StructureDecline, decompile_hermes_module,
+    DecompileReport, DecompiledFunction, HERMES_LIFT_VERSION, HERMES_LIFTED_VERSIONS,
+    HERMES_MAX_VERSION, HERMES_MIN_VERSION, HermesModule, decompile_hermes_module,
     parse_hermes_module,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Measured {
+    sample: &'static str,
+    upstream_tag: &'static str,
+    functions: usize,
+    bodies: usize,
+    decoded_ops: usize,
+    reconstructed_ops: usize,
+    declined_ops: usize,
+    unaccounted_ops: usize,
+    structured: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Coverage {
-    BodiesGraded(&'static str),
-    ContainerGraded(&'static str),
+    BodiesGraded(Measured),
     NoSample(&'static str),
 }
 
@@ -30,10 +42,66 @@ const LAYOUT_BOUNDARY_87: &str = "the header gains the two big-int fields at thi
      release bundle for it is in the corpus, so the field layout is exercised by the layout probe \
      in hermes_reader_versions.rs and bodies are refused by number";
 
+const NO_RELEASE_TAG_89: &str = "facebook/hermes tag v0.12.0 declares this bytecode version and \
+     its opcode order is knowable, but no bundle compiled by that release is in the corpus, so \
+     nothing would grade a lifted body here and bodies are refused by number";
+
+const NO_RELEASE_TAG_83: &str = "facebook/hermes tag v0.8.0 declares this bytecode version and its \
+     opcode order matches the v84 table, but no bundle compiled by that release is in the corpus, \
+     so nothing would grade a lifted body here and bodies are refused by number";
+
+const NO_RELEASE_TAG_74: &str = "facebook/hermes tags v0.4.0 through v0.6.0 declare this bytecode \
+     version and its opcode order matches the v76 table, but no bundle compiled by those releases \
+     is in the corpus, so nothing would grade a lifted body here and bodies are refused by number";
+
+const NO_RELEASE_TAG_71: &str = "facebook/hermes tag v0.3.0 declares this bytecode version and its \
+     opcode order is knowable, but no bundle compiled by that release is in the corpus, so nothing \
+     would grade a lifted body here and bodies are refused by number";
+
+const NO_RELEASE_TAG_62: &str = "facebook/hermes tag v0.2.1 declares this bytecode version and its \
+     opcode order is knowable, but no bundle compiled by that release is in the corpus, so nothing \
+     would grade a lifted body here and bodies are refused by number";
+
+const V76: Measured = Measured {
+    sample: "sample/sample.hbc.v76",
+    upstream_tag: "v0.7.2",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
+const V84: Measured = Measured {
+    sample: "sample/sample.hbc.v84",
+    upstream_tag: "v0.11.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
+const V96: Measured = Measured {
+    sample: "sample/sample.hbc.v96",
+    upstream_tag: "v0.13.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 99,
+    reconstructed_ops: 99,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
+
 const BAND: [(u32, Coverage); 37] = [
     (60, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (61, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (62, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (62, Coverage::NoSample(NO_RELEASE_TAG_62)),
     (63, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (64, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (65, Coverage::NoSample(NO_RELEASE_SAMPLE)),
@@ -42,36 +110,49 @@ const BAND: [(u32, Coverage); 37] = [
     (68, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (69, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (70, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (71, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (71, Coverage::NoSample(NO_RELEASE_TAG_71)),
     (72, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (73, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (74, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (74, Coverage::NoSample(NO_RELEASE_TAG_74)),
     (75, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (76, Coverage::ContainerGraded("sample/sample.hbc.v76")),
+    (76, Coverage::BodiesGraded(V76)),
     (77, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (78, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (79, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (80, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (81, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (82, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (83, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (84, Coverage::ContainerGraded("sample/sample.hbc.v84")),
+    (83, Coverage::NoSample(NO_RELEASE_TAG_83)),
+    (84, Coverage::BodiesGraded(V84)),
     (85, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (86, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (87, Coverage::NoSample(LAYOUT_BOUNDARY_87)),
     (88, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (89, Coverage::NoSample(NO_RELEASE_SAMPLE)),
+    (89, Coverage::NoSample(NO_RELEASE_TAG_89)),
     (90, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (91, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (92, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (93, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (94, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (95, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (96, Coverage::BodiesGraded("sample/sample.hbc.v96")),
+    (96, Coverage::BodiesGraded(V96)),
 ];
 
-const SAMPLE_FUNCTIONS: usize = 8;
-const SAMPLE_NAMES: [&str; 5] = ["add", "sumRange", "greet", "Counter", "main"];
+const SAMPLE_NAMES: [&str; 7] = [
+    "add",
+    "sumRange",
+    "greet",
+    "Counter",
+    "main",
+    "increment",
+    "label",
+];
+
+const PINNED_GRADED_VERSIONS: usize = 3;
+const PINNED_GRADED_FUNCTIONS: usize = 24;
+const PINNED_GRADED_DECODED_OPS: usize = 295;
+const PINNED_GRADED_RECONSTRUCTED_OPS: usize = 295;
+const PINNED_GRADED_STRUCTURED: usize = 24;
 
 fn corpus(relative: &str) -> PathBuf {
     let mut path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -100,6 +181,10 @@ fn report_for(relative: &str) -> DecompileReport {
     decompile_hermes_module(&module)
 }
 
+const fn decoded_ops(report: &DecompileReport) -> usize {
+    report.total_reconstructed_ops + report.total_fallback_ops + report.total_unaccounted_ops
+}
+
 #[test]
 fn the_table_lists_every_version_the_reader_accepts_and_nothing_outside_it() {
     let mut expected: u32 = HERMES_MIN_VERSION;
@@ -123,19 +208,21 @@ fn the_table_lists_every_version_the_reader_accepts_and_nothing_outside_it() {
 }
 
 #[test]
-fn only_the_lifted_version_claims_graded_bodies_and_every_other_row_states_its_reason() {
+fn the_versions_that_claim_graded_bodies_are_exactly_the_versions_the_crate_lifts() {
     let mut bodies_graded: Vec<u32> = Vec::new();
     for (version, coverage) in BAND {
         match coverage {
-            Coverage::BodiesGraded(sample) => {
+            Coverage::BodiesGraded(measured) => {
                 bodies_graded.push(version);
-                assert!(!sample.is_empty());
-            }
-            Coverage::ContainerGraded(sample) => {
-                assert!(!sample.is_empty());
-                assert_ne!(
-                    version, HERMES_LIFT_VERSION,
-                    "the lifted version must claim graded bodies, not container-only grading"
+                assert!(
+                    measured.sample.ends_with(&format!("v{version}")),
+                    "v{version} is graded by {}, which is not a sample at that version",
+                    measured.sample
+                );
+                assert!(
+                    measured.functions > 0 && measured.decoded_ops > 0,
+                    "v{version} claims graded bodies over an empty population, so every equality \
+                     below would hold over nothing"
                 );
             }
             Coverage::NoSample(reason) => {
@@ -154,79 +241,146 @@ fn only_the_lifted_version_claims_graded_bodies_and_every_other_row_states_its_r
     }
     assert_eq!(
         bodies_graded,
-        vec![HERMES_LIFT_VERSION],
-        "exactly one version has an opcode table here, so exactly one version may claim graded \
-         bodies"
+        HERMES_LIFTED_VERSIONS.to_vec(),
+        "a version claims graded bodies here exactly when the crate lifts it. A lifted version \
+         missing from this table would emit JavaScript no row measures, and a row claiming a \
+         version the crate refuses would publish a recovery that never runs"
+    );
+    assert_eq!(bodies_graded.len(), PINNED_GRADED_VERSIONS);
+    assert!(
+        bodies_graded.contains(&HERMES_LIFT_VERSION),
+        "v{HERMES_LIFT_VERSION} is the reference version the published Hermes figures are measured \
+         at, so it must stay graded"
     );
 }
 
 #[test]
-fn the_lifted_version_grades_bodies_and_the_container_versions_refuse_them_by_number() {
-    let mut graded: usize = 0;
+fn each_graded_version_meets_its_pinned_recovery_counts_and_the_rest_refuse_by_number() {
+    let mut graded_versions: usize = 0;
+    let mut refused_versions: usize = 0;
+    let mut total_functions: usize = 0;
+    let mut total_decoded: usize = 0;
+    let mut total_reconstructed: usize = 0;
+    let mut total_declined: usize = 0;
+    let mut total_structured: usize = 0;
+
     for (version, coverage) in BAND {
         match coverage {
-            Coverage::BodiesGraded(sample) => {
-                let report: DecompileReport = report_for(sample);
-                assert_eq!(report.hermes_version, version, "{sample}");
-                assert!(report.lift_supported, "{sample}");
-                assert_eq!(report.function_count, SAMPLE_FUNCTIONS, "{sample}");
-                assert_eq!(report.functions_with_body, SAMPLE_FUNCTIONS, "{sample}");
-                assert!(report.total_reconstructed_ops > 0, "{sample}");
-                graded += 1;
-            }
-            Coverage::ContainerGraded(sample) => {
-                let report: DecompileReport = report_for(sample);
-                assert_eq!(report.hermes_version, version, "{sample}");
+            Coverage::BodiesGraded(measured) => {
+                let report: DecompileReport = report_for(measured.sample);
+                let label: &str = measured.sample;
+                assert_eq!(report.hermes_version, version, "{label}");
                 assert!(
-                    !report.lift_supported,
-                    "{sample}: only v{HERMES_LIFT_VERSION} has an opcode table, so no other \
-                     version may report lifted bodies"
+                    report.lift_supported,
+                    "{label}: this row claims graded bodies at v{version}, decoded through the \
+                     opcode table transcribed from facebook/hermes tag {}, so a refusal here is a \
+                     failure and never a skip",
+                    measured.upstream_tag
                 );
-                assert_eq!(report.functions_with_body, 0, "{sample}");
-                assert_eq!(report.total_reconstructed_ops, 0, "{sample}");
-                assert_eq!(report.total_fallback_ops, 0, "{sample}");
-                assert_eq!(report.total_unaccounted_ops, 0, "{sample}");
-                let [refusal]: &[DeclineCount; 1] = report
-                    .structure_declines
-                    .as_slice()
-                    .try_into()
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "{sample}: the refusal is counted under one reason; got {:?}",
-                            report.structure_declines
-                        )
-                    });
                 assert_eq!(
-                    refusal.reason,
-                    StructureDecline::UnsupportedBytecodeVersion,
-                    "{sample}"
+                    report.function_count, measured.functions,
+                    "{label}: the function denominator is pinned by equality, so a change that \
+                     raises a rate by parsing fewer functions fails here instead"
                 );
-                assert_eq!(refusal.functions, SAMPLE_FUNCTIONS, "{sample}");
+                assert_eq!(report.functions_with_body, measured.bodies, "{label}");
+                assert_eq!(
+                    decoded_ops(&report),
+                    measured.decoded_ops,
+                    "{label}: the opcode denominator is pinned by equality; decoding fewer \
+                     instructions must move this figure deliberately rather than raise the \
+                     coverage ratio by dropping them"
+                );
+                assert_eq!(
+                    report.total_reconstructed_ops, measured.reconstructed_ops,
+                    "{label}: opcode coverage at this version is \
+                     {}/{} and is pinned by equality",
+                    measured.reconstructed_ops, measured.decoded_ops
+                );
+                assert_eq!(
+                    report.total_fallback_ops, measured.declined_ops,
+                    "{label}: declined {:?}",
+                    report.declined_opcodes
+                );
+                assert_eq!(
+                    report.total_unaccounted_ops, measured.unaccounted_ops,
+                    "{label}: unaccounted {:?}",
+                    report.unaccounted_opcodes
+                );
+                assert_eq!(
+                    report.structured_functions, measured.structured,
+                    "{label}: declines {:?}",
+                    report.structure_declines
+                );
+                assert_eq!(
+                    report.declined_opcodes.len(),
+                    0,
+                    "{label}: a declined opcode is allowed but must be named here rather than \
+                     absent from the report; declined {:?}",
+                    report.declined_opcodes
+                );
                 for name in SAMPLE_NAMES {
                     assert!(
                         report
                             .functions
                             .iter()
                             .any(|f: &DecompiledFunction| f.name == name),
-                        "{sample}: container-level name recovery holds at every accepted version, \
-                         so a refused body must still name its function"
+                        "{label}: name recovery holds at every graded version, so a lifted body \
+                         must still name its function"
                     );
                 }
-                graded += 1;
+                graded_versions += 1;
+                total_functions += report.function_count;
+                total_decoded += decoded_ops(&report);
+                total_reconstructed += report.total_reconstructed_ops;
+                total_declined += report.total_fallback_ops;
+                total_structured += report.structured_functions;
             }
-            Coverage::NoSample(_) => {}
+            Coverage::NoSample(_) => {
+                assert!(
+                    !HERMES_LIFTED_VERSIONS.contains(&version),
+                    "v{version} carries no sample here yet the crate lifts it, so its bodies would \
+                     be emitted with nothing measuring them"
+                );
+                refused_versions += 1;
+            }
         }
     }
+
     assert_eq!(
-        graded, 3,
+        graded_versions, PINNED_GRADED_VERSIONS,
         "three versions in the accepted band have a committed sample; a run that grades fewer of \
          them is reading the wrong corpus path rather than meeting a legitimate absence"
     );
+    assert_eq!(
+        graded_versions + refused_versions,
+        BAND.len(),
+        "every version lands in exactly one column"
+    );
+    assert_eq!(total_functions, PINNED_GRADED_FUNCTIONS);
+    assert_eq!(total_decoded, PINNED_GRADED_DECODED_OPS);
+    assert_eq!(total_reconstructed, PINNED_GRADED_RECONSTRUCTED_OPS);
+    assert_eq!(total_declined, 0);
+    assert_eq!(total_structured, PINNED_GRADED_STRUCTURED);
+
     eprintln!(
         "hermes version band {HERMES_MIN_VERSION} to {HERMES_MAX_VERSION}: {} versions listed, \
-         {graded} with a committed sample, 1 with graded bodies, {} with no sample and a stated \
+         {graded_versions} with graded bodies, {refused_versions} refused by number with a stated \
          reason",
-        BAND.len(),
-        BAND.len() - graded
+        BAND.len()
     );
+    for (version, coverage) in BAND {
+        if let Coverage::BodiesGraded(measured) = coverage {
+            eprintln!(
+                "  hbc v{version} ({}) {}: opcodes {}/{} reconstructed, {} declined, functions \
+                 {}/{} structured",
+                measured.upstream_tag,
+                measured.sample,
+                measured.reconstructed_ops,
+                measured.decoded_ops,
+                measured.declined_ops,
+                measured.structured,
+                measured.bodies
+            );
+        }
+    }
 }

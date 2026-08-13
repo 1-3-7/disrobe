@@ -10,6 +10,7 @@ pub mod bigint;
 pub mod builtins;
 pub mod decompile;
 pub mod literals;
+pub(crate) mod opcodes;
 pub mod regex;
 pub mod structure;
 
@@ -29,6 +30,7 @@ pub const HERMES_MAGIC_LE_BYTES: [u8; 8] = HERMES_MAGIC.to_le_bytes();
 pub const HERMES_MIN_VERSION: u32 = 60;
 pub const HERMES_MAX_VERSION: u32 = 96;
 pub const HERMES_LIFT_VERSION: u32 = 96;
+pub const HERMES_LIFTED_VERSIONS: [u32; 3] = [76, 84, 96];
 
 const SMALL_STRING_INVALID_LENGTH: u32 = 0xff;
 const HERMES_HEADER_TOTAL_SIZE: usize = 128;

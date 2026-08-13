@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use boa_engine::{Context, JsError, JsString, JsValue, Source};
 use disrobe_pass_mobile::{
-    DecompileReport, DecompiledFunction, HermesModule, decompile_hermes_module, parse_hermes_module,
+    DecompileReport, DecompiledFunction, HERMES_LIFTED_VERSIONS, HermesModule,
+    decompile_hermes_module, parse_hermes_module,
 };
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -33,6 +34,7 @@ struct ModuleCase {
     original: &'static str,
     observation: &'static str,
     shapes: &'static str,
+    version: u32,
 }
 
 const CASES: &[ModuleCase] = &[
@@ -43,6 +45,7 @@ const CASES: &[ModuleCase] = &[
         observation: "",
         shapes: "top-level module, constructor, prototype method, getter-style method, counted \
                  loop, cross-function call",
+        version: 96,
     },
     ModuleCase {
         directory: "hello",
@@ -50,6 +53,7 @@ const CASES: &[ModuleCase] = &[
         original: "hello.bundle.js",
         observation: "",
         shapes: "top-level module inside an Android asset container, single nested closure",
+        version: 96,
     },
     ModuleCase {
         directory: "regex",
@@ -57,6 +61,7 @@ const CASES: &[ModuleCase] = &[
         original: "regexes.js",
         observation: "var __values = useThem();\n",
         shapes: "twenty-three regular-expression literals with flags, returned through an array",
+        version: 96,
     },
     ModuleCase {
         directory: "regex",
@@ -65,6 +70,7 @@ const CASES: &[ModuleCase] = &[
         observation: "var __values = u();\n",
         shapes: "lookbehind, negated lookbehind, non-word boundary, unicode class range, unicode \
                  flag",
+        version: 96,
     },
     ModuleCase {
         directory: "regex",
@@ -72,14 +78,33 @@ const CASES: &[ModuleCase] = &[
         original: "nest.js",
         observation: "var __values = u();\n",
         shapes: "nested and repeated capture groups, anchored quantified groups",
+        version: 96,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v84",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module compiled by an older Hermes release, decoded through \
+                 the hbc v84 opcode table where Inc, Dec and the big-int loads do not yet exist",
+        version: 84,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v76",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v76, where opcode 0 is NewObjectWithBuffer \
+                 rather than Unreachable so every opcode byte is numbered differently",
+        version: 76,
     },
 ];
 
-const PINNED_MODULES: usize = 5;
-const PINNED_FUNCTIONS_PARSED: usize = 16;
-const PINNED_FUNCTIONS_WITH_BODY: usize = 16;
-const PINNED_FUNCTIONS_CARRIED: usize = 16;
-const PINNED_FUNCTIONS_PARSE_VALID: usize = 16;
+const PINNED_MODULES: usize = 7;
+const PINNED_FUNCTIONS_PARSED: usize = 32;
+const PINNED_FUNCTIONS_WITH_BODY: usize = 32;
+const PINNED_FUNCTIONS_CARRIED: usize = 32;
+const PINNED_FUNCTIONS_PARSE_VALID: usize = 32;
 const PINNED_FUNCTIONS_DECLINED: usize = 0;
 
 fn corpus(parts: &[&str]) -> PathBuf {
@@ -178,6 +203,12 @@ fn grade(case: &ModuleCase, population: &mut Population) {
 
     let module: HermesModule = parse_hermes_module(&bytes).expect("hermes module parse");
     let report: DecompileReport = decompile_hermes_module(&module);
+    assert_eq!(
+        report.hermes_version, case.version,
+        "{label} is graded as bytecode version {}, so a file swapped for one at another version \
+         must fail here rather than be graded through the wrong opcode table",
+        case.version
+    );
     assert!(report.lift_supported, "{label}");
 
     let global: &DecompiledFunction = report
@@ -244,14 +275,14 @@ fn grade(case: &ModuleCase, population: &mut Population) {
 }
 
 #[test]
-fn every_tracked_v96_module_reproduces_its_original_behavior_in_a_real_engine() {
+fn every_tracked_module_reproduces_its_original_behavior_in_a_real_engine() {
     let mut population: Population = Population::default();
     for case in CASES {
         grade(case, &mut population);
     }
 
     eprintln!(
-        "hermes tracked v96 population: modules {} of {}, functions parsed {}, decompiled {}, \
+        "hermes tracked module population: modules {} of {}, functions parsed {}, decompiled {}, \
          carried by the executed program {}, parse-valid {}, declined {}",
         population.modules_equivalent,
         population.modules,
@@ -286,6 +317,19 @@ fn every_tracked_v96_module_reproduces_its_original_behavior_in_a_real_engine() 
     assert_eq!(
         population.modules_equivalent, PINNED_MODULES,
         "every graded module must reproduce its original behavior"
+    );
+
+    let mut graded_versions: Vec<u32> =
+        CASES.iter().map(|case: &ModuleCase| case.version).collect();
+    graded_versions.sort_unstable();
+    graded_versions.dedup();
+    assert_eq!(
+        graded_versions,
+        HERMES_LIFTED_VERSIONS.to_vec(),
+        "this differential is the reference-backed grade behind every bytecode version whose \
+         bodies are lifted, so the versions it exercises and the versions the crate lifts are the \
+         same list; a lifted version with no module here would emit JavaScript that nothing \
+         compares to a real original"
     );
 }
 
