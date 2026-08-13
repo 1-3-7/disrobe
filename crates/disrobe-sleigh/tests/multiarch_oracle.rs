@@ -539,7 +539,7 @@ fn assert_cross_check_with_unsupported(
     assert_eq!(checked.reference.len(), expected, "{label}");
     assert_eq!(decoded, checked.reference, "{label}");
     assert!((checked.report.coverage.decode_coverage_percent() - 100.0).abs() < f64::EPSILON);
-    assert_eq!(checked.report.coverage.callother, callother, "{label}");
+    assert_eq!(checked.report.coverage.callother_ops, callother, "{label}");
     assert_eq!(checked.report.coverage.unsupported, unsupported, "{label}");
 }
 

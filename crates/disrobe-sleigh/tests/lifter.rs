@@ -1,4 +1,6 @@
-use disrobe_sleigh::coverage::{DecodeReport, decode_block_with_coverage};
+use disrobe_sleigh::coverage::{
+    DECODE_STATUSES, DecodeReport, StatusCounts, decode_block_with_coverage, status_name,
+};
 use disrobe_sleigh::decode_block;
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp};
 
@@ -181,7 +183,7 @@ fn reports_named_callother_unmatched_and_truncated_inputs() {
     assert_eq!(report.instructions.len(), 4);
     assert_eq!(report.coverage.total, 4);
     assert_eq!(report.coverage.matched, 2);
-    assert_eq!(report.coverage.callother, 2);
+    assert_eq!(report.coverage.callother_ops, 2);
     assert_eq!(report.coverage.unsupported, 0);
     assert!((report.coverage.decode_coverage_percent() - 50.0).abs() < f64::EPSILON);
     assert!(matches!(
@@ -246,4 +248,105 @@ fn empty_input_has_zero_coverage_without_nan() {
     assert!(report.coverage.decode_coverage_percent().abs() < f64::EPSILON);
     assert!(report.coverage.callother_percent().abs() < f64::EPSILON);
     assert!(report.coverage.unsupported_percent().abs() < f64::EPSILON);
+    assert!(report.unlifted.is_empty());
+}
+
+#[test]
+fn every_decode_status_lands_in_its_own_bucket() {
+    let words: [u32; 3] = [0x8b01_0000, 0xd400_0001, 0xffff_ffff];
+    let mut bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    bytes.extend_from_slice(&[0xaa, 0xbb]);
+    let report: DecodeReport = decode_block_with_coverage(&bytes, 0x3000);
+    let counts: StatusCounts = report.coverage.status;
+
+    assert_eq!(counts.supported, 1);
+    assert_eq!(counts.callother, 1);
+    assert_eq!(counts.no_match, 1);
+    assert_eq!(counts.truncated, 1);
+    assert_eq!(counts.ambiguous, 0);
+    assert_eq!(counts.spec_error, 0);
+    assert_eq!(counts.unsupported, 0);
+
+    assert_eq!(
+        counts.total(),
+        report.coverage.total,
+        "the seven buckets must account for every decoded instruction"
+    );
+    for status in DECODE_STATUSES {
+        let counted: usize = report
+            .instructions
+            .iter()
+            .filter(|instruction: &&PcodeInstr| instruction.status == status)
+            .count();
+        assert_eq!(
+            counts.count_of(status),
+            counted,
+            "{} bucket disagrees with the instruction stream",
+            status_name(status)
+        );
+    }
+}
+
+#[test]
+fn a_matched_constructor_is_not_a_modelled_instruction() {
+    let words: [u32; 3] = [0x8b01_0000, 0xd400_0001, 0xffff_ffff];
+    let mut bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    bytes.extend_from_slice(&[0xaa, 0xbb]);
+    let report: DecodeReport = decode_block_with_coverage(&bytes, 0x3000);
+
+    assert!((report.coverage.decode_coverage_percent() - 50.0).abs() < f64::EPSILON);
+    assert!((report.coverage.semantic_percent() - 25.0).abs() < f64::EPSILON);
+    assert!(
+        report.coverage.semantic_percent() < report.coverage.decode_coverage_percent(),
+        "a block holding a supervisor call must not read as fully recovered"
+    );
+    assert!((report.coverage.status_percent(DecodeStatus::NoMatch) - 25.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn the_unlifted_histogram_names_only_instructions_that_were_not_modelled() {
+    let words: [u32; 3] = [0x8b01_0000, 0xd400_0001, 0xffff_ffff];
+    let mut bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    bytes.extend_from_slice(&[0xaa, 0xbb]);
+    let report: DecodeReport = decode_block_with_coverage(&bytes, 0x3000);
+
+    let counted: usize = report.unlifted.values().copied().sum();
+    assert_eq!(
+        counted, 3,
+        "three of the four instructions were not modelled: {:?}",
+        report.unlifted
+    );
+    let modelled: &str = report.instructions[0].mnemonic.as_str();
+    assert!(
+        !report.unlifted.contains_key(modelled),
+        "the modelled instruction {modelled} must not appear as unlifted"
+    );
+    for instruction in &report.instructions {
+        if instruction.status.supported() {
+            continue;
+        }
+        assert!(
+            report.unlifted.contains_key(&instruction.mnemonic),
+            "{} decoded as {} but is missing from the histogram",
+            instruction.mnemonic,
+            status_name(instruction.status)
+        );
+    }
+}
+
+#[test]
+fn a_repeated_unlifted_mnemonic_is_counted_once_with_its_occurrences() {
+    let words: [u32; 3] = [0xffff_ffff, 0xffff_ffff, 0xffff_ffff];
+    let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+    let report: DecodeReport = decode_block_with_coverage(&bytes, 0x5000);
+
+    assert_eq!(report.coverage.total, 3);
+    assert_eq!(report.coverage.status.no_match, 3);
+    assert_eq!(
+        report.unlifted.len(),
+        1,
+        "one repeated mnemonic must be one entry, not three: {:?}",
+        report.unlifted
+    );
+    assert_eq!(report.unlifted.values().copied().sum::<usize>(), 3);
 }

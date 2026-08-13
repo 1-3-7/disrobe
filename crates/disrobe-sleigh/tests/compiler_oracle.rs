@@ -146,7 +146,7 @@ fn assert_cross_check(label: &str, checked: &CrossCheck) {
         .collect();
     assert_eq!(decoded, checked.reference, "{label}: {mismatches:#?}");
     assert!((checked.report.coverage.decode_coverage_percent() - 100.0).abs() < f64::EPSILON);
-    assert_eq!(checked.report.coverage.callother, 0);
+    assert_eq!(checked.report.coverage.callother_ops, 0);
     assert_eq!(checked.report.coverage.unsupported, 0);
 }
 
