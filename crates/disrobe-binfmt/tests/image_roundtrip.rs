@@ -352,9 +352,88 @@ fn every_native_format_variant_has_a_round_tripping_fixture() {
 
 #[test]
 fn a_thirty_two_bit_macho_written_by_an_outside_encoder_round_trips() {
-    let bytes: Vec<u8> = write_macho(object::Architecture::I386);
+    let bytes: Vec<u8> = write_macho(object::Architecture::I386, object::Endianness::Little);
     let plan: ImagePlan = assert_round_trip(&bytes, "object-written Mach-O 32");
     assert_eq!(plan.format(), NativeFormat::MachO32);
+}
+
+#[test]
+fn a_big_endian_macho_written_by_an_outside_encoder_round_trips() {
+    let bytes: Vec<u8> = write_macho(object::Architecture::PowerPc, object::Endianness::Big);
+    assert_eq!(
+        bytes.get(..4),
+        Some([0xFEu8, 0xED, 0xFA, 0xCE].as_slice()),
+        "the encoder must lay this slice out big endian for this case to grade the big endian path"
+    );
+    let plan: ImagePlan = assert_round_trip(&bytes, "object-written big endian Mach-O 32");
+    assert_eq!(plan.format(), NativeFormat::MachO32);
+
+    let wide: Vec<u8> = write_macho(object::Architecture::PowerPc64, object::Endianness::Big);
+    assert_eq!(
+        wide.get(..4),
+        Some([0xFEu8, 0xED, 0xFA, 0xCF].as_slice()),
+        "the encoder must lay this slice out big endian for this case to grade the big endian path"
+    );
+    let wide_plan: ImagePlan = assert_round_trip(&wide, "object-written big endian Mach-O 64");
+    assert_eq!(wide_plan.format(), NativeFormat::MachO64);
+}
+
+#[test]
+fn a_sixty_four_bit_fat_header_round_trips_with_its_slice_padding() {
+    let first: Vec<u8> = write_macho(object::Architecture::X86_64, object::Endianness::Little);
+    let second: Vec<u8> = write_macho(object::Architecture::Aarch64, object::Endianness::Little);
+    let bytes: Vec<u8> = build_fat64(&[(0x0100_0007, 3, &first), (0x0100_000C, 0, &second)]);
+
+    let plan: ImagePlan = assert_round_trip(&bytes, "hand built 64 bit universal binary");
+    assert_eq!(plan.format(), NativeFormat::MachOFat);
+
+    let mut slices: usize = 0;
+    let mut wide_table: bool = false;
+    for structure in plan.structures() {
+        match structure.body() {
+            Structure::MachHeader(_) => slices += 1,
+            Structure::FatArchTable(table) => wide_table = table.wide,
+            _ => {}
+        }
+    }
+    assert_eq!(slices, 2, "both slices must be planned");
+    assert!(
+        wide_table,
+        "the plan must record the 64 bit architecture table this case builds"
+    );
+}
+
+fn build_fat64(slices: &[(u32, u32, &[u8])]) -> Vec<u8> {
+    const ALIGNMENT: usize = 0x4000;
+    const STRIDE: usize = 32;
+
+    let table_end: usize = 8 + slices.len() * STRIDE;
+    let mut placed: Vec<(u32, u32, usize, &[u8])> = Vec::with_capacity(slices.len());
+    let mut cursor: usize = table_end.div_ceil(ALIGNMENT) * ALIGNMENT;
+    for (cputype, cpusubtype, body) in slices {
+        placed.push((*cputype, *cpusubtype, cursor, body));
+        cursor = (cursor + body.len()).div_ceil(ALIGNMENT) * ALIGNMENT;
+    }
+    let total: usize = placed
+        .last()
+        .map_or(cursor, |(_, _, offset, body): &(u32, u32, usize, &[u8])| {
+            offset + body.len()
+        });
+
+    let mut bytes: Vec<u8> = vec![0u8; total];
+    bytes[0..4].copy_from_slice(&0xCAFE_BABFu32.to_be_bytes());
+    bytes[4..8].copy_from_slice(&(placed.len() as u32).to_be_bytes());
+    for (index, (cputype, cpusubtype, offset, body)) in placed.iter().enumerate() {
+        let base: usize = 8 + index * STRIDE;
+        bytes[base..base + 4].copy_from_slice(&cputype.to_be_bytes());
+        bytes[base + 4..base + 8].copy_from_slice(&cpusubtype.to_be_bytes());
+        bytes[base + 8..base + 16].copy_from_slice(&(*offset as u64).to_be_bytes());
+        bytes[base + 16..base + 24].copy_from_slice(&(body.len() as u64).to_be_bytes());
+        bytes[base + 24..base + 28].copy_from_slice(&14u32.to_be_bytes());
+        bytes[base + 28..base + 32].copy_from_slice(&0u32.to_be_bytes());
+        bytes[*offset..*offset + body.len()].copy_from_slice(body);
+    }
+    bytes
 }
 
 #[test]
@@ -368,12 +447,9 @@ fn a_big_endian_elf_written_by_an_outside_encoder_round_trips() {
     assert_eq!(narrow.format(), NativeFormat::Elf32);
 }
 
-fn write_macho(architecture: object::Architecture) -> Vec<u8> {
-    let mut object_file: object::write::Object<'_> = object::write::Object::new(
-        object::BinaryFormat::MachO,
-        architecture,
-        object::Endianness::Little,
-    );
+fn write_macho(architecture: object::Architecture, endianness: object::Endianness) -> Vec<u8> {
+    let mut object_file: object::write::Object<'_> =
+        object::write::Object::new(object::BinaryFormat::MachO, architecture, endianness);
     let text: object::write::SectionId =
         object_file.section_id(object::write::StandardSection::Text);
     let _offset: u64 = object_file.append_section_data(text, &[0x90u8; 48], 16);
