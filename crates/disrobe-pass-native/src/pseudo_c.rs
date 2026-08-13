@@ -22,6 +22,7 @@ use crate::structuring;
 pub(crate) mod aarch64;
 mod aarch64_callsite;
 pub mod fp_semantics;
+mod idiom;
 mod return_channel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -537,6 +538,8 @@ enum BinOp {
     Sar,
     Sdiv,
     Udiv,
+    Srem,
+    Urem,
     Umull,
     Smull,
     Umulh,
@@ -1101,6 +1104,7 @@ enum Stmt {
     },
     WideMul {
         src: RegRef,
+        signed: bool,
     },
     Divide {
         divisor: RegRef,
@@ -2749,6 +2753,7 @@ fn build_leaf_items(
         ));
     }
     fuse_parity_equality_idioms(&mut items, &insns);
+    idiom::fuse_constant_division_idioms(&mut items);
     Ok(LeafItems {
         insns,
         items,
@@ -10564,6 +10569,8 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         BinOp::Imul
         | BinOp::Sdiv
         | BinOp::Udiv
+        | BinOp::Srem
+        | BinOp::Urem
         | BinOp::Umull
         | BinOp::Smull
         | BinOp::Umulh
@@ -11998,7 +12005,7 @@ fn scan_stmt_params(
             }
             written.insert(dest.reg, true);
         }
-        Stmt::WideMul { src } => {
+        Stmt::WideMul { src, .. } => {
             note(Reg::Rax, written, acc);
             note(src.reg, written, acc);
             written.insert(Reg::Rax, true);
@@ -13235,7 +13242,11 @@ fn lift_one(mnemonic: &str, operands: &str) -> Option<Stmt> {
                 return None;
             }
             let src: RegRef = parse_reg(lhs)?;
-            (src.width == Width::W64).then_some(Stmt::WideMul { src })
+            (src.width == Width::W64).then_some(Stmt::WideMul { src, signed: false })
+        }
+        "imul" if rhs.is_none() => {
+            let src: RegRef = parse_reg(lhs)?;
+            (src.width == Width::W64).then_some(Stmt::WideMul { src, signed: true })
         }
         "shld" | "shrd" => lift_double_shift(mnemonic, operands),
         "imul" if operands.matches(',').count() == 2 => lift_imul_ternary(operands),
@@ -16557,7 +16568,7 @@ impl FrameScan {
                     ExtSource::Mem(mem) => self.note_mem(mem, state),
                 }
             }
-            Stmt::WideMul { src } => self.note_reg(src.reg, state),
+            Stmt::WideMul { src, .. } => self.note_reg(src.reg, state),
             Stmt::Divide { divisor, .. } => self.note_reg(divisor.reg, state),
             Stmt::DoubleShift { dest, src, .. } => {
                 self.note_reg(dest.reg, state);
@@ -17043,7 +17054,7 @@ fn stmt_value_reads(stmt: &Stmt, acc: &mut Vec<Reg>) {
             ExtSource::Reg(r) => acc.push(r.reg),
             ExtSource::Mem(mem) => mem_regs(mem, acc),
         },
-        Stmt::WideMul { src } => {
+        Stmt::WideMul { src, .. } => {
             acc.push(Reg::Rax);
             acc.push(src.reg);
         }
@@ -17717,7 +17728,7 @@ fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
                         ExtSource::Mem(mem) => push_addr(mem, acc),
                     }
                 }
-                Stmt::WideMul { src } => {
+                Stmt::WideMul { src, .. } => {
                     push(Reg::Rax, acc);
                     push(Reg::Rdx, acc);
                     push(src.reg, acc);
@@ -18955,7 +18966,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
             let rhs: String = reg_write_rhs(var, dest.width, &body);
             assign_cstmt(cx, var, &rhs)
         }
-        Stmt::WideMul { src } => wide_mul_cstmt(cx, *src),
+        Stmt::WideMul { src, signed } => wide_mul_cstmt(cx, *src, *signed),
         Stmt::Divide { divisor, signed } => divide_cstmt(cx, *divisor, *signed),
         Stmt::DoubleShift {
             dest,
@@ -19703,16 +19714,31 @@ fn vec_stmt_cstmt(cx: &mut Cx<'_>, vec: &VecStmt) -> CStmt {
     }
 }
 
-fn wide_mul_cstmt(cx: &mut Cx<'_>, src: RegRef) -> CStmt {
+fn wide_mul_cstmt(cx: &mut Cx<'_>, src: RegRef, signed: bool) -> CStmt {
     let rax: &'static str = reg_var(Reg::Rax);
     let rdx: &'static str = reg_var(Reg::Rdx);
     let factor: &'static str = reg_var(src.reg);
+    let wide_ty: &'static str = if signed {
+        "__int128"
+    } else {
+        "unsigned __int128"
+    };
     let rax_ident: CExpr = cx.var(rax);
-    let lhs128: CExpr = c_cast(cx, "unsigned __int128", rax_ident);
+    let lhs_narrow: CExpr = if signed {
+        c_cast(cx, "int64_t", rax_ident)
+    } else {
+        rax_ident
+    };
+    let lhs128: CExpr = c_cast(cx, wide_ty, lhs_narrow);
     let factor_ident: CExpr = cx.var(factor);
-    let rhs128: CExpr = c_cast(cx, "unsigned __int128", factor_ident);
+    let rhs_narrow: CExpr = if signed {
+        c_cast(cx, "int64_t", factor_ident)
+    } else {
+        factor_ident
+    };
+    let rhs128: CExpr = c_cast(cx, wide_ty, rhs_narrow);
     let product: CExpr = c_bin(BinaryOp::Mul, lhs128, rhs128);
-    let decl: CStmt = decl_with_init(cx, "unsigned __int128", "wide_prod", product);
+    let decl: CStmt = decl_with_init(cx, wide_ty, "wide_prod", product);
     let wide_prod: CExpr = cx.var("wide_prod");
     let rax_rhs: CExpr = c_cast(cx, "uint64_t", wide_prod);
     let assign_rax: CStmt = assign_expr_cstmt(cx, rax, rax_rhs);
@@ -20140,6 +20166,26 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 let rv: CExpr = c_opaque(cx, rhs);
                 let r: CExpr = c_cast(cx, &format!("uint{bits}_t"), rv);
                 c_cast(cx, "uint64_t", c_bin(BinaryOp::Div, l, r))
+            })
+        }
+        BinOp::Srem => {
+            let bits: u32 = width.bits();
+            c_render(|cx| {
+                let lv: CExpr = cx.var(lhs);
+                let l: CExpr = c_cast(cx, &format!("int{bits}_t"), lv);
+                let rv: CExpr = c_opaque(cx, rhs);
+                let r: CExpr = c_cast(cx, &format!("int{bits}_t"), rv);
+                c_cast(cx, "uint64_t", c_bin(BinaryOp::Rem, l, r))
+            })
+        }
+        BinOp::Urem => {
+            let bits: u32 = width.bits();
+            c_render(|cx| {
+                let lv: CExpr = cx.var(lhs);
+                let l: CExpr = c_cast(cx, &format!("uint{bits}_t"), lv);
+                let rv: CExpr = c_opaque(cx, rhs);
+                let r: CExpr = c_cast(cx, &format!("uint{bits}_t"), rv);
+                c_cast(cx, "uint64_t", c_bin(BinaryOp::Rem, l, r))
             })
         }
         BinOp::Umull => c_render(|cx| {
@@ -21395,15 +21441,22 @@ fn rs_mul_imm_stmt(
     rs_emit_reg_assign(out, dest, &body, indent);
 }
 
-fn rs_emit_wide_mul(out: &mut String, src: RegRef, indent: &str) {
+fn rs_emit_wide_mul(out: &mut String, src: RegRef, signed: bool, indent: &str) {
     let rax: &'static str = reg_var(Reg::Rax);
     let rdx: &'static str = reg_var(Reg::Rdx);
     let factor: &'static str = reg_var(src.reg);
     let _ = writeln!(out, "{indent}{{");
-    let _ = writeln!(
-        out,
-        "{indent}    let wide_prod: u128 = ({rax} as u128) * ({factor} as u128);"
-    );
+    if signed {
+        let _ = writeln!(
+            out,
+            "{indent}    let wide_prod: i128 = ({rax} as i64 as i128).wrapping_mul({factor} as i64 as i128);"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "{indent}    let wide_prod: u128 = ({rax} as u128).wrapping_mul({factor} as u128);"
+        );
+    }
     let _ = writeln!(out, "{indent}    {rax} = wide_prod as u64;");
     let _ = writeln!(out, "{indent}    {rdx} = (wide_prod >> 64) as u64;");
     let _ = writeln!(out, "{indent}}}");
@@ -21793,7 +21846,7 @@ fn rs_emit_stmt(
         Stmt::MulImm { dest, src, imm } => {
             rs_mul_imm_stmt(out, *dest, src, *imm, indent, aggregates);
         }
-        Stmt::WideMul { src } => rs_emit_wide_mul(out, *src, indent),
+        Stmt::WideMul { src, signed } => rs_emit_wide_mul(out, *src, *signed, indent),
         Stmt::Divide { divisor, signed } => rs_emit_divide(out, *divisor, *signed, indent),
         Stmt::DoubleShift {
             dest,
@@ -22632,6 +22685,30 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                     render_rust_expr(&rcast(q, rtype_path("u64")))
                 }
                 _ => format!("((({lhs}) as {uty}).wrapping_div(({rhs}) as {uty}) as u64)"),
+            }
+        }
+        BinOp::Srem => {
+            let ity: &str = rs_int_ty(width);
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let ls: RustExpr = rcast(l, rtype_path(ity));
+                    let rs: RustExpr = rcast(r, rtype_path(ity));
+                    let m: RustExpr = method_call(ls, "wrapping_rem", vec![rs]);
+                    render_rust_expr(&rcast(m, rtype_path("u64")))
+                }
+                _ => format!("((({lhs}) as {ity}).wrapping_rem(({rhs}) as {ity}) as u64)"),
+            }
+        }
+        BinOp::Urem => {
+            let uty: String = format!("u{}", width.bits());
+            match (parsed_lhs, parsed_rhs) {
+                (Some(l), Some(r)) => {
+                    let ls: RustExpr = rcast(l, rtype_path(&uty));
+                    let rs: RustExpr = rcast(r, rtype_path(&uty));
+                    let m: RustExpr = method_call(ls, "wrapping_rem", vec![rs]);
+                    render_rust_expr(&rcast(m, rtype_path("u64")))
+                }
+                _ => format!("((({lhs}) as {uty}).wrapping_rem(({rhs}) as {uty}) as u64)"),
             }
         }
         BinOp::Umull => {
