@@ -1,6 +1,7 @@
 #![cfg(feature = "sandbox")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
@@ -340,6 +341,50 @@ fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
         call_no_args(&mut original, "peek_state"),
         Outcome::Ret(3),
         "the original module leaves the terminal dispatch state in the shared global"
+    );
+}
+
+const WALL_HARNESS_ENV: &str = "DISROBE_WASM_DEOB_WALL_HARNESS";
+const OBSERVABLE_CELL_REASON: &str =
+    "[debug:wasm-deob] unflatten-wall = state cell is observable outside the dispatcher";
+const UNSUPPORTED_TRANSITION_REASON: &str =
+    "[debug:wasm-deob] unflatten-wall = state transition is not a resolvable constant edge";
+
+#[test]
+#[ignore = "spawned as a subprocess by the wall-reason contract test"]
+fn wall_reason_harness_entrypoint() {
+    if std::env::var_os(WALL_HARNESS_ENV).is_none() {
+        return;
+    }
+    let observable: Vec<u8> = assemble_fixture("cff_global_state_observable.obf.wat");
+    recover_module(&observable).expect("recover exported state global module");
+    let temp_state: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    recover_module(temp_state).expect("recover rustc next-state-temporary module");
+}
+
+#[test]
+fn every_wall_names_the_reason_it_refused() {
+    let exe: PathBuf = std::env::current_exe().expect("test executable path");
+    let mut cmd: Command = Command::new(exe);
+    cmd.env(WALL_HARNESS_ENV, "1");
+    cmd.env("DISROBE_DEBUG", "wasm-deob");
+    cmd.env_remove("DISROBE_DEBUG_FORMAT");
+    cmd.env("NO_COLOR", "1");
+    cmd.arg("--ignored");
+    cmd.arg("--exact");
+    cmd.arg("--nocapture");
+    cmd.arg("--test-threads=1");
+    cmd.arg("wall_reason_harness_entrypoint");
+    let out: Output = cmd.output().expect("spawn wall-reason harness child");
+    assert!(out.status.success(), "child failed: {out:?}");
+    let stderr: String = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains(OBSERVABLE_CELL_REASON),
+        "an exported state global must name the observability refusal, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(UNSUPPORTED_TRANSITION_REASON),
+        "an unresolvable transition must name its own refusal, got:\n{stderr}"
     );
 }
 

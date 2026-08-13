@@ -59,7 +59,9 @@ fn elidable_state_globals(module: &Module) -> BTreeMap<FunctionId, BTreeSet<Glob
     let mut owners: BTreeMap<GlobalId, GlobalOwner> = BTreeMap::new();
     let mut referenced: BTreeMap<FunctionId, BTreeSet<GlobalId>> = BTreeMap::new();
     for (fid, func) in module.funcs.iter_local() {
-        let globals: BTreeSet<GlobalId> = referenced_globals(func);
+        let Some(globals): Option<BTreeSet<GlobalId>> = referenced_globals(func) else {
+            return BTreeMap::new();
+        };
         for global in &globals {
             owners
                 .entry(*global)
@@ -93,9 +95,9 @@ fn is_private_mutable_global(module: &Module, global: GlobalId) -> bool {
     entry.mutable && matches!(entry.kind, GlobalKind::Local(_))
 }
 
-fn referenced_globals(func: &LocalFunction) -> BTreeSet<GlobalId> {
+fn referenced_globals(func: &LocalFunction) -> Option<BTreeSet<GlobalId>> {
     let mut out: BTreeSet<GlobalId> = BTreeSet::new();
-    for seq in reachable_seqs(func, func.entry_block()) {
+    for seq in reachable_seqs(func, func.entry_block())? {
         for (instr, _) in &func.block(seq).instrs {
             match instr {
                 Instr::GlobalGet(get) => {
@@ -108,17 +110,18 @@ fn referenced_globals(func: &LocalFunction) -> BTreeSet<GlobalId> {
             }
         }
     }
-    out
+    Some(out)
 }
 
-fn reachable_seqs(func: &LocalFunction, root: InstrSeqId) -> BTreeSet<InstrSeqId> {
+fn reachable_seqs(func: &LocalFunction, root: InstrSeqId) -> Option<BTreeSet<InstrSeqId>> {
     let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
     let mut stack: Vec<InstrSeqId> = vec![root];
-    let mut visited: usize = 0;
     while let Some(seq) = stack.pop() {
-        visited = visited.saturating_add(1);
-        if visited > NESTED_SEQ_LIMIT || !seen.insert(seq) {
+        if !seen.insert(seq) {
             continue;
+        }
+        if seen.len() > NESTED_SEQ_LIMIT {
+            return None;
         }
         for (instr, _) in &func.block(seq).instrs {
             for child in child_seqs(instr).into_iter().flatten() {
@@ -126,7 +129,7 @@ fn reachable_seqs(func: &LocalFunction, root: InstrSeqId) -> BTreeSet<InstrSeqId
             }
         }
     }
-    seen
+    Some(seen)
 }
 
 const fn child_seqs(instr: &Instr) -> [Option<InstrSeqId>; 2] {
@@ -471,10 +474,9 @@ const fn trailing_exit(unresolved: bool, next_state: Option<i32>, returns: bool)
 }
 
 fn nested_is_transparent(func: &LocalFunction, root: InstrSeqId, state_local: LocalId) -> bool {
-    let inside: BTreeSet<InstrSeqId> = reachable_seqs(func, root);
-    if inside.len() >= NESTED_SEQ_LIMIT {
+    let Some(inside): Option<BTreeSet<InstrSeqId>> = reachable_seqs(func, root) else {
         return false;
-    }
+    };
     inside.iter().all(|seq: &InstrSeqId| {
         func.block(*seq)
             .instrs
@@ -712,6 +714,34 @@ mod tests {
         let order: Vec<i32> =
             linear_order(&plan).expect("dangling next routes to br_table default");
         assert_eq!(order, vec![0], "state 5 has no case so it is the loop exit");
+    }
+
+    fn module_with_sibling_blocks(count: usize) -> Module {
+        let mut text: String =
+            String::from("(module (global (mut i32) (i32.const 0)) (func (export \"f\")");
+        for _ in 0..count {
+            text.push_str(" (block)");
+        }
+        text.push_str(" global.get 0 drop))");
+        let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble sibling blocks");
+        Module::from_buffer(&bytes).expect("parse sibling blocks")
+    }
+
+    #[test]
+    fn a_global_scan_that_hits_its_bound_elides_nothing() {
+        let within: Module = module_with_sibling_blocks(4);
+        assert!(
+            elidable_state_globals(&within)
+                .values()
+                .any(|globals: &BTreeSet<GlobalId>| !globals.is_empty()),
+            "a private mutable global touched by one function is elidable"
+        );
+
+        let beyond: Module = module_with_sibling_blocks(NESTED_SEQ_LIMIT + 2);
+        assert!(
+            elidable_state_globals(&beyond).is_empty(),
+            "a truncated global scan must not report any global as privately owned"
+        );
     }
 
     #[test]
