@@ -1555,6 +1555,7 @@ pub(super) fn build_linear_stmts_sim_seed(
             | CanonicalOp::ForLoopLegacy(_)
             | CanonicalOp::Send(_)
             | CanonicalOp::Specialized(_)
+            | CanonicalOp::JumpIfNotExcMatch(_)
             | CanonicalOp::Other(_, _) => {}
             CanonicalOp::ContinueLoop(_) => out.push(Stmt::Continue),
             CanonicalOp::PrintItem => {

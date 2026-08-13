@@ -290,6 +290,7 @@ pub enum CanonicalOp {
     Cache,
     ExtendedArg(u8),
     Specialized(u16),
+    JumpIfNotExcMatch(u32),
     Other(u8, u8),
 }
 
@@ -747,6 +748,7 @@ fn decode_by_name(
         "STORE_FAST_STORE_FAST" => CanonicalOp::StoreFastStoreFast(arg >> 4, arg & 0xF),
         "CACHE" => CanonicalOp::Cache,
         "EXTENDED_ARG" => CanonicalOp::ExtendedArg(arg_lo),
+        "JUMP_IF_NOT_EXC_MATCH" => CanonicalOp::JumpIfNotExcMatch(arg),
         _ => CanonicalOp::Other(raw, arg_lo),
     }
 }

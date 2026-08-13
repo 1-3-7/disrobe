@@ -35,10 +35,22 @@ pub(crate) const CPYTHON_310: BandToolchain = BandToolchain {
     install_hint: "install it with `uv python install 3.10`",
 };
 
+pub(crate) const CPYTHON_311: BandToolchain = BandToolchain {
+    alias: "3.11",
+    require_var: "DISROBE_REQUIRE_PY_311",
+    install_hint: "install it with `uv python install 3.11`",
+};
+
 pub(crate) const CPYTHON_312: BandToolchain = BandToolchain {
     alias: "3.12",
     require_var: "DISROBE_REQUIRE_PY_312",
     install_hint: "install it with `uv python install 3.12`",
+};
+
+pub(crate) const CPYTHON_313: BandToolchain = BandToolchain {
+    alias: "3.13",
+    require_var: "DISROBE_REQUIRE_PY_313",
+    install_hint: "install it with `uv python install 3.13`",
 };
 
 pub(crate) const CPYTHON_315: BandToolchain = BandToolchain {

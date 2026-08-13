@@ -15,6 +15,7 @@ use std::process::{Command, Stdio};
 use super::band::find_interpreter;
 
 pub(crate) const MEASURE_HARNESS: &str = "tests/harness/py_arbitrary_measure.py";
+pub(crate) const FAMILY_HARNESS: &str = "tests/harness/py_failure_families.py";
 pub(crate) const RECOVERY_JSON: &str = "../../xtask/data/recovery.json";
 
 pub(crate) const FULL_POPULATION: &str = "full-stdlib-574";
@@ -162,6 +163,96 @@ pub(crate) fn run_measure_with_ledger(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
+}
+
+#[must_use]
+pub(crate) fn run_family(python: &Path, disrobe: &Path, lib: &Path, modules: &Path) -> HarnessRun {
+    let harness: PathBuf = manifest_dir().join(FAMILY_HARNESS);
+    let output: std::process::Output = Command::new(python)
+        .arg(&harness)
+        .arg("--disrobe")
+        .arg(disrobe)
+        .arg("--lib")
+        .arg(lib)
+        .arg("--modules")
+        .arg(modules)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn failure-family harness");
+    HarnessRun {
+        success: output.status.success(),
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FailureFamily {
+    pub family: String,
+    pub objects: u64,
+    pub modules: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FamilyReport {
+    pub cpython_version: String,
+    pub modules: u64,
+    pub code_objects: u64,
+    pub objects_ok: u64,
+    pub failing_objects: u64,
+    pub families: Vec<FailureFamily>,
+}
+
+pub(crate) fn parse_family_report(stdout: &str) -> Result<FamilyReport, String> {
+    let line: &str = stdout
+        .lines()
+        .find(|l: &&str| l.trim_start().starts_with('{'))
+        .ok_or_else(|| format!("no JSON object on family harness stdout:\n{stdout}"))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(line).map_err(|e: serde_json::Error| format!("parse {line}: {e}"))?;
+    let scalar = |key: &str| -> Result<u64, String> {
+        doc.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("family report carries no {key}: {line}"))
+    };
+    let raw: &Vec<serde_json::Value> = doc
+        .get("families")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("family report carries no families array: {line}"))?;
+    let mut families: Vec<FailureFamily> = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let family: String = entry
+            .get("family")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("family row carries no name: {entry}"))?
+            .to_owned();
+        let objects: u64 = entry
+            .get("objects")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("family row `{family}` carries no object count"))?;
+        let modules: u64 = entry
+            .get("modules")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| format!("family row `{family}` carries no module count"))?;
+        families.push(FailureFamily {
+            family,
+            objects,
+            modules,
+        });
+    }
+    Ok(FamilyReport {
+        cpython_version: doc
+            .get("cpython_version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("family report carries no cpython_version: {line}"))?
+            .to_owned(),
+        modules: scalar("modules")?,
+        code_objects: scalar("code_objects")?,
+        objects_ok: scalar("objects_ok")?,
+        failing_objects: scalar("failing_objects")?,
+        families,
+    })
 }
 
 fn json_scalar<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {

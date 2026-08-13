@@ -45,15 +45,28 @@
       "bars": [
         {
           "label": "CPython 3.10 (161 of the pinned modules)",
-          "value": 91.57,
-          "num": 4998,
+          "value": 94.72,
+          "num": 5170,
           "den": 5458,
-          "detail": "4998 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "detail": "5170 / 5458 code objects over 161 modules on CPython 3.10.20. 39 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
           "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.10.20 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
           "verified_by": {
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_310.rs",
             "function": "published_310_band_bar_agrees_with_the_counts_this_gate_enforces",
             "measured_by": "arbitrary_recompile_equivalence_gate_310"
+          }
+        },
+        {
+          "label": "CPython 3.11 (172 of the pinned modules)",
+          "value": 95.83,
+          "num": 5403,
+          "den": 5638,
+          "detail": "5403 / 5638 code objects over 172 modules on CPython 3.11.15. 28 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.11.15 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_311.rs",
+            "function": "published_311_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_311"
           }
         },
         {
@@ -67,6 +80,19 @@
             "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_312.rs",
             "function": "published_312_band_bar_agrees_with_the_counts_this_gate_enforces",
             "measured_by": "arbitrary_recompile_equivalence_gate_312"
+          }
+        },
+        {
+          "label": "CPython 3.13 (190 of the pinned modules)",
+          "value": 95.69,
+          "num": 5709,
+          "den": 5966,
+          "detail": "5709 / 5966 code objects over 190 modules on CPython 3.13.14. 10 of the 200 pinned modules do not exist in this interpreter's Lib, so the denominators differ between bands and the percentages are not a like-for-like ranking.",
+          "source": "harness crates/disrobe-pass-py-decompile/tests/harness/py_arbitrary_measure.py run under CPython 3.13.14 over crates/disrobe-pass-py-decompile/tests/harness/pinned_modules_314.txt",
+          "verified_by": {
+            "path": "crates/disrobe-pass-py-decompile/tests/arbitrary_recompile_gate_313.rs",
+            "function": "published_313_band_bar_agrees_with_the_counts_this_gate_enforces",
+            "measured_by": "arbitrary_recompile_equivalence_gate_313"
           }
         },
         {

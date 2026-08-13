@@ -5571,7 +5571,7 @@ pub(super) fn is_pure_finally_handler_shape(
             CanonicalOp::CheckExcMatch
             | CanonicalOp::CheckEgMatch
             | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
-            | CanonicalOp::Other(121, _)
+            | CanonicalOp::JumpIfNotExcMatch(_)
             | CanonicalOp::PopExcept
             | CanonicalOp::Dup => return false,
             CanonicalOp::Reraise(_) => return true,
@@ -5603,7 +5603,7 @@ fn is_pre311_finally_handler_shape(
             CanonicalOp::CheckExcMatch
             | CanonicalOp::CheckEgMatch
             | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
-            | CanonicalOp::Other(121, _)
+            | CanonicalOp::JumpIfNotExcMatch(_)
             | CanonicalOp::PopExcept => return false,
             CanonicalOp::Dup if dup_is_exc_match_probe(stream, k, region_end) => return false,
             CanonicalOp::Reraise(_) => return true,
@@ -5622,7 +5622,7 @@ fn dup_is_exc_match_probe(stream: &DecodedStream, dup_idx: usize, region_end: us
             CanonicalOp::CheckExcMatch
                 | CanonicalOp::CheckEgMatch
                 | CanonicalOp::Compare(crate::bytecode::opcode::CmpOp::ExcMatch)
-                | CanonicalOp::Other(121, _)
+                | CanonicalOp::JumpIfNotExcMatch(_)
         )
     })
 }
@@ -8150,7 +8150,7 @@ fn parse_pre311_except_handlers(
                     j = dispatch + 1;
                     break;
                 }
-                CanonicalOp::Other(121, _) => {
+                CanonicalOp::JumpIfNotExcMatch(_) => {
                     type_end = Some(j);
                     next_handler = resolve_jump_target(stream, j, &stream.ops[j])
                         .filter(|t: &usize| *t > j && *t <= region_end)

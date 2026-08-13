@@ -873,7 +873,7 @@ pub(super) fn resolve_jump_target(
         | CanonicalOp::JumpIfTrueOrPop(a)
         | CanonicalOp::JumpIfFalseOrPop(a)
         | CanonicalOp::JumpAbsolute(a) => a.saturating_mul(jump_unit),
-        CanonicalOp::Other(121, a) => u32::from(*a).saturating_mul(jump_unit),
+        CanonicalOp::JumpIfNotExcMatch(a) => a.saturating_mul(jump_unit),
         CanonicalOp::JumpForward(rel) => {
             let rel_u: u32 = u32::try_from(*rel).unwrap_or(0).saturating_mul(jump_unit);
             next.saturating_add(rel_u)
@@ -4511,7 +4511,7 @@ fn has_jump_target(op: &CanonicalOp) -> bool {
             | CanonicalOp::ForLoopLegacy(_)
             | CanonicalOp::ContinueLoop(_)
             | CanonicalOp::Send(_)
-            | CanonicalOp::Other(121, _)
+            | CanonicalOp::JumpIfNotExcMatch(_)
     )
 }
 
