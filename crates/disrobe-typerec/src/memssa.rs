@@ -1,16 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{
-    CodeSize, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess, Register,
-    UsedMemory,
+    CodeSize, FlowControl, Instruction, InstructionInfoFactory, Mnemonic, OpAccess, OpKind,
+    Register, UsedMemory,
 };
 
 use crate::cells::CellStore;
-use crate::cfg::Cfg;
+use crate::cfg::{BasicBlock, Cfg};
 use crate::lattice::{TypeClass, TypeVar, Width};
-use crate::region::{AliasOracle, IndexSymbol, MemoryAccess, Region, RegionModel};
+use crate::region::{self, AliasOracle, CellKey, IndexSymbol, MemoryAccess, Region, RegionModel};
 
 pub type VersionId = u32;
+
+const MAX_STACK_SLOTS: usize = 1 << 12;
+const MAX_REGION_CELLS: usize = 1 << 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessKind {
@@ -52,8 +55,21 @@ impl StackEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MemEvent {
+    key: CellKey,
+    kind: AccessKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RegionEvent {
+    key: CellKey,
+    access: MemoryAccess,
+    kind: AccessKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VersionInfo {
-    pub rbp_disp: i64,
+    pub key: CellKey,
     pub cell: TypeVar,
     pub live_lo: u64,
     pub live_hi: u64,
@@ -61,20 +77,58 @@ pub struct VersionInfo {
     pub escaped: bool,
 }
 
+impl VersionInfo {
+    #[must_use]
+    pub const fn rbp_disp(&self) -> Option<i64> {
+        self.key.frame_disp()
+    }
+
+    #[must_use]
+    pub const fn region(&self) -> Region {
+        self.key.region
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellAccess {
+    pub key: CellKey,
+    pub cell: TypeVar,
+    pub escaped: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct MemSsa {
     versions: Vec<VersionInfo>,
-    access: BTreeMap<(u64, i64), VersionId>,
+    access: BTreeMap<u64, (CellKey, VersionId)>,
     escaped: BTreeSet<i64>,
 }
 
 impl MemSsa {
     #[must_use]
     pub fn version_cell(&self, ip: u64, rbp_disp: i64) -> Option<TypeVar> {
-        let id: VersionId = *self.access.get(&(ip, rbp_disp))?;
+        self.version_at(ip, CellKey::stack(rbp_disp))
+    }
+
+    #[must_use]
+    pub fn version_at(&self, ip: u64, key: CellKey) -> Option<TypeVar> {
+        let (found, id): (CellKey, VersionId) = *self.access.get(&ip)?;
+        if found != key {
+            return None;
+        }
         self.versions
             .get(id as usize)
             .map(|info: &VersionInfo| info.cell)
+    }
+
+    #[must_use]
+    pub fn access_at(&self, ip: u64) -> Option<CellAccess> {
+        let (key, id): (CellKey, VersionId) = *self.access.get(&ip)?;
+        let version: &VersionInfo = self.versions.get(id as usize)?;
+        Some(CellAccess {
+            key,
+            cell: version.cell,
+            escaped: version.escaped,
+        })
     }
 
     #[must_use]
@@ -90,14 +144,14 @@ impl MemSsa {
     fn fresh(
         &mut self,
         store: &mut CellStore,
-        rbp_disp: i64,
+        key: CellKey,
         is_phi: bool,
         escaped: bool,
     ) -> VersionId {
         let id: VersionId = u32::try_from(self.versions.len()).unwrap_or(u32::MAX);
         let cell: TypeVar = store.fresh(TypeClass::Top);
         self.versions.push(VersionInfo {
-            rbp_disp,
+            key,
             cell,
             live_lo: u64::MAX,
             live_hi: 0,
@@ -232,7 +286,17 @@ fn forces_whole_frame_escape(insn: &Instruction) -> bool {
 
 #[must_use]
 pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa {
-    build_with_oracle(instrs, cfg, store, &RegionModel::default())
+    build_with_model(instrs, cfg, store, &RegionModel::default())
+}
+
+#[must_use]
+pub fn build_with_model(
+    instrs: &[Instruction],
+    cfg: &Cfg,
+    store: &mut CellStore,
+    model: &RegionModel,
+) -> MemSsa {
+    build_with_oracle(instrs, cfg, store, model, model)
 }
 
 fn build_with_oracle(
@@ -240,21 +304,58 @@ fn build_with_oracle(
     cfg: &Cfg,
     store: &mut CellStore,
     oracle: &dyn AliasOracle,
+    model: &RegionModel,
 ) -> MemSsa {
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
-    let mut events: Vec<Option<StackEvent>> = instrs
+    let mut stack: Vec<Option<StackEvent>> = instrs
         .iter()
         .map(|insn: &Instruction| stack_event(insn, &mut factory))
         .collect();
-    annotate_index_symbols(instrs, cfg, &mut events);
+    annotate_index_symbols(instrs, cfg, &mut stack);
+
+    let mut events: Vec<Option<MemEvent>> = stack
+        .iter()
+        .map(|event: &Option<StackEvent>| {
+            event.map(|event: StackEvent| MemEvent {
+                key: CellKey::stack(event.rbp_disp),
+                kind: event.kind,
+            })
+        })
+        .collect();
 
     let mut ssa: MemSsa = MemSsa::default();
+    build_stack_cells(&mut ssa, store, cfg, instrs, &stack, &events, oracle);
+
+    let (region_events, barriers): (Vec<Option<RegionEvent>>, BTreeSet<usize>) =
+        collect_region_events(instrs, cfg, model, &stack);
+    build_region_cells(
+        &mut ssa,
+        store,
+        cfg,
+        instrs,
+        &mut events,
+        &region_events,
+        &barriers,
+        oracle,
+    );
+    ssa
+}
+
+fn build_stack_cells(
+    ssa: &mut MemSsa,
+    store: &mut CellStore,
+    cfg: &Cfg,
+    instrs: &[Instruction],
+    stack: &[Option<StackEvent>],
+    events: &[Option<MemEvent>],
+    oracle: &dyn AliasOracle,
+) {
     if instrs
         .iter()
         .any(|insn: &Instruction| forces_whole_frame_escape(insn))
     {
-        build_all_escaped(&mut ssa, store, instrs, &events);
-        return ssa;
+        build_all_escaped(ssa, store, instrs, stack);
+        return;
     }
     for insn in instrs {
         if let Some(rbp_disp) = escaped_slot(insn) {
@@ -264,7 +365,7 @@ fn build_with_oracle(
 
     let mut widths: BTreeMap<i64, Width> = BTreeMap::new();
     let mut offsets: BTreeMap<i64, Option<StackOffset>> = BTreeMap::new();
-    for event in events.iter().flatten() {
+    for event in stack.iter().flatten() {
         let entry: &mut Width = widths.entry(event.rbp_disp).or_insert(Width::Unknown);
         *entry = entry.join(event.width);
         let offset: StackOffset = event.offset();
@@ -276,7 +377,7 @@ fn build_with_oracle(
 
     for &rbp_disp in widths.keys() {
         if ssa.escaped.contains(&rbp_disp) {
-            build_escaped_slot(&mut ssa, store, instrs, &events, rbp_disp);
+            build_escaped_slot(ssa, store, instrs, stack, rbp_disp);
         }
     }
 
@@ -285,23 +386,41 @@ fn build_with_oracle(
         .copied()
         .filter(|rbp_disp: &i64| !ssa.escaped.contains(rbp_disp))
         .collect();
+    let empty: BTreeSet<usize> = BTreeSet::new();
     for group in group_offsets(&concrete, &widths, &offsets, oracle) {
-        build_slot(&mut ssa, store, cfg, instrs, &events, &group);
+        let keys: BTreeSet<CellKey> = group.iter().copied().map(CellKey::stack).collect();
+        build_group(ssa, store, cfg, instrs, events, &keys, &empty);
     }
-    ssa
 }
 
 const fn stack_alloc(offset: StackOffset, width: Width) -> MemoryAccess {
     MemoryAccess {
         region: Region::Stack,
+        segment: Register::None,
         base: Register::RBP,
-        rbp_disp: offset.rbp_disp,
+        disp: offset.rbp_disp,
         index: offset.index,
         index_address_size: offset.index_address_size,
         index_symbol: offset.index_symbol,
         index_scale: offset.index_scale,
         index_bound: None,
         width,
+        escapes: false,
+    }
+}
+
+const fn region_alloc(region: Region) -> MemoryAccess {
+    MemoryAccess {
+        region,
+        segment: Register::None,
+        base: Register::None,
+        disp: 0,
+        index: None,
+        index_address_size: 0,
+        index_symbol: None,
+        index_scale: 0,
+        index_bound: None,
+        width: Width::Unknown,
         escapes: false,
     }
 }
@@ -313,6 +432,9 @@ fn group_offsets(
     oracle: &dyn AliasOracle,
 ) -> Vec<BTreeSet<i64>> {
     let count: usize = concrete.len();
+    if count > MAX_STACK_SLOTS {
+        return vec![concrete.iter().copied().collect()];
+    }
     let mut parent: Vec<usize> = (0..count).collect();
     for left in 0..count {
         for right in (left + 1)..count {
@@ -357,6 +479,240 @@ fn group_offsets(
     ordered
 }
 
+fn single_memory_operand(insn: &Instruction) -> Option<u32> {
+    let mut found: Option<u32> = None;
+    for op in 0..insn.op_count() {
+        if insn.op_kind(op) != OpKind::Memory {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(op);
+    }
+    found
+}
+
+const fn memory_access_kind(access: OpAccess) -> Option<AccessKind> {
+    match access {
+        OpAccess::Read | OpAccess::CondRead => Some(AccessKind::Load),
+        OpAccess::Write | OpAccess::CondWrite => Some(AccessKind::Store),
+        OpAccess::ReadWrite | OpAccess::ReadCondWrite => Some(AccessKind::Rmw),
+        OpAccess::None | OpAccess::NoMemAccess => None,
+    }
+}
+
+fn symbol_of(
+    register: Register,
+    block: usize,
+    writes: &BTreeMap<Register, usize>,
+    call_barrier: Option<usize>,
+) -> IndexSymbol {
+    IndexSymbol::new(
+        block,
+        writes.get(&register.full_register()).copied(),
+        call_barrier,
+    )
+}
+
+fn region_event(
+    insn: &Instruction,
+    factory: &mut InstructionInfoFactory,
+    model: &RegionModel,
+    block: usize,
+    writes: &BTreeMap<Register, usize>,
+    call_barrier: Option<usize>,
+) -> Option<RegionEvent> {
+    if insn.mnemonic() == Mnemonic::Lea {
+        return None;
+    }
+    let memop: u32 = single_memory_operand(insn)?;
+    let [used]: &[UsedMemory] = factory.info(insn).used_memory() else {
+        return None;
+    };
+    let kind: AccessKind = memory_access_kind(used.access())?;
+    let mut access: MemoryAccess = region::classify(insn, memop, model)?;
+    if access.region == Region::Stack {
+        return None;
+    }
+    access.index_symbol = access
+        .index
+        .map(|index: Register| symbol_of(index, block, writes, call_barrier));
+    let base: IndexSymbol = symbol_of(access.base, block, writes, call_barrier);
+    Some(RegionEvent {
+        key: CellKey::of(&access, base),
+        access,
+        kind,
+    })
+}
+
+fn unmodelled_memory(
+    insn: &Instruction,
+    factory: &mut InstructionInfoFactory,
+    model: &RegionModel,
+) -> bool {
+    factory
+        .info(insn)
+        .used_memory()
+        .iter()
+        .filter(|used: &&UsedMemory| memory_access_kind(used.access()).is_some())
+        .any(|used: &UsedMemory| !model.is_frame(used.base()) || used.index() != Register::None)
+}
+
+fn collect_region_events(
+    instrs: &[Instruction],
+    cfg: &Cfg,
+    model: &RegionModel,
+    stack: &[Option<StackEvent>],
+) -> (Vec<Option<RegionEvent>>, BTreeSet<usize>) {
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    let mut events: Vec<Option<RegionEvent>> = vec![None; instrs.len()];
+    let mut barriers: BTreeSet<usize> = BTreeSet::new();
+    for (block_index, block) in cfg.blocks.iter().enumerate() {
+        let mut writes: BTreeMap<Register, usize> = BTreeMap::new();
+        let mut call_barrier: Option<usize> = None;
+        for index in block.start..block.end {
+            let Some(insn): Option<&Instruction> = instrs.get(index) else {
+                break;
+            };
+            let occupied: bool = stack.get(index).copied().flatten().is_some();
+            let event: Option<RegionEvent> = if occupied {
+                None
+            } else {
+                region_event(
+                    insn,
+                    &mut factory,
+                    model,
+                    block_index,
+                    &writes,
+                    call_barrier,
+                )
+            };
+            let calls: bool = matches!(
+                insn.flow_control(),
+                FlowControl::Call | FlowControl::IndirectCall
+            );
+            if calls
+                || (event.is_none() && !occupied && unmodelled_memory(insn, &mut factory, model))
+            {
+                barriers.insert(index);
+            }
+            if let Some(slot) = events.get_mut(index) {
+                *slot = event;
+            }
+            let info: &iced_x86::InstructionInfo = factory.info(insn);
+            for used in info.used_registers() {
+                if writes_register(used.access()) {
+                    writes.insert(used.register().full_register(), index);
+                }
+            }
+            if calls {
+                call_barrier = Some(index);
+            }
+        }
+    }
+    (events, barriers)
+}
+
+fn region_shapes(events: &[Option<RegionEvent>]) -> BTreeMap<CellKey, MemoryAccess> {
+    let mut shapes: BTreeMap<CellKey, MemoryAccess> = BTreeMap::new();
+    for event in events.iter().flatten() {
+        let entry: &mut MemoryAccess = shapes.entry(event.key).or_insert(event.access);
+        let same: bool = MemoryAccess {
+            width: Width::Unknown,
+            ..*entry
+        } == MemoryAccess {
+            width: Width::Unknown,
+            ..event.access
+        };
+        if same {
+            entry.width = entry.width.join(event.access.width);
+        } else {
+            *entry = region_alloc(event.key.region);
+        }
+    }
+    shapes
+}
+
+fn group_region_keys(
+    shapes: &BTreeMap<CellKey, MemoryAccess>,
+    oracle: &dyn AliasOracle,
+) -> Vec<BTreeSet<CellKey>> {
+    let keys: Vec<CellKey> = shapes.keys().copied().collect();
+    let count: usize = keys.len();
+    let mut parent: Vec<usize> = (0..count).collect();
+    for left in 0..count {
+        for right in (left + 1)..count {
+            let (Some(a), Some(b)): (Option<&MemoryAccess>, Option<&MemoryAccess>) =
+                (shapes.get(&keys[left]), shapes.get(&keys[right]))
+            else {
+                continue;
+            };
+            if oracle.alias(a, b).may_alias() {
+                union_find_join(&mut parent, left, right);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, BTreeSet<CellKey>> = BTreeMap::new();
+    for (index, key) in keys.iter().enumerate() {
+        let root: usize = union_find_root(&mut parent, index);
+        groups.entry(root).or_default().insert(*key);
+    }
+    groups.into_values().collect()
+}
+
+fn build_region_cells(
+    ssa: &mut MemSsa,
+    store: &mut CellStore,
+    cfg: &Cfg,
+    instrs: &[Instruction],
+    events: &mut [Option<MemEvent>],
+    region_events: &[Option<RegionEvent>],
+    barriers: &BTreeSet<usize>,
+    oracle: &dyn AliasOracle,
+) {
+    let mut shapes: BTreeMap<CellKey, MemoryAccess> = region_shapes(region_events);
+    let capped: bool = shapes.len() > MAX_REGION_CELLS;
+    if capped {
+        shapes = region_events
+            .iter()
+            .flatten()
+            .map(|event: &RegionEvent| {
+                (
+                    CellKey::wide(event.key.region),
+                    region_alloc(event.key.region),
+                )
+            })
+            .collect();
+    }
+    let mut present: bool = false;
+    for (index, event) in region_events.iter().enumerate() {
+        let Some(event): Option<&RegionEvent> = event.as_ref() else {
+            continue;
+        };
+        let key: CellKey = if capped {
+            CellKey::wide(event.key.region)
+        } else {
+            event.key
+        };
+        if let Some(slot) = events.get_mut(index)
+            && slot.is_none()
+        {
+            *slot = Some(MemEvent {
+                key,
+                kind: event.kind,
+            });
+            present = true;
+        }
+    }
+    if !present {
+        return;
+    }
+    for group in group_region_keys(&shapes, oracle) {
+        build_group(ssa, store, cfg, instrs, events, &group, barriers);
+    }
+}
+
 const fn decoded_index_scale(scale: u32) -> Option<u8> {
     match scale {
         1 => Some(1),
@@ -390,7 +746,8 @@ fn build_escaped_slot(
     events: &[Option<StackEvent>],
     rbp_disp: i64,
 ) {
-    let version: VersionId = ssa.fresh(store, rbp_disp, false, true);
+    let key: CellKey = CellKey::stack(rbp_disp);
+    let version: VersionId = ssa.fresh(store, key, false, true);
     for (index, event) in events.iter().enumerate() {
         let Some(event): Option<&StackEvent> = event.as_ref() else {
             continue;
@@ -401,7 +758,7 @@ fn build_escaped_slot(
         let Some(insn): Option<&Instruction> = instrs.get(index) else {
             continue;
         };
-        ssa.access.insert((insn.ip(), rbp_disp), version);
+        ssa.access.insert(insn.ip(), (key, version));
         ssa.touch(version, insn.ip());
     }
 }
@@ -420,7 +777,7 @@ fn build_all_escaped(
     else {
         return;
     };
-    let version: VersionId = ssa.fresh(store, representative, false, true);
+    let version: VersionId = ssa.fresh(store, CellKey::stack(representative), false, true);
     for (index, event) in events.iter().enumerate() {
         let Some(event): Option<&StackEvent> = event.as_ref() else {
             continue;
@@ -429,33 +786,44 @@ fn build_all_escaped(
             continue;
         };
         ssa.escaped.insert(event.rbp_disp);
-        ssa.access.insert((insn.ip(), event.rbp_disp), version);
+        ssa.access
+            .insert(insn.ip(), (CellKey::stack(event.rbp_disp), version));
         ssa.touch(version, insn.ip());
     }
 }
 
-fn build_slot(
+fn build_group(
     ssa: &mut MemSsa,
     store: &mut CellStore,
     cfg: &Cfg,
     instrs: &[Instruction],
-    events: &[Option<StackEvent>],
-    group: &BTreeSet<i64>,
+    events: &[Option<MemEvent>],
+    group: &BTreeSet<CellKey>,
+    barriers: &BTreeSet<usize>,
 ) {
     let block_count: usize = cfg.blocks.len();
     if block_count == 0 {
         return;
     }
-    let rep: i64 = group.iter().next().copied().unwrap_or(0);
+    let Some(rep): Option<CellKey> = group.iter().next().copied() else {
+        return;
+    };
     let mut store_version: BTreeMap<usize, VersionId> = BTreeMap::new();
     for (index, event) in events.iter().enumerate() {
-        let Some(event): Option<StackEvent> = *event else {
+        let Some(event): Option<MemEvent> = *event else {
             continue;
         };
-        if group.contains(&event.rbp_disp) && event.kind == AccessKind::Store {
-            let version: VersionId = ssa.fresh(store, event.rbp_disp, false, false);
+        if group.contains(&event.key) && event.kind == AccessKind::Store {
+            let version: VersionId = ssa.fresh(store, event.key, false, false);
             store_version.insert(index, version);
         }
+    }
+    for index in barriers {
+        if store_version.contains_key(index) {
+            continue;
+        }
+        let version: VersionId = ssa.fresh(store, rep, false, false);
+        store_version.insert(*index, version);
     }
     let initial: VersionId = ssa.fresh(store, rep, false, false);
     let mut phi: BTreeMap<usize, VersionId> = BTreeMap::new();
@@ -470,7 +838,7 @@ fn build_slot(
     let last_store: Vec<Option<VersionId>> = cfg
         .blocks
         .iter()
-        .map(|block: &crate::cfg::BasicBlock| {
+        .map(|block: &BasicBlock| {
             (block.start..block.end)
                 .rev()
                 .find_map(|index: usize| store_version.get(&index).copied())
@@ -542,8 +910,8 @@ fn assign_versions(
     ssa: &mut MemSsa,
     cfg: &Cfg,
     instrs: &[Instruction],
-    events: &[Option<StackEvent>],
-    group: &BTreeSet<i64>,
+    events: &[Option<MemEvent>],
+    group: &BTreeSet<CellKey>,
     entry: &[Option<VersionId>],
     store_version: &BTreeMap<usize, VersionId>,
     initial: VersionId,
@@ -551,22 +919,22 @@ fn assign_versions(
     for (block_index, block) in cfg.blocks.iter().enumerate() {
         let mut current: VersionId = entry[block_index].unwrap_or(initial);
         for index in block.start..block.end {
-            let Some(event): Option<StackEvent> = events.get(index).copied().flatten() else {
-                continue;
-            };
-            if !group.contains(&event.rbp_disp) {
-                continue;
+            let event: Option<MemEvent> = events
+                .get(index)
+                .copied()
+                .flatten()
+                .filter(|event: &MemEvent| group.contains(&event.key));
+            if let Some(event) = event
+                && let Some(insn) = instrs.get(index)
+            {
+                let version: VersionId = match event.kind {
+                    AccessKind::Store => store_version.get(&index).copied().unwrap_or(current),
+                    AccessKind::Load | AccessKind::Rmw => current,
+                };
+                ssa.access.insert(insn.ip(), (event.key, version));
+                ssa.touch(version, insn.ip());
             }
-            let Some(insn): Option<&Instruction> = instrs.get(index) else {
-                continue;
-            };
-            let version: VersionId = match event.kind {
-                AccessKind::Store => store_version.get(&index).copied().unwrap_or(current),
-                AccessKind::Load | AccessKind::Rmw => current,
-            };
-            ssa.access.insert((insn.ip(), event.rbp_disp), version);
-            ssa.touch(version, insn.ip());
-            if event.kind == AccessKind::Store {
+            if let Some(version) = store_version.get(&index).copied() {
                 current = version;
             }
         }
@@ -613,7 +981,7 @@ mod tests {
         let store_versions: BTreeSet<TypeVar> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| !v.is_phi && v.rbp_disp == 0 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| !v.is_phi && v.rbp_disp() == Some(0) && v.live_hi > 0)
             .map(|v: &VersionInfo| v.cell)
             .collect();
         assert!(
@@ -634,7 +1002,7 @@ mod tests {
         let live: Vec<&VersionInfo> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| v.rbp_disp == 0x10 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| v.rbp_disp() == Some(0x10) && v.live_hi > 0)
             .collect();
         let cells: BTreeSet<TypeVar> = live.iter().map(|v: &&VersionInfo| v.cell).collect();
         assert_eq!(cells.len(), 1, "one store plus one load share one version");
@@ -654,7 +1022,7 @@ mod tests {
         let live: Vec<&VersionInfo> = ssa
             .versions()
             .iter()
-            .filter(|v: &&VersionInfo| v.rbp_disp == 0x10 && v.live_hi > 0)
+            .filter(|v: &&VersionInfo| v.rbp_disp() == Some(0x10) && v.live_hi > 0)
             .collect();
         assert_eq!(live.len(), 1);
         assert!(live[0].escaped);
@@ -669,7 +1037,7 @@ mod tests {
         let instrs: Vec<Instruction> = decode(bytes, base);
         let cfg: cfg::Cfg = cfg::build(&instrs);
         let mut store: CellStore = CellStore::new();
-        build_with_oracle(&instrs, &cfg, &mut store, oracle)
+        build_with_oracle(&instrs, &cfg, &mut store, oracle, &RegionModel::default())
     }
 
     fn assert_exact_mem_ssa_match(refined: &MemSsa, conflated: &MemSsa) {
@@ -969,6 +1337,187 @@ mod tests {
         );
     }
 
+    const EVERY_REGION: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00,
+        0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34, 0x25, 0x28, 0x00, 0x00, 0x00,
+        0x8b, 0x78, 0x10, 0x44, 0x8b, 0x43, 0x10, 0x5d, 0xc3,
+    ];
+
+    const FIVE_KNOWN_REGIONS: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00,
+        0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34, 0x25, 0x28, 0x00, 0x00, 0x00,
+        0x8b, 0x78, 0x10, 0x5d, 0xc3,
+    ];
+
+    fn seeded_model() -> RegionModel {
+        let mut model: RegionModel = RegionModel::new();
+        model.add_data(0x0020_3300, 0x0020_3310);
+        model.add_rodata(0x0020_0200, 0x0020_0210);
+        model.mark_heap(Register::RAX);
+        model
+    }
+
+    fn accesses(bytes: &[u8], model: &RegionModel) -> Vec<(Region, TypeVar)> {
+        let instrs: Vec<Instruction> = decode(bytes, 0x1000);
+        let cfg: cfg::Cfg = cfg::build(&instrs);
+        let mut store: CellStore = CellStore::new();
+        let ssa: MemSsa = build_with_model(&instrs, &cfg, &mut store, model);
+        instrs
+            .iter()
+            .filter_map(|insn: &Instruction| ssa.access_at(insn.ip()))
+            .map(|access: CellAccess| (access.key.region, access.cell))
+            .collect()
+    }
+
+    #[test]
+    fn every_region_receives_its_own_cell() {
+        let model: RegionModel = seeded_model();
+        let found: BTreeSet<Region> = accesses(EVERY_REGION, &model)
+            .into_iter()
+            .map(|(region, _): (Region, TypeVar)| region)
+            .collect();
+        assert_eq!(
+            found,
+            BTreeSet::from([
+                Region::Stack,
+                Region::Global,
+                Region::Heap,
+                Region::Tls,
+                Region::ConstPool,
+                Region::Unknown,
+            ]),
+            "every region the code touches enters memory ssa",
+        );
+    }
+
+    #[test]
+    fn known_regions_never_share_a_cell() {
+        let model: RegionModel = seeded_model();
+        let observed: Vec<(Region, TypeVar)> = accesses(FIVE_KNOWN_REGIONS, &model);
+        let regions: BTreeSet<Region> = observed
+            .iter()
+            .map(|(region, _): &(Region, TypeVar)| *region)
+            .collect();
+        let cells: BTreeSet<TypeVar> = observed
+            .iter()
+            .map(|(_, cell): &(Region, TypeVar)| *cell)
+            .collect();
+        assert_eq!(regions.len(), 5, "five distinct regions: {regions:?}");
+        assert_eq!(
+            cells.len(),
+            5,
+            "each proven region keeps its own cell: {observed:?}",
+        );
+    }
+
+    const GLOBAL_ACROSS_CALL: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00, 0xe8, 0x00, 0x00, 0x00,
+        0x00, 0x8b, 0x14, 0x25, 0x00, 0x33, 0x20, 0x00, 0x5d, 0xc3,
+    ];
+
+    const GLOBAL_WITHOUT_CALL: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00, 0x90, 0x90, 0x90, 0x90,
+        0x90, 0x8b, 0x14, 0x25, 0x00, 0x33, 0x20, 0x00, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn a_call_clobbers_the_global_version_chain() {
+        let model: RegionModel = seeded_model();
+        let across: Vec<(Region, TypeVar)> = accesses(GLOBAL_ACROSS_CALL, &model);
+        let stable: Vec<(Region, TypeVar)> = accesses(GLOBAL_WITHOUT_CALL, &model);
+
+        let across_cells: BTreeSet<TypeVar> = across
+            .iter()
+            .map(|(_, cell): &(Region, TypeVar)| *cell)
+            .collect();
+        let stable_cells: BTreeSet<TypeVar> = stable
+            .iter()
+            .map(|(_, cell): &(Region, TypeVar)| *cell)
+            .collect();
+        assert_eq!(across.len(), 2, "both global loads enter memory ssa");
+        assert_eq!(stable.len(), 2, "both global loads enter memory ssa");
+        assert_eq!(
+            stable_cells.len(),
+            1,
+            "without a call the two loads observe one definition",
+        );
+        assert_eq!(
+            across_cells.len(),
+            2,
+            "a call may write the global, so the second load is a new definition",
+        );
+    }
+
+    fn many_global_loads(count: usize) -> Vec<u8> {
+        let mut bytes: Vec<u8> = vec![0x55, 0x48, 0x89, 0xe5];
+        for index in 0..count {
+            let address: u32 = 0x0020_3300 + u32::try_from(index).unwrap() * 8;
+            bytes.extend_from_slice(&[0x8b, 0x04, 0x25]);
+            bytes.extend_from_slice(&address.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0x5d, 0xc3]);
+        bytes
+    }
+
+    #[test]
+    fn the_cell_cap_falls_back_to_one_conservative_cell_per_region() {
+        let mut model: RegionModel = RegionModel::new();
+        model.add_data(0x0020_3300, 0x0021_0000);
+
+        let under: Vec<u8> = many_global_loads(MAX_REGION_CELLS);
+        let over: Vec<u8> = many_global_loads(MAX_REGION_CELLS + 1);
+
+        let under_cells: BTreeSet<TypeVar> = accesses(&under, &model)
+            .into_iter()
+            .map(|(_, cell): (Region, TypeVar)| cell)
+            .collect();
+        assert_eq!(
+            under_cells.len(),
+            MAX_REGION_CELLS,
+            "below the cap every proven global keeps its own cell",
+        );
+
+        let over_accesses: Vec<(Region, TypeVar)> = accesses(&over, &model);
+        let over_cells: BTreeSet<TypeVar> = over_accesses
+            .iter()
+            .map(|(_, cell): &(Region, TypeVar)| *cell)
+            .collect();
+        assert_eq!(
+            over_accesses.len(),
+            MAX_REGION_CELLS + 1,
+            "the cap never drops an access",
+        );
+        assert_eq!(
+            over_cells.len(),
+            1,
+            "above the cap the region collapses to one conservative cell",
+        );
+    }
+
+    #[test]
+    fn region_cells_are_deterministic() {
+        let model: RegionModel = seeded_model();
+        let instrs: Vec<Instruction> = decode(EVERY_REGION, 0x1000);
+        let cfg: cfg::Cfg = cfg::build(&instrs);
+        let mut first_store: CellStore = CellStore::new();
+        let first: MemSsa = build_with_model(&instrs, &cfg, &mut first_store, &model);
+        let mut second_store: CellStore = CellStore::new();
+        let second: MemSsa = build_with_model(&instrs, &cfg, &mut second_store, &model);
+        assert_exact_mem_ssa_match(&first, &second);
+    }
+
+    #[test]
+    fn a_seeded_model_never_disturbs_the_frame_slots() {
+        let model: RegionModel = seeded_model();
+        let instrs: Vec<Instruction> = decode(TWO_DISJOINT_SLOTS, 0x1000);
+        let cfg: cfg::Cfg = cfg::build(&instrs);
+        let mut plain_store: CellStore = CellStore::new();
+        let plain: MemSsa = build(&instrs, &cfg, &mut plain_store);
+        let mut seeded_store: CellStore = CellStore::new();
+        let seeded: MemSsa = build_with_model(&instrs, &cfg, &mut seeded_store, &model);
+        assert_exact_mem_ssa_match(&plain, &seeded);
+    }
+
     #[test]
     fn build_matches_the_default_region_oracle() {
         let instrs: Vec<Instruction> = decode(TWO_DISJOINT_SLOTS, 0x1000);
@@ -976,8 +1525,13 @@ mod tests {
         let mut store_a: CellStore = CellStore::new();
         let plain: MemSsa = build(&instrs, &cfg, &mut store_a);
         let mut store_b: CellStore = CellStore::new();
-        let via_oracle: MemSsa =
-            build_with_oracle(&instrs, &cfg, &mut store_b, &RegionModel::default());
+        let via_oracle: MemSsa = build_with_oracle(
+            &instrs,
+            &cfg,
+            &mut store_b,
+            &RegionModel::default(),
+            &RegionModel::default(),
+        );
         assert_eq!(plain.versions().len(), via_oracle.versions().len());
     }
 }

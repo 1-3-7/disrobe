@@ -207,9 +207,12 @@ fn recover_split(instrs: &[Instruction]) -> Vec<RecoveredObject> {
         if version.is_phi || version.live_hi < version.live_lo {
             continue;
         }
+        let Some(rbp_disp): Option<i64> = version.rbp_disp() else {
+            continue;
+        };
         let scalar: RecoveredScalar = scalar_of(&mut facts.store, version.cell);
         objects.push(RecoveredObject {
-            rbp_disp: version.rbp_disp,
+            rbp_disp,
             width: scalar.width,
             sign: scalar.sign,
             sign_conflict: scalar.sign_conflict,

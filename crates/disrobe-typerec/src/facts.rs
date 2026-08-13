@@ -465,7 +465,9 @@ mod tests {
             .ssa
             .versions()
             .iter()
-            .filter(|v: &&crate::memssa::VersionInfo| v.rbp_disp == 0 && !v.is_phi && v.live_hi > 0)
+            .filter(|v: &&crate::memssa::VersionInfo| {
+                v.rbp_disp() == Some(0) && !v.is_phi && v.live_hi > 0
+            })
             .map(|v: &crate::memssa::VersionInfo| facts.store.resolved(v.cell).class.sign())
             .collect();
         assert!(

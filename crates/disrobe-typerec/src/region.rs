@@ -1,8 +1,12 @@
-use iced_x86::{Instruction, OpKind, Register};
+use std::collections::BTreeSet;
 
+use iced_x86::{Instruction, OpKind, Register};
+use object::{File, Object, ObjectSection, SectionFlags};
+
+use crate::import_map::ImportMap;
 use crate::lattice::Width;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Region {
     Stack,
     Global,
@@ -16,6 +20,70 @@ impl Region {
     #[must_use]
     pub const fn never_aliases_other_region(self) -> bool {
         !matches!(self, Self::Unknown)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Locator {
+    FrameDisp(i64),
+    Address(u64),
+    Based {
+        segment: Register,
+        base: Register,
+        symbol: IndexSymbol,
+        disp: i64,
+    },
+    Wide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CellKey {
+    pub region: Region,
+    pub locator: Locator,
+}
+
+impl CellKey {
+    #[must_use]
+    pub const fn stack(rbp_disp: i64) -> Self {
+        Self {
+            region: Region::Stack,
+            locator: Locator::FrameDisp(rbp_disp),
+        }
+    }
+
+    #[must_use]
+    pub const fn wide(region: Region) -> Self {
+        Self {
+            region,
+            locator: Locator::Wide,
+        }
+    }
+
+    #[must_use]
+    pub fn of(access: &MemoryAccess, symbol: IndexSymbol) -> Self {
+        let locator: Locator = match access.base {
+            Register::None | Register::RIP | Register::EIP => {
+                Locator::Address(u64::from_ne_bytes(access.disp.to_ne_bytes()))
+            }
+            base => Locator::Based {
+                segment: access.segment,
+                base: base.full_register(),
+                symbol,
+                disp: access.disp,
+            },
+        };
+        Self {
+            region: access.region,
+            locator,
+        }
+    }
+
+    #[must_use]
+    pub const fn frame_disp(self) -> Option<i64> {
+        match (self.region, self.locator) {
+            (Region::Stack, Locator::FrameDisp(disp)) => Some(disp),
+            _ => None,
+        }
     }
 }
 
@@ -154,29 +222,23 @@ fn alias_access(a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
         return AliasResult::MayAlias;
     }
     match a.region {
-        Region::Stack => stack_alias(a, b),
-        _ => AliasResult::MayAlias,
+        Region::Heap => AliasResult::MayAlias,
+        _ => extent_region_alias(a, b),
     }
 }
 
-fn stack_alias(a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
-    if a.base.full_register() != b.base.full_register() {
+fn extent_region_alias(a: &MemoryAccess, b: &MemoryAccess) -> AliasResult {
+    if a.base.full_register() != b.base.full_register() || a.segment != b.segment {
         return AliasResult::MayAlias;
     }
     let (Some(wa), Some(wb)): (Option<u8>, Option<u8>) = (a.width.bytes(), b.width.bytes()) else {
         return AliasResult::MayAlias;
     };
     if a.index.is_none() && b.index.is_none() {
-        return extent_alias(a.rbp_disp, wa, b.rbp_disp, wb, DisjointReason::ConstExtent);
+        return extent_alias(a.disp, wa, b.disp, wb, DisjointReason::ConstExtent);
     }
     if indexes_are_correlated(a, b) {
-        return extent_alias(
-            a.rbp_disp,
-            wa,
-            b.rbp_disp,
-            wb,
-            DisjointReason::CorrelatedField,
-        );
+        return extent_alias(a.disp, wa, b.disp, wb, DisjointReason::CorrelatedField);
     }
     bounded_interval_alias(a, wa, b, wb)
 }
@@ -253,7 +315,7 @@ fn bounded_interval_alias(
     let Some(scale_gcd): Option<u8> = nonzero_gcd(scale_a, scale_b) else {
         return AliasResult::MayAlias;
     };
-    let base: i128 = i128::from(a.rbp_disp) - i128::from(b.rbp_disp);
+    let base: i128 = i128::from(a.disp) - i128::from(b.disp);
     let minimum: i128 = base - i128::from(scale_b) * i128::from(upper_b);
     let maximum: i128 = base + i128::from(scale_a) * i128::from(upper_a);
     let overlap_minimum: i128 = 1 - i128::from(width_a);
@@ -294,11 +356,9 @@ fn bounded_offsets_are_linear(
     {
         return false;
     }
-    let maximum_a: i128 =
-        i128::from(a.rbp_disp) + i128::from(address_scale(a)) * i128::from(upper_a);
-    let maximum_b: i128 =
-        i128::from(b.rbp_disp) + i128::from(address_scale(b)) * i128::from(upper_b);
-    let minimum: i128 = i128::from(a.rbp_disp).min(i128::from(b.rbp_disp));
+    let maximum_a: i128 = i128::from(a.disp) + i128::from(address_scale(a)) * i128::from(upper_a);
+    let maximum_b: i128 = i128::from(b.disp) + i128::from(address_scale(b)) * i128::from(upper_b);
+    let minimum: i128 = i128::from(a.disp).min(i128::from(b.disp));
     let maximum: i128 = maximum_a.max(maximum_b);
     maximum - minimum <= i128::from(i64::MAX)
 }
@@ -327,8 +387,26 @@ pub enum SectionKind {
     Rodata,
     Data,
     Bss,
+    Tls,
+    Code,
     Other,
 }
+
+const MAX_SECTIONS: usize = 1 << 12;
+const MAX_RELOC_TARGETS: usize = 1 << 16;
+const ELF_SHF_WRITE: u64 = 0x1;
+const ELF_SHF_ALLOC: u64 = 0x2;
+const ELF_SHF_EXECINSTR: u64 = 0x4;
+const ELF_SHF_TLS: u64 = 0x400;
+const COFF_MEM_EXECUTE: u32 = 0x2000_0000;
+const COFF_MEM_WRITE: u32 = 0x8000_0000;
+const COFF_CNT_CODE: u32 = 0x20;
+const MACHO_SECTION_TYPE: u32 = 0xff;
+const MACHO_ZEROFILL: u32 = 0x1;
+const MACHO_THREAD_LOCAL_FIRST: u32 = 0x11;
+const MACHO_THREAD_LOCAL_LAST: u32 = 0x15;
+const MACHO_ATTR_PURE_INSTRUCTIONS: u32 = 0x8000_0000;
+const MACHO_ATTR_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
 
 #[derive(Debug, Default, Clone)]
 pub struct RegionModel {
@@ -337,13 +415,153 @@ pub struct RegionModel {
     rodata: Vec<(u64, u64)>,
     data: Vec<(u64, u64)>,
     bss: Vec<(u64, u64)>,
-    reloc_targets: Vec<u64>,
+    tls: Vec<(u64, u64)>,
+    code: Vec<(u64, u64)>,
+    reloc_targets: BTreeSet<u64>,
+}
+
+fn contains(ranges: &[(u64, u64)], addr: u64) -> bool {
+    ranges
+        .iter()
+        .any(|(start, end): &(u64, u64)| addr >= *start && addr < *end)
+}
+
+fn section_kind_of(section: &object::Section<'_, '_>) -> SectionKind {
+    match section.flags() {
+        SectionFlags::Elf { sh_flags } => elf_section_kind(sh_flags),
+        SectionFlags::Coff { characteristics } => {
+            coff_section_kind(characteristics, section.name().unwrap_or_default())
+        }
+        SectionFlags::MachO { flags } => mach_o_section_kind(flags, section),
+        _ => SectionKind::Other,
+    }
+}
+
+const fn elf_section_kind(sh_flags: u64) -> SectionKind {
+    if sh_flags & ELF_SHF_ALLOC == 0 {
+        return SectionKind::Other;
+    }
+    if sh_flags & ELF_SHF_EXECINSTR != 0 {
+        return SectionKind::Code;
+    }
+    if sh_flags & ELF_SHF_TLS != 0 {
+        return SectionKind::Tls;
+    }
+    if sh_flags & ELF_SHF_WRITE != 0 {
+        return SectionKind::Data;
+    }
+    SectionKind::Rodata
+}
+
+fn coff_section_kind(characteristics: u32, name: &str) -> SectionKind {
+    if characteristics & (COFF_MEM_EXECUTE | COFF_CNT_CODE) != 0 {
+        return SectionKind::Code;
+    }
+    if name.starts_with(".tls") {
+        return SectionKind::Tls;
+    }
+    if characteristics & COFF_MEM_WRITE != 0 {
+        return SectionKind::Data;
+    }
+    SectionKind::Rodata
+}
+
+fn mach_o_section_kind(flags: u32, section: &object::Section<'_, '_>) -> SectionKind {
+    let kind: u32 = flags & MACHO_SECTION_TYPE;
+    if (MACHO_THREAD_LOCAL_FIRST..=MACHO_THREAD_LOCAL_LAST).contains(&kind) {
+        return SectionKind::Tls;
+    }
+    if flags & (MACHO_ATTR_PURE_INSTRUCTIONS | MACHO_ATTR_SOME_INSTRUCTIONS) != 0 {
+        return SectionKind::Code;
+    }
+    let segment: &str = section.segment_name().ok().flatten().unwrap_or_default();
+    if segment.starts_with("__DATA") || segment.starts_with("__AUTH") {
+        if kind == MACHO_ZEROFILL {
+            return SectionKind::Bss;
+        }
+        return SectionKind::Data;
+    }
+    if segment.starts_with("__TEXT") {
+        return SectionKind::Rodata;
+    }
+    SectionKind::Other
 }
 
 impl RegionModel {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn from_image(data: &[u8]) -> Self {
+        let mut model: Self = Self::default();
+        let Ok(file): core::result::Result<File<'_>, object::Error> = File::parse(data) else {
+            return model;
+        };
+        model.absorb_sections(&file);
+        model.absorb_relocations(&file);
+        model.absorb_import_slots(data);
+        model
+    }
+
+    fn absorb_sections(&mut self, file: &File<'_>) {
+        for section in file.sections().take(MAX_SECTIONS) {
+            let start: u64 = section.address();
+            let Some(end): Option<u64> = start.checked_add(section.size()) else {
+                continue;
+            };
+            if start == 0 || end == start {
+                continue;
+            }
+            match section_kind_of(&section) {
+                SectionKind::Rodata => self.rodata.push((start, end)),
+                SectionKind::Data => self.data.push((start, end)),
+                SectionKind::Bss => self.bss.push((start, end)),
+                SectionKind::Tls => self.tls.push((start, end)),
+                SectionKind::Code => self.code.push((start, end)),
+                SectionKind::Other => {}
+            }
+        }
+    }
+
+    fn absorb_relocations(&mut self, file: &File<'_>) {
+        for section in file.sections().take(MAX_SECTIONS) {
+            for (address, _relocation) in section.relocations() {
+                if !self.record_reloc_target(address) {
+                    return;
+                }
+            }
+        }
+        let Some(dynamic): Option<object::read::DynamicRelocationIterator<'_, '_>> =
+            file.dynamic_relocations()
+        else {
+            return;
+        };
+        for (address, _relocation) in dynamic {
+            if !self.record_reloc_target(address) {
+                return;
+            }
+        }
+    }
+
+    fn absorb_import_slots(&mut self, data: &[u8]) {
+        let imports: ImportMap = ImportMap::from_image(data);
+        for slot in imports.by_slot_va.keys() {
+            if !self.record_reloc_target(*slot) {
+                return;
+            }
+        }
+    }
+
+    fn record_reloc_target(&mut self, address: u64) -> bool {
+        if self.reloc_targets.len() >= MAX_RELOC_TARGETS {
+            return false;
+        }
+        if !contains(&self.code, address) {
+            self.reloc_targets.insert(address);
+        }
+        true
     }
 
     pub fn mark_heap(&mut self, reg: Register) {
@@ -377,8 +595,16 @@ impl RegionModel {
         self.bss.push((start, end));
     }
 
+    pub fn add_tls(&mut self, start: u64, end: u64) {
+        self.tls.push((start, end));
+    }
+
+    pub fn add_code(&mut self, start: u64, end: u64) {
+        self.code.push((start, end));
+    }
+
     pub fn add_reloc_target(&mut self, target: u64) {
-        self.reloc_targets.push(target);
+        self.reloc_targets.insert(target);
     }
 
     #[must_use]
@@ -387,35 +613,43 @@ impl RegionModel {
     }
 
     #[must_use]
-    fn is_frame(&self, reg: Register) -> bool {
+    pub(crate) fn is_frame(&self, reg: Register) -> bool {
         matches!(reg, Register::RSP | Register::RBP)
             || self.frame_regs.contains(&reg.full_register())
     }
 
     #[must_use]
     fn section_of(&self, addr: u64) -> SectionKind {
-        if self
-            .rodata
-            .iter()
-            .any(|(s, e): &(u64, u64)| addr >= *s && addr < *e)
-        {
-            return SectionKind::Rodata;
+        if contains(&self.code, addr) {
+            return SectionKind::Code;
         }
-        if self
-            .data
-            .iter()
-            .any(|(s, e): &(u64, u64)| addr >= *s && addr < *e)
-        {
-            return SectionKind::Data;
+        let candidates: [(&[(u64, u64)], SectionKind); 4] = [
+            (&self.tls, SectionKind::Tls),
+            (&self.rodata, SectionKind::Rodata),
+            (&self.data, SectionKind::Data),
+            (&self.bss, SectionKind::Bss),
+        ];
+        let mut found: Option<SectionKind> = None;
+        for (ranges, kind) in candidates {
+            if !contains(ranges, addr) {
+                continue;
+            }
+            match found {
+                None => found = Some(kind),
+                Some(previous) if region_of_section(previous) == region_of_section(kind) => {}
+                Some(_) => return SectionKind::Other,
+            }
         }
-        if self
-            .bss
-            .iter()
-            .any(|(s, e): &(u64, u64)| addr >= *s && addr < *e)
-        {
-            return SectionKind::Bss;
+        found.unwrap_or(SectionKind::Other)
+    }
+
+    #[must_use]
+    pub fn region_of(&self, addr: u64) -> Region {
+        match self.section_of(addr) {
+            SectionKind::Code => Region::Unknown,
+            SectionKind::Other if self.is_reloc_target(addr) => Region::Global,
+            kind => region_of_section(kind),
         }
-        SectionKind::Other
     }
 
     #[must_use]
@@ -424,11 +658,21 @@ impl RegionModel {
     }
 }
 
+const fn region_of_section(kind: SectionKind) -> Region {
+    match kind {
+        SectionKind::Rodata => Region::ConstPool,
+        SectionKind::Data | SectionKind::Bss => Region::Global,
+        SectionKind::Tls => Region::Tls,
+        SectionKind::Code | SectionKind::Other => Region::Unknown,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryAccess {
     pub region: Region,
+    pub segment: Register,
     pub base: Register,
-    pub rbp_disp: i64,
+    pub disp: i64,
     pub index: Option<Register>,
     pub index_address_size: u8,
     pub index_symbol: Option<IndexSymbol>,
@@ -446,8 +690,12 @@ pub fn classify(insn: &Instruction, memop: u32, model: &RegionModel) -> Option<M
     let segment: Register = insn.segment_prefix();
     let base: Register = insn.memory_base();
     let width: Width = memory_width(insn);
-    let region: Region = classify_region(insn, segment, base, model);
-    let rbp_disp: i64 = i64::from_ne_bytes(insn.memory_displacement64().to_ne_bytes());
+    let disp: i64 = if insn.is_ip_rel_memory_operand() {
+        i64::from_ne_bytes(insn.ip_rel_memory_address().to_ne_bytes())
+    } else {
+        i64::from_ne_bytes(insn.memory_displacement64().to_ne_bytes())
+    };
+    let region: Region = classify_region(insn, segment, base, disp, model);
     let raw_index: Register = insn.memory_index();
     let index: Option<Register> =
         (raw_index != Register::None).then_some(raw_index.full_register());
@@ -455,8 +703,9 @@ pub fn classify(insn: &Instruction, memop: u32, model: &RegionModel) -> Option<M
     let index_scale: u8 = decoded_index_scale(insn.memory_index_scale());
     Some(MemoryAccess {
         region,
+        segment,
         base,
-        rbp_disp,
+        disp,
         index,
         index_address_size,
         index_symbol: None,
@@ -471,19 +720,14 @@ fn classify_region(
     insn: &Instruction,
     segment: Register,
     base: Register,
+    disp: i64,
     model: &RegionModel,
 ) -> Region {
     if matches!(segment, Register::FS | Register::GS) {
         return Region::Tls;
     }
     if insn.is_ip_rel_memory_operand() {
-        let target: u64 = insn.ip_rel_memory_address();
-        return match model.section_of(target) {
-            SectionKind::Rodata => Region::ConstPool,
-            SectionKind::Data | SectionKind::Bss => Region::Global,
-            SectionKind::Other if model.is_reloc_target(target) => Region::Global,
-            SectionKind::Other => Region::Unknown,
-        };
+        return model.region_of(u64::from_ne_bytes(disp.to_ne_bytes()));
     }
     if model.is_frame(base) {
         return Region::Stack;
@@ -491,14 +735,8 @@ fn classify_region(
     if model.is_heap(base) {
         return Region::Heap;
     }
-    if base == Register::None && insn.memory_index() == Register::None {
-        let target: u64 = insn.memory_displacement64();
-        return match model.section_of(target) {
-            SectionKind::Rodata => Region::ConstPool,
-            SectionKind::Data | SectionKind::Bss => Region::Global,
-            SectionKind::Other if model.is_reloc_target(target) => Region::Global,
-            SectionKind::Other => Region::Unknown,
-        };
+    if base == Register::None {
+        return model.region_of(u64::from_ne_bytes(disp.to_ne_bytes()));
     }
     Region::Unknown
 }
@@ -547,8 +785,9 @@ mod tests {
     fn stack_access(rbp_disp: i64, width: Width) -> MemoryAccess {
         MemoryAccess {
             region: Region::Stack,
+            segment: Register::None,
             base: Register::RBP,
-            rbp_disp,
+            disp: rbp_disp,
             index: None,
             index_address_size: 0,
             index_symbol: None,
@@ -568,8 +807,9 @@ mod tests {
     ) -> MemoryAccess {
         MemoryAccess {
             region: Region::Stack,
+            segment: Register::None,
             base: Register::RBP,
-            rbp_disp,
+            disp: rbp_disp,
             index: Some(index.full_register()),
             index_address_size: 8,
             index_symbol: Some(IndexSymbol::new(0, None, None)),
@@ -599,8 +839,9 @@ mod tests {
         let stack: MemoryAccess = stack_access(-8, Width::Qword);
         let heap: MemoryAccess = MemoryAccess {
             region: Region::Heap,
+            segment: Register::None,
             base: Register::RAX,
-            rbp_disp: 0,
+            disp: 0,
             index: None,
             index_address_size: 0,
             index_symbol: None,
@@ -617,8 +858,9 @@ mod tests {
         let stack: MemoryAccess = stack_access(-8, Width::Qword);
         let unknown: MemoryAccess = MemoryAccess {
             region: Region::Unknown,
+            segment: Register::None,
             base: Register::RAX,
-            rbp_disp: 0,
+            disp: 0,
             index: None,
             index_address_size: 0,
             index_symbol: None,
@@ -668,8 +910,9 @@ mod tests {
     fn heap_access(width: Width) -> MemoryAccess {
         MemoryAccess {
             region: Region::Heap,
+            segment: Register::None,
             base: Register::RAX,
-            rbp_disp: 0,
+            disp: 0,
             index: None,
             index_address_size: 0,
             index_symbol: None,
@@ -724,8 +967,8 @@ mod tests {
 
         assert_eq!(first_access.region, Region::Stack);
         assert_eq!(second_access.region, Region::Stack);
-        assert_eq!(first_access.rbp_disp, -0x40);
-        assert_eq!(second_access.rbp_disp, -0x38);
+        assert_eq!(first_access.disp, -0x40);
+        assert_eq!(second_access.disp, -0x38);
         assert_eq!(first_access.index, Some(Register::RCX));
         assert_eq!(second_access.index, Some(Register::RCX));
         assert_eq!(first_access.index_scale, 8);
@@ -794,7 +1037,7 @@ mod tests {
         let model: RegionModel = RegionModel::new();
         let first: MemoryAccess = indexed_stack_access(-0x40, Width::Qword, Register::RAX, 8, None);
         let second: MemoryAccess = MemoryAccess {
-            rbp_disp: -0x38,
+            disp: -0x38,
             index_address_size: 4,
             ..first
         };
@@ -890,6 +1133,109 @@ mod tests {
             ..heap
         };
         assert!(model.alias(&stack, &unknown).may_alias());
+    }
+
+    fn absolute_access(region: Region, segment: Register, disp: i64, width: Width) -> MemoryAccess {
+        MemoryAccess {
+            region,
+            segment,
+            base: Register::None,
+            disp,
+            index: None,
+            index_address_size: 0,
+            index_symbol: None,
+            index_scale: 1,
+            index_bound: None,
+            width,
+            escapes: false,
+        }
+    }
+
+    #[test]
+    fn global_extents_report_the_same_four_valued_relation_as_frame_slots() {
+        let model: RegionModel = RegionModel::new();
+        let counter: MemoryAccess =
+            absolute_access(Region::Global, Register::None, 0x0020_3300, Width::Dword);
+        let neighbour: MemoryAccess =
+            absolute_access(Region::Global, Register::None, 0x0020_3304, Width::Dword);
+        let overlap: MemoryAccess =
+            absolute_access(Region::Global, Register::None, 0x0020_3302, Width::Word);
+        let same: MemoryAccess =
+            absolute_access(Region::Global, Register::None, 0x0020_3300, Width::Dword);
+
+        assert_eq!(
+            model.alias(&counter, &neighbour),
+            AliasResult::no_alias(DisjointReason::ConstExtent),
+        );
+        assert_eq!(model.alias(&counter, &overlap), AliasResult::PartialAlias);
+        assert_eq!(model.alias(&counter, &same), AliasResult::MustAlias);
+    }
+
+    #[test]
+    fn constant_pool_and_thread_local_extents_split_the_same_way() {
+        let model: RegionModel = RegionModel::new();
+        let first_constant: MemoryAccess =
+            absolute_access(Region::ConstPool, Register::None, 0x0020_0200, Width::Dword);
+        let second_constant: MemoryAccess =
+            absolute_access(Region::ConstPool, Register::None, 0x0020_0204, Width::Dword);
+        assert_eq!(
+            model.alias(&first_constant, &second_constant),
+            AliasResult::no_alias(DisjointReason::ConstExtent),
+        );
+
+        let first_slot: MemoryAccess =
+            absolute_access(Region::Tls, Register::FS, 0x28, Width::Qword);
+        let second_slot: MemoryAccess =
+            absolute_access(Region::Tls, Register::FS, 0x30, Width::Qword);
+        assert_eq!(
+            model.alias(&first_slot, &second_slot),
+            AliasResult::no_alias(DisjointReason::ConstExtent),
+        );
+    }
+
+    #[test]
+    fn a_different_segment_never_proves_disjoint() {
+        let model: RegionModel = RegionModel::new();
+        let from_fs: MemoryAccess = absolute_access(Region::Tls, Register::FS, 0x28, Width::Qword);
+        let from_gs: MemoryAccess = absolute_access(Region::Tls, Register::GS, 0x30, Width::Qword);
+        assert_eq!(model.alias(&from_fs, &from_gs), AliasResult::MayAlias);
+    }
+
+    #[test]
+    fn heap_accesses_stay_conservative_within_the_heap() {
+        let model: RegionModel = RegionModel::new();
+        let first: MemoryAccess = heap_access(Width::Qword);
+        let second: MemoryAccess = MemoryAccess {
+            disp: 0x40,
+            ..heap_access(Width::Qword)
+        };
+        assert_eq!(model.alias(&first, &second), AliasResult::MayAlias);
+    }
+
+    #[test]
+    fn a_relocation_target_outside_every_section_is_a_global() {
+        let mut model: RegionModel = RegionModel::new();
+        model.add_data(0x4000, 0x5000);
+        model.add_code(0x1000, 0x2000);
+        model.add_reloc_target(0x9000);
+        model.add_reloc_target(0x1400);
+
+        assert_eq!(model.region_of(0x9000), Region::Global);
+        assert_eq!(model.region_of(0x9008), Region::Unknown);
+        assert_eq!(
+            model.region_of(0x1400),
+            Region::Unknown,
+            "a relocation inside code never turns code into data",
+        );
+    }
+
+    #[test]
+    fn an_address_two_sections_claim_is_unknown_rather_than_a_guess() {
+        let mut model: RegionModel = RegionModel::new();
+        model.add_tls(0x2300, 0x2304);
+        model.add_data(0x2300, 0x3000);
+        assert_eq!(model.region_of(0x2300), Region::Unknown);
+        assert_eq!(model.region_of(0x2304), Region::Global);
     }
 
     #[test]

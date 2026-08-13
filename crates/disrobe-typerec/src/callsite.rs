@@ -318,10 +318,13 @@ fn cell_meta(ssa: &MemSsa) -> BTreeMap<TypeVar, SlotMeta> {
     let mut out: BTreeMap<TypeVar, SlotMeta> = BTreeMap::new();
     for version in ssa.versions() {
         let version: VersionInfo = *version;
+        let Some(rbp_disp): Option<i64> = version.rbp_disp() else {
+            continue;
+        };
         out.insert(
             version.cell,
             SlotMeta {
-                rbp_disp: version.rbp_disp,
+                rbp_disp,
                 live_lo: version.live_lo,
                 live_hi: version.live_hi,
             },
