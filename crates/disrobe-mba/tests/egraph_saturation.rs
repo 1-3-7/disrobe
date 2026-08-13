@@ -148,3 +148,54 @@ fn l5_collapses_opaque_leaf_identity_that_pre_l5_layers_miss() {
         result.simplified
     );
 }
+
+#[test]
+fn only_saturation_closes_the_carry_identity_over_a_memory_load() {
+    let cell: Expr = Expr::mem(Expr::var(0), Width::W8);
+    let obfuscated: Expr = Expr::add(
+        Expr::xor(cell.clone(), Expr::var(0)),
+        Expr::mul(Expr::konst(2), Expr::and(cell.clone(), Expr::var(0))),
+    );
+    let recovered: Expr = Expr::add(Expr::var(0), cell);
+
+    for width in [Width::W4, Width::W8, Width::W16] {
+        assert_eq!(
+            canonicalize(&obfuscated, width).node_count(),
+            obfuscated.node_count(),
+            "{width:?}: canonicalization alone must not shrink this input"
+        );
+        assert!(
+            solve_linear_mba(&obfuscated, width, 1).is_none(),
+            "{width:?}: the linear solver must not fire over a load"
+        );
+        assert!(
+            solve_polynomial_mba(&obfuscated, width, 1).is_none(),
+            "{width:?}: the polynomial reducer must not fire over a load"
+        );
+        assert!(
+            simplify_mixed(&obfuscated, width).is_none(),
+            "{width:?}: the mixed reducer must not fire over a load"
+        );
+
+        let result: Simplification = simplify(&obfuscated, width);
+        assert!(
+            result.changed(),
+            "{width:?}: equality saturation is the only layer left for `{obfuscated}`, and it did not fire"
+        );
+        assert!(result.verification.is_proven());
+        assert_eq!(
+            result.simplified, recovered,
+            "{width:?}: expected the carry identity to collapse to v0 + the load"
+        );
+        for probe in 0..=width.mask() {
+            let load = |_address: u64, load_width: Width| -> u64 {
+                probe.wrapping_mul(0x9E37_79B9).rotate_left(7) & load_width.mask()
+            };
+            assert_eq!(
+                obfuscated.eval_with_mem(&[probe], &load, width),
+                result.simplified.eval_with_mem(&[probe], &load, width),
+                "{width:?}: the rewrite disagrees with the input at v0 = {probe}"
+            );
+        }
+    }
+}
