@@ -310,16 +310,29 @@ fn lift_special(
                 left,
                 right,
             }),
-            42 => ops.push(PcodeOp::IntSignedLess {
-                output: destination,
-                left,
-                right,
-            }),
-            43 => ops.push(PcodeOp::IntLess {
-                output: destination,
-                left,
-                right,
-            }),
+            42 | 43 => {
+                let comparison: Varnode = allocator.allocate(1)?;
+                let compare: PcodeOp = if function == 42 {
+                    PcodeOp::IntSignedLess {
+                        output: comparison,
+                        left,
+                        right,
+                    }
+                } else {
+                    PcodeOp::IntLess {
+                        output: comparison,
+                        left,
+                        right,
+                    }
+                };
+                ops.extend([
+                    compare,
+                    PcodeOp::IntZext {
+                        output: destination,
+                        input: comparison,
+                    },
+                ]);
+            }
             _ => return None,
         }
         if trapping {
@@ -395,7 +408,7 @@ fn lift_immediate(
     spec: &SleighSpec,
     word: u32,
     opcode: u32,
-    _allocator: &mut UniqueAllocator,
+    allocator: &mut UniqueAllocator,
 ) -> Option<MipsLifted> {
     let destination: Option<Varnode> = mips_output(spec, bits(word, 16, 5));
     let mut ops: Vec<PcodeOp> = Vec::new();
@@ -424,16 +437,29 @@ fn lift_immediate(
                 left,
                 right,
             }),
-            10 => ops.push(PcodeOp::IntSignedLess {
-                output,
-                left,
-                right,
-            }),
-            11 => ops.push(PcodeOp::IntLess {
-                output,
-                left,
-                right,
-            }),
+            10 | 11 => {
+                let comparison: Varnode = allocator.allocate(1)?;
+                let compare: PcodeOp = if opcode == 10 {
+                    PcodeOp::IntSignedLess {
+                        output: comparison,
+                        left,
+                        right,
+                    }
+                } else {
+                    PcodeOp::IntLess {
+                        output: comparison,
+                        left,
+                        right,
+                    }
+                };
+                ops.extend([
+                    compare,
+                    PcodeOp::IntZext {
+                        output,
+                        input: comparison,
+                    },
+                ]);
+            }
             12 => ops.push(PcodeOp::IntAnd {
                 output,
                 left,
