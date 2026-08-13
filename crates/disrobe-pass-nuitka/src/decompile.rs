@@ -406,9 +406,8 @@ fn decompile_embedded_standalone(bytes: &[u8], detection: &Detection) -> NuitkaD
     }
     let name_map: Option<NativeNameMap> =
         recover_name_map("<standalone>", bytes, module_constants.as_ref(), &mut notes);
-    let native_bodies: Option<NativeBodyRecovery> = module_constants
-        .as_ref()
-        .and_then(|constants: &NuitkaConstants| lift_native_bodies(bytes, constants));
+    let native_bodies: Option<NativeBodyRecovery> =
+        lift_native_bodies(bytes, module_constants.as_ref());
     if let Some(bodies) = native_bodies.as_ref() {
         notes.extend(bodies.notes.iter().cloned());
     }
@@ -452,9 +451,6 @@ fn apply_native_bodies(
         let Some(body) = bodies.body_for(&function.name) else {
             continue;
         };
-        if body.recovered_stmts.is_empty() {
-            continue;
-        }
         function.body_stmts = body.recovered_stmts.clone();
         function.body_recovered = true;
         function.lift_fidelity = body.fidelity;
@@ -462,11 +458,13 @@ fn apply_native_bodies(
     }
     if upgraded > 0 {
         module.python_source = crate::surface::emit_python(module);
-        notes.push(format!(
-            "native body lift: upgraded {upgraded} surface function(s) from skeleton stub to a \
-             body reconstructed from the compiled machine code"
-        ));
     }
+    notes.push(format!(
+        "native body lift: reconstructed {} body/bodies from the compiled machine code and \
+         upgraded {upgraded} of them onto a named surface function; the rest carry an impl \
+         address, a resolved CPython C-API call set and an operation trace only",
+        bodies.reconstructed_bodies
+    ));
 }
 
 fn recover_frozen(
@@ -690,12 +688,8 @@ fn decompile_onefile(bytes: &[u8], offset: usize) -> Result<NuitkaDecompilation>
     let name_map: Option<NativeNameMap> = main_image.and_then(|(name, image): (&str, &[u8])| {
         recover_name_map(name, image, module_constants.as_ref(), &mut notes)
     });
-    let native_bodies: Option<NativeBodyRecovery> =
-        main_image.and_then(|(_, image): (&str, &[u8])| {
-            module_constants
-                .as_ref()
-                .and_then(|constants: &NuitkaConstants| lift_native_bodies(image, constants))
-        });
+    let native_bodies: Option<NativeBodyRecovery> = main_image
+        .and_then(|(_, image): (&str, &[u8])| lift_native_bodies(image, module_constants.as_ref()));
     if let Some(bodies) = native_bodies.as_ref() {
         notes.extend(bodies.notes.iter().cloned());
     }

@@ -211,7 +211,8 @@ fn exercise_byte_entrypoints(bytes: &[u8], rng: &mut XorShift64) {
     let _ = recover_frozen_bytecode(bytes, None);
     let _ = disassemble_module_stats(MODULE_NAME, bytes);
     let _ = disassemble_module_to_vec(MODULE_NAME, bytes);
-    let _ = lift_native_bodies(bytes, &constants);
+    let _ = lift_native_bodies(bytes, Some(&constants));
+    let _ = lift_native_bodies(bytes, None);
     let _ = reconstruct_skeleton(&constants);
     let _ = map_names(MODULE_NAME, bytes, &names);
     for name in &names {

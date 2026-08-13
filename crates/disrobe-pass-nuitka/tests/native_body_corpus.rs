@@ -11,13 +11,16 @@ fn corpus_standalone() -> PathBuf {
 #[test]
 fn locates_and_traces_impls_on_real_corpus_binary() {
     let path: PathBuf = corpus_standalone();
-    if !path.is_file() {
-        eprintln!("skip: real nuitka corpus exe absent");
-        return;
-    }
-    let bytes: Vec<u8> = std::fs::read(&path).expect("read corpus exe");
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|e: std::io::Error| {
+        panic!(
+            "the committed real Nuitka standalone build {} must be readable, this gate does not \
+             skip: {e}",
+            path.display()
+        )
+    });
     let constants = parse_constants(&bytes);
-    let Some(recovery): Option<NativeBodyRecovery> = lift_native_bodies(&bytes, &constants) else {
+    let Some(recovery): Option<NativeBodyRecovery> = lift_native_bodies(&bytes, Some(&constants))
+    else {
         panic!("native body lift produced nothing on the real corpus binary");
     };
 

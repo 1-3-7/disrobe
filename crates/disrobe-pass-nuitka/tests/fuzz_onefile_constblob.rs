@@ -174,7 +174,8 @@ fn exercise(bytes: &[u8], rng: &mut Xorshift64) {
     });
     guard("native-body+skeleton+name-map", || {
         let constants: NuitkaConstants = parse_constants(bytes);
-        let _ = lift_native_bodies(bytes, &constants);
+        let _ = lift_native_bodies(bytes, Some(&constants));
+        let _ = lift_native_bodies(bytes, None);
         let _ = reconstruct_skeleton(&constants);
         let names: Vec<String> = constants
             .modules

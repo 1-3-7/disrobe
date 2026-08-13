@@ -81,7 +81,9 @@ pub use frozen::{
 pub use manifest::{NuitkaVariantManifest, build_manifest, build_manifest_from_file};
 pub use markers::{CSourceMarker, DecompReadyMarkers, NuitkaEraGuess, scan_c_source_markers};
 pub use name_map::{NameMapEntry, NameRef, NativeNameMap, map_names};
-pub use native_body::{NativeBodyRecovery, NativeFunctionBody, NativeOp, lift_native_bodies};
+pub use native_body::{
+    NameBinding, NativeBodyRecovery, NativeFunctionBody, NativeOp, lift_native_bodies,
+};
 pub use native_disasm::{
     NativeDisasm, disassemble_module_stats, disassemble_module_to_file, disassemble_module_to_vec,
 };

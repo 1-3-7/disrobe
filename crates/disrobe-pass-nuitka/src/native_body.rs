@@ -11,6 +11,9 @@ const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FUNCTIONS: usize = 20_000;
 const MAX_IMPL_INSNS: usize = 20_000;
 const CTOR_WINDOW: usize = 24;
+const MAX_ENUMERATION_INSNS: usize = 4_000_000;
+const MAX_API_CALLS: usize = 64;
+const MIN_CONSTRUCTOR_IMPLS: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -36,15 +39,26 @@ enum ReturnOrigin {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NameBinding {
+    CodeObject,
+    Positional,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeFunctionBody {
     pub name: String,
     pub qualname: String,
     pub impl_address: u64,
+    pub constructed_in: u64,
+    pub constructor: u64,
     pub code_size: u64,
     pub argcount: u32,
     pub varnames: Vec<String>,
     pub kind: CodeKind,
+    pub name_binding: NameBinding,
+    pub api_calls: Vec<String>,
     pub ops: Vec<NativeOp>,
     pub instruction_count: u64,
     pub recovered_stmts: Vec<PythonStmt>,
@@ -57,12 +71,19 @@ impl NativeFunctionBody {
     pub const fn is_body_recovered(&self) -> bool {
         !self.recovered_stmts.is_empty()
     }
+
+    #[must_use]
+    pub const fn is_name_bound(&self) -> bool {
+        matches!(self.name_binding, NameBinding::CodeObject)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeBodyRecovery {
     pub module_name: String,
     pub located_impls: usize,
+    pub host_functions: usize,
+    pub constructors: Vec<u64>,
     pub bound_functions: usize,
     pub reconstructed_bodies: usize,
     pub functions: Vec<NativeFunctionBody>,
@@ -77,9 +98,9 @@ impl NativeBodyRecovery {
 
     #[must_use]
     pub fn body_for(&self, name: &str) -> Option<&NativeFunctionBody> {
-        self.functions
-            .iter()
-            .find(|f: &&NativeFunctionBody| f.name == name && f.is_body_recovered())
+        self.functions.iter().find(|f: &&NativeFunctionBody| {
+            f.is_name_bound() && f.name == name && f.is_body_recovered()
+        })
     }
 }
 
@@ -384,13 +405,36 @@ struct CtorSite {
     callee: u64,
 }
 
-fn enumerate_impls(view: &PeView) -> Vec<u64> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocatedImpl {
+    address: u64,
+    host: u64,
+    constructor: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ImplSites {
+    impls: Vec<LocatedImpl>,
+    primary_host_impls: Vec<u64>,
+    constructors: Vec<u64>,
+    hosts: usize,
+    decode_budget_exhausted: bool,
+}
+
+fn collect_ctor_sites(view: &PeView) -> (BTreeMap<u64, Vec<CtorSite>>, BTreeSet<u64>, bool) {
     let mut callee_impls: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
-    let mut per_function: BTreeMap<u64, Vec<CtorSite>> = BTreeMap::new();
+    let mut per_host: BTreeMap<u64, Vec<CtorSite>> = BTreeMap::new();
+    let mut decoded: usize = 0;
+    let mut exhausted: bool = false;
 
     for &(begin, end) in &view.functions {
+        if decoded >= MAX_ENUMERATION_INSNS {
+            exhausted = true;
+            break;
+        }
         let insns: Vec<Instruction> = decode_function(view, begin, end);
-        for (i, insn) in insns.iter().enumerate() {
+        decoded = decoded.saturating_add(insns.len());
+        for (index, insn) in insns.iter().enumerate() {
             if insn.mnemonic() != Mnemonic::Lea {
                 continue;
             }
@@ -400,8 +444,8 @@ fn enumerate_impls(view: &PeView) -> Vec<u64> {
             if !view.function_begins.contains(&target) {
                 continue;
             }
-            let upper: usize = (i + CTOR_WINDOW).min(insns.len());
-            for follow in &insns[i + 1..upper] {
+            let upper: usize = (index + CTOR_WINDOW).min(insns.len());
+            for follow in &insns[index + 1..upper] {
                 if follow.flow_control() == FlowControl::Return {
                     break;
                 }
@@ -410,7 +454,7 @@ fn enumerate_impls(view: &PeView) -> Vec<u64> {
                     && view.function_begins.contains(&callee)
                 {
                     callee_impls.entry(callee).or_default().insert(target);
-                    per_function.entry(begin).or_default().push(CtorSite {
+                    per_host.entry(begin).or_default().push(CtorSite {
                         site: insn.ip(),
                         impl_address: target,
                         callee,
@@ -421,44 +465,92 @@ fn enumerate_impls(view: &PeView) -> Vec<u64> {
         }
     }
 
-    let ctors: BTreeSet<u64> = callee_impls
+    let constructors: BTreeSet<u64> = callee_impls
         .iter()
-        .filter(|(_, impls): &(&u64, &BTreeSet<u64>)| impls.len() >= 2)
+        .filter(|(_, impls): &(&u64, &BTreeSet<u64>)| impls.len() >= MIN_CONSTRUCTOR_IMPLS)
         .map(|(callee, _): (&u64, &BTreeSet<u64>)| *callee)
         .collect();
-    if ctors.is_empty() {
-        return Vec::new();
+    (per_host, constructors, exhausted)
+}
+
+fn ordered_host_impls<'a>(
+    sites: &'a [CtorSite],
+    constructors: &BTreeSet<u64>,
+) -> Vec<&'a CtorSite> {
+    let mut matching: Vec<&CtorSite> = sites
+        .iter()
+        .filter(|site: &&CtorSite| constructors.contains(&site.callee))
+        .collect();
+    matching.sort_by_key(|site: &&CtorSite| site.site);
+    matching
+}
+
+fn locate_impls(view: &PeView) -> ImplSites {
+    let (per_host, constructors, decode_budget_exhausted): (
+        BTreeMap<u64, Vec<CtorSite>>,
+        BTreeSet<u64>,
+        bool,
+    ) = collect_ctor_sites(view);
+    if constructors.is_empty() {
+        return ImplSites {
+            decode_budget_exhausted,
+            ..ImplSites::default()
+        };
     }
 
-    let module_code: Option<u64> = per_function
-        .iter()
-        .max_by_key(|(_, sites): &(&u64, &Vec<CtorSite>)| {
-            sites
-                .iter()
-                .filter(|s: &&CtorSite| ctors.contains(&s.callee))
-                .count()
-        })
-        .map(|(begin, _): (&u64, &Vec<CtorSite>)| *begin);
-    let Some(module_code): Option<u64> = module_code else {
-        return Vec::new();
-    };
-
-    let mut sites: Vec<&CtorSite> = per_function
-        .get(&module_code)
-        .into_iter()
-        .flatten()
-        .filter(|s: &&CtorSite| ctors.contains(&s.callee))
-        .collect();
-    sites.sort_by_key(|s: &&CtorSite| s.site);
-
+    let mut hosts: usize = 0;
     let mut seen: BTreeSet<u64> = BTreeSet::new();
-    let mut ordered: Vec<u64> = Vec::new();
-    for site in sites {
-        if seen.insert(site.impl_address) {
-            ordered.push(site.impl_address);
+    let mut impls: Vec<LocatedImpl> = Vec::new();
+    for (&host, sites) in &per_host {
+        let matching: Vec<&CtorSite> = ordered_host_impls(sites, &constructors);
+        if matching.is_empty() {
+            continue;
+        }
+        let before: usize = impls.len();
+        for site in matching {
+            if impls.len() >= MAX_FUNCTIONS {
+                break;
+            }
+            if seen.insert(site.impl_address) {
+                impls.push(LocatedImpl {
+                    address: site.impl_address,
+                    host,
+                    constructor: site.callee,
+                });
+            }
+        }
+        if impls.len() > before {
+            hosts += 1;
         }
     }
-    ordered
+
+    let primary_host: Option<u64> = per_host
+        .iter()
+        .map(|(host, sites): (&u64, &Vec<CtorSite>)| {
+            (*host, ordered_host_impls(sites, &constructors).len())
+        })
+        .filter(|(_, count): &(u64, usize)| *count > 0)
+        .max_by_key(|(_, count): &(u64, usize)| *count)
+        .map(|(host, _): (u64, usize)| host);
+    let primary_host_impls: Vec<u64> = primary_host
+        .and_then(|host: u64| per_host.get(&host))
+        .map(|sites: &Vec<CtorSite>| {
+            let mut seen_primary: BTreeSet<u64> = BTreeSet::new();
+            ordered_host_impls(sites, &constructors)
+                .into_iter()
+                .filter(|site: &&CtorSite| seen_primary.insert(site.impl_address))
+                .map(|site: &CtorSite| site.impl_address)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    ImplSites {
+        impls,
+        primary_host_impls,
+        constructors: constructors.into_iter().collect(),
+        hosts,
+        decode_budget_exhausted,
+    }
 }
 
 fn user_code_objects(constants: &NuitkaConstants) -> Vec<CodeObjectMeta> {
@@ -747,49 +839,124 @@ fn marker(ops: &[NativeOp]) -> String {
     }
 }
 
+fn collect_api_calls(view: &PeView, insns: &[Instruction]) -> Vec<String> {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for insn in insns {
+        if names.len() >= MAX_API_CALLS {
+            break;
+        }
+        if insn.mnemonic() != Mnemonic::Call {
+            continue;
+        }
+        if let Some(name) = call_import_name(view, insn) {
+            names.insert(name);
+        }
+    }
+    names.into_iter().collect()
+}
+
+fn imports_cpython_api(view: &PeView) -> bool {
+    view.iat
+        .values()
+        .any(|name: &String| name.starts_with("Py") || name.starts_with("_Py"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingPlan {
+    Union,
+    PrimaryHost,
+    None,
+}
+
+const fn plan_binding(sites: &ImplSites, codes: &[CodeObjectMeta]) -> BindingPlan {
+    if codes.is_empty() {
+        return BindingPlan::None;
+    }
+    if sites.impls.len() == codes.len() {
+        return BindingPlan::Union;
+    }
+    if sites.primary_host_impls.len() == codes.len() {
+        return BindingPlan::PrimaryHost;
+    }
+    BindingPlan::None
+}
+
 #[must_use]
-pub fn lift_native_bodies(image: &[u8], constants: &NuitkaConstants) -> Option<NativeBodyRecovery> {
+pub fn lift_native_bodies(
+    image: &[u8],
+    constants: Option<&NuitkaConstants>,
+) -> Option<NativeBodyRecovery> {
     let dbg: DebugLog = DebugLog::for_scope("nuitka");
     dbg.section("native-body");
     let view: PeView = parse_pe(image)?;
     if view.text.is_empty() || view.functions.is_empty() {
         return None;
     }
-    let impls: Vec<u64> = enumerate_impls(&view);
-    if impls.is_empty() {
+    if constants.is_none() && !imports_cpython_api(&view) {
+        dbg.line(|| {
+            "native body lift: no constants chunk parsed and no CPython C-API import in this \
+             image, so it is not treated as a compiled-Python module"
+                .to_owned()
+        });
         return None;
     }
-    let codes: Vec<CodeObjectMeta> = user_code_objects(constants);
-    let confident_binding: bool = !codes.is_empty() && impls.len() == codes.len();
+    let sites: ImplSites = locate_impls(&view);
+    if sites.impls.is_empty() {
+        return None;
+    }
+    let codes: Vec<CodeObjectMeta> = constants.map(user_code_objects).unwrap_or_default();
+    let plan: BindingPlan = plan_binding(&sites, &codes);
+    let primary_order: BTreeMap<u64, usize> = match plan {
+        BindingPlan::PrimaryHost => sites
+            .primary_host_impls
+            .iter()
+            .enumerate()
+            .map(|(order, address): (usize, &u64)| (*address, order))
+            .collect(),
+        BindingPlan::Union | BindingPlan::None => BTreeMap::new(),
+    };
 
     let mut functions: Vec<NativeFunctionBody> = Vec::new();
     let mut reconstructed: usize = 0;
     let end_of: BTreeMap<u64, u64> = view.functions.iter().copied().collect();
 
-    for (index, &impl_address) in impls.iter().enumerate() {
-        let Some(&end): Option<&u64> = end_of.get(&impl_address) else {
+    for (index, located) in sites.impls.iter().enumerate() {
+        let Some(&end): Option<&u64> = end_of.get(&located.address) else {
             continue;
         };
-        let insns: Vec<Instruction> = decode_function(&view, impl_address, end);
+        let insns: Vec<Instruction> = decode_function(&view, located.address, end);
         if insns.is_empty() {
             continue;
         }
         let (ops, return_origin): (Vec<NativeOp>, ReturnOrigin) = trace_ops(&view, &insns);
-        let code: Option<&CodeObjectMeta> = confident_binding.then(|| codes.get(index)).flatten();
+        let code: Option<&CodeObjectMeta> = match plan {
+            BindingPlan::Union => codes.get(index),
+            BindingPlan::PrimaryHost => primary_order
+                .get(&located.address)
+                .and_then(|order: &usize| codes.get(*order)),
+            BindingPlan::None => None,
+        };
         let traced_argcount: usize = inferred_argcount(&ops, return_origin);
-        let (name, qualname, kind): (String, String, CodeKind) = code.map_or_else(
-            || {
-                let label: String = format!("native_impl_{index}");
-                (label.clone(), label, CodeKind::Function)
-            },
-            |c: &CodeObjectMeta| {
-                (
-                    c.name.clone(),
-                    c.qualname.clone().unwrap_or_else(|| c.name.clone()),
-                    c.kind,
-                )
-            },
-        );
+        let (name, qualname, kind, name_binding): (String, String, CodeKind, NameBinding) = code
+            .map_or_else(
+                || {
+                    let label: String = format!("native_impl_{index}");
+                    (
+                        label.clone(),
+                        label,
+                        CodeKind::Function,
+                        NameBinding::Positional,
+                    )
+                },
+                |c: &CodeObjectMeta| {
+                    (
+                        c.name.clone(),
+                        c.qualname.clone().unwrap_or_else(|| c.name.clone()),
+                        c.kind,
+                        NameBinding::CodeObject,
+                    )
+                },
+            );
         let params: Vec<String> = match code {
             Some(c) if !c.varnames.is_empty() => c
                 .varnames
@@ -808,11 +975,15 @@ pub fn lift_native_bodies(image: &[u8], constants: &NuitkaConstants) -> Option<N
         functions.push(NativeFunctionBody {
             name,
             qualname,
-            impl_address,
-            code_size: end.saturating_sub(impl_address),
+            impl_address: located.address,
+            constructed_in: located.host,
+            constructor: located.constructor,
+            code_size: end.saturating_sub(located.address),
             argcount,
             varnames: params,
             kind,
+            name_binding,
+            api_calls: collect_api_calls(&view, &insns),
             ops,
             instruction_count: insns.len() as u64,
             recovered_stmts,
@@ -827,45 +998,77 @@ pub fn lift_native_bodies(image: &[u8], constants: &NuitkaConstants) -> Option<N
 
     let bound: usize = functions
         .iter()
-        .filter(|f: &&NativeFunctionBody| !f.name.starts_with("native_impl_"))
+        .filter(|f: &&NativeFunctionBody| f.is_name_bound())
         .count();
-    let mut notes: Vec<String> = Vec::new();
-    notes.push(format!(
-        "native body lift: located {} function impl(s) via the Nuitka function-constructor \
-         cross-reference; bound {} to recovered code-object metadata; reconstructed {} executable \
-         body/bodies for provably-sound idioms (pass-through / `return None`)",
-        impls.len(),
-        bound,
-        reconstructed
-    ));
-    notes.push(
-        "native body lift: operator identity, control flow, and per-slot constant values are \
-         specialized into type-slot dispatch by MSVC -O2, so remaining functions surface an \
-         honest operation trace rather than a fabricated body"
-            .to_owned(),
-    );
-    if !confident_binding {
-        notes.push(format!(
-            "native body lift: located {} impl(s) but the module carries {} user code object(s); \
-             the 1:1 source-order binding is not certain, so impls are reported positionally with \
-             an operation trace and no name-bound executable body",
-            impls.len(),
-            codes.len()
-        ));
-    }
-    dbg.kv("located impls", || impls.len().to_string());
+    let notes: Vec<String> = build_notes(&sites, &codes, plan, bound, reconstructed);
+    dbg.kv("located impls", || sites.impls.len().to_string());
+    dbg.kv("host functions", || sites.hosts.to_string());
     dbg.kv("reconstructed", || reconstructed.to_string());
 
     Some(NativeBodyRecovery {
         module_name: constants
-            .modules
-            .first()
+            .and_then(|c: &NuitkaConstants| c.modules.first())
             .map(|m: &crate::const_blob::ModuleConstants| m.name.clone())
             .unwrap_or_default(),
-        located_impls: impls.len(),
+        located_impls: sites.impls.len(),
+        host_functions: sites.hosts,
+        constructors: sites.constructors,
         bound_functions: bound,
         reconstructed_bodies: reconstructed,
         functions,
         notes,
     })
+}
+
+fn build_notes(
+    sites: &ImplSites,
+    codes: &[CodeObjectMeta],
+    plan: BindingPlan,
+    bound: usize,
+    reconstructed: usize,
+) -> Vec<String> {
+    let mut notes: Vec<String> = Vec::new();
+    notes.push(format!(
+        "native body lift: located {} function impl(s) via the Nuitka function-constructor \
+         cross-reference across {} constructing function(s) and {} constructor(s); bound {} to \
+         recovered code-object metadata; reconstructed {} executable body/bodies for \
+         provably-sound idioms (pass-through / `return None`)",
+        sites.impls.len(),
+        sites.hosts,
+        sites.constructors.len(),
+        bound,
+        reconstructed
+    ));
+    notes.push(
+        "native body lift: operator identity, control flow, and per-slot constant values are \
+         specialized into type-slot dispatch by the optimizing C compiler, so remaining functions \
+         surface an operation trace and the resolved CPython C-API call set rather than an \
+         invented body"
+            .to_owned(),
+    );
+    match plan {
+        BindingPlan::Union => {}
+        BindingPlan::PrimaryHost => notes.push(format!(
+            "native body lift: {} of the {} located impl(s) come from the largest constructing \
+             function and match the {} recovered user code object(s) one to one, so only those \
+             carry code-object names; the remaining impl(s) are reported positionally",
+            sites.primary_host_impls.len(),
+            sites.impls.len(),
+            codes.len()
+        )),
+        BindingPlan::None => notes.push(format!(
+            "native body lift: located {} impl(s) but the image carries {} user code object(s); \
+             the source-order binding is not certain, so impls are reported positionally with an \
+             operation trace and no name-bound executable body",
+            sites.impls.len(),
+            codes.len()
+        )),
+    }
+    if sites.decode_budget_exhausted {
+        notes.push(format!(
+            "native body lift: the constructor cross-reference stopped at the {MAX_ENUMERATION_INSNS} \
+             instruction decode budget, so impl enumeration over this image is partial"
+        ));
+    }
+    notes
 }

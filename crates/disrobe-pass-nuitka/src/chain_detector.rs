@@ -284,6 +284,13 @@ fn decompile_children(bytes: &[u8], app_stem: Option<&str>) -> CoreResult<Vec<Ch
         children.push(child("native/name-map.json".to_string(), json));
     }
 
+    if let Some(bodies) = decompilation.native_bodies.as_ref()
+        && !bodies.is_empty()
+        && let Ok(json) = serde_json::to_vec_pretty(bodies)
+    {
+        children.push(child("native/function-impls.json".to_string(), json));
+    }
+
     if let Ok(manifest) = serde_json::to_vec_pretty(&recovery_manifest(&decompilation)) {
         children.push(child("recovery-manifest.json".to_string(), manifest));
     }
@@ -316,6 +323,12 @@ fn recovery_manifest(decompilation: &NuitkaDecompilation) -> serde_json::Value {
         .name_map
         .as_ref()
         .map_or(0, |m: &crate::name_map::NativeNameMap| m.entries.len());
+    let (impls, hosts, named): (usize, usize, usize) = decompilation.native_bodies.as_ref().map_or(
+        (0, 0, 0),
+        |b: &crate::native_body::NativeBodyRecovery| {
+            (b.located_impls, b.host_functions, b.bound_functions)
+        },
+    );
     serde_json::json!({
         "schema": "disrobe.nuitka.recovery-manifest/v1",
         "outputs": {
@@ -323,6 +336,7 @@ fn recovery_manifest(decompilation: &NuitkaDecompilation) -> serde_json::Value {
             "skeleton/app/, skeleton/libs/": { "what": "typed signatures of native-compiled modules, app/ vs bundled libs/", "count": skeleton },
             "native/": { "what": "x86 disassembly of the compiled image .text", "instructions": instructions, "functions": functions },
             "native/name-map.json": { "what": "recovered python identifiers correlated to referencing .text functions", "identifiers": identifiers },
+            "native/function-impls.json": { "what": "compiled python function implementations located through the function-constructor cross-reference, with their resolved CPython C-API call sets", "impls": impls, "constructing_functions": hosts, "name_bound": named },
             "libs/": { "what": "bundled DLL/.pyd extension modules carved as child artifacts for native follow-up passes" },
             "data/": { "what": "bundled non-code data files" }
         }

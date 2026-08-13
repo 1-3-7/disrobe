@@ -232,8 +232,8 @@ fn native_body_lift_behavioral_differential_against_cpython() {
 
     let bytes: Vec<u8> = std::fs::read(&pyd).expect("read compiled module");
     let constants = parse_constants(&bytes);
-    let recovery: NativeBodyRecovery =
-        lift_native_bodies(&bytes, &constants).expect("native body recovery on real release pyd");
+    let recovery: NativeBodyRecovery = lift_native_bodies(&bytes, Some(&constants))
+        .expect("native body recovery on real release pyd");
 
     let ground_truth: BTreeSet<(u32, Option<usize>)> = probe_source_shapes(&py, &src);
     assert!(
