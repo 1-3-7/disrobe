@@ -84,6 +84,7 @@ pub enum Encoding {
     Hex,
     Codec,
     Utf16Le,
+    Utf16Be,
 }
 
 impl Encoding {
@@ -96,6 +97,7 @@ impl Encoding {
             Self::Hex => "hex",
             Self::Codec => "codec",
             Self::Utf16Le => "utf16le",
+            Self::Utf16Be => "utf16be",
         }
     }
 }
@@ -985,28 +987,56 @@ pub fn extract(bytes: &[u8]) -> Vec<Indicator> {
     extract_with_extra(bytes, &[])
 }
 
-fn decode_utf16le_runs(bytes: &[u8]) -> Vec<(usize, String)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WideEndian {
+    Little,
+    Big,
+}
+
+impl WideEndian {
+    #[inline]
+    const fn code_unit(self, first: u8, second: u8) -> Option<u8> {
+        let (lead, unit): (u8, u8) = match self {
+            Self::Little => (second, first),
+            Self::Big => (first, second),
+        };
+        if lead == 0x00 && matches!(unit, 0x09 | 0x0a | 0x0d | 0x20..=0x7e) {
+            Some(unit)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    const fn encoding(self) -> Encoding {
+        match self {
+            Self::Little => Encoding::Utf16Le,
+            Self::Big => Encoding::Utf16Be,
+        }
+    }
+}
+
+fn decode_utf16_runs(bytes: &[u8], endian: WideEndian) -> Vec<(usize, String)> {
     let mut runs: Vec<(usize, String)> = Vec::new();
     let mut i: usize = 0;
     let limit: usize = bytes.len().saturating_sub(1);
     while i < limit {
-        let lo: u8 = bytes[i];
-        let hi: u8 = bytes[i + 1];
-        if hi == 0x00 && matches!(lo, 0x09 | 0x0a | 0x0d | 0x20..=0x7e) {
-            let start: usize = i;
-            let mut run: String = String::new();
-            while i < limit
-                && bytes[i + 1] == 0x00
-                && matches!(bytes[i], 0x09 | 0x0a | 0x0d | 0x20..=0x7e)
-            {
-                run.push(bytes[i] as char);
-                i += 2;
-            }
-            if run.len() >= MIN_WIDE_RUN_CHARS {
-                runs.push((start, run));
-            }
-        } else {
+        let Some(first): Option<u8> = endian.code_unit(bytes[i], bytes[i + 1]) else {
             i += 1;
+            continue;
+        };
+        let start: usize = i;
+        let mut run: String = String::new();
+        run.push(first as char);
+        i += 2;
+        while i < limit
+            && let Some(unit) = endian.code_unit(bytes[i], bytes[i + 1])
+        {
+            run.push(unit as char);
+            i += 2;
+        }
+        if run.len() >= MIN_WIDE_RUN_CHARS {
+            runs.push((start, run));
         }
     }
     runs
@@ -1016,15 +1046,17 @@ fn scan_wide(bytes: &[u8], out: &mut Vec<Indicator>) {
     if bytes.len() < 8 {
         return;
     }
-    for (start, run) in decode_utf16le_runs(bytes) {
-        if out.len() >= MAX_INDICATORS {
-            return;
+    for endian in [WideEndian::Little, WideEndian::Big] {
+        for (start, run) in decode_utf16_runs(bytes, endian) {
+            if out.len() >= MAX_INDICATORS {
+                return;
+            }
+            if run.trim().is_empty() {
+                continue;
+            }
+            scan_text_layer(&run, endian.encoding(), start, out);
+            decode_and_recurse(&run, start, out);
         }
-        if run.trim().is_empty() {
-            continue;
-        }
-        scan_text_layer(&run, Encoding::Utf16Le, start, out);
-        decode_and_recurse(&run, start, out);
     }
 }
 

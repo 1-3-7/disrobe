@@ -14,11 +14,13 @@ pub mod malware_config;
 #[cfg(feature = "redact")]
 pub mod redact;
 pub mod secret_scan;
+pub mod string_emu;
 
 use self::ioc::IocKind;
 #[cfg(feature = "redact")]
 pub use self::redact::Redactor;
 use self::secret_scan::Severity;
+use self::string_emu::{DecodedString, RunLimits, StringEncoding};
 
 pub const RECON_SCHEMA: &str = "disrobe.recon/v0";
 
@@ -812,10 +814,13 @@ fn ioc_findings(lines: &LineIndex<'_>, path: Option<&str>, out: &mut Vec<ReconFi
             _ => Severity::Note,
         };
         let (line, column): (usize, usize) = lines.line_col(ind.offset);
-        let encoding_suffix: &str = if ind.encoding == ioc::Encoding::Utf16Le {
-            WIDE_ENCODING_SUFFIX
-        } else {
-            ""
+        let encoding_suffix: &str = match ind.encoding {
+            ioc::Encoding::Utf16Le => WIDE_ENCODING_SUFFIX,
+            ioc::Encoding::Utf16Be => WIDE_BE_ENCODING_SUFFIX,
+            ioc::Encoding::Plain
+            | ioc::Encoding::Base64
+            | ioc::Encoding::Hex
+            | ioc::Encoding::Codec => "",
         };
         out.push(ReconFinding {
             category,
@@ -1151,30 +1156,25 @@ fn first_self_describing_rc4(
     None
 }
 
-const MIN_WIDE_RUN_CHARS: usize = 4;
 const WIDE_ENCODING_SUFFIX: &str = "-UTF16LE";
+const WIDE_BE_ENCODING_SUFFIX: &str = "-UTF16BE";
+const MAX_WIDE_RUNS: usize = 1 << 16;
 
-fn extract_utf16le_ascii_runs(bytes: &[u8]) -> Vec<(usize, String)> {
-    let mut runs: Vec<(usize, String)> = Vec::new();
-    let mut i: usize = 0;
-    while i + 1 < bytes.len() {
-        let lo: u8 = bytes[i];
-        let hi: u8 = bytes[i + 1];
-        if (0x20..=0x7E).contains(&lo) && hi == 0x00 {
-            let start: usize = i;
-            let mut chars: Vec<char> = Vec::new();
-            while i + 1 < bytes.len() && (0x20..=0x7E).contains(&bytes[i]) && bytes[i + 1] == 0x00 {
-                chars.push(bytes[i] as char);
-                i += 2;
-            }
-            if chars.len() >= MIN_WIDE_RUN_CHARS {
-                runs.push((start, chars.into_iter().collect()));
-            }
-        } else {
-            i += 1;
-        }
+fn wide_run_limits() -> RunLimits {
+    RunLimits {
+        max_runs: MAX_WIDE_RUNS,
+        ..RunLimits::default()
     }
-    runs
+}
+
+fn extract_wide_ascii_runs(bytes: &[u8], encoding: StringEncoding) -> Vec<(usize, String)> {
+    string_emu::text_runs(bytes, 0, encoding, &wide_run_limits())
+        .into_iter()
+        .filter_map(|run: DecodedString| {
+            let start: usize = usize::try_from(run.address).ok()?;
+            run.text.map(|text: String| (start, text))
+        })
+        .collect()
 }
 
 fn anchor_wide_findings(
@@ -1182,14 +1182,15 @@ fn anchor_wide_findings(
     first_new: usize,
     lines: &LineIndex<'_>,
     run_start: usize,
+    suffix: &str,
 ) {
     let (line, column): (usize, usize) = lines.line_col(run_start);
     for finding in out.iter_mut().skip(first_new) {
         finding.offset = run_start;
         finding.line = line;
         finding.column = column;
-        if !finding.rule_id.ends_with(WIDE_ENCODING_SUFFIX) {
-            finding.rule_id.push_str(WIDE_ENCODING_SUFFIX);
+        if !finding.rule_id.ends_with(suffix) {
+            finding.rule_id.push_str(suffix);
         }
     }
 }
@@ -1213,12 +1214,17 @@ pub fn scan_bytes(
     endpoint_paths(&text, &lines, path, &mut out);
     endpoint_calls(&text, &lines, path, &mut out);
     onion_findings(&text, &lines, path, &mut out);
-    for (run_start, run) in extract_utf16le_ascii_runs(bytes) {
-        let first_new: usize = out.len();
-        let run_lines: LineIndex<'_> = LineIndex::new(run.as_bytes());
-        endpoint_rules(&run, &run_lines, path, &mut out);
-        onion_findings(&run, &run_lines, path, &mut out);
-        anchor_wide_findings(&mut out, first_new, &lines, run_start);
+    for (encoding, suffix) in [
+        (StringEncoding::Utf16Le, WIDE_ENCODING_SUFFIX),
+        (StringEncoding::Utf16Be, WIDE_BE_ENCODING_SUFFIX),
+    ] {
+        for (run_start, run) in extract_wide_ascii_runs(bytes, encoding) {
+            let first_new: usize = out.len();
+            let run_lines: LineIndex<'_> = LineIndex::new(run.as_bytes());
+            endpoint_rules(&run, &run_lines, path, &mut out);
+            onion_findings(&run, &run_lines, path, &mut out);
+            anchor_wide_findings(&mut out, first_new, &lines, run_start, suffix);
+        }
     }
     malware_config_findings(&lines, &text_lines, &text, path, &mut out);
     custom_rules(&text, &lines, path, config, &mut out);
@@ -2145,6 +2151,60 @@ mod tests {
             "a finding lifted out of a utf-16le run must name that encoding in its rule id \
              rather than read as a plain-text hit: {wide:?}"
         );
+    }
+
+    #[test]
+    fn a_utf16be_finding_is_anchored_in_the_real_file_and_names_its_encoding() {
+        const LEAD: &[u8] = b"MZ\x90\x00 plain header text padding here ";
+        let mut buffer: Vec<u8> = LEAD.to_vec();
+        let run_start: usize = buffer.len();
+        for b in b"http://bigend.example.com/c2" {
+            buffer.push(0x00);
+            buffer.push(*b);
+        }
+        buffer.extend_from_slice(b"\x00\x00trailing plain bytes");
+        let report: ReconReport =
+            report_bytes(&buffer, Some("sample.bin"), &ReconConfig::default());
+        let wide: &ReconFinding = report
+            .findings
+            .iter()
+            .find(|f: &&ReconFinding| f.value.contains("bigend.example.com"))
+            .unwrap_or_else(|| panic!("utf-16be url not reported: {:?}", report.findings));
+        assert_eq!(
+            wide.offset, run_start,
+            "the offset must point at the big-endian run in the real file: {wide:?}"
+        );
+        assert!(
+            wide.rule_id.ends_with(WIDE_BE_ENCODING_SUFFIX),
+            "a finding lifted out of a utf-16be run must name that encoding in its rule id: {wide:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_big_endian_reading_recovers_a_big_endian_run_whole() {
+        const URL: &str = "https://onlybig.example.org/beacon";
+        let mut buffer: Vec<u8> = b"padding bytes before ".to_vec();
+        for b in URL.as_bytes() {
+            buffer.push(0x00);
+            buffer.push(*b);
+        }
+        let report: ReconReport = report_bytes(&buffer, None, &ReconConfig::default());
+        assert!(
+            report.findings.iter().any(|f: &ReconFinding| {
+                f.rule_id.ends_with(WIDE_BE_ENCODING_SUFFIX) && f.value == URL
+            }),
+            "the big-endian reading must recover the whole url and name its encoding: {:?}",
+            report.findings
+        );
+        for finding in &report.findings {
+            if finding.rule_id.ends_with(WIDE_ENCODING_SUFFIX) {
+                assert!(
+                    finding.value.len() < URL.len(),
+                    "reading a big-endian buffer little-endian is one code unit short and must \
+                     never claim the whole value: {finding:?}"
+                );
+            }
+        }
     }
 
     #[test]
