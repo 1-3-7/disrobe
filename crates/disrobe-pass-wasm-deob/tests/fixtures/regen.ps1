@@ -3,6 +3,7 @@
 # Run from anywhere: pwsh crates/disrobe-pass-wasm-deob/tests/fixtures/regen.ps1
 param(
     [string]$Clang = "clang",
+    [string]$Rustc = "rustc",
     [switch]$SelectOnly
 )
 
@@ -30,6 +31,27 @@ foreach ($fixture in $selectFixtures) {
     & $Clang "--target=wasm32" $fixture.Optimize "-nostdlib" "-Wl,--no-entry" "-Wl,--strip-all" -o $output $source
     if ($LASTEXITCODE -ne 0) {
         throw "clang failed to regenerate $($fixture.Output)"
+    }
+    [string]$actual = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
+    if ($actual -ne $fixture.Sha256) {
+        throw "unexpected SHA-256 for $($fixture.Output): $actual"
+    }
+    Write-Host "regenerated $output"
+}
+
+# Recorded with rustc 1.96.1 (31fca3adb 2026-06-26) and the wasm32-unknown-unknown target.
+# rustc output is not byte-stable across releases, so another rustc fails the hash check.
+[object[]]$rustcFixtures = @(
+    @{ Source = "cff_rustc_temp_state.rs"; Output = "cff_rustc_temp_state.obf.wasm"; Optimize = "0"; Sha256 = "7C8DDBCA3DE23D75858E8153B1759A4FBF157F3A201E1E253CF9229069EA7239" }
+)
+
+& $Rustc --version
+foreach ($fixture in $rustcFixtures) {
+    [string]$source = Join-Path $dir $fixture.Source
+    [string]$output = Join-Path $dir $fixture.Output
+    & $Rustc "--target" "wasm32-unknown-unknown" "-C" "opt-level=$($fixture.Optimize)" "-C" "panic=abort" "--crate-type" "cdylib" "-o" $output $source
+    if ($LASTEXITCODE -ne 0) {
+        throw "rustc failed to regenerate $($fixture.Output)"
     }
     [string]$actual = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
     if ($actual -ne $fixture.Sha256) {

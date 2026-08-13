@@ -212,6 +212,163 @@ fn assert_fixture_reloops(clean: &str, obf: &str, export: &str) {
 }
 
 #[test]
+fn state_held_in_a_local_reloops_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_local_state.clean.wat",
+        "cff_local_state.obf.wat",
+        "classify_local",
+    );
+}
+
+#[test]
+fn state_held_in_a_global_reloops_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_global_state.clean.wat",
+        "cff_global_state.obf.wat",
+        "classify_global",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_local_state_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let mutant_bytes: Vec<u8> = assemble_fixture("cff_local_state.mutant.wat");
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_local");
+}
+
+fn read_global_i32(inst: &mut Inst, name: &str) -> Option<i32> {
+    let global: wasmtime::Global = inst.instance.get_global(&mut inst.store, name)?;
+    match global.get(&mut inst.store) {
+        Val::I32(v) => Some(v),
+        _ => None,
+    }
+}
+
+fn call_no_args(inst: &mut Inst, export: &str) -> Outcome {
+    let func: wasmtime::Func = match inst.instance.get_func(&mut inst.store, export) {
+        Some(f) => f,
+        None => return Outcome::Trap,
+    };
+    let mut results: [Val; 1] = [Val::I32(0)];
+    inst.store.set_fuel(FUEL_BUDGET).ok();
+    if func.call(&mut inst.store, &[], &mut results).is_err() {
+        return Outcome::Trap;
+    }
+    match results[0] {
+        Val::I32(v) => Outcome::Ret(v),
+        _ => Outcome::Trap,
+    }
+}
+
+#[test]
+fn an_exported_state_global_is_walled_rather_than_elided() {
+    let bytes: Vec<u8> = assemble_fixture("cff_global_state_observable.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover exported state global module");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "an exported state global must not be relooped: {:?}",
+        recovered.report
+    );
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 1,
+        "an exported state global must be walled: {:?}",
+        recovered.report
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_global");
+    assert_eq!(
+        call_i32(&mut original, "classify_global", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        call_i32(&mut candidate, "classify_global", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        read_global_i32(&mut candidate, "state"),
+        read_global_i32(&mut original, "state"),
+        "the exported state global must keep the value the original leaves behind"
+    );
+    assert_eq!(
+        read_global_i32(&mut original, "state"),
+        Some(3),
+        "the original module leaves the terminal dispatch state in the exported global"
+    );
+}
+
+#[test]
+fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
+    let bytes: Vec<u8> = assemble_fixture("cff_global_state_shared.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover shared state global module");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "a state global read elsewhere must not be relooped: {:?}",
+        recovered.report
+    );
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 1,
+        "a state global read elsewhere must be walled: {:?}",
+        recovered.report
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_global");
+    assert_eq!(
+        call_i32(&mut original, "classify_global", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        call_i32(&mut candidate, "classify_global", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        call_no_args(&mut candidate, "peek_state"),
+        call_no_args(&mut original, "peek_state"),
+        "the second reader of the state global must observe the same value"
+    );
+    assert_eq!(
+        call_no_args(&mut original, "peek_state"),
+        Outcome::Ret(3),
+        "the original module leaves the terminal dispatch state in the shared global"
+    );
+}
+
+#[test]
+fn a_real_rustc_next_state_temporary_is_walled_not_mis_structured() {
+    let bytes: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    let recovered: RecoveredModule =
+        recover_module(bytes).expect("recover rustc next-state-temporary module");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "the rustc next-state-temporary lowering is not a supported shape: {:?}",
+        recovered.report
+    );
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 1,
+        "an unsupported real lowering must be walled, never silently skipped: {:?}",
+        recovered.report
+    );
+    assert!(
+        wasmparser::validate(&recovered.bytes).is_ok(),
+        "the walled module must still validate"
+    );
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_local");
+}
+
+#[test]
 fn default_dispatch_state_reloops_under_wasmtime() {
     assert_fixture_reloops(
         "cff_default_state.clean.wat",

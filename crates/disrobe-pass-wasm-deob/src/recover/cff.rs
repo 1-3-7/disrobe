@@ -1,7 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use walrus::ir::{Instr, InstrSeqId, InstrSeqType, Value};
-use walrus::{FunctionId, FunctionKind, LocalFunction, LocalId, Module};
+use walrus::{
+    ExportItem, FunctionId, FunctionKind, GlobalId, GlobalKind, LocalFunction, LocalId, Module,
+};
+
+const NESTED_SEQ_LIMIT: usize = 4096;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CffRecovery {
@@ -12,13 +16,16 @@ pub struct CffRecovery {
 
 pub(super) fn restructure_flattened(module: &mut Module) -> CffRecovery {
     let local_ids: Vec<FunctionId> = module.funcs.iter_local().map(|(id, _)| id).collect();
+    let elidable: BTreeMap<FunctionId, BTreeSet<GlobalId>> = elidable_state_globals(module);
+    let empty: BTreeSet<GlobalId> = BTreeSet::new();
     let mut recovery: CffRecovery = CffRecovery::default();
     for fid in local_ids {
+        let globals: &BTreeSet<GlobalId> = elidable.get(&fid).unwrap_or(&empty);
         let FunctionKind::Local(func): &mut FunctionKind = &mut module.funcs.get_mut(fid).kind
         else {
             continue;
         };
-        match restructure_one(func) {
+        match restructure_one(func, globals) {
             Restructure::Linearized => recovery.functions_restructured += 1,
             Restructure::Relooped => {
                 recovery.functions_restructured += 1;
@@ -32,6 +39,106 @@ pub(super) fn restructure_flattened(module: &mut Module) -> CffRecovery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalOwner {
+    Function(FunctionId),
+    Shared,
+}
+
+fn elidable_state_globals(module: &Module) -> BTreeMap<FunctionId, BTreeSet<GlobalId>> {
+    let exported: BTreeSet<GlobalId> = module
+        .exports
+        .iter()
+        .filter_map(|export| match export.item {
+            ExportItem::Global(id) => Some(id),
+            ExportItem::Function(_)
+            | ExportItem::Table(_)
+            | ExportItem::Memory(_)
+            | ExportItem::Tag(_) => None,
+        })
+        .collect();
+    let mut owners: BTreeMap<GlobalId, GlobalOwner> = BTreeMap::new();
+    let mut referenced: BTreeMap<FunctionId, BTreeSet<GlobalId>> = BTreeMap::new();
+    for (fid, func) in module.funcs.iter_local() {
+        let globals: BTreeSet<GlobalId> = referenced_globals(func);
+        for global in &globals {
+            owners
+                .entry(*global)
+                .and_modify(|owner: &mut GlobalOwner| {
+                    if *owner != GlobalOwner::Function(fid) {
+                        *owner = GlobalOwner::Shared;
+                    }
+                })
+                .or_insert(GlobalOwner::Function(fid));
+        }
+        referenced.insert(fid, globals);
+    }
+    referenced
+        .into_iter()
+        .map(|(fid, globals): (FunctionId, BTreeSet<GlobalId>)| {
+            let owned: BTreeSet<GlobalId> = globals
+                .into_iter()
+                .filter(|global: &GlobalId| {
+                    owners.get(global) == Some(&GlobalOwner::Function(fid))
+                        && !exported.contains(global)
+                        && is_private_mutable_global(module, *global)
+                })
+                .collect();
+            (fid, owned)
+        })
+        .collect()
+}
+
+fn is_private_mutable_global(module: &Module, global: GlobalId) -> bool {
+    let entry: &walrus::Global = module.globals.get(global);
+    entry.mutable && matches!(entry.kind, GlobalKind::Local(_))
+}
+
+fn referenced_globals(func: &LocalFunction) -> BTreeSet<GlobalId> {
+    let mut out: BTreeSet<GlobalId> = BTreeSet::new();
+    for seq in reachable_seqs(func, func.entry_block()) {
+        for (instr, _) in &func.block(seq).instrs {
+            match instr {
+                Instr::GlobalGet(get) => {
+                    out.insert(get.global);
+                }
+                Instr::GlobalSet(set) => {
+                    out.insert(set.global);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn reachable_seqs(func: &LocalFunction, root: InstrSeqId) -> BTreeSet<InstrSeqId> {
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut stack: Vec<InstrSeqId> = vec![root];
+    let mut visited: usize = 0;
+    while let Some(seq) = stack.pop() {
+        visited = visited.saturating_add(1);
+        if visited > NESTED_SEQ_LIMIT || !seen.insert(seq) {
+            continue;
+        }
+        for (instr, _) in &func.block(seq).instrs {
+            for child in child_seqs(instr).into_iter().flatten() {
+                stack.push(child);
+            }
+        }
+    }
+    seen
+}
+
+const fn child_seqs(instr: &Instr) -> [Option<InstrSeqId>; 2] {
+    match instr {
+        Instr::Block(b) => [Some(b.seq), None],
+        Instr::Loop(l) => [Some(l.seq), None],
+        Instr::IfElse(ie) => [Some(ie.consequent), Some(ie.alternative)],
+        _ => [None, None],
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Restructure {
     Linearized,
     Relooped,
@@ -39,18 +146,19 @@ enum Restructure {
     NotFlattened,
 }
 
-fn restructure_one(func: &mut LocalFunction) -> Restructure {
+fn restructure_one(func: &mut LocalFunction, elidable_globals: &BTreeSet<GlobalId>) -> Restructure {
     let Some(plan): Option<Dispatcher> = detect_dispatcher(func) else {
-        return match super::reloop::try_reloop(func) {
+        return match super::reloop::try_reloop(func, elidable_globals) {
             super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
-            super::reloop::ReloopOutcome::Walled => Restructure::WalledBranching,
+            super::reloop::ReloopOutcome::Walled(_) => Restructure::WalledBranching,
             super::reloop::ReloopOutcome::NotApplicable => Restructure::NotFlattened,
         };
     };
     let Some(flow): Option<ExecutionPlan> = execution_plan(&plan) else {
-        return match super::reloop::try_reloop(func) {
+        return match super::reloop::try_reloop(func, elidable_globals) {
             super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
-            _ => Restructure::WalledBranching,
+            super::reloop::ReloopOutcome::Walled(_)
+            | super::reloop::ReloopOutcome::NotApplicable => Restructure::WalledBranching,
         };
     };
     rewrite_entry(func, &plan, &flow);
@@ -59,11 +167,18 @@ fn restructure_one(func: &mut LocalFunction) -> Restructure {
 
 type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaseExit {
+    Next(i32),
+    Return,
+    FallThrough,
+    Unresolved,
+}
+
 #[derive(Debug, Clone)]
 struct CaseBody {
     body: Body,
-    next_state: Option<i32>,
-    exits: bool,
+    exit: CaseExit,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +217,7 @@ fn detect_dispatcher(func: &LocalFunction) -> Option<Dispatcher> {
     let mut cases: BTreeMap<i32, CaseBody> = BTreeMap::new();
     for (state, target_block) in targets.iter().enumerate() {
         let body: Body = block_to_body.get(target_block).cloned().unwrap_or_default();
-        let case: CaseBody = lift_case(body, site.state_local, site.loop_seq);
+        let case: CaseBody = lift_case(func, body, site.state_local, site.loop_seq);
         let state_i32: i32 = i32::try_from(state).ok()?;
         cases.insert(state_i32, case);
     }
@@ -283,13 +398,24 @@ fn brtable_targets(instrs: &Body) -> Option<(Vec<InstrSeqId>, LocalId)> {
     None
 }
 
-fn lift_case(instrs: Body, state_local: LocalId, loop_seq: InstrSeqId) -> CaseBody {
+fn lift_case(
+    func: &LocalFunction,
+    instrs: Body,
+    state_local: LocalId,
+    loop_seq: InstrSeqId,
+) -> CaseBody {
     let mut body: Body = Vec::new();
     let mut next_state: Option<i32> = None;
     let mut last_const: Option<i32> = None;
-    let mut exits: bool = false;
+    let mut returns: bool = false;
+    let mut unresolved: bool = false;
     let mut pending_set: Option<usize> = None;
     for (instr, loc) in instrs {
+        for child in child_seqs(&instr).into_iter().flatten() {
+            if !nested_is_transparent(func, child, state_local) {
+                unresolved = true;
+            }
+        }
         match &instr {
             Instr::Const(c) => {
                 if let Value::I32(v) = c.value {
@@ -306,14 +432,19 @@ fn lift_case(instrs: Body, state_local: LocalId, loop_seq: InstrSeqId) -> CaseBo
                 if let Some(set_idx) = pending_set.take() {
                     truncate_state_write(&mut body, set_idx);
                 }
-                return CaseBody {
-                    body,
-                    next_state,
-                    exits: false,
+                let exit: CaseExit = match next_state {
+                    Some(state) if !unresolved => CaseExit::Next(state),
+                    Some(_) | None => CaseExit::Unresolved,
                 };
+                return CaseBody { body, exit };
+            }
+            Instr::Br(_) | Instr::BrIf(_) | Instr::BrTable(_) => {
+                unresolved = true;
+                last_const = None;
+                body.push((instr, loc));
             }
             Instr::Return(_) => {
-                exits = true;
+                returns = true;
                 body.push((instr, loc));
             }
             _ => {
@@ -324,8 +455,48 @@ fn lift_case(instrs: Body, state_local: LocalId, loop_seq: InstrSeqId) -> CaseBo
     }
     CaseBody {
         body,
-        next_state,
-        exits,
+        exit: trailing_exit(unresolved, next_state, returns),
+    }
+}
+
+const fn trailing_exit(unresolved: bool, next_state: Option<i32>, returns: bool) -> CaseExit {
+    if unresolved {
+        return CaseExit::Unresolved;
+    }
+    match next_state {
+        Some(state) => CaseExit::Next(state),
+        None if returns => CaseExit::Return,
+        None => CaseExit::FallThrough,
+    }
+}
+
+fn nested_is_transparent(func: &LocalFunction, root: InstrSeqId, state_local: LocalId) -> bool {
+    let inside: BTreeSet<InstrSeqId> = reachable_seqs(func, root);
+    if inside.len() >= NESTED_SEQ_LIMIT {
+        return false;
+    }
+    inside.iter().all(|seq: &InstrSeqId| {
+        func.block(*seq)
+            .instrs
+            .iter()
+            .all(|(instr, _)| nested_instr_is_transparent(instr, &inside, state_local))
+    })
+}
+
+fn nested_instr_is_transparent(
+    instr: &Instr,
+    inside: &BTreeSet<InstrSeqId>,
+    state_local: LocalId,
+) -> bool {
+    match instr {
+        Instr::Br(br) => inside.contains(&br.block),
+        Instr::BrIf(br) => inside.contains(&br.block),
+        Instr::BrTable(bt) => {
+            inside.contains(&bt.default) && bt.blocks.iter().all(|b| inside.contains(b))
+        }
+        Instr::LocalSet(set) => set.local != state_local,
+        Instr::LocalTee(tee) => tee.local != state_local,
+        _ => true,
     }
 }
 
@@ -368,12 +539,12 @@ fn execution_plan(plan: &Dispatcher) -> Option<ExecutionPlan> {
             return Some(ExecutionPlan::Linear(order));
         };
         order.push(current);
-        if case.exits {
-            return Some(ExecutionPlan::Linear(order));
-        }
-        match case.next_state {
-            Some(next) => current = next,
-            None => return Some(ExecutionPlan::Linear(order)),
+        match case.exit {
+            CaseExit::Unresolved => return None,
+            CaseExit::Return | CaseExit::FallThrough => {
+                return Some(ExecutionPlan::Linear(order));
+            }
+            CaseExit::Next(next) => current = next,
         }
     }
 }
@@ -477,11 +648,10 @@ fn is_dispatch_region(instr: &Instr, plan: &Dispatcher) -> bool {
 mod tests {
     use super::*;
 
-    fn case(next: Option<i32>, exits: bool) -> CaseBody {
+    fn case(exit: CaseExit) -> CaseBody {
         CaseBody {
             body: Vec::new(),
-            next_state: next,
-            exits,
+            exit,
         }
     }
 
@@ -494,10 +664,10 @@ mod tests {
         (local, seq)
     }
 
-    fn plan_with(entry: i32, cases: &[(i32, Option<i32>, bool)]) -> Dispatcher {
+    fn plan_with(entry: i32, cases: &[(i32, CaseExit)]) -> Dispatcher {
         let mut map: BTreeMap<i32, CaseBody> = BTreeMap::new();
-        for (state, next, exits) in cases {
-            map.insert(*state, case(*next, *exits));
+        for (state, exit) in cases {
+            map.insert(*state, case(*exit));
         }
         let (state_local, seq): (LocalId, InstrSeqId) = scaffold();
         Dispatcher {
@@ -513,7 +683,11 @@ mod tests {
     fn linear_chain_resolves_in_execution_order() {
         let plan: Dispatcher = plan_with(
             0,
-            &[(0, Some(1), false), (1, Some(2), false), (2, None, true)],
+            &[
+                (0, CaseExit::Next(1)),
+                (1, CaseExit::Next(2)),
+                (2, CaseExit::Return),
+            ],
         );
         let order: Vec<i32> = linear_order(&plan).expect("linear order");
         assert_eq!(order, vec![0, 1, 2]);
@@ -521,7 +695,7 @@ mod tests {
 
     #[test]
     fn cyclic_state_machine_uses_cycle_plan() {
-        let plan: Dispatcher = plan_with(0, &[(0, Some(1), false), (1, Some(0), false)]);
+        let plan: Dispatcher = plan_with(0, &[(0, CaseExit::Next(1)), (1, CaseExit::Next(0))]);
         assert!(linear_order(&plan).is_none(), "cycle must not linearize");
         assert_eq!(
             execution_plan(&plan),
@@ -534,10 +708,20 @@ mod tests {
 
     #[test]
     fn dangling_next_state_falls_through_to_loop_exit() {
-        let plan: Dispatcher = plan_with(0, &[(0, Some(5), false)]);
+        let plan: Dispatcher = plan_with(0, &[(0, CaseExit::Next(5))]);
         let order: Vec<i32> =
             linear_order(&plan).expect("dangling next routes to br_table default");
         assert_eq!(order, vec![0], "state 5 has no case so it is the loop exit");
+    }
+
+    #[test]
+    fn an_unresolved_case_refuses_the_linear_plan() {
+        let plan: Dispatcher = plan_with(0, &[(0, CaseExit::Next(1)), (1, CaseExit::Unresolved)]);
+        assert_eq!(
+            execution_plan(&plan),
+            None,
+            "a case whose transition is hidden behind control flow must not linearize"
+        );
     }
 
     #[test]
@@ -545,9 +729,9 @@ mod tests {
         let plan: Dispatcher = plan_with(
             0,
             &[
-                (0, Some(1), false),
-                (1, Some(2), false),
-                (2, Some(3), false),
+                (0, CaseExit::Next(1)),
+                (1, CaseExit::Next(2)),
+                (2, CaseExit::Next(3)),
             ],
         );
         let order: Vec<i32> = linear_order(&plan).expect("linearize");

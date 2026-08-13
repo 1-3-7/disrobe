@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_cfg::{Flow, FlowGraph, PostDominator};
 use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind, Value};
-use walrus::{LocalFunction, LocalId};
+use walrus::{GlobalId, LocalFunction, LocalId, MemoryId};
 
 type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
 
@@ -11,30 +11,118 @@ const RENDER_GUARD: usize = 4096;
 const TRANSITION_INSTRUCTION_LIMIT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WallReason {
+    ObservableStateCell,
+    UnsupportedTransition,
+    UnstructurableStateGraph,
+}
+
+impl WallReason {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::ObservableStateCell => "state cell is observable outside the dispatcher",
+            Self::UnsupportedTransition => "state transition is not a resolvable constant edge",
+            Self::UnstructurableStateGraph => "state graph has no sound structured form",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReloopOutcome {
     Restructured,
-    Walled,
+    Walled(WallReason),
     NotApplicable,
 }
 
-pub(super) fn try_reloop(func: &mut LocalFunction) -> ReloopOutcome {
+pub(super) fn try_reloop(
+    func: &mut LocalFunction,
+    elidable_globals: &BTreeSet<GlobalId>,
+) -> ReloopOutcome {
     let Some(disp): Option<Dispatcher> = detect(func) else {
         return ReloopOutcome::NotApplicable;
     };
+    if !cell_is_elidable(&disp, elidable_globals) {
+        return wall(WallReason::ObservableStateCell);
+    }
     let Some(graph): Option<Graph> = build_graph(func, &disp) else {
-        return ReloopOutcome::Walled;
+        return wall(WallReason::UnsupportedTransition);
     };
     let Some(tree): Option<SNode> = structure(&graph) else {
-        return ReloopOutcome::Walled;
+        return wall(WallReason::UnstructurableStateGraph);
     };
     emit(func, &disp, &graph, &tree);
     ReloopOutcome::Restructured
 }
 
-#[derive(Debug, Clone, Copy)]
-struct StateSlot {
-    base: LocalId,
-    offset: u32,
+fn wall(reason: WallReason) -> ReloopOutcome {
+    crate::debug::dbg_kv("unflatten-wall", || reason.name().to_owned());
+    ReloopOutcome::Walled(reason)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateCell {
+    Local(LocalId),
+    Global(GlobalId),
+    MemorySlot {
+        base: LocalId,
+        memory: MemoryId,
+        offset: u32,
+    },
+}
+
+impl StateCell {
+    const fn address_prefix_len(self) -> usize {
+        match self {
+            Self::MemorySlot { .. } => 1,
+            Self::Local(_) | Self::Global(_) => 0,
+        }
+    }
+
+    const fn write_sequence_len(self) -> usize {
+        self.address_prefix_len() + 2
+    }
+
+    fn address_prefix_matches(self, prefix: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
+        match self {
+            Self::MemorySlot { base, .. } => {
+                matches!(prefix.first(), Some((Instr::LocalGet(get), _)) if get.local == base)
+            }
+            Self::Local(_) | Self::Global(_) => prefix.is_empty(),
+        }
+    }
+
+    fn commit_matches(self, instr: &Instr) -> bool {
+        match self {
+            Self::Local(local) => matches!(instr, Instr::LocalSet(set) if set.local == local),
+            Self::Global(global) => matches!(instr, Instr::GlobalSet(set) if set.global == global),
+            Self::MemorySlot { memory, offset, .. } => matches!(
+                instr,
+                Instr::Store(store)
+                    if store.memory == memory
+                        && store.arg.offset == offset
+                        && matches!(store.kind, StoreKind::I32 { atomic: false })
+            ),
+        }
+    }
+
+    fn read_matches(self, instr: &Instr) -> bool {
+        match self {
+            Self::Local(local) => {
+                matches!(instr, Instr::LocalGet(get) if get.local == local)
+                    || matches!(instr, Instr::LocalTee(tee) if tee.local == local)
+            }
+            Self::Global(global) => matches!(instr, Instr::GlobalGet(get) if get.global == global),
+            Self::MemorySlot { memory, offset, .. } => {
+                matches!(instr, Instr::Load(load) if load.memory == memory && load.arg.offset == offset)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Selector {
+    Local(LocalId),
+    Global(GlobalId),
 }
 
 #[derive(Debug, Clone)]
@@ -42,10 +130,23 @@ struct Dispatcher {
     preamble: Body,
     suffix: Body,
     entry_state: i32,
-    slot: StateSlot,
+    cell: StateCell,
     case_count: u32,
     default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
+}
+
+fn cell_is_elidable(disp: &Dispatcher, elidable_globals: &BTreeSet<GlobalId>) -> bool {
+    if let StateCell::Global(global) = disp.cell {
+        if !elidable_globals.contains(&global) {
+            return false;
+        }
+    }
+    !reads_cell(&disp.suffix, disp.cell)
+}
+
+fn reads_cell(instrs: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> bool {
+    instrs.iter().any(|(instr, _)| cell.read_matches(instr))
 }
 
 fn detect(func: &LocalFunction) -> Option<Dispatcher> {
@@ -60,7 +161,6 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     let loop_seq: InstrSeqId = dispatch_loop.seq;
     let loop_body: &Body = &func.block(loop_seq).instrs;
 
-    let (slot, temp): (StateSlot, LocalId) = state_read(loop_body)?;
     if !ends_with_branch_to(loop_body, loop_seq) {
         return None;
     }
@@ -70,7 +170,9 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     })?;
 
     let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> = build_parent_map(func, entry);
-    let (targets, default): (Vec<InstrSeqId>, InstrSeqId) = find_switch(func, wrapper, temp)?;
+    let (targets, default, selector): (Vec<InstrSeqId>, InstrSeqId, Selector) =
+        find_switch(func, wrapper)?;
+    let cell: StateCell = resolve_state_cell(loop_body, selector)?;
 
     let case_count: u32 = u32::try_from(targets.len()).ok()?;
     let mut state_to_body: BTreeMap<i32, Body> = BTreeMap::new();
@@ -85,42 +187,65 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
 
     let preamble: Body = entry_instrs[..loop_index].to_vec();
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
-    let entry_state: i32 = last_slot_init(&preamble, slot)?;
+    let entry_state: i32 = initial_state(&preamble, cell)?;
 
     Some(Dispatcher {
         preamble,
         suffix,
         entry_state,
-        slot,
+        cell,
         case_count,
         default_state,
         state_to_body,
     })
 }
 
-fn state_read(loop_body: &Body) -> Option<(StateSlot, LocalId)> {
-    for window in loop_body.windows(3) {
-        let Instr::LocalGet(base) = &window[0].0 else {
-            continue;
-        };
-        let Instr::Load(load) = &window[1].0 else {
-            continue;
-        };
-        let Instr::LocalSet(temp) = &window[2].0 else {
-            continue;
-        };
-        if !matches!(load.kind, LoadKind::I32 { .. }) {
-            continue;
-        }
-        return Some((
-            StateSlot {
-                base: base.local,
-                offset: load.arg.offset,
-            },
-            temp.local,
-        ));
+fn resolve_state_cell(loop_body: &Body, selector: Selector) -> Option<StateCell> {
+    match selector {
+        Selector::Global(global) => Some(StateCell::Global(global)),
+        Selector::Local(temp) => resolve_local_selector(loop_body, temp),
     }
-    None
+}
+
+fn resolve_local_selector(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
+    let definitions: usize = loop_body
+        .iter()
+        .filter(|(instr, _)| {
+            matches!(instr, Instr::LocalSet(set) if set.local == temp)
+                || matches!(instr, Instr::LocalTee(tee) if tee.local == temp)
+        })
+        .count();
+    match definitions {
+        0 => Some(StateCell::Local(temp)),
+        1 => copied_state_cell(loop_body, temp),
+        _ => None,
+    }
+}
+
+fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
+    let set_index: usize = loop_body
+        .iter()
+        .position(|(instr, _)| matches!(instr, Instr::LocalSet(set) if set.local == temp))?;
+    let source_index: usize = set_index.checked_sub(1)?;
+    match &loop_body.get(source_index)?.0 {
+        Instr::LocalGet(get) => Some(StateCell::Local(get.local)),
+        Instr::GlobalGet(get) => Some(StateCell::Global(get.global)),
+        Instr::Load(load) => {
+            if !matches!(load.kind, LoadKind::I32 { atomic: false }) {
+                return None;
+            }
+            let base_index: usize = source_index.checked_sub(1)?;
+            let Instr::LocalGet(base) = &loop_body.get(base_index)?.0 else {
+                return None;
+            };
+            Some(StateCell::MemorySlot {
+                base: base.local,
+                memory: load.memory,
+                offset: load.arg.offset,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn ends_with_branch_to(body: &Body, target: InstrSeqId) -> bool {
@@ -131,8 +256,7 @@ fn ends_with_branch_to(body: &Body, target: InstrSeqId) -> bool {
 fn find_switch(
     func: &LocalFunction,
     wrapper: InstrSeqId,
-    temp: LocalId,
-) -> Option<(Vec<InstrSeqId>, InstrSeqId)> {
+) -> Option<(Vec<InstrSeqId>, InstrSeqId, Selector)> {
     let mut current: InstrSeqId = wrapper;
     let mut depth: usize = 0;
     loop {
@@ -141,7 +265,7 @@ fn find_switch(
             return None;
         }
         let instrs: &Body = &func.block(current).instrs;
-        let found: Option<(Vec<InstrSeqId>, InstrSeqId)> = switch_here(instrs, temp);
+        let found: Option<(Vec<InstrSeqId>, InstrSeqId, Selector)> = switch_here(instrs);
         if let Some(result) = found {
             return Some(result);
         }
@@ -153,19 +277,18 @@ fn find_switch(
     }
 }
 
-fn switch_here(instrs: &Body, temp: LocalId) -> Option<(Vec<InstrSeqId>, InstrSeqId)> {
-    let mut last_get: Option<LocalId> = None;
+fn switch_here(instrs: &Body) -> Option<(Vec<InstrSeqId>, InstrSeqId, Selector)> {
+    let mut last_read: Option<Selector> = None;
     for (instr, _) in instrs {
         match instr {
-            Instr::LocalGet(lg) => last_get = Some(lg.local),
+            Instr::LocalGet(lg) => last_read = Some(Selector::Local(lg.local)),
+            Instr::GlobalGet(gg) => last_read = Some(Selector::Global(gg.global)),
             Instr::BrTable(bt) => {
-                if last_get == Some(temp) {
-                    return Some((bt.blocks.to_vec(), bt.default));
-                }
-                return None;
+                return last_read
+                    .map(|selector: Selector| (bt.blocks.to_vec(), bt.default, selector));
             }
             Instr::Block(_) => {}
-            _ => last_get = None,
+            _ => last_read = None,
         }
     }
     None
@@ -209,29 +332,32 @@ fn case_body(
     Some(parent_instrs.get(index + 1..)?.to_vec())
 }
 
-fn last_slot_init(preamble: &Body, slot: StateSlot) -> Option<i32> {
+fn initial_state(preamble: &Body, cell: StateCell) -> Option<i32> {
     let mut found: Option<i32> = None;
-    for window in preamble.windows(3) {
-        let Instr::LocalGet(base) = &window[0].0 else {
-            continue;
-        };
-        let Instr::Const(c) = &window[1].0 else {
-            continue;
-        };
-        let Instr::Store(store) = &window[2].0 else {
-            continue;
-        };
-        if base.local != slot.base
-            || store.arg.offset != slot.offset
-            || !matches!(store.kind, StoreKind::I32 { .. })
-        {
-            continue;
-        }
-        if let Value::I32(v) = c.value {
-            found = Some(v);
+    for window in preamble.windows(cell.write_sequence_len()) {
+        if let Some(value) = state_write_constant(window, cell) {
+            found = Some(value);
         }
     }
     found
+}
+
+fn state_write_constant(
+    window: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+) -> Option<i32> {
+    if window.len() != cell.write_sequence_len() {
+        return None;
+    }
+    let prefix: usize = cell.address_prefix_len();
+    if !cell.address_prefix_matches(window.get(..prefix)?) {
+        return None;
+    }
+    let value: i32 = i32_constant(&window.get(prefix)?.0)?;
+    if !cell.commit_matches(&window.get(prefix.checked_add(1)?)?.0) {
+        return None;
+    }
+    Some(value)
 }
 
 #[derive(Debug, Clone)]
@@ -266,7 +392,7 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
             return None;
         }
         let body: &Body = disp.state_to_body.get(&state)?;
-        let mut node: Node = classify_case(func, body, disp.slot)?;
+        let mut node: Node = classify_case(func, body, disp.cell)?;
         canonicalize_transition(&mut node.trans, disp);
         match &node.trans {
             Trans::Exit => {}
@@ -307,7 +433,15 @@ const fn canonicalize_transition(trans: &mut Trans, disp: &Dispatcher) {
     }
 }
 
-fn classify_case(func: &LocalFunction, body: &Body, slot: StateSlot) -> Option<Node> {
+fn classify_case(func: &LocalFunction, body: &Body, cell: StateCell) -> Option<Node> {
+    let node: Node = classify_case_shape(func, body, cell)?;
+    if reads_cell(&node.work, cell) || reads_cell(&node.cond, cell) {
+        return None;
+    }
+    Some(node)
+}
+
+fn classify_case_shape(func: &LocalFunction, body: &Body, cell: StateCell) -> Option<Node> {
     let return_pos: Option<usize> = body
         .iter()
         .position(|(instr, _)| matches!(instr, Instr::Return(_)));
@@ -324,7 +458,7 @@ fn classify_case(func: &LocalFunction, body: &Body, slot: StateSlot) -> Option<N
     }
 
     let stripped: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(body);
-    if let Some(node) = classify_select_conditional(stripped, slot) {
+    if let Some(node) = classify_select_conditional(stripped, cell) {
         return Some(node);
     }
     let (last, head): (
@@ -333,9 +467,9 @@ fn classify_case(func: &LocalFunction, body: &Body, slot: StateSlot) -> Option<N
     ) = stripped.split_last()?;
 
     if let Instr::Block(_) = &last.0 {
-        return classify_conditional(func, head, last, slot);
+        return classify_conditional(func, head, last, cell);
     }
-    classify_goto(stripped, slot)
+    classify_goto(stripped, cell)
 }
 
 fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
@@ -345,16 +479,10 @@ fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
     }
 }
 
-fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], slot: StateSlot) -> Option<Node> {
-    let len: usize = stripped.len();
-    if len < 3 {
-        return None;
-    }
-    let base_get: &Instr = &stripped[len - 3].0;
-    let const_val: &Instr = &stripped[len - 2].0;
-    let store: &Instr = &stripped[len - 1].0;
-    let next: i32 = match_state_store(base_get, const_val, store, slot)?;
-    let work: Body = stripped[..len - 3].to_vec();
+fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> Option<Node> {
+    let head_len: usize = stripped.len().checked_sub(cell.write_sequence_len())?;
+    let next: i32 = state_write_constant(stripped.get(head_len..)?, cell)?;
+    let work: Body = stripped.get(..head_len)?.to_vec();
     if !is_flat(&work) {
         return None;
     }
@@ -367,25 +495,26 @@ fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], slot: StateSlot) 
 
 fn classify_select_conditional(
     stripped: &[(Instr, walrus::ir::InstrLocId)],
-    slot: StateSlot,
+    cell: StateCell,
 ) -> Option<Node> {
     if stripped.len() > TRANSITION_INSTRUCTION_LIMIT {
         return None;
     }
-    let store_index: usize = stripped.len().checked_sub(1)?;
-    let select_index: usize = store_index.checked_sub(1)?;
+    let commit_index: usize = stripped.len().checked_sub(1)?;
+    let select_index: usize = commit_index.checked_sub(1)?;
     if !matches!(stripped.get(select_index)?.0, Instr::Select(_)) {
         return None;
     }
-    let store: &Instr = &stripped.get(store_index)?.0;
+    let commit: &Instr = &stripped.get(commit_index)?.0;
     let prefix: &[(Instr, walrus::ir::InstrLocId)] = stripped.get(..select_index)?;
+    let anchor_window: usize = cell.write_sequence_len();
     let (anchor, then_state, else_state): (usize, i32, i32) =
-        prefix.windows(3).enumerate().rev().find_map(
+        prefix.windows(anchor_window).enumerate().rev().find_map(
             |(index, window): (usize, &[(Instr, walrus::ir::InstrLocId)])| {
-                select_transition_candidate(index, window, store, slot)
+                select_transition_candidate(index, window, commit, cell)
             },
         )?;
-    let condition_start: usize = anchor.checked_add(3)?;
+    let condition_start: usize = anchor.checked_add(anchor_window)?;
     let work: Body = stripped.get(..anchor)?.to_vec();
     let cond: Body = stripped.get(condition_start..select_index)?.to_vec();
     if cond.is_empty()
@@ -430,45 +559,32 @@ fn condition_has_isolated_value_stack(condition: &Body) -> bool {
 fn select_transition_candidate(
     index: usize,
     window: &[(Instr, walrus::ir::InstrLocId)],
-    store: &Instr,
-    slot: StateSlot,
+    commit: &Instr,
+    cell: StateCell,
 ) -> Option<(usize, i32, i32)> {
-    let then_state: i32 = match_select_state_store(
-        &window.first()?.0,
-        &window.get(1)?.0,
-        &window.get(2)?.0,
-        store,
-        slot,
-    )?;
-    let else_state: i32 = i32_constant(&window.get(2)?.0)?;
-    Some((index, then_state, else_state))
-}
-
-fn match_select_state_store(
-    base_get: &Instr,
-    then_value: &Instr,
-    else_value: &Instr,
-    store: &Instr,
-    slot: StateSlot,
-) -> Option<i32> {
-    let _: i32 = i32_constant(else_value)?;
-    if !state_store_matches(base_get, store, slot) {
+    if window.len() != cell.write_sequence_len() || !cell.commit_matches(commit) {
         return None;
     }
-    i32_constant(then_value)
+    let prefix: usize = cell.address_prefix_len();
+    if !cell.address_prefix_matches(window.get(..prefix)?) {
+        return None;
+    }
+    let then_state: i32 = i32_constant(&window.get(prefix)?.0)?;
+    let else_state: i32 = i32_constant(&window.get(prefix.checked_add(1)?)?.0)?;
+    Some((index, then_state, else_state))
 }
 
 fn classify_conditional(
     func: &LocalFunction,
     head: &[(Instr, walrus::ir::InstrLocId)],
     outer_instr: &(Instr, walrus::ir::InstrLocId),
-    slot: StateSlot,
+    cell: StateCell,
 ) -> Option<Node> {
     let work: Body = head.to_vec();
     if !is_flat(&work) {
         return None;
     }
-    let idiom: Conditional = condition_from_blocks(func, outer_instr, slot)?;
+    let idiom: Conditional = condition_from_blocks(func, outer_instr, cell)?;
     if !is_flat(&idiom.cond) {
         return None;
     }
@@ -491,7 +607,7 @@ struct Conditional {
 fn condition_from_blocks(
     func: &LocalFunction,
     outer_instr: &(Instr, walrus::ir::InstrLocId),
-    slot: StateSlot,
+    cell: StateCell,
 ) -> Option<Conditional> {
     let Instr::Block(outer) = &outer_instr.0 else {
         return None;
@@ -502,7 +618,7 @@ fn condition_from_blocks(
     };
     let inner_id: InstrSeqId = inner.seq;
     let sb_store: &[(Instr, walrus::ir::InstrLocId)] = outer_body.get(1..)?;
-    let guard_nonzero_state: i32 = trailing_state_store(sb_store, slot)?;
+    let guard_nonzero_state: i32 = state_write_constant(sb_store, cell)?;
 
     let inner_body: &Body = &func.block(inner_id).instrs;
     let brif_index: usize = inner_body
@@ -520,50 +636,12 @@ fn condition_from_blocks(
     if !matches!(&br_out.0, Instr::Br(br) if br.block == outer.seq) {
         return None;
     }
-    let guard_zero_state: i32 = trailing_state_store(sa_store, slot)?;
+    let guard_zero_state: i32 = state_write_constant(sa_store, cell)?;
     Some(Conditional {
         cond,
         then_state: guard_nonzero_state,
         else_state: guard_zero_state,
     })
-}
-
-fn trailing_state_store(
-    instrs: &[(Instr, walrus::ir::InstrLocId)],
-    slot: StateSlot,
-) -> Option<i32> {
-    if instrs.len() != 3 {
-        return None;
-    }
-    match_state_store(&instrs[0].0, &instrs[1].0, &instrs[2].0, slot)
-}
-
-fn match_state_store(
-    base_get: &Instr,
-    const_val: &Instr,
-    store: &Instr,
-    slot: StateSlot,
-) -> Option<i32> {
-    if !state_store_matches(base_get, store, slot) {
-        return None;
-    }
-    i32_constant(const_val)
-}
-
-fn state_store_matches(base_get: &Instr, store: &Instr, slot: StateSlot) -> bool {
-    let Instr::LocalGet(base) = base_get else {
-        return false;
-    };
-    let Instr::Store(s) = store else {
-        return false;
-    };
-    if base.local != slot.base
-        || s.arg.offset != slot.offset
-        || !matches!(s.kind, StoreKind::I32 { .. })
-    {
-        return false;
-    }
-    true
 }
 
 const fn i32_constant(instr: &Instr) -> Option<i32> {
@@ -1112,6 +1190,28 @@ mod tests {
             items[1]
         );
         assert!(matches!(items[2], SNode::Work(3)));
+    }
+
+    #[test]
+    fn an_irreducible_two_entry_loop_is_walled_not_faked() {
+        let g: Graph = graph(
+            0,
+            vec![
+                (
+                    0,
+                    Trans::Cond {
+                        then_state: 1,
+                        else_state: 2,
+                    },
+                ),
+                (1, Trans::Goto(2)),
+                (2, Trans::Goto(1)),
+            ],
+        );
+        assert!(
+            structure(&g).is_none(),
+            "a cycle entered at two distinct states is irreducible and must wall"
+        );
     }
 
     #[test]
