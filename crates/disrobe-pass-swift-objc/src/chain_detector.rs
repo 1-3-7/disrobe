@@ -1,15 +1,22 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::path::{Path, PathBuf};
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::{
-    CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput, FAMILY_NATIVE_FORMAT,
-    ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    CatalogEntry, ChildArtifact, ChildHandle, DetectContext, DetectVerdict, Detector,
+    DetectorOutput, FAMILY_NATIVE_FORMAT, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
-use disrobe_core::pass::PassId;
+use disrobe_core::pass::{PassContext, PassId};
 use disrobe_core::provenance::Language;
 
+use crate::dyld_cache::subcache::CacheFamily;
+use crate::dyld_cache::{
+    self, DyldSharedCache, ReconstructBatch, ReconstructOptions, ReconstructedDylib,
+    UnresolvedImage,
+};
 use crate::macho::{
     DylibReference, FatArchEntry, MachoKind, ParsedSlice, Section, Segment, detect_magic,
     parse_slice, slice_bytes, walk_fat,
@@ -22,6 +29,9 @@ const TAG_MACHO_SLICE32: &str = "macho-slice-32";
 const TAG_MACHO_SLICE64: &str = "macho-slice-64";
 const TAG_MACHO_FAT32: &str = "macho-fat-32";
 const TAG_MACHO_FAT64: &str = "macho-fat-64";
+const TAG_DYLD_SHARED_CACHE: &str = "dyld-shared-cache";
+
+const MAX_CHAIN_CHILDREN: usize = 256;
 
 #[derive(Debug)]
 pub struct SwiftObjcDetector;
@@ -33,6 +43,26 @@ impl Detector for SwiftObjcDetector {
     }
 
     fn detect(&self, ctx: &DetectContext<'_>) -> Option<DetectVerdict> {
+        if dyld_cache::is_dyld_shared_cache(ctx.bytes) {
+            return dyld_cache::parse(ctx.bytes).ok().map(
+                |parsed: DyldSharedCache| -> DetectVerdict {
+                    DetectVerdict::new(
+                        PASS_ID,
+                        TAG_DYLD_SHARED_CACHE,
+                        FAMILY_NATIVE_FORMAT,
+                        0.99,
+                        45,
+                        vec!["dyld-v1-magic"],
+                        format!(
+                            "dyld shared cache arch={} layout={} images={}",
+                            parsed.arch,
+                            parsed.layout.label(),
+                            parsed.images.len()
+                        ),
+                    )
+                },
+            );
+        }
         let kind: MachoKind = detect_magic(ctx.bytes)?;
         let marker: &'static str = semantic_marker(ctx.bytes, kind)?;
         Some(verdict_for(kind, marker))
@@ -65,8 +95,64 @@ impl Pass for SwiftObjcPassAdapter {
         }
     }
 
+    fn extract_children(&self, input: &Artifact) -> CoreResult<Vec<ChildArtifact>> {
+        self.extract_children_with_context(input, PassContext::with_path_hint(None))
+    }
+
+    fn extract_children_with_context(
+        &self,
+        input: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        let bytes: &[u8] = input.envelope.as_slice();
+        if !dyld_cache::is_dyld_shared_cache(bytes) {
+            return Ok(Vec::new());
+        }
+        let batch: ReconstructBatch = reconstruct_cache(bytes, context.path_hint)?;
+        if !batch.unresolved.is_empty() {
+            let named: Vec<String> = batch
+                .unresolved
+                .iter()
+                .take(8)
+                .map(|image: &UnresolvedImage| format!("{}: {}", image.install_name, image.reason))
+                .collect();
+            let reason: String = batch
+                .partial_reason
+                .unwrap_or_else(|| "some images could not be reached".to_owned());
+            return Err(CoreError::PassFailure(format!(
+                "DR-SWOBJ-0906: swift-objc.classify: {} of {} dyld cache images could not be reconstructed ({reason}); unreached: {}",
+                batch.unresolved.len(),
+                batch.unresolved.len() + batch.dylibs.len(),
+                named.join("; ")
+            )));
+        }
+        let mut out: Vec<ChildArtifact> = Vec::with_capacity(batch.dylibs.len());
+        for dylib in batch.dylibs {
+            out.push(ChildArtifact {
+                handle: ChildHandle {
+                    artifact_index: 0,
+                    relative_path: child_path(&dylib.install_name),
+                    hint: None,
+                },
+                bytes: dylib.bytes,
+            });
+        }
+        Ok(out)
+    }
+
     fn run(&self, artifact: &Artifact) -> CoreResult<Artifact> {
         let bytes: &[u8] = artifact.envelope.as_slice();
+        if dyld_cache::is_dyld_shared_cache(bytes) {
+            let report: SwiftObjcReport =
+                analyze_swift_objc(bytes).map_err(|e: crate::error::Error| {
+                    CoreError::PassFailure(format!("DR-SWOBJ-0905: dyld shared cache analyze: {e}"))
+                })?;
+            let payload: Vec<u8> =
+                serde_json::to_vec_pretty(&report).map_err(|e: serde_json::Error| {
+                    CoreError::PassFailure(format!("DR-SWOBJ-0904: serialize report: {e}"))
+                })?;
+            return Ok(Artifact::new(Rung::Disasm, payload, artifact.root_hash));
+        }
         if detect_magic(bytes).is_none() {
             return Err(CoreError::PassFailure(
                 "DR-SWOBJ-0902: swift-objc.classify: input is not a recognized Mach-O magic"
@@ -101,6 +187,89 @@ pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::n
 );
 
 pub static SWIFT_OBJC_PASS: SwiftObjcPassAdapter = SwiftObjcPassAdapter;
+
+fn reconstruct_cache(bytes: &[u8], path_hint: Option<&str>) -> CoreResult<ReconstructBatch> {
+    let parsed: DyldSharedCache = dyld_cache::parse(bytes).map_err(|e: crate::error::Error| {
+        CoreError::PassFailure(format!("DR-SWOBJ-0907: dyld shared cache parse: {e}"))
+    })?;
+    if parsed.images.len() > MAX_CHAIN_CHILDREN {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0908: swift-objc.classify: the cache bundles {} images, which exceeds the {MAX_CHAIN_CHILDREN}-child chain cap; recover it with the dedicated dyld cache command instead",
+            parsed.images.len()
+        )));
+    }
+    if let Some(family) = family_for(path_hint, &parsed)? {
+        return dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+            .map_err(|e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
+            });
+    }
+    let dylibs: Vec<ReconstructedDylib> =
+        dyld_cache::reconstruct_all_with(bytes, &parsed, ReconstructOptions::LOAD_READY).map_err(
+            |e: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-SWOBJ-0909: dyld cache reconstruct: {e}"))
+            },
+        )?;
+    Ok(ReconstructBatch {
+        dylibs,
+        unresolved: Vec::new(),
+        missing_sub_caches: Vec::new(),
+        partial_reason: None,
+    })
+}
+
+fn family_for(
+    path_hint: Option<&str>,
+    parsed: &DyldSharedCache,
+) -> CoreResult<Option<CacheFamily>> {
+    if parsed.sub_caches.is_empty() {
+        return Ok(None);
+    }
+    let Some(hint): Option<&str> = path_hint else {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0910: swift-objc.classify: the cache declares {} sibling files but the chain supplied no path to compute their names from",
+            parsed.sub_caches.len()
+        )));
+    };
+    let path: PathBuf = PathBuf::from(hint);
+    if !Path::new(&path).is_file() {
+        return Err(CoreError::PassFailure(format!(
+            "DR-SWOBJ-0911: swift-objc.classify: the cache declares {} sibling files but '{hint}' is not a readable file to compute their names from",
+            parsed.sub_caches.len()
+        )));
+    }
+    let (family, _reparsed): (CacheFamily, DyldSharedCache) = dyld_cache::open_family(&path)
+        .map_err(|e: crate::error::Error| {
+            CoreError::PassFailure(format!("DR-SWOBJ-0912: dyld cache sibling files: {e}"))
+        })?;
+    Ok(Some(family))
+}
+
+fn child_path(install_name: &str) -> String {
+    let mut out: String = String::with_capacity(install_name.len());
+    for part in install_name.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('/');
+        }
+        for character in part.chars() {
+            if character.is_ascii_graphic()
+                && !matches!(character, ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            {
+                out.push(character);
+            } else {
+                out.push('_');
+            }
+        }
+    }
+    if out.is_empty() {
+        "dyld-cache-image".to_owned()
+    } else {
+        out
+    }
+}
 
 fn render_class_dump(report: &SwiftObjcReport) -> Option<String> {
     let mut out: String =
@@ -215,7 +384,7 @@ impl CatalogEntry for SwiftObjcCatalogEntry {
     }
 }
 
-const CATALOG_COUNT: usize = 2;
+const CATALOG_COUNT: usize = 3;
 
 static CATALOG: [SwiftObjcCatalogEntry; CATALOG_COUNT] = [
     SwiftObjcCatalogEntry {
@@ -230,12 +399,19 @@ static CATALOG: [SwiftObjcCatalogEntry; CATALOG_COUNT] = [
         aliases: &["fat", "universal", "lipo"],
         quality: SupportQuality::Full,
     },
+    SwiftObjcCatalogEntry {
+        id: "dyld-shared-cache",
+        display_name: "dyld shared cache",
+        aliases: &["dyld", "dsc", "shared-cache", "dyld_shared_cache"],
+        quality: SupportQuality::Full,
+    },
 ];
 
 fn catalog_id_for_tag(tag: &str) -> Option<&'static str> {
     match tag {
         TAG_MACHO_SLICE32 | TAG_MACHO_SLICE64 => Some("swift-macho"),
         TAG_MACHO_FAT32 | TAG_MACHO_FAT64 => Some("swift-macho-fat"),
+        TAG_DYLD_SHARED_CACHE => Some("dyld-shared-cache"),
         _ => None,
     }
 }

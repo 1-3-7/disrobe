@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::code_signature::{self, CodeSignature};
+use crate::dyld_cache::slide::{self, SlideInfoVersion};
+use crate::dyld_cache::{self, DyldSharedCache};
 use crate::error::Error;
 use crate::fairplay::{self, FairPlayStatus};
 use crate::ipa::{self, EmbeddedImage, EmbeddedImageRole, IpaInventory};
@@ -23,6 +25,7 @@ pub struct SwiftObjcReport {
     pub embedded_images: Vec<EmbeddedImageReport>,
     pub unanalyzed_embedded_images: Vec<UnanalyzedEmbeddedImage>,
     pub swift_module: Option<SwiftModuleDecls>,
+    pub dyld_cache: Option<DyldCacheReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +48,7 @@ pub enum ContainerKind {
     Ipa,
     MachO,
     SwiftModule,
+    DyldSharedCache,
     Other,
 }
 
@@ -85,6 +89,93 @@ pub struct MetadataSummary {
     pub swift_associated_types: usize,
     pub swift_mangled_symbols: usize,
     pub swift_demangled_symbols: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DyldSlideRegionReport {
+    pub index: u32,
+    pub address: u64,
+    pub size: u64,
+    pub version: Option<u32>,
+    pub unsupported_version: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DyldCacheReport {
+    pub magic: String,
+    pub arch: String,
+    pub layout: String,
+    pub header_size: u32,
+    pub uuid: Option<String>,
+    pub platform: u32,
+    pub format_version: u8,
+    pub simulator: bool,
+    pub built_from_chained_fixups: bool,
+    pub mappings: usize,
+    pub images: usize,
+    pub sub_caches: usize,
+    pub sub_cache_entry_kind: Option<String>,
+    pub local_symbols_in_symbols_file: bool,
+    pub slide_regions: Vec<DyldSlideRegionReport>,
+    pub truncated_mappings: Vec<u32>,
+    pub overlapping_mappings: Vec<(u32, u32)>,
+    pub install_names: Vec<String>,
+}
+
+const MAX_REPORTED_INSTALL_NAMES: usize = 4096;
+
+fn dyld_cache_report(bytes: &[u8]) -> crate::error::Result<DyldCacheReport> {
+    let parsed: DyldSharedCache = dyld_cache::parse(bytes)?;
+    let mut slide_regions: Vec<DyldSlideRegionReport> =
+        Vec::with_capacity(parsed.slide_mappings.len());
+    for mapping in &parsed.slide_mappings {
+        if mapping.slide.size == 0 {
+            continue;
+        }
+        let (version, unsupported): (Option<u32>, Option<u32>) =
+            match slide::version_of(bytes, mapping.slide) {
+                Ok(found) => (Some(SlideInfoVersion::number(found)), None),
+                Err(crate::error::Error::UnsupportedDyldSlideInfo(raw)) => (None, Some(raw)),
+                Err(error) => return Err(error),
+            };
+        slide_regions.push(DyldSlideRegionReport {
+            index: mapping.index,
+            address: mapping.address,
+            size: mapping.size,
+            version,
+            unsupported_version: unsupported,
+        });
+    }
+    let install_names: Vec<String> = parsed
+        .images
+        .iter()
+        .take(MAX_REPORTED_INSTALL_NAMES)
+        .map(|image: &crate::dyld_cache::DyldImage| image.install_name.clone())
+        .collect();
+    Ok(DyldCacheReport {
+        magic: parsed.magic.clone(),
+        arch: parsed.arch.clone(),
+        layout: parsed.layout.label().to_owned(),
+        header_size: parsed.header_size,
+        uuid: parsed.uuid.clone(),
+        platform: parsed.platform,
+        format_version: parsed.format_version,
+        simulator: parsed.simulator,
+        built_from_chained_fixups: parsed.built_from_chained_fixups,
+        mappings: parsed.mappings.len(),
+        images: parsed.images.len(),
+        sub_caches: parsed.sub_caches.len(),
+        sub_cache_entry_kind: parsed
+            .sub_cache_entry_kind
+            .map(|kind: crate::dyld_cache::subcache::SubCacheEntryKind| kind.label().to_owned()),
+        local_symbols_in_symbols_file: parsed.local_symbols.as_ref().is_some_and(
+            |location: &crate::dyld_cache::LocalSymbolsLocation| location.in_symbols_file,
+        ),
+        slide_regions,
+        truncated_mappings: parsed.truncated_mappings.clone(),
+        overlapping_mappings: parsed.overlapping_mappings,
+        install_names,
+    })
 }
 
 pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
@@ -140,6 +231,23 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             embedded_images,
             unanalyzed_embedded_images,
             swift_module: None,
+            dyld_cache: None,
+        });
+    }
+    if dyld_cache::is_dyld_shared_cache(bytes) {
+        crate::debug::dbg_kv("classify", || {
+            "dyld shared cache (dyld_v1 magic)".to_owned()
+        });
+        let report: DyldCacheReport = dyld_cache_report(bytes)?;
+        return Ok(SwiftObjcReport {
+            container: ContainerKind::DyldSharedCache,
+            ipa: None,
+            fat_entries: Vec::new(),
+            slices: Vec::new(),
+            embedded_images: Vec::new(),
+            unanalyzed_embedded_images: Vec::new(),
+            swift_module: None,
+            dyld_cache: Some(report),
         });
     }
     if let Some(kind) = macho::detect_magic(bytes) {
@@ -153,6 +261,7 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             embedded_images: Vec::new(),
             unanalyzed_embedded_images: Vec::new(),
             swift_module: None,
+            dyld_cache: None,
         });
     }
     if swiftmodule::is_swift_module(bytes) {
@@ -168,6 +277,7 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
             embedded_images: Vec::new(),
             unanalyzed_embedded_images: Vec::new(),
             swift_module: Some(decls),
+            dyld_cache: None,
         });
     }
     crate::debug::dbg_kv("classify", || {
@@ -181,6 +291,7 @@ pub fn analyze(bytes: &[u8]) -> crate::error::Result<SwiftObjcReport> {
         embedded_images: Vec::new(),
         unanalyzed_embedded_images: Vec::new(),
         swift_module: None,
+        dyld_cache: None,
     })
 }
 

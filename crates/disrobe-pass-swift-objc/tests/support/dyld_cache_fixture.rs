@@ -86,6 +86,8 @@ pub(crate) struct CacheSpec {
     pub(crate) emit_sibling: bool,
     pub(crate) declared_suffix: Option<String>,
     pub(crate) slide: Option<SlidePlan>,
+    pub(crate) local_symbols: Vec<String>,
+    pub(crate) emit_symbols_file: bool,
 }
 
 impl CacheSpec {
@@ -98,7 +100,21 @@ impl CacheSpec {
             emit_sibling: false,
             declared_suffix: None,
             slide: None,
+            local_symbols: Vec::new(),
+            emit_symbols_file: false,
         }
+    }
+
+    pub(crate) fn with_local_symbols(mut self, names: &[&str]) -> Self {
+        self.local_symbols = names.iter().map(|name: &&str| (*name).to_owned()).collect();
+        self.emit_symbols_file = true;
+        self.shape = HeaderShape::SubCaches;
+        self
+    }
+
+    pub(crate) const fn without_symbols_file(mut self) -> Self {
+        self.emit_symbols_file = false;
+        self
     }
 
     pub(crate) const fn with_shape(mut self, shape: HeaderShape) -> Self {
@@ -145,6 +161,7 @@ pub(crate) struct PlacedSegment {
 pub(crate) struct BuiltCache {
     pub(crate) primary: Vec<u8>,
     pub(crate) sibling: Option<Vec<u8>>,
+    pub(crate) symbols: Option<Vec<u8>>,
     pub(crate) image_address: u64,
     pub(crate) segments: Vec<PlacedSegment>,
     pub(crate) slide_expectations: Vec<(u64, u64)>,
@@ -273,9 +290,13 @@ pub(crate) fn build(image: &[u8], spec: &CacheSpec) -> BuiltCache {
         write_sibling_header(&mut sibling, spec, &placed);
     }
 
+    let symbols: Option<Vec<u8>> = (!spec.local_symbols.is_empty() && spec.emit_symbols_file)
+        .then(|| build_symbols_file(spec, text.vmaddr));
+
     BuiltCache {
         primary,
         sibling: (spec.split_linkedit && spec.emit_sibling).then_some(sibling),
+        symbols,
         image_address: text.vmaddr,
         segments: placed,
         slide_expectations,
@@ -489,7 +510,9 @@ fn write_primary_header(
             let raw: &[u8] = suffix.as_bytes();
             cache[entry_at + 24..entry_at + 24 + raw.len()].copy_from_slice(raw);
         }
-        cache[SYMBOL_FILE_UUID_FIELD..SYMBOL_FILE_UUID_FIELD + 16].copy_from_slice(&[0u8; 16]);
+    }
+    if spec.shape == HeaderShape::SubCaches && !spec.local_symbols.is_empty() {
+        cache[SYMBOL_FILE_UUID_FIELD..SYMBOL_FILE_UUID_FIELD + 16].copy_from_slice(&[0xEF; 16]);
     }
     written_slide_blob
 }
@@ -518,6 +541,56 @@ fn write_sibling_header(cache: &mut [u8], spec: &CacheSpec, placed: &[PlacedSegm
         write_u32(cache, at + 24, 1);
         write_u32(cache, at + 28, 1);
     }
+}
+
+const LOCAL_SYMBOLS_AT: u64 = 0x4000;
+const NLIST_64_SIZE: usize = 16;
+
+fn build_symbols_file(spec: &CacheSpec, image_address: u64) -> Vec<u8> {
+    let mut strings: Vec<u8> = vec![0u8];
+    let mut nlist: Vec<u8> = Vec::with_capacity(spec.local_symbols.len() * NLIST_64_SIZE);
+    for (index, name) in spec.local_symbols.iter().enumerate() {
+        let strx: u32 = strings.len() as u32;
+        strings.extend_from_slice(name.as_bytes());
+        strings.push(0);
+        nlist.extend_from_slice(&strx.to_le_bytes());
+        nlist.push(0x0E);
+        nlist.push(1);
+        nlist.extend_from_slice(&0u16.to_le_bytes());
+        nlist.extend_from_slice(&(image_address + 0x100 * index as u64).to_le_bytes());
+    }
+    let info_size: u32 = 24;
+    let nlist_offset: u32 = info_size;
+    let strings_offset: u32 = nlist_offset + nlist.len() as u32;
+    let entries_offset: u32 = strings_offset + strings.len() as u32;
+    let mut blob: Vec<u8> = Vec::new();
+    blob.extend_from_slice(&nlist_offset.to_le_bytes());
+    blob.extend_from_slice(&(spec.local_symbols.len() as u32).to_le_bytes());
+    blob.extend_from_slice(&strings_offset.to_le_bytes());
+    blob.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+    blob.extend_from_slice(&entries_offset.to_le_bytes());
+    blob.extend_from_slice(&1u32.to_le_bytes());
+    blob.extend_from_slice(&nlist);
+    blob.extend_from_slice(&strings);
+    blob.extend_from_slice(&0u64.to_le_bytes());
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    blob.extend_from_slice(&(spec.local_symbols.len() as u32).to_le_bytes());
+
+    let header_size: u32 = spec.shape.header_size() as u32;
+    let total: u64 = align_up(LOCAL_SYMBOLS_AT + blob.len() as u64, CACHE_PAGE);
+    let mut file: Vec<u8> = vec![0u8; total as usize];
+    file[..MAGIC_LEN].copy_from_slice(&magic_bytes(&spec.arch));
+    write_u32(&mut file, MAPPING_OFFSET_FIELD, header_size);
+    write_u32(&mut file, MAPPING_COUNT_FIELD, 0);
+    write_u32(&mut file, IMAGES_OFFSET_OLD_FIELD, 0);
+    write_u32(&mut file, IMAGES_COUNT_OLD_FIELD, 0);
+    write_u32(&mut file, IMAGES_OFFSET_NEW_FIELD, header_size);
+    write_u32(&mut file, IMAGES_COUNT_NEW_FIELD, 0);
+    write_u64(&mut file, LOCAL_SYMBOLS_OFFSET_FIELD, LOCAL_SYMBOLS_AT);
+    write_u64(&mut file, LOCAL_SYMBOLS_SIZE_FIELD, blob.len() as u64);
+    let at: usize = LOCAL_SYMBOLS_AT as usize;
+    file[at..at + blob.len()].copy_from_slice(&blob);
+    file
 }
 
 pub(crate) fn slide_carrier(placed: &[PlacedSegment]) -> Option<&PlacedSegment> {

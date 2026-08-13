@@ -405,11 +405,19 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
         let in_symbols_file: bool = layout.has_sub_caches()
             && header_size >= SYMBOL_FILE_UUID_FIELD + UUID_LEN
             && has_symbol_file_uuid(cache)?;
-        (file_offset != 0 && size != 0).then_some(LocalSymbolsLocation {
-            file_offset,
-            size,
-            in_symbols_file,
-        })
+        if in_symbols_file {
+            Some(LocalSymbolsLocation {
+                file_offset,
+                size,
+                in_symbols_file,
+            })
+        } else {
+            (file_offset != 0 && size != 0).then_some(LocalSymbolsLocation {
+                file_offset,
+                size,
+                in_symbols_file,
+            })
+        }
     } else {
         None
     };

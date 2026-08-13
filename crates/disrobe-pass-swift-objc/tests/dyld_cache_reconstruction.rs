@@ -390,7 +390,90 @@ fn write_family(dir: &Path, cache: &BuiltCache) -> PathBuf {
         std::fs::write(dir.join("dyld_shared_cache_arm64e.1"), sibling)
             .expect("write the sibling cache");
     }
+    if let Some(symbols) = cache.symbols.as_ref() {
+        std::fs::write(dir.join("dyld_shared_cache_arm64e.symbols"), symbols)
+            .expect("write the symbols cache");
+    }
     primary
+}
+
+const LOCAL_SYMBOL_NAMES: [&str; 2] = ["_local_alpha", "_local_beta"];
+
+#[test]
+fn local_symbols_held_in_the_sibling_symbols_file_join_the_synthesized_symbol_table() {
+    let (image, cache): (Vec<u8>, BuiltCache) =
+        built(&CacheSpec::modern(INSTALL_NAME).with_local_symbols(&LOCAL_SYMBOL_NAMES));
+    let dir: ScratchDir = ScratchDir::create("dr-dyld-locals").expect("scratch directory");
+    let primary: PathBuf = write_family(dir.path(), &cache);
+
+    let (family, parsed): (CacheFamily, DyldSharedCache) =
+        dyld_cache::open_family(&primary).expect("the family opens");
+    assert!(
+        family.symbols.is_some(),
+        "the computed .symbols sibling loads"
+    );
+    assert!(family.partial_reason().is_none());
+
+    let batch: ReconstructBatch =
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+            .expect("the family reconstructs");
+    assert_eq!(batch.dylibs.len(), 1);
+    let recovered: &ReconstructedDylib = &batch.dylibs[0];
+    let summary = recovered
+        .linkedit
+        .expect("a load-ready image carries a synthesized linkedit");
+    assert_eq!(summary.local_symbols, LOCAL_SYMBOL_NAMES.len() as u32);
+    assert_eq!(
+        summary.symbols,
+        PINNED_NLIST_ENTRIES + LOCAL_SYMBOL_NAMES.len() as u32
+    );
+    let reparsed: ParsedSlice =
+        macho::parse_slice(&recovered.bytes).expect("the recovered image parses");
+    let names: Vec<String> = macho::symbol_names(&recovered.bytes, &reparsed);
+    let mut expected: Vec<String> = macho::symbol_names(&image, &parse_original(&image));
+    expected.extend(
+        LOCAL_SYMBOL_NAMES
+            .iter()
+            .map(|name: &&str| (*name).to_owned()),
+    );
+    assert_eq!(
+        names, expected,
+        "the central local-symbol run must be appended to the image's own symbol table"
+    );
+}
+
+#[test]
+fn a_missing_symbols_file_degrades_to_a_named_partial_result() {
+    let (image, cache): (Vec<u8>, BuiltCache) = built(
+        &CacheSpec::modern(INSTALL_NAME)
+            .with_local_symbols(&LOCAL_SYMBOL_NAMES)
+            .without_symbols_file(),
+    );
+    let dir: ScratchDir = ScratchDir::create("dr-dyld-nolocals").expect("scratch directory");
+    let primary: PathBuf = write_family(dir.path(), &cache);
+
+    let (family, parsed): (CacheFamily, DyldSharedCache) =
+        dyld_cache::open_family(&primary).expect("the family opens without a symbols file");
+    assert!(family.symbols.is_none());
+    let reason: String = family
+        .partial_reason()
+        .expect("an absent symbols file must be named");
+    assert!(
+        reason.contains("dyld_shared_cache_arm64e.symbols"),
+        "got: {reason}"
+    );
+
+    let batch: ReconstructBatch =
+        dyld_cache::reconstruct_family(&family, &parsed, ReconstructOptions::LOAD_READY)
+            .expect("the image still reconstructs without its local symbols");
+    let recovered: &ReconstructedDylib = &batch.dylibs[0];
+    let reparsed: ParsedSlice =
+        macho::parse_slice(&recovered.bytes).expect("the recovered image parses");
+    assert_eq!(
+        macho::symbol_names(&recovered.bytes, &reparsed),
+        macho::symbol_names(&image, &parse_original(&image)),
+        "without the symbols file the image keeps exactly its own symbol table"
+    );
 }
 
 #[test]

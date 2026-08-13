@@ -30,11 +30,25 @@ pub use code_signature::{
     BlobSlot, CodeDirectory, CodeSignature, HashKind, PageHashAudit, PageHashVerdict,
     SignatureCoverage, SlotKind, parse as parse_code_signature,
 };
+pub use dyld_cache::linkedit::LinkeditSummary as DyldLinkeditSummary;
+pub use dyld_cache::slide::{
+    PointerAuth as DyldPointerAuth, SlideInfoVersion, SlideSummary as DyldSlideSummary,
+};
+pub use dyld_cache::subcache::{
+    CacheFamily as DyldCacheFamily, MissingSubCache as MissingDyldSubCache,
+    SubCacheEntry as DyldSubCacheEntry, SubCacheEntryKind as DyldSubCacheEntryKind,
+};
 pub use dyld_cache::{
-    DyldImage, DyldMapping, DyldSharedCache, ReconstructedDylib, is_dyld_shared_cache,
-    parse as parse_dyld_cache, reconstruct_all as reconstruct_dyld_images,
+    AuthPointerRecord, CacheFile, CacheHeaderLayout, CacheSpace, DyldImage, DyldMapping,
+    DyldSharedCache, DyldSlideMapping, LocalSymbolsLocation, ReconstructBatch, ReconstructOptions,
+    ReconstructedDylib, SegmentLayout, UnresolvedImage, is_dyld_shared_cache,
+    open_family as open_dyld_cache_family, parse as parse_dyld_cache,
+    reconstruct_all as reconstruct_dyld_images,
+    reconstruct_all_with as reconstruct_dyld_images_with,
     reconstruct_by_name as reconstruct_dyld_image_by_name,
+    reconstruct_family as reconstruct_dyld_cache_family,
     reconstruct_image as reconstruct_dyld_image,
+    reconstruct_image_with as reconstruct_dyld_image_with,
 };
 pub use error::{Error, Result};
 pub use fairplay::{
@@ -71,8 +85,8 @@ pub use objc_records::{
     recover_interfaces as recover_objc_interfaces, recover_protocols as recover_objc_protocols,
 };
 pub use pass::{
-    ContainerKind, EmbeddedImageReport, MetadataSummary, SliceReport, SwiftObjcReport,
-    UnanalyzedEmbeddedImage, analyze,
+    ContainerKind, DyldCacheReport, DyldSlideRegionReport, EmbeddedImageReport, MetadataSummary,
+    SliceReport, SwiftObjcReport, UnanalyzedEmbeddedImage, analyze,
 };
 pub use plist_decode::{
     EntitlementValue, EntitlementsDecode, InfoPlistSummary,

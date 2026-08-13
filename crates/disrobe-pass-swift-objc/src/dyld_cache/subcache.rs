@@ -86,7 +86,16 @@ impl CacheFamily {
     #[must_use]
     pub fn partial_reason(&self) -> Option<String> {
         if self.missing.is_empty() {
-            return None;
+            return self
+                .symbols_missing
+                .as_ref()
+                .map(|entry: &MissingSubCache| {
+                    format!(
+                        "the unmapped local-symbols file was not found next to the primary cache: {} ({})",
+                        entry.candidate_names.join(", "),
+                        entry.reason
+                    )
+                });
         }
         let named: Vec<String> = self
             .missing

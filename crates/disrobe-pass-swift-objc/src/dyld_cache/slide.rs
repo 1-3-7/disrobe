@@ -775,6 +775,206 @@ mod tests {
         assert!(auth.address_diversity);
     }
 
+    const REGION_FILE_OFFSET: u64 = 0x1000;
+    const REGION_VM_ADDRESS: u64 = 0x4000_0000;
+    const REGION_SIZE: u64 = 0x2000;
+    const BLOB_AT: u64 = 0x40;
+    const TEST_PAGE: u32 = 0x1000;
+
+    struct Harness {
+        cache: Vec<u8>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self {
+                cache: vec![0u8; (REGION_FILE_OFFSET + REGION_SIZE) as usize],
+            }
+        }
+
+        fn put_blob(&mut self, blob: &[u8]) {
+            let at: usize = BLOB_AT as usize;
+            self.cache[at..at + blob.len()].copy_from_slice(blob);
+        }
+
+        fn put_u64(&mut self, page_offset: u64, value: u64) {
+            let at: usize = (REGION_FILE_OFFSET + page_offset) as usize;
+            self.cache[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn put_u32(&mut self, page_offset: u64, value: u32) {
+            let at: usize = (REGION_FILE_OFFSET + page_offset) as usize;
+            self.cache[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn walk(&self, blob_len: u64) -> Result<Vec<SlidPointer>> {
+            let mut out: Vec<SlidPointer> = Vec::new();
+            unapply_range(
+                &self.cache,
+                SlideLocation {
+                    file_offset: BLOB_AT,
+                    size: blob_len,
+                },
+                SlideTarget {
+                    vm_address: REGION_VM_ADDRESS,
+                    file_offset: REGION_FILE_OFFSET,
+                    size: REGION_SIZE,
+                },
+                &(REGION_VM_ADDRESS..REGION_VM_ADDRESS + REGION_SIZE),
+                &mut |pointer: SlidPointer| {
+                    out.push(pointer);
+                    Ok(())
+                },
+            )?;
+            Ok(out)
+        }
+    }
+
+    fn delta_blob(version: u32, delta_mask: u64, value_add: u64, page_starts: &[u16]) -> Vec<u8> {
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(&version.to_le_bytes());
+        blob.extend_from_slice(&TEST_PAGE.to_le_bytes());
+        blob.extend_from_slice(&40u32.to_le_bytes());
+        blob.extend_from_slice(&(page_starts.len() as u32).to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(&delta_mask.to_le_bytes());
+        blob.extend_from_slice(&value_add.to_le_bytes());
+        for entry in page_starts {
+            blob.extend_from_slice(&entry.to_le_bytes());
+        }
+        blob
+    }
+
+    #[test]
+    fn version_2_walks_its_delta_chain_and_adds_the_value_add() {
+        let mut harness: Harness = Harness::new();
+        let blob: Vec<u8> = delta_blob(2, 0x00FF_FF00_0000_0000, 0x1000, &[0, 0x4000]);
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        harness.put_u64(0, 0x1234_4678 | (8u64 << 38));
+        harness.put_u64(8, 0x0000_0000);
+        let walked: Vec<SlidPointer> = harness.walk(blob_len).expect("v2 chain walks");
+        assert_eq!(walked.len(), 2);
+        assert_eq!(walked[0].vm_address, REGION_VM_ADDRESS);
+        assert_eq!(walked[0].unslid_value, 0x1234_5678);
+        assert_eq!(walked[0].width, 8);
+        assert_eq!(walked[1].vm_address, REGION_VM_ADDRESS + 8);
+        assert_eq!(
+            walked[1].unslid_value, 0,
+            "a zero slot stays zero rather than becoming the value add"
+        );
+    }
+
+    #[test]
+    fn version_2_page_extras_start_a_second_chain_on_the_same_page() {
+        let mut harness: Harness = Harness::new();
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(&2u32.to_le_bytes());
+        blob.extend_from_slice(&TEST_PAGE.to_le_bytes());
+        blob.extend_from_slice(&40u32.to_le_bytes());
+        blob.extend_from_slice(&2u32.to_le_bytes());
+        blob.extend_from_slice(&44u32.to_le_bytes());
+        blob.extend_from_slice(&2u32.to_le_bytes());
+        blob.extend_from_slice(&0x00FF_FF00_0000_0000u64.to_le_bytes());
+        blob.extend_from_slice(&0x1000u64.to_le_bytes());
+        blob.extend_from_slice(&(PAGE_ATTR_EXTRA).to_le_bytes());
+        blob.extend_from_slice(&PAGE_ATTR_NO_REBASE_V2.to_le_bytes());
+        blob.extend_from_slice(&0u16.to_le_bytes());
+        blob.extend_from_slice(&(4u16 | PAGE_ATTR_END).to_le_bytes());
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        harness.put_u64(0, 0x2000);
+        harness.put_u64(16, 0x3000);
+        let walked: Vec<SlidPointer> = harness.walk(blob_len).expect("v2 extras walk");
+        assert_eq!(walked.len(), 2);
+        assert_eq!(walked[0].vm_address, REGION_VM_ADDRESS);
+        assert_eq!(walked[0].unslid_value, 0x3000);
+        assert_eq!(walked[1].vm_address, REGION_VM_ADDRESS + 16);
+        assert_eq!(walked[1].unslid_value, 0x4000);
+    }
+
+    #[test]
+    fn version_4_applies_the_three_documented_value_rules_across_a_chain() {
+        let mut harness: Harness = Harness::new();
+        let blob: Vec<u8> = delta_blob(4, 0xC000_0000, 0x4000_0000, &[0, PAGE_NO_REBASE_V4]);
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        harness.put_u32(0, 0x0000_1234 | (4u32 << 28));
+        harness.put_u32(4, 0x3FFF_8001 | (4u32 << 28));
+        harness.put_u32(8, 0x0004_1234);
+        let walked: Vec<SlidPointer> = harness.walk(blob_len).expect("v4 chain walks");
+        assert_eq!(walked.len(), 3);
+        assert_eq!(walked[0].unslid_value, 0x0000_1234);
+        assert_eq!(walked[0].width, 4);
+        assert_eq!(walked[1].unslid_value, 0xFFFF_8001);
+        assert_eq!(walked[2].unslid_value, 0x4004_1234);
+    }
+
+    #[test]
+    fn version_1_reports_every_bit_its_page_bitmap_sets_and_leaves_the_value_alone() {
+        let mut harness: Harness = Harness::new();
+        let mut blob: Vec<u8> = Vec::new();
+        blob.extend_from_slice(&1u32.to_le_bytes());
+        blob.extend_from_slice(&24u32.to_le_bytes());
+        blob.extend_from_slice(&1u32.to_le_bytes());
+        blob.extend_from_slice(&32u32.to_le_bytes());
+        blob.extend_from_slice(&1u32.to_le_bytes());
+        blob.extend_from_slice(&128u32.to_le_bytes());
+        blob.extend_from_slice(&0u16.to_le_bytes());
+        blob.resize(32, 0);
+        let mut bitmap: Vec<u8> = vec![0u8; 128];
+        bitmap[1] = 0b0000_0001;
+        bitmap[3] = 0b0000_0100;
+        blob.extend_from_slice(&bitmap);
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        harness.put_u32(32, 0xDEAD_BEEF);
+        harness.put_u32(104, 0x1234_5678);
+        let walked: Vec<SlidPointer> = harness.walk(blob_len).expect("v1 bitmap walks");
+        assert_eq!(walked.len(), 2);
+        assert_eq!(walked[0].vm_address, REGION_VM_ADDRESS + 32);
+        assert_eq!(walked[0].unslid_value, 0xDEAD_BEEF);
+        assert_eq!(walked[1].vm_address, REGION_VM_ADDRESS + 104);
+        assert_eq!(walked[1].unslid_value, 0x1234_5678);
+    }
+
+    #[test]
+    fn a_chain_that_never_leaves_its_page_is_stopped_rather_than_walked_forever() {
+        let mut harness: Harness = Harness::new();
+        let blob: Vec<u8> = delta_blob(2, 0x00FF_FF00_0000_0000, 0, &[0, PAGE_ATTR_NO_REBASE_V2]);
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        for slot in 0..(TEST_PAGE as u64 / 8) {
+            harness.put_u64(slot * 8, 0x1000 | (8u64 << 38));
+        }
+        let refusal: Error = harness
+            .walk(blob_len)
+            .expect_err("a chain that walks off its page must be refused");
+        assert!(format!("{refusal}").contains("leaves its"), "got {refusal}");
+    }
+
+    #[test]
+    fn a_slide_region_outside_the_cache_is_refused() {
+        let harness: Harness = Harness::new();
+        let refusal: Error = unapply_range(
+            &harness.cache,
+            SlideLocation {
+                file_offset: 0,
+                size: u64::from(u32::MAX),
+            },
+            SlideTarget {
+                vm_address: REGION_VM_ADDRESS,
+                file_offset: REGION_FILE_OFFSET,
+                size: REGION_SIZE,
+            },
+            &(REGION_VM_ADDRESS..REGION_VM_ADDRESS + REGION_SIZE),
+            &mut |_: SlidPointer| Ok(()),
+        )
+        .expect_err("a slide blob past the file must be refused");
+        assert!(matches!(refusal, Error::BadDyldCache(_)));
+    }
+
     #[test]
     fn v4_small_values_are_left_alone_and_pointers_take_the_value_add() {
         assert_eq!(unslide_v4_value(0x0000_1234, 0x4000_0000), 0x0000_1234);
