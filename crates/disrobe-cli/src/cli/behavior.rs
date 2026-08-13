@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use disrobe_core::anti_analysis::{self, AntiAnalysisFinding, AntiAnalysisReport, DefeatStatus};
 use disrobe_core::behavior::{self, BehaviorReport};
+use disrobe_nir::{EffectContext, EffectRow, EffectTable, HardEffect, NirModule};
 use serde::Serialize;
 
 use crate::cli::output::{self, OutputFormat};
@@ -13,6 +15,80 @@ struct BehaviorWithAntiAnalysis<'a> {
     #[serde(flatten)]
     behavior: &'a BehaviorReport,
     anti_analysis: &'a AntiAnalysisReport,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectSummary {
+    functions: usize,
+    instructions: usize,
+    effect_free: usize,
+    unknown: usize,
+    effects: BTreeMap<&'static str, usize>,
+    provenance: BTreeMap<&'static str, usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct BehaviorWithEffects<'a> {
+    #[serde(flatten)]
+    behavior: &'a BehaviorReport,
+    anti_analysis: &'a AntiAnalysisReport,
+    effects: EffectSummary,
+}
+
+fn summarize_effects(table: &EffectTable) -> EffectSummary {
+    let mut effects: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut provenance: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut effect_free: usize = 0;
+    let mut unknown: usize = 0;
+    for row in table.rows() {
+        let row: EffectRow = *row;
+        if row.is_unknown() {
+            unknown = unknown.saturating_add(1);
+        }
+        if row.is_effect_free() {
+            effect_free = effect_free.saturating_add(1);
+        }
+        for effect in row.effects().iter() {
+            let effect: HardEffect = effect;
+            let seen: &mut usize = effects.entry(effect.label()).or_default();
+            *seen = seen.saturating_add(1);
+            if let Some(source) = row.provenance_of(effect) {
+                let counted: &mut usize = provenance.entry(source.label()).or_default();
+                *counted = counted.saturating_add(1);
+            }
+        }
+    }
+    EffectSummary {
+        functions: table.function_count(),
+        instructions: table.len(),
+        effect_free,
+        unknown,
+        effects,
+        provenance,
+    }
+}
+
+fn render_effects(summary: &EffectSummary) {
+    println!();
+    println!(
+        "effects over {} instruction(s) in {} function(s)",
+        summary.instructions, summary.functions
+    );
+    println!(
+        "  {} carry no hard effect, {} are not modelled",
+        summary.effect_free, summary.unknown
+    );
+    if summary.effects.is_empty() {
+        println!("  no hard effect is reported for this input");
+        return;
+    }
+    for (effect, count) in &summary.effects {
+        println!("  {effect:<22} {count}");
+    }
+    println!("evidence for those effects");
+    for (source, count) in &summary.provenance {
+        println!("  {source:<22} {count}");
+    }
 }
 
 fn native_import_tokens(bytes: &[u8]) -> Vec<String> {
@@ -149,20 +225,37 @@ fn trim_signal(signal: &str) -> String {
     }
 }
 
-pub(crate) fn run(path: PathBuf, fmt: OutputFormat) -> miette::Result<()> {
+pub(crate) fn run(path: PathBuf, fmt: OutputFormat, effects: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&path)
         .map_err(|e| miette::miette!("DR-BEH-0050: cannot read target: {e}"))?;
     let uri: String = path.display().to_string();
     let imports: Vec<String> = native_import_tokens(&bytes);
     let report: BehaviorReport = behavior::analyze_with_uri(&bytes, &imports, Some(&uri));
     let anti: AntiAnalysisReport = anti_analysis::scan(&bytes, Some(&uri));
-    let combined: BehaviorWithAntiAnalysis<'_> = BehaviorWithAntiAnalysis {
+    if !effects {
+        let combined: BehaviorWithAntiAnalysis<'_> = BehaviorWithAntiAnalysis {
+            behavior: &report,
+            anti_analysis: &anti,
+        };
+        return output::emit(fmt, &combined, || {
+            render_text(&report);
+            render_anti_analysis(&anti);
+        });
+    }
+    let module: NirModule = crate::cli::nir_source::lift_module_from_bytes(&path, &bytes)?;
+    let table: EffectTable =
+        EffectTable::for_module(&module, &EffectContext::new()).map_err(|e| {
+            miette::miette!("DR-BEH-0051: cannot derive an effect table for this input: {e}")
+        })?;
+    let combined: BehaviorWithEffects<'_> = BehaviorWithEffects {
         behavior: &report,
         anti_analysis: &anti,
+        effects: summarize_effects(&table),
     };
     output::emit(fmt, &combined, || {
         render_text(&report);
         render_anti_analysis(&anti);
+        render_effects(&combined.effects);
     })
 }
 

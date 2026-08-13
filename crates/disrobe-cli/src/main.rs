@@ -504,6 +504,11 @@ enum Cmd {
     Behavior {
         #[arg(value_name = "PATH")]
         path: PathBuf,
+        #[arg(
+            long,
+            help = "also lift the input to the intermediate representation and report, per hard effect, how many instructions carry it and what evidence assigned it"
+        )]
+        effects: bool,
     },
     #[command(
         alias = "die",
@@ -1762,7 +1767,7 @@ fn main() -> miette::Result<()> {
             min_len,
             no_decode,
         } => strings_cmd::run(path, min_len, no_decode, fmt),
-        Cmd::Behavior { path } => behavior::run(path, fmt),
+        Cmd::Behavior { path, effects } => behavior::run(path, fmt, effects),
         Cmd::Identify { path, coverage } => identify::run(path, fmt, coverage),
         #[cfg(feature = "chain")]
         Cmd::Detect { input } => detect::run(input),
