@@ -92,6 +92,14 @@ impl PcodeArch {
             .map(|entry: &ArchEntry| entry.arch)
     }
 
+    #[must_use]
+    pub fn for_language(language: Language) -> Option<Self> {
+        ARCHITECTURES
+            .iter()
+            .find(|entry: &&ArchEntry| entry.decoder == Decoder::Sleigh(language))
+            .map(|entry: &ArchEntry| entry.arch)
+    }
+
     pub fn config(self) -> Result<PcodeLiftConfig> {
         (self.resolved_entry()?.config)()
     }
@@ -125,32 +133,74 @@ pub struct LiftGap {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiftGaps {
+    reported: Vec<LiftGap>,
+    total: usize,
+}
+
+impl LiftGaps {
+    #[must_use]
+    pub fn reported(&self) -> &[LiftGap] {
+        &self.reported
+    }
+
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.total
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    #[must_use]
+    pub const fn is_truncated(&self) -> bool {
+        self.total > self.reported.len()
+    }
+
+    #[must_use]
+    pub fn mnemonics(&self) -> Vec<&str> {
+        self.reported
+            .iter()
+            .map(|gap: &LiftGap| gap.mnemonic.as_str())
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchLift {
     pub arch: PcodeArch,
     pub function: NirFunction,
-    pub gaps: Vec<LiftGap>,
+    pub gaps: LiftGaps,
     pub consumed: usize,
 }
 
 #[must_use]
-pub fn block_gaps(block: &DecodedBlock) -> Vec<LiftGap> {
-    block
-        .instructions
-        .iter()
-        .filter(|instruction: &&PcodeInstr| instruction.status != DecodeStatus::Supported)
-        .take(MAX_REPORTED_GAPS)
-        .map(|instruction: &PcodeInstr| LiftGap {
-            address: instruction.address,
-            mnemonic: instruction.mnemonic.clone(),
-            status: instruction.status,
-        })
-        .collect()
+pub fn block_gaps(block: &DecodedBlock) -> LiftGaps {
+    let undecoded = || {
+        block
+            .instructions
+            .iter()
+            .filter(|instruction: &&PcodeInstr| instruction.status != DecodeStatus::Supported)
+    };
+    LiftGaps {
+        reported: undecoded()
+            .take(MAX_REPORTED_GAPS)
+            .map(|instruction: &PcodeInstr| LiftGap {
+                address: instruction.address,
+                mnemonic: instruction.mnemonic.clone(),
+                status: instruction.status,
+            })
+            .collect(),
+        total: undecoded().count(),
+    }
 }
 
 pub fn lower_arch(arch: PcodeArch, bytes: &[u8], address: u64, name: &str) -> Result<ArchLift> {
     let config: PcodeLiftConfig = arch.config()?;
     let block: DecodedBlock = arch.decode(bytes, address)?;
-    let gaps: Vec<LiftGap> = block_gaps(&block);
+    let gaps: LiftGaps = block_gaps(&block);
     let consumed: usize = block.consumed;
     let function: NirFunction = lower_pcode_block(&block, name, &config)?;
     Ok(ArchLift {
@@ -159,15 +209,6 @@ pub fn lower_arch(arch: PcodeArch, bytes: &[u8], address: u64, name: &str) -> Re
         gaps,
         consumed,
     })
-}
-
-pub fn lower_for_arch(
-    arch: PcodeArch,
-    bytes: &[u8],
-    address: u64,
-    name: &str,
-) -> Result<NirFunction> {
-    lower_arch(arch, bytes, address, name).map(|lift: ArchLift| lift.function)
 }
 
 pub fn lower_for_arch_with_provenance(

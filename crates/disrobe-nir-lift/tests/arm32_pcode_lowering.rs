@@ -3,9 +3,13 @@
 use std::collections::BTreeMap;
 
 use disrobe_nir::{NirFunction, NirInstr, NirOp, SourceLang};
-use disrobe_nir_lift::{LiftError, PcodeArch, PcodeLiftConfig, RegisterCell, lower_pcode_block};
-use disrobe_sleigh::lifter::DecodedBlock;
+use disrobe_nir_lift::{
+    LiftError, LiftGap, LiftGaps, PcodeArch, PcodeLiftConfig, RegisterCell, block_gaps,
+    lower_pcode_block,
+};
+use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr, PcodeOp, Space, Varnode};
+use disrobe_sleigh::syntax::Endian;
 
 const ARM32_CANONICAL_CELLS: usize = 64;
 
@@ -343,4 +347,161 @@ fn a_non_supported_instruction_without_semantics_is_refused() {
         panic!("expected a typed p-code error, got {error}");
     };
     assert!(reason.contains("no P-code semantics"), "{reason}");
+}
+
+#[test]
+fn the_architecture_table_resolves_the_sleigh_language_each_row_decodes() {
+    for (language, expected) in [
+        (Language::AArch64, Some(PcodeArch::AArch64)),
+        (Language::Arm32(ArmMode::A32), Some(PcodeArch::Arm32A32)),
+        (Language::Arm32(ArmMode::Thumb), Some(PcodeArch::Arm32Thumb)),
+        (Language::Mips32(Endian::Big), Some(PcodeArch::Mips32Be)),
+        (Language::Mips32(Endian::Little), Some(PcodeArch::Mips32Le)),
+        (Language::PowerPc32Be, None),
+    ] {
+        assert_eq!(
+            PcodeArch::for_language(language),
+            expected,
+            "{language:?} must resolve through the table rather than a hand-written match"
+        );
+    }
+}
+
+fn undecodable_a32_run(count: usize) -> DecodedBlock {
+    let mut instructions: Vec<PcodeInstr> = Vec::with_capacity(count);
+    for index in 0..count {
+        let step: u64 = u64::try_from(index).expect("the run index fits an address");
+        let address: u64 = 0x1000_u64 + step * 4;
+        instructions.push(PcodeInstr {
+            address,
+            bytes: vec![0xff, 0xff, 0xff, 0xf7],
+            length: 4,
+            mnemonic: ".inst".to_owned(),
+            operands: "0xf7ffffff".to_owned(),
+            ops: vec![PcodeOp::CallOther {
+                name: "decode_unmatched_0xf7ffffff".to_owned(),
+                output: None,
+                inputs: Vec::new(),
+            }],
+            status: DecodeStatus::NoMatch,
+        });
+    }
+    DecodedBlock {
+        consumed: count.saturating_mul(4),
+        instructions,
+        ordered_ops: Vec::new(),
+    }
+}
+
+#[test]
+fn a_long_undecodable_run_reports_its_true_total_even_when_the_sample_is_capped() {
+    const RUN: usize = 5000;
+    let block: DecodedBlock = undecodable_a32_run(RUN);
+    let gaps: LiftGaps = block_gaps(&block);
+    assert_eq!(
+        gaps.total(),
+        RUN,
+        "the reported total must count every word the decoder could not model"
+    );
+    assert!(
+        gaps.is_truncated(),
+        "a capped sample must declare that it is a sample"
+    );
+    assert!(
+        gaps.reported().len() < gaps.total(),
+        "the sample is capped, so it cannot be the whole set"
+    );
+    assert!(
+        gaps.reported()
+            .iter()
+            .all(|gap: &LiftGap| gap.status == DecodeStatus::NoMatch),
+        "every sampled gap must carry the decode status that produced it"
+    );
+    assert_eq!(
+        gaps.mnemonics().first().copied(),
+        Some(".inst"),
+        "the sample must name the mnemonic it could not model"
+    );
+}
+
+#[test]
+fn a_partly_undecodable_a32_block_names_the_word_it_could_not_model() {
+    let first_argument: Varnode = Varnode {
+        offset: 0x0020,
+        size_bytes: 4,
+        space: Space::Register,
+    };
+    let link_register: Varnode = Varnode {
+        offset: 0x0058,
+        size_bytes: 4,
+        space: Space::Register,
+    };
+    let decoded: DecodedBlock = DecodedBlock {
+        consumed: 12,
+        instructions: vec![
+            PcodeInstr {
+                address: 0x1000,
+                bytes: vec![0x01, 0x00, 0xa0, 0xe3],
+                length: 4,
+                mnemonic: "mov".to_owned(),
+                operands: "r0, #1".to_owned(),
+                ops: vec![PcodeOp::Copy {
+                    output: first_argument,
+                    input: Varnode {
+                        offset: 1,
+                        size_bytes: 4,
+                        space: Space::Constant,
+                    },
+                }],
+                status: DecodeStatus::Supported,
+            },
+            PcodeInstr {
+                address: 0x1004,
+                bytes: vec![0xff, 0xff, 0xff, 0xf7],
+                length: 4,
+                mnemonic: ".inst".to_owned(),
+                operands: "0xf7ffffff".to_owned(),
+                ops: vec![PcodeOp::CallOther {
+                    name: "decode_unmatched_0xf7ffffff".to_owned(),
+                    output: None,
+                    inputs: Vec::new(),
+                }],
+                status: DecodeStatus::NoMatch,
+            },
+            PcodeInstr {
+                address: 0x1008,
+                bytes: vec![0x1e, 0xff, 0x2f, 0xe1],
+                length: 4,
+                mnemonic: "bx".to_owned(),
+                operands: "lr".to_owned(),
+                ops: vec![PcodeOp::Return {
+                    target: Some(link_register),
+                }],
+                status: DecodeStatus::Supported,
+            },
+        ],
+        ordered_ops: Vec::new(),
+    };
+    let gaps: LiftGaps = block_gaps(&decoded);
+    assert_eq!(gaps.total(), 1, "exactly one word resisted the decoder");
+    assert!(
+        !gaps.is_truncated(),
+        "a single gap fits the sample, so nothing is hidden"
+    );
+    assert_eq!(gaps.mnemonics(), [".inst"]);
+    assert_eq!(
+        gaps.reported().first().map(|gap: &LiftGap| gap.address),
+        Some(0x1004),
+        "the gap must name where recovery stopped being complete"
+    );
+    let config: PcodeLiftConfig = PcodeLiftConfig::arm32().expect("build the arm32 lift config");
+    let lowered: NirFunction =
+        lower_pcode_block(&decoded, "partial", &config).expect("the modelled words still lift");
+    assert!(
+        lowered
+            .instructions
+            .iter()
+            .any(|instruction: &NirInstr| matches!(instruction.op, NirOp::Return)),
+        "the words around the gap must still recover"
+    );
 }

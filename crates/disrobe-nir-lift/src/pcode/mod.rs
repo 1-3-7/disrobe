@@ -18,8 +18,7 @@ mod spec;
 mod varnode;
 
 pub use arch::{
-    ArchLift, LiftGap, PcodeArch, block_gaps, lower_arch, lower_for_arch,
-    lower_for_arch_with_provenance,
+    ArchLift, LiftGap, LiftGaps, PcodeArch, block_gaps, lower_arch, lower_for_arch_with_provenance,
 };
 use spec::{SpecRegisterMap, SpecRegisters};
 pub use varnode::RegisterCell;
@@ -310,20 +309,22 @@ pub fn lower_aarch64(bytes: &[u8], address: u64, name: &str) -> Result<NirFuncti
     lower_pcode_block(&block, name, &PcodeLiftConfig::aarch64())
 }
 
-pub fn lower_arm32(bytes: &[u8], address: u64, name: &str, mode: ArmMode) -> Result<NirFunction> {
-    let arch: PcodeArch = match mode {
-        ArmMode::A32 => PcodeArch::Arm32A32,
-        ArmMode::Thumb => PcodeArch::Arm32Thumb,
-    };
-    lower_for_arch(arch, bytes, address, name)
+pub fn lower_arm32(bytes: &[u8], address: u64, name: &str, mode: ArmMode) -> Result<ArchLift> {
+    lower_language(Language::Arm32(mode), bytes, address, name)
 }
 
-pub fn lower_mips32(bytes: &[u8], address: u64, name: &str, endian: Endian) -> Result<NirFunction> {
-    let arch: PcodeArch = match endian {
-        Endian::Big => PcodeArch::Mips32Be,
-        Endian::Little => PcodeArch::Mips32Le,
-    };
-    lower_for_arch(arch, bytes, address, name)
+pub fn lower_mips32(bytes: &[u8], address: u64, name: &str, endian: Endian) -> Result<ArchLift> {
+    lower_language(Language::Mips32(endian), bytes, address, name)
+}
+
+fn lower_language(language: Language, bytes: &[u8], address: u64, name: &str) -> Result<ArchLift> {
+    let arch: PcodeArch =
+        PcodeArch::for_language(language).ok_or_else(|| LiftError::InvalidPcode {
+            address,
+            operation: "ARCH_TABLE".to_owned(),
+            reason: "the lowering table has no row for this sleigh language".to_owned(),
+        })?;
+    lower_arch(arch, bytes, address, name)
 }
 
 pub fn lower_pcode_block(

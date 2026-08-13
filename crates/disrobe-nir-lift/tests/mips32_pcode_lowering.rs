@@ -49,7 +49,9 @@ fn lower(words: &[u32], endian: Endian, address: u64) -> NirFunction {
             Endian::Big => word.to_be_bytes(),
         })
         .collect();
-    lower_mips32(&bytes, address, "probe", endian).expect("lower the mips32 block")
+    lower_mips32(&bytes, address, "probe", endian)
+        .expect("lower the mips32 block")
+        .function
 }
 
 fn callother_names(function: &NirFunction) -> Vec<String> {
@@ -453,6 +455,7 @@ fn a_big_endian_image_read_as_little_endian_does_not_decode_as_the_same_program(
     assert!(
         correct
             .gaps
+            .reported()
             .iter()
             .all(|gap: &LiftGap| gap.status != DecodeStatus::NoMatch),
         "every word of the correctly ordered image matches an instruction: {:?}",
@@ -475,6 +478,7 @@ fn a_big_endian_image_read_as_little_endian_does_not_decode_as_the_same_program(
     assert!(
         misread
             .gaps
+            .reported()
             .iter()
             .any(|gap: &LiftGap| gap.status == DecodeStatus::NoMatch),
         "the misread image must name at least one word that matches no instruction: {:?}",
