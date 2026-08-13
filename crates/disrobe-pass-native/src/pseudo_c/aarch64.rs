@@ -3985,7 +3985,7 @@ fn lower_fp_round(insn: &DisasmInsn, operands: &[&str], kind: FpRoundKind) -> Re
     if width != src_width {
         return Err(reject_at(insn, "round to integral uses mixed precision"));
     }
-    if width == FpWidth::F16 && matches!(kind, FpRoundKind::SignedRange(_)) {
+    if width == FpWidth::F16 && matches!(kind, FpRoundKind::SignedRange { .. }) {
         return Err(reject_at(
             insn,
             "range-limited rounding does not encode a half-precision form",
@@ -4306,21 +4306,24 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, FpRoundKind::Integral(mode)).map(Some)
         }
-        "frint32z" | "frint64z" if has_scalar_fp_destination(&operands) => {
+        "frint32z" | "frint64z" | "frint32x" | "frint64x"
+            if has_scalar_fp_destination(&operands) =>
+        {
             let range: FpRoundRange = if insn.mnemonic.starts_with("frint32") {
                 FpRoundRange::I32
             } else {
                 FpRoundRange::I64
             };
-            lower_fp_round(insn, &operands, FpRoundKind::SignedRange(range)).map(Some)
+            let mode: RoundMode = if insn.mnemonic.ends_with('x') {
+                RoundMode::Nearest
+            } else {
+                RoundMode::Trunc
+            };
+            lower_fp_round(insn, &operands, FpRoundKind::SignedRange { range, mode }).map(Some)
         }
-        "frint32x" | "frint64x" if has_scalar_fp_destination(&operands) => Err(reject_at(
-            insn,
-            "range-limited exact rounding depends on unmodelled ambient FPCR state",
-        )),
         "fjcvtzs" if has_scalar_gpr_destination(&operands) => Err(reject_at(
             insn,
-            "JavaScript conversion requires FJCVTZS semantics",
+            "javascript float-to-integer conversion needs a modular wrap policy and an exact-result flag definition",
         )),
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmax" | "fmin" | "fmadd"
         | "fmsub" | "fnmadd" | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf"
@@ -4329,7 +4332,15 @@ fn try_lower_scalar_fp(
         | "frinta" | "frintx" | "frinti" | "frint32z" | "frint32x" | "frint64z" | "frint64x"
         | "fjcvtzs" => Ok(None),
         "movi" if !vector_context => lower_movi_scalar_zero(&operands),
-        "fmov" if vector_context => Ok(None),
+        "fmov" if vector_context => {
+            if !operand_is_vector(insn) && instruction_has_vector_syntax(insn) {
+                return Err(reject_at(
+                    insn,
+                    "vector-lane floating-point move is outside scalar floating-point recovery",
+                ));
+            }
+            Ok(None)
+        }
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {
             let Some(token): Option<&&str> = operands.first() else {

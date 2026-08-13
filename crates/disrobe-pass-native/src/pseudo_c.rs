@@ -271,7 +271,10 @@ enum FpRoundRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FpRoundKind {
     Integral(RoundMode),
-    SignedRange(FpRoundRange),
+    SignedRange {
+        range: FpRoundRange,
+        mode: RoundMode,
+    },
 }
 
 impl RoundMode {

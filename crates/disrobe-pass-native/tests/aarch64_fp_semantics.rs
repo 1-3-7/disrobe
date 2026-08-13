@@ -604,14 +604,27 @@ fn scalar_range_limited_rounding_recovers_through_exact_helpers() {
 }
 
 #[test]
-fn scalar_range_limited_exact_rounding_refuses_unmodelled_ambient_fpcr() {
-    for bytes in [FRINT32X_F32, FRINT32X_F64, FRINT64X_F32, FRINT64X_F64] {
-        let error: String = recover_aarch64_function(bytes, 0)
-            .expect_err("range-limited exact rounding depends on ambient FPCR")
-            .to_string();
+fn scalar_range_limited_exact_rounding_recovers_through_nearest_helpers() {
+    for (bytes, helper, truncating) in [
+        (FRINT32X_F32, "fpx_rint32x_f32", "fpx_rint32z_f32"),
+        (FRINT32X_F64, "fpx_rint32x_f64", "fpx_rint32z_f64"),
+        (FRINT64X_F32, "fpx_rint64x_f32", "fpx_rint64z_f32"),
+        (FRINT64X_F64, "fpx_rint64x_f64", "fpx_rint64z_f64"),
+    ] {
+        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0)
+            .unwrap_or_else(|error| panic!("range-limited exact rounding must recover: {error}"));
         assert!(
-            error.contains("range-limited exact rounding depends on unmodelled ambient FPCR state"),
-            "unexpected refusal: {error}"
+            recovery.source.contains(helper) && !recovery.source.contains(truncating),
+            "recovered c must call {helper} and never the toward-zero {truncating}:\n{}",
+            recovery.source
+        );
+        let rust: &str = recovery
+            .rust_source
+            .as_deref()
+            .expect("range-limited exact rounding must recover rust");
+        assert!(
+            rust.contains(helper) && !rust.contains(truncating),
+            "recovered rust must call {helper} and never the toward-zero {truncating}:\n{rust}"
         );
     }
 }
@@ -643,7 +656,7 @@ fn run_bounded(mut command: Command, label: &str) -> std::process::Output {
 #[test]
 fn scalar_range_limited_rounding_executes_boundary_values() {
     let compiler: String = cc().expect("range-limited execution needs a host C compiler");
-    let cases: [(&[u8], &str, &str); 4] = [
+    let cases: [(&[u8], &str, &str); 8] = [
         (
             FRINT32Z_F32,
             "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 1.0f && recovered(-1.75f) == -1.0f && recovered(0x1p31f) == -0x1p31f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p31f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p31f",
@@ -663,6 +676,26 @@ fn scalar_range_limited_rounding_executes_boundary_values() {
             FRINT64Z_F64,
             "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 1.0 && recovered(-1.75) == -1.0 && recovered(0x1p63) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p63",
             "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::NAN), -9_223_372_036_854_775_808.0);",
+        ),
+        (
+            FRINT32X_F32,
+            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 2.0f && recovered(-1.75f) == -2.0f && recovered(2.5f) == 2.0f && recovered(3.5f) == 4.0f && recovered(0x1p31f) == -0x1p31f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p31f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p31f",
+            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f32::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f32::NAN), -2_147_483_648.0);",
+        ),
+        (
+            FRINT32X_F64,
+            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 2.0 && recovered(-1.75) == -2.0 && recovered(2.5) == 2.0 && recovered(3.5) == 4.0 && recovered(2147483647.5) == -0x1p31 && recovered(0x1p31) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p31",
+            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(2_147_483_647.5), -2_147_483_648.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f64::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f64::NAN), -2_147_483_648.0);",
+        ),
+        (
+            FRINT64X_F32,
+            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 2.0f && recovered(-1.75f) == -2.0f && recovered(2.5f) == 2.0f && recovered(3.5f) == 4.0f && recovered(0x1p63f) == -0x1p63f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p63f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p63f",
+            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::NAN), -9_223_372_036_854_775_808.0);",
+        ),
+        (
+            FRINT64X_F64,
+            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 2.0 && recovered(-1.75) == -2.0 && recovered(2.5) == 2.0 && recovered(3.5) == 4.0 && recovered(0x1p63) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p63",
+            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::NAN), -9_223_372_036_854_775_808.0);",
         ),
     ];
     let directory: tempfile::TempDir = tempfile::tempdir().expect("range-limited scratch dir");
