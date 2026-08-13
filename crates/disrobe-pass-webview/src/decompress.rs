@@ -567,8 +567,8 @@ mod tests {
                     assert!(!detail.is_empty());
                 }
                 other => panic!(
-                    "a stream cut to {divisor}ths must be typed as corrupt rather than handed back \
-                     as partial bytes under a codec label, got {other:?}"
+                    "a stream cut to one part in {divisor} must be typed as corrupt rather than \
+                     handed back as partial bytes under a codec label, got {other:?}"
                 ),
             }
         }
