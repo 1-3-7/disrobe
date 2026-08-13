@@ -205,4 +205,13 @@ pub enum Error {
 
     #[error("DR-BINFMT-0071: new executable parse failed: {0}")]
     Ne(String),
+
+    #[error("DR-BINFMT-0072: byte coverage map failed: {0}")]
+    Coverage(String),
+
+    #[error("DR-BINFMT-0073: byte coverage map does not account for `{format}`: {detail}")]
+    CoverageUnsupported {
+        format: &'static str,
+        detail: String,
+    },
 }

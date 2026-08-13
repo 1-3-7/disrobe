@@ -10,6 +10,7 @@ pub mod chain_detector;
 pub mod classify;
 pub mod container;
 pub mod containers;
+pub mod coverage;
 pub(crate) mod debug;
 pub mod elf_dynamic;
 pub mod error;
@@ -31,6 +32,10 @@ pub use classify::{
     classify_input, native_lang_fingerprint,
 };
 pub use container::{ContainerKind, detect_container, detect_container_with_hint};
+pub use coverage::{
+    BYTE_COVERAGE_SCHEMA, ByteCoverage, CoverageOverlap, CoverageRegion, RegionClass,
+    TruncatedClaim, UnbackedClaim, UnbackedReason, file_byte_coverage,
+};
 pub use elf_dynamic::{ElfDynamic, parse_elf_dynamic};
 pub use error::{Error, Result};
 pub use external_wrap::{
