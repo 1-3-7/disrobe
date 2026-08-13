@@ -33,7 +33,7 @@ pub use provenance_header::{
 };
 pub use pyc_zipper::{UnzippedPyc, ZipperCompression, looks_like_pyc, unzip_pyc};
 pub use pyz::{PyzEntry, PyzTocKind, extract_pyz, extract_pyz_with_key};
-pub use toc::{EntryType, TocEntry, walk_toc};
+pub use toc::{DependencyReference, EntryType, TocEntry, TocNameStatus, walk_toc};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+use serde::{Deserialize, Serialize};
+
 use crate::cookie::Cookie;
 use crate::debug::{dbg_enabled, dbg_kv, dbg_line, dbg_section};
 use crate::error::{Error, Result};
@@ -168,6 +172,29 @@ pub(crate) fn overlay_position(image_len: usize, cookie: &Cookie) -> Result<usiz
     Ok(image_len - overlay_size)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TocNameStatus {
+    Preserved,
+    Contained,
+}
+
+impl TocNameStatus {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Preserved => "preserved",
+            Self::Contained => "contained",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyReference {
+    pub entry_name: String,
+    pub referenced_executable: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TocEntry {
     pub entry_size: u32,
@@ -177,6 +204,9 @@ pub struct TocEntry {
     pub compressed_flag: u8,
     pub entry_type: EntryType,
     pub name: String,
+    pub raw_name: String,
+    pub name_status: TocNameStatus,
+    pub dependency_source: Option<String>,
 }
 
 pub fn walk_toc(image: &[u8], cookie: &Cookie) -> Result<Vec<TocEntry>> {
@@ -256,13 +286,16 @@ pub fn walk_toc(image: &[u8], cookie: &Cookie) -> Result<Vec<TocEntry>> {
         let type_byte: u8 = toc_region[cursor + 17];
         let name_len: usize = entry_size_usize - 18;
         let name_bytes: &[u8] = &toc_region[cursor + 18..cursor + 18 + name_len];
-        let name: String = sanitize_name(name_bytes)?;
         let entry_type: EntryType = EntryType::from_byte(type_byte);
+        let decoded: DecodedName = decode_entry_name(name_bytes, entry_type);
         if dbg_enabled() {
             let label: &'static str = entry_type.label();
+            let name: String = decoded.name.clone();
+            let status: &'static str = decoded.status.label();
+            let raw: String = decoded.raw.clone();
             dbg_line(|| {
                 format!(
-                    "entry '{name}' type={label} pos={entry_position:#x} csize={compressed_size} usize={uncompressed_size} flag={compressed_flag}"
+                    "entry '{name}' type={label} name={status} raw={raw:?} pos={entry_position:#x} csize={compressed_size} usize={uncompressed_size} flag={compressed_flag}"
                 )
             });
         }
@@ -273,7 +306,10 @@ pub fn walk_toc(image: &[u8], cookie: &Cookie) -> Result<Vec<TocEntry>> {
             uncompressed_size,
             compressed_flag,
             entry_type,
-            name,
+            name: decoded.name,
+            raw_name: decoded.raw,
+            name_status: decoded.status,
+            dependency_source: decoded.dependency_source,
         });
         cursor = entry_end;
     }
@@ -288,20 +324,76 @@ fn read_u32_be(buf: &[u8], at: usize) -> Result<u32> {
     Ok(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
-fn sanitize_name(name_bytes: &[u8]) -> Result<String> {
+const CONTAINED_PARENT: &str = "__";
+const UNNAMED_ENTRY: &str = "unnamed-entry";
+const MULTIPACKAGE_SEPARATOR: char = ':';
+
+struct DecodedName {
+    name: String,
+    raw: String,
+    status: TocNameStatus,
+    dependency_source: Option<String>,
+}
+
+fn decode_entry_name(name_bytes: &[u8], entry_type: EntryType) -> DecodedName {
     let null_end: usize = name_bytes
         .iter()
         .position(|&b| b == 0)
         .map_or(name_bytes.len(), |position: usize| position);
     let raw: String = String::from_utf8_lossy(&name_bytes[..null_end]).into_owned();
-    if raw.contains("..")
-        || raw.starts_with('/')
-        || raw.starts_with('\\')
-        || raw.contains(['\\', ':'])
-    {
-        return Err(Error::PathTraversal(raw));
+    let (dependency_source, target): (Option<String>, &str) =
+        if matches!(entry_type, EntryType::Dependency) {
+            match raw.split_once(MULTIPACKAGE_SEPARATOR) {
+                Some((reference, dependency_name)) => {
+                    (Some(reference.replace('\\', "/")), dependency_name)
+                }
+                None => (None, raw.as_str()),
+            }
+        } else {
+            (None, raw.as_str())
+        };
+    let (name, rewritten): (String, bool) = contain_path(target);
+    let status: TocNameStatus = if rewritten {
+        TocNameStatus::Contained
+    } else {
+        TocNameStatus::Preserved
+    };
+    DecodedName {
+        name,
+        raw,
+        status,
+        dependency_source,
     }
-    Ok(raw)
+}
+
+fn contain_path(raw: &str) -> (String, bool) {
+    let mut out: String = String::with_capacity(raw.len());
+    let mut rewritten: bool = false;
+    for part in raw.split(['/', '\\']) {
+        let kept: Cow<'_, str> = match part {
+            "" | "." => {
+                rewritten = true;
+                continue;
+            }
+            ".." => {
+                rewritten = true;
+                Cow::Borrowed(CONTAINED_PARENT)
+            }
+            other if other.contains(MULTIPACKAGE_SEPARATOR) => {
+                rewritten = true;
+                Cow::Owned(other.replace(MULTIPACKAGE_SEPARATOR, "_"))
+            }
+            other => Cow::Borrowed(other),
+        };
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(kept.as_ref());
+    }
+    if out.is_empty() {
+        return (UNNAMED_ENTRY.to_owned(), true);
+    }
+    (out, rewritten)
 }
 
 #[cfg(test)]
@@ -353,20 +445,123 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_rejects_traversal() {
-        let err: Option<Error> = sanitize_name(b"../etc/passwd\0").err();
-        assert!(matches!(err, Some(Error::PathTraversal(_))));
+    fn a_windows_separator_is_decoded_not_treated_as_an_escape() {
+        let decoded: DecodedName = decode_entry_name(b"certifi\\cacert.pem\0", EntryType::Data);
+        assert_eq!(
+            decoded.name, "certifi/cacert.pem",
+            "CArchiveWriter runs os.path.normpath over every destination, so a Windows build \
+             stores nested names with back slashes; that separator is the on-wire encoding, not \
+             an attempt to escape",
+        );
+        assert_eq!(decoded.raw, "certifi\\cacert.pem");
+        assert_eq!(decoded.status, TocNameStatus::Preserved);
+        assert!(decoded.dependency_source.is_none());
     }
 
     #[test]
-    fn sanitize_rejects_windows_absolute_and_backslash_names() {
+    fn an_escaping_name_is_contained_and_its_original_text_kept() {
         for raw in [
+            b"../etc/passwd\0".as_slice(),
             b"C:\\temp\\evil.pyc\0".as_slice(),
-            b"pkg\\mod.pyc\0".as_slice(),
+            b"..\\..\\evil.pyc\0".as_slice(),
+            b"\\\\server\\share\\evil.dll\0".as_slice(),
         ] {
-            let err: Option<Error> = sanitize_name(raw).err();
-            assert!(matches!(err, Some(Error::PathTraversal(_))));
+            let decoded: DecodedName = decode_entry_name(raw, EntryType::Data);
+            assert_eq!(
+                decoded.status,
+                TocNameStatus::Contained,
+                "'{}' must be recorded as rewritten",
+                decoded.raw,
+            );
+            assert!(
+                !decoded.name.split('/').any(|part: &str| part == ".."),
+                "contained name '{}' still carries a parent component",
+                decoded.name,
+            );
+            assert!(!decoded.name.contains(['\\', ':']));
+            assert!(!decoded.name.starts_with('/'));
         }
+    }
+
+    #[test]
+    fn a_filename_that_merely_contains_two_dots_is_left_alone() {
+        let decoded: DecodedName = decode_entry_name(b"data..bak\0", EntryType::Data);
+        assert_eq!(
+            decoded.name, "data..bak",
+            "only a path component equal to '..' escapes; a filename containing two dots is \
+             an ordinary contained name",
+        );
+        assert_eq!(decoded.status, TocNameStatus::Preserved);
+    }
+
+    #[test]
+    fn a_name_with_nothing_left_after_containment_gets_a_deterministic_placeholder() {
+        for raw in [b"/\0".as_slice(), b"\0".as_slice(), b".\0".as_slice()] {
+            let decoded: DecodedName = decode_entry_name(raw, EntryType::Data);
+            assert_eq!(decoded.name, UNNAMED_ENTRY);
+            assert_eq!(decoded.status, TocNameStatus::Contained);
+        }
+    }
+
+    #[test]
+    fn a_dependency_name_splits_at_the_first_colon_like_the_bootloader() {
+        let decoded: DecodedName = decode_entry_name(
+            b"..\\app_b\\app_b.exe:mypkg\\data\\shared.bin\0",
+            EntryType::Dependency,
+        );
+        assert_eq!(
+            decoded.dependency_source.as_deref(),
+            Some("../app_b/app_b.exe"),
+            "CArchiveWriter stores a multipackage dependency as '<reference>:<name>' and the \
+             bootloader splits it with strchr, so the colon is a field separator and the \
+             reference is a path to another executable, never a write destination",
+        );
+        assert_eq!(decoded.name, "mypkg/data/shared.bin");
+        assert_eq!(decoded.status, TocNameStatus::Preserved);
+        assert_eq!(decoded.raw, "..\\app_b\\app_b.exe:mypkg\\data\\shared.bin");
+    }
+
+    #[test]
+    fn a_colon_outside_a_dependency_entry_is_contained() {
+        let decoded: DecodedName = decode_entry_name(b"C:\\evil\0", EntryType::Data);
+        assert_eq!(decoded.name, "C_/evil");
+        assert_eq!(decoded.status, TocNameStatus::Contained);
+        assert!(decoded.dependency_source.is_none());
+    }
+
+    #[test]
+    fn only_dependency_and_runtime_option_entries_are_skipped_by_extraction() {
+        for entry_type in [EntryType::Dependency, EntryType::RuntimeOption] {
+            assert!(entry_type.should_skip());
+        }
+        for entry_type in [
+            EntryType::Script,
+            EntryType::Module,
+            EntryType::Package,
+            EntryType::Pyz,
+            EntryType::Zipfile,
+            EntryType::Binary,
+            EntryType::Data,
+            EntryType::Splash,
+            EntryType::Symlink,
+            EntryType::PyzModule,
+            EntryType::PyzPackage,
+            EntryType::BaseLibraryModule,
+            EntryType::BaseLibraryPackage,
+            EntryType::Unknown(0),
+        ] {
+            assert!(
+                !entry_type.should_skip(),
+                "extraction handles the two skipped typecodes by hand, so any third one added \
+                 here would silently stop being recovered",
+            );
+        }
+    }
+
+    #[test]
+    fn name_status_labels_are_distinct_ascii() {
+        assert_eq!(TocNameStatus::Preserved.label(), "preserved");
+        assert_eq!(TocNameStatus::Contained.label(), "contained");
     }
 
     #[test]

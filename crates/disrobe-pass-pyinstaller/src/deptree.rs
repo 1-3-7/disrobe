@@ -58,7 +58,7 @@ pub fn build_dependency_tree(output: &ExtractOutput, pyz_entries: &[PyzEntry]) -
     let mut entry_point: Option<String> = None;
 
     for e in &output.entries {
-        let name: String = e.toc.name.replace('\\', "/");
+        let name: String = e.toc.name.clone();
         match e.toc.entry_type {
             EntryType::Script => {
                 entry_point = Some(name.clone());
@@ -270,6 +270,9 @@ mod tests {
                 compressed_flag: 0,
                 entry_type: kind,
                 name: name.to_owned(),
+                raw_name: name.to_owned(),
+                name_status: crate::toc::TocNameStatus::Preserved,
+                dependency_source: None,
             },
             data: vec![0u8; 10],
             written_path: None,
@@ -288,6 +291,8 @@ mod tests {
             pyz_module_count: 0,
             pyc_unzipped_count: 0,
             base_library_module_count: 0,
+            runtime_options: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 

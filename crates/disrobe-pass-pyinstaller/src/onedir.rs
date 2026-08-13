@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -116,7 +117,7 @@ fn compute_relative_path(prefix: &str, entry: &ExtractedEntry) -> Option<(String
     if entry.toc.entry_type.should_skip() {
         return None;
     }
-    let logical: String = entry.toc.name.replace('\\', "/");
+    let logical: &str = entry.toc.name.as_str();
     let final_path: String = match entry.toc.entry_type {
         EntryType::Script => format!("{prefix}{logical}.pyc"),
         EntryType::Module => format!("{prefix}{}.pyc", logical.replace('.', "/")),
@@ -124,10 +125,10 @@ fn compute_relative_path(prefix: &str, entry: &ExtractedEntry) -> Option<(String
             format!("{prefix}{}/__init__.pyc", logical.replace('.', "/"))
         }
         EntryType::Pyz => {
-            let safe_name: String = if has_extension_ignore_case(&logical, "pyz") {
-                logical
+            let safe_name: Cow<'_, str> = if has_extension_ignore_case(logical, "pyz") {
+                Cow::Borrowed(logical)
             } else {
-                format!("{logical}.pyz")
+                Cow::Owned(format!("{logical}.pyz"))
             };
             format!("{prefix}{safe_name}")
         }
@@ -204,6 +205,9 @@ mod tests {
                 compressed_flag: 0,
                 entry_type: kind,
                 name: name.to_owned(),
+                raw_name: name.to_owned(),
+                name_status: crate::toc::TocNameStatus::Preserved,
+                dependency_source: None,
             },
             data,
             written_path: None,
@@ -222,6 +226,8 @@ mod tests {
             pyz_module_count: 0,
             pyc_unzipped_count: 0,
             base_library_module_count: 0,
+            runtime_options: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 

@@ -137,3 +137,17 @@ files = []
 generator = "crates/disrobe-pass-pyfreeze/tests/real_bbfreeze.rs"
 spec = "bbfreeze dist layout (schmir/bbfreeze): stub launcher .exe + sibling library.zip of top-level .pyc modules + a versioned pythonNN.dll (Windows) / libpythonX.Y.so (unix) runtime + optional py.exe launcher; no frozen_application_license.txt and no lib/ subdir (which is how it is told apart from cx_Freeze)."
 non_circularity = "the .pyc members are real CPython compile()+marshal.dumps() output (the test shells out to the on-box interpreter), the module sources are authored clean Python, and src/bbfreeze/{layout,mod}.rs detection+extraction are independent of the test assembler. Asserts detect_bytes -> Bbfreeze, every module extracts, each pyc marshal-loads into a code object via disrobe-py-marshal, __main__.pyc is the primary module, and the full extract() pipeline recovers the module set (with app_logic source content graded when the decompiler recovers directly). Graceful-skips if no python interpreter is present."
+
+[pyinstaller_nested_paths]
+file = "pyinstaller/nested_paths/nested_paths.bin"
+sha256 = "70c41c656635ca870b522a2203efac2ff943812b4b435dd0a648fe293d632d4a"
+size = 903
+tool = "pyinstaller"
+tool_version = "6.22.0"
+python_runtime = "CPython 3.10.11"
+host_platform = "win_amd64"
+generation_command = "python crates/disrobe-pass-pyinstaller/tests/fixtures/gen_nested_paths_fixture.py corpus/python/freezers/pyinstaller/nested_paths"
+status = "real-committed"
+reference_file = "pyinstaller/nested_paths/nested_paths.expected.json"
+notes = """PyInstaller PKG (CArchive) written by PyInstaller's own `PyInstaller.archive.writers.CArchiveWriter`, which runs `os.path.normpath` over every destination and therefore stores nested names with back slashes on Windows, and joins a multipackage DEPENDENCY entry as `<reference>:<name>`. In 903 bytes the archive carries an entry script, a module, two nested data files, a nested extension module, a MERGE-style dependency reference and a runtime option. It carries the `.bin` extension because `.gitignore` excludes `corpus/**/*.pkg`; the sibling `encrypted/hello_enc.bin` is the same convention. Its python runtime is 3.10 rather than the 3.12 of the gauntlet row because the generating venv is 3.10; that is a second cookie version under test, not drift. Regenerating from the same generator and PyInstaller version reproduces the recorded sha256 byte for byte."""
+non_circularity = "nested_paths.expected.json is written by `PyInstaller.archive.readers.CArchiveReader` in the same run and records every TOC name, typecode, length and full payload hex. crates/disrobe-pass-pyinstaller/tests/pi_nested_paths.rs grades disrobe's recovered names and payload bytes against that vendor-reader record, so the reference never passes through disrobe code."

@@ -12,7 +12,9 @@ use crate::debug::{dbg_enabled, dbg_hex, dbg_kv_guarded, dbg_line, dbg_section};
 use crate::error::{Error, Result};
 use crate::pyc_zipper::{UnzippedPyc, ZipperCompression, unzip_pyc};
 use crate::pyz::{PyzEntry, PyzTocKind};
-use crate::toc::{EntryType, TocEntry, overlay_position, walk_toc};
+use crate::toc::{
+    DependencyReference, EntryType, TocEntry, TocNameStatus, overlay_position, walk_toc,
+};
 
 #[derive(Debug, Clone)]
 pub struct ExtractedEntry {
@@ -33,6 +35,8 @@ pub struct ExtractOutput {
     pub pyz_module_count: usize,
     pub pyc_unzipped_count: usize,
     pub base_library_module_count: usize,
+    pub runtime_options: Vec<String>,
+    pub dependencies: Vec<DependencyReference>,
 }
 
 pub fn extract_from_path(path: &Path) -> Result<ExtractOutput> {
@@ -86,10 +90,23 @@ pub(crate) fn extract_archive_with_budget(
     let mut pyc_unzipped_count: usize = 0usize;
     let mut base_library_module_count: usize = 0usize;
     let mut inflate_budget: u64 = aggregate_inflate_budget;
+    let mut runtime_options: Vec<String> = Vec::new();
+    let mut dependencies: Vec<DependencyReference> = Vec::new();
 
     for entry in toc {
-        if entry.entry_type.should_skip() {
-            continue;
+        match entry.entry_type {
+            EntryType::RuntimeOption => {
+                runtime_options.push(entry.raw_name);
+                continue;
+            }
+            EntryType::Dependency => {
+                dependencies.push(DependencyReference {
+                    entry_name: entry.name,
+                    referenced_executable: entry.dependency_source,
+                });
+                continue;
+            }
+            _ => {}
         }
         let range: Range<usize> = entry_range(image.len(), overlay_pos, &entry)?;
         let raw: &[u8] = &image[range];
@@ -200,6 +217,8 @@ pub(crate) fn extract_archive_with_budget(
         pyz_module_count,
         pyc_unzipped_count,
         base_library_module_count,
+        runtime_options,
+        dependencies,
     })
 }
 
@@ -247,7 +266,10 @@ fn unpack_pyz_entry(
                 uncompressed_size,
                 compressed_flag: 1,
                 entry_type,
+                raw_name: module.name,
                 name: rel_path,
+                name_status: TocNameStatus::Preserved,
+                dependency_source: None,
             },
             data: pyc,
             written_path: None,
@@ -331,7 +353,10 @@ fn unpack_base_library(
                 uncompressed_size: saturating_u32_from_usize(pyc.len()),
                 compressed_flag: u8::from(!member.stored),
                 entry_type,
+                raw_name: member.name,
                 name: rel_path,
+                name_status: TocNameStatus::Preserved,
+                dependency_source: None,
             },
             data: pyc,
             written_path: None,

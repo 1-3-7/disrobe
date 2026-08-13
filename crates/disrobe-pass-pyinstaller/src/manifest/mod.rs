@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cookie::{Cookie, CookieVariant};
 use crate::extract::{ExtractOutput, ExtractedEntry};
-use crate::toc::{EntryType, NativeImageKind, classify_native_image};
+use crate::toc::{
+    DependencyReference, EntryType, NativeImageKind, TocNameStatus, classify_native_image,
+};
 
 pub use protection::{ProtectionReport, ProtectionSignal};
 
@@ -48,6 +50,8 @@ impl EntryClassification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
     pub name: String,
+    pub raw_name: String,
+    pub name_status: TocNameStatus,
     pub kind: String,
     pub classification: EntryClassification,
     pub size: u64,
@@ -73,6 +77,8 @@ pub struct PyInstallerManifest {
     pub protection: ProtectionReport,
     pub entries: Vec<ManifestEntry>,
     pub kind_histogram: BTreeMap<String, usize>,
+    pub runtime_options: Vec<String>,
+    pub dependencies: Vec<DependencyReference>,
 }
 
 #[must_use]
@@ -93,6 +99,8 @@ pub fn build_manifest(image: &[u8], output: &ExtractOutput) -> PyInstallerManife
         *histogram.entry(kind_label.to_owned()).or_insert(0) += 1;
         entries.push(ManifestEntry {
             name: e.toc.name.clone(),
+            raw_name: e.toc.raw_name.clone(),
+            name_status: e.toc.name_status,
             kind: kind_label.to_owned(),
             classification,
             size: u64::from(e.toc.uncompressed_size),
@@ -120,6 +128,8 @@ pub fn build_manifest(image: &[u8], output: &ExtractOutput) -> PyInstallerManife
         protection,
         entries,
         kind_histogram: histogram,
+        runtime_options: output.runtime_options.clone(),
+        dependencies: output.dependencies.clone(),
     }
 }
 
@@ -231,6 +241,9 @@ mod tests {
                 compressed_flag: 1,
                 entry_type: kind,
                 name: name.to_owned(),
+                raw_name: name.to_owned(),
+                name_status: TocNameStatus::Preserved,
+                dependency_source: None,
             },
             data,
             written_path: None,
@@ -249,6 +262,8 @@ mod tests {
             pyz_module_count: 0,
             pyc_unzipped_count: 0,
             base_library_module_count: 0,
+            runtime_options: Vec::new(),
+            dependencies: Vec::new(),
         }
     }
 

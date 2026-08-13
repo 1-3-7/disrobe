@@ -1,5 +1,7 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::module_name_repetitions)]
+use std::fmt::Write as _;
+
 use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::TERMINAL_HINT;
@@ -13,7 +15,7 @@ use disrobe_core::pass::PassId;
 use crate::cookie::{Cookie, CookieVariant, find_cookie};
 use crate::extract::{ExtractOutput, ExtractedEntry, extract_archive};
 use crate::native_surface::{NativeArtifact, NativeSurfaceStats, surface_native_entry};
-use crate::toc::{EntryType, classify_native_image};
+use crate::toc::{EntryType, TocNameStatus, classify_native_image};
 
 pub const PASS_ID: PassId = "pyinstaller.extract";
 
@@ -192,6 +194,23 @@ fn render_manifest(out: &ExtractOutput) -> String {
     s.push_str(" entries=");
     s.push_str(&out.entries.len().to_string());
     s.push('\n');
+    for option in &out.runtime_options {
+        s.push_str("runtime-option ");
+        let _: std::fmt::Result = write!(s, "{option:?}");
+        s.push('\n');
+    }
+    for dependency in &out.dependencies {
+        s.push_str("dependency ");
+        s.push_str(&dependency.entry_name);
+        s.push_str(" in=");
+        s.push_str(
+            dependency
+                .referenced_executable
+                .as_deref()
+                .unwrap_or("unknown"),
+        );
+        s.push('\n');
+    }
     for entry in &out.entries {
         let kind: String = format!("{:?}", entry.toc.entry_type);
         s.push_str(&entry.toc.name);
@@ -199,6 +218,12 @@ fn render_manifest(out: &ExtractOutput) -> String {
         s.push_str(&kind);
         s.push_str(" bytes=");
         s.push_str(&entry.data.len().to_string());
+        if entry.toc.name_status == TocNameStatus::Contained {
+            s.push_str(" name=");
+            s.push_str(entry.toc.name_status.label());
+            s.push_str(" raw=");
+            let _: std::fmt::Result = write!(s, "{:?}", entry.toc.raw_name);
+        }
         s.push('\n');
     }
     s
