@@ -60,9 +60,10 @@ pub enum Abstain {
 
 type Eval<T> = Result<T, Abstain>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Val {
     Int(i64),
+    Float(f64),
     Str(Vec<u8>),
     Arr(BTreeMap<i64, Self>),
 }
@@ -207,13 +208,16 @@ struct FnDef {
     body: Vec<LStmt>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Flow {
     Normal,
     Break(u32),
     Continue(u32),
     Return(Val),
 }
+
+const I64_RANGE_AS_F64: std::ops::Range<f64> =
+    -9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0;
 
 const MAX_PARSE_DEPTH: u32 = 128;
 const MAX_STATEMENTS: usize = 4096;
@@ -1497,7 +1501,7 @@ impl Interp {
         self.enter_loop()?;
         let items: Vec<(i64, Val)> = match self.eval(subject, 0)? {
             Val::Arr(map) => map.into_iter().collect(),
-            Val::Str(_) | Val::Int(_) => return Err(Abstain::TypeMismatch),
+            Val::Str(_) | Val::Int(_) | Val::Float(_) => return Err(Abstain::TypeMismatch),
         };
         for (k, v) in items {
             self.tick()?;
@@ -1836,7 +1840,7 @@ impl Interp {
                 Val::Arr(map) => Ok(Val::Int(
                     i64::try_from(map.len()).map_err(|_| Abstain::OutOfRange)?,
                 )),
-                Val::Str(_) | Val::Int(_) => Err(Abstain::TypeMismatch),
+                Val::Str(_) | Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
             },
             b"ord" => {
                 let s: Vec<u8> = to_bytes(arg0?)?;
@@ -2070,6 +2074,7 @@ fn scope_size(scope: &BTreeMap<Vec<u8>, Val>) -> usize {
 fn val_size(value: &Val) -> usize {
     match value {
         Val::Int(_) => size_of::<i64>(),
+        Val::Float(_) => size_of::<f64>(),
         Val::Str(bytes) => bytes.len(),
         Val::Arr(map) => map.values().fold(0usize, |acc: usize, item: &Val| {
             acc.saturating_add(val_size(item))
@@ -2412,7 +2417,7 @@ fn index_value(container: &Val, key: i64) -> Eval<Val> {
                 .map(|b: &u8| Val::Str(vec![*b]))
                 .ok_or(Abstain::OutOfRange)
         }
-        Val::Int(_) => Err(Abstain::TypeMismatch),
+        Val::Int(_) | Val::Float(_) => Err(Abstain::TypeMismatch),
     }
 }
 
@@ -2435,6 +2440,13 @@ const fn assign_op_to_binary(op: AssignOp) -> BinOp {
 fn to_int(value: &Val) -> Eval<i64> {
     match value {
         Val::Int(n) => Ok(*n),
+        Val::Float(f) => {
+            let truncated: f64 = f.trunc();
+            if !truncated.is_finite() || !I64_RANGE_AS_F64.contains(&truncated) {
+                return Err(Abstain::OutOfRange);
+            }
+            Ok(truncated as i64)
+        }
         Val::Str(s) => {
             let text: &str = std::str::from_utf8(s).map_err(|_| Abstain::TypeMismatch)?;
             let trimmed: &str = text.trim();
@@ -2447,17 +2459,31 @@ fn to_int(value: &Val) -> Eval<i64> {
     }
 }
 
+const fn either_is_float(lhs: &Val, rhs: &Val) -> bool {
+    matches!(lhs, Val::Float(_)) || matches!(rhs, Val::Float(_))
+}
+
+fn to_float(value: &Val) -> Eval<f64> {
+    match value {
+        Val::Float(f) => Ok(*f),
+        Val::Int(n) => Ok(*n as f64),
+        Val::Str(_) => to_int(value).map(|n: i64| n as f64),
+        Val::Arr(_) => Err(Abstain::TypeMismatch),
+    }
+}
+
 fn to_bytes(value: &Val) -> Eval<Vec<u8>> {
     match value {
         Val::Int(n) => Ok(n.to_string().into_bytes()),
         Val::Str(s) => Ok(s.clone()),
-        Val::Arr(_) => Err(Abstain::TypeMismatch),
+        Val::Float(_) | Val::Arr(_) => Err(Abstain::TypeMismatch),
     }
 }
 
 fn to_bool(value: &Val) -> bool {
     match value {
         Val::Int(n) => *n != 0,
+        Val::Float(f) => *f != 0.0,
         Val::Str(s) => !s.is_empty() && s.as_slice() != b"0",
         Val::Arr(map) => !map.is_empty(),
     }
@@ -2465,7 +2491,7 @@ fn to_bool(value: &Val) -> bool {
 
 fn is_numeric(value: &Val) -> bool {
     match value {
-        Val::Int(_) => true,
+        Val::Int(_) | Val::Float(_) => true,
         Val::Str(s) => std::str::from_utf8(s)
             .is_ok_and(|t: &str| !t.trim().is_empty() && t.trim().parse::<i64>().is_ok()),
         Val::Arr(_) => false,
@@ -2475,13 +2501,19 @@ fn is_numeric(value: &Val) -> bool {
 fn apply_unary(op: UnOp, value: &Val) -> Eval<Val> {
     match op {
         UnOp::Not => Ok(Val::Int(i64::from(!to_bool(value)))),
-        UnOp::Neg => Ok(Val::Int(
-            to_int(value)?.checked_neg().ok_or(Abstain::OutOfRange)?,
-        )),
-        UnOp::Plus => Ok(Val::Int(to_int(value)?)),
+        UnOp::Neg => match value {
+            Val::Float(f) => Ok(Val::Float(-*f)),
+            _ => Ok(Val::Int(
+                to_int(value)?.checked_neg().ok_or(Abstain::OutOfRange)?,
+            )),
+        },
+        UnOp::Plus => match value {
+            Val::Float(f) => Ok(Val::Float(*f)),
+            _ => Ok(Val::Int(to_int(value)?)),
+        },
         UnOp::BitNot => match value {
             Val::Str(s) => Ok(Val::Str(s.iter().map(|b: &u8| !*b).collect())),
-            Val::Int(_) => Ok(Val::Int(!to_int(value)?)),
+            Val::Int(_) | Val::Float(_) => Ok(Val::Int(!to_int(value)?)),
             Val::Arr(_) => Err(Abstain::TypeMismatch),
         },
     }
@@ -2516,8 +2548,11 @@ fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
                 BinOp::Sub => a.checked_sub(b).ok_or(Abstain::OutOfRange)?,
                 BinOp::Mul => a.checked_mul(b).ok_or(Abstain::OutOfRange)?,
                 BinOp::Div => {
-                    if b == 0 || a % b != 0 {
+                    if b == 0 {
                         return Err(Abstain::TypeMismatch);
+                    }
+                    if a % b != 0 {
+                        return Ok(Val::Float(a as f64 / b as f64));
                     }
                     a.checked_div(b).ok_or(Abstain::OutOfRange)?
                 }
@@ -2533,6 +2568,9 @@ fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
         BinOp::Eq | BinOp::Ne | BinOp::Identical | BinOp::NotIdentical => {
             let equal: bool = match op {
                 BinOp::Identical | BinOp::NotIdentical => lhs == rhs,
+                _ if either_is_float(lhs, rhs) => {
+                    to_float(lhs)?.partial_cmp(&to_float(rhs)?) == Some(std::cmp::Ordering::Equal)
+                }
                 _ if is_numeric(lhs) && is_numeric(rhs) => to_int(lhs)? == to_int(rhs)?,
                 _ => to_bytes(lhs)? == to_bytes(rhs)?,
             };
@@ -2540,7 +2578,11 @@ fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
             Ok(Val::Int(i64::from(equal != negate)))
         }
         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-            let ordering: std::cmp::Ordering = if is_numeric(lhs) && is_numeric(rhs) {
+            let ordering: std::cmp::Ordering = if either_is_float(lhs, rhs) {
+                to_float(lhs)?
+                    .partial_cmp(&to_float(rhs)?)
+                    .ok_or(Abstain::TypeMismatch)?
+            } else if is_numeric(lhs) && is_numeric(rhs) {
                 to_int(lhs)?.cmp(&to_int(rhs)?)
             } else {
                 to_bytes(lhs)?.cmp(&to_bytes(rhs)?)
@@ -2614,7 +2656,7 @@ mod tests {
                 .iter()
                 .filter_map(|(k, v): (&Vec<u8>, &Val)| match v {
                     Val::Str(s) => Some((k.clone(), s.clone())),
-                    Val::Int(_) | Val::Arr(_) => None,
+                    Val::Int(_) | Val::Float(_) | Val::Arr(_) => None,
                 })
                 .collect(),
         )
@@ -2640,6 +2682,106 @@ mod tests {
             .get(b"o".as_slice())
             .cloned()
             .expect("accumulator bound")
+    }
+
+    #[test]
+    fn inexact_division_truncates_to_the_value_php_produces() {
+        assert_eq!(
+            out_of(
+                "$o = chr(65 + intval(strlen($d) / 3));",
+                &[("d", b"abcdefghij")]
+            ),
+            b"D".to_vec(),
+            "php 8.4.24 evaluates chr(65 + intval(strlen($d) / 3)) to D for a ten byte subject"
+        );
+    }
+
+    #[test]
+    fn division_truncates_toward_zero_rather_than_flooring() {
+        assert_eq!(
+            out_of("$o = chr(70 + intval(-7 / 2));", &[]),
+            b"C".to_vec(),
+            "php truncates -3.5 toward zero to -3, so flooring to -4 would render B"
+        );
+    }
+
+    #[test]
+    fn exact_division_stays_an_integer() {
+        assert_eq!(
+            out_of("$o = chr(65 + 6 / 3);", &[]),
+            b"C".to_vec(),
+            "php returns int(2) rather than float(2.0) when the division is exact"
+        );
+    }
+
+    #[test]
+    fn bitwise_not_of_a_quotient_truncates_before_inverting() {
+        assert_eq!(
+            out_of("$o = chr(70 + ~(10 / 3));", &[]),
+            b"B".to_vec(),
+            "php truncates 3.3333333333333335 to 3 before inverting, giving -4"
+        );
+    }
+
+    #[test]
+    fn a_quotient_drives_a_per_byte_decode_loop() {
+        assert_eq!(
+            out_of(
+                "$o=''; for($i=0;$i<strlen($d);$i++){ $o .= chr(intval(ord($d[$i]) / 2)); }",
+                &[("d", b"abcdefghij")]
+            ),
+            hex_literal(b"30313132323333343435"),
+            "each byte halves and truncates exactly as php does"
+        );
+    }
+
+    #[test]
+    fn a_quotient_compares_as_a_fraction_rather_than_as_its_truncation() {
+        assert_eq!(
+            out_of("$o = chr(65 + ((10 / 3) > 3));", &[]),
+            b"B".to_vec(),
+            "php holds 3.3333333333333335 > 3, so a quotient truncated to 3 before comparing would \
+             render A"
+        );
+        assert_eq!(
+            out_of("$o = chr(65 + ((10 / 3) == 3));", &[]),
+            b"A".to_vec(),
+            "php holds 3.3333333333333335 != 3, so a truncating comparison would render B"
+        );
+        assert_eq!(
+            out_of("$o = chr(65 + ((7 / 2) < 4));", &[]),
+            b"B".to_vec(),
+            "php holds 3.5 < 4"
+        );
+    }
+
+    #[test]
+    fn rendering_a_quotient_as_text_abstains_rather_than_guessing_php_precision() {
+        assert_eq!(
+            abstain_of("$o = '' . (10 / 3);", &[]),
+            Some(Abstain::TypeMismatch),
+            "php prints 3.3333333333333 at its default precision of fourteen significant digits; \
+             emitting a different rendering would put a wrong byte into recovered source, so the \
+             evaluator refuses instead"
+        );
+    }
+
+    #[test]
+    fn division_by_zero_still_abstains() {
+        assert_eq!(
+            abstain_of("$o = chr(65 + intval(7 / 0));", &[]),
+            Some(Abstain::TypeMismatch),
+            "php raises DivisionByZeroError, so there is no value to recover"
+        );
+    }
+
+    fn hex_literal(hex: &[u8]) -> Vec<u8> {
+        hex.chunks_exact(2)
+            .filter_map(|pair: &[u8]| {
+                let text: &str = std::str::from_utf8(pair).ok()?;
+                u8::from_str_radix(text, 16).ok()
+            })
+            .collect()
     }
 
     #[test]
