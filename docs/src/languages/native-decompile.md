@@ -17,6 +17,7 @@ For symbol recovery, disassembly, and identification see the [native guide](./na
 | Calling convention | x86-64 inferred per function, including `thiscall` and `vectorcall` |
 | AArch64 scalar floating point | `h0` to `h31`, `s0` to `s31`, and `d0` to `d31`; IEEE binary16, binary32, and binary64 arithmetic, conversion, comparison, rounding, and loads or stores |
 | Vectorized loops | x86-64 SSE/AVX reduction and pointer-walk map kernels lowered back to the equivalent scalar loop |
+| Constant division | x86-64 magic-multiply division and modulo recovered as `/` and `%` in C output and as `wrapping_div` and `wrapping_rem` in Rust output; a divisor the range check cannot confirm keeps the multiply and shift |
 | AArch64 devirtualizer | Symbolic, on by default in a full build, `--no-devirt` to disable; transactional, reverts on any proof miss |
 | Grading | C output is execution-differentially recompiled with real gcc or clang; x86-64 Rust output with rustc |
 | Sidecars | `manifest.json` (schema `disrobe.native.decompile/v1`) for both architectures; x86-64 also emits `types.json` (schema `disrobe.native.types/v1`) |
@@ -62,9 +63,25 @@ On the AArch64 path a symbolic devirtualizer runs before structuring, on by defa
 
 Auto-vectorized loops are recovered to their scalar meaning: the C backend recognizes SSE/AVX reduction and pointer-walk map kernels that gcc and clang emit at `-O2`/`-O3` and lowers them back to the equivalent scalar loop, tracing each argument to its pristine ABI register so a compiler's entry-sequence register swap does not misattribute the length to the output pointer. Reassociation-unsafe floating-point vector loops are rejected rather than lowered to a wrong scalar form.
 
+### x86-64 constant division and modulo
+
+A compiler replaces a division by a constant with a multiply by a magic number, a shift, and a sign correction. The x86-64 path recognizes that sequence and emits the division again. C output uses `/` and `%`. Rust output uses `wrapping_div` and `wrapping_rem`. The recognized forms are a magic multiply whose product fits a single register, a wide multiply through the one-operand `mul` or `imul`, the add-form that carries an implicit high bit, the pre-shift form used for an even divisor, and the signed corrections taken from the sign of the dividend, of the product, or of the quotient. A dividend narrower than 64 bits must be zero-extended into an unsigned form or sign-extended into a signed form. An extension that does not match the form refuses the rewrite.
+
+The divisor is not read out of the magic number. A candidate divisor is accepted only when the multiply and shift reproduce the exact quotient for every dividend in range. A multiply-shift pair that computes a fixed-point scale fails that check and stays a multiply and shift, so a scale is never renamed as a division. A perturbed shift amount, a perturbed multiplier, and a 32-bit magic applied to a 64-bit dividend fail the same range check.
+
+The modulo is recovered from the tail that follows the quotient. Inside a bounded window after the matched sequence, the recovery tracks copies, additions, subtractions, multiplication by a constant, left shifts, and `lea` with a scale, then emits `%` for the register that ends up holding `dividend - quotient * divisor`. When the quotient is still live after that tail, the division and the modulo both emit.
+
+The rewrite replaces straight-line code only. A back edge that targets the first instruction of the matched sequence, or any address before it, refuses the rewrite. A division inside a loop therefore keeps its multiply-and-shift form whenever the loop jumps back to or above the start of the matched sequence. Any other control transfer that lands inside the sequence refuses it as well. A store or a read-modify-write inside the sequence refuses it. Every register the sequence writes, other than the quotient and the copies of the dividend that outlive it, must be dead afterward.
+
+The one-operand `imul` lifts as a signed wide multiply, so a signed 64-by-64 high-half product emits as `__int128` in C and as `i128` with `wrapping_mul` in Rust instead of taking the unsigned form.
+
+Set `DISROBE_DEBUG=native` to print the address and the recovered divisor of each rewritten sequence.
+
 ### Grading
 
 C output is graded by execution-differential recompilation against real gcc or clang, and x86-64 Rust output against rustc, never against disrobe's own prior output. The AArch64 pseudo-C lift is held to the C bar against real `clang -O2` machine code, and the struct, array, and union recovery is asserted on recompiled-and-executed fixtures rather than by inspection. The vectorized-loop recovery is held to the same C bar: the recovered scalar loop is recompiled and its output compared bit-for-bit against the original compiled kernel across a spread of input lengths, and on Linux at least one gcc `-O3` pointer-walk reduction must recover and execute-prove (`simd_devirt_oracle.rs`).
+
+Constant-division recovery is held to the same C bar. It is measured over divisors 1 through 1024 plus sampled values up to 4294967295, at `-O1`, `-O2`, and `-Os`, for 32-bit and 64-bit dividends, with whichever of gcc, clang, and cc is on `PATH`, and a recovered divisor that differs from the one in the source is a failure. Recovered functions are recompiled and executed against the compiled original over a fixed spread of inputs, and that execution grading covers the loop bodies and the signed 128-bit high-half products as well as the plain division and modulo cases. Whole-program recovery is graded on its own, so the rewrite is proven reachable through `recover_program` and not only through a single leaf function (`pseudo_c_const_division_oracle.rs`).
 
 ### Ghidra backend
 
@@ -78,4 +95,8 @@ C output is graded by execution-differential recompilation against real gcc or c
 - On x86-64, where the byte stream carries no sign signal for a frame slot, the `types.json` sidecar reports it as unknown rather than guessing.
 - An unresolved import, an ordinal-only import, or a call whose backpropagated type conflicts abstains rather than guessing an API-derived type.
 - Reassociation-unsafe floating-point vector loops are rejected rather than lowered to a wrong scalar form.
+- Constant-division recovery is x86-64 only. The AArch64 path does not rewrite a magic multiply back into a division.
+- Constant-division recovery starts from a magic multiply, so a divisor the compiler lowered to a plain shift stays a shift in the output.
+- A magic multiply-shift sequence whose divisor the range check cannot confirm, including a fixed-point scale, is left as a multiply and a shift rather than rewritten.
+- A constant division is left alone when a back edge targets the first instruction of the matched sequence or an earlier address, when another control transfer lands inside the sequence, or when the sequence writes to memory.
 - Reach for `--backend ghidra` on large, deeply nested binaries where Ghidra's whole-program type and structure recovery still leads: `disrobe`'s job there is to hand it a clean, unpacked, symbol-rich input.
