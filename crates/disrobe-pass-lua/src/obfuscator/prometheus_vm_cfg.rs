@@ -2785,6 +2785,9 @@ pub fn recover_with_string_pool(
     dbg_kv("prometheus_vmify.unreached_structural_leaves", || {
         unreached_structural_leaves.to_string()
     });
+    dbg_kv("prometheus_vmify.captured_variables", || {
+        stats.boxes_bound.to_string()
+    });
     dbg_kv("prometheus_vmify.fully_recovered", || {
         fully_recovered.to_string()
     });
