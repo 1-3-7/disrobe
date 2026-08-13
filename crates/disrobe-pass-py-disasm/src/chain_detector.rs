@@ -75,7 +75,7 @@ impl Pass for PyDisasmPass {
                 children: Vec::new(),
             }
         } else {
-            OutputKind::Bytes {
+            OutputKind::Report {
                 format_tag: "py.runtime-detected",
                 family: FAMILY_INTERPRETER_BYTECODE,
             }
@@ -374,12 +374,23 @@ mod tests {
         let parse_failed: Vec<u8> =
             b"; alt-runtime pypy detected; pypy payload decode failed: truncated\n".to_vec();
         let a: Artifact = Artifact::new(Rung::Disasm, parse_failed, [0u8; 32]);
-        match PY_DISASM_PASS.output_kind(&a) {
-            OutputKind::Bytes { format_tag, .. } => {
-                assert_eq!(format_tag, "py.runtime-detected");
+        let detected_only: OutputKind = PY_DISASM_PASS.output_kind(&a);
+        match &detected_only {
+            OutputKind::Report { format_tag, .. } => {
+                assert_eq!(*format_tag, "py.runtime-detected");
             }
-            _ => panic!("expected Bytes for parse-failed result"),
+            _ => panic!("expected Report for a detected-but-unrecovered result"),
         }
+        assert!(
+            detected_only.is_report(),
+            "a detected-but-unrecovered note is this pass's answer about the input, not a new \
+             sample, so the chain must not re-detect it as one"
+        );
+        assert!(
+            !detected_only.is_bytes(),
+            "a report that still reads as Bytes is re-fed to the next detector, which is the \
+             defect that made a native report get claimed as minified javascript"
+        );
     }
 
     #[test]
