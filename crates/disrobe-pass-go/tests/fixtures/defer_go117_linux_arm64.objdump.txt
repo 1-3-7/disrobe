@@ -1,0 +1,87 @@
+FUNC main.NoDefer 12 13
+FUNC main.OpenCodedOne 16 18
+CALL main.OpenCodedOne runtime.deferreturn 0x96e14 18 97fea527
+FUNC main.OpenCodedOne.func1 17 17
+FUNC main.OpenCodedThree 21 27
+CALL main.OpenCodedThree runtime.deferreturn 0x96f64 27 97fea4d3
+FUNC main.OpenCodedThree.func3 25 25
+FUNC main.OpenCodedThree.func2 24 24
+FUNC main.LoopDefer 30 34
+CALL main.LoopDefer runtime.deferproc 0x97064 32 97fea137
+CALL main.LoopDefer runtime.deferreturn 0x97078 32 97fea48e
+CALL main.LoopDefer runtime.deferreturn 0x9709c 34 97fea485
+FUNC main.LoopDefer.func1 32 32
+FUNC main.LoopAndPlainDefer 37 42
+CALL main.LoopAndPlainDefer runtime.deferprocStack 0x97128 38 97fea15e
+CALL main.LoopAndPlainDefer runtime.deferreturn 0x97154 38 97fea457
+CALL main.LoopAndPlainDefer runtime.deferproc 0x9719c 40 97fea0e9
+CALL main.LoopAndPlainDefer runtime.deferreturn 0x971b0 40 97fea440
+CALL main.LoopAndPlainDefer runtime.deferreturn 0x971d4 42 97fea437
+FUNC main.LoopAndPlainDefer.func2 40 40
+FUNC main.ManyReturnsManyDefers 45 65
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x97260 46 97fea110
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x97284 47 97fea107
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x972a8 48 97fea0fe
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x972cc 49 97fea0f5
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x97310 63 97fea3e8
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x9732c 65 97fea3e1
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x9734c 60 97fea3d9
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x9736c 57 97fea3d1
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x9738c 54 97fea3c9
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x973ac 51 97fea3c1
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x973c4 49 97fea3bb
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x973dc 48 97fea3b5
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x973f4 47 97fea3af
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x9740c 46 97fea3a9
+FUNC main.NineDefers 68 78
+CALL main.NineDefers runtime.deferprocStack 0x97470 69 97fea08c
+CALL main.NineDefers runtime.deferprocStack 0x97494 70 97fea083
+CALL main.NineDefers runtime.deferprocStack 0x974b8 71 97fea07a
+CALL main.NineDefers runtime.deferprocStack 0x974dc 72 97fea071
+CALL main.NineDefers runtime.deferprocStack 0x97500 73 97fea068
+CALL main.NineDefers runtime.deferprocStack 0x97524 74 97fea05f
+CALL main.NineDefers runtime.deferprocStack 0x97548 75 97fea056
+CALL main.NineDefers runtime.deferprocStack 0x9756c 76 97fea04d
+CALL main.NineDefers runtime.deferprocStack 0x97590 77 97fea044
+CALL main.NineDefers runtime.deferreturn 0x975b8 78 97fea33e
+CALL main.NineDefers runtime.deferreturn 0x975d0 77 97fea338
+CALL main.NineDefers runtime.deferreturn 0x975e8 76 97fea332
+CALL main.NineDefers runtime.deferreturn 0x97600 75 97fea32c
+CALL main.NineDefers runtime.deferreturn 0x97618 74 97fea326
+CALL main.NineDefers runtime.deferreturn 0x97630 73 97fea320
+CALL main.NineDefers runtime.deferreturn 0x97648 72 97fea31a
+CALL main.NineDefers runtime.deferreturn 0x97660 71 97fea314
+CALL main.NineDefers runtime.deferreturn 0x97678 70 97fea30e
+CALL main.NineDefers runtime.deferreturn 0x97690 69 97fea308
+FUNC main.WithRecover 81 90
+CALL main.WithRecover runtime.gopanic 0x9773c 88 97fea75d
+CALL main.WithRecover runtime.deferreturn 0x97744 88 97fea2db
+FUNC main.WithRecover.func1 82 86
+CALL main.WithRecover.func1 runtime.gorecover 0x97788 83 97fea93e
+FUNC main.Panics 93 97
+CALL main.Panics runtime.gopanic 0x9786c 95 97fea711
+FUNC main.DeferWithFileClose 100 108
+CALL main.DeferWithFileClose runtime.deferreturn 0x9794c 108 97fea259
+FUNC main.(*Res).Close 113 113
+FUNC main.MethodDefer 115 117
+CALL main.MethodDefer runtime.deferreturn 0x97a0c 117 97fea229
+FUNC main.Nested 120 125
+FUNC main.main 128 133
+FUNC main.OpenCodedThree.func1 23 23
+FUNC main.LoopAndPlainDefer.func1 38 38
+FUNC main.ManyReturnsManyDefers.func1 46 46
+FUNC main.ManyReturnsManyDefers.func2 47 47
+FUNC main.ManyReturnsManyDefers.func3 48 48
+FUNC main.ManyReturnsManyDefers.func4 49 49
+FUNC main.NineDefers.func1 69 69
+FUNC main.NineDefers.func2 70 70
+FUNC main.NineDefers.func3 71 71
+FUNC main.NineDefers.func4 72 72
+FUNC main.NineDefers.func5 73 73
+FUNC main.NineDefers.func6 74 74
+FUNC main.NineDefers.func7 75 75
+FUNC main.NineDefers.func8 76 76
+FUNC main.NineDefers.func9 77 77
+FUNC main.Nested.func1 121 123
+CALL main.Nested.func1 runtime.deferreturn 0x980a8 123 97fea082
+FUNC main.Nested.func1.1 122 122

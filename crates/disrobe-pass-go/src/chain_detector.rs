@@ -12,6 +12,7 @@ use disrobe_core::pass::PassId;
 
 use crate::GoAnalysis;
 use crate::binary::GoImage;
+use crate::defers::{DeferFunc, DeferSupport, RuntimeDeferHook};
 use crate::embed_fs::EmbedFile;
 use crate::garble::GarbleQuality;
 use crate::pclntab::{PclntabVersion, locate_pclntab};
@@ -223,6 +224,8 @@ fn render_symbol_report(a: &GoAnalysis) -> String {
         }
     }
 
+    push_defer_section(&mut out, a);
+
     if a.embed.uses_embed_fs || !a.embed.files.is_empty() {
         out.push_str("\n// go:embed files\n");
         for file in &a.embed.files {
@@ -236,6 +239,58 @@ fn render_symbol_report(a: &GoAnalysis) -> String {
     }
 
     out
+}
+
+fn push_defer_section(out: &mut String, a: &GoAnalysis) {
+    if a.defers.support != DeferSupport::Recovered {
+        push_line(
+            out,
+            &format!("\n// defer lowering not recovered: {:?}", a.defers.support),
+        );
+        return;
+    }
+    if a.defers.functions.is_empty() && a.defers.runtime_hooks.is_empty() {
+        return;
+    }
+    out.push_str("\n// defer lowering (open-coded needs FUNCDATA_OpenCodedDeferInfo)\n");
+    push_line(
+        out,
+        &format!(
+            "// defer functions={} open-coded={} call-based={} scanned={}",
+            a.defers.functions.len(),
+            a.defers.open_coded_functions,
+            a.defers.call_based_functions,
+            a.defers.scanned_functions,
+        ),
+    );
+    for hook in &a.defers.runtime_hooks {
+        let hook: &RuntimeDeferHook = hook;
+        push_line(
+            out,
+            &format!("runtime hook {} // entry {:#x}", hook.name, hook.entry),
+        );
+    }
+    for func in a.defers.functions.iter().take(MAX_LISTED_FUNCS) {
+        let func: &DeferFunc = func;
+        push_line(
+            out,
+            &format!(
+                "defer {} {} // deferreturn +{:#x}",
+                func.lowering.label(),
+                func.name,
+                func.deferreturn_offset,
+            ),
+        );
+    }
+    if a.defers.functions.len() > MAX_LISTED_FUNCS {
+        push_line(
+            out,
+            &format!(
+                "// ... {} more defer functions elided",
+                a.defers.functions.len() - MAX_LISTED_FUNCS,
+            ),
+        );
+    }
 }
 
 fn push_line(out: &mut String, line: &str) {

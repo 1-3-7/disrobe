@@ -6,6 +6,7 @@ pub mod binary;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod debug;
+pub mod defers;
 pub mod dwarf;
 pub mod embed_fs;
 pub mod error;
@@ -27,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use crate::debug::{dbg_enabled, dbg_hex, dbg_kv, dbg_line, dbg_section};
 
 pub use binary::{Endian, GoImage, ImageKind, Section};
+pub use defers::{
+    DeferFunc, DeferLowering, DeferReport, DeferSupport, RuntimeDeferHook, recover_defers,
+};
 pub use dwarf::{DwarfFunction, DwarfReport, recover_dwarf};
 pub use embed_fs::{EmbedFile, EmbedReport, extract_embed};
 pub use error::{Error, Result};
@@ -76,6 +80,7 @@ pub struct GoAnalysis {
     pub garble: GarbleReport,
     pub embed: EmbedReport,
     pub dwarf: DwarfReport,
+    pub defers: DeferReport,
 }
 
 pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
@@ -97,11 +102,12 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
         dbg_kv("flat_base_inferred", || format!("{base:#x}"));
     }
     let located_result: Result<LocatedPclntab<'_>> = locate_pclntab(&image);
-    let (pclntab_version, symbols, moduledata, typemeta): (
+    let (pclntab_version, symbols, moduledata, typemeta, defers): (
         String,
         GoSymbols,
         Moduledata,
         GoTypeMeta,
+        DeferReport,
     ) = match located_result {
         Ok(located) => {
             dbg_kv("pclntab_version", || {
@@ -198,11 +204,24 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                     typemeta.generics.len().saturating_sub(generics_pre)
                 )
             });
+            let defers: DeferReport = recover_defers(
+                &located,
+                &symbols,
+                effective_build_version(&moduledata).as_deref(),
+            );
+            dbg_kv("defer_support", || format!("{:?}", defers.support));
+            dbg_kv("defer_open_coded", || {
+                defers.open_coded_functions.to_string()
+            });
+            dbg_kv("defer_call_based", || {
+                defers.call_based_functions.to_string()
+            });
             (
                 located.header.version.label().to_owned(),
                 symbols,
                 moduledata,
                 typemeta,
+                defers,
             )
         }
         Err(Error::PclntabMissing) => {
@@ -236,15 +255,17 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                 strings: Vec::new(),
                 generics: Vec::new(),
             };
-            ("pclntab-absent".to_owned(), empty_syms, empty_md, empty_tm)
+            (
+                "pclntab-absent".to_owned(),
+                empty_syms,
+                empty_md,
+                empty_tm,
+                DeferReport::pclntab_absent(),
+            )
         }
         Err(other) => return Err(other),
     };
-    let buildversion: Option<String> = moduledata
-        .build_info
-        .as_ref()
-        .and_then(|b: &GoBuildInfo| b.go_version.clone())
-        .or_else(|| moduledata.buildversion.clone());
+    let buildversion: Option<String> = effective_build_version(&moduledata);
     dbg_kv("buildversion", || format!("{buildversion:?}"));
     let stripped: StrippedReport = analyze_stripped(&image, &symbols, buildversion.clone());
     dbg_kv("stripped", || stripped.stripped.to_string());
@@ -274,7 +295,16 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
         garble,
         embed,
         dwarf,
+        defers,
     })
+}
+
+fn effective_build_version(moduledata: &Moduledata) -> Option<String> {
+    moduledata
+        .build_info
+        .as_ref()
+        .and_then(|b: &GoBuildInfo| b.go_version.clone())
+        .or_else(|| moduledata.buildversion.clone())
 }
 
 fn image_kind_label(k: ImageKind) -> String {

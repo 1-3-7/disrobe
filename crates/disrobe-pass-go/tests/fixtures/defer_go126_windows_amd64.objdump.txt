@@ -1,0 +1,77 @@
+FUNC main.NoDefer 12 13
+FUNC main.OpenCodedOne 16 18
+CALL main.OpenCodedOne runtime.deferreturn 0x1400a94c9 18 e812a0f9ff
+FUNC main.OpenCodedOne.func1 17 17
+FUNC main.OpenCodedThree 21 27
+CALL main.OpenCodedThree runtime.deferreturn 0x1400a9619 27 e8c29ef9ff
+FUNC main.OpenCodedThree.func3 25 25
+FUNC main.OpenCodedThree.func2 24 24
+FUNC main.LoopDefer 30 35
+CALL main.LoopDefer runtime.deferproc 0x1400a9740 32 e8bb96f9ff
+CALL main.LoopDefer runtime.deferreturn 0x1400a9747 35 e8949df9ff
+CALL main.LoopDefer runtime.deferreturn 0x1400a9763 35 e8789df9ff
+FUNC main.LoopDefer.func1 32 32
+FUNC main.LoopAndPlainDefer 37 43
+CALL main.LoopAndPlainDefer runtime.deferprocStack 0x1400a97f1 38 e8ca97f9ff
+CALL main.LoopAndPlainDefer runtime.deferreturn 0x1400a980c 43 e8cf9cf9ff
+CALL main.LoopAndPlainDefer runtime.deferproc 0x1400a9865 40 e89695f9ff
+CALL main.LoopAndPlainDefer runtime.deferreturn 0x1400a9878 43 e8639cf9ff
+FUNC main.LoopAndPlainDefer.func2 40 40
+FUNC main.ManyReturnsManyDefers 45 66
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x1400a9902 46 e8b996f9ff
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x1400a9920 47 e89b96f9ff
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x1400a9936 48 e88596f9ff
+CALL main.ManyReturnsManyDefers runtime.deferprocStack 0x1400a994c 49 e86f96f9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a9995 66 e8469bf9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a99b1 66 e82a9bf9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a99cd 66 e80e9bf9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a99ea 66 e8f19af9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a9a06 66 e8d59af9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a9a22 66 e8b99af9ff
+CALL main.ManyReturnsManyDefers runtime.deferreturn 0x1400a9a35 66 e8a69af9ff
+FUNC main.NineDefers 68 79
+CALL main.NineDefers runtime.deferprocStack 0x1400a9aa5 69 e81695f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9ac1 70 e8fa94f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9ae0 71 e8db94f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b00 72 e8bb94f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b20 73 e89b94f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b39 74 e88294f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b4f 75 e86c94f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b65 76 e85694f9ff
+CALL main.NineDefers runtime.deferprocStack 0x1400a9b81 77 e83a94f9ff
+CALL main.NineDefers runtime.deferreturn 0x1400a9b9a 79 e84199f9ff
+CALL main.NineDefers runtime.deferreturn 0x1400a9bad 79 e82e99f9ff
+FUNC main.WithRecover 81 90
+CALL main.WithRecover runtime.gopanic 0x1400a9c60 88 e83bc2fcff
+CALL main.WithRecover runtime.deferreturn 0x1400a9c66 88 e87598f9ff
+FUNC main.WithRecover.func1 82 86
+CALL main.WithRecover.func1 runtime.gorecover 0x1400a9cb6 83 e8c5a2f9ff
+FUNC main.Panics 93 97
+CALL main.Panics runtime.gopanic 0x1400a9d48 95 e853c1fcff
+FUNC main.DeferWithFileClose 100 108
+CALL main.DeferWithFileClose runtime.deferreturn 0x1400a9e18 108 e8c396f9ff
+FUNC main.DeferWithFileClose.deferwrap1 105 105
+FUNC main.(*Res).Close 113 113
+FUNC main.MethodDefer 115 117
+CALL main.MethodDefer runtime.deferreturn 0x1400a9f22 117 e8b995f9ff
+FUNC main.MethodDefer.deferwrap1 116 116
+FUNC main.Nested 120 125
+FUNC main.main 128 133
+FUNC main.Nested.func1 121 123
+CALL main.Nested.func1 runtime.deferreturn 0x1400aa380 123 e85b91f9ff
+FUNC main.Nested.func1.1 122 122
+FUNC main.NineDefers.func1 69 69
+FUNC main.NineDefers.func2 70 70
+FUNC main.NineDefers.func3 71 71
+FUNC main.NineDefers.func4 72 72
+FUNC main.NineDefers.func5 73 73
+FUNC main.NineDefers.func6 74 74
+FUNC main.NineDefers.func7 75 75
+FUNC main.NineDefers.func8 76 76
+FUNC main.NineDefers.func9 77 77
+FUNC main.ManyReturnsManyDefers.func1 46 46
+FUNC main.ManyReturnsManyDefers.func2 47 47
+FUNC main.ManyReturnsManyDefers.func3 48 48
+FUNC main.ManyReturnsManyDefers.func4 49 49
+FUNC main.LoopAndPlainDefer.func1 38 38
+FUNC main.OpenCodedThree.func1 23 23

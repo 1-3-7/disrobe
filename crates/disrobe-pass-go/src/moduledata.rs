@@ -294,7 +294,7 @@ fn score_typelinks_word(
     Some(in_range.saturating_mul(100) / read)
 }
 
-fn build_minor(go_version: Option<&str>) -> Option<u32> {
+pub(crate) fn build_minor(go_version: Option<&str>) -> Option<u32> {
     let rest: &str = go_version?.strip_prefix("go1.")?;
     let dot: usize = rest
         .find(|c: char| !c.is_ascii_digit())

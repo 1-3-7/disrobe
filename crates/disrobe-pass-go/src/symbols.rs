@@ -203,21 +203,30 @@ fn consensus_text_delta(funcs: &[GoFunc], name_to_va: &BTreeMap<&str, u64>) -> O
     (count >= MIN_DELTA_CONSENSUS).then_some(delta)
 }
 
-fn parse_go12(
-    _image: &GoImage<'_>,
-    header: &PclntabHeader,
-    body: &[u8],
-    funcs: &mut Vec<GoFunc>,
-    packages: &mut BTreeSet<String>,
-) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FuncTabEntry {
+    pub(crate) entry: u64,
+    pub(crate) struct_off: usize,
+}
+
+pub(crate) fn func_table(header: &PclntabHeader, body: &[u8]) -> Result<Vec<FuncTabEntry>> {
+    match header.version {
+        PclntabVersion::Go12 => func_table_go12(header, body),
+        PclntabVersion::Go116 => func_table_go116(header, body),
+        PclntabVersion::Go118 | PclntabVersion::Go120 => func_table_go118_plus(header, body),
+    }
+}
+
+fn func_table_go12(header: &PclntabHeader, body: &[u8]) -> Result<Vec<FuncTabEntry>> {
     let ps: usize = header.ptr_size as usize;
     let n: usize = bounded_func_count(header.n_funcs);
     let tab_off: usize = 8 + ps;
     let stride: usize = 2 * ps;
+    let mut out: Vec<FuncTabEntry> = Vec::new();
     if n == 0 || tab_off.saturating_add(n.saturating_mul(stride)) > body.len() {
-        return Ok(());
+        return Ok(out);
     }
-    funcs.reserve(bounded_func_prealloc(n));
+    out.reserve(bounded_func_prealloc(n));
     for i in 0..n {
         let entry_off: usize = tab_off + i * stride;
         let pc: u64 = read_word(body, entry_off, header)?;
@@ -228,6 +237,113 @@ fn parse_go12(
         if funcoff == 0 || funcoff >= body.len() {
             continue;
         }
+        out.push(FuncTabEntry {
+            entry: pc,
+            struct_off: funcoff,
+        });
+    }
+    Ok(out)
+}
+
+fn func_table_go116(header: &PclntabHeader, body: &[u8]) -> Result<Vec<FuncTabEntry>> {
+    let n: usize = bounded_func_count(header.n_funcs);
+    let funcdata_off: usize = usize::try_from(header.funcdata_off).unwrap_or(0);
+    let mut out: Vec<FuncTabEntry> = Vec::new();
+    if n == 0 || funcdata_off >= body.len() {
+        return Ok(out);
+    }
+    let stride: usize = 2 * header.ptr_size as usize;
+    let Some(ftab_size): Option<usize> =
+        n.checked_add(1).and_then(|m: usize| m.checked_mul(stride))
+    else {
+        return Ok(out);
+    };
+    if funcdata_off
+        .checked_add(ftab_size)
+        .is_none_or(|end: usize| end > body.len())
+    {
+        return Ok(out);
+    }
+    out.reserve(bounded_func_prealloc(n));
+    for i in 0..n {
+        let pos: usize = funcdata_off + i * stride;
+        let pc: u64 = read_word(body, pos, header)?;
+        let funcoff_word: u64 = read_word(body, pos + header.ptr_size as usize, header)?;
+        let Ok(off_native): core::result::Result<usize, _> = usize::try_from(funcoff_word) else {
+            continue;
+        };
+        let Some(funcoff): Option<usize> = funcdata_off.checked_add(off_native) else {
+            continue;
+        };
+        if funcoff
+            .checked_add(8)
+            .is_none_or(|end: usize| end > body.len())
+        {
+            continue;
+        }
+        out.push(FuncTabEntry {
+            entry: pc,
+            struct_off: funcoff,
+        });
+    }
+    Ok(out)
+}
+
+fn func_table_go118_plus(header: &PclntabHeader, body: &[u8]) -> Result<Vec<FuncTabEntry>> {
+    let n: usize = bounded_func_count(header.n_funcs);
+    let funcdata_off: usize = usize::try_from(header.funcdata_off).unwrap_or(0);
+    let text_start: u64 = header.text_start;
+    let mut out: Vec<FuncTabEntry> = Vec::new();
+    if n == 0 || funcdata_off >= body.len() {
+        return Ok(out);
+    }
+    let stride: usize = 8;
+    let Some(ftab_size): Option<usize> =
+        n.checked_add(1).and_then(|m: usize| m.checked_mul(stride))
+    else {
+        return Ok(out);
+    };
+    if funcdata_off
+        .checked_add(ftab_size)
+        .is_none_or(|end: usize| end > body.len())
+    {
+        return Ok(out);
+    }
+    out.reserve(bounded_func_prealloc(n));
+    for i in 0..n {
+        let pos: usize = funcdata_off + i * stride;
+        let pc_off: u32 = read_u32(body, pos, header.endian)?;
+        let funcoff: u32 = read_u32(body, pos + 4, header.endian)?;
+        let pc: u64 = text_start.wrapping_add(u64::from(pc_off));
+        let Some(func_struct_at): Option<usize> = funcdata_off.checked_add(funcoff as usize) else {
+            continue;
+        };
+        if func_struct_at
+            .checked_add(8)
+            .is_none_or(|end: usize| end > body.len())
+        {
+            continue;
+        }
+        out.push(FuncTabEntry {
+            entry: pc,
+            struct_off: func_struct_at,
+        });
+    }
+    Ok(out)
+}
+
+fn parse_go12(
+    _image: &GoImage<'_>,
+    header: &PclntabHeader,
+    body: &[u8],
+    funcs: &mut Vec<GoFunc>,
+    packages: &mut BTreeSet<String>,
+) -> Result<()> {
+    let ps: usize = header.ptr_size as usize;
+    let table: Vec<FuncTabEntry> = func_table_go12(header, body)?;
+    funcs.reserve(table.len());
+    for slot in &table {
+        let (pc, funcoff): (u64, usize) = (slot.entry, slot.struct_off);
         let name_off_field: usize = funcoff + ps;
         if name_off_field + 4 > body.len() {
             continue;
@@ -252,42 +368,11 @@ fn parse_go116(
     packages: &mut BTreeSet<String>,
     files: &mut BTreeSet<String>,
 ) -> Result<()> {
-    let n: usize = bounded_func_count(header.n_funcs);
-    let ftab_off: usize = usize::try_from(header.filetab_off).unwrap_or(0);
     let funcname_off: usize = usize::try_from(header.funcname_off).unwrap_or(0);
-    let funcdata_off: usize = usize::try_from(header.funcdata_off).unwrap_or(0);
-    if n == 0 || funcdata_off >= body.len() {
-        return Ok(());
-    }
-    let stride: usize = 2 * header.ptr_size as usize;
-    let Some(ftab_size): Option<usize> =
-        n.checked_add(1).and_then(|m: usize| m.checked_mul(stride))
-    else {
-        return Ok(());
-    };
-    if ftab_off
-        .checked_add(ftab_size)
-        .is_none_or(|end: usize| end > body.len())
-    {
-        return Ok(());
-    }
-    funcs.reserve(bounded_func_prealloc(n));
-    for i in 0..n {
-        let pos: usize = ftab_off + i * stride;
-        let pc: u64 = read_word(body, pos, header)?;
-        let funcoff_word: u64 = read_word(body, pos + header.ptr_size as usize, header)?;
-        let Ok(off_native): core::result::Result<usize, _> = usize::try_from(funcoff_word) else {
-            continue;
-        };
-        let Some(funcoff): Option<usize> = funcdata_off.checked_add(off_native) else {
-            continue;
-        };
-        if funcoff
-            .checked_add(8)
-            .is_none_or(|end: usize| end > body.len())
-        {
-            continue;
-        }
+    let table: Vec<FuncTabEntry> = func_table_go116(header, body)?;
+    funcs.reserve(table.len());
+    for slot in &table {
+        let (pc, funcoff): (u64, usize) = (slot.entry, slot.struct_off);
         let Some(nameoff_field): Option<usize> = funcoff.checked_add(header.ptr_size as usize)
         else {
             continue;
@@ -319,40 +404,11 @@ fn parse_go118_plus(
     packages: &mut BTreeSet<String>,
     files: &mut BTreeSet<String>,
 ) -> Result<()> {
-    let n: usize = bounded_func_count(header.n_funcs);
-    let funcdata_off: usize = usize::try_from(header.funcdata_off).unwrap_or(0);
     let funcname_off: usize = usize::try_from(header.funcname_off).unwrap_or(0);
-    let text_start: u64 = header.text_start;
-    if n == 0 || funcdata_off >= body.len() {
-        return Ok(());
-    }
-    let stride: usize = 8;
-    let Some(ftab_size): Option<usize> =
-        n.checked_add(1).and_then(|m: usize| m.checked_mul(stride))
-    else {
-        return Ok(());
-    };
-    if funcdata_off
-        .checked_add(ftab_size)
-        .is_none_or(|end: usize| end > body.len())
-    {
-        return Ok(());
-    }
-    funcs.reserve(bounded_func_prealloc(n));
-    for i in 0..n {
-        let pos: usize = funcdata_off + i * stride;
-        let pc_off: u32 = read_u32(body, pos, header.endian)?;
-        let funcoff: u32 = read_u32(body, pos + 4, header.endian)?;
-        let pc: u64 = text_start.wrapping_add(u64::from(pc_off));
-        let Some(func_struct_at): Option<usize> = funcdata_off.checked_add(funcoff as usize) else {
-            continue;
-        };
-        if func_struct_at
-            .checked_add(8)
-            .is_none_or(|end: usize| end > body.len())
-        {
-            continue;
-        }
+    let table: Vec<FuncTabEntry> = func_table_go118_plus(header, body)?;
+    funcs.reserve(table.len());
+    for slot in &table {
+        let (pc, func_struct_at): (u64, usize) = (slot.entry, slot.struct_off);
         let Some(nameoff_field): Option<usize> = func_struct_at.checked_add(4) else {
             continue;
         };
@@ -484,7 +540,7 @@ const fn bounded_func_prealloc(count: usize) -> usize {
     }
 }
 
-fn read_word(buf: &[u8], off: usize, header: &PclntabHeader) -> Result<u64> {
+pub(crate) fn read_word(buf: &[u8], off: usize, header: &PclntabHeader) -> Result<u64> {
     match header.ptr_size {
         4 => read_u32(buf, off, header.endian).map(u64::from),
         8 => read_u64(buf, off, header.endian),
@@ -962,7 +1018,7 @@ mod tests {
     #[test]
     fn go116_saturated_funcoff_returns_without_panic() {
         let mut body: Vec<u8> = vec![0u8; 0x100];
-        body[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        body[0x48..0x50].copy_from_slice(&u64::MAX.to_le_bytes());
 
         let image: GoImage<'_> = GoImage {
             kind: crate::binary::ImageKind::Pe,
