@@ -117,6 +117,13 @@ impl CacheSpec {
         self
     }
 
+    pub(crate) fn with_local_symbols_in_primary(mut self, names: &[&str]) -> Self {
+        self.local_symbols = names.iter().map(|name: &&str| (*name).to_owned()).collect();
+        self.emit_symbols_file = false;
+        self.shape = HeaderShape::SlideMappings;
+        self
+    }
+
     pub(crate) const fn with_shape(mut self, shape: HeaderShape) -> Self {
         self.shape = shape;
         self
@@ -284,8 +291,21 @@ pub(crate) fn build(image: &[u8], spec: &CacheSpec) -> BuiltCache {
         encode_slide_pointers(&mut primary, &placed, plan)
     });
 
+    let in_primary_locals: Option<(u64, usize)> =
+        (!spec.local_symbols.is_empty() && spec.shape != HeaderShape::SubCaches).then(|| {
+            let blob: Vec<u8> = local_symbols_blob(spec, text.vmaddr, text.cache_offset);
+            let at: u64 = primary.len() as u64;
+            primary.extend_from_slice(&blob);
+            primary.resize(align_up(primary.len() as u64, CACHE_PAGE) as usize, 0);
+            (at, blob.len())
+        });
+
     let slide_blob_offset: Option<u64> =
         write_primary_header(&mut primary, spec, &placed, text.vmaddr);
+    if let Some((at, len)) = in_primary_locals {
+        write_u64(&mut primary, LOCAL_SYMBOLS_OFFSET_FIELD, at);
+        write_u64(&mut primary, LOCAL_SYMBOLS_SIZE_FIELD, len as u64);
+    }
     if spec.split_linkedit {
         write_sibling_header(&mut sibling, spec, &placed);
     }
@@ -546,7 +566,8 @@ fn write_sibling_header(cache: &mut [u8], spec: &CacheSpec, placed: &[PlacedSegm
 const LOCAL_SYMBOLS_AT: u64 = 0x4000;
 const NLIST_64_SIZE: usize = 16;
 
-fn build_symbols_file(spec: &CacheSpec, image_address: u64) -> Vec<u8> {
+fn local_symbols_blob(spec: &CacheSpec, image_address: u64, dylib_offset: u64) -> Vec<u8> {
+    let wide: bool = spec.shape == HeaderShape::SubCaches;
     let mut strings: Vec<u8> = vec![0u8];
     let mut nlist: Vec<u8> = Vec::with_capacity(spec.local_symbols.len() * NLIST_64_SIZE);
     for (index, name) in spec.local_symbols.iter().enumerate() {
@@ -572,10 +593,18 @@ fn build_symbols_file(spec: &CacheSpec, image_address: u64) -> Vec<u8> {
     blob.extend_from_slice(&1u32.to_le_bytes());
     blob.extend_from_slice(&nlist);
     blob.extend_from_slice(&strings);
-    blob.extend_from_slice(&0u64.to_le_bytes());
+    if wide {
+        blob.extend_from_slice(&dylib_offset.to_le_bytes());
+    } else {
+        blob.extend_from_slice(&(dylib_offset as u32).to_le_bytes());
+    }
     blob.extend_from_slice(&0u32.to_le_bytes());
     blob.extend_from_slice(&(spec.local_symbols.len() as u32).to_le_bytes());
+    blob
+}
 
+fn build_symbols_file(spec: &CacheSpec, image_address: u64) -> Vec<u8> {
+    let blob: Vec<u8> = local_symbols_blob(spec, image_address, 0);
     let header_size: u32 = spec.shape.header_size() as u32;
     let total: u64 = align_up(LOCAL_SYMBOLS_AT + blob.len() as u64, CACHE_PAGE);
     let mut file: Vec<u8> = vec![0u8; total as usize];

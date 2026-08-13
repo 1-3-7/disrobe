@@ -80,7 +80,7 @@ pub struct CacheFamily {
 impl CacheFamily {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
-        self.missing.is_empty()
+        self.missing.is_empty() && self.symbols_missing.is_none()
     }
 
     #[must_use]

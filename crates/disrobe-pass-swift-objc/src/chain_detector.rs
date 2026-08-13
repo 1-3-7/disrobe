@@ -87,8 +87,12 @@ impl Pass for SwiftObjcPassAdapter {
         &SwiftObjcDetector
     }
 
-    #[inline]
-    fn output_kind(&self, _output: &Artifact) -> OutputKind {
+    fn output_kind(&self, output: &Artifact) -> OutputKind {
+        if is_dyld_cache_report(output.envelope.as_slice()) {
+            return OutputKind::Mixed {
+                children: Vec::new(),
+            };
+        }
         OutputKind::Source {
             language: Language::Swift,
             formatted: true,
@@ -187,6 +191,16 @@ pub const META: disrobe_core::chain::PassMeta = disrobe_core::chain::PassMeta::n
 );
 
 pub static SWIFT_OBJC_PASS: SwiftObjcPassAdapter = SwiftObjcPassAdapter;
+
+const DYLD_REPORT_MARKER: &[u8] = br#""container": "DyldSharedCache""#;
+const DYLD_REPORT_MARKER_WINDOW: usize = 256;
+
+fn is_dyld_cache_report(bytes: &[u8]) -> bool {
+    let window: &[u8] = &bytes[..bytes.len().min(DYLD_REPORT_MARKER_WINDOW)];
+    window
+        .windows(DYLD_REPORT_MARKER.len())
+        .any(|candidate: &[u8]| candidate == DYLD_REPORT_MARKER)
+}
 
 fn reconstruct_cache(bytes: &[u8], path_hint: Option<&str>) -> CoreResult<ReconstructBatch> {
     let parsed: DyldSharedCache = dyld_cache::parse(bytes).map_err(|e: crate::error::Error| {

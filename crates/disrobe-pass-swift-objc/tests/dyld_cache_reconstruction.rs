@@ -443,6 +443,45 @@ fn local_symbols_held_in_the_sibling_symbols_file_join_the_synthesized_symbol_ta
 }
 
 #[test]
+fn local_symbols_held_in_the_primary_cache_itself_join_the_synthesized_symbol_table() {
+    let (image, cache): (Vec<u8>, BuiltCache) =
+        built(&CacheSpec::modern(INSTALL_NAME).with_local_symbols_in_primary(&LOCAL_SYMBOL_NAMES));
+    let parsed: DyldSharedCache =
+        dyld_cache::parse(&cache.primary).expect("the older-layout cache parses");
+    assert_eq!(parsed.layout, CacheHeaderLayout::SlideMappings);
+    let location = parsed
+        .local_symbols
+        .as_ref()
+        .expect("the older layout carries its local symbols in the primary file");
+    assert!(!location.in_symbols_file);
+
+    let recovered: ReconstructedDylib = dyld_cache::reconstruct_image_with(
+        &cache.primary,
+        &parsed,
+        0,
+        ReconstructOptions::LOAD_READY,
+    )
+    .expect("the image reconstructs");
+    let summary = recovered
+        .linkedit
+        .expect("a load-ready image carries a synthesized linkedit");
+    assert_eq!(summary.local_symbols, LOCAL_SYMBOL_NAMES.len() as u32);
+    let reparsed: ParsedSlice =
+        macho::parse_slice(&recovered.bytes).expect("the recovered image parses");
+    let mut expected: Vec<String> = macho::symbol_names(&image, &parse_original(&image));
+    expected.extend(
+        LOCAL_SYMBOL_NAMES
+            .iter()
+            .map(|name: &&str| (*name).to_owned()),
+    );
+    assert_eq!(
+        macho::symbol_names(&recovered.bytes, &reparsed),
+        expected,
+        "a 32-bit local-symbols entry keyed by file offset must resolve to the same image"
+    );
+}
+
+#[test]
 fn a_missing_symbols_file_degrades_to_a_named_partial_result() {
     let (image, cache): (Vec<u8>, BuiltCache) = built(
         &CacheSpec::modern(INSTALL_NAME)

@@ -1029,6 +1029,7 @@ fn reconstruct(
             seg,
             placement,
             fields,
+            options.page_size,
             options.synthesize_linkedit && seg.name == LINKEDIT_SEGMENT,
         )?;
     }
@@ -1406,6 +1407,7 @@ fn patch_segment(
     seg: &Segment,
     placement: &Placement,
     fields: SegmentFields,
+    page_size: u64,
     resized: bool,
 ) -> Result<()> {
     write_sized_field(
@@ -1422,7 +1424,7 @@ fn patch_segment(
             output,
             lc.data_offset,
             fields.vmsize,
-            align_up_u64(size, DEFAULT_PAGE_SIZE),
+            align_up_u64(size, page_size),
             fields.width,
         )?;
         return Ok(());

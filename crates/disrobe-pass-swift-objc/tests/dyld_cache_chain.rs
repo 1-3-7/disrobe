@@ -77,6 +77,25 @@ fn running_the_pass_over_a_cache_reports_the_container_and_its_images() {
 }
 
 #[test]
+fn a_cache_report_declares_mixed_output_so_the_chain_asks_for_its_children() {
+    let (image, cache): (Vec<u8>, BuiltCache) = built(&CacheSpec::modern(INSTALL_NAME));
+    let cache_artifact: Artifact = Artifact::new(Rung::Raw, cache.primary, [0u8; 32]);
+    let cache_output: Artifact = SWIFT_OBJC_PASS.run(&cache_artifact).expect("the pass runs");
+    assert!(
+        SWIFT_OBJC_PASS.output_kind(&cache_output).is_mixed(),
+        "the chain only asks a pass for children when its output kind is mixed, so a cache report \
+         that does not declare mixed output silently drops every recovered dylib"
+    );
+
+    let macho_artifact: Artifact = Artifact::new(Rung::Raw, image, [0u8; 32]);
+    let macho_output: Artifact = SWIFT_OBJC_PASS.run(&macho_artifact).expect("the pass runs");
+    assert!(
+        SWIFT_OBJC_PASS.output_kind(&macho_output).is_source(),
+        "a plain Mach-O still yields recovered source, not a child container"
+    );
+}
+
+#[test]
 fn extracting_children_emits_each_bundled_dylib_as_a_load_ready_child() {
     let (image, cache): (Vec<u8>, BuiltCache) = built(&CacheSpec::modern(INSTALL_NAME));
     let artifact: Artifact = Artifact::new(Rung::Raw, cache.primary, [0u8; 32]);
