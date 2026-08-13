@@ -351,3 +351,17 @@ None or 'y'	'y'
 ' ab '.strip(chars=' ')	!ERROR	TypeError: str.strip() takes no keyword arguments
 'abc'.translate(table={97: 122})	!ERROR	TypeError: str.translate() takes no keyword arguments
 '-'.join(iterable=['a', 'b'])	!ERROR	TypeError: str.join() takes no keyword arguments
+int.from_bytes(bytes=b'\x01\x00', byteorder='little')	1
+pow(2, 10, mod=3)	1
+pow(2, 10, 3)	1
+bytes('hi', encoding='utf-8', errors='strict')	b'hi'
+bytearray('hi', encoding='utf-8', errors='strict')	bytearray(b'hi')
+str(b'ab', encoding='utf-8', errors='strict')	'ab'
+str(b'ab', 'utf-8', 'strict')	'ab'
+'abc'.encode('utf-8', 'strict')	b'abc'
+b'abc'.decode('utf-8', 'strict')	'abc'
+(255).to_bytes(2, 'big', signed=False)	b'\x00\xff'
+list(enumerate(['a'], 1))	[(1, 'a')]
+'a b'.expandtabs(tabsize=4)	'a b'
+sorted([2, 1], reverse=1)	[2, 1]
+int('ff', base=16.0)	!ERROR	TypeError: 'float' object cannot be interpreted as an integer

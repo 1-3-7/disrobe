@@ -36,6 +36,10 @@ fn fold_stmt(stmt: &mut Stmt, scope: &mut Scope, report: &mut FoldReport) {
     match stmt {
         Stmt::Assign(StmtAssign { targets, value, .. }) => {
             fold_expr_in_place(value, scope, report);
+            if expr_builds_distinct_type(value) {
+                report.bindings_skipped_dynamic += 1;
+                return;
+            }
             for target in targets.iter() {
                 if let Expr::Name(name_node) = target {
                     if is_forbidden(name_node.id.as_str()) {
@@ -55,6 +59,10 @@ fn fold_stmt(stmt: &mut Stmt, scope: &mut Scope, report: &mut FoldReport) {
         Stmt::AnnAssign(a) => {
             if let Some(v) = a.value.as_mut() {
                 fold_expr_in_place(v, scope, report);
+                if expr_builds_distinct_type(v) {
+                    report.bindings_skipped_dynamic += 1;
+                    return;
+                }
                 if let Expr::Name(name_node) = &*a.target
                     && !is_forbidden(name_node.id.as_str())
                     && let Ok(val) = eval_expr(v, scope)

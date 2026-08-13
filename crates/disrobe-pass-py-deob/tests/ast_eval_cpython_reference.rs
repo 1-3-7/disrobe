@@ -6,7 +6,7 @@ use ruff_python_ast::{Expr, ExprTuple, ExprUnaryOp, UnaryOp};
 use ruff_python_parser::{Mode, ParseOptions, parse};
 
 const PROBE_CALL: &str = "_probe";
-const FOLDED_EXPECTED: usize = 323;
+const FOLDED_EXPECTED: usize = 330;
 
 fn reference_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,12 +91,13 @@ fn fold_probe(expression: &str) -> String {
         .to_owned()
 }
 
-fn is_literal(source: &str) -> bool {
-    let Ok(parsed) = parse(source, ParseOptions::from(Mode::Expression)) else {
-        return false;
-    };
+fn is_literal(expression: &str, source: &str) -> bool {
+    let parsed: ruff_python_parser::Parsed<ruff_python_ast::Mod> =
+        parse(source, ParseOptions::from(Mode::Expression)).unwrap_or_else(|e| {
+            panic!("the evaluator emitted unparseable output for {expression}: {source} ({e})")
+        });
     let ruff_python_ast::Mod::Expression(module) = parsed.into_syntax() else {
-        return false;
+        panic!("expected an expression for {expression}: {source}");
     };
     literal_expr(&module.body)
 }
@@ -128,7 +129,7 @@ fn folded_values_match_cpython_and_refusals_stay_unfolded() {
             Some(reference) => {
                 if rendered == reference {
                     folded += 1;
-                } else if is_literal(&rendered) {
+                } else if is_literal(&row.expression, &rendered) {
                     wrong.push(format!(
                         "{expr}: CPython says {reference}, disrobe folded to {rendered}",
                         expr = row.expression
@@ -136,7 +137,7 @@ fn folded_values_match_cpython_and_refusals_stay_unfolded() {
                 }
             }
             None => {
-                if is_literal(&rendered) {
+                if is_literal(&row.expression, &rendered) {
                     wrong.push(format!(
                         "{expr}: CPython raises, disrobe folded to {rendered}",
                         expr = row.expression
@@ -180,4 +181,25 @@ fn every_probe_that_folds_is_reachable_through_the_source_cleanup_entry_point() 
         "f-string folding must reach the public evaluator entry point: {folded}"
     );
     assert!(report.exprs_folded >= 3, "report undercounts: {report:?}");
+}
+
+#[test]
+fn a_bytearray_binding_does_not_propagate_as_bytes_through_later_statements() {
+    let source: &str =
+        "x = bytearray([104, 105])\ny = x + b'!'\nz = bytearray([104, 105]).decode('latin1')\n";
+    let (folded, _report): (String, EvalReport) =
+        evaluate_source(source).expect("evaluate the bytearray chain");
+    assert!(
+        folded.contains("x = bytearray([104, 105])"),
+        "a bytearray call must not be rewritten as a bytes literal: {folded}"
+    );
+    assert!(
+        !folded.contains("b'hi!'"),
+        "CPython evaluates x + b'!' to bytearray(b'hi!'), which this evaluator cannot represent, \
+         so it must refuse rather than emit the bytes literal b'hi!': {folded}"
+    );
+    assert!(
+        folded.contains("'hi'"),
+        "decoding a bytearray still yields a str, which is representable: {folded}"
+    );
 }
