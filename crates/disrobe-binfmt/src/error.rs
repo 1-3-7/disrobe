@@ -214,4 +214,15 @@ pub enum Error {
         format: &'static str,
         detail: String,
     },
+
+    #[error("DR-BINFMT-0074: native image plan failed: {0}")]
+    Rewrite(String),
+
+    #[error(
+        "DR-BINFMT-0075: `{format}` carries a construct this writer cannot reproduce: {construct}"
+    )]
+    RewriteUnsupported {
+        format: &'static str,
+        construct: String,
+    },
 }

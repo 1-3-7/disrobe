@@ -21,6 +21,7 @@ pub mod native_graph;
 pub mod native_image;
 mod ne;
 pub mod quota;
+pub mod rewrite;
 pub use disrobe_core::structural;
 
 pub use carve::{
