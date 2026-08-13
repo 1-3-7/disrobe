@@ -505,10 +505,21 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
             if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
         }\n\
     }\n\
+    static void finallyThrowsVoid(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+        } finally {\n\
+            if (a < 0) { throw new IllegalStateException(\"neg\"); }\n\
+        }\n\
+    }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[&str] =
-    &["finallyBreaks", "finallyContinues", "finallyNestedTry"];
+const UNMODELLED_FINALLY_METHODS: &[&str] = &[
+    "finallyBreaks",
+    "finallyContinues",
+    "finallyNestedTry",
+    "finallyThrowsVoid",
+];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {
