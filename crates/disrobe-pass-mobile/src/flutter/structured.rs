@@ -10,9 +10,13 @@ use disrobe_nir::{
 use super::aot_lift::{
     DartCheckKind, bcond, classify_guard, is_arm64_trap, subs_imm, subs_shifted_reg, tbz_tbnz,
 };
+use super::call_args::{DartCallArguments, recover_call_arguments};
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
+use super::pool_table::DartPoolTable;
 
 const ARM64_INSN_BYTES: u64 = 4;
+
+const OPAQUE_ARGUMENTS: &str = "...";
 
 const CBZ_CBNZ_MASK: u32 = 0x7E00_0000;
 
@@ -28,10 +32,21 @@ pub(crate) struct DartAbi<'a> {
     pub(crate) label: &'a str,
     pub(crate) arg_registers: u8,
     pub(crate) resolve: &'a dyn Fn(u64) -> Option<String>,
+    pub(crate) pool: Option<&'a DartPoolTable>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DartCallArgumentCounts {
+    pub(crate) recovered_sites: usize,
+    pub(crate) opaque_sites: usize,
 }
 
 #[must_use]
-pub(crate) fn structure_dart_function(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<String> {
+pub(crate) fn structure_dart_function(
+    func: &Arm64Function,
+    abi: &DartAbi<'_>,
+    counts: &mut DartCallArgumentCounts,
+) -> Option<String> {
     let nir: NirFunction = build_nir(func, abi)?;
     let blocks: Vec<NirBlock> = basic_blocks(&nir);
     if blocks.len() < 2 {
@@ -45,7 +60,14 @@ pub(crate) fn structure_dart_function(func: &Arm64Function, abi: &DartAbi<'_>) -
         return None;
     }
     let reachable: BTreeSet<u64> = reachable_from(&blocks);
-    Some(emit_dart(&hir, abi, &reachable))
+    let tail_calls: BTreeSet<u64> = tail_call_addresses(&nir);
+    let arguments: DartCallArguments =
+        recover_call_arguments(func, &blocks, &reachable, &tail_calls, abi.pool);
+    counts.recovered_sites = counts
+        .recovered_sites
+        .saturating_add(arguments.recovered_sites);
+    counts.opaque_sites = counts.opaque_sites.saturating_add(arguments.opaque_sites);
+    Some(emit_dart(&hir, abi, &reachable, &arguments))
 }
 
 fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
@@ -81,6 +103,7 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
                 } else {
                     op = NirOp::TailCall { target };
                     mnemonic = "tail".to_owned();
+                    operands.push(call_display(target, abi));
                 }
             }
             Arm64FlowKind::ConditionalBranch => {
@@ -136,6 +159,14 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
         instructions: lowered,
         source: SourceRef::new(SourceLang::NativeArm, abi.fn_start),
     })
+}
+
+fn tail_call_addresses(nir: &NirFunction) -> BTreeSet<u64> {
+    nir.instructions
+        .iter()
+        .filter(|instr: &&NirInstr| matches!(instr.op, NirOp::TailCall { .. }))
+        .map(|instr: &NirInstr| instr.address)
+        .collect::<BTreeSet<u64>>()
 }
 
 fn branch_target_counts(insns: &[Arm64Instruction], abi: &DartAbi<'_>) -> BTreeMap<u64, usize> {
@@ -512,15 +543,25 @@ fn natural_loop_headers(blocks: &[NirBlock], reachable: &BTreeSet<u64>) -> BTree
         .collect()
 }
 
-fn emit_dart(hir: &HirFunction, abi: &DartAbi<'_>, reachable: &BTreeSet<u64>) -> String {
-    let params: String = (0..abi.arg_registers)
-        .map(|i: u8| format!("arg{i}"))
+fn emit_dart(
+    hir: &HirFunction,
+    abi: &DartAbi<'_>,
+    reachable: &BTreeSet<u64>,
+    arguments: &DartCallArguments,
+) -> String {
+    let declared: usize = usize::from(abi.arg_registers).max(
+        arguments
+            .max_parameter
+            .map_or(0, |highest: usize| highest.saturating_add(1)),
+    );
+    let params: String = (0..declared)
+        .map(|i: usize| format!("arg{i}"))
         .collect::<Vec<String>>()
         .join(", ");
     let mut out: String = String::new();
     let _ = writeln!(out, "{}({params}) {{", abi.label);
     let mut body: String = String::new();
-    emit_stmt(&hir.body, 1, reachable, &mut body);
+    emit_stmt(&hir.body, 1, reachable, arguments, &mut body);
     if body.trim().is_empty() {
         let _ = writeln!(out, "  return;");
     } else {
@@ -530,11 +571,17 @@ fn emit_dart(hir: &HirFunction, abi: &DartAbi<'_>, reachable: &BTreeSet<u64>) ->
     out
 }
 
-fn emit_stmt(stmt: &HirStmt, indent: usize, reachable: &BTreeSet<u64>, out: &mut String) {
+fn emit_stmt(
+    stmt: &HirStmt,
+    indent: usize,
+    reachable: &BTreeSet<u64>,
+    arguments: &DartCallArguments,
+    out: &mut String,
+) {
     match stmt {
         HirStmt::Seq { body } => {
             for child in body {
-                emit_stmt(child, indent, reachable, out);
+                emit_stmt(child, indent, reachable, arguments, out);
             }
         }
         HirStmt::Leaf { block_start, stmts } => {
@@ -542,7 +589,7 @@ fn emit_stmt(stmt: &HirStmt, indent: usize, reachable: &BTreeSet<u64>, out: &mut
                 return;
             }
             for leaf in stmts {
-                if let Some(line) = render_leaf(&leaf.instr) {
+                if let Some(line) = render_leaf(&leaf.instr, arguments) {
                     push_indented(out, indent, &line);
                 }
             }
@@ -553,16 +600,16 @@ fn emit_stmt(stmt: &HirStmt, indent: usize, reachable: &BTreeSet<u64>, out: &mut
             else_branch,
         } => {
             push_indented(out, indent, &format!("if ({}) {{", condition_of(cond)));
-            emit_stmt(then_branch, indent + 1, reachable, out);
-            if has_content(else_branch, reachable) {
+            emit_stmt(then_branch, indent + 1, reachable, arguments, out);
+            if has_content(else_branch, reachable, arguments) {
                 push_indented(out, indent, "} else {");
-                emit_stmt(else_branch, indent + 1, reachable, out);
+                emit_stmt(else_branch, indent + 1, reachable, arguments, out);
             }
             push_indented(out, indent, "}");
         }
         HirStmt::Loop { body, .. } => {
             push_indented(out, indent, "while (true) {");
-            emit_stmt(body, indent + 1, reachable, out);
+            emit_stmt(body, indent + 1, reachable, arguments, out);
             push_indented(out, indent, "}");
         }
         HirStmt::Break { .. } => push_indented(out, indent, "break;"),
@@ -580,13 +627,17 @@ fn condition_of(cond: &HirCond) -> String {
     }
 }
 
-fn has_content(stmt: &HirStmt, reachable: &BTreeSet<u64>) -> bool {
+fn has_content(stmt: &HirStmt, reachable: &BTreeSet<u64>, arguments: &DartCallArguments) -> bool {
     match stmt {
         HirStmt::Leaf { block_start, stmts } => {
             reachable.contains(block_start)
-                && stmts.iter().any(|leaf| render_leaf(&leaf.instr).is_some())
+                && stmts
+                    .iter()
+                    .any(|leaf| render_leaf(&leaf.instr, arguments).is_some())
         }
-        HirStmt::Seq { body } => body.iter().any(|s: &HirStmt| has_content(s, reachable)),
+        HirStmt::Seq { body } => body
+            .iter()
+            .any(|s: &HirStmt| has_content(s, reachable, arguments)),
         HirStmt::If { .. }
         | HirStmt::Loop { .. }
         | HirStmt::Break { .. }
@@ -596,19 +647,39 @@ fn has_content(stmt: &HirStmt, reachable: &BTreeSet<u64>) -> bool {
     }
 }
 
-fn render_leaf(instr: &NirInstr) -> Option<String> {
+fn render_leaf(instr: &NirInstr, arguments: &DartCallArguments) -> Option<String> {
     match &instr.op {
         NirOp::Call { .. } => {
             let callee: &str = instr
                 .operands
                 .first()
                 .map_or("sub", |s: &String| s.as_str());
-            Some(format!("{callee}(...);"))
+            Some(render_invocation(callee, instr.address, arguments))
         }
-        NirOp::IndirectCall => Some("invoke(...);".to_owned()),
+        NirOp::IndirectCall => Some(render_invocation("invoke", instr.address, arguments)),
+        NirOp::TailCall { .. } => {
+            let callee: &str = instr
+                .operands
+                .first()
+                .map_or("sub", |s: &String| s.as_str());
+            let list: String = arguments
+                .arguments(instr.address)
+                .map_or_else(|| OPAQUE_ARGUMENTS.to_owned(), |values| values.join(", "));
+            Some(format!("return {callee}({list});"))
+        }
         NirOp::NoReturnCall { .. } if instr.mnemonic == "trap" => Some("trap();".to_owned()),
         NirOp::Nop if !instr.mnemonic.is_empty() => Some(instr.mnemonic.clone()),
         _ => None,
+    }
+}
+
+fn render_invocation(callee: &str, address: u64, arguments: &DartCallArguments) -> String {
+    let list: String = arguments
+        .arguments(address)
+        .map_or_else(|| OPAQUE_ARGUMENTS.to_owned(), |values| values.join(", "));
+    match arguments.result_binding(address) {
+        Some(index) => format!("var v{index} = {callee}({list});"),
+        None => format!("{callee}({list});"),
     }
 }
 
@@ -670,7 +741,216 @@ mod tests {
             label: "probe",
             arg_registers: 1,
             resolve,
+            pool: None,
         }
+    }
+
+    fn structure(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<String> {
+        let mut counts: DartCallArgumentCounts = DartCallArgumentCounts::default();
+        structure_dart_function(func, abi, &mut counts)
+    }
+
+    fn movz_imm(rd: u32, imm: u32) -> u32 {
+        0xD280_0000 | (imm << 5) | rd
+    }
+
+    fn mov_from(rd: u32, rm: u32) -> u32 {
+        0xAA00_03E0 | (rm << 16) | rd
+    }
+
+    fn bl(from: u64, to: u64) -> u32 {
+        let imm: i64 = ((to as i64) - (from as i64)) >> 2;
+        0x9400_0000 | ((imm as u32) & 0x03FF_FFFF)
+    }
+
+    fn str_stack(rt: u32, byte_offset: u32) -> u32 {
+        0xF900_0000 | ((byte_offset / 8) << 10) | (15 << 5) | rt
+    }
+
+    fn ldr_pool(rt: u32, byte_offset: u32) -> u32 {
+        0xF940_0000 | ((byte_offset / 8) << 10) | (27 << 5) | rt
+    }
+
+    fn blr(reg: u32) -> u32 {
+        0xD63F_0000 | (reg << 5)
+    }
+
+    #[test]
+    fn argument_set_in_both_arms_renders_as_the_placeholder() {
+        let base: u64 = 0x5000;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 0),
+            bcc(0, base + 0x4, base + 0x10),
+            movz_imm(1, 7),
+            b(base + 0xC, base + 0x14),
+            movz_imm(1, 9),
+            mov_from(2, 22),
+            bl(base + 0x18, base + 0x100),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("merge".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("(?, null);"),
+            "an argument register written on both sides of a merge must render as the placeholder, never one arm's value, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("(7,") && !rendered.contains("(9,"),
+            "no branch-local value may leak through the merge, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn dart_argument_registers_are_read_in_the_engine_order() {
+        let base: u64 = 0x7000;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x2C),
+            movz_imm(1, 11),
+            movz_imm(2, 22),
+            movz_imm(3, 33),
+            movz_imm(4, 99),
+            movz_imm(5, 55),
+            movz_imm(6, 66),
+            movz_imm(7, 77),
+            bl(base + 0x20, base + 0x400),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("order".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("(11, 22, 33, 55, 66, 77);"),
+            "the Dart argument sequence is R1 R2 R3 R5 R6 R7; R4 carries the arguments descriptor and never an argument, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("99"),
+            "a value parked in R4 must never enter the argument list, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn stack_slots_extend_the_argument_list_past_the_register_file() {
+        let base: u64 = 0x7400;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x30),
+            movz_imm(9, 88),
+            str_stack(9, 0),
+            movz_imm(1, 11),
+            movz_imm(2, 22),
+            movz_imm(3, 33),
+            movz_imm(5, 55),
+            movz_imm(6, 66),
+            movz_imm(7, 77),
+            bl(base + 0x28, base + 0x500),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("spill".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("(11, 22, 33, 55, 66, 77, 88);"),
+            "an argument written to a Dart stack slot must extend the list past the register file, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_non_contiguous_stack_area_yields_no_stack_arguments() {
+        let base: u64 = 0x7800;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x1C),
+            movz_imm(9, 88),
+            str_stack(9, 0x10),
+            movz_imm(1, 11),
+            bl(base + 0x14, base + 0x600),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("gap".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("(11);"),
+            "a store that does not start the outgoing area at slot zero must not become an argument, got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("88"),
+            "a non-contiguous stack store must not inflate the argument count, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_tail_call_renders_its_recovered_arguments() {
+        let base: u64 = 0x7C00;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x14),
+            movz_imm(2, 42),
+            b(base + 0xC, base + 0x9000),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("tail".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("return sub_0x10c00(arg0, 42);"),
+            "a tail call leaves the function and must render its recovered arguments, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn an_instance_dispatch_selector_is_not_an_argument() {
+        let base: u64 = 0x8000;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x18),
+            movz_imm(1, 11),
+            ldr_pool(5, 0x40),
+            blr(9),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("dispatch".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("invoke(11);"),
+            "an instance dispatch loads its selector into R5 from the pool; that selector is not an argument, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn straight_line_argument_setup_is_recovered() {
+        let base: u64 = 0x6000;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 1),
+            bcc(0, base + 0x4, base + 0x18),
+            movz_imm(1, 7),
+            mov_from(2, 22),
+            bl(base + 0x10, base + 0x200),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("straight".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(
+            rendered.contains("(7, null);"),
+            "a single-predecessor argument setup must recover both argument registers, got:\n{rendered}"
+        );
     }
 
     #[test]
@@ -687,8 +967,7 @@ mod tests {
         let func: Arm64Function =
             disassemble_range(&bytes, base, 0, bytes.len(), Some("probe".to_owned()));
         let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
-        let rendered: String =
-            structure_dart_function(&func, &abi(&func, resolve)).expect("must structure");
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
         assert!(rendered.contains("if (x0 >= 2)"), "got:\n{rendered}");
         assert!(rendered.contains('}'), "got:\n{rendered}");
     }
@@ -764,7 +1043,7 @@ mod tests {
             disassemble_range(&bytes, base, 0, bytes.len(), Some("probe".to_owned()));
         let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
         assert!(
-            structure_dart_function(&func, &abi(&func, resolve)).is_none(),
+            structure(&func, &abi(&func, resolve)).is_none(),
             "an indirect (computed) branch is not soundly structurable and must fall back"
         );
     }

@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 
 pub mod aot_lift;
 pub mod arm64_traversal;
+pub(crate) mod call_args;
 pub mod cid_table;
 pub mod cluster;
 pub mod dart_graph;
@@ -21,6 +22,7 @@ pub mod disasm;
 pub mod kernel;
 pub mod libapp_parser;
 pub mod object_pool;
+pub mod pool_table;
 pub mod snapshot;
 pub mod string_pool;
 pub mod structured;
@@ -76,6 +78,9 @@ pub use libapp_parser::{
 pub use object_pool::{
     DartPoolLiteral, DispatchSite, ObjectPoolReferenceMap, PoolSlotUse,
     recover_object_pool_references, resolve_pool_literals,
+};
+pub use pool_table::{
+    DART_POOL_ELEMENT_BASE_BYTES, DartPoolLiteralKind, DartPoolTable, DartPoolTableStats,
 };
 pub use snapshot::{
     DartClassEntry, DartFunctionBoundary, DartMethodEntry, DartNameSource, DartRecoveredFunction,

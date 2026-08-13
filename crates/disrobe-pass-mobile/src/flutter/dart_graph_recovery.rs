@@ -416,6 +416,51 @@ fn recover_pinned_data_blobs(
     })
 }
 
+pub(super) struct DartPinnedGraph {
+    pub(super) graph: DartParsedGraph,
+    pub(super) layout: DartPinnedLayout,
+}
+
+pub(super) fn parse_pinned_isolate_graph(
+    vm_data: &[u8],
+    isolate_data: &[u8],
+    limits: DartGraphLimits,
+) -> Result<Option<DartPinnedGraph>> {
+    limits.validate()?;
+    let vm_header: DartPinnedHeader = parse_pinned_header(vm_data)?;
+    let isolate_header: DartPinnedHeader = parse_pinned_header(isolate_data)?;
+    if vm_header.snapshot_compatibility_hash != isolate_header.snapshot_compatibility_hash {
+        return Err(Error::DartGraphHeaderMismatch {
+            field: "snapshot compatibility hash",
+        });
+    }
+    let Some(layout): Option<DartPinnedLayout> = pinned_dart_graph_layout(
+        &isolate_header.snapshot_compatibility_hash,
+        &isolate_header.features,
+    ) else {
+        return Ok(None);
+    };
+    let vm_graph: DartParsedGraph = parse_dart_graph(
+        vm_data,
+        vm_header.declared_length,
+        vm_header.clustered_offset,
+        DartGraphSnapshotRole::Vm,
+        None,
+        layout,
+        limits,
+    )?;
+    let graph: DartParsedGraph = parse_dart_graph(
+        isolate_data,
+        isolate_header.declared_length,
+        isolate_header.clustered_offset,
+        DartGraphSnapshotRole::Isolate,
+        Some(&vm_graph.nodes),
+        layout,
+        limits,
+    )?;
+    Ok(Some(DartPinnedGraph { graph, layout }))
+}
+
 fn classify_names(
     inventory: &DartPinnedInventory,
     hint: DartGraphObfuscationHint,

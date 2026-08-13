@@ -366,7 +366,11 @@ pub(super) fn classify_name_evidence(inventory: &DartPinnedInventory) -> DartGra
 
 fn text_at(nodes: &[DartGraphNode], reference: u32) -> Option<&str> {
     let index: usize = usize::try_from(reference).ok()?;
-    nodes.get(index)?.text.as_deref()
+    let node: &DartGraphNode = nodes.get(index)?;
+    if node.text_is_escaped {
+        return None;
+    }
+    node.text.as_deref()
 }
 
 fn resolve_owner(owner: u32, patch_owners: &BTreeMap<u32, u32>) -> u32 {

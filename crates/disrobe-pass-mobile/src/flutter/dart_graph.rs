@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde::{Deserialize, Serialize};
 
 use super::cluster::DartReadStream;
@@ -10,6 +12,10 @@ const HARD_REFERENCE_LIMIT: usize = 16_000_000;
 const HARD_STRING_CODE_UNIT_LIMIT: usize = 16 * 1024 * 1024;
 const HARD_TOTAL_STRING_BYTE_LIMIT: usize = 256 * 1024 * 1024;
 const HARD_VARIABLE_LENGTH_LIMIT: usize = 64 * 1024 * 1024;
+
+const MINT_CLASS_ID: i32 = 61;
+
+const MAX_POOL_SLOTS: usize = 1 << 21;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DartGraphLimits {
@@ -93,6 +99,14 @@ pub(super) enum DartGraphNodeKind {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DartPoolSlot {
+    Immediate(i64),
+    Object(u32),
+    NativeFunction,
+    Unmodelled,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct DartGraphNode {
     pub(super) kind: DartGraphNodeKind,
@@ -100,6 +114,9 @@ pub(super) struct DartGraphNode {
     pub(super) text: Option<String>,
     pub(super) class_id: Option<i32>,
     pub(super) parameter_count: Option<usize>,
+    pub(super) immediate: Option<i64>,
+    pub(super) pool_slots: Vec<DartPoolSlot>,
+    pub(super) text_is_escaped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,8 +579,10 @@ impl DartGraphParser<'_> {
     fn allocate_mints(&mut self, index: usize) -> Result<DartGraphAllocation> {
         let count: usize = self.read_count(index, "integer count")?;
         for _ in 0..count {
-            let _value: i64 = self.cursor.read_i64("mint value")?;
-            self.assign_nodes(index, 1, DartGraphNodeKind::Other, Some(61))?;
+            let value: i64 = self.cursor.read_i64("mint value")?;
+            let reference: usize = self.next_reference;
+            self.assign_nodes(index, 1, DartGraphNodeKind::Other, Some(MINT_CLASS_ID))?;
+            self.node_mut(reference)?.immediate = Some(value);
         }
         Ok(DartGraphAllocation::Fixed)
     }
@@ -1003,12 +1022,17 @@ impl DartGraphParser<'_> {
                 });
             }
             let bytes: &[u8] = self.cursor.read_bytes(byte_length, "string bytes")?;
-            let text: Option<String> = if two_byte {
-                decode_two_byte_string(bytes)
+            let (text, escaped): (Option<String>, bool) = if two_byte {
+                match decode_two_byte_string(bytes) {
+                    Some(decoded) => (Some(decoded), false),
+                    None => (Some(escape_two_byte_string(bytes)), true),
+                }
             } else {
-                Some(decode_one_byte_string(bytes))
+                (Some(decode_one_byte_string(bytes)), false)
             };
-            self.node_mut(reference)?.text = text;
+            let node: &mut DartGraphNode = self.node_mut(reference)?;
+            node.text = text;
+            node.text_is_escaped = escaped;
         }
         Ok(())
     }
@@ -1127,20 +1151,23 @@ impl DartGraphParser<'_> {
             let actual: usize = self.read_variable_length(cluster.index)?;
             self.validate_repeated_length(cluster, reference, actual, expected)?;
             let mut references: Vec<u32> = Vec::new();
+            let mut slots: Vec<DartPoolSlot> = Vec::with_capacity(expected.min(MAX_POOL_SLOTS));
             for _ in 0..expected {
                 let bits: u8 = self.cursor.read_u8("object pool entry bits")?;
                 let behavior: u8 = (bits >> 5) & 0x7;
                 let entry_type: u8 = bits & 0x0f;
-                match behavior {
+                let slot: DartPoolSlot = match behavior {
                     0 => match entry_type {
                         0 => {
-                            let _immediate: i64 = self.cursor.read_i64("object pool immediate")?;
+                            let immediate: i64 = self.cursor.read_i64("object pool immediate")?;
+                            DartPoolSlot::Immediate(immediate)
                         }
                         1 => {
                             let resolved: u32 = self.cursor.read_ref(self.object_count)?;
                             references.push(resolved);
+                            DartPoolSlot::Object(resolved)
                         }
-                        2 => {}
+                        2 => DartPoolSlot::NativeFunction,
                         _ => {
                             return Err(Error::DartGraphInvalidObjectPoolEntry {
                                 index: cluster.index,
@@ -1149,7 +1176,7 @@ impl DartGraphParser<'_> {
                             });
                         }
                     },
-                    2..=4 => {}
+                    2..=4 => DartPoolSlot::Unmodelled,
                     _ => {
                         return Err(Error::DartGraphInvalidObjectPoolEntry {
                             index: cluster.index,
@@ -1157,9 +1184,14 @@ impl DartGraphParser<'_> {
                             bits,
                         });
                     }
+                };
+                if slots.len() < MAX_POOL_SLOTS {
+                    slots.push(slot);
                 }
             }
-            self.node_mut(reference)?.references = references;
+            let node: &mut DartGraphNode = self.node_mut(reference)?;
+            node.references = references;
+            node.pool_slots = slots;
         }
         Ok(())
     }
@@ -1251,8 +1283,9 @@ impl DartGraphParser<'_> {
     }
 
     fn fill_compact_i64(&mut self, cluster: &DartGraphCluster) -> Result<()> {
-        for _ in cluster.start_reference..cluster.end_reference {
-            let _value: i64 = self.cursor.read_i64("compact i64 value")?;
+        for reference in cluster.start_reference..cluster.end_reference {
+            let value: i64 = self.cursor.read_i64("compact i64 value")?;
+            self.node_mut(reference)?.immediate = Some(value);
         }
         Ok(())
     }
@@ -1402,6 +1435,25 @@ fn decode_one_byte_string(bytes: &[u8]) -> String {
     let mut text: String = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         text.push(char::from(*byte));
+    }
+    text
+}
+
+fn escape_two_byte_string(bytes: &[u8]) -> String {
+    let unit_count: usize = bytes.len() / 2;
+    let mut text: String = String::with_capacity(unit_count.saturating_mul(3));
+    for character in char::decode_utf16(
+        bytes
+            .chunks_exact(2)
+            .map(|pair: &[u8]| u16::from_le_bytes([pair[0], pair[1]])),
+    ) {
+        match character {
+            Ok(decoded) => text.push(decoded),
+            Err(error) => {
+                let unit: u16 = error.unpaired_surrogate();
+                let _ = write!(text, "\\u{unit:04X}");
+            }
+        }
     }
     text
 }

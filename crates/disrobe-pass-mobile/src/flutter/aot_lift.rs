@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use super::DartFunctionSymbol;
 use super::cid_table::matches_version;
+use super::dart_graph::DartGraphLimits;
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::object_pool::{DartPoolLiteral, resolve_pool_literals};
+use super::pool_table::{DartPoolTable, DartPoolTableStats, pool_slot_of_offset};
+use super::structured::DartCallArgumentCounts;
 use crate::debug::{dbg_kv, dbg_section};
 use crate::error::Result;
 
@@ -245,7 +248,7 @@ fn render_call(out: &mut String, call: &DartCallSite) {
     }
 }
 
-fn escape_dart_string(text: &str) -> String {
+pub(super) fn escape_dart_string(text: &str) -> String {
     let mut escaped: String = String::with_capacity(text.len());
     for character in text.chars() {
         match character {
@@ -255,6 +258,9 @@ fn escape_dart_string(text: &str) -> String {
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
             '$' => escaped.push_str("\\$"),
+            other if other.is_control() => {
+                let _ = write!(escaped, "\\u{{{:04X}}}", u32::from(other));
+            }
             other => escaped.push(other),
         }
     }
@@ -290,6 +296,9 @@ pub struct AotLiftReport {
     pub pool_refs_wide_offset: usize,
     pub pool_content_resolved: usize,
     pub pool_literals: Vec<DartPoolLiteral>,
+    pub pool_slots: Option<DartPoolTableStats>,
+    pub call_sites_with_arguments: usize,
+    pub call_sites_opaque: usize,
     pub inline_double_literals: Vec<DartPoolLiteral>,
     pub inline_double_count: usize,
     pub notes: Vec<String>,
@@ -297,11 +306,13 @@ pub struct AotLiftReport {
 
 const ABI_UNRESOLVED_NOTE: &str = "snapshot version hash is not pinned; ARM64 Dart ABI register roles (PP/THR/NULL/dispatch) are version-keyed and are not guessed, so this report is boundary and control-flow structure only";
 
-const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form; string literals and ObjectPool cluster kImmediate double constants are decoded to typed values, while per-slot attribution, Smi integer immediates, and fmov-inlined doubles need the fully deserialized version-keyed ObjectPool cluster and stay unresolved rather than fabricated";
+const POOL_CONTENT_NOTE: &str = "pool slot indices are resolved from every PP-relative load form and the version-keyed ObjectPool cluster is deserialized per slot, so a call-site load resolves to its own string, double, integer, list or declared name; slots holding a snapshot base object, a native-function entry or a body shape this layout does not model stay unresolved rather than fabricated";
 
 const INLINE_DOUBLE_NOTE: &str = "double literals that gen_snapshot materializes with an inline fmov 8-bit immediate never reach the ObjectPool; they are decoded byte-exact from the AArch64 fmov encoding and attributed to the function that loads them";
 
 const FIELD_NAME_WALL_NOTE: &str = "instance field names are dropped by the product AOT precompiler (Precompiler::DropFields); they are absent from the snapshot bytes and are never fabricated. field access surfaces by offset only";
+
+const POOL_UNAVAILABLE_NOTE: &str = "this image does not present a readable pair of VM and isolate snapshot blobs, so object-pool slot attribution is unavailable and call arguments that read the pool render as slot references";
 
 const INLINE_WALL_NOTE: &str = "small leaf methods are inlined and tree-shaken; their boundaries do not survive in the AOT image, so they are honestly absent rather than reconstructed";
 
@@ -317,12 +328,31 @@ pub fn lift_libapp_aot(bytes: &[u8]) -> Result<AotLiftReport> {
     };
     dbg_kv("aot.functions", || disasm.function_count.to_string());
     let isolate_data: Vec<u8> = super::isolate_data_bytes(bytes)?;
-    Ok(lift_functions(
+    let attempted: Result<Option<DartPoolTable>> =
+        super::vm_data_bytes(bytes).and_then(|vm_data: Vec<u8>| {
+            DartPoolTable::build(&vm_data, &isolate_data, DartGraphLimits::default())
+        });
+    let (pool, unavailable): (Option<DartPoolTable>, Option<String>) = match attempted {
+        Ok(table) => (table, None),
+        Err(error) => (None, Some(format!("{POOL_UNAVAILABLE_NOTE}: {error}"))),
+    };
+    dbg_kv("aot.pool-slots", || {
+        pool.as_ref().map_or_else(
+            || "unavailable".to_owned(),
+            |table| table.slot_count().to_string(),
+        )
+    });
+    let mut report: AotLiftReport = lift_functions(
         &recovery.version_hash,
         &disasm,
         &layout.function_symbols,
         &isolate_data,
-    ))
+        pool.as_ref(),
+    );
+    if let Some(note) = unavailable {
+        report.notes.push(note);
+    }
+    Ok(report)
 }
 
 #[must_use]
@@ -367,13 +397,21 @@ pub fn lift_functions(
     disasm: &Arm64Disassembly,
     symbols: &[DartFunctionSymbol],
     isolate_data: &[u8],
+    pool: Option<&DartPoolTable>,
 ) -> AotLiftReport {
     let abi_resolved: bool = matches_version(version_hash);
     let index: SymbolIndex = SymbolIndex::build(symbols);
 
+    let mut call_argument_counts: DartCallArgumentCounts = DartCallArgumentCounts::default();
     let mut functions: Vec<DartLiftedFunction> = Vec::with_capacity(disasm.functions.len());
     for func in &disasm.functions {
-        functions.push(lift_one(func, &index, abi_resolved));
+        functions.push(lift_one(
+            func,
+            &index,
+            abi_resolved,
+            pool,
+            &mut call_argument_counts,
+        ));
     }
 
     let named_function_count: usize = functions
@@ -488,6 +526,9 @@ pub fn lift_functions(
         pool_refs_wide_offset,
         pool_content_resolved,
         pool_literals,
+        pool_slots: pool.map(DartPoolTable::stats),
+        call_sites_with_arguments: call_argument_counts.recovered_sites,
+        call_sites_opaque: call_argument_counts.opaque_sites,
         inline_double_literals,
         inline_double_count,
         notes,
@@ -495,7 +536,13 @@ pub fn lift_functions(
 }
 
 #[must_use]
-fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> DartLiftedFunction {
+fn lift_one(
+    func: &Arm64Function,
+    index: &SymbolIndex,
+    abi_resolved: bool,
+    pool: Option<&DartPoolTable>,
+    counts: &mut DartCallArgumentCounts,
+) -> DartLiftedFunction {
     let (start, end): (u64, u64) = func_range(func);
     let (basic_block_count, has_loop_back_edge): (usize, bool) =
         control_flow_shape(func, start, end);
@@ -568,8 +615,9 @@ fn lift_one(func: &Arm64Function, index: &SymbolIndex, abi_resolved: bool) -> Da
             label: &label,
             arg_registers,
             resolve: &resolve,
+            pool,
         };
-        super::structured::structure_dart_function(func, &abi)
+        super::structured::structure_dart_function(func, &abi, counts)
     } else {
         None
     };
@@ -855,12 +903,12 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
                     });
                 }
             } else if let Some(base) = scratch.get(&rn).copied()
-                && byte_off.is_multiple_of(POOL_ENTRY_BYTES)
+                && let Some(slot) = pool_slot_of_offset(base.saturating_add(byte_off))
             {
                 refs.push(DartPoolRef {
                     address: insn.address,
                     dest_reg: rt,
-                    slot_index: (base + byte_off) / POOL_ENTRY_BYTES,
+                    slot_index: slot,
                     form: DartPoolLoadForm::ShiftedAdd,
                     resolved_content: None,
                 });
@@ -871,12 +919,12 @@ fn resolve_pool_refs(instructions: &[Arm64Instruction]) -> Vec<DartPoolRef> {
         if let Some((rt, rn, rm_base)) = ldr_reg_offset(raw)
             && rn == POOL_REG
             && let Some(base) = scratch.get(&rm_base).copied()
-            && base.is_multiple_of(POOL_ENTRY_BYTES)
+            && let Some(slot) = pool_slot_of_offset(base)
         {
             refs.push(DartPoolRef {
                 address: insn.address,
                 dest_reg: rt,
-                slot_index: base / POOL_ENTRY_BYTES,
+                slot_index: slot,
                 form: DartPoolLoadForm::RegisterOffset,
                 resolved_content: None,
             });
@@ -925,7 +973,7 @@ fn recover_inline_double_literals(instructions: &[Arm64Instruction]) -> Vec<u64>
 }
 
 #[must_use]
-fn fmov_double_immediate(raw: u32) -> Option<u64> {
+pub(super) fn fmov_double_immediate(raw: u32) -> Option<u64> {
     if raw & FMOV_DOUBLE_IMM_MASK != FMOV_DOUBLE_IMM_MATCH {
         return None;
     }
@@ -944,10 +992,10 @@ const fn vfp_expand_double(imm8: u8) -> u64 {
 
 #[must_use]
 fn pool_slot_from(rn: u8, byte_off: u64) -> Option<u64> {
-    if rn != POOL_REG || !byte_off.is_multiple_of(POOL_ENTRY_BYTES) {
+    if rn != POOL_REG {
         return None;
     }
-    Some(byte_off / POOL_ENTRY_BYTES)
+    pool_slot_of_offset(byte_off)
 }
 
 #[derive(Debug)]
@@ -993,7 +1041,7 @@ impl SymbolIndex {
 }
 
 #[must_use]
-fn ldr_imm_unsigned(raw: u32) -> Option<(u8, u8, u64)> {
+pub(super) fn ldr_imm_unsigned(raw: u32) -> Option<(u8, u8, u64)> {
     if raw & 0xFFC0_0000 != 0xF940_0000 {
         return None;
     }
@@ -1004,7 +1052,7 @@ fn ldr_imm_unsigned(raw: u32) -> Option<(u8, u8, u64)> {
 }
 
 #[must_use]
-fn ldr_reg_offset(raw: u32) -> Option<(u8, u8, u8)> {
+pub(super) fn ldr_reg_offset(raw: u32) -> Option<(u8, u8, u8)> {
     if raw & 0xFFE0_0C00 != 0xF860_0800 {
         return None;
     }
@@ -1015,7 +1063,7 @@ fn ldr_reg_offset(raw: u32) -> Option<(u8, u8, u8)> {
 }
 
 #[must_use]
-fn add_imm(raw: u32) -> Option<(u8, u8, u64)> {
+pub(super) fn add_imm(raw: u32) -> Option<(u8, u8, u64)> {
     if raw & 0xFF00_0000 != 0x9100_0000 {
         return None;
     }
@@ -1031,7 +1079,7 @@ fn add_imm(raw: u32) -> Option<(u8, u8, u64)> {
 }
 
 #[must_use]
-fn movz(raw: u32) -> Option<(u8, u64)> {
+pub(super) fn movz(raw: u32) -> Option<(u8, u64)> {
     if raw & 0xFF80_0000 != 0xD280_0000 {
         return None;
     }
@@ -1042,7 +1090,7 @@ fn movz(raw: u32) -> Option<(u8, u64)> {
 }
 
 #[must_use]
-fn movk(raw: u32) -> Option<(u8, u64, u32)> {
+pub(super) fn movk(raw: u32) -> Option<(u8, u64, u32)> {
     if raw & 0xFF80_0000 != 0xF280_0000 {
         return None;
     }
@@ -1096,7 +1144,7 @@ pub(crate) fn tbz_tbnz(raw: u32) -> Option<(u8, u32, bool)> {
 }
 
 #[must_use]
-fn blr_target_reg(raw: u32) -> Option<u8> {
+pub(super) fn blr_target_reg(raw: u32) -> Option<u8> {
     if raw & 0xFFFF_FC1F != 0xD63F_0000 {
         return None;
     }
@@ -1104,7 +1152,7 @@ fn blr_target_reg(raw: u32) -> Option<u8> {
 }
 
 #[must_use]
-fn single_dest_reg(raw: u32) -> Option<u8> {
+pub(super) fn single_dest_reg(raw: u32) -> Option<u8> {
     if let Some((rd, _, _)) = add_imm(raw) {
         return Some(rd);
     }
@@ -1191,7 +1239,13 @@ mod tests {
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex =
             SymbolIndex::build(&[symbol(0x200, 0x40, "WarehouseLedger.mostValuable")]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert_eq!(lifted.calls.len(), 1);
         assert_eq!(lifted.calls[0].kind, DartCallKind::Static);
         assert_eq!(
@@ -1206,7 +1260,13 @@ mod tests {
         let func: Arm64Function =
             disassemble_function(&bytes, 0x100, 0, bytes.len(), Some("fib".to_owned()));
         let index: SymbolIndex = SymbolIndex::build(&[symbol(0x100, 0x0c, "fib")]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert!(
             lifted
                 .calls
@@ -1222,13 +1282,19 @@ mod tests {
         let bytes: Vec<u8> = words(&[ldr_pool(IC_DATA_REG as u32, 64), blr(3), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         let call: &DartCallSite = lifted
             .calls
             .iter()
             .find(|c: &&DartCallSite| c.kind == DartCallKind::InstanceSwitchable)
             .expect("x5 pool-load then blr is a switchable instance call");
-        assert_eq!(call.selector_slot, Some(8));
+        assert_eq!(call.selector_slot, Some(6));
     }
 
     #[test]
@@ -1236,7 +1302,13 @@ mod tests {
         let bytes: Vec<u8> = words(&[ldr_from(9, DISPATCH_TABLE_REG as u32, 32), blr(9), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert!(
             lifted
                 .calls
@@ -1252,13 +1324,19 @@ mod tests {
         let bytes: Vec<u8> = words(&[add_pool(16, 1), ldr_from(0, 16, 16), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         let wide: &DartPoolRef = lifted
             .pool_refs
             .iter()
             .find(|p: &&DartPoolRef| p.form == DartPoolLoadForm::ShiftedAdd)
             .expect("add x16,x27,#1,lsl#12 then ldr must resolve a wide pool slot");
-        assert_eq!(wide.slot_index, ((1u64 << 12) + 16) / 8);
+        assert_eq!(wide.slot_index, ((1u64 << 12) + 16 - 16) / 8);
     }
 
     fn fmov_d(imm8: u8, rd: u32) -> u32 {
@@ -1295,7 +1373,13 @@ mod tests {
         let func: Arm64Function =
             disassemble_function(&bytes, 0x100, 0, bytes.len(), Some("build".to_owned()));
         let index: SymbolIndex = SymbolIndex::build(&[symbol(0x100, 0x08, "build")]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert_eq!(
             lifted.inline_double_literals,
             vec![4.25f64.to_bits()],
@@ -1309,7 +1393,13 @@ mod tests {
         let bytes: Vec<u8> = words(&[fmov_d(0x11, 0), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, false);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            false,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert!(
             lifted.inline_double_literals.is_empty(),
             "an unpinned ABI must not decode inline immediates"
@@ -1327,7 +1417,13 @@ mod tests {
         ]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, true);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            true,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert_eq!(lifted.conditional_branch_count, 2);
         assert!(
             lifted
@@ -1348,7 +1444,13 @@ mod tests {
         let bytes: Vec<u8> = words(&[cmp_reg(3, NULL_REG as u32), bcc(u32::from(COND_EQ)), ret()]);
         let func: Arm64Function = disassemble_function(&bytes, 0x100, 0, bytes.len(), None);
         let index: SymbolIndex = SymbolIndex::build(&[]);
-        let lifted: DartLiftedFunction = lift_one(&func, &index, false);
+        let lifted: DartLiftedFunction = lift_one(
+            &func,
+            &index,
+            false,
+            None,
+            &mut DartCallArgumentCounts::default(),
+        );
         assert!(
             lifted.calls.is_empty()
                 && lifted.elided_checks.is_empty()
@@ -1419,6 +1521,7 @@ mod tests {
             &disasm,
             &[symbol(0x100, 0x08, "fib")],
             &[],
+            None,
         );
         assert!(report.abi_resolved);
         assert!(report.self_recursive_functions >= 1);

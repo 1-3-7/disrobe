@@ -5,13 +5,12 @@ use yaxpeax_arch::Decoder as _;
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction, Opcode, Operand};
 
 use super::cluster::DartReadStream;
+use super::pool_table::{pool_offset_of_slot, pool_slot_of_offset};
 use super::string_pool::recover_string_pool;
 
 const ARM64_INSN_LEN: usize = 4;
 
 const DART_POOL_POINTER_REG: u16 = 27;
-
-const DART_POOL_ENTRY_BYTES: u64 = 8;
 
 const DISPATCH_LOOKBACK_INSNS: usize = 4;
 
@@ -100,7 +99,7 @@ pub fn recover_object_pool_references(base: u64, instructions: &[u8]) -> ObjectP
         .iter()
         .map(|(slot, count): (&u64, &u32)| PoolSlotUse {
             slot_index: *slot,
-            byte_offset: slot * DART_POOL_ENTRY_BYTES,
+            byte_offset: pool_offset_of_slot(*slot),
             load_sites: *count,
         })
         .collect::<Vec<PoolSlotUse>>();
@@ -286,11 +285,7 @@ fn pool_load_slot(insn: &Instruction) -> Option<u64> {
     }
     match insn.operands[1] {
         Operand::RegPreIndex(DART_POOL_POINTER_REG, offset, false) if offset >= 0 => {
-            let byte_offset: u64 = offset as u64;
-            if byte_offset % DART_POOL_ENTRY_BYTES != 0 {
-                return None;
-            }
-            Some(byte_offset / DART_POOL_ENTRY_BYTES)
+            pool_slot_of_offset(offset as u64)
         }
         _ => None,
     }
@@ -300,6 +295,7 @@ fn pool_load_slot(insn: &Instruction) -> Option<u64> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::flutter::pool_table::DART_POOL_ELEMENT_BASE_BYTES;
 
     fn ldr_pool(dst: u32, byte_offset: u32) -> u32 {
         let imm12: u32 = byte_offset / 8;
@@ -331,23 +327,26 @@ mod tests {
     fn decodes_pool_load_slot_index() {
         let bytes: Vec<u8> = assemble(&[ldr_pool(0, 16), ldr_pool(1, 24), ldr_pool(0, 16)]);
         let map: ObjectPoolReferenceMap = recover_object_pool_references(0, &bytes);
-        assert_eq!(map.distinct_slots, 2, "slots 2 and 3 are distinct");
+        assert_eq!(map.distinct_slots, 2, "slots 0 and 1 are distinct");
         assert_eq!(map.total_load_sites, 3, "three ldr sites total");
-        let slot2: &PoolSlotUse = map
+        let first: &PoolSlotUse = map
             .slots
             .iter()
-            .find(|s: &&PoolSlotUse| s.slot_index == 2)
-            .expect("slot 2 present");
-        assert_eq!(slot2.byte_offset, 16);
-        assert_eq!(slot2.load_sites, 2, "slot 2 loaded twice");
+            .find(|s: &&PoolSlotUse| s.slot_index == 0)
+            .expect("the first pool entry sits at the element base, not at byte zero");
+        assert_eq!(first.byte_offset, DART_POOL_ELEMENT_BASE_BYTES);
+        assert_eq!(first.load_sites, 2, "the first entry is loaded twice");
     }
 
     #[test]
     fn estimates_pool_entries_from_highest_slot() {
         let bytes: Vec<u8> = assemble(&[ldr_pool(0, 16), ldr_pool(1, 800)]);
         let map: ObjectPoolReferenceMap = recover_object_pool_references(0, &bytes);
-        assert_eq!(map.highest_slot_index, 100, "800/8 = slot 100");
-        assert_eq!(map.estimated_pool_entries, 101);
+        assert_eq!(
+            map.highest_slot_index, 98,
+            "the pool data array starts 16 bytes past the untagged pool pointer, so (800-16)/8 = entry 98"
+        );
+        assert_eq!(map.estimated_pool_entries, 99);
     }
 
     #[test]
@@ -360,7 +359,10 @@ mod tests {
             1,
             "the blr after a pool load is a dispatch"
         );
-        assert_eq!(map.dispatch_sites[0].pool_slot_index, 8, "64/8 = slot 8");
+        assert_eq!(
+            map.dispatch_sites[0].pool_slot_index, 6,
+            "(64-16)/8 = entry 6"
+        );
         assert_eq!(map.distinct_dispatch_slots, 1);
     }
 
