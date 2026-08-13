@@ -1,5 +1,6 @@
 use crate::expr::Expr;
 
+pub mod egraph_rules;
 pub mod engine;
 pub mod error;
 pub mod loader;

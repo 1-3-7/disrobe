@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-pub const MAX_MBA_DEPTH: usize = 4096;
+pub const MAX_MBA_DEPTH: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Width {

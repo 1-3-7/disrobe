@@ -1,0 +1,258 @@
+[[rules]]
+name = "add_from_xor_and_carry"
+provenance = "two's complement carry identity, Warren, Hacker's Delight"
+direction = "contract"
+pattern = "(add (xor ?x ?y) (mul 2 (and ?x ?y)))"
+rewrite = "(add ?x ?y)"
+
+[[rules]]
+name = "sub_from_xor_andnot_carry"
+provenance = "two's complement borrow identity, Warren, Hacker's Delight"
+direction = "contract"
+pattern = "(sub (xor ?x ?y) (mul 2 (and (not ?x) ?y)))"
+rewrite = "(sub ?x ?y)"
+
+[[rules]]
+name = "or_from_sum_minus_and"
+provenance = "Zhou, Main, Gu, Johnson, mixed boolean-arithmetic transform identity, WISA 2007"
+direction = "contract"
+pattern = "(sub (add ?x ?y) (and ?x ?y))"
+rewrite = "(or ?x ?y)"
+
+[[rules]]
+name = "or_from_xor_plus_and"
+provenance = "Zhou, Main, Gu, Johnson, mixed boolean-arithmetic transform identity, WISA 2007"
+direction = "contract"
+pattern = "(add (xor ?x ?y) (and ?x ?y))"
+rewrite = "(or ?x ?y)"
+
+[[rules]]
+name = "xor_from_or_minus_and"
+provenance = "Zhou, Main, Gu, Johnson, mixed boolean-arithmetic transform identity, WISA 2007"
+direction = "contract"
+pattern = "(sub (or ?x ?y) (and ?x ?y))"
+rewrite = "(xor ?x ?y)"
+
+[[rules]]
+name = "and_from_sum_minus_or"
+provenance = "Zhou, Main, Gu, Johnson, mixed boolean-arithmetic transform identity, WISA 2007"
+direction = "contract"
+pattern = "(sub (add ?x ?y) (or ?x ?y))"
+rewrite = "(and ?x ?y)"
+
+[[rules]]
+name = "add_from_or_plus_and"
+provenance = "Zhou, Main, Gu, Johnson, mixed boolean-arithmetic transform identity, WISA 2007"
+direction = "contract"
+pattern = "(add (or ?x ?y) (and ?x ?y))"
+rewrite = "(add ?x ?y)"
+
+[[rules]]
+name = "sub_from_add_of_negation"
+provenance = "additive inverse over the ring of integers modulo two to the width"
+direction = "contract"
+pattern = "(add ?x (neg ?y))"
+rewrite = "(sub ?x ?y)"
+
+[[rules]]
+name = "neg_from_complement_plus_one"
+provenance = "two's complement identity, Warren, Hacker's Delight"
+direction = "contract"
+pattern = "(add (not ?x) 1)"
+rewrite = "(neg ?x)"
+
+[[rules]]
+name = "not_from_negation_minus_one"
+provenance = "two's complement identity, Warren, Hacker's Delight"
+direction = "contract"
+pattern = "(sub (neg ?x) 1)"
+rewrite = "(not ?x)"
+
+[[rules]]
+name = "de_morgan_or_of_complements"
+provenance = "De Morgan's law"
+direction = "contract"
+pattern = "(or (not ?x) (not ?y))"
+rewrite = "(not (and ?x ?y))"
+
+[[rules]]
+name = "de_morgan_and_of_complements"
+provenance = "De Morgan's law"
+direction = "contract"
+pattern = "(and (not ?x) (not ?y))"
+rewrite = "(not (or ?x ?y))"
+
+[[rules]]
+name = "xor_of_complements_cancels"
+provenance = "Boolean algebra, complementing both operands leaves exclusive or unchanged"
+direction = "contract"
+pattern = "(xor (not ?x) (not ?y))"
+rewrite = "(xor ?x ?y)"
+
+[[rules]]
+name = "add_associativity"
+provenance = "ring associativity over the integers modulo two to the width"
+direction = "bidirectional"
+pattern = "(add (add ?x ?y) ?z)"
+rewrite = "(add ?x (add ?y ?z))"
+
+[[rules]]
+name = "and_associativity"
+provenance = "Boolean algebra associativity"
+direction = "bidirectional"
+pattern = "(and (and ?x ?y) ?z)"
+rewrite = "(and ?x (and ?y ?z))"
+
+[[rules]]
+name = "or_associativity"
+provenance = "Boolean algebra associativity"
+direction = "bidirectional"
+pattern = "(or (or ?x ?y) ?z)"
+rewrite = "(or ?x (or ?y ?z))"
+
+[[rules]]
+name = "xor_associativity"
+provenance = "Boolean algebra associativity"
+direction = "bidirectional"
+pattern = "(xor (xor ?x ?y) ?z)"
+rewrite = "(xor ?x (xor ?y ?z))"
+
+[[rules]]
+name = "not_involution"
+provenance = "Boolean algebra involution"
+direction = "contract"
+pattern = "(not (not ?x))"
+rewrite = "?x"
+
+[[rules]]
+name = "neg_involution"
+provenance = "additive inverse is an involution over the integers modulo two to the width"
+direction = "contract"
+pattern = "(neg (neg ?x))"
+rewrite = "?x"
+
+[[rules]]
+name = "and_idempotence"
+provenance = "Boolean algebra idempotence"
+direction = "contract"
+pattern = "(and ?x ?x)"
+rewrite = "?x"
+
+[[rules]]
+name = "or_idempotence"
+provenance = "Boolean algebra idempotence"
+direction = "contract"
+pattern = "(or ?x ?x)"
+rewrite = "?x"
+
+[[rules]]
+name = "xor_self_is_zero"
+provenance = "Boolean algebra, exclusive or of a term with itself"
+direction = "contract"
+pattern = "(xor ?x ?x)"
+rewrite = "0"
+
+[[rules]]
+name = "sub_self_is_zero"
+provenance = "additive inverse over the integers modulo two to the width"
+direction = "contract"
+pattern = "(sub ?x ?x)"
+rewrite = "0"
+
+[[rules]]
+name = "and_complement_is_zero"
+provenance = "Boolean algebra complement law"
+direction = "contract"
+pattern = "(and ?x (not ?x))"
+rewrite = "0"
+
+[[rules]]
+name = "or_complement_is_all_ones"
+provenance = "Boolean algebra complement law"
+direction = "contract"
+pattern = "(or ?x (not ?x))"
+rewrite = "ones"
+
+[[rules]]
+name = "xor_complement_is_all_ones"
+provenance = "Boolean algebra complement law"
+direction = "contract"
+pattern = "(xor ?x (not ?x))"
+rewrite = "ones"
+
+[[rules]]
+name = "and_absorbs_or"
+provenance = "Boolean algebra absorption law"
+direction = "contract"
+pattern = "(and ?x (or ?x ?y))"
+rewrite = "?x"
+
+[[rules]]
+name = "or_absorbs_and"
+provenance = "Boolean algebra absorption law"
+direction = "contract"
+pattern = "(or ?x (and ?x ?y))"
+rewrite = "?x"
+
+[[rules]]
+name = "add_zero_identity"
+provenance = "additive identity over the integers modulo two to the width"
+direction = "contract"
+pattern = "(add ?x 0)"
+rewrite = "?x"
+
+[[rules]]
+name = "sub_zero_identity"
+provenance = "additive identity over the integers modulo two to the width"
+direction = "contract"
+pattern = "(sub ?x 0)"
+rewrite = "?x"
+
+[[rules]]
+name = "mul_one_identity"
+provenance = "multiplicative identity over the integers modulo two to the width"
+direction = "contract"
+pattern = "(mul ?x 1)"
+rewrite = "?x"
+
+[[rules]]
+name = "mul_zero_annihilates"
+provenance = "multiplicative annihilator over the integers modulo two to the width"
+direction = "contract"
+pattern = "(mul ?x 0)"
+rewrite = "0"
+
+[[rules]]
+name = "and_zero_annihilates"
+provenance = "Boolean algebra annihilator"
+direction = "contract"
+pattern = "(and ?x 0)"
+rewrite = "0"
+
+[[rules]]
+name = "and_all_ones_identity"
+provenance = "Boolean algebra identity element"
+direction = "contract"
+pattern = "(and ?x ones)"
+rewrite = "?x"
+
+[[rules]]
+name = "or_zero_identity"
+provenance = "Boolean algebra identity element"
+direction = "contract"
+pattern = "(or ?x 0)"
+rewrite = "?x"
+
+[[rules]]
+name = "or_all_ones_annihilates"
+provenance = "Boolean algebra annihilator"
+direction = "contract"
+pattern = "(or ?x ones)"
+rewrite = "ones"
+
+[[rules]]
+name = "xor_zero_identity"
+provenance = "Boolean algebra identity element"
+direction = "contract"
+pattern = "(xor ?x 0)"
+rewrite = "?x"

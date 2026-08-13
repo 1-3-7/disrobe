@@ -299,15 +299,23 @@ pub(crate) fn accept_verified(
         return None;
     }
     let faithful: bool = expr_is_eval_faithful(original) && expr_is_eval_faithful(candidate);
-    let bdd_proven: bool = crate::verify::verify_equivalent(original, candidate, width).is_proven();
+    let bdd: crate::verify::Equivalence =
+        crate::verify::verify_equivalent(original, candidate, width);
     if faithful && width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count) {
         let exhaustive: bool = equivalent_exhaustive(original, candidate, width, var_count);
-        if exhaustive != bdd_proven {
+        if exhaustive != bdd.is_proven() {
             return None;
         }
         return exhaustive.then_some(Verification::ExhaustiveAtWidth(width));
     }
-    bdd_proven.then_some(Verification::SmtProvenAtWidth(width))
+    if bdd.is_disproven() {
+        return None;
+    }
+    if bdd.is_proven() {
+        return Some(Verification::SmtProvenAtWidth(width));
+    }
+    crate::poly_oracle::polynomial_identity_proves(original, candidate, width)
+        .then_some(Verification::PolynomialIdentity(width))
 }
 
 #[cfg(not(feature = "smt-verify"))]
@@ -320,16 +328,18 @@ pub(crate) fn accept_verified(
     if candidate.node_count() >= original.node_count() {
         return None;
     }
-    if expr_is_eval_faithful(original)
-        && expr_is_eval_faithful(candidate)
-        && width.is_exhaustible()
-        && equivalent_exhaustive_runnable(width, var_count)
-        && equivalent_exhaustive(original, candidate, width, var_count)
-    {
-        Some(Verification::ExhaustiveAtWidth(width))
-    } else {
-        None
+    let faithful: bool = expr_is_eval_faithful(original) && expr_is_eval_faithful(candidate);
+    let exhaustive: Option<bool> =
+        (faithful && width.is_exhaustible() && equivalent_exhaustive_runnable(width, var_count))
+            .then(|| equivalent_exhaustive(original, candidate, width, var_count));
+    if exhaustive == Some(false) {
+        return None;
     }
+    if exhaustive == Some(true) {
+        return Some(Verification::ExhaustiveAtWidth(width));
+    }
+    crate::poly_oracle::polynomial_identity_proves(original, candidate, width)
+        .then_some(Verification::PolynomialIdentity(width))
 }
 
 #[must_use]
