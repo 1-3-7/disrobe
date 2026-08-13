@@ -106,7 +106,7 @@ fn quote_stix_literal(raw: &str) -> String {
     raw.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
-fn stix_object_path(class: IndicatorClass) -> Option<&'static str> {
+const fn stix_object_path(class: IndicatorClass) -> Option<&'static str> {
     match class {
         IndicatorClass::Url => Some("url:value"),
         IndicatorClass::Domain => Some("domain-name:value"),
@@ -137,42 +137,55 @@ struct ArtifactTable {
     entries: Vec<SarifArtifact>,
 }
 
+#[derive(Debug)]
+struct MergedArtifact {
+    length: Option<u64>,
+    blake3: Option<String>,
+    roles: BTreeSet<ArtifactRole>,
+    display: String,
+}
+
 impl ArtifactTable {
     fn from_evidence(evidence: &[EvidenceItem]) -> Self {
-        let mut merged: BTreeMap<
-            String,
-            (Option<u64>, Option<String>, BTreeSet<ArtifactRole>, String),
-        > = BTreeMap::new();
+        let mut merged: BTreeMap<String, MergedArtifact> = BTreeMap::new();
         for item in evidence {
             let role: ArtifactRole = match item.role {
                 EvidenceRole::AnalysisTarget => ArtifactRole::AnalysisTarget,
                 EvidenceRole::RecoveredArtifact => ArtifactRole::ResultFile,
                 EvidenceRole::StageInput | EvidenceRole::StageOutput => ArtifactRole::Unmodified,
             };
-            let slot: &mut (Option<u64>, Option<String>, BTreeSet<ArtifactRole>, String) = merged
-                .entry(item.uri.clone())
-                .or_insert_with(|| (None, None, BTreeSet::new(), item.display.clone()));
-            if slot.0.is_none() {
-                slot.0 = item.byte_length;
+            let slot: &mut MergedArtifact =
+                merged
+                    .entry(item.uri.clone())
+                    .or_insert_with(|| MergedArtifact {
+                        length: None,
+                        blake3: None,
+                        roles: BTreeSet::new(),
+                        display: item.display.clone(),
+                    });
+            if slot.length.is_none() {
+                slot.length = item.byte_length;
             }
-            if slot.1.is_none() {
-                slot.1.clone_from(&item.blake3);
+            if slot.blake3.is_none() {
+                slot.blake3.clone_from(&item.blake3);
             }
-            slot.2.insert(role);
+            slot.roles.insert(role);
         }
         let mut order: BTreeMap<String, usize> = BTreeMap::new();
         let mut entries: Vec<SarifArtifact> = Vec::with_capacity(merged.len());
-        for (uri, (length, blake3, roles, display)) in merged {
+        for (uri, artifact) in merged {
             let mut hashes: BTreeMap<String, String> = BTreeMap::new();
-            if let Some(digest) = blake3 {
+            if let Some(digest) = artifact.blake3 {
                 hashes.insert("blake3".to_string(), digest);
             }
             order.insert(uri.clone(), entries.len());
             entries.push(SarifArtifact {
                 location: ArtifactLocation::at(uri),
-                description: Some(Message { text: display }),
-                length,
-                roles: roles.into_iter().collect(),
+                description: Some(Message {
+                    text: artifact.display,
+                }),
+                length: artifact.length,
+                roles: artifact.roles.into_iter().collect(),
                 hashes,
             });
         }

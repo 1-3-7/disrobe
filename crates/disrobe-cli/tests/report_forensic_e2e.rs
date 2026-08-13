@@ -594,6 +594,37 @@ fn a_batch_of_only_errors_still_produces_a_valid_document() {
 }
 
 #[test]
+fn a_chain_run_leaves_the_citable_report_without_a_second_command() {
+    let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
+        completed_run("forensic-auto", &(0u8..96).collect::<Vec<u8>>());
+    let written: PathBuf = out.join("report.json");
+    assert!(
+        written.is_file(),
+        "`disrobe auto` must leave {} beside chain.json",
+        written.display()
+    );
+    let left: Value =
+        serde_json::from_slice(&std::fs::read(&written).expect("read report.json")).expect("json");
+    assert!(left["walls"].is_array(), "{left}");
+    assert!(left["evidence"].is_array(), "{left}");
+    assert!(left["reproduction"]["command"].is_string(), "{left}");
+
+    let r: Run = run_disrobe(&["report", out.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(r.code, 0, "stderr={}", r.stderr);
+    let mut right: Value = serde_json::from_str(&r.stdout).expect("json");
+    let object: &mut serde_json::Map<String, Value> =
+        right.as_object_mut().expect("report document object");
+    assert_eq!(
+        object.remove("report_kind"),
+        Some(serde_json::json!("single"))
+    );
+    assert_eq!(
+        left, right,
+        "the report `auto` writes and the report the command renders must agree"
+    );
+}
+
+#[test]
 fn the_excluded_standards_are_named_rather_than_silently_dropped() {
     let (_scratch, out): (disrobe_core::scratch::ScratchDir, PathBuf) =
         completed_run("forensic-standards", &(0u8..96).collect::<Vec<u8>>());

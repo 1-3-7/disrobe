@@ -242,10 +242,10 @@ const TERMINAL_PASS_NAME: &str = "terminal";
 const CONTENT_URI_SCHEME: &str = "ni:///blake3;";
 
 fn node_matches_pass(node: &NodeDoc, pass_name: &str) -> bool {
-    match node.pass.as_deref() {
-        Some(name) => name == pass_name,
-        None => pass_name == TERMINAL_PASS_NAME,
-    }
+    node.pass.as_deref().map_or_else(
+        || pass_name == TERMINAL_PASS_NAME,
+        |name: &str| name == pass_name,
+    )
 }
 
 fn attribute_stages<'doc>(
@@ -345,7 +345,8 @@ fn collect_walls(
         .map(|node: &NodeDoc| {
             stage_nodes
                 .iter()
-                .position(|attached: &Option<&NodeDoc>| {
+                .copied()
+                .position(|attached: Option<&NodeDoc>| {
                     attached.is_some_and(|other: &NodeDoc| other.id == node.id)
                 })
                 .map(|index: usize| index.saturating_add(1))
@@ -445,34 +446,8 @@ fn artifact_evidence(relative: &str, source_dir: Option<&Path>) -> EvidenceItem 
     let existing: Option<PathBuf> = resolved
         .filter(|p: &PathBuf| p.is_file())
         .or_else(|| Some(PathBuf::from(relative)).filter(|p: &PathBuf| p.is_file()));
-    match existing {
-        Some(path) => match hash_artifact_file(&path) {
-            Ok((blake3, length)) => EvidenceItem {
-                role: EvidenceRole::RecoveredArtifact,
-                uri: artifact_uri(&path),
-                display: relative.to_string(),
-                blake3: Some(blake3),
-                hash_source: HashSource::RecomputedFromFile,
-                byte_offset: 0,
-                byte_length: Some(length),
-                stage_index: None,
-                node_id: None,
-                unavailable_reason: None,
-            },
-            Err(reason) => EvidenceItem {
-                role: EvidenceRole::RecoveredArtifact,
-                uri: artifact_uri(&path),
-                display: relative.to_string(),
-                blake3: None,
-                hash_source: HashSource::Unavailable,
-                byte_offset: 0,
-                byte_length: None,
-                stage_index: None,
-                node_id: None,
-                unavailable_reason: Some(format!("cannot hash {}: {reason}", path.display())),
-            },
-        },
-        None => EvidenceItem {
+    existing.map_or_else(
+        || EvidenceItem {
             role: EvidenceRole::RecoveredArtifact,
             uri: artifact_uri(Path::new(relative)),
             display: relative.to_string(),
@@ -487,7 +462,36 @@ fn artifact_evidence(relative: &str, source_dir: Option<&Path>) -> EvidenceItem 
                 |dir: &Path| format!("`{relative}` is not on disk under {}", dir.display()),
             )),
         },
-    }
+        |path: PathBuf| {
+            let uri: String = artifact_uri(&path);
+            hash_artifact_file(&path).map_or_else(
+                |reason: String| EvidenceItem {
+                    role: EvidenceRole::RecoveredArtifact,
+                    uri: uri.clone(),
+                    display: relative.to_string(),
+                    blake3: None,
+                    hash_source: HashSource::Unavailable,
+                    byte_offset: 0,
+                    byte_length: None,
+                    stage_index: None,
+                    node_id: None,
+                    unavailable_reason: Some(format!("cannot hash {}: {reason}", path.display())),
+                },
+                |(blake3, length): (String, u64)| EvidenceItem {
+                    role: EvidenceRole::RecoveredArtifact,
+                    uri: uri.clone(),
+                    display: relative.to_string(),
+                    blake3: Some(blake3),
+                    hash_source: HashSource::RecomputedFromFile,
+                    byte_offset: 0,
+                    byte_length: Some(length),
+                    stage_index: None,
+                    node_id: None,
+                    unavailable_reason: None,
+                },
+            )
+        },
+    )
 }
 
 fn collect_evidence(
@@ -601,6 +605,14 @@ fn reproduction_for(target: &Path, evidence: &[EvidenceItem]) -> Reproduction {
         ));
     }
     Reproduction { command, steps }
+}
+
+pub(crate) fn build_forensic(
+    doc: &ChainDocument,
+    recovery: &ChainRecoveryReport,
+    out_dir: &Path,
+) -> SingleReport {
+    build_single(doc, recovery, Some(out_dir), out_dir)
 }
 
 fn build_single(

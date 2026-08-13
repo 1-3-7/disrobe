@@ -563,11 +563,19 @@ pub(crate) fn run_with_disk(
     } else {
         None
     };
+    let forensic_path: PathBuf = out_dir.join("report.json");
+    let forensic_bytes: Vec<u8> =
+        serde_json::to_vec_pretty(&super::report::build_forensic(&doc, &report, &out_dir))
+            .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
+    std::fs::write(&forensic_path, &forensic_bytes)
+        .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
+    let forensic_path_str: String = forensic_path.display().to_string();
     let chain_path_str: String = chain_path.display().to_string();
     emit(fmt, &doc, || {
         println!("chain.json written: {chain_path_str}");
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
+        println!("report.json written: {forensic_path_str}");
         if let Some(path) = delphi_path_str.as_ref() {
             println!("delphi.json written: {path}");
         }
