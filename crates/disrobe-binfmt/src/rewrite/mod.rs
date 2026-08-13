@@ -299,8 +299,8 @@ impl ImagePlan {
         &self.structures
     }
 
-    pub const fn structures_mut(&mut self) -> &mut Vec<PlannedStructure> {
-        &mut self.structures
+    pub const fn structures_mut(&mut self) -> &mut [PlannedStructure] {
+        self.structures.as_mut_slice()
     }
 
     #[must_use]
@@ -685,8 +685,13 @@ pub fn patch_native_image(bytes: &[u8], edits: &[FileEdit]) -> Result<PatchedIma
         let original: Vec<u8> = window.to_vec();
         window.copy_from_slice(&edit.bytes);
 
-        if original != edit.bytes {
-            bytes_changed = bytes_changed.saturating_add(edit.bytes.len() as u64);
+        let differing: u64 = original
+            .iter()
+            .zip(edit.bytes.iter())
+            .filter(|(before, after): &(&u8, &u8)| before != after)
+            .count() as u64;
+        if differing > 0 {
+            bytes_changed = bytes_changed.saturating_add(differing);
             for value in plan.stale_after(edit.offset, end) {
                 if !stale.contains(&value) {
                     stale.push(value);

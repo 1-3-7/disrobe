@@ -964,6 +964,36 @@ fn section_payload_offset(plan: &ImagePlan, bytes: &[u8]) -> u64 {
 }
 
 #[test]
+fn a_patch_that_breaks_the_header_is_refused_rather_than_written_out() {
+    let bytes: Vec<u8> = required_corpus("native/formats/hello.elf64");
+    let error: Error = patch_native_image(&bytes, &[FileEdit::new(4, vec![0x7Fu8])])
+        .expect_err("an edit that leaves the image unmodellable must be refused");
+    assert!(
+        matches!(
+            error,
+            Error::Rewrite(_) | Error::RewriteUnsupported { .. } | Error::NativeParse(_)
+        ),
+        "an unmodellable patched image must be a typed refusal, not `{error}`"
+    );
+}
+
+#[test]
+fn a_multi_byte_patch_counts_only_the_bytes_it_actually_changed() {
+    let bytes: Vec<u8> = required_corpus("native/formats/hello.pe64.exe");
+    let plan: ImagePlan = plan_native_image(&bytes).expect("plan a PE32+ image");
+    let target: u64 = section_payload_offset(&plan, &bytes);
+    let window: &[u8] = &bytes[target as usize..target as usize + 4];
+    let replacement: Vec<u8> = vec![window[0], window[1] ^ 0xFF, window[2], window[3] ^ 0x0F];
+
+    let patched: PatchedImage = patch_native_image(&bytes, &[FileEdit::new(target, replacement)])
+        .expect("apply a four byte edit");
+    assert_eq!(
+        patched.report.bytes_changed, 2,
+        "only the two bytes the edit actually altered may be counted"
+    );
+}
+
+#[test]
 fn overlapping_edits_are_refused() {
     let bytes: Vec<u8> = required_corpus("native/formats/hello.pe64.exe");
     let error: Error = patch_native_image(
