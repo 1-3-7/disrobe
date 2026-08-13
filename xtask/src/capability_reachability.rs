@@ -98,17 +98,16 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-mobile",
-        19,
+        18,
         "Dart, Flutter and Hermes parsing and demangling helpers each proven by their own oracle \
          but not yet called from the crate's own extraction entry points, one more of the same \
          shape added when the pinned Dart declaration graph moved into this crate from the \
          now-retired disrobe-dart, plus four per-dialect provenance-header renderers never \
-         spliced into the `--emit` output path. Two more were already public and uncalled and \
-         entered this count only when per-version opcode tables gave them their first grading \
-         test: hermes_disasm_function is the per-function sibling of the module-level \
-         disassemble_hermes the CLI calls, and hermes_opcode_label re-exports a label lookup the \
-         crate resolves internally through opcode_label. Both stay uncalled until a per-function \
-         hermes disassembly surface exists to call them",
+         spliced into the `--emit` output path. One more entered this count only when per-version \
+         opcode tables gave it its first grading test: hermes_opcode_label re-exports a label \
+         lookup the crate resolves internally through opcode_label, and it is deliberately not \
+         wired because it is hardcoded to the HBC96 table while the crate now decodes v76 and v84 \
+         through their own tables, so calling it would label those versions wrongly",
     ),
     (
         "disrobe-pass-native",

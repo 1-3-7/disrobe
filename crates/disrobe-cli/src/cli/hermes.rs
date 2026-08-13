@@ -6,7 +6,7 @@ use clap::Subcommand;
 
 use disrobe_pass_mobile::{
     DecompileReport, DisassemblyReport, HermesModule, decompile_hermes_module, disassemble_hermes,
-    parse_hermes_module,
+    hermes_disasm_function, parse_hermes_module,
 };
 
 use super::emit::EmitSpec;
@@ -39,6 +39,12 @@ pub(crate) enum HermesCmd {
             help = "output path for the disasm JSON (default: ./out/<stem>-hermes.disasm.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "INDEX",
+            help = "print the instructions of one function by its zero-based index instead of writing the whole-bundle summary"
+        )]
+        function: Option<usize>,
     },
     #[command(
         about = "parse the Hermes header and report version, function count, string/identifier counts"
@@ -52,7 +58,11 @@ pub(crate) enum HermesCmd {
 pub(crate) fn run(action: HermesCmd) -> miette::Result<()> {
     match action {
         HermesCmd::Decompile { input, out, emit } => decompile(input, out, emit),
-        HermesCmd::Disasm { input, out } => disasm(input, out),
+        HermesCmd::Disasm {
+            input,
+            out,
+            function,
+        } => disasm(input, out, function),
         HermesCmd::Info { input } => info(input),
     }
 }
@@ -133,11 +143,14 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     Ok(())
 }
 
-fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn disasm(input: PathBuf, out: Option<PathBuf>, function: Option<usize>) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0460: cannot read input: {e}"))?;
     let module: HermesModule = parse_hermes_module(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0461: hermes parse: {e}"))?;
+    if let Some(index) = function {
+        return disasm_one_function(&input, &module, index);
+    }
     let report: DisassemblyReport = disassemble_hermes(&module);
     let stem: String = input
         .file_stem()
@@ -160,6 +173,33 @@ fn disasm(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
     println!("  identifiers:  {}", report.identifier_count);
     println!("  strings:      {}", report.string_count);
     println!("  wrote:        {}", out_path.display());
+    Ok(())
+}
+
+fn disasm_one_function(
+    input: &std::path::Path,
+    module: &HermesModule,
+    index: usize,
+) -> miette::Result<()> {
+    let total: usize = module.functions.len();
+    if index >= total {
+        return Err(miette::miette!(
+            "DR-CLI-0465: function index {index} is past the end of this bundle, which declares {total} function(s) numbered 0 to {}",
+            total.saturating_sub(1)
+        ));
+    }
+    let instructions: Vec<String> = hermes_disasm_function(module, index);
+    println!("hermes disasm: {}", input.display());
+    println!(
+        "  bytecode version: {}  function {index} of {total}",
+        module.header.version
+    );
+    for line in &instructions {
+        println!("  {line}");
+    }
+    if instructions.is_empty() {
+        println!("  this function declares no instruction bytes");
+    }
     Ok(())
 }
 
