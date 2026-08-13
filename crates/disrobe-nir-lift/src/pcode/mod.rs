@@ -194,7 +194,7 @@ impl PcodeLiftConfig {
     pub fn mips32(endian: Endian) -> Result<Self> {
         let map: SpecRegisters = spec::registers(SpecRegisterMap::mips32(endian))?;
         spec::require_cells(&map.cells, MIPS32_REQUIRED_CELLS, "mips32")?;
-        let mut config: Self = Self::new(SourceLang::Unknown, map.cells)
+        let mut config: Self = Self::new(SourceLang::NativeMips, map.cells)
             .with_return_value("v0")
             .with_big_endian_register_space(map.big_endian)
             .with_branch_delay_slots();

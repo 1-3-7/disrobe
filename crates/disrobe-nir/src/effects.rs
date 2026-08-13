@@ -514,7 +514,7 @@ impl DialectEffect {
             (Self::None, _)
                 | (
                     Self::Native(_),
-                    SourceLang::NativeX86 | SourceLang::NativeArm
+                    SourceLang::NativeX86 | SourceLang::NativeArm | SourceLang::NativeMips
                 )
                 | (Self::Cil(_), SourceLang::Cil)
                 | (Self::Jvm(_), SourceLang::Jvm)
@@ -1270,7 +1270,9 @@ fn cell_touches_stack(cell: &str) -> bool {
 #[must_use]
 pub fn derive_effect_row(instr: &NirInstr, context: &EffectContext) -> EffectRow {
     match instr.source.lang {
-        SourceLang::NativeX86 | SourceLang::NativeArm => native_row(instr, context),
+        SourceLang::NativeX86 | SourceLang::NativeArm | SourceLang::NativeMips => {
+            native_row(instr, context)
+        }
         SourceLang::Cil => cil_row(instr, context),
         SourceLang::Jvm => jvm_row(instr, context),
         SourceLang::Dalvik => dalvik_row(instr, context),
@@ -1438,14 +1440,14 @@ fn native_call_other(
 
 const fn native_link_effect(lang: SourceLang) -> HardEffect {
     match lang {
-        SourceLang::NativeArm => HardEffect::RegisterWrite,
+        SourceLang::NativeArm | SourceLang::NativeMips => HardEffect::RegisterWrite,
         _ => HardEffect::StackWrite,
     }
 }
 
 const fn native_unlink_effect(lang: SourceLang) -> HardEffect {
     match lang {
-        SourceLang::NativeArm => HardEffect::RegisterRead,
+        SourceLang::NativeArm | SourceLang::NativeMips => HardEffect::RegisterRead,
         _ => HardEffect::StackRead,
     }
 }

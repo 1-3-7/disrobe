@@ -862,7 +862,7 @@ fn append_unreachable_blocks(
 fn uses_goto_fallback(function: &NirFunction) -> bool {
     matches!(
         function.source.lang,
-        SourceLang::NativeX86 | SourceLang::NativeArm
+        SourceLang::NativeX86 | SourceLang::NativeArm | SourceLang::NativeMips
     ) || function.instructions.iter().any(|instruction: &NirInstr| {
         matches!(
             instruction.op,
@@ -1095,7 +1095,10 @@ fn lower_instr(instr: &NirInstr, lang: SourceLang) -> HirInstrStmt {
         | NirOp::Return
         | NirOp::Unmodeled { .. } => HirInstrStmt::Effect {
             expr: HirExpr::Unknown {
-                text: if matches!(lang, SourceLang::NativeX86 | SourceLang::NativeArm) {
+                text: if matches!(
+                    lang,
+                    SourceLang::NativeX86 | SourceLang::NativeArm | SourceLang::NativeMips
+                ) {
                     String::new()
                 } else {
                     instr.mnemonic.clone()

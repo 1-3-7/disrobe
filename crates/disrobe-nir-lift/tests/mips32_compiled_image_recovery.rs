@@ -355,15 +355,21 @@ fn a_delay_slot_of_a_compiled_transfer_executes_before_the_transfer() {
 }
 
 #[test]
-fn the_delay_slot_residue_still_reaches_pseudo_source_as_a_bare_mnemonic() {
+fn mips32_pseudo_source_carries_no_more_residue_than_arm32() {
     let mips: ArchLift = lift("mips32be-o2", Endian::Big, mix_body(BE_ORACLE_TEXT));
     let (_surface, emitted): (SurfaceFunction, String) = pseudo_source(&mips.function);
-    for leaked in ["addu;", "RETURN;"] {
+    for leaked in ["addu;", "sll;", "RETURN;", "CBRANCH;", "BRANCH;"] {
         assert!(
-            emitted.contains(leaked),
-            "the mips32 route still leaks {leaked} because its lift config declares no native source language:\n{emitted}"
+            !emitted.contains(leaked),
+            "mips32 declares a native source language, so the structurer must suppress {leaked} \
+             rather than emitting it as a statement:\n{emitted}"
         );
     }
+    assert!(
+        emitted.contains("return"),
+        "suppressing residue must not remove the function's real return:\n{emitted}"
+    );
+
     let arm: ArchLift = lower_arm32(
         A32_ORACLE_TEXT
             .get(..MIX_BYTES)
@@ -376,7 +382,32 @@ fn the_delay_slot_residue_still_reaches_pseudo_source_as_a_bare_mnemonic() {
     let (_arm_surface, arm_emitted): (SurfaceFunction, String) = pseudo_source(&arm.function);
     assert!(
         !arm_emitted.contains("RETURN;"),
-        "arm32 declares a native source language, so it must not leak the same residue:\n{arm_emitted}"
+        "arm32 must keep suppressing the same residue:\n{arm_emitted}"
+    );
+}
+
+#[test]
+fn a_mips32_instruction_is_given_native_effects_rather_than_an_unknown_row() {
+    use disrobe_nir::{EffectContext, EffectRow, SourceLang, derive_effect_row};
+
+    let mips: ArchLift = lift("mips32be-o2", Endian::Big, mix_body(BE_ORACLE_TEXT));
+    let context: EffectContext = EffectContext::new();
+    let mut modelled: usize = 0;
+    for instruction in &mips.function.instructions {
+        assert_eq!(
+            instruction.source.lang,
+            SourceLang::NativeMips,
+            "every lifted mips instruction must name its own source language"
+        );
+        let row: EffectRow = derive_effect_row(instruction, &context);
+        if !row.is_unknown() {
+            modelled = modelled.saturating_add(1);
+        }
+    }
+    assert!(
+        modelled > 0,
+        "a compiled mips body must produce modelled effect rows, not an unknown row for every \
+         instruction"
     );
 }
 

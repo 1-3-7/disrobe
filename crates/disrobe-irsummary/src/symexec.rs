@@ -104,6 +104,7 @@ impl Frontend {
             SourceLang::Unknown
             | SourceLang::NativeX86
             | SourceLang::NativeArm
+            | SourceLang::NativeMips
             | SourceLang::Dalvik => Self::Register,
         }
     }
