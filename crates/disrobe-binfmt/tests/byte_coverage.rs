@@ -1311,3 +1311,63 @@ fn a_thirty_two_bit_elf_without_a_section_table_reads_its_load_segment_permissio
         "the 32 bit fallback must not double claim the ELF header or the program headers"
     );
 }
+
+#[test]
+fn a_macho_linkedit_table_matches_the_symbol_count_an_independent_parser_reads() {
+    let bytes: Vec<u8> = fixture("hello.macho64.o");
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a Mach-O object");
+    let parsed: object::read::macho::MachOFile64<'_, object::Endianness, &[u8]> =
+        object::read::macho::MachOFile64::parse(bytes.as_slice())
+            .expect("the reference parser must read this fixture");
+    let symbols: u64 = parsed.symbols().count() as u64;
+    assert!(
+        symbols > 0,
+        "this case needs a fixture that carries a symbol table"
+    );
+
+    assert!(
+        region_named(&coverage, "load-command:LC_SYMTAB").is_some(),
+        "the load command itself is claimed"
+    );
+    let table: &CoverageRegion =
+        region_named(&coverage, "symbol-table").expect("the symbol table is claimed");
+    assert_eq!(
+        table.len(),
+        symbols * 16,
+        "a 64 bit Mach-O symbol table is sixteen bytes for every symbol the reference parser reads"
+    );
+    assert!(
+        region_named(&coverage, "string-table").is_some(),
+        "the string table the symbol table points into is claimed"
+    );
+}
+
+#[test]
+fn a_big_endian_macho_is_covered_end_to_end() {
+    let mut object_file: object::write::Object<'_> = object::write::Object::new(
+        object::BinaryFormat::MachO,
+        object::Architecture::PowerPc,
+        object::Endianness::Big,
+    );
+    let text: object::write::SectionId =
+        object_file.section_id(object::write::StandardSection::Text);
+    let _offset: u64 = object_file.append_section_data(text, &[0x60u8; 32], 4);
+    let bytes: Vec<u8> = object_file.write().expect("write a big endian Mach-O");
+
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a big endian Mach-O");
+    assert_eq!(coverage.format, NativeFormat::MachO32);
+    assert_partition(&coverage, bytes.len() as u64, "big endian Mach-O");
+    assert_eq!(
+        coverage.unclaimed_bytes, 0,
+        "the byte swapped header walk must reach every load command"
+    );
+    assert!(
+        coverage.regions.iter().any(|region: &CoverageRegion| {
+            region.claimant.as_deref().is_some_and(|claimant: &str| {
+                claimant.starts_with("section:") && claimant.ends_with("__text")
+            })
+        }),
+        "the big endian walk must resolve segment and section names: {:?}",
+        coverage.regions
+    );
+}
