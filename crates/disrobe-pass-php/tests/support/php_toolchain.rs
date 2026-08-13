@@ -37,6 +37,7 @@ pub(crate) enum ToolchainRequirement {
 pub(crate) struct PhpRuntime {
     pub(crate) binary: PathBuf,
     pub(crate) banner: String,
+    pub(crate) settings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -160,11 +161,46 @@ pub(crate) fn require_with_requirement(
         .unwrap_or_default()
         .trim()
         .to_owned();
-    Some(PhpRuntime { binary, banner })
+    Some(PhpRuntime {
+        binary,
+        banner,
+        settings: Vec::new(),
+    })
 }
 
 pub(crate) fn require_php(graded: &str) -> Option<PhpRuntime> {
     require_with_requirement(&PHP, graded, requirement(&PHP))
+}
+
+pub(crate) fn require_php_extensions(
+    base: &PhpRuntime,
+    extensions: &[(&str, &str)],
+    graded: &str,
+) -> Option<PhpRuntime> {
+    let direct: Vec<String> = extensions
+        .iter()
+        .map(|(name, _): &(&str, &str)| format!("extension={name}"))
+        .collect();
+    if base.provides(extensions, &direct) {
+        return Some(base.with_settings(direct));
+    }
+    if let Some(directory) = base.extension_directory() {
+        let mut located: Vec<String> = vec![format!("extension_dir={}", directory.display())];
+        located.extend(direct);
+        if base.provides(extensions, &located) {
+            return Some(base.with_settings(located));
+        }
+    }
+    let names: Vec<&str> = extensions
+        .iter()
+        .map(|(name, _): &(&str, &str)| *name)
+        .collect();
+    let defect: String = format!(
+        "{} cannot load the {names:?} extension(s), so the functions they provide cannot be run",
+        base.banner
+    );
+    enforce_requirement(&PHP, graded, &defect, requirement(&PHP));
+    None
 }
 
 pub(crate) fn unmeasured(toolchain: &Toolchain, graded: &str, defect: &str) {
@@ -202,6 +238,9 @@ impl PhpRuntime {
             });
         drop(file);
         let mut command: Command = Command::new(&self.binary);
+        for setting in &self.settings {
+            command.arg("-d").arg(setting);
+        }
         for setting in settings {
             command.arg("-d").arg(setting);
         }
@@ -220,6 +259,47 @@ impl PhpRuntime {
             stdout: output.stdout,
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         }
+    }
+
+    fn with_settings(&self, settings: Vec<String>) -> Self {
+        Self {
+            binary: self.binary.clone(),
+            banner: self.banner.clone(),
+            settings,
+        }
+    }
+
+    fn evaluate(&self, script: &str, settings: &[String]) -> Option<String> {
+        let mut command: Command = Command::new(&self.binary);
+        command.arg("-d").arg("display_errors=stderr");
+        for setting in settings {
+            command.arg("-d").arg(setting);
+        }
+        let output: Output = command.arg("-r").arg(script).output().ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn extension_directory(&self) -> Option<PathBuf> {
+        let reported: String = self.evaluate("echo PHP_BINARY;", &[])?;
+        let binary: PathBuf = PathBuf::from(reported);
+        let mut directory: PathBuf = binary.parent()?.to_path_buf();
+        directory.push("ext");
+        directory.is_dir().then_some(directory)
+    }
+
+    fn provides(&self, extensions: &[(&str, &str)], settings: &[String]) -> bool {
+        let probes: Vec<String> = extensions
+            .iter()
+            .map(|(_, function): &(&str, &str)| {
+                format!("echo function_exists('{function}') ? '1' : '0';")
+            })
+            .collect();
+        let expected: String = "1".repeat(extensions.len());
+        self.evaluate(&probes.concat(), settings)
+            .is_some_and(|seen: String| seen == expected)
     }
 
     pub(crate) fn stdout_of(&self, label: &str, source: &[u8]) -> Vec<u8> {
@@ -244,11 +324,13 @@ pub(crate) fn with_open_tag(source: &str) -> String {
     }
 }
 
-pub(crate) const DECODE_PRIMITIVES: [&str; 16] = [
+pub(crate) const DECODE_PRIMITIVES: [&str; 18] = [
     "base64_decode",
     "gzinflate",
     "gzuncompress",
     "gzdecode",
+    "bzdecompress",
+    "openssl_decrypt",
     "str_rot13",
     "strrev",
     "hex2bin",

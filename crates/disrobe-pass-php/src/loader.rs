@@ -153,6 +153,9 @@ enum Stmt {
     FunctionDecl {
         raw: Vec<u8>,
     },
+    Opaque {
+        raw: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -233,6 +236,10 @@ impl<'a> Parser<'a> {
             let Some(stmt): Option<Stmt> = self.parse_statement() else {
                 if !self.recover_to_semicolon() {
                     break;
+                }
+                let raw: &[u8] = self.buf.get(start..self.pos).unwrap_or_default();
+                if raw.len() <= MAX_OPAQUE_STATEMENT && opaque_names_an_interpreter_form(raw) {
+                    out.push((Stmt::Opaque { raw: raw.to_vec() }, start..self.pos));
                 }
                 continue;
             };
@@ -894,7 +901,12 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     if stmts.is_empty() {
         return None;
     }
-    if stmts.len() == 1 && !is_loader_owned_single(&stmts[0].0) {
+    let parsed: Vec<&Stmt> = stmts
+        .iter()
+        .map(|(stmt, _): &(Stmt, std::ops::Range<usize>)| stmt)
+        .filter(|stmt: &&Stmt| !matches!(stmt, Stmt::Opaque { .. }))
+        .collect();
+    if parsed.len() == 1 && !parsed.first().copied().is_some_and(is_loader_owned_single) {
         return None;
     }
     let mut env: Env = Env::default();
@@ -911,6 +923,22 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     for (stmt, span) in &stmts {
         match stmt {
             Stmt::FunctionDecl { .. } => {}
+            Stmt::Opaque { raw } => {
+                if depth == 0 {
+                    continue;
+                }
+                if let Some(sink) = raw_sink_kind(raw)
+                    && let Some(body) = interp.run_sink_statement(raw)
+                {
+                    sink_result = Some(LoaderReport {
+                        sink,
+                        recovered: body,
+                        bound_variable_count: bound,
+                    });
+                } else if interp.declare_constant(raw) {
+                    bound += 1;
+                }
+            }
             Stmt::Assign { target, op, value } => {
                 let Some(name): Option<Vec<u8>> = resolve_assign_target(target, &env, depth) else {
                     continue;
@@ -993,6 +1021,11 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
                         recovered: body,
                         bound_variable_count: bound,
                     });
+                } else if depth > 0
+                    && let Some(raw) = buf.get(span.clone())
+                    && interp.declare_constant(raw)
+                {
+                    bound += 1;
                 }
             }
         }
@@ -1026,6 +1059,50 @@ fn create_function_body(value: &Expr, env: &Env, depth: u32) -> Option<Vec<u8>> 
         return None;
     }
     string_arg(body_arg, env, depth)
+}
+
+const MAX_OPAQUE_STATEMENT: usize = 1 << 20;
+
+const INTERPRETER_FORMS: [&[u8]; 3] = [b"eval", b"assert", b"define"];
+
+fn opaque_names_an_interpreter_form(raw: &[u8]) -> bool {
+    let lowered: Vec<u8> = raw.to_ascii_lowercase();
+    INTERPRETER_FORMS
+        .iter()
+        .any(|form: &&[u8]| contains_call_ident(&lowered, form))
+}
+
+fn contains_call_ident(lowered: &[u8], ident: &[u8]) -> bool {
+    let mut from: usize = 0;
+    while let Some(offset) = memchr::memmem::find(lowered.get(from..).unwrap_or_default(), ident) {
+        let at: usize = from + offset;
+        let before_ok: bool = at == 0 || !lowered.get(at - 1).copied().is_some_and(is_ident_byte);
+        let after: usize = at + ident.len();
+        let after_ok: bool = !lowered.get(after).copied().is_some_and(is_ident_byte);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+fn raw_sink_kind(raw: &[u8]) -> Option<LoaderSink> {
+    let trimmed: &[u8] = raw.trim_ascii_start();
+    for (ident, sink) in [
+        (b"eval".as_slice(), LoaderSink::Eval),
+        (b"assert".as_slice(), LoaderSink::Assert),
+    ] {
+        let Some(rest): Option<&[u8]> = trimmed.get(..ident.len()) else {
+            continue;
+        };
+        if rest.eq_ignore_ascii_case(ident)
+            && !trimmed.get(ident.len()).copied().is_some_and(is_ident_byte)
+        {
+            return Some(sink);
+        }
+    }
+    None
 }
 
 fn is_loader_owned_single(stmt: &Stmt) -> bool {

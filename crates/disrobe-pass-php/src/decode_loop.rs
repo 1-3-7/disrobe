@@ -5,6 +5,7 @@ use crate::loader::{
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
+use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -120,6 +121,7 @@ enum LExpr {
     Int(i64),
     Str(Vec<u8>),
     Var(Vec<u8>),
+    Const(Vec<u8>),
     Index {
         base: Box<Self>,
         idx: Box<Self>,
@@ -942,7 +944,8 @@ impl<'a> LoopParser<'a> {
             let name: Vec<u8> = self.parse_ident()?;
             self.skip_trivia();
             if self.peek() != Some(b'(') {
-                return None;
+                return literal_keyword(&name)
+                    .or_else(|| (!is_reserved_word(&name)).then(|| LExpr::Const(name.clone())));
             }
             self.pos += 1;
             let args: Vec<LExpr> = self.parse_arg_list(b')')?;
@@ -986,23 +989,20 @@ impl<'a> LoopParser<'a> {
     }
 
     fn parse_number(&mut self) -> Option<LExpr> {
-        let start: usize = self.pos;
-        if self.buf[self.pos..].starts_with(b"0x") || self.buf[self.pos..].starts_with(b"0X") {
-            self.pos += 2;
-            let digits_at: usize = self.pos;
-            while self
-                .peek()
-                .is_some_and(|b: u8| b.is_ascii_hexdigit() || b == b'_')
-            {
-                self.pos += 1;
+        let rest: &[u8] = self.buf.get(self.pos..)?;
+        for (prefix, radix) in [
+            (b"0x".as_slice(), 16u32),
+            (b"0X".as_slice(), 16),
+            (b"0b".as_slice(), 2),
+            (b"0B".as_slice(), 2),
+            (b"0o".as_slice(), 8),
+            (b"0O".as_slice(), 8),
+        ] {
+            if rest.starts_with(prefix) {
+                return self.parse_radix_digits(prefix.len(), radix);
             }
-            let text: String = self.buf[digits_at..self.pos]
-                .iter()
-                .filter(|b: &&u8| **b != b'_')
-                .map(|b: &u8| char::from(*b))
-                .collect();
-            return i64::from_str_radix(&text, 16).ok().map(LExpr::Int);
         }
+        let start: usize = self.pos;
         while self
             .peek()
             .is_some_and(|b: u8| b.is_ascii_digit() || b == b'_')
@@ -1012,12 +1012,38 @@ impl<'a> LoopParser<'a> {
         if self.peek() == Some(b'.') && self.peek_at(1).is_some_and(|b: u8| b.is_ascii_digit()) {
             return None;
         }
-        let text: String = self.buf[start..self.pos]
-            .iter()
-            .filter(|b: &&u8| **b != b'_')
-            .map(|b: &u8| char::from(*b))
-            .collect();
+        if self.peek().is_some_and(|b: u8| b == b'e' || b == b'E') {
+            return None;
+        }
+        let text: String = self.digits_between(start, self.pos)?;
+        if text.len() > 1 && text.starts_with('0') {
+            return i64::from_str_radix(&text, 8).ok().map(LExpr::Int);
+        }
         text.parse::<i64>().ok().map(LExpr::Int)
+    }
+
+    fn parse_radix_digits(&mut self, prefix: usize, radix: u32) -> Option<LExpr> {
+        self.pos += prefix;
+        let start: usize = self.pos;
+        while self
+            .peek()
+            .is_some_and(|b: u8| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            self.pos += 1;
+        }
+        let text: String = self.digits_between(start, self.pos)?;
+        i64::from_str_radix(&text, radix).ok().map(LExpr::Int)
+    }
+
+    fn digits_between(&self, start: usize, end: usize) -> Option<String> {
+        Some(
+            self.buf
+                .get(start..end)?
+                .iter()
+                .filter(|b: &&u8| **b != b'_')
+                .map(|b: &u8| char::from(*b))
+                .collect(),
+        )
     }
 
     fn parse_string(&mut self, quote: u8) -> Option<LExpr> {
@@ -1131,12 +1157,17 @@ pub(crate) struct Interp {
     live_bytes: usize,
     frames_deep: u32,
     functions: BTreeMap<Vec<u8>, FnDef>,
+    constants: BTreeMap<Vec<u8>, Val>,
     refused_names: std::collections::BTreeSet<Vec<u8>>,
     started: Instant,
 }
 
 impl Interp {
     pub(crate) fn new(budget: Budget) -> Self {
+        let constants: BTreeMap<Vec<u8>, Val> = PREDEFINED_CONSTANTS
+            .iter()
+            .map(|(name, value): &(&[u8], i64)| ((*name).to_vec(), Val::Int(*value)))
+            .collect();
         Self {
             scope: BTreeMap::new(),
             budget,
@@ -1145,6 +1176,7 @@ impl Interp {
             live_bytes: 0,
             frames_deep: 0,
             functions: BTreeMap::new(),
+            constants,
             refused_names: std::collections::BTreeSet::new(),
             started: Instant::now(),
         }
@@ -1236,6 +1268,23 @@ impl Interp {
             Flow::Return(value) => Ok(value),
             Flow::Normal | Flow::Break(_) | Flow::Continue(_) => Ok(Val::Str(Vec::new())),
         }
+    }
+
+    pub(crate) fn declare_constant(&mut self, raw: &[u8]) -> bool {
+        if self.check_heap().is_err() {
+            return false;
+        }
+        let mut parser: LoopParser<'_> = LoopParser::new(raw);
+        let Some(program): Option<Vec<LStmt>> = parser.parse_program() else {
+            return false;
+        };
+        let [LStmt::Expr(LExpr::Call { name, args })] = program.as_slice() else {
+            return false;
+        };
+        if name.as_slice() != b"define" {
+            return false;
+        }
+        self.dispatch_call(name, args, 0).is_ok()
     }
 
     pub(crate) fn run_sink_statement(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
@@ -1532,6 +1581,11 @@ impl Interp {
             LExpr::Int(n) => Ok(Val::Int(*n)),
             LExpr::Str(s) => Ok(Val::Str(s.clone())),
             LExpr::Var(name) => self.scope.get(name).cloned().ok_or(Abstain::UndefinedRead),
+            LExpr::Const(name) => self
+                .constants
+                .get(name)
+                .cloned()
+                .ok_or(Abstain::UndefinedRead),
             LExpr::Index { base, idx } => {
                 let container: Val = self.eval(base, depth + 1)?;
                 let key: i64 = to_int(&self.eval(idx, depth + 1)?)?;
@@ -1603,6 +1657,170 @@ impl Interp {
             self.check_size(bytes.len())?;
         }
         Ok(out)
+    }
+
+    fn pack_values(&mut self, code: PackCode, repeat: PackRepeat, args: &[Val]) -> Eval<Val> {
+        let first: Eval<&Val> = args.first().ok_or(Abstain::Unsupported);
+        if matches!(code, PackCode::HexHigh | PackCode::HexLow) {
+            if repeat != PackRepeat::All {
+                return Err(Abstain::Unsupported);
+            }
+            let digits: Vec<u8> = to_bytes(first?)?;
+            let packed: Vec<u8> =
+                pack_hex(&digits, code == PackCode::HexLow).ok_or(Abstain::TypeMismatch)?;
+            self.check_size(packed.len())?;
+            return Ok(Val::Str(packed));
+        }
+        if matches!(code, PackCode::StringNull | PackCode::StringSpace) {
+            if repeat != PackRepeat::All {
+                return Err(Abstain::Unsupported);
+            }
+            return Ok(Val::Str(to_bytes(first?)?));
+        }
+        let width: usize = numeric_width(code);
+        let wanted: usize = match repeat {
+            PackRepeat::All => args.len(),
+            PackRepeat::Count(n) => n,
+        };
+        if args.len() != wanted {
+            return Err(Abstain::Unsupported);
+        }
+        let mut out: Vec<u8> = Vec::with_capacity(wanted.saturating_mul(width));
+        for value in args {
+            self.tick()?;
+            let n: i64 = to_int(value)?;
+            let wrapped: u32 = (n as u64 & u64::from(u32::MAX)) as u32;
+            match code {
+                PackCode::ByteUnsigned | PackCode::ByteSigned => out.push(wrapped as u8),
+                PackCode::U16Be => out.extend_from_slice(&(wrapped as u16).to_be_bytes()),
+                PackCode::U16Le => out.extend_from_slice(&(wrapped as u16).to_le_bytes()),
+                PackCode::U32Be => out.extend_from_slice(&wrapped.to_be_bytes()),
+                PackCode::U32Le => out.extend_from_slice(&wrapped.to_le_bytes()),
+                PackCode::HexHigh
+                | PackCode::HexLow
+                | PackCode::StringNull
+                | PackCode::StringSpace => return Err(Abstain::Unsupported),
+            }
+            self.check_size(out.len())?;
+        }
+        Ok(Val::Str(out))
+    }
+
+    fn unpack_values(&mut self, code: PackCode, repeat: PackRepeat, body: &[u8]) -> Eval<Val> {
+        let mut map: BTreeMap<i64, Val> = BTreeMap::new();
+        match code {
+            PackCode::HexHigh | PackCode::HexLow => {
+                if repeat != PackRepeat::All {
+                    return Err(Abstain::Unsupported);
+                }
+                let hex: Vec<u8> = unpack_hex(body, code == PackCode::HexLow);
+                self.check_size(hex.len())?;
+                map.insert(1, Val::Str(hex));
+            }
+            PackCode::StringNull => {
+                if repeat != PackRepeat::All {
+                    return Err(Abstain::Unsupported);
+                }
+                map.insert(1, Val::Str(body.to_vec()));
+            }
+            PackCode::StringSpace => {
+                if repeat != PackRepeat::All {
+                    return Err(Abstain::Unsupported);
+                }
+                let trimmed: &[u8] = trim_end_pad(body);
+                map.insert(1, Val::Str(trimmed.to_vec()));
+            }
+            PackCode::ByteUnsigned
+            | PackCode::ByteSigned
+            | PackCode::U16Be
+            | PackCode::U16Le
+            | PackCode::U32Be
+            | PackCode::U32Le => {
+                let width: usize = numeric_width(code);
+                let available: usize = body.len() / width;
+                let wanted: usize = match repeat {
+                    PackRepeat::All => available,
+                    PackRepeat::Count(n) => n,
+                };
+                if wanted > available {
+                    return Err(Abstain::OutOfRange);
+                }
+                for index in 0..wanted {
+                    self.tick()?;
+                    let at: usize = index.checked_mul(width).ok_or(Abstain::OutOfRange)?;
+                    let slot: &[u8] = body.get(at..at + width).ok_or(Abstain::OutOfRange)?;
+                    map.insert(
+                        i64::try_from(index).map_err(|_| Abstain::OutOfRange)? + 1,
+                        Val::Int(read_numeric(code, slot)?),
+                    );
+                }
+            }
+        }
+        self.check_heap()?;
+        Ok(Val::Arr(map))
+    }
+
+    fn openssl_decrypt(&mut self, args: &[Val]) -> Eval<Val> {
+        if args.len() > OPENSSL_MAX_ARGS {
+            return Err(Abstain::Unsupported);
+        }
+        let data: Vec<u8> = to_bytes(args.first().ok_or(Abstain::Unsupported)?)?;
+        let algorithm: Vec<u8> = to_bytes(args.get(1).ok_or(Abstain::Unsupported)?)?;
+        let passphrase: Vec<u8> = to_bytes(args.get(2).ok_or(Abstain::Unsupported)?)?;
+        let options: i64 = match args.get(3) {
+            Some(value) => to_int(value)?,
+            None => 0,
+        };
+        let vector: Vec<u8> = match args.get(4) {
+            Some(value) => to_bytes(value)?,
+            None => Vec::new(),
+        };
+        let (key_len, mode): (usize, AesMode) =
+            aes_algorithm(&algorithm).ok_or(Abstain::Unsupported)?;
+        let ciphertext: Vec<u8> = if options & OPENSSL_RAW_DATA == 0 {
+            let clean: Vec<u8> = data
+                .into_iter()
+                .filter(|b: &u8| !b.is_ascii_whitespace())
+                .collect();
+            B64_STD.decode(&clean).map_err(|_| Abstain::TypeMismatch)?
+        } else {
+            data
+        };
+        self.check_size(ciphertext.len())?;
+        if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(AES_BLOCK_LEN) {
+            return Err(Abstain::OutOfRange);
+        }
+        let key: Vec<u8> = zero_extended(&passphrase, key_len);
+        let padding: CbcPadding = if options & OPENSSL_ZERO_PADDING == 0 {
+            CbcPadding::Pkcs7
+        } else {
+            CbcPadding::NoPadding
+        };
+        let plain: Vec<u8> = match mode {
+            AesMode::Cbc => {
+                let iv: Vec<u8> = zero_extended(&vector, AES_BLOCK_LEN);
+                aes_cbc_decrypt(&key, &iv, &ciphertext, padding)
+                    .map_err(|_| Abstain::TypeMismatch)?
+            }
+            AesMode::Ecb => {
+                let blocks: usize = ciphertext.len() / AES_BLOCK_LEN;
+                let mut out: Vec<u8> = Vec::with_capacity(ciphertext.len());
+                for (index, block) in ciphertext.chunks(AES_BLOCK_LEN).enumerate() {
+                    self.tick()?;
+                    let step: CbcPadding = if index + 1 == blocks {
+                        padding
+                    } else {
+                        CbcPadding::NoPadding
+                    };
+                    let decrypted: Vec<u8> = aes_cbc_decrypt(&key, &ECB_VECTOR, block, step)
+                        .map_err(|_| Abstain::TypeMismatch)?;
+                    out.extend_from_slice(&decrypted);
+                }
+                out
+            }
+        };
+        self.check_size(plain.len())?;
+        Ok(Val::Str(plain))
     }
 
     fn call_builtin(&mut self, name: &[u8], args: &[Val]) -> Eval<Val> {
@@ -1712,18 +1930,16 @@ impl Interp {
             b"html_entity_decode" | b"htmlspecialchars_decode" => {
                 Ok(Val::Str(html_entity_decode(&to_bytes(arg0?)?)))
             }
-            b"pack" | b"unpack" => {
-                let fmt: Vec<u8> = to_bytes(arg0?)?;
-                if fmt.trim_ascii() != b"H*" {
-                    return Err(Abstain::Unsupported);
-                }
+            b"pack" => {
+                let (code, repeat): (PackCode, PackRepeat) =
+                    parse_pack_format(&to_bytes(arg0?)?).ok_or(Abstain::Unsupported)?;
+                self.pack_values(code, repeat, args.get(1..).unwrap_or_default())
+            }
+            b"unpack" => {
+                let (code, repeat): (PackCode, PackRepeat) =
+                    parse_pack_format(&to_bytes(arg0?)?).ok_or(Abstain::Unsupported)?;
                 let body: Vec<u8> = to_bytes(args.get(1).ok_or(Abstain::Unsupported)?)?;
-                if name == b"pack" {
-                    return decode_hex_stream_skip_ws(&body)
-                        .map(Val::Str)
-                        .ok_or(Abstain::TypeMismatch);
-                }
-                Ok(Val::Str(bin2hex(&body)))
+                self.unpack_values(code, repeat, &body)
             }
             b"substr" => {
                 let s: Vec<u8> = to_bytes(arg0?)?;
@@ -1793,6 +2009,29 @@ impl Interp {
                 }
                 Ok(Val::Str(out))
             }
+            b"define" => {
+                let key: Vec<u8> = to_bytes(arg0?)?;
+                let value: Val = args.get(1).ok_or(Abstain::Unsupported)?.clone();
+                if key.is_empty() || self.constants.contains_key(&key) {
+                    return Err(Abstain::Unsupported);
+                }
+                self.live_bytes = self.live_bytes.saturating_add(val_size(&value));
+                self.constants.insert(key, value);
+                self.check_heap()?;
+                Ok(Val::Int(1))
+            }
+            b"defined" => {
+                let key: Vec<u8> = to_bytes(arg0?)?;
+                Ok(Val::Int(i64::from(self.constants.contains_key(&key))))
+            }
+            b"constant" => {
+                let key: Vec<u8> = to_bytes(arg0?)?;
+                self.constants
+                    .get(&key)
+                    .cloned()
+                    .ok_or(Abstain::UndefinedRead)
+            }
+            b"openssl_decrypt" => self.openssl_decrypt(args),
             b"range" => {
                 let from: i64 = to_int(arg0?)?;
                 let to: i64 = to_int(args.get(1).ok_or(Abstain::Unsupported)?)?;
@@ -1867,9 +2106,12 @@ const PURE_BUILTINS: &[&[u8]] = &[
     b"bin2hex",
     b"bzdecompress",
     b"chr",
+    b"constant",
     b"convert_uudecode",
     b"count",
     b"dechex",
+    b"define",
+    b"defined",
     b"gzdecode",
     b"gzinflate",
     b"gzuncompress",
@@ -1883,6 +2125,7 @@ const PURE_BUILTINS: &[&[u8]] = &[
     b"ltrim",
     b"max",
     b"min",
+    b"openssl_decrypt",
     b"ord",
     b"pack",
     b"range",
@@ -1903,6 +2146,257 @@ const PURE_BUILTINS: &[&[u8]] = &[
     b"unpack",
     b"urldecode",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackCode {
+    HexHigh,
+    HexLow,
+    ByteUnsigned,
+    ByteSigned,
+    StringNull,
+    StringSpace,
+    U16Be,
+    U16Le,
+    U32Be,
+    U32Le,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackRepeat {
+    All,
+    Count(usize),
+}
+
+fn parse_pack_format(fmt: &[u8]) -> Option<(PackCode, PackRepeat)> {
+    let (head, rest): (&u8, &[u8]) = fmt.trim_ascii().split_first()?;
+    let code: PackCode = match head {
+        b'H' => PackCode::HexHigh,
+        b'h' => PackCode::HexLow,
+        b'C' => PackCode::ByteUnsigned,
+        b'c' => PackCode::ByteSigned,
+        b'a' => PackCode::StringNull,
+        b'A' => PackCode::StringSpace,
+        b'n' => PackCode::U16Be,
+        b'v' => PackCode::U16Le,
+        b'N' => PackCode::U32Be,
+        b'V' => PackCode::U32Le,
+        _ => return None,
+    };
+    let repeat: PackRepeat = match rest {
+        [] => PackRepeat::Count(1),
+        [b'*'] => PackRepeat::All,
+        digits if digits.iter().all(u8::is_ascii_digit) => PackRepeat::Count(
+            std::str::from_utf8(digits)
+                .ok()
+                .and_then(|text: &str| text.parse::<usize>().ok())?,
+        ),
+        _ => return None,
+    };
+    Some((code, repeat))
+}
+
+const fn numeric_width(code: PackCode) -> usize {
+    match code {
+        PackCode::U32Be | PackCode::U32Le => 4,
+        PackCode::U16Be | PackCode::U16Le => 2,
+        PackCode::ByteUnsigned
+        | PackCode::ByteSigned
+        | PackCode::HexHigh
+        | PackCode::HexLow
+        | PackCode::StringNull
+        | PackCode::StringSpace => 1,
+    }
+}
+
+fn read_numeric(code: PackCode, slot: &[u8]) -> Eval<i64> {
+    let head: u8 = slot.first().copied().ok_or(Abstain::OutOfRange)?;
+    match code {
+        PackCode::ByteUnsigned => Ok(i64::from(head)),
+        PackCode::ByteSigned => Ok(i64::from(head as i8)),
+        PackCode::U16Be | PackCode::U16Le => {
+            let pair: [u8; 2] = slot.try_into().map_err(|_| Abstain::OutOfRange)?;
+            let value: u16 = if code == PackCode::U16Be {
+                u16::from_be_bytes(pair)
+            } else {
+                u16::from_le_bytes(pair)
+            };
+            Ok(i64::from(value))
+        }
+        PackCode::U32Be | PackCode::U32Le => {
+            let quad: [u8; 4] = slot.try_into().map_err(|_| Abstain::OutOfRange)?;
+            let value: u32 = if code == PackCode::U32Be {
+                u32::from_be_bytes(quad)
+            } else {
+                u32::from_le_bytes(quad)
+            };
+            Ok(i64::from(value))
+        }
+        PackCode::HexHigh | PackCode::HexLow | PackCode::StringNull | PackCode::StringSpace => {
+            Err(Abstain::Unsupported)
+        }
+    }
+}
+
+fn pack_hex(digits: &[u8], swapped: bool) -> Option<Vec<u8>> {
+    if !swapped {
+        return decode_hex_stream_skip_ws(digits);
+    }
+    let plain: Vec<u8> = decode_hex_stream_skip_ws(digits)?;
+    Some(
+        plain
+            .into_iter()
+            .map(|b: u8| b.rotate_left(4))
+            .collect::<Vec<u8>>(),
+    )
+}
+
+fn unpack_hex(body: &[u8], swapped: bool) -> Vec<u8> {
+    if swapped {
+        let flipped: Vec<u8> = body.iter().map(|b: &u8| b.rotate_left(4)).collect();
+        return bin2hex(&flipped);
+    }
+    bin2hex(body)
+}
+
+fn trim_end_pad(body: &[u8]) -> &[u8] {
+    let mut end: usize = body.len();
+    while end > 0
+        && body
+            .get(end - 1)
+            .is_some_and(|b: &u8| *b == 0 || b.is_ascii_whitespace())
+    {
+        end -= 1;
+    }
+    body.get(..end).unwrap_or(body)
+}
+
+const OPENSSL_RAW_DATA: i64 = 1;
+const OPENSSL_ZERO_PADDING: i64 = 2;
+const OPENSSL_MAX_ARGS: usize = 5;
+const AES_BLOCK_LEN: usize = 16;
+const ECB_VECTOR: [u8; AES_BLOCK_LEN] = [0u8; AES_BLOCK_LEN];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AesMode {
+    Cbc,
+    Ecb,
+}
+
+fn aes_algorithm(name: &[u8]) -> Option<(usize, AesMode)> {
+    match name.to_ascii_lowercase().as_slice() {
+        b"aes-128-cbc" => Some((16, AesMode::Cbc)),
+        b"aes-192-cbc" => Some((24, AesMode::Cbc)),
+        b"aes-256-cbc" => Some((32, AesMode::Cbc)),
+        b"aes-128-ecb" => Some((16, AesMode::Ecb)),
+        b"aes-192-ecb" => Some((24, AesMode::Ecb)),
+        b"aes-256-ecb" => Some((32, AesMode::Ecb)),
+        _ => None,
+    }
+}
+
+fn zero_extended(source: &[u8], width: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = vec![0u8; width];
+    let take: usize = source.len().min(width);
+    out[..take].copy_from_slice(&source[..take]);
+    out
+}
+
+const RESERVED_WORDS: &[&[u8]] = &[
+    b"abstract",
+    b"and",
+    b"array",
+    b"as",
+    b"break",
+    b"callable",
+    b"case",
+    b"catch",
+    b"class",
+    b"clone",
+    b"const",
+    b"continue",
+    b"declare",
+    b"default",
+    b"die",
+    b"do",
+    b"echo",
+    b"else",
+    b"elseif",
+    b"empty",
+    b"enddeclare",
+    b"endfor",
+    b"endforeach",
+    b"endif",
+    b"endswitch",
+    b"endwhile",
+    b"enum",
+    b"eval",
+    b"exit",
+    b"extends",
+    b"final",
+    b"finally",
+    b"fn",
+    b"for",
+    b"foreach",
+    b"function",
+    b"global",
+    b"goto",
+    b"if",
+    b"implements",
+    b"include",
+    b"include_once",
+    b"instanceof",
+    b"insteadof",
+    b"interface",
+    b"isset",
+    b"list",
+    b"match",
+    b"namespace",
+    b"new",
+    b"or",
+    b"print",
+    b"private",
+    b"protected",
+    b"public",
+    b"readonly",
+    b"require",
+    b"require_once",
+    b"return",
+    b"static",
+    b"switch",
+    b"throw",
+    b"trait",
+    b"try",
+    b"unset",
+    b"use",
+    b"var",
+    b"while",
+    b"xor",
+    b"yield",
+];
+
+const PREDEFINED_CONSTANTS: &[(&[u8], i64)] = &[
+    (b"OPENSSL_RAW_DATA", OPENSSL_RAW_DATA),
+    (b"OPENSSL_ZERO_PADDING", OPENSSL_ZERO_PADDING),
+    (
+        b"OPENSSL_NO_PADDING",
+        OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING,
+    ),
+];
+
+fn literal_keyword(name: &[u8]) -> Option<LExpr> {
+    if name.eq_ignore_ascii_case(b"true") {
+        return Some(LExpr::Int(1));
+    }
+    if name.eq_ignore_ascii_case(b"false") || name.eq_ignore_ascii_case(b"null") {
+        return Some(LExpr::Str(Vec::new()));
+    }
+    None
+}
+
+fn is_reserved_word(name: &[u8]) -> bool {
+    let lowered: Vec<u8> = name.to_ascii_lowercase();
+    RESERVED_WORDS.contains(&lowered.as_slice())
+}
 
 fn index_value(container: &Val, key: i64) -> Eval<Val> {
     match container {
@@ -2665,5 +3159,241 @@ mod tests {
         src.extend(std::iter::repeat_n(b'{', NESTING));
         src.extend(std::iter::repeat_n(b'}', NESTING));
         let _: Option<Vec<(Vec<u8>, Vec<u8>)>> = Interp::new(Budget::default()).run_block(&src);
+    }
+
+    fn raw_zero_padded_call(cipher: &[u8], algorithm: &str) -> Vec<Val> {
+        vec![
+            Val::Str(cipher.to_vec()),
+            Val::Str(algorithm.as_bytes().to_vec()),
+            Val::Str(b"budget-key-00016".to_vec()),
+            Val::Int(OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING),
+            Val::Str(b"budget-ivec-0016".to_vec()),
+        ]
+    }
+
+    #[test]
+    fn an_aes_ecb_block_walk_respects_the_step_budget() {
+        let cipher: Vec<u8> = vec![b'x'; 4096];
+        let args: Vec<Val> = raw_zero_padded_call(&cipher, "aes-128-ecb");
+        let unbounded: Eval<Val> = Interp::new(Budget::default()).openssl_decrypt(&args);
+        assert_eq!(
+            unbounded.map(|value: Val| to_bytes(&value).map(|b: Vec<u8>| b.len())),
+            Ok(Ok(cipher.len())),
+            "with room to run, every block of this ciphertext decrypts, so the bounded run below \
+             is stopped by the budget and not by the input"
+        );
+        let bounded: Eval<Val> = Interp::new(Budget {
+            steps: 8,
+            ..Budget::default()
+        })
+        .openssl_decrypt(&args);
+        assert_eq!(
+            bounded.err(),
+            Some(Abstain::StepBudget),
+            "the per-block ecb walk must charge a step per block"
+        );
+    }
+
+    #[test]
+    fn an_openssl_plaintext_over_the_output_budget_abstains() {
+        let cipher: Vec<u8> = vec![b'y'; 4096];
+        let args: Vec<Val> = raw_zero_padded_call(&cipher, "aes-128-cbc");
+        let unbounded: Eval<Val> = Interp::new(Budget::default()).openssl_decrypt(&args);
+        assert_eq!(
+            unbounded.map(|value: Val| to_bytes(&value).map(|b: Vec<u8>| b.len())),
+            Ok(Ok(cipher.len())),
+            "this ciphertext decrypts to a full-length plaintext when the caps allow it"
+        );
+        let bounded: Eval<Val> = Interp::new(Budget {
+            output_bytes: 64,
+            ..Budget::default()
+        })
+        .openssl_decrypt(&args);
+        assert_eq!(
+            bounded.err(),
+            Some(Abstain::OutputBudget),
+            "a ciphertext whose plaintext exceeds the output cap must abstain instead of \
+             materialising it"
+        );
+    }
+
+    #[test]
+    fn an_unpack_walk_respects_the_step_budget() {
+        let mut interp: Interp = Interp::new(Budget {
+            steps: 16,
+            ..Budget::default()
+        });
+        interp.observe_scalar(b"d", &vec![b'z'; 65_536]);
+        assert!(
+            interp.run_block(b"$a = unpack('C*', $d);").is_none(),
+            "unpack must charge a step per produced element, so a large blob has to hit the cap"
+        );
+    }
+
+    #[test]
+    fn a_pack_run_respects_the_output_budget() {
+        let budget: Budget = Budget {
+            output_bytes: 32,
+            ..Budget::default()
+        };
+        let src: &str = "$o = ''; for($i=0;$i<64;$i++){ $o .= pack('N*', 1, 2, 3, 4); }";
+        assert_eq!(abstain_under(budget, src), Some(Abstain::OutputBudget));
+    }
+
+    #[test]
+    fn a_constant_table_respects_the_heap_budget() {
+        let budget: Budget = Budget {
+            heap_bytes: 512,
+            ..Budget::default()
+        };
+        let src: &str = "define('BIG', str_repeat('x', 4096));";
+        assert_eq!(
+            abstain_under(budget, src),
+            Some(Abstain::HeapBudget),
+            "a constant holds bytes for the rest of the run, so the constant table has to be \
+             charged against the same heap budget as the scope"
+        );
+    }
+
+    #[test]
+    fn a_redefined_constant_is_refused_rather_than_resolved_either_way() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        assert!(interp.declare_constant(b"define('K', 'first');"));
+        assert!(
+            !interp.declare_constant(b"define('K', 'second');"),
+            "php emits a warning and keeps the first value for a duplicate define, so a second \
+             binding must never silently replace the first"
+        );
+        assert_eq!(
+            interp.constants.get(b"K".as_slice()),
+            Some(&Val::Str(b"first".to_vec()))
+        );
+    }
+
+    #[test]
+    fn a_predefined_openssl_flag_cannot_be_overwritten_by_the_file() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        assert!(
+            !interp.declare_constant(b"define('OPENSSL_RAW_DATA', 999);"),
+            "php refuses to redefine a constant the engine already provides, so a file must not \
+             be able to reinterpret the option flags the evaluator reads"
+        );
+        assert_eq!(
+            interp.constants.get(b"OPENSSL_RAW_DATA".as_slice()),
+            Some(&Val::Int(OPENSSL_RAW_DATA))
+        );
+    }
+
+    #[test]
+    fn an_undefined_constant_abstains_rather_than_reading_zero() {
+        assert_eq!(
+            abstain_of("$o = NOT_DEFINED_ANYWHERE;", &[]),
+            Some(Abstain::UndefinedRead)
+        );
+    }
+
+    #[test]
+    fn a_reserved_word_is_never_read_as_a_constant() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"$o = echo;");
+        assert!(
+            parser.parse_program().is_none(),
+            "a php keyword is not a constant, so treating one as a name would invent a value the \
+             interpreter never saw"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_openssl_algorithm_names_no_key_length() {
+        assert_eq!(aes_algorithm(b"aes-128-gcm"), None);
+        assert_eq!(aes_algorithm(b"aes-128-ctr"), None);
+        assert_eq!(aes_algorithm(b"rc4"), None);
+        assert_eq!(aes_algorithm(b"aes-128-cbc"), Some((16, AesMode::Cbc)));
+        assert_eq!(aes_algorithm(b"AES-256-ECB"), Some((32, AesMode::Ecb)));
+    }
+
+    #[test]
+    fn a_ciphertext_that_is_not_a_block_multiple_abstains() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"c", &[0u8; 17]);
+        assert!(
+            interp
+                .run_sink_statement(
+                    b"eval(openssl_decrypt($c, 'aes-128-cbc', 'k', 1, '0123456789abcdef'));"
+                )
+                .is_none(),
+            "a truncated ciphertext must abstain rather than decrypt the blocks that happen to fit"
+        );
+    }
+
+    #[test]
+    fn an_empty_ciphertext_abstains() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"c", b"");
+        assert!(
+            interp
+                .run_sink_statement(
+                    b"eval(openssl_decrypt($c, 'aes-128-cbc', 'k', 1, '0123456789abcdef'));"
+                )
+                .is_none(),
+            "a zero-length ciphertext has no plaintext, so an empty success would be a fabricated \
+             recovery"
+        );
+    }
+
+    #[test]
+    fn a_leading_zero_literal_is_read_as_octal_the_way_php_reads_it() {
+        let out: Vec<u8> = out_of("$o = chr(0145) . chr(0143) . chr(0150);", &[]);
+        assert_eq!(
+            out, b"ech",
+            "php reads a leading-zero integer as octal, so reading it as decimal would decode a \
+             different byte than the file runs"
+        );
+    }
+
+    #[test]
+    fn an_invalid_octal_literal_is_refused_rather_than_read_as_decimal() {
+        let mut parser: LoopParser<'_> = LoopParser::new(b"$o = chr(08);");
+        assert!(
+            parser.parse_program().is_none(),
+            "php fatals on 08 because 8 is not an octal digit, so a file carrying one runs \
+             nothing and no plaintext may be produced from it"
+        );
+    }
+
+    #[test]
+    fn binary_and_explicit_octal_literals_match_php() {
+        let out: Vec<u8> = out_of("$o = chr(0b1100001) . chr(0o142) . chr(0x63);", &[]);
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn a_repeater_larger_than_the_data_abstains_before_allocating() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"d", b"abcd");
+        assert!(
+            interp
+                .run_block(b"$a = unpack('N4294967295', $d);")
+                .is_none(),
+            "a repeater the data cannot satisfy must abstain rather than size an allocation from a \
+             file-controlled count"
+        );
+        assert!(
+            interp.run_block(b"$a = pack('N4294967295', 1);").is_none(),
+            "a pack repeater that does not match the supplied argument count must abstain"
+        );
+    }
+
+    #[test]
+    fn unpack_produces_the_one_based_array_php_produces() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"d", b"abc");
+        let produced: Option<Vec<(Vec<u8>, Vec<u8>)>> =
+            interp.run_block(b"$h = unpack('H*', $d); $o = $h[1];");
+        let bound: Vec<(Vec<u8>, Vec<u8>)> = produced.expect("unpack binds");
+        assert!(
+            bound.contains(&(b"o".to_vec(), b"616263".to_vec())),
+            "php returns unpack('H*') as an array keyed from 1, so reading [1] must yield the \
+             whole hex string, not one character of it; got {bound:?}"
+        );
     }
 }
