@@ -10280,7 +10280,7 @@ fn emit_stmts(blocks: &[CfgBlock], block: usize, out: &mut Block) {
 
 const PURE_TAIL_CLONE_BUDGET: usize = 8;
 
-const fn stmt_is_clonable(stmt: &Stmt) -> bool {
+const fn stmt_is_cloneable(stmt: &Stmt) -> bool {
     !matches!(
         stmt,
         Stmt::Store { .. }
@@ -10323,7 +10323,7 @@ fn emit_cloned_pure_tail(
             return None;
         }
         let block: &CfgBlock = ctx.blocks.get(current)?;
-        if !block.stmts.iter().all(stmt_is_clonable) {
+        if !block.stmts.iter().all(stmt_is_cloneable) {
             return None;
         }
         for stmt in &block.stmts {
