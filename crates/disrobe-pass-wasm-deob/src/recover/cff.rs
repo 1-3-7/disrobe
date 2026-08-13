@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use walrus::ir::{Instr, InstrSeqId, InstrSeqType, Value};
+use walrus::ir::{Instr, InstrSeq, InstrSeqId, InstrSeqType, Value, Visitor, dfs_in_order};
 use walrus::{
-    ExportItem, FunctionId, FunctionKind, GlobalId, GlobalKind, LocalFunction, LocalId, Module,
+    ExportItem, FunctionId, FunctionKind, GlobalId, GlobalKind, LocalFunction, LocalId, MemoryId,
+    Module,
 };
+
+use super::reloop::ElidableCells;
 
 const NESTED_SEQ_LIMIT: usize = 4096;
 
@@ -16,16 +19,16 @@ pub struct CffRecovery {
 
 pub(super) fn restructure_flattened(module: &mut Module) -> CffRecovery {
     let local_ids: Vec<FunctionId> = module.funcs.iter_local().map(|(id, _)| id).collect();
-    let elidable: BTreeMap<FunctionId, BTreeSet<GlobalId>> = elidable_state_globals(module);
-    let empty: BTreeSet<GlobalId> = BTreeSet::new();
+    let elidable: BTreeMap<FunctionId, ElidableCells> = elidable_state_cells(module);
+    let empty: ElidableCells = ElidableCells::default();
     let mut recovery: CffRecovery = CffRecovery::default();
     for fid in local_ids {
-        let globals: &BTreeSet<GlobalId> = elidable.get(&fid).unwrap_or(&empty);
+        let cells: &ElidableCells = elidable.get(&fid).unwrap_or(&empty);
         let FunctionKind::Local(func): &mut FunctionKind = &mut module.funcs.get_mut(fid).kind
         else {
             continue;
         };
-        match restructure_one(func, globals) {
+        match restructure_one(func, cells) {
             Restructure::Linearized => recovery.functions_restructured += 1,
             Restructure::Relooped => {
                 recovery.functions_restructured += 1;
@@ -39,9 +42,95 @@ pub(super) fn restructure_flattened(module: &mut Module) -> CffRecovery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GlobalOwner {
+enum CellOwner {
     Function(FunctionId),
     Shared,
+}
+
+fn elidable_state_cells(module: &Module) -> BTreeMap<FunctionId, ElidableCells> {
+    let globals: BTreeMap<FunctionId, BTreeSet<GlobalId>> = elidable_state_globals(module);
+    let memories: BTreeMap<FunctionId, BTreeSet<MemoryId>> = elidable_state_memories(module);
+    module
+        .funcs
+        .iter_local()
+        .map(|(fid, _)| {
+            let cells: ElidableCells = ElidableCells {
+                globals: globals.get(&fid).cloned().unwrap_or_default(),
+                memories: memories.get(&fid).cloned().unwrap_or_default(),
+            };
+            (fid, cells)
+        })
+        .collect()
+}
+
+fn elidable_state_memories(module: &Module) -> BTreeMap<FunctionId, BTreeSet<MemoryId>> {
+    let imported: BTreeSet<MemoryId> = module
+        .memories
+        .iter()
+        .filter(|memory: &&walrus::Memory| memory.import.is_some())
+        .map(walrus::Memory::id)
+        .collect();
+    let mut owners: BTreeMap<MemoryId, CellOwner> = BTreeMap::new();
+    let mut referenced: BTreeMap<FunctionId, BTreeSet<MemoryId>> = BTreeMap::new();
+    for (fid, func) in module.funcs.iter_local() {
+        let Some(memories): Option<BTreeSet<MemoryId>> = referenced_memories(func) else {
+            return BTreeMap::new();
+        };
+        for memory in &memories {
+            claim(&mut owners, *memory, fid);
+        }
+        referenced.insert(fid, memories);
+    }
+    referenced
+        .into_iter()
+        .map(|(fid, memories): (FunctionId, BTreeSet<MemoryId>)| {
+            let owned: BTreeSet<MemoryId> = memories
+                .into_iter()
+                .filter(|memory: &MemoryId| {
+                    owners.get(memory) == Some(&CellOwner::Function(fid))
+                        && !imported.contains(memory)
+                })
+                .collect();
+            (fid, owned)
+        })
+        .collect()
+}
+
+fn claim<T: Ord>(owners: &mut BTreeMap<T, CellOwner>, cell: T, fid: FunctionId) {
+    owners
+        .entry(cell)
+        .and_modify(|owner: &mut CellOwner| {
+            if *owner != CellOwner::Function(fid) {
+                *owner = CellOwner::Shared;
+            }
+        })
+        .or_insert(CellOwner::Function(fid));
+}
+
+#[derive(Debug, Default)]
+struct MemoryScan {
+    memories: BTreeSet<MemoryId>,
+    sequences: usize,
+    truncated: bool,
+}
+
+impl<'instr> Visitor<'instr> for MemoryScan {
+    fn start_instr_seq(&mut self, _instr_seq: &'instr InstrSeq) {
+        self.sequences = self.sequences.saturating_add(1);
+        if self.sequences > NESTED_SEQ_LIMIT {
+            self.truncated = true;
+        }
+    }
+
+    fn visit_memory_id(&mut self, memory: &MemoryId) {
+        self.memories.insert(*memory);
+    }
+}
+
+fn referenced_memories(func: &LocalFunction) -> Option<BTreeSet<MemoryId>> {
+    let mut scan: MemoryScan = MemoryScan::default();
+    dfs_in_order(&mut scan, func, func.entry_block());
+    (!scan.truncated).then_some(scan.memories)
 }
 
 fn elidable_state_globals(module: &Module) -> BTreeMap<FunctionId, BTreeSet<GlobalId>> {
@@ -56,21 +145,14 @@ fn elidable_state_globals(module: &Module) -> BTreeMap<FunctionId, BTreeSet<Glob
             | ExportItem::Tag(_) => None,
         })
         .collect();
-    let mut owners: BTreeMap<GlobalId, GlobalOwner> = BTreeMap::new();
+    let mut owners: BTreeMap<GlobalId, CellOwner> = BTreeMap::new();
     let mut referenced: BTreeMap<FunctionId, BTreeSet<GlobalId>> = BTreeMap::new();
     for (fid, func) in module.funcs.iter_local() {
         let Some(globals): Option<BTreeSet<GlobalId>> = referenced_globals(func) else {
             return BTreeMap::new();
         };
         for global in &globals {
-            owners
-                .entry(*global)
-                .and_modify(|owner: &mut GlobalOwner| {
-                    if *owner != GlobalOwner::Function(fid) {
-                        *owner = GlobalOwner::Shared;
-                    }
-                })
-                .or_insert(GlobalOwner::Function(fid));
+            claim(&mut owners, *global, fid);
         }
         referenced.insert(fid, globals);
     }
@@ -80,7 +162,7 @@ fn elidable_state_globals(module: &Module) -> BTreeMap<FunctionId, BTreeSet<Glob
             let owned: BTreeSet<GlobalId> = globals
                 .into_iter()
                 .filter(|global: &GlobalId| {
-                    owners.get(global) == Some(&GlobalOwner::Function(fid))
+                    owners.get(global) == Some(&CellOwner::Function(fid))
                         && !exported.contains(global)
                         && is_private_mutable_global(module, *global)
                 })
@@ -149,16 +231,16 @@ enum Restructure {
     NotFlattened,
 }
 
-fn restructure_one(func: &mut LocalFunction, elidable_globals: &BTreeSet<GlobalId>) -> Restructure {
+fn restructure_one(func: &mut LocalFunction, elidable: &ElidableCells) -> Restructure {
     let Some(plan): Option<Dispatcher> = detect_dispatcher(func) else {
-        return match super::reloop::try_reloop(func, elidable_globals) {
+        return match super::reloop::try_reloop(func, elidable) {
             super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
             super::reloop::ReloopOutcome::Walled(_) => Restructure::WalledBranching,
             super::reloop::ReloopOutcome::NotApplicable => Restructure::NotFlattened,
         };
     };
     let Some(flow): Option<ExecutionPlan> = execution_plan(&plan) else {
-        return match super::reloop::try_reloop(func, elidable_globals) {
+        return match super::reloop::try_reloop(func, elidable) {
             super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
             super::reloop::ReloopOutcome::Walled(_)
             | super::reloop::ReloopOutcome::NotApplicable => Restructure::WalledBranching,
@@ -717,12 +799,13 @@ mod tests {
     }
 
     fn module_with_sibling_blocks(count: usize) -> Module {
-        let mut text: String =
-            String::from("(module (global (mut i32) (i32.const 0)) (func (export \"f\")");
+        let mut text: String = String::from(
+            "(module (memory 1) (global (mut i32) (i32.const 0)) (func (export \"f\")",
+        );
         for _ in 0..count {
             text.push_str(" (block)");
         }
-        text.push_str(" global.get 0 drop))");
+        text.push_str(" global.get 0 drop i32.const 0 i32.load drop))");
         let bytes: Vec<u8> = wat::parse_str(&text).expect("assemble sibling blocks");
         Module::from_buffer(&bytes).expect("parse sibling blocks")
     }
@@ -741,6 +824,52 @@ mod tests {
         assert!(
             elidable_state_globals(&beyond).is_empty(),
             "a truncated global scan must not report any global as privately owned"
+        );
+    }
+
+    #[test]
+    fn a_memory_scan_that_hits_its_bound_elides_nothing() {
+        let within: Module = module_with_sibling_blocks(4);
+        assert!(
+            elidable_state_memories(&within)
+                .values()
+                .any(|memories: &BTreeSet<MemoryId>| !memories.is_empty()),
+            "a defined memory touched by one function is elidable"
+        );
+
+        let beyond: Module = module_with_sibling_blocks(NESTED_SEQ_LIMIT + 2);
+        assert!(
+            elidable_state_memories(&beyond).is_empty(),
+            "a truncated memory scan must not report any memory as privately owned"
+        );
+    }
+
+    #[test]
+    fn a_memory_a_second_function_touches_is_not_privately_owned() {
+        let text: &str = "(module (memory 1) \
+            (func (export \"f\") i32.const 0 i32.load drop) \
+            (func (export \"g\") i32.const 4 i32.load drop))";
+        let bytes: Vec<u8> = wat::parse_str(text).expect("assemble shared memory module");
+        let module: Module = Module::from_buffer(&bytes).expect("parse shared memory module");
+        assert!(
+            elidable_state_memories(&module)
+                .values()
+                .all(|memories: &BTreeSet<MemoryId>| memories.is_empty()),
+            "a memory two functions access belongs to neither"
+        );
+    }
+
+    #[test]
+    fn an_imported_memory_is_never_privately_owned() {
+        let text: &str = "(module (import \"env\" \"memory\" (memory 1)) \
+            (func (export \"f\") i32.const 0 i32.load drop))";
+        let bytes: Vec<u8> = wat::parse_str(text).expect("assemble imported memory module");
+        let module: Module = Module::from_buffer(&bytes).expect("parse imported memory module");
+        assert!(
+            elidable_state_memories(&module)
+                .values()
+                .all(|memories: &BTreeSet<MemoryId>| memories.is_empty()),
+            "an imported memory is owned by the host"
         );
     }
 

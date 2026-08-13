@@ -34,14 +34,17 @@ pub(super) enum ReloopOutcome {
     NotApplicable,
 }
 
-pub(super) fn try_reloop(
-    func: &mut LocalFunction,
-    elidable_globals: &BTreeSet<GlobalId>,
-) -> ReloopOutcome {
+#[derive(Debug, Default, Clone)]
+pub(super) struct ElidableCells {
+    pub(super) globals: BTreeSet<GlobalId>,
+    pub(super) memories: BTreeSet<MemoryId>,
+}
+
+pub(super) fn try_reloop(func: &mut LocalFunction, elidable: &ElidableCells) -> ReloopOutcome {
     let Some(disp): Option<Dispatcher> = detect(func) else {
         return ReloopOutcome::NotApplicable;
     };
-    if !cell_is_elidable(&disp, elidable_globals) {
+    if !cell_is_elidable(&disp, elidable) {
         return wall(WallReason::ObservableStateCell);
     }
     let Some(graph): Option<Graph> = build_graph(func, &disp) else {
@@ -136,13 +139,13 @@ struct Dispatcher {
     state_to_body: BTreeMap<i32, Body>,
 }
 
-fn cell_is_elidable(disp: &Dispatcher, elidable_globals: &BTreeSet<GlobalId>) -> bool {
-    if let StateCell::Global(global) = disp.cell {
-        if !elidable_globals.contains(&global) {
-            return false;
-        }
-    }
-    !reads_cell(&disp.suffix, disp.cell)
+fn cell_is_elidable(disp: &Dispatcher, elidable: &ElidableCells) -> bool {
+    let owned_by_dispatcher: bool = match disp.cell {
+        StateCell::Local(_) => true,
+        StateCell::Global(global) => elidable.globals.contains(&global),
+        StateCell::MemorySlot { memory, .. } => elidable.memories.contains(&memory),
+    };
+    owned_by_dispatcher && !reads_cell(&disp.suffix, disp.cell)
 }
 
 fn reads_cell(instrs: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> bool {

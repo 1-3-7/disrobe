@@ -231,6 +231,15 @@ fn state_held_in_a_global_reloops_under_wasmtime() {
 }
 
 #[test]
+fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_memory_state.clean.wat",
+        "cff_memory_state.obf.wat",
+        "classify_memory",
+    );
+}
+
+#[test]
 fn runtime_differential_rejects_swapped_local_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_local_state.mutant.wat");
@@ -341,6 +350,46 @@ fn a_state_global_read_by_another_function_is_walled_rather_than_elided() {
         call_no_args(&mut original, "peek_state"),
         Outcome::Ret(3),
         "the original module leaves the terminal dispatch state in the shared global"
+    );
+}
+
+#[test]
+fn a_state_memory_slot_read_by_another_function_is_walled_rather_than_elided() {
+    let bytes: Vec<u8> = assemble_fixture("cff_memory_state_shared.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover shared state memory module");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "a state memory slot read elsewhere must not be relooped: {:?}",
+        recovered.report
+    );
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 1,
+        "a state memory slot read elsewhere must be walled: {:?}",
+        recovered.report
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_memory");
+    assert_eq!(
+        call_i32(&mut original, "classify_memory", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        call_i32(&mut candidate, "classify_memory", 5),
+        Outcome::Ret(-1)
+    );
+    assert_eq!(
+        call_no_args(&mut candidate, "peek_state"),
+        call_no_args(&mut original, "peek_state"),
+        "the second reader of the state slot must observe the same value"
+    );
+    assert_eq!(
+        call_no_args(&mut original, "peek_state"),
+        Outcome::Ret(3),
+        "the original module leaves the terminal dispatch state in the shared slot"
     );
 }
 
