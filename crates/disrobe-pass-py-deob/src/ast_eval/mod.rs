@@ -1,6 +1,7 @@
 mod eval;
 mod fold;
 mod methods;
+mod pyformat;
 mod value;
 
 pub use public::{EvalReport, evaluate_source};

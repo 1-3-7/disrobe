@@ -2,13 +2,16 @@ use std::collections::BTreeMap;
 
 use disrobe_core::codec::hex::push_fixed as push_lower_hex_fixed;
 use ruff_python_ast::{
-    BoolOp, CmpOp, Comprehension, Expr, ExprAttribute, ExprBinOp, ExprBoolOp, ExprBooleanLiteral,
-    ExprBytesLiteral, ExprCall, ExprCompare, ExprDict, ExprGenerator, ExprIf, ExprLambda, ExprList,
-    ExprListComp, ExprName, ExprNoneLiteral, ExprNumberLiteral, ExprSetComp, ExprStringLiteral,
-    ExprSubscript, ExprTuple, ExprUnaryOp, Number, Operator, Parameters, UnaryOp,
+    Arguments, BoolOp, CmpOp, Comprehension, ConversionFlag, Expr, ExprAttribute, ExprBinOp,
+    ExprBoolOp, ExprBooleanLiteral, ExprBytesLiteral, ExprCall, ExprCompare, ExprDict, ExprFString,
+    ExprGenerator, ExprIf, ExprLambda, ExprList, ExprListComp, ExprName, ExprNoneLiteral,
+    ExprNumberLiteral, ExprSetComp, ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp,
+    FStringPart, InterpolatedElement, InterpolatedStringElement, InterpolatedStringFormatSpec,
+    Number, Operator, Parameters, UnaryOp,
 };
 
-use super::methods::call_method;
+use super::methods::{self, call_method};
+use super::pyformat;
 use super::value::{Key, Value};
 
 #[derive(Debug)]
@@ -146,6 +149,7 @@ pub(crate) fn eval_expr(expr: &Expr, scope: &Scope) -> EvalResult {
         }
         Expr::Subscript(s) => eval_subscript(s, scope),
         Expr::Call(c) => eval_call(c, scope),
+        Expr::FString(f) => eval_fstring(f, scope),
         Expr::Attribute(a) => eval_attribute(a, scope),
         Expr::ListComp(ExprListComp {
             elt, generators, ..
@@ -256,8 +260,38 @@ fn eval_binop(b: &ExprBinOp, scope: &Scope) -> EvalResult {
             a.extend(c);
             Ok(Value::Tuple(a))
         }
+        (Value::List(items), Value::Int(n), Operator::Mult) => {
+            repeat_items(&items, n).map(Value::List)
+        }
+        (Value::Tuple(items), Value::Int(n), Operator::Mult) => {
+            repeat_items(&items, n).map(Value::Tuple)
+        }
+        (Value::Str(fmt), operand, Operator::Mod) => {
+            pyformat::str_mod(&fmt, &operand).map(Value::Str)
+        }
+        (Value::Bytes(fmt), operand, Operator::Mod) => {
+            pyformat::bytes_mod(&fmt, &operand).map(Value::Bytes)
+        }
         _ => Err(EvalError::TypeMismatch),
     }
+}
+
+const MAX_REPEAT_ITEMS: usize = 8192;
+
+fn repeat_items(items: &[Value], count: i128) -> core::result::Result<Vec<Value>, EvalError> {
+    if count <= 0 {
+        return Ok(Vec::new());
+    }
+    let times: usize = usize::try_from(count).map_err(|_| EvalError::Overflow)?;
+    let total: usize = items.len().checked_mul(times).ok_or(EvalError::Overflow)?;
+    if total > MAX_REPEAT_ITEMS {
+        return Err(EvalError::Overflow);
+    }
+    let mut out: Vec<Value> = Vec::with_capacity(total);
+    for _ in 0..times {
+        out.extend_from_slice(items);
+    }
+    Ok(out)
 }
 
 fn eval_boolop(b: &ExprBoolOp, scope: &Scope) -> EvalResult {
@@ -473,28 +507,13 @@ fn wrap_index(idx: i128, len: usize) -> Option<usize> {
 
 fn eval_call(c: &ExprCall, scope: &Scope) -> EvalResult {
     if let Expr::Lambda(lambda) = &*c.func {
+        if !c.arguments.keywords.is_empty() {
+            return Err(EvalError::Unsupported);
+        }
         return eval_lambda_iife(lambda, &c.arguments.args, scope);
     }
-    if !c.arguments.keywords.is_empty() {
-        return Err(EvalError::Unsupported);
-    }
     if let Expr::Attribute(attr) = &*c.func {
-        let args: Vec<Value> = eval_seq(&c.arguments.args, scope)?;
-        if let Expr::Name(name_node) = &*attr.value
-            && let Some(result) = class_method(name_node.id.as_str(), attr.attr.as_str(), &args)
-        {
-            return result;
-        }
-        if attr.attr.as_str() == "__class__"
-            && let Some(result) = class_constructor_from_literal(&attr.value, &args)
-        {
-            return result;
-        }
-        let receiver: Value = eval_expr(&attr.value, scope)?;
-        if let Some(result) = int_dunder_method(&receiver, attr.attr.as_str(), &args) {
-            return result;
-        }
-        return call_method(&receiver, attr.attr.as_str(), &args);
+        return eval_method_call(attr, &c.arguments, scope);
     }
     let Expr::Name(ExprName { id, .. }) = &*c.func else {
         return Err(EvalError::Unsupported);
@@ -503,6 +522,7 @@ fn eval_call(c: &ExprCall, scope: &Scope) -> EvalResult {
         return Err(EvalError::DynamicCode);
     }
     if id.as_str() == "map"
+        && c.arguments.keywords.is_empty()
         && c.arguments.args.len() == 2
         && let Some(Expr::Name(func_name)) = c.arguments.args.first()
         && let Some(iter_expr) = c.arguments.args.get(1)
@@ -517,8 +537,95 @@ fn eval_call(c: &ExprCall, scope: &Scope) -> EvalResult {
         }
         return Err(EvalError::Unsupported);
     }
-    let args: Vec<Value> = eval_seq(&c.arguments.args, scope)?;
+    let positional: Vec<Value> = eval_seq(&c.arguments.args, scope)?;
+    let keywords: Vec<(String, Value)> = keyword_pairs(&c.arguments, scope)?;
+    let args: Vec<Value> = merge_keywords(id.as_str(), positional, keywords)?;
     call_builtin(id.as_str(), &args)
+}
+
+fn eval_method_call(attr: &ExprAttribute, arguments: &Arguments, scope: &Scope) -> EvalResult {
+    let method: &str = attr.attr.as_str();
+    let positional: Vec<Value> = eval_seq(&arguments.args, scope)?;
+    let keywords: Vec<(String, Value)> = keyword_pairs(arguments, scope)?;
+
+    if method == "format" {
+        let receiver: Value = eval_expr(&attr.value, scope)?;
+        let Value::Str(template) = receiver else {
+            return Err(EvalError::Unsupported);
+        };
+        return methods::str_format(&template, &positional, &keywords);
+    }
+
+    let args: Vec<Value> = merge_keywords(method, positional, keywords)?;
+
+    if let Expr::Name(name_node) = &*attr.value
+        && let Some(result) = class_method(name_node.id.as_str(), method, &args)
+    {
+        return result;
+    }
+    if method == "__class__"
+        && let Some(result) = class_constructor_from_literal(&attr.value, &args)
+    {
+        return result;
+    }
+    let receiver: Value = eval_expr(&attr.value, scope)?;
+    if let Some(result) = int_dunder_method(&receiver, method, &args) {
+        return result;
+    }
+    call_method(&receiver, method, &args)
+}
+
+fn keyword_pairs(
+    arguments: &Arguments,
+    scope: &Scope,
+) -> core::result::Result<Vec<(String, Value)>, EvalError> {
+    let mut out: Vec<(String, Value)> = Vec::with_capacity(arguments.keywords.len());
+    for keyword in &arguments.keywords {
+        let Some(identifier) = keyword.arg.as_ref() else {
+            return Err(EvalError::Unsupported);
+        };
+        let value: Value = eval_expr(&keyword.value, scope)?;
+        out.push((identifier.id.to_string(), value));
+    }
+    Ok(out)
+}
+
+fn merge_keywords(
+    callee: &str,
+    mut positional: Vec<Value>,
+    keywords: Vec<(String, Value)>,
+) -> core::result::Result<Vec<Value>, EvalError> {
+    for (name, value) in keywords {
+        let slot: usize = keyword_slot(callee, &name).ok_or(EvalError::Unsupported)?;
+        if slot != positional.len() {
+            return Err(EvalError::Unsupported);
+        }
+        positional.push(value);
+    }
+    Ok(positional)
+}
+
+fn keyword_slot(callee: &str, keyword: &str) -> Option<usize> {
+    let slot: usize = match (callee, keyword) {
+        ("split" | "rsplit", "sep")
+        | ("encode" | "decode", "encoding")
+        | ("from_bytes", "bytes")
+        | ("to_bytes", "length")
+        | ("expandtabs", "tabsize")
+        | ("pow", "base") => 0,
+        ("int", "base")
+        | ("round", "ndigits")
+        | ("split" | "rsplit", "maxsplit")
+        | ("encode" | "decode", "errors")
+        | ("from_bytes" | "to_bytes", "byteorder")
+        | ("bytes" | "bytearray" | "str", "encoding")
+        | ("sorted", "reverse")
+        | ("sum" | "enumerate", "start")
+        | ("pow", "exp") => 1,
+        ("bytes" | "bytearray" | "str", "errors") | ("pow", "mod") => 2,
+        _ => return None,
+    };
+    Some(slot)
 }
 
 fn eval_lambda_iife(lambda: &ExprLambda, call_args: &[Expr], scope: &Scope) -> EvalResult {
@@ -569,6 +676,10 @@ fn int_dunder_method(receiver: &Value, method: &str, args: &[Value]) -> Option<E
     };
     if let ("to_bytes", [Value::Int(length), Value::Str(order)]) = (method, args) {
         return Some(int_to_bytes(*lhs, *length, order));
+    }
+    if let ("bit_length", []) = (method, args) {
+        let significant: u32 = 128 - lhs.unsigned_abs().leading_zeros();
+        return Some(Ok(Value::Int(i128::from(significant))));
     }
     let [Value::Int(rhs)] = args else {
         return None;
@@ -648,6 +759,9 @@ fn class_method(type_name: &str, method: &str, args: &[Value]) -> Option<EvalRes
         ("bytes" | "bytearray", "fromhex", [Value::Str(hex)]) => Some(bytes_fromhex(hex)),
         ("int", "from_bytes", [Value::Bytes(b), Value::Str(order)]) => {
             Some(int_from_bytes(b, order))
+        }
+        ("str", "maketrans", [Value::Str(from), Value::Str(to)]) => {
+            Some(methods::str_maketrans(from, to))
         }
         ("int", _, [Value::Int(lhs), ..]) if method.starts_with("__") => {
             int_dunder_method(&Value::Int(*lhs), method, &args[1..])
@@ -809,7 +923,34 @@ fn call_builtin(name: &str, args: &[Value]) -> EvalResult {
         {
             Ok(Value::Int(pow_mod(*base, *exp, *modulus)))
         }
-        ("repr" | "ascii", [v]) => Ok(Value::Str(py_repr(v, name == "ascii"))),
+        ("repr" | "ascii", [v]) => py_repr(v, name == "ascii")
+            .map(Value::Str)
+            .ok_or(EvalError::Unsupported),
+        ("all", [v]) => {
+            let items: Vec<Value> = v.iter_items().ok_or(EvalError::TypeMismatch)?;
+            Ok(Value::Bool(items.iter().all(Value::truthy)))
+        }
+        ("any", [v]) => {
+            let items: Vec<Value> = v.iter_items().ok_or(EvalError::TypeMismatch)?;
+            Ok(Value::Bool(items.iter().any(Value::truthy)))
+        }
+        ("format", [v]) => pyformat::format_value(v, "").map(Value::Str),
+        ("format", [v, Value::Str(spec)]) => pyformat::format_value(v, spec).map(Value::Str),
+        ("str", [Value::Bytes(b), Value::Str(codec)]) => methods::decode_bytes(b, codec),
+        ("bytes" | "bytearray", [Value::Str(s), Value::Str(codec)]) => {
+            methods::encode_str(s, codec)
+        }
+        ("round", [Value::Int(n), Value::Int(digits)]) if *digits >= 0 => Ok(Value::Int(*n)),
+        ("sorted", [v, Value::Bool(reverse)]) => {
+            let sorted: Value = sorted_iter(v)?;
+            let Value::List(mut items) = sorted else {
+                return Err(EvalError::TypeMismatch);
+            };
+            if *reverse {
+                items.reverse();
+            }
+            Ok(Value::List(items))
+        }
         ("range", [Value::Int(end_n)]) => Ok(Value::List(range_list(0, *end_n, 1)?)),
         ("range", [Value::Int(begin_n), Value::Int(end_n)]) => {
             Ok(Value::List(range_list(*begin_n, *end_n, 1)?))
@@ -837,7 +978,6 @@ fn bytes_from_iterable(v: &Value) -> EvalResult {
             }
             Ok(Value::Bytes(out))
         }
-        Value::Str(s) => Ok(Value::Bytes(s.as_bytes().to_vec())),
         _ => Err(EvalError::TypeMismatch),
     }
 }
@@ -938,33 +1078,34 @@ const fn pow_mod(base: i128, exp: i128, modulus: i128) -> i128 {
     result
 }
 
-fn py_repr(v: &Value, ascii_only: bool) -> String {
+pub(crate) fn py_repr(v: &Value, ascii_only: bool) -> Option<String> {
     match v {
-        Value::None => "None".to_owned(),
-        Value::Bool(b) => if *b { "True" } else { "False" }.to_owned(),
-        Value::Int(n) => n.to_string(),
-        Value::Str(s) => repr_str(s, ascii_only),
-        Value::Bytes(b) => repr_bytes(b),
+        Value::None => Some("None".to_owned()),
+        Value::Bool(b) => Some(if *b { "True" } else { "False" }.to_owned()),
+        Value::Int(n) => Some(n.to_string()),
+        Value::Str(s) => Some(repr_str(s, ascii_only)),
+        Value::Bytes(b) => Some(repr_bytes(b)),
         Value::List(items) => {
-            let inner: Vec<String> = items
-                .iter()
-                .map(|x: &Value| py_repr(x, ascii_only))
-                .collect();
-            format!("[{}]", inner.join(", "))
+            let inner: Vec<String> = repr_items(items, ascii_only)?;
+            Some(format!("[{}]", inner.join(", ")))
         }
         Value::Tuple(items) => {
-            let inner: Vec<String> = items
-                .iter()
-                .map(|x: &Value| py_repr(x, ascii_only))
-                .collect();
-            if items.len() == 1 {
-                format!("({},)", inner[0])
-            } else {
-                format!("({})", inner.join(", "))
+            let inner: Vec<String> = repr_items(items, ascii_only)?;
+            match inner.as_slice() {
+                [only] => Some(format!("({only},)")),
+                _ => Some(format!("({})", inner.join(", "))),
             }
         }
-        Value::Dict(_) => String::new(),
+        Value::Dict(_) => None,
     }
+}
+
+fn repr_items(items: &[Value], ascii_only: bool) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(py_repr(item, ascii_only)?);
+    }
+    Some(out)
 }
 
 fn repr_str(s: &str, ascii_only: bool) -> String {
@@ -1048,6 +1189,67 @@ fn range_list(
         guard += 1;
         if guard > 1_048_576 {
             return Err(EvalError::Overflow);
+        }
+    }
+    Ok(out)
+}
+
+const MAX_FSTRING_OUTPUT: usize = 1 << 20;
+
+fn eval_fstring(f: &ExprFString, scope: &Scope) -> EvalResult {
+    let mut out: String = String::new();
+    for part in &f.value {
+        match part {
+            FStringPart::Literal(literal) => out.push_str(&literal.value),
+            FStringPart::FString(inner) => {
+                for element in &inner.elements {
+                    out.push_str(&eval_fstring_element(element, scope)?);
+                    if out.len() > MAX_FSTRING_OUTPUT {
+                        return Err(EvalError::Overflow);
+                    }
+                }
+            }
+        }
+        if out.len() > MAX_FSTRING_OUTPUT {
+            return Err(EvalError::Overflow);
+        }
+    }
+    Ok(Value::Str(out))
+}
+
+fn eval_fstring_element(
+    element: &InterpolatedStringElement,
+    scope: &Scope,
+) -> core::result::Result<String, EvalError> {
+    let interpolation: &InterpolatedElement = match element {
+        InterpolatedStringElement::Literal(literal) => return Ok(literal.value.to_string()),
+        InterpolatedStringElement::Interpolation(node) => node,
+    };
+    if interpolation.debug_text.is_some() {
+        return Err(EvalError::Unsupported);
+    }
+    let value: Value = eval_expr(&interpolation.expression, scope)?;
+    let spec: String = match interpolation.format_spec.as_deref() {
+        None => String::new(),
+        Some(node) => literal_format_spec(node)?,
+    };
+    let converted: Value = match interpolation.conversion {
+        ConversionFlag::None => value,
+        ConversionFlag::Str => Value::Str(pyformat::format_value(&value, "")?),
+        ConversionFlag::Repr => Value::Str(py_repr(&value, false).ok_or(EvalError::Unsupported)?),
+        ConversionFlag::Ascii => Value::Str(py_repr(&value, true).ok_or(EvalError::Unsupported)?),
+    };
+    pyformat::format_value(&converted, &spec)
+}
+
+fn literal_format_spec(
+    spec: &InterpolatedStringFormatSpec,
+) -> core::result::Result<String, EvalError> {
+    let mut out: String = String::new();
+    for element in &spec.elements {
+        match element {
+            InterpolatedStringElement::Literal(literal) => out.push_str(&literal.value),
+            InterpolatedStringElement::Interpolation(_) => return Err(EvalError::Unsupported),
         }
     }
     Ok(out)
@@ -1147,10 +1349,12 @@ mod repr_tests {
 
     fn repr_of(chars: &[char]) -> String {
         py_repr(&Value::Str(chars.iter().collect::<String>()), false)
+            .unwrap_or_else(|| unreachable!("a string value always has a repr"))
     }
 
     fn ascii_of(chars: &[char]) -> String {
         py_repr(&Value::Str(chars.iter().collect::<String>()), true)
+            .unwrap_or_else(|| unreachable!("a string value always has a repr"))
     }
 
     #[test]

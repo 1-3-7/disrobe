@@ -122,7 +122,7 @@ pub(crate) fn fold_expr_in_place(expr: &mut Expr, scope: &Scope, report: &mut Fo
     if !value_is_simple(&value) {
         return;
     }
-    if expr_is_already_literal(expr) {
+    if expr_is_already_literal(expr) || expr_builds_distinct_type(expr) {
         return;
     }
     let Some(new_expr) = value_to_expr(value, range_of(expr)) else {
@@ -199,6 +199,20 @@ fn value_is_simple(v: &Value) -> bool {
     }
 }
 
+fn expr_builds_distinct_type(expr: &Expr) -> bool {
+    let Expr::Call(call) = expr else {
+        return false;
+    };
+    match &*call.func {
+        Expr::Name(name) => name.id.as_str() == "bytearray",
+        Expr::Attribute(attr) => {
+            attr.attr.as_str() == "fromhex"
+                && matches!(&*attr.value, Expr::Name(owner) if owner.id.as_str() == "bytearray")
+        }
+        _ => false,
+    }
+}
+
 const fn expr_is_already_literal(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -228,6 +242,7 @@ fn range_of(expr: &Expr) -> TextRange {
         Expr::BytesLiteral(b) => b.range,
         Expr::BooleanLiteral(b) => b.range,
         Expr::NoneLiteral(n) => n.range,
+        Expr::FString(f) => f.range,
         _ => TextRange::default(),
     }
 }

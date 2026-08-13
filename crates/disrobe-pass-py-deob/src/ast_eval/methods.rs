@@ -1,6 +1,7 @@
 use disrobe_core::codec::hex::push_byte as push_lower_hex_byte;
 
-use super::eval::{EvalError, EvalResult};
+use super::eval::{EvalError, EvalResult, py_repr};
+use super::pyformat;
 use super::value::{Key, Value};
 
 pub(crate) fn call_method(receiver: &Value, name: &str, args: &[Value]) -> EvalResult {
@@ -24,6 +25,9 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
         ("rstrip", [Value::Str(chars)]) => Ok(Value::Str(trim_chars(s, chars, false, true))),
         ("encode", []) => Ok(Value::Bytes(s.as_bytes().to_vec())),
         ("encode", [Value::Str(codec)]) => encode_str(s, codec),
+        ("encode", [Value::Str(codec), Value::Str(errors)]) if errors == "strict" => {
+            encode_str(s, codec)
+        }
         ("split", []) => Ok(Value::List(
             s.split_whitespace()
                 .map(|p: &str| Value::Str(p.to_owned()))
@@ -34,13 +38,45 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
                 .map(|p: &str| Value::Str(p.to_owned()))
                 .collect(),
         )),
+        ("split", [Value::Str(sep), Value::Int(limit)])
+            if !sep.is_empty() && (0..=MAX_SPLIT).contains(limit) =>
+        {
+            let parts: usize = usize::try_from(*limit).map_err(|_| EvalError::Overflow)?;
+            Ok(Value::List(
+                s.splitn(parts + 1, sep.as_str())
+                    .map(|p: &str| Value::Str(p.to_owned()))
+                    .collect(),
+            ))
+        }
         ("rsplit", []) => Ok(Value::List(
             s.split_whitespace()
                 .map(|p: &str| Value::Str(p.to_owned()))
                 .collect(),
         )),
+        ("rsplit", [Value::Str(sep)]) if !sep.is_empty() => Ok(Value::List(
+            s.split(sep.as_str())
+                .map(|p: &str| Value::Str(p.to_owned()))
+                .collect(),
+        )),
+        ("rsplit", [Value::Str(sep), Value::Int(limit)])
+            if !sep.is_empty() && (0..=MAX_SPLIT).contains(limit) =>
+        {
+            let parts: usize = usize::try_from(*limit).map_err(|_| EvalError::Overflow)?;
+            let mut collected: Vec<Value> = s
+                .rsplitn(parts + 1, sep.as_str())
+                .map(|p: &str| Value::Str(p.to_owned()))
+                .collect();
+            collected.reverse();
+            Ok(Value::List(collected))
+        }
         ("replace", [Value::Str(old), Value::Str(new)]) if !old.is_empty() => {
             Ok(Value::Str(s.replace(old.as_str(), new.as_str())))
+        }
+        ("replace", [Value::Str(old), Value::Str(new), Value::Int(count)])
+            if !old.is_empty() && (0..=MAX_SPLIT).contains(count) =>
+        {
+            let limit: usize = usize::try_from(*count).map_err(|_| EvalError::Overflow)?;
+            Ok(Value::Str(s.replacen(old.as_str(), new.as_str(), limit)))
         }
         ("join", [Value::List(items) | Value::Tuple(items)]) => {
             let mut parts: Vec<String> = Vec::with_capacity(items.len());
@@ -54,6 +90,10 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
         }
         ("startswith", [Value::Str(prefix)]) => Ok(Value::Bool(s.starts_with(prefix.as_str()))),
         ("endswith", [Value::Str(suffix)]) => Ok(Value::Bool(s.ends_with(suffix.as_str()))),
+        ("startswith", [Value::Tuple(candidates)]) => {
+            any_str_affix(s, candidates, AffixSide::Start)
+        }
+        ("endswith", [Value::Tuple(candidates)]) => any_str_affix(s, candidates, AffixSide::End),
         ("find", [Value::Str(needle)]) => Ok(Value::Int(
             s.find(needle.as_str())
                 .map_or(-1, |i: usize| i128::try_from(i).unwrap_or(-1)),
@@ -86,25 +126,45 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
                 })
                 .collect(),
         )),
-        ("isdigit", []) => Ok(Value::Bool(
-            !s.is_empty() && s.chars().all(|c: char| c.is_ascii_digit()),
-        )),
-        ("isalpha", []) => Ok(Value::Bool(
-            !s.is_empty() && s.chars().all(char::is_alphabetic),
-        )),
-        ("isalnum", []) => Ok(Value::Bool(
-            !s.is_empty() && s.chars().all(char::is_alphanumeric),
-        )),
-        ("isspace", []) => Ok(Value::Bool(
-            !s.is_empty() && s.chars().all(char::is_whitespace),
-        )),
+        ("isdigit" | "isnumeric" | "isdecimal", []) => {
+            ascii_predicate(s, |c: char| c.is_ascii_digit())
+        }
+        ("isalpha", []) => ascii_predicate(s, |c: char| c.is_ascii_alphabetic()),
+        ("isalnum", []) => ascii_predicate(s, |c: char| c.is_ascii_alphanumeric()),
+        ("isspace", []) => ascii_predicate(s, |c: char| c.is_ascii_whitespace()),
+        ("isascii", []) => Ok(Value::Bool(s.is_ascii())),
+        ("isupper", []) => cased_predicate(s, true),
+        ("islower", []) => cased_predicate(s, false),
+        ("istitle", []) => str_istitle(s),
+        ("isidentifier", []) => {
+            if !s.is_ascii() {
+                return Err(EvalError::Unsupported);
+            }
+            let mut chars: core::str::Chars<'_> = s.chars();
+            let head_ok: bool = chars
+                .next()
+                .is_some_and(|c: char| c.is_ascii_alphabetic() || c == '_');
+            Ok(Value::Bool(
+                head_ok && chars.all(|c: char| c.is_ascii_alphanumeric() || c == '_'),
+            ))
+        }
+        ("isprintable", []) => {
+            if !s.is_ascii() {
+                return Err(EvalError::Unsupported);
+            }
+            Ok(Value::Bool(
+                s.bytes().all(|b: u8| (0x20..0x7f).contains(&b)),
+            ))
+        }
+        ("casefold", []) => {
+            if !s.is_ascii() {
+                return Err(EvalError::Unsupported);
+            }
+            Ok(Value::Str(s.to_ascii_lowercase()))
+        }
         ("zfill", [Value::Int(width)]) if (0..=8192).contains(width) => {
             let w: usize = usize::try_from(*width).map_err(|_| EvalError::Overflow)?;
-            if s.len() >= w {
-                Ok(Value::Str(s.to_owned()))
-            } else {
-                Ok(Value::Str(format!("{s:0>w$}")))
-            }
+            Ok(Value::Str(zero_fill(s, w)))
         }
         ("removeprefix", [Value::Str(prefix)]) => Ok(Value::Str(
             s.strip_prefix(prefix.as_str()).unwrap_or(s).to_owned(),
@@ -175,10 +235,121 @@ fn str_method(s: &str, name: &str, args: &[Value]) -> EvalResult {
         )),
         ("partition", [Value::Str(sep)]) if !sep.is_empty() => Ok(partition(s, sep, false)),
         ("rpartition", [Value::Str(sep)]) if !sep.is_empty() => Ok(partition(s, sep, true)),
-        ("format", fmt_args) => str_format(s, fmt_args),
         ("translate", [Value::Dict(table)]) => str_translate(s, table),
         _ => Err(EvalError::Unsupported),
     }
+}
+
+const MAX_SPLIT: i128 = 65_536;
+
+#[derive(Debug, Clone, Copy)]
+enum AffixSide {
+    Start,
+    End,
+}
+
+fn any_str_affix(s: &str, candidates: &[Value], side: AffixSide) -> EvalResult {
+    for candidate in candidates {
+        let Value::Str(affix) = candidate else {
+            return Err(EvalError::TypeMismatch);
+        };
+        let hit: bool = match side {
+            AffixSide::Start => s.starts_with(affix.as_str()),
+            AffixSide::End => s.ends_with(affix.as_str()),
+        };
+        if hit {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+fn any_bytes_affix(b: &[u8], candidates: &[Value], side: AffixSide) -> EvalResult {
+    for candidate in candidates {
+        let Value::Bytes(affix) = candidate else {
+            return Err(EvalError::TypeMismatch);
+        };
+        let hit: bool = match side {
+            AffixSide::Start => b.starts_with(affix),
+            AffixSide::End => b.ends_with(affix),
+        };
+        if hit {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+fn ascii_predicate(s: &str, accept: impl Fn(char) -> bool) -> EvalResult {
+    if !s.is_ascii() {
+        return Err(EvalError::Unsupported);
+    }
+    Ok(Value::Bool(!s.is_empty() && s.chars().all(accept)))
+}
+
+fn cased_predicate(s: &str, want_upper: bool) -> EvalResult {
+    if !s.is_ascii() {
+        return Err(EvalError::Unsupported);
+    }
+    let mut has_cased: bool = false;
+    for c in s.chars() {
+        if !c.is_ascii_alphabetic() {
+            continue;
+        }
+        has_cased = true;
+        if c.is_ascii_uppercase() != want_upper {
+            return Ok(Value::Bool(false));
+        }
+    }
+    Ok(Value::Bool(has_cased))
+}
+
+fn str_istitle(s: &str) -> EvalResult {
+    if !s.is_ascii() {
+        return Err(EvalError::Unsupported);
+    }
+    let mut has_cased: bool = false;
+    let mut previous_cased: bool = false;
+    for c in s.chars() {
+        if c.is_ascii_alphabetic() {
+            has_cased = true;
+            let expected_upper: bool = !previous_cased;
+            if c.is_ascii_uppercase() != expected_upper {
+                return Ok(Value::Bool(false));
+            }
+            previous_cased = true;
+        } else {
+            previous_cased = false;
+        }
+    }
+    Ok(Value::Bool(has_cased))
+}
+
+fn zero_fill(s: &str, width: usize) -> String {
+    let current: usize = s.chars().count();
+    if current >= width {
+        return s.to_owned();
+    }
+    let pad: String = "0".repeat(width - current);
+    let mut chars: core::str::Chars<'_> = s.chars();
+    match chars.next() {
+        Some(sign @ ('+' | '-')) => format!("{sign}{pad}{rest}", rest = chars.as_str()),
+        _ => format!("{pad}{s}"),
+    }
+}
+
+pub(crate) fn str_maketrans(from: &str, to: &str) -> EvalResult {
+    if from.chars().count() != to.chars().count() {
+        return Err(EvalError::TypeMismatch);
+    }
+    let mut table: std::collections::BTreeMap<Key, Value> = std::collections::BTreeMap::new();
+    for (source, target) in from.chars().zip(to.chars()) {
+        table.insert(
+            Key::Int(i128::from(source as u32)),
+            Value::Int(i128::from(target as u32)),
+        );
+    }
+    Ok(Value::Dict(table))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,7 +478,7 @@ fn char_index(s: &str, byte_idx: Option<usize>) -> i128 {
     })
 }
 
-fn str_format(s: &str, args: &[Value]) -> EvalResult {
+pub(crate) fn str_format(s: &str, args: &[Value], named: &[(String, Value)]) -> EvalResult {
     let mut out: String = String::with_capacity(s.len());
     let mut auto_index: usize = 0;
     let mut chars: core::iter::Peekable<core::str::Chars<'_>> = s.chars().peekable();
@@ -326,23 +497,15 @@ fn str_format(s: &str, args: &[Value]) -> EvalResult {
                         closed = true;
                         break;
                     }
+                    if inner == '{' {
+                        return Err(EvalError::Unsupported);
+                    }
                     field.push(inner);
                 }
                 if !closed {
                     return Err(EvalError::Unsupported);
                 }
-                if field.contains([':', '!', '.', '[']) {
-                    return Err(EvalError::Unsupported);
-                }
-                let value: &Value = if field.is_empty() {
-                    let idx: usize = auto_index;
-                    auto_index += 1;
-                    args.get(idx).ok_or(EvalError::IndexOutOfRange)?
-                } else {
-                    let idx: usize = field.parse::<usize>().map_err(|_| EvalError::Unsupported)?;
-                    args.get(idx).ok_or(EvalError::IndexOutOfRange)?
-                };
-                out.push_str(&format_value_str(value)?);
+                out.push_str(&render_format_field(&field, args, named, &mut auto_index)?);
             }
             '}' => {
                 if chars.peek() == Some(&'}') {
@@ -358,13 +521,58 @@ fn str_format(s: &str, args: &[Value]) -> EvalResult {
     Ok(Value::Str(out))
 }
 
-fn format_value_str(v: &Value) -> core::result::Result<String, EvalError> {
-    match v {
-        Value::Str(s) => Ok(s.clone()),
-        Value::Int(n) => Ok(n.to_string()),
-        Value::Bool(b) => Ok(if *b { "True" } else { "False" }.to_owned()),
-        Value::None => Ok("None".to_owned()),
-        _ => Err(EvalError::Unsupported),
+fn render_format_field(
+    field: &str,
+    args: &[Value],
+    named: &[(String, Value)],
+    auto_index: &mut usize,
+) -> core::result::Result<String, EvalError> {
+    let (head, spec): (&str, &str) = match field.split_once(':') {
+        Some((before, after)) => (before, after),
+        None => (field, ""),
+    };
+    if spec.contains(['{', '}']) {
+        return Err(EvalError::Unsupported);
+    }
+    let (name, conversion): (&str, Option<char>) = match head.split_once('!') {
+        Some((before, marker)) => {
+            let mut marks: core::str::Chars<'_> = marker.chars();
+            let symbol: char = marks.next().ok_or(EvalError::Unsupported)?;
+            if marks.next().is_some() {
+                return Err(EvalError::Unsupported);
+            }
+            (before, Some(symbol))
+        }
+        None => (head, None),
+    };
+    if name.contains(['.', '[', ']']) {
+        return Err(EvalError::Unsupported);
+    }
+    let value: &Value = if name.is_empty() {
+        let index: usize = *auto_index;
+        *auto_index += 1;
+        args.get(index).ok_or(EvalError::IndexOutOfRange)?
+    } else if name.chars().all(|c: char| c.is_ascii_digit()) {
+        let index: usize = name.parse::<usize>().map_err(|_| EvalError::Unsupported)?;
+        args.get(index).ok_or(EvalError::IndexOutOfRange)?
+    } else {
+        named
+            .iter()
+            .find(|(key, _): &&(String, Value)| key == name)
+            .map(|(_, v): &(String, Value)| v)
+            .ok_or(EvalError::IndexOutOfRange)?
+    };
+    match conversion {
+        None => pyformat::format_value(value, spec),
+        Some(symbol @ ('r' | 'a' | 's')) => {
+            let rendered: String = match symbol {
+                'r' => py_repr(value, false).ok_or(EvalError::Unsupported)?,
+                'a' => py_repr(value, true).ok_or(EvalError::Unsupported)?,
+                _ => pyformat::format_value(value, "")?,
+            };
+            pyformat::format_value(&Value::Str(rendered), spec)
+        }
+        Some(_) => Err(EvalError::Unsupported),
     }
 }
 
@@ -398,10 +606,23 @@ fn trim_chars(s: &str, chars: &str, left: bool, right: bool) -> String {
     trimmed.to_owned()
 }
 
-fn encode_str(s: &str, codec: &str) -> EvalResult {
+pub(crate) fn encode_str(s: &str, codec: &str) -> EvalResult {
     match normalize_codec(codec).as_str() {
-        "utf-8" | "utf8" | "ascii" | "latin-1" | "latin1" | "iso-8859-1" => {
-            Ok(Value::Bytes(s.as_bytes().to_vec()))
+        "utf-8" | "utf8" => Ok(Value::Bytes(s.as_bytes().to_vec())),
+        "ascii" | "us-ascii" => {
+            if s.is_ascii() {
+                Ok(Value::Bytes(s.as_bytes().to_vec()))
+            } else {
+                Err(EvalError::TypeMismatch)
+            }
+        }
+        "latin-1" | "latin1" | "iso-8859-1" | "l1" | "8859" | "cp819" => {
+            let mut out: Vec<u8> = Vec::with_capacity(s.len());
+            for c in s.chars() {
+                let code: u32 = c as u32;
+                out.push(u8::try_from(code).map_err(|_| EvalError::TypeMismatch)?);
+            }
+            Ok(Value::Bytes(out))
         }
         _ => Err(EvalError::Unsupported),
     }
@@ -438,6 +659,19 @@ fn bytes_method(b: &[u8], name: &str, args: &[Value]) -> EvalResult {
                 .to_owned(),
         )),
         ("decode", [Value::Str(codec)]) => decode_bytes(b, codec),
+        ("decode", [Value::Str(codec), Value::Str(errors)]) if errors == "strict" => {
+            decode_bytes(b, codec)
+        }
+        ("split", [Value::Bytes(sep)]) if !sep.is_empty() => Ok(Value::List(
+            split_bytes(b, sep)
+                .into_iter()
+                .map(Value::Bytes)
+                .collect::<Vec<Value>>(),
+        )),
+        ("startswith", [Value::Tuple(candidates)]) => {
+            any_bytes_affix(b, candidates, AffixSide::Start)
+        }
+        ("endswith", [Value::Tuple(candidates)]) => any_bytes_affix(b, candidates, AffixSide::End),
         ("hex", []) => {
             let mut out: String = String::with_capacity(b.len() * 2);
             for byte in b {
@@ -531,6 +765,21 @@ fn count_subslices(haystack: &[u8], needle: &[u8]) -> usize {
     count
 }
 
+fn split_bytes(haystack: &[u8], sep: &[u8]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut start: usize = 0;
+    while start <= haystack.len() {
+        let rest: &[u8] = haystack.get(start..).unwrap_or_default();
+        let Some(offset) = find_subslice(rest, sep) else {
+            out.push(rest.to_vec());
+            break;
+        };
+        out.push(rest.get(..offset).unwrap_or_default().to_vec());
+        start += offset + sep.len();
+    }
+    out
+}
+
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -558,14 +807,25 @@ fn bytes_from_hex(hex: &str) -> EvalResult {
     Ok(Value::Bytes(out))
 }
 
-fn decode_bytes(b: &[u8], codec: &str) -> EvalResult {
+pub(crate) fn decode_bytes(b: &[u8], codec: &str) -> EvalResult {
     match normalize_codec(codec).as_str() {
-        "utf-8" | "utf8" | "ascii" => Ok(Value::Str(
+        "utf-8" | "utf8" => Ok(Value::Str(
             std::str::from_utf8(b)
                 .map_err(|_| EvalError::TypeMismatch)?
                 .to_owned(),
         )),
-        "latin-1" | "latin1" | "iso-8859-1" => {
+        "ascii" | "us-ascii" => {
+            if b.is_ascii() {
+                Ok(Value::Str(
+                    std::str::from_utf8(b)
+                        .map_err(|_| EvalError::TypeMismatch)?
+                        .to_owned(),
+                ))
+            } else {
+                Err(EvalError::TypeMismatch)
+            }
+        }
+        "latin-1" | "latin1" | "iso-8859-1" | "l1" | "8859" | "cp819" => {
             let s: String = b.iter().map(|byte: &u8| char::from(*byte)).collect();
             Ok(Value::Str(s))
         }
