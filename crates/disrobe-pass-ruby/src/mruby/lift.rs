@@ -83,6 +83,172 @@ pub(crate) struct LiftOutput {
     pub(crate) has_invalid_references: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrubyLowering {
+    Semantics,
+    Conditional(&'static str),
+    Decoder(&'static str),
+    Dropped(&'static str),
+}
+
+impl MrubyLowering {
+    #[must_use]
+    pub const fn reaches_the_lifter(self) -> bool {
+        !matches!(self, Self::Decoder(_))
+    }
+
+    #[must_use]
+    pub const fn can_report_itself_dropped(self) -> bool {
+        matches!(self, Self::Conditional(_) | Self::Dropped(_))
+    }
+}
+
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub const fn lowering(op: MrubyOp) -> MrubyLowering {
+    match op {
+        MrubyOp::Nop
+        | MrubyOp::Move
+        | MrubyOp::LoadL
+        | MrubyOp::LoadI
+        | MrubyOp::LoadINeg
+        | MrubyOp::LoadI16
+        | MrubyOp::LoadI32
+        | MrubyOp::LoadISmall(_)
+        | MrubyOp::LoadSym
+        | MrubyOp::LoadNil
+        | MrubyOp::LoadSelf
+        | MrubyOp::LoadT
+        | MrubyOp::LoadF
+        | MrubyOp::GetGv
+        | MrubyOp::SetGv
+        | MrubyOp::GetSv
+        | MrubyOp::SetSv
+        | MrubyOp::GetIv
+        | MrubyOp::SetIv
+        | MrubyOp::GetCv
+        | MrubyOp::SetCv
+        | MrubyOp::GetConst
+        | MrubyOp::SetConst
+        | MrubyOp::GetMCnst
+        | MrubyOp::SetMCnst
+        | MrubyOp::GetUpvar
+        | MrubyOp::SetUpvar
+        | MrubyOp::GetIdx
+        | MrubyOp::SetIdx
+        | MrubyOp::Except
+        | MrubyOp::Rescue
+        | MrubyOp::SSend
+        | MrubyOp::Send
+        | MrubyOp::Call
+        | MrubyOp::Super
+        | MrubyOp::ArgAry
+        | MrubyOp::Karg
+        | MrubyOp::Return
+        | MrubyOp::ReturnBlk
+        | MrubyOp::Break
+        | MrubyOp::BlkPush
+        | MrubyOp::Add
+        | MrubyOp::AddI
+        | MrubyOp::Sub
+        | MrubyOp::SubI
+        | MrubyOp::Mul
+        | MrubyOp::Div
+        | MrubyOp::Eq
+        | MrubyOp::Lt
+        | MrubyOp::Le
+        | MrubyOp::Gt
+        | MrubyOp::Ge
+        | MrubyOp::Array
+        | MrubyOp::Array2
+        | MrubyOp::AryCat
+        | MrubyOp::AryPush
+        | MrubyOp::ArySplat
+        | MrubyOp::Aref
+        | MrubyOp::Aset
+        | MrubyOp::Apost
+        | MrubyOp::Symbol
+        | MrubyOp::Strng
+        | MrubyOp::StrCat
+        | MrubyOp::Hash
+        | MrubyOp::HashAdd
+        | MrubyOp::HashCat
+        | MrubyOp::Lambda
+        | MrubyOp::Block
+        | MrubyOp::Method
+        | MrubyOp::RangeInc
+        | MrubyOp::RangeExc
+        | MrubyOp::OClass
+        | MrubyOp::Class
+        | MrubyOp::Module
+        | MrubyOp::Exec
+        | MrubyOp::Def
+        | MrubyOp::Alias
+        | MrubyOp::Undef
+        | MrubyOp::SClass
+        | MrubyOp::TClass
+        | MrubyOp::Err => MrubyLowering::Semantics,
+
+        MrubyOp::SSendB | MrubyOp::SendB => MrubyLowering::Conditional(
+            "the block operand register must hold a resolved block irep; a block value the call \
+             site cannot trace to an irep is reported instead of being rendered as a call with no \
+             block",
+        ),
+        MrubyOp::Intern => MrubyLowering::Conditional(
+            "the interned register must hold a recovered string; interning a value of unknown \
+             provenance has no symbol literal to spell",
+        ),
+        MrubyOp::Jmp | MrubyOp::JmpIf | MrubyOp::JmpNot => MrubyLowering::Conditional(
+            "the region structurer lowers the jump as an if, unless, while, or until when the \
+             surrounding shape matches; a jump it cannot place, such as the control flow of a \
+             rescue, else, or ensure clause, is reported under its own mnemonic",
+        ),
+        MrubyOp::JmpUw => MrubyLowering::Conditional(
+            "the unwinding jump lowers to next, redo, or break when its target is the enclosing \
+             loop condition, body, or a provable break destination; any other target has no \
+             provable place for the loop value",
+        ),
+        MrubyOp::RaiseIf => MrubyLowering::Conditional(
+            "the condition register must be a proven reference to the current exception, the \
+             reraise path inside a rescue clause; any other operand shape is unproven",
+        ),
+        MrubyOp::Enter => MrubyLowering::Conditional(
+            "the argument spec must be one the reconstructed def signature can spell; an optional \
+             positional default, a rest or post parameter, a keyword rest hash, or a block \
+             parameter is reported rather than dropped from the signature",
+        ),
+        MrubyOp::KeyP => MrubyLowering::Conditional(
+            "the optional-keyword prologue folds into the parameter list when the default is one \
+             instruction loading a literal; a default built from several instructions has no \
+             single operand to read",
+        ),
+        MrubyOp::KeyEnd => MrubyLowering::Conditional(
+            "the keyword-argument terminator folds into a recognized keyword prologue; reached on \
+             its own it carries an unknown-keyword check that the recovered signature does not \
+             express",
+        ),
+        MrubyOp::Stop => MrubyLowering::Conditional(
+            "the trailing STOP that ends an iseq has no Ruby spelling and contributes nothing; a \
+             STOP anywhere else halts the program mid-body and is reported",
+        ),
+
+        MrubyOp::JmpNil => MrubyLowering::Dropped(
+            "mruby emits JMPNIL for the nil guard of safe navigation; the region structurer models \
+             no nil-guard shape, so the guarded call is reported rather than rendered as an \
+             unguarded one",
+        ),
+        MrubyOp::Debug => MrubyLowering::Dropped(
+            "DEBUG prints its three operands from inside the virtual machine and has no Ruby \
+             statement that spells it",
+        ),
+
+        MrubyOp::Ext1 | MrubyOp::Ext2 | MrubyOp::Ext3 => MrubyLowering::Decoder(
+            "the operand-width prefixes are consumed by the instruction decoder, which emits the \
+             widened instruction they introduce; no EXT instruction reaches the lifter",
+        ),
+    }
+}
+
 struct PendingDefs {
     by_reg: Vec<Option<(&'static str, String)>>,
 }
@@ -1312,13 +1478,15 @@ impl Lifter<'_> {
                     self.mark(instr, &pad, out);
                 }
             }
-            MrubyOp::Nop
-            | MrubyOp::KeyEnd
-            | MrubyOp::Debug
-            | MrubyOp::Stop
-            | MrubyOp::Ext1
-            | MrubyOp::Ext2
-            | MrubyOp::Ext3 => {}
+            MrubyOp::Nop => {}
+            MrubyOp::Stop => {
+                if i.saturating_add(1) != frame.ins.len() {
+                    self.mark(instr, &pad, out);
+                }
+            }
+            MrubyOp::KeyEnd | MrubyOp::Debug | MrubyOp::Ext1 | MrubyOp::Ext2 | MrubyOp::Ext3 => {
+                self.mark(instr, &pad, out);
+            }
             MrubyOp::Method => {
                 let child: u32 = nth_child(rec, b).unwrap_or(u32::MAX);
                 regs.set(a, RegVal::MethodProc(child));
@@ -1375,7 +1543,7 @@ impl Lifter<'_> {
                     emit_keyword_value(keyword, &regs.get(a), &pad, out);
                 }
             }
-            _ => {
+            MrubyOp::Jmp | MrubyOp::JmpIf | MrubyOp::JmpNot | MrubyOp::JmpNil | MrubyOp::KeyP => {
                 self.mark(instr, &pad, out);
             }
         }

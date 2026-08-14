@@ -17,7 +17,7 @@ use disrobe_core::scratch::ScratchFile;
 use disrobe_pass_ruby::{MrubyDecompiled, analyze_bytes};
 use ruby_toolchain::{
     MRBC, MRUBY, MRUBY_MEASURED_SERIES, ToolchainBanner, ToolchainRequirement,
-    require_with_requirement,
+    require_measured_series,
 };
 
 const GRADED: &str = "the mrbc recompile and mruby output comparison over the breadth corpus";
@@ -73,7 +73,7 @@ const EXPECTED_OPCODE_COUNTS: &[(&str, u32, u32)] = &[
     ("whilebreak", 54, 54),
     ("untilbreak", 64, 64),
     ("loopvalue", 29, 30),
-    ("kwdefaults", 57, 60),
+    ("kwdefaults", 56, 60),
 ];
 
 const UNMODELED_REASONS: &[(&str, &str)] = &[
@@ -112,6 +112,12 @@ const UNMODELED_REASONS: &[(&str, &str)] = &[
          keyword rest hash, or a block parameter, none of which the reconstructed def signature \
          can spell; emitting the signature without them would drop a parameter the body still \
          reads",
+    ),
+    (
+        "KEYEND",
+        "the keyword-argument terminator raises on an unrecognised keyword; it folds away only \
+         inside a recognised keyword prologue, and once that prologue is refused the check has no \
+         signature left to hide behind, so it is reported rather than skipped",
     ),
 ];
 
@@ -426,8 +432,10 @@ fn a_keyword_signature_the_lifter_cannot_spell_is_refused_not_guessed() {
     );
     assert_eq!(
         dec.unmodeled_mnemonics,
-        vec!["ENTER".to_owned(), "KEY_P".to_owned()],
-        "both refusals must be recorded against the opcode that carries the unspellable shape"
+        vec!["ENTER".to_owned(), "KEYEND".to_owned(), "KEY_P".to_owned()],
+        "every refusal must be recorded against the opcode that carries the unspellable shape, \
+         including the keyword terminator whose unknown-keyword check the refused signature no \
+         longer expresses"
     );
     let body: String = reconstructed_body(&dec);
     assert!(
@@ -438,9 +446,9 @@ fn a_keyword_signature_the_lifter_cannot_spell_is_refused_not_guessed() {
 
 #[test]
 fn redo_carries_no_value_in_the_mruby_grammar() {
-    let mrbc: Option<ToolchainBanner> = require_with_requirement(
+    let mrbc: Option<ToolchainBanner> = require_measured_series(
         &MRBC,
-        Some(MRUBY_MEASURED_SERIES),
+        MRUBY_MEASURED_SERIES,
         GRADED,
         ToolchainRequirement::Mandatory,
     );
@@ -467,9 +475,9 @@ fn redo_carries_no_value_in_the_mruby_grammar() {
 
 #[test]
 fn stdout_comparator_rejects_a_changed_real_mruby_program() {
-    let mruby: Option<ToolchainBanner> = require_with_requirement(
+    let mruby: Option<ToolchainBanner> = require_measured_series(
         &MRUBY,
-        Some(MRUBY_MEASURED_SERIES),
+        MRUBY_MEASURED_SERIES,
         GRADED,
         ToolchainRequirement::Mandatory,
     );
@@ -501,15 +509,15 @@ fn stdout_comparator_rejects_a_changed_real_mruby_program() {
 
 #[test]
 fn mrbc_recompile_and_semantic_equivalence_oracle() {
-    let mrbc: Option<ToolchainBanner> = require_with_requirement(
+    let mrbc: Option<ToolchainBanner> = require_measured_series(
         &MRBC,
-        Some(MRUBY_MEASURED_SERIES),
+        MRUBY_MEASURED_SERIES,
         GRADED,
         ToolchainRequirement::Mandatory,
     );
-    let mruby: Option<ToolchainBanner> = require_with_requirement(
+    let mruby: Option<ToolchainBanner> = require_measured_series(
         &MRUBY,
-        Some(MRUBY_MEASURED_SERIES),
+        MRUBY_MEASURED_SERIES,
         GRADED,
         ToolchainRequirement::Mandatory,
     );

@@ -28,7 +28,7 @@ pub(crate) const MRUBY: Toolchain = Toolchain {
 };
 
 pub(crate) const MRI_MEASURED_SERIES: &str = "ruby 3.4";
-pub(crate) const MRUBY_MEASURED_SERIES: &str = "mruby 3.3.0";
+pub(crate) const MRUBY_MEASURED_SERIES: &[&str] = &["mruby 3.3.", "mruby 3.4."];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolchainRequirement {
@@ -117,6 +117,18 @@ pub(crate) fn require_with_requirement(
     graded: &str,
     requirement: ToolchainRequirement,
 ) -> Option<ToolchainBanner> {
+    version_marker.map_or_else(
+        || require_measured_series(toolchain, &[], graded, requirement),
+        |marker: &str| require_measured_series(toolchain, &[marker], graded, requirement),
+    )
+}
+
+pub(crate) fn require_measured_series(
+    toolchain: &Toolchain,
+    series: &[&str],
+    graded: &str,
+    requirement: ToolchainRequirement,
+) -> Option<ToolchainBanner> {
     let output: Output = match version_output(toolchain, graded) {
         Ok(output) => output,
         Err(defect) => {
@@ -125,12 +137,11 @@ pub(crate) fn require_with_requirement(
         }
     };
     let banner: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if let Some(marker) = version_marker
-        && !banner.contains(marker)
-    {
+    if !series.is_empty() && !series.iter().any(|marker: &&str| banner.contains(*marker)) {
         let defect: String = format!(
-            "it reports `{banner}`, which is not the `{marker}` series these expectations were \
-             measured against"
+            "it reports `{banner}`, which is not one of the `{}` series these expectations were \
+             measured against",
+            series.join("`, `")
         );
         enforce_requirement(toolchain, graded, &defect, requirement);
         return None;

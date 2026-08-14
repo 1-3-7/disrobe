@@ -36,6 +36,21 @@ impl OperandFormat {
             Self::W => 3,
         }
     }
+
+    #[inline]
+    #[must_use]
+    pub const fn spec_name(self) -> &'static str {
+        match self {
+            Self::Z => "Z",
+            Self::B => "B",
+            Self::Bb => "BB",
+            Self::Bbb => "BBB",
+            Self::Bs => "BS",
+            Self::Bss => "BSS",
+            Self::S => "S",
+            Self::W => "W",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +157,7 @@ pub enum MrubyOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MrubyOpcode {
+pub struct MrubyOpcode {
     pub mnemonic: &'static str,
     pub format: OperandFormat,
     pub op: MrubyOp,
@@ -687,6 +702,18 @@ pub(crate) const OPS: &[MrubyOpcode] = &[
 #[must_use]
 pub(crate) fn lookup(op: u8) -> Option<&'static MrubyOpcode> {
     OPS.get(op as usize)
+}
+
+#[inline]
+#[must_use]
+pub const fn opcode_count() -> usize {
+    OPS.len()
+}
+
+#[inline]
+#[must_use]
+pub fn opcode_spec(op: u8) -> Option<&'static MrubyOpcode> {
+    lookup(op)
 }
 
 #[cfg(test)]

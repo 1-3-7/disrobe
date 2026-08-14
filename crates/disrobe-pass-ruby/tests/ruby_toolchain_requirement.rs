@@ -14,7 +14,7 @@ use std::ffi::OsStr;
 
 use ruby_toolchain::{
     MRI, MRI_MEASURED_SERIES, Toolchain, ToolchainBanner, ToolchainRequirement,
-    require_with_requirement, requirement_from_value,
+    require_measured_series, require_with_requirement, requirement_from_value,
 };
 
 const ABSENT: Toolchain = Toolchain {
@@ -131,6 +131,52 @@ fn a_present_interpreter_satisfies_a_mandatory_run() {
         mandatory.map(|found: ToolchainBanner| found.banner),
         Some(banner.banner),
         "a present interpreter in the measured series must satisfy a mandatory run"
+    );
+}
+
+#[test]
+fn a_series_allowlist_still_rejects_a_banner_outside_every_entry() {
+    let present: Option<ToolchainBanner> =
+        require_with_requirement(&MRI, None, PROOF_SUBJECT, ToolchainRequirement::Optional);
+    let Some(banner): Option<ToolchainBanner> = present else {
+        println!(
+            "NOT MEASURED: the series-allowlist rejection was not exercised because {} is absent \
+             here",
+            MRI.program
+        );
+        return;
+    };
+    let outcome: std::thread::Result<Option<ToolchainBanner>> = std::panic::catch_unwind(|| {
+        require_measured_series(
+            &MRI,
+            &["ruby 0.0", "ruby 0.1"],
+            PROOF_SUBJECT,
+            ToolchainRequirement::Mandatory,
+        )
+    });
+    assert!(
+        outcome.is_err(),
+        "an allowlist that names no installed series must not be satisfied by `{}`; widening a \
+         version pin to a list must never turn it into an accept-anything check",
+        banner.banner
+    );
+    let message: String = panic_message(&outcome);
+    for named in ["ruby 0.0", "ruby 0.1"] {
+        assert!(
+            message.contains(named),
+            "the failure must name every series it would have accepted, got {message:?}"
+        );
+    }
+    let accepted: Option<ToolchainBanner> = require_measured_series(
+        &MRI,
+        &["ruby 0.0", MRI_MEASURED_SERIES],
+        PROOF_SUBJECT,
+        ToolchainRequirement::Mandatory,
+    );
+    assert_eq!(
+        accepted.map(|found: ToolchainBanner| found.banner),
+        Some(banner.banner),
+        "an allowlist that names the installed series must satisfy a mandatory run"
     );
 }
 
