@@ -276,19 +276,44 @@ fn a_stomped_docm_recovers_every_authored_line_of_the_module_from_pcode() {
     );
 }
 
+const CLEAN_CORPUS: &[(&str, usize)] = &[
+    ("vba/hello.docm", 2),
+    ("vba/megafile.docm", 3),
+    ("vba/sourceprobe.docm", 2),
+    ("vba/sourceprobe.xlsm", 3),
+];
+
 #[test]
-fn a_clean_multi_module_document_flags_nothing() {
-    let clean: Vec<u8> = read_corpus("vba/megafile.docm");
-    let report: StompReport = analyze_stomp(&clean).expect("analyze the clean docm");
-    let flagged: Vec<(&str, StompVerdict)> = report
-        .modules
-        .iter()
-        .filter(|m: &&ModuleStompReport| m.verdict != StompVerdict::Consistent)
-        .map(|m: &ModuleStompReport| (m.module.as_str(), m.verdict))
-        .collect();
-    assert!(
-        flagged.is_empty(),
-        "an unstomped document must not raise a stomp verdict; flagged={flagged:?}"
+fn every_clean_corpus_module_flags_nothing() {
+    let mut graded: usize = 0;
+    for (relative, expected_modules) in CLEAN_CORPUS {
+        let clean: Vec<u8> = read_corpus(relative);
+        let report: StompReport =
+            analyze_stomp(&clean).unwrap_or_else(|e: Error| panic!("{relative}: {e}"));
+        assert_eq!(
+            report.modules.len(),
+            *expected_modules,
+            "{relative} module count is pinned so a shrinking denominator cannot raise precision"
+        );
+        let flagged: Vec<(&str, StompVerdict)> = report
+            .modules
+            .iter()
+            .filter(|m: &&ModuleStompReport| m.verdict != StompVerdict::Consistent)
+            .map(|m: &ModuleStompReport| (m.module.as_str(), m.verdict))
+            .collect();
+        assert!(
+            flagged.is_empty(),
+            "{relative}: an unstomped document must not raise a stomp verdict; flagged={flagged:?}"
+        );
+        graded += report.modules.len();
+    }
+    assert_eq!(
+        graded,
+        CLEAN_CORPUS
+            .iter()
+            .map(|(_, count): &(&str, usize)| *count)
+            .sum::<usize>(),
+        "every corpus module must be graded"
     );
 }
 
