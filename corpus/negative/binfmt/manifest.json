@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "members": [
+    {
+      "id": "asar-truncated-prefix",
+      "file": "asar-truncated-prefix.bin",
+      "blake3": "98532e09687fb9d1718f5c35a886b17713b804a1631e920f5cc03add75e9d475",
+      "shape": "truncated_header",
+      "target": "asar_parse",
+      "builder": "asar_truncated_prefix",
+      "authored_reason": "Twelve bytes of an asar prefix. The reader needs sixteen before any field is meaningful, so the correct outcome is a refusal that names the truncation rather than a parse of whatever follows.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "asar_header",
+          "reason_contains": "truncated prefix"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "asar-json-length-past-end",
+      "file": "asar-json-length-past-end.bin",
+      "blake3": "18f2703d919c26e351cd80b42c0343c085e30b7ed5e7dc61730084fa09c55649",
+      "shape": "declared_size_exceeds_file",
+      "target": "asar_parse",
+      "builder": "asar_json_length_past_end",
+      "authored_reason": "A sixteen-byte asar prefix whose three pickle fields agree with each other but declare a 1024-byte header inside a 64-byte file. Every internal consistency check passes, so only a check against the real file length can reject it.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "asar_header",
+          "reason_contains": "header extends past file end"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "pe64-sections-overlap",
+      "file": "pe64-sections-overlap.bin",
+      "blake3": "f3bd4bed2cc4cd266615be79136d7ff1339bba599b064ad610a7cb969af6af4c",
+      "shape": "overlapping_sections",
+      "target": "native_image_parse",
+      "builder": "pe64_sections_overlap",
+      "authored_reason": "A PE32+ image whose .text section spans RVA 0x1000..0x2000 and whose .data section starts at RVA 0x1800. One address maps to two sections, so any address-to-bytes answer would be arbitrary and the reader must refuse instead of picking one.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "native_parse",
+          "reason_contains": "sections \".text\" and \".data\" overlap"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "romfs-node-next-points-at-itself",
+      "file": "romfs-node-next-points-at-itself.bin",
+      "blake3": "3702adfbd1c967a317b84e999889ac025229f83e6dfd166ae3cf1ec0b3774bfa",
+      "shape": "self_referential_offset",
+      "target": "romfs_walk",
+      "builder": "romfs_node_next_points_at_itself",
+      "authored_reason": "A romfs file node whose next-header offset is its own offset. The linked list closes on itself. The one real node is recoverable, so the correct outcome is exactly one file rather than a refusal or an unbounded walk.",
+      "accepted": [
+        {
+          "outcome": "partial",
+          "entries": 1,
+          "violations": []
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "romfs-directory-child-cycle",
+      "file": "romfs-directory-child-cycle.bin",
+      "blake3": "3e81ee76f4704908c33bb090ef1dfd092dfb662aa481362c6e51d2d9c999748f",
+      "shape": "cyclic_offset",
+      "target": "romfs_walk",
+      "builder": "romfs_directory_child_cycle",
+      "authored_reason": "A romfs directory whose first-child offset is the directory itself. Descending it re-enters the same node forever unless a depth bound stops the walk. The image holds no file node, so the correct outcome is zero files and a terminating walk.",
+      "accepted": [
+        {
+          "outcome": "partial",
+          "entries": 0,
+          "violations": []
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zero-length-file",
+      "file": "zero-length-file.bin",
+      "blake3": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+      "shape": "zero_length_member",
+      "target": "zip_extract",
+      "builder": "empty_file",
+      "authored_reason": "An empty file handed to the zip extractor. There is no end-of-central-directory record to find, so the correct outcome is a refusal naming that absence.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "zip",
+          "reason_contains": "Could not find EOCD"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zip-declared-ratio-bomb",
+      "file": "zip-declared-ratio-bomb.bin",
+      "blake3": "36f2016966048249c913a9cbc712594d923e14c77195f46a956d196e1a7f88a0",
+      "shape": "expansion_ratio_bomb",
+      "target": "zip_extract",
+      "builder": "zip_declared_ratio_bomb",
+      "authored_reason": "A stored zip entry whose directory declares 1 MiB of output from 64 compressed bytes, an expansion ratio of 16384 against a cap of 100. The lie is in the declared sizes, so the quota rejects it before any byte is decompressed and the member needs no expanding payload.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "quota_exceeded",
+          "reason_contains": "per-entry expansion ratio 16384 exceeds cap 100"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "uzip-block-count-near-u32-max",
+      "file": "uzip-block-count-near-u32-max.bin",
+      "blake3": "a80e3f1b596d4fdac9f8baf7a85ea4249f42f907a0ad2f063b0fa02558c302fd",
+      "shape": "declared_count_near_type_max",
+      "target": "uzip_parse",
+      "builder": "uzip_block_count_near_u32_max",
+      "authored_reason": "A uzip header declaring 4294967294 blocks in a 168-byte file. The table of contents that count implies is 32 GiB, so the reader must reject the count against the real file length before it reserves anything.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "uzip",
+          "reason_contains": "TOC of 4294967295 offsets runs past end of image"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zip-magic-body-is-elf",
+      "file": "zip-magic-body-is-elf.bin",
+      "blake3": "17c96d9f2175b5d1ff527b6b1d0c44cd6b22506b5ae39a102b07e76fff93f662",
+      "shape": "magic_matches_body_is_another_format",
+      "target": "zip_detect_then_extract",
+      "builder": "zip_magic_body_is_elf",
+      "authored_reason": "Four bytes of zip magic in front of an ELF header. Classification by magic alone names it a zip, so the correct outcome is detection followed by a refusal to recover. The refusal message is the generic missing-directory one, which is why this member also pins the detected kind and the detect-then-refuse shape rather than the message alone.",
+      "accepted": [
+        {
+          "outcome": "detect_only",
+          "detected_as": "Zip",
+          "error": "zip",
+          "reason_contains": "Could not find EOCD"
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zip-valid-empty-archive",
+      "file": "zip-valid-empty-archive.bin",
+      "blake3": "cef4e6a6b5ae5e6e5bdf9d24a5f8c471ec2740a09c1d00545ef51bbd6f7b3020",
+      "shape": "valid_but_empty",
+      "target": "zip_extract",
+      "builder": "zip_valid_empty_archive",
+      "authored_reason": "A structurally valid zip that holds nothing: a 22-byte end-of-central-directory record and no entries. Refusing it would be wrong, so the correct outcome is a recovery of exactly zero entries with no integrity violation.",
+      "accepted": [
+        {
+          "outcome": "partial",
+          "entries": 0,
+          "violations": []
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zip-entry-name-parent-traversal",
+      "file": "zip-entry-name-parent-traversal.bin",
+      "blake3": "b0f8ae41a8b648d712909c80057ae65c0f7d1fbe029d918e55e87179d2c6851b",
+      "shape": "path_traversal_name",
+      "target": "zip_extract",
+      "builder": "zip_entry_name_parent_traversal",
+      "authored_reason": "A zip whose only entry is named ../escape.txt. The archive is otherwise well formed, so the extractor must keep going, drop the entry, and record why. The correct outcome is zero entries written and one named zip-slip violation, and the harness separately proves nothing landed outside the extraction root.",
+      "accepted": [
+        {
+          "outcome": "partial",
+          "entries": 0,
+          "violations": [
+            "zip-slip: DR-BINFMT-0008: archive entry path escapes container root: ../escape.txt"
+          ]
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "squashfs-unsupported-major-version",
+      "file": "squashfs-unsupported-major-version.bin",
+      "blake3": "35f4791b7505409dac682febc3311f43747a395628b9986869fa59c3b9264cf7",
+      "shape": "unsupported_declared_version",
+      "target": "squashfs_superblock_parse",
+      "builder": "squashfs_unsupported_major_version",
+      "authored_reason": "A squashfs superblock with valid magic and a major version of 7. The reader implements majors 1 through 4. Guessing a layout for an unknown version would produce plausible wrong output, so the correct outcome is a refusal that names the version.",
+      "accepted": [
+        {
+          "outcome": "unsupported_version",
+          "error": "decompression",
+          "reason_contains": "squashfs unsupported major version 7"
+        }
+      ],
+      "multiple_outcome_reason": null
+    }
+  ]
+}

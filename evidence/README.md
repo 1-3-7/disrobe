@@ -89,6 +89,16 @@ DISROBE_MBA_DATASET_CORPUS=$PWD/target/mba-dataset-corpus cargo test -p disrobe-
 
 That lane is a `[local]` figure and is never presented as CI-attested.
 
+## Labelled negative corpus
+
+Every corpus above grades what `disrobe` recovers. `corpus/negative/binfmt/` grades what it must
+refuse: truncated headers, declared sizes that exceed the file, overlapping sections, cyclic and
+self-referential offsets, expansion-ratio lies, counts near the type maximum, a magic that does not
+match its body, and a version the reader does not implement. Every member carries a label
+naming its correct outcome, drawn from a closed typed vocabulary, and the harness fails when a
+member that must refuse instead returns a recovery. See `evidence/negative-corpus.md`, and run it
+with `cargo test -p disrobe-binfmt --test negative_corpus`.
+
 ## Dependency boundary (two disjoint sets)
 
 These are deliberately separate. The product needs the first set; only the evidence and oracle
