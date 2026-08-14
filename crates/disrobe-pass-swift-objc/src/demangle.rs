@@ -6,6 +6,7 @@ const MAX_DEPTH: usize = 1024;
 const MAX_NODES: usize = 1 << 18;
 const MAX_REPEAT_COUNT: u32 = 2048;
 const MAX_SYMBOL_LEN: usize = 1 << 16;
+const REABSTRACTION_THUNK_OPERATORS: [&[u8; 2]; 4] = [b"TR", b"Tr", b"Ty", b"TU"];
 
 #[must_use]
 pub fn looks_like_swift_mangled(s: &str) -> bool {
@@ -100,6 +101,15 @@ enum Kind {
     Tuple,
     TupleElement,
     FunctionType,
+    ImplFunctionType,
+    ImplParameter,
+    ImplResult,
+    ImplYield,
+    ImplErrorResult,
+    ImplSendingResult,
+    ImplPatternSubstitutions,
+    ImplInvocationSubstitutions,
+    TypeList,
     ArgumentTuple,
     ReturnType,
     Function,
@@ -201,6 +211,10 @@ enum Kind {
     ProtocolConformanceContext,
     ProtocolWitnessThunk,
     PartialApplyForwarder,
+    ReabstractionThunk,
+    ReabstractionThunkHelper,
+    ReabstractionThunkHelperWithSelf,
+    ReabstractionThunkHelperWithGlobalActor,
     KeyPathThunk,
     LazyWitnessTableCacheVariable,
     LazyWitnessTableAccessor,
@@ -222,6 +236,19 @@ enum FunctionConvention {
     C,
     Block,
     Autoclosure,
+}
+
+#[derive(Debug, Clone)]
+enum ImplPreamble {
+    Type(NodeRef),
+    Signature(NodeRef),
+    Separator,
+}
+
+#[derive(Debug, Clone)]
+enum ParsedImplFunctionConvention {
+    Absent,
+    Present(String),
 }
 
 impl FunctionConvention {
@@ -382,6 +409,11 @@ impl<'a> Demangler<'a> {
     }
 
     fn demangle_global_inner(&mut self) -> Option<NodeRef> {
+        if self.ends_with_reabstraction_thunk_operator()
+            && let Some(thunk) = self.try_demangle_reabstraction_thunk()
+        {
+            return Some(thunk);
+        }
         if let Some(descriptor) = self.try_demangle_assoc_type_descriptor() {
             return Some(descriptor);
         }
@@ -391,6 +423,351 @@ impl<'a> Demangler<'a> {
         let entity: NodeRef = self.demangle_entity_or_type()?;
         let entity: NodeRef = self.demangle_trailing_entity_spec(entity)?;
         self.demangle_operator_suffix(entity)
+    }
+
+    fn ends_with_reabstraction_thunk_operator(&self) -> bool {
+        REABSTRACTION_THUNK_OPERATORS
+            .iter()
+            .any(|operator: &&[u8; 2]| self.src.ends_with(operator.as_slice()))
+    }
+
+    fn try_demangle_reabstraction_thunk(&mut self) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let parsed: Option<NodeRef> = (|| {
+            let from: NodeRef = self.demangle_impl_function_type()?;
+            let to: NodeRef = self.demangle_impl_function_type()?;
+            let generic_signature: Option<NodeRef> = if self.peek() == Some(b'T') {
+                None
+            } else {
+                self.try_demangle_generic_signature_node()
+            };
+            let self_type: Option<NodeRef> = if self.peek() == Some(b'T') {
+                None
+            } else {
+                Some(self.demangle_type()?)
+            };
+            if !self.next_if(b'T') {
+                return None;
+            }
+            let kind: Kind = match self.next()? {
+                b'R' if self_type.is_none() => Kind::ReabstractionThunkHelper,
+                b'r' if self_type.is_none() => Kind::ReabstractionThunk,
+                b'y' if self_type.is_some() => Kind::ReabstractionThunkHelperWithSelf,
+                _ => return None,
+            };
+            let mut children: Vec<NodeRef> = Vec::with_capacity(4);
+            children.extend(generic_signature);
+            children.push(from);
+            children.push(to);
+            children.extend(self_type);
+            let thunk: NodeRef = Node::branch(kind, children);
+            if self.pos == self.src.len() {
+                return Some(thunk);
+            }
+            let global_actor: NodeRef = self.demangle_type()?;
+            if !(self.next_if(b'T') && self.next_if(b'U') && self.pos == self.src.len()) {
+                return None;
+            }
+            Some(Node::branch(
+                Kind::ReabstractionThunkHelperWithGlobalActor,
+                vec![thunk, global_actor],
+            ))
+        })();
+        if parsed.is_none() {
+            self.restore(cp);
+        }
+        parsed
+    }
+
+    fn demangle_impl_function_type(&mut self) -> Option<NodeRef> {
+        let mut preamble: Vec<ImplPreamble> = Vec::new();
+        while self.peek() != Some(b'I') || !self.pending_substitutions.is_empty() {
+            self.spend()?;
+            if let Some(signature) = self.try_demangle_generic_signature_node() {
+                preamble.push(ImplPreamble::Signature(signature));
+            } else if let Some(ty) = self.try_demangle_type_node() {
+                preamble.push(ImplPreamble::Type(ty));
+            } else if self.next_if(b'y') {
+                preamble.push(ImplPreamble::Separator);
+            } else {
+                return None;
+            }
+            if preamble.len() > MAX_DEPTH {
+                return None;
+            }
+        }
+        self.pos += 1;
+        let has_pattern_substitutions: bool = self.next_if(b's');
+        let has_invocation_substitutions: bool = self.next_if(b'I');
+        let pattern_substitutions: Option<Vec<NodeRef>> = if has_pattern_substitutions {
+            Some(Self::take_impl_substitutions(&mut preamble)?)
+        } else {
+            None
+        };
+        let pattern_signature: Option<NodeRef> = if has_pattern_substitutions {
+            match preamble.pop()? {
+                ImplPreamble::Signature(signature) => Some(signature),
+                ImplPreamble::Type(_) | ImplPreamble::Separator => return None,
+            }
+        } else {
+            None
+        };
+        let invocation_substitutions: Option<Vec<NodeRef>> = if has_invocation_substitutions {
+            Some(Self::take_impl_substitutions(&mut preamble)?)
+        } else {
+            None
+        };
+        let generic_signature: Option<NodeRef> = match preamble.last() {
+            Some(ImplPreamble::Signature(_)) => match preamble.pop()? {
+                ImplPreamble::Signature(signature) => Some(signature),
+                ImplPreamble::Type(_) | ImplPreamble::Separator => return None,
+            },
+            Some(ImplPreamble::Type(_) | ImplPreamble::Separator) | None => None,
+        };
+        if self.next_if(b'P') && generic_signature.is_none() {
+            return None;
+        }
+        let mut types: Vec<NodeRef> = Vec::with_capacity(preamble.len());
+        for item in preamble {
+            match item {
+                ImplPreamble::Type(ty) => types.push(ty),
+                ImplPreamble::Signature(_) | ImplPreamble::Separator => return None,
+            }
+        }
+        let mut attributes: Vec<String> = Vec::new();
+        if self.next_if(b'e') {
+            attributes.push("@escaping".to_owned());
+        }
+        if self.next_if(b'A') {
+            attributes.push("@isolated(any)".to_owned());
+        }
+        let differentiability: Option<&'static str> = match self.peek() {
+            Some(b'd') => Some("@differentiable"),
+            Some(b'l') => Some("@differentiable(_linear)"),
+            Some(b'f') => Some("@differentiable(_forward)"),
+            Some(b'r') => Some("@differentiable(reverse)"),
+            _ => None,
+        };
+        if let Some(differentiability) = differentiability {
+            self.pos += 1;
+            attributes.push(differentiability.to_owned());
+        }
+        let callee: &'static str = match self.next()? {
+            b'y' => "@callee_unowned",
+            b'g' => "@callee_guaranteed",
+            b'x' => "@callee_owned",
+            b't' => "@convention(thin)",
+            _ => return None,
+        };
+        attributes.push(callee.to_owned());
+        match self.demangle_impl_function_convention()? {
+            ParsedImplFunctionConvention::Present(function_convention) => {
+                attributes.push(function_convention);
+            }
+            ParsedImplFunctionConvention::Absent => {}
+        }
+        let coroutine: Option<&'static str> = match self.peek() {
+            Some(b'A') => Some("@yield_once"),
+            Some(b'I') => Some("@yield_once_2"),
+            Some(b'G') => Some("@yield_many"),
+            _ => None,
+        };
+        if let Some(coroutine) = coroutine {
+            self.pos += 1;
+            attributes.push(coroutine.to_owned());
+        }
+        if self.next_if(b'h') {
+            attributes.push("@Sendable".to_owned());
+        }
+        if self.next_if(b'H') {
+            attributes.push("@async".to_owned());
+        }
+        let sending_result: bool = self.next_if(b'T');
+        let mut conventions: Vec<(Kind, String)> = Vec::new();
+        while let Some(convention) = self.demangle_impl_parameter_convention() {
+            let no_derivative: bool = self.next_if(b'w');
+            let mut modifiers: Vec<&'static str> = Vec::new();
+            if self.next_if(b'T') {
+                modifiers.push("sending");
+            }
+            if self.next_if(b'I') {
+                modifiers.push("isolated");
+            }
+            if self.next_if(b'L') {
+                modifiers.push("sil_implicit_leading_param");
+            }
+            let rendered_modifiers: Vec<&str> = if modifiers.len() <= 1 {
+                no_derivative
+                    .then_some("@noDerivative")
+                    .into_iter()
+                    .chain(modifiers)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let text: String = std::iter::once(convention)
+                .chain(rendered_modifiers)
+                .collect::<Vec<&str>>()
+                .join(" ");
+            conventions.push((Kind::ImplParameter, text));
+        }
+        while let Some(convention) = self.demangle_impl_result_convention() {
+            let differentiability: &str = if self.next_if(b'w') {
+                " @noDerivative"
+            } else {
+                ""
+            };
+            conventions.push((Kind::ImplResult, format!("{convention}{differentiability}")));
+        }
+        while self.next_if(b'Y') {
+            let convention: &'static str = self.demangle_impl_parameter_convention()?;
+            conventions.push((Kind::ImplYield, convention.to_owned()));
+        }
+        if self.next_if(b'z') {
+            let convention: &'static str = self.demangle_impl_result_convention()?;
+            conventions.push((Kind::ImplErrorResult, convention.to_owned()));
+        }
+        if !self.next_if(b'_') || conventions.len() != types.len() {
+            return None;
+        }
+        let mut children: Vec<NodeRef> = Vec::with_capacity(types.len() + 4);
+        if let (Some(signature), Some(substitutions)) = (pattern_signature, pattern_substitutions) {
+            children.push(Node::branch(
+                Kind::ImplPatternSubstitutions,
+                vec![signature, Node::branch(Kind::TypeList, substitutions)],
+            ));
+        }
+        if let Some(substitutions) = invocation_substitutions {
+            children.push(Node::unary(
+                Kind::ImplInvocationSubstitutions,
+                Node::branch(Kind::TypeList, substitutions),
+            ));
+        }
+        children.extend(generic_signature);
+        if sending_result {
+            children.push(Node::branch(Kind::ImplSendingResult, Vec::new()));
+        }
+        for ((kind, convention), ty) in conventions.into_iter().zip(types) {
+            children.push(Node::branch_with_text(kind, convention, vec![ty]));
+        }
+        Some(Node::branch_with_text(
+            Kind::ImplFunctionType,
+            attributes.join(" "),
+            children,
+        ))
+    }
+
+    fn try_demangle_generic_signature_node(&mut self) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let depth: usize = self.depth;
+        let parsed: Option<NodeRef> = self.demangle_generic_signature();
+        self.depth = depth;
+        if parsed.is_none() {
+            self.restore(cp);
+        }
+        parsed
+    }
+
+    fn try_demangle_type_node(&mut self) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let parsed: Option<NodeRef> = self.demangle_type();
+        if parsed.is_none() {
+            self.restore(cp);
+        }
+        parsed
+    }
+
+    fn take_impl_substitutions(preamble: &mut Vec<ImplPreamble>) -> Option<Vec<NodeRef>> {
+        let separator: usize = preamble
+            .iter()
+            .rposition(|item: &ImplPreamble| matches!(item, ImplPreamble::Separator))?;
+        let tail: Vec<ImplPreamble> = preamble.split_off(separator + 1);
+        match preamble.pop()? {
+            ImplPreamble::Separator => {}
+            ImplPreamble::Type(_) | ImplPreamble::Signature(_) => return None,
+        }
+        tail.into_iter()
+            .map(|item: ImplPreamble| match item {
+                ImplPreamble::Type(ty) => Some(ty),
+                ImplPreamble::Signature(_) | ImplPreamble::Separator => None,
+            })
+            .collect()
+    }
+
+    fn demangle_impl_function_convention(&mut self) -> Option<ParsedImplFunctionConvention> {
+        let convention: Option<String> = match self.peek() {
+            Some(b'B') => Some("@convention(block)".to_owned()),
+            Some(b'C') => Some("@convention(c)".to_owned()),
+            Some(b'M') => Some("@convention(method)".to_owned()),
+            Some(b'O') => Some("@convention(objc_method)".to_owned()),
+            Some(b'K') => Some("@convention(closure)".to_owned()),
+            Some(b'W') => Some("@convention(witness_method)".to_owned()),
+            Some(b'z') if matches!(self.peek_at(1), Some(b'B' | b'C')) => {
+                self.pos += 1;
+                let name: &'static str = match self.next()? {
+                    b'B' => "block",
+                    b'C' => "c",
+                    _ => return None,
+                };
+                let length_start: usize = self.pos;
+                let length: usize = usize::try_from(self.demangle_natural()).ok()?;
+                if length == 0 || self.pos == length_start {
+                    return None;
+                }
+                let end: usize = self.pos.checked_add(length)?;
+                let encoded: &str = std::str::from_utf8(self.src.get(self.pos..end)?).ok()?;
+                self.pos = end;
+                return Some(ParsedImplFunctionConvention::Present(format!(
+                    "@convention({name}, mangledCType: \"{encoded}\")"
+                )));
+            }
+            _ => None,
+        };
+        if convention.is_some() {
+            self.pos += 1;
+        }
+        Some(convention.map_or(
+            ParsedImplFunctionConvention::Absent,
+            ParsedImplFunctionConvention::Present,
+        ))
+    }
+
+    fn demangle_impl_parameter_convention(&mut self) -> Option<&'static str> {
+        let convention: &'static str = match self.peek()? {
+            b'i' => "@in",
+            b'c' => "@in_constant",
+            b'l' => "@inout",
+            b'b' => "@inout_aliasable",
+            b'n' => "@in_guaranteed",
+            b'X' => "@in_cxx",
+            b'x' => "@owned",
+            b'y' => "@unowned",
+            b'g' => "@guaranteed",
+            b'e' => "@deallocating",
+            b'v' => "@pack_owned",
+            b'p' => "@pack_guaranteed",
+            b'm' => "@pack_inout",
+            _ => return None,
+        };
+        self.pos += 1;
+        Some(convention)
+    }
+
+    fn demangle_impl_result_convention(&mut self) -> Option<&'static str> {
+        let convention: &'static str = match self.peek()? {
+            b'r' => "@out",
+            b'o' => "@owned",
+            b'd' => "@unowned",
+            b'u' => "@unowned_inner_pointer",
+            b'a' => "@autoreleased",
+            b'k' => "@pack_out",
+            b'l' => "@guaranteed_address",
+            b'g' => "@guaranteed",
+            b'm' => "@inout",
+            _ => return None,
+        };
+        self.pos += 1;
+        Some(convention)
     }
 
     fn try_demangle_assoc_type_descriptor(&mut self) -> Option<NodeRef> {
@@ -2501,6 +2878,20 @@ impl<'a> Demangler<'a> {
                     _ => break,
                 },
                 Some(b'X') => match self.peek_at(1) {
+                    Some(b'M') => {
+                        let representation: &'static str = match self.peek_at(2)? {
+                            b't' => "@thin",
+                            b'T' => "@thick",
+                            b'o' => "@objc_metatype",
+                            _ => return None,
+                        };
+                        self.pos += 3;
+                        node = Node::branch_with_text(
+                            Kind::Metatype,
+                            representation.to_owned(),
+                            vec![node],
+                        );
+                    }
                     Some(b'p') => {
                         self.pos += 2;
                         node = Node::unary(Kind::ExistentialMetatype, node);
@@ -3083,6 +3474,9 @@ impl<'a> Demangler<'a> {
                     constraint = Some(self.demangle_constraint()?);
                 }
             }
+        }
+        if constraint.is_some() || associated_name.is_some() {
+            return None;
         }
         let param_count: u32 = if param_counts.is_empty() {
             u32::from(!multi_param)
@@ -3947,7 +4341,12 @@ fn print_node(node: &Node, mode: Mode) -> String {
         }
         Kind::TupleElement => print_tuple_element(node),
         Kind::LabelList => String::new(),
-        Kind::Metatype | Kind::ExistentialMetatype => format!("{}.Type", print_child(node, 0)),
+        Kind::Metatype => {
+            let representation: &str = node.text.as_deref().unwrap_or_default();
+            let separator: &str = if representation.is_empty() { "" } else { " " };
+            format!("{representation}{separator}{}.Type", print_child(node, 0))
+        }
+        Kind::ExistentialMetatype => format!("{}.Type", print_child(node, 0)),
         Kind::DependentGenericSignature => print_generic_signature(node),
         Kind::DependentGenericConformanceRequirement | Kind::DependentGenericLayoutRequirement => {
             format!("{}: {}", print_child(node, 0), print_child(node, 1))
@@ -4007,6 +4406,37 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::UnsafeAddressor => print_accessor(node, "unsafeAddressor"),
         Kind::UnsafeMutableAddressor => print_accessor(node, "unsafeMutableAddressor"),
         Kind::FunctionType => print_function_type(node),
+        Kind::ImplFunctionType => print_impl_function_type(node),
+        Kind::ImplParameter | Kind::ImplResult => {
+            format!(
+                "{} {}",
+                node.text.as_deref().unwrap_or_default(),
+                print_child(node, 0)
+            )
+        }
+        Kind::ImplYield => format!(
+            "@yields {} {}",
+            node.text.as_deref().unwrap_or_default(),
+            print_child(node, 0)
+        ),
+        Kind::ImplErrorResult => format!(
+            "@error {} {}",
+            node.text.as_deref().unwrap_or_default(),
+            print_child(node, 0)
+        ),
+        Kind::ImplSendingResult => "sending".to_owned(),
+        Kind::ImplPatternSubstitutions => format!(
+            "@substituted {} for <{}>",
+            print_child(node, 0),
+            print_child(node, 1)
+        ),
+        Kind::ImplInvocationSubstitutions => format!("for <{}>", print_child(node, 0)),
+        Kind::TypeList => node
+            .children
+            .iter()
+            .map(|child: &NodeRef| print_node(child, Mode::Type))
+            .collect::<Vec<String>>()
+            .join(", "),
         Kind::ArgumentTuple => print_argument_tuple(node),
         Kind::ReturnType => print_child(node, 0),
         Kind::Function => print_function(node),
@@ -4084,6 +4514,14 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::PartialApplyForwarder => {
             format!("partial apply forwarder for {}", print_child(node, 0))
         }
+        Kind::ReabstractionThunk => print_reabstraction_thunk(node, false),
+        Kind::ReabstractionThunkHelper => print_reabstraction_thunk(node, true),
+        Kind::ReabstractionThunkHelperWithSelf => print_reabstraction_thunk_with_self(node),
+        Kind::ReabstractionThunkHelperWithGlobalActor => format!(
+            "{} with global actor constraint {}",
+            print_child(node, 0),
+            print_child(node, 1)
+        ),
         Kind::KeyPathThunk => print_keypath_thunk(node),
         Kind::LazyWitnessTableCacheVariable => {
             print_lazy_witness_accessor(node, "lazy protocol witness table cache variable")
@@ -4734,6 +5172,109 @@ fn print_function_type(node: &Node) -> String {
     }
     middle.push_str(&function_type_throws_clause(node));
     format!("{convention}{prefix}{args}{middle} -> {ret}")
+}
+
+fn print_impl_function_type(node: &Node) -> String {
+    let generic_signature: Option<String> = node
+        .children
+        .iter()
+        .find(|child: &&NodeRef| child.kind == Kind::DependentGenericSignature)
+        .map(|child: &NodeRef| print_node(child, Mode::Type));
+    let pattern_substitutions: Option<&NodeRef> = node
+        .children
+        .iter()
+        .find(|child: &&NodeRef| child.kind == Kind::ImplPatternSubstitutions);
+    let invocation_substitutions: Option<&NodeRef> = node
+        .children
+        .iter()
+        .find(|child: &&NodeRef| child.kind == Kind::ImplInvocationSubstitutions);
+    let mut attributes: Vec<String> = vec![node.text.clone().unwrap_or_default()];
+    attributes.extend(generic_signature);
+    if let Some(pattern) = pattern_substitutions {
+        attributes.push(format!("@substituted {}", print_child(pattern, 0)));
+    }
+    attributes.retain(|attribute: &String| !attribute.is_empty());
+    let parameters: Vec<String> = node
+        .children
+        .iter()
+        .filter(|child: &&NodeRef| child.kind == Kind::ImplParameter)
+        .map(|child: &NodeRef| print_node(child, Mode::Type))
+        .collect();
+    let results: Vec<String> = node
+        .children
+        .iter()
+        .filter(|child: &&NodeRef| {
+            matches!(
+                child.kind,
+                Kind::ImplResult | Kind::ImplYield | Kind::ImplErrorResult
+            )
+        })
+        .map(|child: &NodeRef| print_node(child, Mode::Type))
+        .collect();
+    let sending_result: &str = if node
+        .children
+        .iter()
+        .any(|child: &NodeRef| child.kind == Kind::ImplSendingResult)
+    {
+        "sending "
+    } else {
+        ""
+    };
+    let mut rendered: String = format!(
+        "{} ({}) -> {sending_result}({})",
+        attributes.join(" "),
+        parameters.join(", "),
+        results.join(", ")
+    );
+    if let Some(pattern) = pattern_substitutions {
+        rendered.push_str(" for <");
+        rendered.push_str(&print_child(pattern, 1));
+        rendered.push('>');
+    }
+    if let Some(invocation) = invocation_substitutions {
+        rendered.push_str(" for <");
+        rendered.push_str(&print_child(invocation, 0));
+        rendered.push('>');
+    }
+    rendered
+}
+
+fn print_reabstraction_thunk(node: &Node, helper: bool) -> String {
+    let has_signature: bool = node
+        .children
+        .first()
+        .is_some_and(|child: &NodeRef| child.kind == Kind::DependentGenericSignature);
+    let index: usize = usize::from(has_signature);
+    let signature: String = if has_signature {
+        format!("{} ", print_child(node, 0))
+    } else {
+        String::new()
+    };
+    let helper: &str = if helper { " helper" } else { "" };
+    format!(
+        "reabstraction thunk{helper} {signature}from {} to {}",
+        print_child(node, index),
+        print_child(node, index + 1)
+    )
+}
+
+fn print_reabstraction_thunk_with_self(node: &Node) -> String {
+    let has_signature: bool = node
+        .children
+        .first()
+        .is_some_and(|child: &NodeRef| child.kind == Kind::DependentGenericSignature);
+    let index: usize = usize::from(has_signature);
+    let signature: String = if has_signature {
+        format!("{} ", print_child(node, 0))
+    } else {
+        String::new()
+    };
+    format!(
+        "reabstraction thunk {signature}from {} to {} self {}",
+        print_child(node, index),
+        print_child(node, index + 1),
+        print_child(node, index + 2)
+    )
 }
 
 fn print_argument_tuple(node: &Node) -> String {
@@ -5588,5 +6129,112 @@ mod tests {
             dem.node_budget, 0,
             "each pending-substitution clone must be charged against the global node budget"
         );
+    }
+
+    #[test]
+    fn demangle_impl_function_types_preserve_abi_conventions() {
+        let mut dem: Demangler<'_> = Demangler::new("ypypIgnn_S2iIegyy_");
+        let from: NodeRef = dem
+            .demangle_impl_function_type()
+            .expect("parse the from implementation type");
+        assert_eq!(
+            print_node(&from, Mode::Type),
+            "@callee_guaranteed (@in_guaranteed Any, @in_guaranteed Any) -> ()"
+        );
+        assert_eq!(dem.peek(), Some(b'S'));
+        let mut probe: Demangler<'_> = Demangler::new("S2iIegyy_");
+        let first: NodeRef = probe.demangle_type().expect("parse repeated Swift.Int");
+        assert_eq!(print_node(&first, Mode::Type), "Swift.Int");
+        assert_eq!((probe.pos, probe.pending_substitutions.len()), (3, 1));
+        let to: NodeRef = dem
+            .demangle_impl_function_type()
+            .expect("parse the to implementation type");
+        assert_eq!(
+            print_node(&to, Mode::Type),
+            "@escaping @callee_guaranteed (@unowned Swift.Int, @unowned Swift.Int) -> ()"
+        );
+        assert_eq!(dem.pos, dem.src.len());
+    }
+
+    #[test]
+    fn impl_function_attributes_outside_the_reference_grammar_abstain() {
+        for symbol in [
+            "$sINg_INg_TR",
+            "$sIOg_IOg_TR",
+            "$sIPg_IPg_TR",
+            "$sIzg_Izg_TR",
+        ] {
+            assert!(
+                demangle(symbol).is_err(),
+                "{symbol} encodes an implementation-type attribute the reference toolchain \
+                 rejects, so it must abstain rather than invent a rendering"
+            );
+        }
+    }
+
+    #[test]
+    fn demangle_impl_function_differentiability_kinds_are_exact() {
+        let cases: [(&str, &str); 4] = [
+            ("d", "@differentiable"),
+            ("l", "@differentiable(_linear)"),
+            ("f", "@differentiable(_forward)"),
+            ("r", "@differentiable(reverse)"),
+        ];
+        for (operator, expected) in cases {
+            let symbol: String = format!("$sI{operator}g_I{operator}g_TR");
+            let rendered: String = demangle(&symbol).expect("parse differentiability fixture");
+            assert_eq!(
+                rendered,
+                format!(
+                    "reabstraction thunk helper from {expected} @callee_guaranteed () -> () to \
+                     {expected} @callee_guaranteed () -> ()"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn demangle_impl_function_conventions_are_exact() {
+        let cases: [(&str, &str); 6] = [
+            ("B", "block"),
+            ("C", "c"),
+            ("M", "method"),
+            ("O", "objc_method"),
+            ("K", "closure"),
+            ("W", "witness_method"),
+        ];
+        for (operator, expected) in cases {
+            let symbol: String = format!("$sIg{operator}_Ig{operator}_TR");
+            let rendered: String = demangle(&symbol).expect("parse convention fixture");
+            assert_eq!(
+                rendered,
+                format!(
+                    "reabstraction thunk helper from @callee_guaranteed \
+                     @convention({expected}) () -> () to @callee_guaranteed \
+                     @convention({expected}) () -> ()"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn reabstraction_thunks_reject_partial_and_unknown_encodings() {
+        for symbol in [
+            "$sIg_Ig_T",
+            "$sIg_Ig_TQ",
+            "$sIg_Ig_TRx",
+            "$sIg_Ig_TRSi",
+            "$sIg_Ig_TRSiTV",
+            "$sIg_Ig_lTQ",
+            "$sIg_Ig_lTRx",
+            "$sIg_Ig_SiTyx",
+            "$sIg_Ig_TRSiTUx",
+            "$sIgzB4abc_Ig_TR",
+        ] {
+            assert!(
+                demangle(symbol).is_err(),
+                "{symbol} must abstain instead of accepting a partial or unknown encoding"
+            );
+        }
     }
 }

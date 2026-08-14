@@ -6,12 +6,20 @@ mod swift_toolchain;
 
 use disrobe_pass_swift_objc::demangle;
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
 use swift_toolchain::{
     ReferenceDemangler, provenance_note, reference_demangle, resolve_reference_demangler,
+    resolve_swift_compiler,
 };
 
 const GRADED: &str =
     "byte-exact agreement with swift-demangle on the FEAT-023 named-arm fixture corpus";
+
+const COMPILED: &str =
+    "the pinned reabstraction-thunk symbols being emitted by a real Swift compiler";
 
 #[derive(Debug, Clone, Copy)]
 struct ArmFixture {
@@ -97,6 +105,166 @@ const ARM_FIXTURES: &[ArmFixture] = &[
         expected: "partial apply forwarder for Arms2.genericIdentity<A>(A) -> A",
     },
     ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sypypIgnn_S2iIegyy_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@in_guaranteed Any, @in_guaranteed Any) -> () to @escaping @callee_guaranteed (@unowned Swift.Int, @unowned Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sS2iSbIegnnd_S2iSbIegyyd_TR",
+        expected: "reabstraction thunk helper from @escaping @callee_guaranteed (@in_guaranteed Swift.Int, @in_guaranteed Swift.Int) -> (@unowned Swift.Bool) to @escaping @callee_guaranteed (@unowned Swift.Int, @unowned Swift.Int) -> (@unowned Swift.Bool)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$ss5UInt8VIxr_ABIxd_TR",
+        expected: "reabstraction thunk helper from @callee_owned () -> (@out Swift.UInt8) to @callee_owned () -> (@unowned Swift.UInt8)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sxIeghHr_xs5Error_pIegHrzo_s8SendableRzs5NeverORs_r0_lTR",
+        expected: "reabstraction thunk helper <A, B where A: Swift.Sendable, B == Swift.Never> from @escaping @callee_guaranteed @Sendable @async () -> (@out A) to @escaping @callee_guaranteed @async () -> (@out A, @error @owned Swift.Error)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$s4null16NonSendableKlassCIegHo_ACs5Error_pIegHTrzo_TR",
+        expected: "reabstraction thunk helper from @escaping @callee_guaranteed @async () -> (@owned null.NonSendableKlass) to @escaping @callee_guaranteed @async () -> sending (@out null.NonSendableKlass, @error @owned Swift.Error)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sxySilySbIsIgn_xySilySbIsIgn_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @substituted <A> (@in_guaranteed A) -> () for <Swift.Bool> for <Swift.Int> to @callee_guaranteed @substituted <A> (@in_guaranteed A) -> () for <Swift.Bool> for <Swift.Int>",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sxlIgn_xlIgn_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed <A> (@in_guaranteed A) -> () to @callee_guaranteed <A> (@in_guaranteed A) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIAg_IAg_TR",
+        expected: "reabstraction thunk helper from @isolated(any) @callee_guaranteed () -> () to @isolated(any) @callee_guaranteed () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sS5fIertyyywddw_S5fIertyyywddw_TR",
+        expected: "reabstraction thunk helper from @escaping @differentiable(reverse) @convention(thin) (@unowned Swift.Float, @unowned Swift.Float, @unowned @noDerivative Swift.Float) -> (@unowned Swift.Float, @unowned @noDerivative Swift.Float) to @escaping @differentiable(reverse) @convention(thin) (@unowned Swift.Float, @unowned Swift.Float, @unowned @noDerivative Swift.Float) -> (@unowned Swift.Float, @unowned @noDerivative Swift.Float)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIdg_Ilg_TR",
+        expected: "reabstraction thunk helper from @differentiable @callee_guaranteed () -> () to @differentiable(_linear) @callee_guaranteed () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIfg_Irg_TR",
+        expected: "reabstraction thunk helper from @differentiable(_forward) @callee_guaranteed () -> () to @differentiable(reverse) @callee_guaranteed () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIgzB3abc_IgzC3def_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @convention(block, mangledCType: \"abc\") () -> () to @callee_guaranteed @convention(c, mangledCType: \"def\") () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIgA_IgI_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @yield_once () -> () to @callee_guaranteed @yield_once_2 () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIgG_IgG_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @yield_many () -> () to @callee_guaranteed @yield_many () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIgM_IgO_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @convention(method) () -> () to @callee_guaranteed @convention(objc_method) () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sIgK_IgW_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed @convention(closure) () -> () to @callee_guaranteed @convention(witness_method) () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgiw_SiIgiT_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@in @noDerivative Swift.Int) -> () to @callee_guaranteed (@in sending Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgiI_SiIgiL_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@in isolated Swift.Int) -> () to @callee_guaranteed (@in sil_implicit_leading_param Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgiwTIL_SiIgiwTIL_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@in Swift.Int) -> () to @callee_guaranteed (@in Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgYi_SiIgzo_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed () -> (@yields @in Swift.Int) to @callee_guaranteed () -> (@error @owned Swift.Int)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$ss5UInt8VIxk_ABIxd_TR",
+        expected: "reabstraction thunk helper from @callee_owned () -> (@pack_out Swift.UInt8) to @callee_owned () -> (@unowned Swift.UInt8)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "_T0Ix_IyB_Tr",
+        expected: "reabstraction thunk from @callee_owned () -> () to @callee_unowned @convention(block) () -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$s12dynamic_self22FunctionConversionTestCIgg_ACIegn_ACXMTTy",
+        expected: "reabstraction thunk from @callee_guaranteed (@guaranteed dynamic_self.FunctionConversionTest) -> () to @escaping @callee_guaranteed (@in_guaranteed dynamic_self.FunctionConversionTest) -> () self @thick dynamic_self.FunctionConversionTest.Type",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sxIgr_xIgr_lTRScMTU",
+        expected: "reabstraction thunk helper <A> from @callee_guaranteed () -> (@out A) to @callee_guaranteed () -> (@out A) with global actor constraint Swift.MainActor",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$s12dynamic_self22FunctionConversionTestCIgg_ACIegn_ACXMtTy",
+        expected: "reabstraction thunk from @callee_guaranteed (@guaranteed dynamic_self.FunctionConversionTest) -> () to @escaping @callee_guaranteed (@in_guaranteed dynamic_self.FunctionConversionTest) -> () self @thin dynamic_self.FunctionConversionTest.Type",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$s12dynamic_self22FunctionConversionTestCIgg_ACIegn_ACXMoTy",
+        expected: "reabstraction thunk from @callee_guaranteed (@guaranteed dynamic_self.FunctionConversionTest) -> () to @escaping @callee_guaranteed (@in_guaranteed dynamic_self.FunctionConversionTest) -> () self @objc_metatype dynamic_self.FunctionConversionTest.Type",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sxlIPgn_xlIPgn_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed <A> (@in_guaranteed A) -> () to @callee_guaranteed <A> (@in_guaranteed A) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sS4iIgblce_S4iIgvpmx_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@inout_aliasable Swift.Int, @inout Swift.Int, @in_constant Swift.Int, @deallocating Swift.Int) -> () to @callee_guaranteed (@pack_owned Swift.Int, @pack_guaranteed Swift.Int, @pack_inout Swift.Int, @owned Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sS2iIggX_S2iIgXg_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed (@guaranteed Swift.Int, @in_cxx Swift.Int) -> () to @callee_guaranteed (@in_cxx Swift.Int, @guaranteed Swift.Int) -> ()",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sS2iIgua_S2iIgdk_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed () -> (@unowned_inner_pointer Swift.Int, @autoreleased Swift.Int) to @callee_guaranteed () -> (@unowned Swift.Int, @pack_out Swift.Int)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgzl_SiIgzo_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed () -> (@error @guaranteed_address Swift.Int) to @callee_guaranteed () -> (@error @owned Swift.Int)",
+    },
+    ArmFixture {
+        arm: "reabstraction_thunk",
+        mangled: "$sSiIgzg_SiIgzm_TR",
+        expected: "reabstraction thunk helper from @callee_guaranteed () -> (@error @guaranteed Swift.Int) to @callee_guaranteed () -> (@error @inout Swift.Int)",
+    },
+    ArmFixture {
         arm: "protocol_witness_thunk",
         mangled: "$s4Arms14EnglishGreeterVAA0C0A2aDP5greetSSyFTW",
         expected: "protocol witness for Arms.Greeter.greet() -> Swift.String in conformance Arms.EnglishGreeter : Arms.Greeter in Arms",
@@ -153,11 +321,142 @@ const ARM_FIXTURES: &[ArmFixture] = &[
     },
 ];
 
-const OPEN_ARMS: &[&str] = &[
-    "reabstraction_thunk",
-    "freestanding_macro_expansion",
-    "autodiff_thunk",
+const OPEN_ARMS: &[&str] = &["freestanding_macro_expansion", "autodiff_thunk"];
+
+fn windows_sdk(swiftc: &Path) -> Option<PathBuf> {
+    let swift_root: &Path = swiftc.ancestors().nth(5)?;
+    let toolchain: &str = swiftc.ancestors().nth(3)?.file_name()?.to_str()?;
+    let version: &str = toolchain.split_once('+').map_or(toolchain, |pair| pair.0);
+    let sdk: PathBuf = swift_root
+        .join("Platforms")
+        .join(version)
+        .join("Windows.platform")
+        .join("Developer")
+        .join("SDKs")
+        .join("Windows.sdk");
+    sdk.is_dir().then_some(sdk)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompiledFixture {
+    source: &'static str,
+    module: &'static str,
+    symbol: &'static str,
+}
+
+const COMPILED_FIXTURES: &[CompiledFixture] = &[
+    CompiledFixture {
+        source: "reabstraction_thunk.swift",
+        module: "Arms",
+        symbol: "$sypypIgnn_S2iIegyy_TR",
+    },
+    CompiledFixture {
+        source: "dynamic_self_reabstraction.swift",
+        module: "dynamic_self",
+        symbol: "$s12dynamic_self22FunctionConversionTestCIgg_ACIegn_ACXMTTy",
+    },
 ];
+
+fn sibling_tool(swiftc: &Path, stem: &str) -> PathBuf {
+    let exe: String = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_owned()
+    };
+    swiftc
+        .parent()
+        .map(|parent: &Path| parent.join(&exe))
+        .filter(|tool: &PathBuf| tool.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "{stem} does not sit beside {}; a Swift toolchain that is present and incomplete \
+                 is never a skip",
+                swiftc.display()
+            )
+        })
+}
+
+fn compiled_symbol_table(swiftc: &Path, fixture: CompiledFixture) -> String {
+    let source: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(fixture.source);
+    let output_dir: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join(fixture.module);
+    fs::create_dir_all(&output_dir).expect("create the compiled fixture output directory");
+    let object: PathBuf = output_dir.join(format!(
+        "{}.{}",
+        fixture.module,
+        if cfg!(windows) { "obj" } else { "o" }
+    ));
+    let mut command: Command = Command::new(swiftc);
+    if cfg!(windows) {
+        let sdk: PathBuf = windows_sdk(swiftc).unwrap_or_else(|| {
+            panic!(
+                "no Windows SDK sits beside {}; a Swift toolchain that is present and unusable is \
+                 never a skip",
+                swiftc.display()
+            )
+        });
+        command.arg("-sdk").arg(sdk);
+    }
+    let compiled: Output = command
+        .arg("-emit-object")
+        .arg("-module-name")
+        .arg(fixture.module)
+        .arg(&source)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .expect("run swiftc for the compiled fixture");
+    assert!(
+        compiled.status.success(),
+        "{} failed to compile {}: {}",
+        swiftc.display(),
+        source.display(),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let llvm_nm: PathBuf = sibling_tool(swiftc, "llvm-nm");
+    let listed: Output = Command::new(&llvm_nm)
+        .arg(&object)
+        .output()
+        .expect("run llvm-nm on the compiled fixture");
+    assert!(
+        listed.status.success(),
+        "{} failed to read {}: {}",
+        llvm_nm.display(),
+        object.display(),
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    String::from_utf8(listed.stdout).expect("llvm-nm emits a UTF-8 symbol table")
+}
+
+#[test]
+fn a_real_compiler_emits_every_pinned_reabstraction_thunk_symbol() {
+    let Some(swiftc): Option<PathBuf> = resolve_swift_compiler(COMPILED) else {
+        return;
+    };
+    for fixture in COMPILED_FIXTURES {
+        assert!(
+            ARM_FIXTURES
+                .iter()
+                .any(|f: &ArmFixture| f.mangled == fixture.symbol),
+            "{} is compiled for provenance but no arm fixture grades it, so compiling it proves \
+             nothing about recovery",
+            fixture.symbol
+        );
+        let table: String = compiled_symbol_table(&swiftc, *fixture);
+        assert!(
+            table
+                .lines()
+                .any(|line: &str| line.split(' ').next_back() == Some(fixture.symbol)),
+            "{} compiled {} without emitting {}, so the pinned mangling is not what this \
+             compiler produces",
+            swiftc.display(),
+            fixture.source,
+            fixture.symbol
+        );
+    }
+}
 
 fn closed_arm_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = ARM_FIXTURES.iter().map(|f: &ArmFixture| f.arm).collect();

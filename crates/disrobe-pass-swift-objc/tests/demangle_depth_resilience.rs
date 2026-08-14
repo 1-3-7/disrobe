@@ -12,6 +12,7 @@ const SUITE_BUDGET: Duration = Duration::from_mins(3);
 const NESTING_DOMAIN: u64 = 0x0F3A_11C3_D3E9_0001;
 const MIN_NESTING_LEVELS: usize = 1_100;
 const MAX_EXTRA_NESTING_LEVELS: usize = 200;
+const MAX_THUNK_WIDTH: usize = 64;
 
 fn nested_array_of_int(levels: usize) -> String {
     let mut body: String = "Say".repeat(levels);
@@ -37,6 +38,25 @@ fn nested_tuple_of_int(levels: usize) -> String {
         body.push('t');
     }
     format!("$s{body}")
+}
+
+fn reabstraction_thunk_of_width(width: usize) -> String {
+    let types: String = "Si".repeat(width);
+    let conventions: String = "y".repeat(width);
+    format!("$s{types}Ig{conventions}_{types}Ig{conventions}_TR")
+}
+
+fn reabstraction_thunk_with_mangled_ctype_length(length: u64) -> String {
+    format!("$sIgzB{length}abc_Ig_TR")
+}
+
+fn reabstraction_thunk_from_seed(case_seed: u64) -> String {
+    let mut rng: XorShift64 = XorShift64::new(case_seed ^ NESTING_DOMAIN.wrapping_add(5));
+    if rng.below(2) == 0 {
+        reabstraction_thunk_of_width(rng.below_usize(MAX_THUNK_WIDTH))
+    } else {
+        reabstraction_thunk_with_mangled_ctype_length(rng.below(u64::MAX))
+    }
 }
 
 fn deeply_nested_from_seed(case_seed: u64) -> String {
@@ -75,9 +95,10 @@ fn corpus() -> Vec<CorpusEntry> {
 fn check(case: &StressCase<'_>) {
     probe_symbol(&String::from_utf8_lossy(case.bytes()));
     let mut rng: XorShift64 = XorShift64::new(case.case_seed() ^ NESTING_DOMAIN.wrapping_add(3));
-    match rng.below_usize(3) {
+    match rng.below_usize(4) {
         0 => probe_symbol(&deeply_nested_from_seed(case.case_seed())),
         1 => probe_symbol(&oversized_from_seed(case.case_seed())),
+        2 => probe_symbol(&reabstraction_thunk_from_seed(case.case_seed())),
         _ => {
             let truncated_at: usize = rng.below_usize(4_096);
             let deep: String = deeply_nested_from_seed(case.case_seed());
@@ -177,4 +198,62 @@ fn a_deeply_nested_optional_abstains_in_bounded_wall_clock_time() {
 #[test]
 fn a_deeply_nested_tuple_abstains_in_bounded_wall_clock_time() {
     assert_abstains_quickly("nested tuple", &nested_tuple_of_int(MIN_NESTING_LEVELS));
+}
+
+fn assert_symbol_abstains_within(label: &str, mangled: &str, ceiling: Duration) {
+    let start: std::time::Instant = std::time::Instant::now();
+    let rendered: Result<String, _> = demangle::demangle(mangled);
+    let elapsed: Duration = start.elapsed();
+    assert!(
+        rendered.is_err(),
+        "{label} unexpectedly recovered {rendered:?}"
+    );
+    assert!(
+        elapsed < ceiling,
+        "{label} took {elapsed:?} to abstain, past the {ceiling:?} ceiling; the parser is no \
+         longer bounded in the width of its input"
+    );
+}
+
+#[test]
+fn a_reabstraction_thunk_wider_than_the_depth_bound_abstains() {
+    let mangled: String = reabstraction_thunk_of_width(MIN_NESTING_LEVELS);
+    let rendered: Result<String, _> = demangle::demangle(&mangled);
+    assert!(
+        rendered.is_err(),
+        "a reabstraction thunk carrying more implementation-type operands than MAX_DEPTH must \
+         abstain, got {rendered:?}"
+    );
+}
+
+#[test]
+fn an_oversized_mangled_ctype_length_abstains_in_bounded_wall_clock_time() {
+    assert_symbol_abstains_within(
+        "mangled C type length at the natural-number ceiling",
+        &reabstraction_thunk_with_mangled_ctype_length(u64::from(u32::MAX)),
+        Duration::from_secs(1),
+    );
+    assert_symbol_abstains_within(
+        "mangled C type length past the natural-number ceiling",
+        &reabstraction_thunk_with_mangled_ctype_length(u64::MAX),
+        Duration::from_secs(1),
+    );
+    assert_symbol_abstains_within(
+        "mangled C type past the symbol end",
+        &reabstraction_thunk_with_mangled_ctype_length(1 << 20),
+        Duration::from_secs(1),
+    );
+}
+
+#[test]
+fn a_narrow_reabstraction_thunk_under_the_bound_still_recovers() {
+    let mangled: String = reabstraction_thunk_of_width(4);
+    let rendered: String = demangle::demangle(&mangled)
+        .expect("a reabstraction thunk well under the parser bounds must still recover");
+    assert_eq!(
+        rendered,
+        "reabstraction thunk helper from @callee_guaranteed (@unowned Swift.Int, @unowned \
+         Swift.Int, @unowned Swift.Int, @unowned Swift.Int) -> () to @callee_guaranteed (@unowned \
+         Swift.Int, @unowned Swift.Int, @unowned Swift.Int, @unowned Swift.Int) -> ()"
+    );
 }
