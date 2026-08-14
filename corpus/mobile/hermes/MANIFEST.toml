@@ -71,7 +71,7 @@ license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
 sha256 = "0e1a0a3019afaefdf8fa8a8e50c1a249fcdfa476b894c7a405c427607bd40913"
 hermes_version_detected = 84
-notes = "HBC v84. Parses and recovers function names; opcode bodies decode under the v96 table only."
+notes = "HBC v84. The release-specific v84 table grades all eight function bodies against the original source."
 
 [[sample]]
 name = "sample/sample.hbc.v76"
@@ -80,7 +80,74 @@ license = "self-authored (disrobe regression fixture, freely redistributable)"
 size_bytes = 1203
 sha256 = "3eb217fcceb2c0bcc789227059577a2b07050059a258bd2d2c079ff855a7eeff"
 hermes_version_detected = 76
-notes = "HBC v76. Parses and recovers function names; opcode bodies decode under the v96 table only."
+notes = "HBC v76. The release-specific v76 table grades all eight function bodies against the original source."
+
+[[sample]]
+name = "sample/sample.hbc.v89"
+source_url = "self-authored sample.js compiled with hermesc from hermes-cli-windows-v0.12.0.tar.gz (FOSS)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1158
+sha256 = "6f2b39157bc6e88fed19641e5168e9db4c50ce7be0ea70d42fc966c7286e2705"
+hermes_version_detected = 89
+notes = """
+HBC v89, the bytecode version facebook/hermes tag v0.12.0 declares. Graded through
+the 190-opcode table transcribed from BytecodeList.def at that tag.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v83"
+source_url = "self-authored sample.js compiled with hermesc from hermes-cli-windows-v0.8.0.tar.gz (FOSS)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1158
+sha256 = "09a9836e44084dc990f7b1b18b3430cf267d1520ae1a0789557caff47a66b5fa"
+hermes_version_detected = 83
+notes = """
+HBC v83, the bytecode version facebook/hermes tag v0.8.0 declares. Its opcode list is
+byte-identical to the v84 list, so both versions share one table.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v74"
+source_url = "self-authored sample.js compiled with hermes from hermes-cli-windows-v0.4.0.tar.gz (FOSS)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1146
+sha256 = "ea77e6e5c0fea4d9a7f1e4499a392627934e96cb25adf5b436431c5fdfb0bf41"
+hermes_version_detected = 74
+notes = """
+HBC v74, the bytecode version facebook/hermes tag v0.4.0 declares. Its opcode list is
+byte-identical to the v76 list, so both versions share one table.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v71"
+source_url = "self-authored sample.js compiled with hermes from hermes-cli-windows-v0.3.0.tar.gz (FOSS)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1375
+sha256 = "aeab21e871dcdfc233c58f95bc94ef0904d7d9eaa1db1a3827eda9ab4c0e5418"
+hermes_version_detected = 71
+notes = """
+HBC v71, the bytecode version facebook/hermes tag v0.3.0 declares. The 177-opcode list
+matches v62, but the builtin numbering does not: v0.3.0 adds four HermesInternal methods.
+"""
+
+[[sample]]
+name = "sample/sample.hbc.v62"
+source_url = "self-authored sample.js compiled with hermes from hermes-cli-windows-v0.2.1.tar.gz (FOSS)"
+upstream_repo = "https://github.com/facebook/hermes"
+license = "self-authored (disrobe regression fixture, freely redistributable)"
+size_bytes = 1379
+sha256 = "e143f78b679da0724fba14bcf61d4e1f6efc2605919cbc24c1dd45046bdbc4a6"
+hermes_version_detected = 62
+notes = """
+HBC v62, the oldest bytecode version disrobe accepts, from facebook/hermes tag v0.2.1.
+That release emits far more instructions for the same source than later ones: 161
+against 98 at v74, because locals live in an environment rather than in registers and
+calls pass arguments through the frame window rather than the Call1 to Call4 forms.
+"""
 
 [[sample]]
 name = "discord/index.android.bundle"

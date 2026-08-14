@@ -98,13 +98,58 @@ const CASES: &[ModuleCase] = &[
                  rather than Unreachable so every opcode byte is numbered differently",
         version: 76,
     },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v89",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v89, the release that adds Inc, Dec, ToNumeric \
+                 and the big-int loads but not yet CreateInnerEnvironment",
+        version: 89,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v83",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v83, the release that moves Unreachable to \
+                 opcode 0 and replaces ThrowIfUndefinedInst with ThrowIfEmpty",
+        version: 83,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v74",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v74, the oldest release whose opcode list \
+                 already carries the iterator instructions",
+        version: 74,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v71",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v71, compiled before the iterator opcodes exist \
+                 and before the HermesInternal helpers leave the public builtin table",
+        version: 71,
+    },
+    ModuleCase {
+        directory: "sample",
+        bytecode: "sample.hbc.v62",
+        original: "sample.js",
+        observation: "",
+        shapes: "the same top-level module at hbc v62, the oldest accepted release, whose \
+                 unoptimised codegen emits far more instructions for the same source",
+        version: 62,
+    },
 ];
 
-const PINNED_MODULES: usize = 7;
-const PINNED_FUNCTIONS_PARSED: usize = 32;
-const PINNED_FUNCTIONS_WITH_BODY: usize = 32;
-const PINNED_FUNCTIONS_CARRIED: usize = 32;
-const PINNED_FUNCTIONS_PARSE_VALID: usize = 32;
+const PINNED_MODULES: usize = 12;
+const PINNED_FUNCTIONS_PARSED: usize = 72;
+const PINNED_FUNCTIONS_WITH_BODY: usize = 72;
+const PINNED_FUNCTIONS_CARRIED: usize = 72;
+const PINNED_FUNCTIONS_PARSE_VALID: usize = 72;
 const PINNED_FUNCTIONS_DECLINED: usize = 0;
 
 fn corpus(parts: &[&str]) -> PathBuf {

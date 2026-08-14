@@ -10,6 +10,7 @@ use super::structure::{StructureDecline, structure_function};
 use super::{HERMES_LIFTED_VERSIONS, HermesExceptionEntry, HermesModule, SmallFunctionHeader};
 
 const MAX_RENDERED_CALL_ARGS: u64 = 256;
+const CALL_FRAME_THIS_SLOT: u32 = 7;
 
 const UNRECOVERED_ARG: &str = "<arg?>";
 
@@ -454,10 +455,13 @@ struct LiftCtx<'a> {
     code_base: usize,
     regs: BTreeMap<u32, String>,
     env_levels: BTreeMap<u32, u32>,
+    owned_env_regs: BTreeSet<u32>,
     materialized: BTreeSet<u32>,
     window_consumed: BTreeSet<u32>,
     declared: BTreeSet<u32>,
     inline_bodies: &'a BTreeMap<u32, String>,
+    own_env_slots: BTreeSet<u64>,
+    frame_size: u32,
     reconstructed: usize,
     fallback: usize,
     unaccounted: usize,
@@ -471,16 +475,20 @@ impl<'a> LiftCtx<'a> {
         materialized: BTreeSet<u32>,
         window_consumed: BTreeSet<u32>,
         inline_bodies: &'a BTreeMap<u32, String>,
+        frame_size: u32,
     ) -> Self {
         LiftCtx {
             module,
             code_base,
             regs: BTreeMap::new(),
             env_levels: BTreeMap::new(),
+            owned_env_regs: BTreeSet::new(),
             materialized,
             window_consumed,
             declared: BTreeSet::new(),
             inline_bodies,
+            own_env_slots: BTreeSet::new(),
+            frame_size,
             reconstructed: 0,
             fallback: 0,
             unaccounted: 0,
@@ -528,16 +536,27 @@ impl<'a> LiftCtx<'a> {
         } else {
             format!("{name} = {rhs};")
         };
+        self.env_levels.remove(&r);
+        self.owned_env_regs.remove(&r);
         self.regs.insert(r, name);
         stmt
     }
 
-    fn set_env(&mut self, reg: u32, level: u32) {
+    fn set_env(&mut self, reg: u32, level: u32, owned: bool) {
         self.env_levels.insert(reg, level);
+        if owned {
+            self.owned_env_regs.insert(reg);
+        } else {
+            self.owned_env_regs.remove(&reg);
+        }
     }
 
     fn env_level(&self, reg: u32) -> u32 {
         self.env_levels.get(&reg).copied().unwrap_or(0)
+    }
+
+    fn owns_env(&self, reg: u32) -> bool {
+        self.owned_env_regs.contains(&reg)
     }
 
     fn reg_expr(&self, r: u32) -> String {
@@ -553,6 +572,8 @@ impl<'a> LiftCtx<'a> {
     }
 
     fn set_reg(&mut self, r: u32, expr: String) {
+        self.env_levels.remove(&r);
+        self.owned_env_regs.remove(&r);
         if expr.len() > MAX_REG_EXPR_BYTES {
             self.regs.insert(r, format!("r{r}"));
         } else {
@@ -561,6 +582,8 @@ impl<'a> LiftCtx<'a> {
     }
 
     fn set_reg_closure(&mut self, r: u32, expr: String) {
+        self.env_levels.remove(&r);
+        self.owned_env_regs.remove(&r);
         self.regs.insert(r, expr);
     }
 
@@ -1140,31 +1163,37 @@ fn lift_instruction_inner(
         }
         "Mov" | "MovLong" => {
             let d: u32 = reg_of(ops.first());
-            let src: String = ctx.reg_expr(reg_of(ops.get(1)));
+            let source_reg: u32 = reg_of(ops.get(1));
+            let src: String = ctx.reg_expr(source_reg);
+            let source_env: Option<(u32, bool)> = ctx
+                .env_levels
+                .get(&source_reg)
+                .copied()
+                .map(|level: u32| (level, ctx.owns_env(source_reg)));
             ctx.set_reg(d, src);
-            if let Some(level) = ctx.env_levels.get(&reg_of(ops.get(1))).copied() {
-                ctx.set_env(d, level);
+            if let Some((level, owned)) = source_env {
+                ctx.set_env(d, level, owned);
             }
             ctx.reconstructed += 1;
         }
         "CreateEnvironment" => {
             let d: u32 = reg_of(ops.first());
             ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, 0);
+            ctx.set_env(d, 0, true);
             ctx.reconstructed += 1;
         }
         "CreateInnerEnvironment" => {
             let d: u32 = reg_of(ops.first());
             let parent: u32 = reg_of(ops.get(1));
             ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, ctx.env_level(parent));
+            ctx.set_env(d, ctx.env_level(parent), true);
             ctx.reconstructed += 1;
         }
         "GetEnvironment" => {
             let d: u32 = reg_of(ops.first());
             let levels: u32 = uint_of(ops.get(1)) as u32;
             ctx.set_reg(d, "$env".to_owned());
-            ctx.set_env(d, levels);
+            ctx.set_env(d, levels, false);
             ctx.reconstructed += 1;
         }
         "LoadFromEnvironment" | "LoadFromEnvironmentL" => {
@@ -1172,6 +1201,9 @@ fn lift_instruction_inner(
             let env_reg: u32 = reg_of(ops.get(1));
             let slot: u64 = uint_of(ops.get(2));
             let level: u32 = ctx.env_level(env_reg);
+            if ctx.owns_env(env_reg) {
+                ctx.own_env_slots.insert(slot);
+            }
             ctx.set_reg(d, captured_var(level, slot));
             ctx.reconstructed += 1;
         }
@@ -1183,6 +1215,9 @@ fn lift_instruction_inner(
             let slot: u64 = uint_of(ops.get(1));
             let value: String = ctx.reg_expr(reg_of(ops.get(2)));
             let level: u32 = ctx.env_level(env_reg);
+            if ctx.owns_env(env_reg) {
+                ctx.own_env_slots.insert(slot);
+            }
             let name: String = captured_var(level, slot);
             stmts.push(BlockStmt::Line(format!("{name} = {value};")));
             ctx.reconstructed += 1;
@@ -1547,7 +1582,7 @@ fn lift_instruction_inner(
             } else {
                 ""
             };
-            let args: String = match recover_call_arguments(ctx, inst, instructions, argc) {
+            let args: String = match recover_call_arguments(ctx, argc) {
                 Some(recovered) => recovered.join(", "),
                 None => unrecovered_arg_list(argc),
             };
@@ -1683,30 +1718,15 @@ fn next_offset_after(inst: &Instruction, instructions: &[Instruction]) -> Option
 }
 
 #[must_use]
-fn call_window_registers(
-    instructions: &[Instruction],
-    call_index: usize,
-    argc: u64,
-) -> Option<Vec<u32>> {
+fn call_window_registers(frame_size: u32, argc: u64) -> Option<Vec<u32>> {
     if argc == 0 {
         return Some(Vec::new());
     }
-    let argc: usize = usize::try_from(argc).ok()?;
-    if argc > MAX_RENDERED_CALL_ARGS as usize {
+    if argc > MAX_RENDERED_CALL_ARGS {
         return None;
     }
-    let scan_start: usize = call_index.saturating_sub(64);
-    let this_reg: u32 =
-        instructions[scan_start..call_index]
-            .iter()
-            .rev()
-            .find_map(|prior: &Instruction| match &*prior.name {
-                "Mov" | "MovLong" => match prior.operands.first() {
-                    Some(OperandValue::Reg(r)) => Some(*r),
-                    _ => None,
-                },
-                _ => None,
-            })?;
+    let argc: usize = usize::try_from(argc).ok()?;
+    let this_reg: u32 = frame_size.checked_sub(CALL_FRAME_THIS_SLOT)?;
     if (this_reg as usize) < argc {
         return None;
     }
@@ -1717,19 +1737,11 @@ fn call_window_registers(
     Some(window)
 }
 
-fn recover_call_arguments(
-    ctx: &LiftCtx<'_>,
-    inst: &Instruction,
-    instructions: &[Instruction],
-    argc: u64,
-) -> Option<Vec<String>> {
+fn recover_call_arguments(ctx: &LiftCtx<'_>, argc: u64) -> Option<Vec<String>> {
     if argc == 0 {
         return Some(Vec::new());
     }
-    let call_index: usize = instructions
-        .iter()
-        .position(|i: &Instruction| i.offset == inst.offset)?;
-    let window: Vec<u32> = call_window_registers(instructions, call_index, argc)?;
+    let window: Vec<u32> = call_window_registers(ctx.frame_size, argc)?;
     let args: Vec<String> = window.iter().map(|r: &u32| ctx.reg_expr(*r)).collect();
     if args
         .iter()
@@ -1741,9 +1753,9 @@ fn recover_call_arguments(
 }
 
 #[must_use]
-fn call_window_consumed(instructions: &[Instruction]) -> BTreeSet<u32> {
+fn call_window_consumed(instructions: &[Instruction], frame_size: u32) -> BTreeSet<u32> {
     let mut consumed: BTreeSet<u32> = BTreeSet::new();
-    for (i, inst) in instructions.iter().enumerate() {
+    for inst in instructions {
         if !matches!(
             &*inst.name,
             "Call" | "CallLong" | "Construct" | "ConstructLong"
@@ -1751,7 +1763,7 @@ fn call_window_consumed(instructions: &[Instruction]) -> BTreeSet<u32> {
             continue;
         }
         let argc: u64 = uint_of(inst.operands.get(2)).saturating_sub(1);
-        if let Some(window) = call_window_registers(instructions, i, argc) {
+        if let Some(window) = call_window_registers(frame_size, argc) {
             for r in window {
                 consumed.insert(r);
             }
@@ -1966,7 +1978,7 @@ fn decompile_function_tallied(
     let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
     let cfg: Cfg = build_cfg(&instructions, &module.raw_image, code_base, &exceptions);
 
-    let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions);
+    let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions, header.frame_size);
     let materialized: BTreeSet<u32> = compute_materialized(&instructions, &cfg, &exceptions);
     let mut ctx: LiftCtx<'_> = LiftCtx::new(
         module,
@@ -1974,6 +1986,7 @@ fn decompile_function_tallied(
         materialized,
         window_consumed,
         inline_bodies,
+        header.frame_size,
     );
     let lifted: Vec<LiftedBlock> = cfg
         .blocks
@@ -2033,8 +2046,18 @@ fn decompile_function_tallied(
     } else {
         "function"
     };
+    let own_env: String = if ctx.own_env_slots.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = ctx
+            .own_env_slots
+            .iter()
+            .map(|slot: &u64| captured_var(0, *slot))
+            .collect();
+        format!("  var {};\n", names.join(", "))
+    };
     let source: String = format!(
-        "{fn_keyword} {name}({}) {{{strict}\n{body}}}",
+        "{fn_keyword} {name}({}) {{{strict}\n{own_env}{body}}}",
         params.join(", ")
     );
 
@@ -2767,29 +2790,24 @@ mod tests {
 
     #[test]
     fn call_window_rejects_argc_above_render_cap() {
-        let instructions: Vec<Instruction> = vec![
-            Instruction {
-                offset: 0,
-                size: 1,
-                opcode: 0,
-                name: Cow::Borrowed("Mov"),
-                operands: vec![OperandValue::Reg(u32::MAX)],
-            },
-            Instruction {
-                offset: 1,
-                size: 1,
-                opcode: 0,
-                name: Cow::Borrowed("CallLong"),
-                operands: Vec::new(),
-            },
-        ];
-        assert!(call_window_registers(&instructions, 1, MAX_RENDERED_CALL_ARGS + 1).is_none());
-        let at_cap: Option<Vec<u32>> =
-            call_window_registers(&instructions, 1, MAX_RENDERED_CALL_ARGS);
+        assert!(call_window_registers(u32::MAX, MAX_RENDERED_CALL_ARGS + 1).is_none());
+        let at_cap: Option<Vec<u32>> = call_window_registers(u32::MAX, MAX_RENDERED_CALL_ARGS);
         assert_eq!(
             at_cap.map(|w: Vec<u32>| w.len()),
             Some(MAX_RENDERED_CALL_ARGS as usize)
         );
+    }
+
+    #[test]
+    fn the_call_argument_window_sits_where_the_frame_layout_puts_it() {
+        assert_eq!(call_window_registers(36, 2), Some(vec![28, 27]));
+        assert_eq!(call_window_registers(17, 1), Some(vec![9]));
+        assert_eq!(call_window_registers(15, 1), Some(vec![7]));
+        assert_eq!(call_window_registers(15, 0), Some(Vec::new()));
+        for frame_size in 0u32..=7 {
+            assert_eq!(call_window_registers(frame_size, 1), None);
+        }
+        assert_eq!(call_window_registers(9, 3), None);
     }
 
     fn opcode_byte(name: &str) -> u8 {
@@ -3211,7 +3229,7 @@ mod tests {
         );
         let no_inline: BTreeMap<u32, String> = BTreeMap::new();
         let ctx: LiftCtx<'_> =
-            LiftCtx::new(&module, 0, BTreeSet::new(), BTreeSet::new(), &no_inline);
+            LiftCtx::new(&module, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
 
         let bomb_count: usize = u32::MAX as usize;
         let obj: String = ctx.object_literal(bomb_count, 0, 0);
@@ -3240,7 +3258,7 @@ mod tests {
             Vec::new(),
         );
         let empty_ctx: LiftCtx<'_> =
-            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline);
+            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline, 0);
         assert_eq!(empty_ctx.object_literal(bomb_count, 0, 0), "{}");
         assert_eq!(empty_ctx.array_literal(bomb_count, 0), "[]");
     }
@@ -3346,6 +3364,22 @@ mod tests {
             "expected level-2 captured var; src: {}",
             f.source
         );
+        assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
+    }
+
+    #[test]
+    fn captured_level_zero_environment_does_not_declare_a_shadowing_local() {
+        let mut code: Vec<u8> = Vec::new();
+        code.push(opcode_byte("GetEnvironment"));
+        code.extend_from_slice(&[0u8, 0u8]);
+        code.push(opcode_byte("LoadFromEnvironment"));
+        code.extend_from_slice(&[1u8, 0u8, 5u8]);
+        code.push(opcode_byte("Ret"));
+        code.push(1u8);
+        let module: HermesModule = module_with(&["inner"], &[], code, 1);
+        let f: DecompiledFunction = decompile_function(&module, 0);
+        assert!(f.source.contains("return cvar5;"), "src: {}", f.source);
+        assert!(!f.source.contains("var cvar5;"), "src: {}", f.source);
         assert_eq!(f.fallback_ops, 0, "src: {}", f.source);
     }
 

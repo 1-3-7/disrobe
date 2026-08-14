@@ -494,9 +494,9 @@ fn neither_side_of_the_differential_reads_a_value_that_can_change_between_runs()
         );
     }
 }
-const PINNED_LIFTED_VERSIONS: usize = 3;
-const PINNED_VERSION_BEHAVIORALLY_CORRECT: usize = 24;
-const PINNED_VERSION_BEHAVIOR_POPULATION: usize = 24;
+const PINNED_LIFTED_VERSIONS: usize = 8;
+const PINNED_VERSION_BEHAVIORALLY_CORRECT: usize = 64;
+const PINNED_VERSION_BEHAVIOR_POPULATION: usize = 64;
 
 fn normalized_source(text: &str) -> String {
     let single_quoted: String = text.replace('"', "'");

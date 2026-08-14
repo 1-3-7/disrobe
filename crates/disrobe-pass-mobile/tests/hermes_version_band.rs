@@ -42,25 +42,65 @@ const LAYOUT_BOUNDARY_87: &str = "the header gains the two big-int fields at thi
      release bundle for it is in the corpus, so the field layout is exercised by the layout probe \
      in hermes_reader_versions.rs and bodies are refused by number";
 
-const NO_RELEASE_TAG_89: &str = "facebook/hermes tag v0.12.0 declares this bytecode version and \
-     its opcode order is knowable, but no bundle compiled by that release is in the corpus, so \
-     nothing would grade a lifted body here and bodies are refused by number";
+const V62: Measured = Measured {
+    sample: "sample/sample.hbc.v62",
+    upstream_tag: "v0.2.1",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 161,
+    reconstructed_ops: 161,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
 
-const NO_RELEASE_TAG_83: &str = "facebook/hermes tag v0.8.0 declares this bytecode version and its \
-     opcode order matches the v84 table, but no bundle compiled by that release is in the corpus, \
-     so nothing would grade a lifted body here and bodies are refused by number";
+const V71: Measured = Measured {
+    sample: "sample/sample.hbc.v71",
+    upstream_tag: "v0.3.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 161,
+    reconstructed_ops: 161,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
 
-const NO_RELEASE_TAG_74: &str = "facebook/hermes tags v0.4.0 through v0.6.0 declare this bytecode \
-     version and its opcode order matches the v76 table, but no bundle compiled by those releases \
-     is in the corpus, so nothing would grade a lifted body here and bodies are refused by number";
+const V74: Measured = Measured {
+    sample: "sample/sample.hbc.v74",
+    upstream_tag: "v0.4.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
 
-const NO_RELEASE_TAG_71: &str = "facebook/hermes tag v0.3.0 declares this bytecode version and its \
-     opcode order is knowable, but no bundle compiled by that release is in the corpus, so nothing \
-     would grade a lifted body here and bodies are refused by number";
+const V83: Measured = Measured {
+    sample: "sample/sample.hbc.v83",
+    upstream_tag: "v0.8.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
 
-const NO_RELEASE_TAG_62: &str = "facebook/hermes tag v0.2.1 declares this bytecode version and its \
-     opcode order is knowable, but no bundle compiled by that release is in the corpus, so nothing \
-     would grade a lifted body here and bodies are refused by number";
+const V89: Measured = Measured {
+    sample: "sample/sample.hbc.v89",
+    upstream_tag: "v0.12.0",
+    functions: 8,
+    bodies: 8,
+    decoded_ops: 98,
+    reconstructed_ops: 98,
+    declined_ops: 0,
+    unaccounted_ops: 0,
+    structured: 8,
+};
 
 const V76: Measured = Measured {
     sample: "sample/sample.hbc.v76",
@@ -101,7 +141,7 @@ const V96: Measured = Measured {
 const BAND: [(u32, Coverage); 37] = [
     (60, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (61, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (62, Coverage::NoSample(NO_RELEASE_TAG_62)),
+    (62, Coverage::BodiesGraded(V62)),
     (63, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (64, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (65, Coverage::NoSample(NO_RELEASE_SAMPLE)),
@@ -110,10 +150,10 @@ const BAND: [(u32, Coverage); 37] = [
     (68, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (69, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (70, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (71, Coverage::NoSample(NO_RELEASE_TAG_71)),
+    (71, Coverage::BodiesGraded(V71)),
     (72, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (73, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (74, Coverage::NoSample(NO_RELEASE_TAG_74)),
+    (74, Coverage::BodiesGraded(V74)),
     (75, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (76, Coverage::BodiesGraded(V76)),
     (77, Coverage::NoSample(NO_RELEASE_SAMPLE)),
@@ -122,13 +162,13 @@ const BAND: [(u32, Coverage); 37] = [
     (80, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (81, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (82, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (83, Coverage::NoSample(NO_RELEASE_TAG_83)),
+    (83, Coverage::BodiesGraded(V83)),
     (84, Coverage::BodiesGraded(V84)),
     (85, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (86, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (87, Coverage::NoSample(LAYOUT_BOUNDARY_87)),
     (88, Coverage::NoSample(NO_RELEASE_SAMPLE)),
-    (89, Coverage::NoSample(NO_RELEASE_TAG_89)),
+    (89, Coverage::BodiesGraded(V89)),
     (90, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (91, Coverage::NoSample(NO_RELEASE_SAMPLE)),
     (92, Coverage::NoSample(NO_RELEASE_SAMPLE)),
@@ -148,11 +188,11 @@ const SAMPLE_NAMES: [&str; 7] = [
     "label",
 ];
 
-const PINNED_GRADED_VERSIONS: usize = 3;
-const PINNED_GRADED_FUNCTIONS: usize = 24;
-const PINNED_GRADED_DECODED_OPS: usize = 295;
-const PINNED_GRADED_RECONSTRUCTED_OPS: usize = 295;
-const PINNED_GRADED_STRUCTURED: usize = 24;
+const PINNED_GRADED_VERSIONS: usize = 8;
+const PINNED_GRADED_FUNCTIONS: usize = 64;
+const PINNED_GRADED_DECODED_OPS: usize = 911;
+const PINNED_GRADED_RECONSTRUCTED_OPS: usize = 911;
+const PINNED_GRADED_STRUCTURED: usize = 64;
 
 fn corpus(relative: &str) -> PathBuf {
     let mut path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -348,7 +388,7 @@ fn each_graded_version_meets_its_pinned_recovery_counts_and_the_rest_refuse_by_n
 
     assert_eq!(
         graded_versions, PINNED_GRADED_VERSIONS,
-        "three versions in the accepted band have a committed sample; a run that grades fewer of \
+        "eight versions in the accepted band have a committed sample; a run that grades fewer of \
          them is reading the wrong corpus path rather than meeting a legitimate absence"
     );
     assert_eq!(

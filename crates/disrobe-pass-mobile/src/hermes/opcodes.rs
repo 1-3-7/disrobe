@@ -59,6 +59,187 @@ pub(crate) struct BytecodeTable {
 }
 
 #[rustfmt::skip]
+pub(crate) const OPCODES_HBC62: &[OpcodeSpec] = &[
+    op!("NewObjectWithBuffer", Reg8, UInt16, UInt16, UInt16, UInt16),
+    op!("NewObjectWithBufferLong", Reg8, UInt16, UInt16, UInt32, UInt32),
+    op!("NewObject", Reg8),
+    op!("NewObjectWithParent", Reg8, Reg8),
+    op!("NewArrayWithBuffer", Reg8, UInt16, UInt16, UInt16),
+    op!("NewArrayWithBufferLong", Reg8, UInt16, UInt16, UInt32),
+    op!("NewArray", Reg8, UInt16),
+    op!("Mov", Reg8, Reg8),
+    op!("MovLong", Reg32, Reg32),
+    op!("Negate", Reg8, Reg8),
+    op!("Not", Reg8, Reg8),
+    op!("BitNot", Reg8, Reg8),
+    op!("TypeOf", Reg8, Reg8),
+    op!("Eq", Reg8, Reg8, Reg8),
+    op!("StrictEq", Reg8, Reg8, Reg8),
+    op!("Neq", Reg8, Reg8, Reg8),
+    op!("StrictNeq", Reg8, Reg8, Reg8),
+    op!("Less", Reg8, Reg8, Reg8),
+    op!("LessEq", Reg8, Reg8, Reg8),
+    op!("Greater", Reg8, Reg8, Reg8),
+    op!("GreaterEq", Reg8, Reg8, Reg8),
+    op!("Add", Reg8, Reg8, Reg8),
+    op!("AddN", Reg8, Reg8, Reg8),
+    op!("Mul", Reg8, Reg8, Reg8),
+    op!("MulN", Reg8, Reg8, Reg8),
+    op!("Div", Reg8, Reg8, Reg8),
+    op!("DivN", Reg8, Reg8, Reg8),
+    op!("Mod", Reg8, Reg8, Reg8),
+    op!("Sub", Reg8, Reg8, Reg8),
+    op!("SubN", Reg8, Reg8, Reg8),
+    op!("LShift", Reg8, Reg8, Reg8),
+    op!("RShift", Reg8, Reg8, Reg8),
+    op!("URshift", Reg8, Reg8, Reg8),
+    op!("BitAnd", Reg8, Reg8, Reg8),
+    op!("BitXor", Reg8, Reg8, Reg8),
+    op!("BitOr", Reg8, Reg8, Reg8),
+    op!("InstanceOf", Reg8, Reg8, Reg8),
+    op!("IsIn", Reg8, Reg8, Reg8),
+    op!("GetEnvironment", Reg8, UInt8),
+    op!("StoreToEnvironment", Reg8, UInt8, Reg8),
+    op!("StoreToEnvironmentL", Reg8, UInt16, Reg8),
+    op!("StoreNPToEnvironment", Reg8, UInt8, Reg8),
+    op!("StoreNPToEnvironmentL", Reg8, UInt16, Reg8),
+    op!("LoadFromEnvironment", Reg8, Reg8, UInt8),
+    op!("LoadFromEnvironmentL", Reg8, Reg8, UInt16),
+    op!("GetGlobalObject", Reg8),
+    op!("GetNewTarget", Reg8),
+    op!("CreateEnvironment", Reg8),
+    op!("DeclareGlobalVar", StringId32),
+    op!("GetByIdShort", Reg8, Reg8, UInt8, StringId8),
+    op!("GetById", Reg8, Reg8, UInt8, StringId16),
+    op!("GetByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("TryGetById", Reg8, Reg8, UInt8, StringId16),
+    op!("TryGetByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("PutById", Reg8, Reg8, UInt8, StringId16),
+    op!("PutByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("TryPutById", Reg8, Reg8, UInt8, StringId16),
+    op!("TryPutByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("PutNewOwnByIdShort", Reg8, Reg8, StringId8),
+    op!("PutNewOwnById", Reg8, Reg8, StringId16),
+    op!("PutNewOwnByIdLong", Reg8, Reg8, StringId32),
+    op!("PutNewOwnNEById", Reg8, Reg8, StringId16),
+    op!("PutNewOwnNEByIdLong", Reg8, Reg8, StringId32),
+    op!("PutOwnByIndex", Reg8, Reg8, UInt8),
+    op!("PutOwnByIndexL", Reg8, Reg8, UInt32),
+    op!("PutOwnByVal", Reg8, Reg8, Reg8, UInt8),
+    op!("DelById", Reg8, Reg8, StringId16),
+    op!("DelByIdLong", Reg8, Reg8, StringId32),
+    op!("GetByVal", Reg8, Reg8, Reg8),
+    op!("PutByVal", Reg8, Reg8, Reg8),
+    op!("DelByVal", Reg8, Reg8, Reg8),
+    op!("PutOwnGetterSetterByVal", Reg8, Reg8, Reg8, Reg8, UInt8),
+    op!("GetPNameList", Reg8, Reg8, Reg8, Reg8),
+    op!("GetNextPName", Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("Call", Reg8, Reg8, UInt8),
+    op!("Construct", Reg8, Reg8, UInt8),
+    op!("Call1", Reg8, Reg8, Reg8),
+    op!("CallDirect", Reg8, UInt8, FunctionId16),
+    op!("Call2", Reg8, Reg8, Reg8, Reg8),
+    op!("Call3", Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("Call4", Reg8, Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("CallLong", Reg8, Reg8, UInt32),
+    op!("ConstructLong", Reg8, Reg8, UInt32),
+    op!("CallDirectLongIndex", Reg8, UInt8, FunctionId32),
+    op!("CallBuiltin", Reg8, UInt8, UInt8),
+    op!("Ret", Reg8),
+    op!("Catch", Reg8),
+    op!("DirectEval", Reg8, Reg8),
+    op!("Throw", Reg8),
+    op!("ThrowIfUndefinedInst", Reg8),
+    op!("Debugger"),
+    op!("AsyncBreakCheck"),
+    op!("ProfilePoint", UInt16),
+    op!("Unreachable"),
+    op!("CreateClosure", Reg8, Reg8, FunctionId16),
+    op!("CreateClosureLongIndex", Reg8, Reg8, FunctionId32),
+    op!("CreateGeneratorClosure", Reg8, Reg8, FunctionId16),
+    op!("CreateGeneratorClosureLongIndex", Reg8, Reg8, FunctionId32),
+    op!("CreateThis", Reg8, Reg8, Reg8),
+    op!("SelectObject", Reg8, Reg8, Reg8),
+    op!("LoadParam", Reg8, UInt8),
+    op!("LoadParamLong", Reg8, UInt32),
+    op!("LoadConstUInt8", Reg8, UInt8),
+    op!("LoadConstInt", Reg8, Imm32),
+    op!("LoadConstDouble", Reg8, Double),
+    op!("LoadConstString", Reg8, StringId16),
+    op!("LoadConstStringLongIndex", Reg8, StringId32),
+    op!("LoadConstUndefined", Reg8),
+    op!("LoadConstNull", Reg8),
+    op!("LoadConstTrue", Reg8),
+    op!("LoadConstFalse", Reg8),
+    op!("LoadConstZero", Reg8),
+    op!("CoerceThisNS", Reg8, Reg8),
+    op!("LoadThisNS", Reg8),
+    op!("ToNumber", Reg8, Reg8),
+    op!("ToInt32", Reg8, Reg8),
+    op!("AddEmptyString", Reg8, Reg8),
+    op!("GetArgumentsPropByVal", Reg8, Reg8, Reg8),
+    op!("GetArgumentsLength", Reg8, Reg8),
+    op!("ReifyArguments", Reg8),
+    op!("CreateRegExp", Reg8, StringId32, StringId32, UInt32),
+    op!("SwitchImm", Reg8, UInt32, Addr32, UInt32, UInt32),
+    op!("StartGenerator"),
+    op!("ResumeGenerator", Reg8, Reg8),
+    op!("CompleteGenerator"),
+    op!("CreateGenerator", Reg8, Reg8, FunctionId16),
+    op!("CreateGeneratorLongIndex", Reg8, Reg8, FunctionId32),
+    op!("Jmp", Addr8),
+    op!("JmpLong", Addr32),
+    op!("JmpTrue", Addr8, Reg8),
+    op!("JmpTrueLong", Addr32, Reg8),
+    op!("JmpFalse", Addr8, Reg8),
+    op!("JmpFalseLong", Addr32, Reg8),
+    op!("JmpUndefined", Addr8, Reg8),
+    op!("JmpUndefinedLong", Addr32, Reg8),
+    op!("SaveGenerator", Addr8),
+    op!("SaveGeneratorLong", Addr32),
+    op!("JLess", Addr8, Reg8, Reg8),
+    op!("JLessLong", Addr32, Reg8, Reg8),
+    op!("JNotLess", Addr8, Reg8, Reg8),
+    op!("JNotLessLong", Addr32, Reg8, Reg8),
+    op!("JLessN", Addr8, Reg8, Reg8),
+    op!("JLessNLong", Addr32, Reg8, Reg8),
+    op!("JNotLessN", Addr8, Reg8, Reg8),
+    op!("JNotLessNLong", Addr32, Reg8, Reg8),
+    op!("JLessEqual", Addr8, Reg8, Reg8),
+    op!("JLessEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotLessEqual", Addr8, Reg8, Reg8),
+    op!("JNotLessEqualLong", Addr32, Reg8, Reg8),
+    op!("JLessEqualN", Addr8, Reg8, Reg8),
+    op!("JLessEqualNLong", Addr32, Reg8, Reg8),
+    op!("JNotLessEqualN", Addr8, Reg8, Reg8),
+    op!("JNotLessEqualNLong", Addr32, Reg8, Reg8),
+    op!("JGreater", Addr8, Reg8, Reg8),
+    op!("JGreaterLong", Addr32, Reg8, Reg8),
+    op!("JNotGreater", Addr8, Reg8, Reg8),
+    op!("JNotGreaterLong", Addr32, Reg8, Reg8),
+    op!("JGreaterN", Addr8, Reg8, Reg8),
+    op!("JGreaterNLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterN", Addr8, Reg8, Reg8),
+    op!("JNotGreaterNLong", Addr32, Reg8, Reg8),
+    op!("JGreaterEqual", Addr8, Reg8, Reg8),
+    op!("JGreaterEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterEqual", Addr8, Reg8, Reg8),
+    op!("JNotGreaterEqualLong", Addr32, Reg8, Reg8),
+    op!("JGreaterEqualN", Addr8, Reg8, Reg8),
+    op!("JGreaterEqualNLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterEqualN", Addr8, Reg8, Reg8),
+    op!("JNotGreaterEqualNLong", Addr32, Reg8, Reg8),
+    op!("JEqual", Addr8, Reg8, Reg8),
+    op!("JEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotEqual", Addr8, Reg8, Reg8),
+    op!("JNotEqualLong", Addr32, Reg8, Reg8),
+    op!("JStrictEqual", Addr8, Reg8, Reg8),
+    op!("JStrictEqualLong", Addr32, Reg8, Reg8),
+    op!("JStrictNotEqual", Addr8, Reg8, Reg8),
+    op!("JStrictNotEqualLong", Addr32, Reg8, Reg8),
+];
+
+#[rustfmt::skip]
 pub(crate) const OPCODES_HBC76: &[OpcodeSpec] = &[
     op!("NewObjectWithBuffer", Reg8, UInt16, UInt16, UInt16, UInt16),
     op!("NewObjectWithBufferLong", Reg8, UInt16, UInt16, UInt32, UInt32),
@@ -432,6 +613,200 @@ pub(crate) const OPCODES_HBC84: &[OpcodeSpec] = &[
 ];
 
 #[rustfmt::skip]
+pub(crate) const OPCODES_HBC89: &[OpcodeSpec] = &[
+    op!("Unreachable"),
+    op!("NewObjectWithBuffer", Reg8, UInt16, UInt16, UInt16, UInt16),
+    op!("NewObjectWithBufferLong", Reg8, UInt16, UInt16, UInt32, UInt32),
+    op!("NewObject", Reg8),
+    op!("NewObjectWithParent", Reg8, Reg8),
+    op!("NewArrayWithBuffer", Reg8, UInt16, UInt16, UInt16),
+    op!("NewArrayWithBufferLong", Reg8, UInt16, UInt16, UInt32),
+    op!("NewArray", Reg8, UInt16),
+    op!("Mov", Reg8, Reg8),
+    op!("MovLong", Reg32, Reg32),
+    op!("Negate", Reg8, Reg8),
+    op!("Not", Reg8, Reg8),
+    op!("BitNot", Reg8, Reg8),
+    op!("TypeOf", Reg8, Reg8),
+    op!("Eq", Reg8, Reg8, Reg8),
+    op!("StrictEq", Reg8, Reg8, Reg8),
+    op!("Neq", Reg8, Reg8, Reg8),
+    op!("StrictNeq", Reg8, Reg8, Reg8),
+    op!("Less", Reg8, Reg8, Reg8),
+    op!("LessEq", Reg8, Reg8, Reg8),
+    op!("Greater", Reg8, Reg8, Reg8),
+    op!("GreaterEq", Reg8, Reg8, Reg8),
+    op!("Add", Reg8, Reg8, Reg8),
+    op!("AddN", Reg8, Reg8, Reg8),
+    op!("Mul", Reg8, Reg8, Reg8),
+    op!("MulN", Reg8, Reg8, Reg8),
+    op!("Div", Reg8, Reg8, Reg8),
+    op!("DivN", Reg8, Reg8, Reg8),
+    op!("Mod", Reg8, Reg8, Reg8),
+    op!("Sub", Reg8, Reg8, Reg8),
+    op!("SubN", Reg8, Reg8, Reg8),
+    op!("LShift", Reg8, Reg8, Reg8),
+    op!("RShift", Reg8, Reg8, Reg8),
+    op!("URshift", Reg8, Reg8, Reg8),
+    op!("BitAnd", Reg8, Reg8, Reg8),
+    op!("BitXor", Reg8, Reg8, Reg8),
+    op!("BitOr", Reg8, Reg8, Reg8),
+    op!("Inc", Reg8, Reg8),
+    op!("Dec", Reg8, Reg8),
+    op!("InstanceOf", Reg8, Reg8, Reg8),
+    op!("IsIn", Reg8, Reg8, Reg8),
+    op!("GetEnvironment", Reg8, UInt8),
+    op!("StoreToEnvironment", Reg8, UInt8, Reg8),
+    op!("StoreToEnvironmentL", Reg8, UInt16, Reg8),
+    op!("StoreNPToEnvironment", Reg8, UInt8, Reg8),
+    op!("StoreNPToEnvironmentL", Reg8, UInt16, Reg8),
+    op!("LoadFromEnvironment", Reg8, Reg8, UInt8),
+    op!("LoadFromEnvironmentL", Reg8, Reg8, UInt16),
+    op!("GetGlobalObject", Reg8),
+    op!("GetNewTarget", Reg8),
+    op!("CreateEnvironment", Reg8),
+    op!("DeclareGlobalVar", StringId32),
+    op!("GetByIdShort", Reg8, Reg8, UInt8, StringId8),
+    op!("GetById", Reg8, Reg8, UInt8, StringId16),
+    op!("GetByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("TryGetById", Reg8, Reg8, UInt8, StringId16),
+    op!("TryGetByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("PutById", Reg8, Reg8, UInt8, StringId16),
+    op!("PutByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("TryPutById", Reg8, Reg8, UInt8, StringId16),
+    op!("TryPutByIdLong", Reg8, Reg8, UInt8, StringId32),
+    op!("PutNewOwnByIdShort", Reg8, Reg8, StringId8),
+    op!("PutNewOwnById", Reg8, Reg8, StringId16),
+    op!("PutNewOwnByIdLong", Reg8, Reg8, StringId32),
+    op!("PutNewOwnNEById", Reg8, Reg8, StringId16),
+    op!("PutNewOwnNEByIdLong", Reg8, Reg8, StringId32),
+    op!("PutOwnByIndex", Reg8, Reg8, UInt8),
+    op!("PutOwnByIndexL", Reg8, Reg8, UInt32),
+    op!("PutOwnByVal", Reg8, Reg8, Reg8, UInt8),
+    op!("DelById", Reg8, Reg8, StringId16),
+    op!("DelByIdLong", Reg8, Reg8, StringId32),
+    op!("GetByVal", Reg8, Reg8, Reg8),
+    op!("PutByVal", Reg8, Reg8, Reg8),
+    op!("DelByVal", Reg8, Reg8, Reg8),
+    op!("PutOwnGetterSetterByVal", Reg8, Reg8, Reg8, Reg8, UInt8),
+    op!("GetPNameList", Reg8, Reg8, Reg8, Reg8),
+    op!("GetNextPName", Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("Call", Reg8, Reg8, UInt8),
+    op!("Construct", Reg8, Reg8, UInt8),
+    op!("Call1", Reg8, Reg8, Reg8),
+    op!("CallDirect", Reg8, UInt8, FunctionId16),
+    op!("Call2", Reg8, Reg8, Reg8, Reg8),
+    op!("Call3", Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("Call4", Reg8, Reg8, Reg8, Reg8, Reg8, Reg8),
+    op!("CallLong", Reg8, Reg8, UInt32),
+    op!("ConstructLong", Reg8, Reg8, UInt32),
+    op!("CallDirectLongIndex", Reg8, UInt8, FunctionId32),
+    op!("CallBuiltin", Reg8, UInt8, UInt8),
+    op!("CallBuiltinLong", Reg8, UInt8, UInt32),
+    op!("GetBuiltinClosure", Reg8, UInt8),
+    op!("Ret", Reg8),
+    op!("Catch", Reg8),
+    op!("DirectEval", Reg8, Reg8),
+    op!("Throw", Reg8),
+    op!("ThrowIfEmpty", Reg8, Reg8),
+    op!("Debugger"),
+    op!("AsyncBreakCheck"),
+    op!("ProfilePoint", UInt16),
+    op!("CreateClosure", Reg8, Reg8, FunctionId16),
+    op!("CreateClosureLongIndex", Reg8, Reg8, FunctionId32),
+    op!("CreateGeneratorClosure", Reg8, Reg8, FunctionId16),
+    op!("CreateGeneratorClosureLongIndex", Reg8, Reg8, FunctionId32),
+    op!("CreateAsyncClosure", Reg8, Reg8, FunctionId16),
+    op!("CreateAsyncClosureLongIndex", Reg8, Reg8, FunctionId32),
+    op!("CreateThis", Reg8, Reg8, Reg8),
+    op!("SelectObject", Reg8, Reg8, Reg8),
+    op!("LoadParam", Reg8, UInt8),
+    op!("LoadParamLong", Reg8, UInt32),
+    op!("LoadConstUInt8", Reg8, UInt8),
+    op!("LoadConstInt", Reg8, Imm32),
+    op!("LoadConstDouble", Reg8, Double),
+    op!("LoadConstBigInt", Reg8, BigIntId16),
+    op!("LoadConstBigIntLongIndex", Reg8, BigIntId32),
+    op!("LoadConstString", Reg8, StringId16),
+    op!("LoadConstStringLongIndex", Reg8, StringId32),
+    op!("LoadConstEmpty", Reg8),
+    op!("LoadConstUndefined", Reg8),
+    op!("LoadConstNull", Reg8),
+    op!("LoadConstTrue", Reg8),
+    op!("LoadConstFalse", Reg8),
+    op!("LoadConstZero", Reg8),
+    op!("CoerceThisNS", Reg8, Reg8),
+    op!("LoadThisNS", Reg8),
+    op!("ToNumber", Reg8, Reg8),
+    op!("ToNumeric", Reg8, Reg8),
+    op!("ToInt32", Reg8, Reg8),
+    op!("AddEmptyString", Reg8, Reg8),
+    op!("GetArgumentsPropByVal", Reg8, Reg8, Reg8),
+    op!("GetArgumentsLength", Reg8, Reg8),
+    op!("ReifyArguments", Reg8),
+    op!("CreateRegExp", Reg8, StringId32, StringId32, UInt32),
+    op!("SwitchImm", Reg8, UInt32, Addr32, UInt32, UInt32),
+    op!("StartGenerator"),
+    op!("ResumeGenerator", Reg8, Reg8),
+    op!("CompleteGenerator"),
+    op!("CreateGenerator", Reg8, Reg8, FunctionId16),
+    op!("CreateGeneratorLongIndex", Reg8, Reg8, FunctionId32),
+    op!("IteratorBegin", Reg8, Reg8),
+    op!("IteratorNext", Reg8, Reg8, Reg8),
+    op!("IteratorClose", Reg8, UInt8),
+    op!("Jmp", Addr8),
+    op!("JmpLong", Addr32),
+    op!("JmpTrue", Addr8, Reg8),
+    op!("JmpTrueLong", Addr32, Reg8),
+    op!("JmpFalse", Addr8, Reg8),
+    op!("JmpFalseLong", Addr32, Reg8),
+    op!("JmpUndefined", Addr8, Reg8),
+    op!("JmpUndefinedLong", Addr32, Reg8),
+    op!("SaveGenerator", Addr8),
+    op!("SaveGeneratorLong", Addr32),
+    op!("JLess", Addr8, Reg8, Reg8),
+    op!("JLessLong", Addr32, Reg8, Reg8),
+    op!("JNotLess", Addr8, Reg8, Reg8),
+    op!("JNotLessLong", Addr32, Reg8, Reg8),
+    op!("JLessN", Addr8, Reg8, Reg8),
+    op!("JLessNLong", Addr32, Reg8, Reg8),
+    op!("JNotLessN", Addr8, Reg8, Reg8),
+    op!("JNotLessNLong", Addr32, Reg8, Reg8),
+    op!("JLessEqual", Addr8, Reg8, Reg8),
+    op!("JLessEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotLessEqual", Addr8, Reg8, Reg8),
+    op!("JNotLessEqualLong", Addr32, Reg8, Reg8),
+    op!("JLessEqualN", Addr8, Reg8, Reg8),
+    op!("JLessEqualNLong", Addr32, Reg8, Reg8),
+    op!("JNotLessEqualN", Addr8, Reg8, Reg8),
+    op!("JNotLessEqualNLong", Addr32, Reg8, Reg8),
+    op!("JGreater", Addr8, Reg8, Reg8),
+    op!("JGreaterLong", Addr32, Reg8, Reg8),
+    op!("JNotGreater", Addr8, Reg8, Reg8),
+    op!("JNotGreaterLong", Addr32, Reg8, Reg8),
+    op!("JGreaterN", Addr8, Reg8, Reg8),
+    op!("JGreaterNLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterN", Addr8, Reg8, Reg8),
+    op!("JNotGreaterNLong", Addr32, Reg8, Reg8),
+    op!("JGreaterEqual", Addr8, Reg8, Reg8),
+    op!("JGreaterEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterEqual", Addr8, Reg8, Reg8),
+    op!("JNotGreaterEqualLong", Addr32, Reg8, Reg8),
+    op!("JGreaterEqualN", Addr8, Reg8, Reg8),
+    op!("JGreaterEqualNLong", Addr32, Reg8, Reg8),
+    op!("JNotGreaterEqualN", Addr8, Reg8, Reg8),
+    op!("JNotGreaterEqualNLong", Addr32, Reg8, Reg8),
+    op!("JEqual", Addr8, Reg8, Reg8),
+    op!("JEqualLong", Addr32, Reg8, Reg8),
+    op!("JNotEqual", Addr8, Reg8, Reg8),
+    op!("JNotEqualLong", Addr32, Reg8, Reg8),
+    op!("JStrictEqual", Addr8, Reg8, Reg8),
+    op!("JStrictEqualLong", Addr32, Reg8, Reg8),
+    op!("JStrictNotEqual", Addr8, Reg8, Reg8),
+    op!("JStrictNotEqualLong", Addr32, Reg8, Reg8),
+];
+
+#[rustfmt::skip]
 pub(crate) const OPCODES_HBC96: &[OpcodeSpec] = &[
     op!("Unreachable"),
     op!("NewObjectWithBuffer", Reg8, UInt16, UInt16, UInt16, UInt16),
@@ -629,16 +1004,46 @@ pub(crate) const OPCODES_HBC96: &[OpcodeSpec] = &[
 
 pub(crate) const BYTECODE_TABLES: &[BytecodeTable] = &[
     BytecodeTable {
+        version: 62,
+        specs: OPCODES_HBC62,
+        upstream_tag: "v0.2.1",
+        graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v62",
+    },
+    BytecodeTable {
+        version: 71,
+        specs: OPCODES_HBC62,
+        upstream_tag: "v0.3.0",
+        graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v71",
+    },
+    BytecodeTable {
+        version: 74,
+        specs: OPCODES_HBC76,
+        upstream_tag: "v0.4.0",
+        graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v74",
+    },
+    BytecodeTable {
         version: 76,
         specs: OPCODES_HBC76,
         upstream_tag: "v0.7.2",
         graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v76",
     },
     BytecodeTable {
+        version: 83,
+        specs: OPCODES_HBC84,
+        upstream_tag: "v0.8.0",
+        graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v83",
+    },
+    BytecodeTable {
         version: 84,
         specs: OPCODES_HBC84,
         upstream_tag: "v0.11.0",
         graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v84",
+    },
+    BytecodeTable {
+        version: 89,
+        specs: OPCODES_HBC89,
+        upstream_tag: "v0.12.0",
+        graded_sample: "corpus/mobile/hermes/sample/sample.hbc.v89",
     },
     BytecodeTable {
         version: 96,
@@ -740,7 +1145,28 @@ mod tests {
 
     #[test]
     fn each_table_reproduces_the_opcode_order_of_its_upstream_release() {
-        let expected: [(u32, &str, usize, &str, &str); 3] = [
+        let expected: [(u32, &str, usize, &str, &str); 8] = [
+            (
+                62,
+                "v0.2.1",
+                177,
+                "NewObjectWithBuffer",
+                "JStrictNotEqualLong",
+            ),
+            (
+                71,
+                "v0.3.0",
+                177,
+                "NewObjectWithBuffer",
+                "JStrictNotEqualLong",
+            ),
+            (
+                74,
+                "v0.4.0",
+                180,
+                "NewObjectWithBuffer",
+                "JStrictNotEqualLong",
+            ),
             (
                 76,
                 "v0.7.2",
@@ -748,7 +1174,9 @@ mod tests {
                 "NewObjectWithBuffer",
                 "JStrictNotEqualLong",
             ),
+            (83, "v0.8.0", 185, "Unreachable", "JStrictNotEqualLong"),
             (84, "v0.11.0", 185, "Unreachable", "JStrictNotEqualLong"),
+            (89, "v0.12.0", 190, "Unreachable", "JStrictNotEqualLong"),
             (96, "v0.13.0", 192, "Unreachable", "JStrictNotEqualLong"),
         ];
         for (version, tag, count, first, last) in expected {
@@ -783,8 +1211,13 @@ mod tests {
 
     #[test]
     fn the_version_deltas_upstream_recorded_are_present_in_the_tables() {
+        let v62: &[OpcodeSpec] = opcode_specs(62).expect("hbc v62 table");
+        let v71: &[OpcodeSpec] = opcode_specs(71).expect("hbc v71 table");
+        let v74: &[OpcodeSpec] = opcode_specs(74).expect("hbc v74 table");
         let v76: &[OpcodeSpec] = opcode_specs(76).expect("hbc v76 table");
+        let v83: &[OpcodeSpec] = opcode_specs(83).expect("hbc v83 table");
         let v84: &[OpcodeSpec] = opcode_specs(84).expect("hbc v84 table");
+        let v89: &[OpcodeSpec] = opcode_specs(89).expect("hbc v89 table");
         let v96: &[OpcodeSpec] = opcode_specs(96).expect("hbc v96 table");
 
         assert!(
@@ -794,17 +1227,41 @@ mod tests {
         );
         for late in ["Inc", "Dec", "LoadConstBigInt", "ToNumeric"] {
             assert!(
-                !names(v76, late) && !names(v84, late) && names(v96, late),
-                "{late} arrives after hbc v84, so finding it earlier means the older table was \
-                 copied from a newer release"
+                !names(v76, late) && !names(v84, late) && names(v89, late) && names(v96, late),
+                "{late} arrives at hbc v89 with facebook/hermes tag v0.12.0, so finding it earlier \
+                 means the older table was copied from a newer release"
+            );
+        }
+        for latest in [
+            "CreateInnerEnvironment",
+            "ThrowIfHasRestrictedGlobalProperty",
+        ] {
+            assert!(
+                !names(v89, latest) && names(v96, latest),
+                "{latest} arrives at hbc v96, so a v89 table that carries it was copied from tag \
+                 v0.13.0 rather than v0.12.0"
             );
         }
         for mid in ["LoadConstEmpty", "CallBuiltinLong", "CreateAsyncClosure"] {
             assert!(
-                !names(v76, mid) && names(v84, mid) && names(v96, mid),
-                "{mid} arrives at hbc v83, so it must be absent at v76 and present from v84"
+                !names(v76, mid) && names(v83, mid) && names(v84, mid) && names(v96, mid),
+                "{mid} arrives at hbc v83, so it must be absent at v76 and present from v83"
             );
         }
+        for iterator in ["IteratorBegin", "IteratorNext", "IteratorClose"] {
+            assert!(
+                !names(v62, iterator) && !names(v71, iterator) && names(v74, iterator),
+                "{iterator} arrives at hbc v74 with tag v0.4.0, and it is the whole difference \
+                 between the 177-opcode and the 180-opcode list"
+            );
+        }
+        assert_eq!(
+            position(v62, "Jmp"),
+            Some(127),
+            "the three iterator opcodes sit between CreateGeneratorLongIndex and the jump block, so \
+             their absence at hbc v62 shifts every jump opcode down by three from its v74 byte"
+        );
+        assert_eq!(position(v74, "Jmp"), Some(130));
 
         assert_eq!(
             position(v76, "Unreachable"),
@@ -813,7 +1270,10 @@ mod tests {
              same instruction is a different byte at the two versions and one shared table would \
              misread every function that uses either"
         );
+        assert_eq!(position(v62, "Unreachable"), Some(93));
+        assert_eq!(position(v83, "Unreachable"), Some(0));
         assert_eq!(position(v84, "Unreachable"), Some(0));
+        assert_eq!(position(v89, "Unreachable"), Some(0));
         assert_eq!(position(v96, "Unreachable"), Some(0));
 
         assert_ne!(
@@ -822,6 +1282,64 @@ mod tests {
             "the whole point of a per-version table is that opcode 0 does not name the same \
              instruction at every version"
         );
+    }
+
+    #[test]
+    fn two_versions_share_one_table_only_where_their_releases_ship_the_same_opcode_list() {
+        const SHARED: [(u32, u32); 3] = [(62, 71), (74, 76), (83, 84)];
+        for (earlier, later) in SHARED {
+            let left: &[OpcodeSpec] = opcode_specs(earlier).expect("earlier table");
+            let right: &[OpcodeSpec] = opcode_specs(later).expect("later table");
+            assert_eq!(
+                left, right,
+                "hbc v{earlier} and v{later} are registered against one opcode list because \
+                 BytecodeList.def is unchanged between their releases; forking one of them without \
+                 forking the other would leave the two versions disagreeing about the same byte"
+            );
+            assert!(
+                std::ptr::eq(left, right),
+                "hbc v{earlier} and v{later} hold equal opcode lists, so they must point at one \
+                 constant rather than two copies that can drift apart"
+            );
+        }
+
+        let mut tags: Vec<&'static str> = BYTECODE_TABLES
+            .iter()
+            .map(|table: &BytecodeTable| table.upstream_tag)
+            .collect();
+        let registered: usize = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(
+            tags.len(),
+            registered,
+            "every registered version names the upstream release its list was read from, so two \
+             versions must never claim the same tag"
+        );
+
+        let mut samples: Vec<&'static str> = BYTECODE_TABLES
+            .iter()
+            .map(|table: &BytecodeTable| table.graded_sample)
+            .collect();
+        samples.sort_unstable();
+        samples.dedup();
+        assert_eq!(
+            samples.len(),
+            registered,
+            "each registered version is graded by a bundle compiled at that version, so two \
+             versions pointing at one file would leave one of them measured by bytes it never \
+             produced"
+        );
+        for table in BYTECODE_TABLES {
+            assert!(
+                table
+                    .graded_sample
+                    .ends_with(&format!("v{}", table.version)),
+                "hbc v{} is registered against {}, which is not a sample at that version",
+                table.version,
+                table.graded_sample
+            );
+        }
     }
 
     #[test]
@@ -934,7 +1452,24 @@ mod tests {
 
     #[test]
     fn a_version_with_no_table_resolves_to_no_table_rather_than_the_nearest_one() {
-        for absent in [0u32, 59, 60, 75, 77, 83, 85, 95, 97, u32::MAX] {
+        for absent in [
+            0u32,
+            59,
+            60,
+            61,
+            63,
+            70,
+            72,
+            75,
+            77,
+            82,
+            85,
+            88,
+            90,
+            95,
+            97,
+            u32::MAX,
+        ] {
             assert!(
                 bytecode_table(absent).is_none(),
                 "hbc v{absent} has no committed sample, so it must resolve to no opcode table; \
