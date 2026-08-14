@@ -103,6 +103,7 @@ pub(crate) mod ruby;
 pub(crate) mod sarif;
 pub(crate) mod scan;
 pub(crate) mod self_update;
+pub(crate) mod semdiff;
 #[cfg(feature = "server")]
 pub(crate) mod serve;
 #[cfg(feature = "shell")]

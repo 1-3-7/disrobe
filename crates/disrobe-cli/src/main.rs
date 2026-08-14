@@ -95,6 +95,7 @@ use cli::report::{self, ReportFormat};
 use cli::ruby::{self, RubyCmd};
 use cli::scan;
 use cli::self_update as self_update_cmd;
+use cli::semdiff;
 #[cfg(feature = "server")]
 use cli::serve;
 #[cfg(feature = "shell")]
@@ -796,6 +797,27 @@ enum Cmd {
             help = "treat calls to SYMBOL as a taint sink; repeatable; replaces the built-in sink set when supplied"
         )]
         sink: Vec<String>,
+    },
+    #[command(
+        about = "pair the functions of two builds by what they compute, not by name: lifts both inputs to the normalized IR, matches leaf functions on an exact structural signature, then on a symbolic summary, then propagates along the call graph, and reports every refusal with its typed reason. Works on any input the lifters accept (native, wasm, JVM/Dalvik, .NET, Python, Lua, Ruby, BEAM, ABC), unlike `native diff` and `native match`, which read native images only"
+    )]
+    Semdiff {
+        #[arg(
+            value_name = "BASE",
+            help = "the reference build: native binary, wasm module, JVM .class, Android .dex, managed PE, .pyc, or a Disasm/Mir-rung .dr envelope"
+        )]
+        base: PathBuf,
+        #[arg(
+            value_name = "OTHER",
+            help = "the build to pair against BASE; must lift to the same source language"
+        )]
+        other: PathBuf,
+        #[arg(
+            long = "limit",
+            value_name = "N",
+            help = "list at most N rows per section; totals are always exact"
+        )]
+        limit: Option<usize>,
     },
     #[command(
         about = "match reachability-aware vulnerability rules against a native binary or a Disasm- or Mir-rung .dr envelope, preserving reachable, reachability-unknown, present, and confirmed findings"
@@ -1907,6 +1929,7 @@ fn main() -> miette::Result<()> {
             source,
             sink,
         } => taint::run(input, source, sink, fmt, &llm_flags),
+        Cmd::Semdiff { base, other, limit } => semdiff::run(base, other, limit, fmt),
         Cmd::Vulnmatch {
             input,
             osv_db,

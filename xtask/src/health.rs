@@ -13,10 +13,7 @@ const NON_MEMBER_CRATE_ALLOWLIST: &[(&str, &str)] = &[(
     "cargo-fuzz requires its own workspace, so it is built by `cargo fuzz`, never by the root workspace",
 )];
 
-const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[(
-    "disrobe-semdiff",
-    "semantic diff over NIR; no consumer has been written yet, tracked as a wiring item",
-)];
+const KNOWN_UNWIRED_CRATES: &[(&str, &str)] = &[];
 
 const KNOWN_STANDALONE_BINARIES: &[(&str, &str)] = &[
     (

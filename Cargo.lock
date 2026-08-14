@@ -1938,6 +1938,7 @@ dependencies = [
  "disrobe-prowl",
  "disrobe-py-marshal",
  "disrobe-query",
+ "disrobe-semdiff",
  "disrobe-similarity",
  "disrobe-taint",
  "disrobe-typerec",

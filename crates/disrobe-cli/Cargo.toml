@@ -178,6 +178,7 @@ disrobe-irsummary = { workspace = true, features = ["llm-metadata"], optional = 
 disrobe-mba = { workspace = true, optional = true }
 disrobe-typerec = { workspace = true }
 disrobe-taint = { workspace = true }
+disrobe-semdiff = { workspace = true }
 disrobe-vulnmatch = { workspace = true }
 disrobe-query = { workspace = true }
 disrobe-llm-metadata = { workspace = true }
