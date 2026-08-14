@@ -19,6 +19,10 @@ struct Evidence {
     sample: DecompileReport,
     regexes: DecompileReport,
     bundle: DecompileReport,
+    longtail: DecompileReport,
+    shapes: DecompileReport,
+    shapes_bigints: usize,
+    shapes_utf16_strings: usize,
     utf16_strings: usize,
     debug_info_offsets: Vec<u32>,
     debug_info_flags: Vec<bool>,
@@ -36,6 +40,13 @@ impl Evidence {
     fn source_of(&self, name: &str) -> &str {
         self.named(name)
             .map_or("", |f: &DecompiledFunction| f.source.as_str())
+    }
+
+    fn recovered<'a>(report: &'a DecompileReport, name: &str) -> Option<&'a DecompiledFunction> {
+        report
+            .functions
+            .iter()
+            .find(|f: &&DecompiledFunction| f.name == name)
     }
 }
 
@@ -69,7 +80,13 @@ const SHAPES: &[(&str, Coverage)] = &[
     ),
     (
         "function kind: generator",
-        Coverage::Fixture("decompile_generator_function"),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.shapes, "seq").is_some()
+                && e.shapes
+                    .functions
+                    .iter()
+                    .any(|f: &DecompiledFunction| f.is_generator)
+        }),
     ),
     (
         "function kind: async function",
@@ -88,21 +105,24 @@ const SHAPES: &[(&str, Coverage)] = &[
     (
         "function kind: class method",
         Coverage::Uncovered(
-            "no committed bundle uses ES class syntax; hermes lowers a class method to the \
-             prototype-method shape the row above covers, so this row is unproven rather than \
-             assumed",
+            "hermesc v0.13.0, the newest release this crate transcribes an opcode table from, \
+             rejects a class declaration with `invalid statement encountered`, so no bundle it \
+             compiles can carry one and this row cannot be raised at the versions in the band",
         ),
     ),
     (
         "function kind: getter and setter",
-        Coverage::Uncovered("no committed bundle defines an accessor property"),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.shapes, "get twice").is_some()
+                && Evidence::recovered(&e.shapes, "set twice").is_some()
+        }),
     ),
     (
         "function kind: arrow function",
-        Coverage::Uncovered(
-            "no committed bundle compiles an arrow function; hermes emits the closure shape the \
-             nested-closure row covers, so this row is unproven rather than assumed",
-        ),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.shapes, "arrow")
+                .is_some_and(|f: &DecompiledFunction| f.structured)
+        }),
     ),
     (
         "function kind: body containing a with block",
@@ -146,35 +166,60 @@ const SHAPES: &[(&str, Coverage)] = &[
     ),
     (
         "control flow: switch statement",
-        Coverage::Fixture("structured_switch_imm_recovers_a_switch_statement"),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.longtail, "classify")
+                .is_some_and(|f: &DecompiledFunction| f.structured && f.source.contains("=== "))
+        }),
     ),
     (
         "control flow: SwitchImm jump table splits the graph",
-        Coverage::Fixture("switch_imm_case_targets_become_block_leaders"),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.longtail, "pick").is_some_and(|f: &DecompiledFunction| {
+                f.structured
+                    && f.source.contains("switch (")
+                    && (0..16u32).all(|v: u32| f.source.contains(&format!("case {v}:")))
+            })
+        }),
     ),
     (
         "control flow: irreducible graph is refused by name",
         Coverage::Fixture("irreducible_control_flow_is_declined_by_name"),
     ),
     (
-        "control flow: try, catch and finally",
+        "control flow: try and catch",
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.longtail, "guarded").is_some_and(|f: &DecompiledFunction| {
+                f.structured && f.has_try_catch && f.source.contains("catch (")
+            })
+        }),
+    ),
+    (
+        "control flow: finally",
         Coverage::Uncovered(
-            "the exception-handler table is not parsed, so a try region is reported through the \
-             function header flag and its handler edges never enter the graph; no committed \
-             bundle compiles a try region either, so the table layout has no compiled input to \
-             read it against and a reader built here would be checked only against its own writer",
+            "hermesc lowers a finally block by copying it into the normal path and into the \
+             handler path, so recovering the single source block means proving the two copies are \
+             the same body; no committed bundle carries one and that comparison is not implemented",
         ),
     ),
     (
         "control flow: labelled break and continue",
         Coverage::Uncovered(
-            "labels would only be needed for graphs the structurer refuses, and those are refused \
-             by name instead of relabelled",
+            "a labelled break and a labelled continue over a plain reducible nested loop are \
+             compiled into crates/disrobe-pass-mobile/tests/fixtures/hermes/longtail.hbc and the \
+             structurer refuses that function by name, because its break and continue sinks carry \
+             no label and an unlabelled break would leave the wrong loop",
         ),
     ),
     (
         "value shape: BigInt literal",
-        Coverage::Fixture("decompile_bigint_literal_synthesis"),
+        Coverage::Corpus(|e: &Evidence| {
+            e.shapes_bigints > 0
+                && Evidence::recovered(&e.shapes, "bigText").is_some_and(
+                    |f: &DecompiledFunction| {
+                        f.structured && f.source.contains("123456789012345678901234567890n")
+                    },
+                )
+        }),
     ),
     (
         "value shape: regular expression literal",
@@ -194,10 +239,11 @@ const SHAPES: &[(&str, Coverage)] = &[
     ),
     (
         "value shape: UTF-16 string table entry",
-        Coverage::Uncovered(
-            "every committed bundle stores its strings in the one-byte form, so the UTF-16 branch \
-             of the string reader has no real input here",
-        ),
+        Coverage::Corpus(|e: &Evidence| {
+            e.shapes_utf16_strings > 0
+                && Evidence::recovered(&e.shapes, "surrogate")
+                    .is_some_and(|f: &DecompiledFunction| f.structured)
+        }),
     ),
     (
         "container: bare hbc file",
@@ -225,16 +271,20 @@ const SHAPES: &[(&str, Coverage)] = &[
         "container: bundle with a debug info section",
         Coverage::Corpus(|e: &Evidence| {
             e.debug_info_offsets.iter().all(|offset: &u32| *offset != 0)
-                && e.debug_info_flags.iter().all(|flag: &bool| *flag)
+                && e.debug_info_flags.iter().any(|flag: &bool| *flag)
         }),
+    ),
+    (
+        "container: function inside a bundle that carries no debug info of its own",
+        Coverage::Corpus(|e: &Evidence| e.debug_info_flags.iter().any(|flag: &bool| !*flag)),
     ),
     (
         "container: bundle stripped of its debug info section",
         Coverage::Uncovered(
-            "every committed bundle was compiled with debug info, so no committed input has the \
-             stripped shape; recovered names come from the function name index into the string \
-             table rather than from the debug section, and a header declaring a zero debug info \
-             offset is read in hermes_reader_versions.rs",
+            "every committed bundle declares a non-zero debug info offset in its header, so no \
+             committed input has the whole-section stripped shape; recovered names come from the \
+             function name index into the string table rather than from the debug section, and a \
+             header declaring a zero debug info offset is read in hermes_reader_versions.rs",
         ),
     ),
 ];
@@ -265,11 +315,34 @@ fn module_for(parts: &[&str]) -> HermesModule {
         .unwrap_or_else(|error: disrobe_pass_mobile::Error| panic!("{}: {error}", path.display()))
 }
 
+fn crate_fixture(name: &str) -> HermesModule {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("hermes")
+        .join(name);
+    let bytes: Vec<u8> = std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "this ledger states what committed bytecode proves, so a run that cannot read {} must \
+             fail rather than report a green over fewer bundles: {error}",
+            path.display()
+        )
+    });
+    parse_hermes_module(&bytes)
+        .unwrap_or_else(|error: disrobe_pass_mobile::Error| panic!("{}: {error}", path.display()))
+}
+
 fn evidence() -> Evidence {
-    let modules: [HermesModule; 3] = [
+    let longtail: HermesModule = crate_fixture("longtail.hbc");
+    let shapes: HermesModule = crate_fixture("shapes.hbc");
+    let shapes_bigints: usize = shapes.big_int_table.len();
+    let shapes_utf16_strings: usize = shapes.utf16_strings;
+    let modules: [HermesModule; 5] = [
         module_for(&["sample", "sample.hbc.v96"]),
         module_for(&["regex", "regexes.hbc.v96"]),
         module_for(&["hello", "index.android.bundle"]),
+        longtail,
+        shapes,
     ];
     let utf16_strings: usize = modules
         .iter()
@@ -289,11 +362,15 @@ fn evidence() -> Evidence {
         .flat_map(|module: &HermesModule| module.functions.iter())
         .map(|function: &SmallFunctionHeader| function.has_exception_handler)
         .collect();
-    let [sample, regexes, bundle]: [HermesModule; 3] = modules;
+    let [sample, regexes, bundle, longtail, shapes]: [HermesModule; 5] = modules;
     Evidence {
         sample: decompile_hermes_module(&sample),
         regexes: decompile_hermes_module(&regexes),
         bundle: decompile_hermes_module(&bundle),
+        longtail: decompile_hermes_module(&longtail),
+        shapes: decompile_hermes_module(&shapes),
+        shapes_bigints,
+        shapes_utf16_strings,
         utf16_strings,
         debug_info_offsets,
         debug_info_flags,
@@ -383,23 +460,26 @@ fn every_named_shape_is_either_proven_here_or_states_why_it_is_not() {
         eprintln!("  uncovered: {shape}");
     }
     assert_eq!(
-        evidence.utf16_strings, 0,
-        "the UTF-16 row is listed as uncovered because no committed bundle has such an entry; a \
-         bundle that does means the row must be promoted rather than left listed"
+        evidence.utf16_strings, evidence.shapes_utf16_strings,
+        "the UTF-16 row is proven by the one committed bundle whose string table holds such an \
+         entry, so a second bundle gaining one means the row is measured over a population it \
+         does not name"
     );
     assert!(
-        evidence.debug_info_flags.iter().all(|flag: &bool| *flag),
-        "the stripped-debug-info row is listed as uncovered because every function in every \
-         committed bundle carries debug info; a function that does not means the row must be \
-         promoted rather than left listed"
+        evidence.shapes_utf16_strings > 0,
+        "the UTF-16 row claims a committed bundle stores a string in the two-byte form; a run \
+         that finds none is grading that row against nothing"
     );
-    assert!(
+    assert_eq!(
         evidence
             .exception_handler_flags
             .iter()
-            .all(|flag: &bool| !*flag),
-        "the try row is listed as uncovered because no function in any committed bundle declares \
-         an exception handler; a bundle that does gives the handler table a compiled input to be \
-         read against, and the row must then be built rather than left listed"
+            .filter(|flag: &&bool| **flag)
+            .count(),
+        2,
+        "the try and catch row is proven against the two functions in the committed bundles that \
+         declare an exception handler, the explicit try in longtail.js and the for-of loop in \
+         shapes.js that hermesc guards so it can close its iterator, so a change in that count \
+         means the row is measured over a different population than the one it names"
     );
 }

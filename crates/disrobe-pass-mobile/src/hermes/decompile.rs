@@ -284,22 +284,29 @@ pub(crate) fn is_terminator(name: &str) -> bool {
 }
 
 #[must_use]
-fn switch_case_targets(code: &[u8], inst: &Instruction) -> Vec<(i64, usize)> {
+fn switch_case_targets(image: &[u8], code_base: usize, inst: &Instruction) -> Vec<(i64, usize)> {
     if !is_switch(&inst.name) {
         return Vec::new();
     }
     let table_offset: u64 = uint_of(inst.operands.get(1));
     let min_val: u64 = uint_of(inst.operands.get(3));
     let max_val: u64 = uint_of(inst.operands.get(4));
-    switch_table_entries(code, inst.offset, table_offset, min_val, max_val)
+    switch_table_entries(
+        image,
+        code_base,
+        inst.offset,
+        table_offset,
+        min_val,
+        max_val,
+    )
 }
 
 #[must_use]
-pub(crate) fn block_edges(inst: &Instruction, code: &[u8]) -> Vec<usize> {
+pub(crate) fn block_edges(inst: &Instruction, image: &[u8], code_base: usize) -> Vec<usize> {
     if !is_switch(&inst.name) {
         return instruction_targets(inst);
     }
-    let mut edges: Vec<usize> = switch_case_targets(code, inst)
+    let mut edges: Vec<usize> = switch_case_targets(image, code_base, inst)
         .into_iter()
         .map(|(_, target): (i64, usize)| target)
         .collect();
@@ -324,7 +331,8 @@ pub(crate) struct Cfg {
 #[must_use]
 pub(crate) fn build_cfg(
     instructions: &[Instruction],
-    code: &[u8],
+    image: &[u8],
+    code_base: usize,
     exception_entries: &[HermesExceptionEntry],
 ) -> Cfg {
     if instructions.is_empty() {
@@ -348,7 +356,7 @@ pub(crate) fn build_cfg(
     }
     for (i, inst) in instructions.iter().enumerate() {
         if is_terminator(&inst.name) {
-            for t in block_edges(inst, code) {
+            for t in block_edges(inst, image, code_base) {
                 leaders.insert(t);
             }
             if let Some(next) = instructions.get(i + 1) {
@@ -397,7 +405,7 @@ pub(crate) fn build_cfg(
             let last: &Instruction = &instructions[e - 1];
             let mut succ: Vec<usize> = Vec::new();
             if is_switch(&last.name) {
-                for t in block_edges(last, code) {
+                for t in block_edges(last, image, code_base) {
                     if let Some(b) = offset_to_block.get(&t)
                         && !succ.contains(b)
                     {
@@ -443,7 +451,7 @@ pub(crate) fn build_cfg(
 
 struct LiftCtx<'a> {
     module: &'a HermesModule,
-    code: &'a [u8],
+    code_base: usize,
     regs: BTreeMap<u32, String>,
     env_levels: BTreeMap<u32, u32>,
     materialized: BTreeSet<u32>,
@@ -459,14 +467,14 @@ struct LiftCtx<'a> {
 impl<'a> LiftCtx<'a> {
     fn new(
         module: &'a HermesModule,
-        code: &'a [u8],
+        code_base: usize,
         materialized: BTreeSet<u32>,
         window_consumed: BTreeSet<u32>,
         inline_bodies: &'a BTreeMap<u32, String>,
     ) -> Self {
         LiftCtx {
             module,
-            code,
+            code_base,
             regs: BTreeMap::new(),
             env_levels: BTreeMap::new(),
             materialized,
@@ -721,13 +729,21 @@ impl<'a> LiftCtx<'a> {
         min_val: u64,
         max_val: u64,
     ) -> Vec<(i64, usize)> {
-        switch_table_entries(self.code, inst_offset, table_offset, min_val, max_val)
+        switch_table_entries(
+            &self.module.raw_image,
+            self.code_base,
+            inst_offset,
+            table_offset,
+            min_val,
+            max_val,
+        )
     }
 }
 
 #[must_use]
 fn switch_table_entries(
-    code: &[u8],
+    image: &[u8],
+    code_base: usize,
     inst_offset: usize,
     table_offset: u64,
     min_val: u64,
@@ -746,8 +762,12 @@ fn switch_table_entries(
     let Some(table_base): Option<usize> = inst_offset.checked_add(table_offset_usize) else {
         return Vec::new();
     };
-    let Some(aligned_base): Option<usize> =
-        table_base.checked_add(3).map(|base: usize| base & !3usize)
+    let Some(absolute_base): Option<usize> = code_base.checked_add(table_base) else {
+        return Vec::new();
+    };
+    let Some(aligned_base): Option<usize> = absolute_base
+        .checked_add(3)
+        .map(|base: usize| base & !3usize)
     else {
         return Vec::new();
     };
@@ -769,7 +789,7 @@ fn switch_table_entries(
         else {
             break;
         };
-        let Some(raw): Option<&[u8]> = code.get(entry_at..entry_end) else {
+        let Some(raw): Option<&[u8]> = image.get(entry_at..entry_end) else {
             break;
         };
         let rel: i32 = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
@@ -1191,14 +1211,26 @@ fn lift_instruction_inner(
         "GetPNameList" => {
             let d: u32 = reg_of(ops.first());
             let obj: String = ctx.reg_expr(reg_of(ops.get(1)));
-            ctx.set_reg(d, format!("Object.keys({obj})"));
+            let index_reg: u32 = reg_of(ops.get(2));
+            let size_reg: u32 = reg_of(ops.get(3));
+            let list_stmt: String = ctx.materialize_assignment(d, &format!("Object.keys({obj})"));
+            stmts.push(BlockStmt::Line(list_stmt));
+            let list: String = ctx.reg_expr(d);
+            let index_stmt: String = ctx.materialize_assignment(index_reg, "0");
+            stmts.push(BlockStmt::Line(index_stmt));
+            let size_stmt: String =
+                ctx.materialize_assignment(size_reg, &format!("({list} ? {list}.length : 0)"));
+            stmts.push(BlockStmt::Line(size_stmt));
             ctx.reconstructed += 1;
         }
         "GetNextPName" => {
             let d: u32 = reg_of(ops.first());
             let props: String = ctx.reg_expr(reg_of(ops.get(1)));
-            let idx: String = ctx.reg_expr(reg_of(ops.get(3)));
-            ctx.set_reg(d, format!("{props}[{idx}]"));
+            let index: String = ctx.reg_expr(reg_of(ops.get(3)));
+            let size: String = ctx.reg_expr(reg_of(ops.get(4)));
+            let next: String = format!("({index} < {size} ? {props}[{index}++] : undefined)");
+            let next_stmt: String = ctx.materialize_assignment(d, &next);
+            stmts.push(BlockStmt::Line(next_stmt));
             ctx.reconstructed += 1;
         }
         "StartGenerator" | "CompleteGenerator" => {
@@ -1929,14 +1961,20 @@ fn decompile_function_tallied(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("$func{index}"));
     let code: &[u8] = module.function_code(index);
+    let code_base: usize = usize::try_from(header.offset).unwrap_or(0);
     let instructions: Vec<Instruction> = decode_instructions(code, specs);
     let exceptions: Vec<HermesExceptionEntry> = module.exception_table(index).unwrap_or_default();
-    let cfg: Cfg = build_cfg(&instructions, code, &exceptions);
+    let cfg: Cfg = build_cfg(&instructions, &module.raw_image, code_base, &exceptions);
 
     let window_consumed: BTreeSet<u32> = call_window_consumed(&instructions);
-    let materialized: BTreeSet<u32> = compute_materialized(&instructions, &exceptions);
-    let mut ctx: LiftCtx<'_> =
-        LiftCtx::new(module, code, materialized, window_consumed, inline_bodies);
+    let materialized: BTreeSet<u32> = compute_materialized(&instructions, &cfg, &exceptions);
+    let mut ctx: LiftCtx<'_> = LiftCtx::new(
+        module,
+        code_base,
+        materialized,
+        window_consumed,
+        inline_bodies,
+    );
     let lifted: Vec<LiftedBlock> = cfg
         .blocks
         .iter()
@@ -2148,9 +2186,32 @@ fn mutated_then_read_again(instructions: &[Instruction], from: usize, reg: u32) 
 #[must_use]
 fn compute_materialized(
     instructions: &[Instruction],
+    cfg: &Cfg,
     exception_entries: &[HermesExceptionEntry],
 ) -> BTreeSet<u32> {
     let mut materialized: BTreeSet<u32> = BTreeSet::new();
+
+    let mut writing_blocks: BTreeMap<u32, BTreeSet<usize>> = BTreeMap::new();
+    let mut ever_read: BTreeSet<u32> = BTreeSet::new();
+    for (index, block) in cfg.blocks.iter().enumerate() {
+        let (first, last): (usize, usize) = block.instr_range;
+        let Some(window): Option<&[Instruction]> = instructions.get(first..last) else {
+            continue;
+        };
+        for inst in window {
+            if let Some(d) = inst_dest(inst) {
+                writing_blocks.entry(d).or_default().insert(index);
+            }
+            for r in inst_read_regs(inst) {
+                ever_read.insert(r);
+            }
+        }
+    }
+    for (reg, blocks) in &writing_blocks {
+        if blocks.len() > 1 && ever_read.contains(reg) {
+            materialized.insert(*reg);
+        }
+    }
 
     let mut protected_by_target: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
     for entry in exception_entries {
@@ -2907,7 +2968,7 @@ mod tests {
         code.push(opcode_byte("Ret"));
         code.push(0u8);
         let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
-        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
+        let cfg: Cfg = build_cfg(&instructions, &code, 0, &[]);
         assert!(cfg.blocks.len() >= 2, "blocks: {}", cfg.blocks.len());
     }
 
@@ -2991,7 +3052,7 @@ mod tests {
             other => panic!("expected target operand, got {other:?}"),
         };
         assert_eq!(target, 0);
-        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
+        let cfg: Cfg = build_cfg(&instructions, &code, 0, &[]);
         assert!(!cfg.blocks.is_empty());
     }
 
@@ -3148,10 +3209,9 @@ mod tests {
             value_buffer,
             array_buffer,
         );
-        let code: Vec<u8> = Vec::new();
         let no_inline: BTreeMap<u32, String> = BTreeMap::new();
         let ctx: LiftCtx<'_> =
-            LiftCtx::new(&module, &code, BTreeSet::new(), BTreeSet::new(), &no_inline);
+            LiftCtx::new(&module, 0, BTreeSet::new(), BTreeSet::new(), &no_inline);
 
         let bomb_count: usize = u32::MAX as usize;
         let obj: String = ctx.object_literal(bomb_count, 0, 0);
@@ -3180,7 +3240,7 @@ mod tests {
             Vec::new(),
         );
         let empty_ctx: LiftCtx<'_> =
-            LiftCtx::new(&empty, &code, BTreeSet::new(), BTreeSet::new(), &no_inline);
+            LiftCtx::new(&empty, 0, BTreeSet::new(), BTreeSet::new(), &no_inline);
         assert_eq!(empty_ctx.object_literal(bomb_count, 0, 0), "{}");
         assert_eq!(empty_ctx.array_literal(bomb_count, 0), "[]");
     }
@@ -4050,7 +4110,7 @@ mod tests {
         );
     }
 
-    fn switch_imm_fixture() -> Vec<u8> {
+    fn switch_imm_fixture(code_base: usize) -> Vec<u8> {
         let mut code: Vec<u8> = Vec::new();
         code.push(opcode_byte("LoadParam"));
         code.extend_from_slice(&[1u8, 1u8]);
@@ -4071,7 +4131,7 @@ mod tests {
         code.push(2u8);
         code.push(opcode_byte("Ret"));
         code.push(0u8);
-        while code.len() % 4 != 0 {
+        while (code_base + code.len()) % 4 != 0 {
             code.push(opcode_byte("Debugger"));
         }
         for target in [21i64, 26] {
@@ -4083,28 +4143,37 @@ mod tests {
 
     #[test]
     fn switch_imm_case_targets_become_block_leaders() {
-        let code: Vec<u8> = switch_imm_fixture();
-        let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
-        let cfg: Cfg = build_cfg(&instructions, &code, &[]);
-        for leader in [21usize, 26, 31] {
-            assert!(
-                cfg.offset_to_block.contains_key(&leader),
-                "switch edge {leader:#x} must start a block; leaders: {:?}",
-                cfg.offset_to_block.keys().collect::<Vec<&usize>>()
+        for code_base in [0usize, 1, 2, 3, 0x4f5] {
+            let code: Vec<u8> = switch_imm_fixture(code_base);
+            let mut image: Vec<u8> = vec![0u8; code_base];
+            image.extend_from_slice(&code);
+            let instructions: Vec<Instruction> = decode_instructions(&code, OPCODES_HBC96);
+            let cfg: Cfg = build_cfg(&instructions, &image, code_base, &[]);
+            for leader in [21usize, 26, 31] {
+                assert!(
+                    cfg.offset_to_block.contains_key(&leader),
+                    "code base {code_base:#x}: switch edge {leader:#x} must start a block. The \
+                     jump table is aligned at its absolute position in the bytecode, so a decoder \
+                     that aligns the function-relative offset instead reads a table of garbage for \
+                     every function whose code does not begin on a four byte boundary; leaders: \
+                     {:?}",
+                    cfg.offset_to_block.keys().collect::<Vec<&usize>>()
+                );
+            }
+            let switch_block: usize = cfg.offset_to_block[&0];
+            assert_eq!(
+                cfg.blocks[switch_block].successors.len(),
+                3,
+                "code base {code_base:#x}: two case targets plus the default are three edges; got \
+                 {:?}",
+                cfg.blocks[switch_block].successors
             );
         }
-        let switch_block: usize = cfg.offset_to_block[&0];
-        assert_eq!(
-            cfg.blocks[switch_block].successors.len(),
-            3,
-            "two case targets plus the default are three edges; got {:?}",
-            cfg.blocks[switch_block].successors
-        );
     }
 
     #[test]
     fn structured_switch_imm_recovers_a_switch_statement() {
-        let module: HermesModule = module_with(&["dispatch"], &[], switch_imm_fixture(), 2);
+        let module: HermesModule = module_with(&["dispatch"], &[], switch_imm_fixture(0), 2);
         let f: DecompiledFunction = decompile_function(&module, 0);
         assert!(
             f.structured,

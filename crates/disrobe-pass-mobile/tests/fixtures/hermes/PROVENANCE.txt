@@ -1,0 +1,56 @@
+Hermes long-tail fixtures for crates/disrobe-pass-mobile/tests/real_hermes_longtail.rs
+
+Toolchain
+---------
+facebook/hermes v0.13.0 release archive hermes-cli-windows.tar.gz
+https://github.com/facebook/hermes/releases/tag/v0.13.0
+archive sha256 485907ae87f267f7901f45c12979fea9703967ee2fa930bab887d022de9d6478
+The archive supplies hermesc.exe, hermes.exe and hbcdump.exe. That release emits
+bytecode version 96.
+
+Rebuild
+-------
+    pwsh -File build.ps1 -HermesToolchain <directory holding the three executables>
+
+build.ps1 runs every command with this directory as its working directory and
+names each input by a relative path, so the debug information stored in the
+bytecode records "./<name>.js" and no build machine path enters a fixture.
+
+Files
+-----
+longtail.js                 source compiled into longtail.hbc
+longtail.hbc                hermesc -emit-binary output, 2741 bytes, bytecode version 96
+                            sha256 ec1442d7481836c205d6b9b2447e6eee102bf70a04835b658b6f5d52d0bd626d
+longtail.hermes-stdout.txt  standard output of hermes.exe running longtail.js
+longtail.hbcdump.txt        hbcdump -objdump-disassemble -c "disassemble;quit" longtail.hbc
+
+shapes.js                   source compiled into shapes.hbc
+shapes.hbc                  hermesc -emit-binary output, 2915 bytes, bytecode version 96
+                            sha256 7f0e2eab19c6a275e92a8e19b66de4c24e5c688acabc46450f666595c6852168
+shapes.hermes-stdout.txt    standard output of hermes.exe running shapes.js
+shapes.hbcdump.txt          hbcdump -objdump-disassemble -c "disassemble;quit" shapes.hbc
+
+Why two programs
+----------------
+longtail.js holds control flow: a sixteen case dense switch that hermesc lowers
+to the SwitchImm jump table, a four case switch that it lowers to a comparison
+chain instead, a labelled break and a labelled continue across nested loops, a
+do-while loop, a while loop over bitwise operators, a try and catch around a
+throw, a nested conditional expression, a closure that captures an enclosing
+variable, an indexed loop over an array literal, and a for-in loop.
+
+shapes.js holds value and function shapes: a BigInt literal and BigInt addition,
+an untagged template literal, a string holding an astral plane code point, a
+function expression, an arrow function, an object literal with a getter and a
+setter, a generator function, a for-of loop that drains that generator, an apply
+call over a spread-shaped argument list, and an object literal read back through
+Object.keys.
+
+hermesc v0.13.0 rejects ES6 class syntax with "invalid statement encountered", so
+no fixture here carries a class declaration.
+
+License
+-------
+longtail.js and shapes.js are written for this repository and are freely
+redistributable. The bytecode and the disassembly are the output of the FOSS
+Hermes toolchain over those two sources.
