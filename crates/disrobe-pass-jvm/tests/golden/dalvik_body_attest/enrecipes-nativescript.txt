@@ -360,6 +360,7 @@ ATTEST com.google.android.material.floatingactionbutton.ExtendedFloatingActionBu
 ATTEST com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton$ExtendedFloatingActionButtonBehavior#setInternalAutoShrinkCallback(Lcom/google/android/material/floatingactionbutton/ExtendedFloatingActionButton$OnChangedCallback;)V
 ATTEST com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton$ShowStrategy#onAnimationEnd()V
 ATTEST com.google.android.material.floatingactionbutton.FloatingActionButtonImpl#getDefaultShowMotionSpec()Lcom/google/android/material/animation/MotionSpec;
+ATTEST com.google.android.material.floatingactionbutton.FloatingActionButtonImpl#updateFromViewRotation()V
 ATTEST com.google.android.material.floatingactionbutton.FloatingActionButtonImplLollipop#jumpDrawableToCurrentState()V
 ATTEST com.google.android.material.internal.CollapsingTextHelper#getCollapsedTextGravity()I
 ATTEST com.google.android.material.internal.NavigationMenuPresenter#getHeaderCount()I
@@ -431,6 +432,7 @@ ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.DraggableItemState#is
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.DraggableItemWrapperAdapter#getItemViewType(I)I
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.DraggableItemWrapperAdapter#shouldCancelDragOnDataUpdated()Z
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.ItemDraggableRange#getEnd()I
+ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.RecyclerViewDragDropManager#findSwapTargetItemForGridLayoutManagerInternal2(Lcom/h6ah4i/android/widget/advrecyclerview/draggable/RecyclerViewDragDropManager$FindSwapTargetContext;)Landroidx/recyclerview/widget/RecyclerView$ViewHolder;
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.RecyclerViewDragDropManager#getDragStartItemAnimationDuration()I
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.RecyclerViewDragDropManager#handleOnCheckItemViewSizeUpdate()V
 ATTEST com.h6ah4i.android.widget.advrecyclerview.draggable.RecyclerViewDragDropManager#setCheckCanDropEnabled(Z)V
@@ -487,6 +489,7 @@ ATTEST com.tns.NativeScriptHashMap$EntrySet#iterator()Ljava/util/Iterator;
 ATTEST com.tns.NativeScriptHashMap$HashMapEntry#hashCode()I
 ATTEST com.tns.NativeScriptHashMap$KeySet#clear()V
 ATTEST com.tns.NativeScriptHashMap$KeySet#contains(Ljava/lang/Object;)Z
+ATTEST com.tns.NativeScriptWeakHashMap#remove(Ljava/lang/Object;)Ljava/lang/Number;
 ATTEST com.tns.NativeScriptWeakHashMap$1$1#get(Ljava/util/Map$Entry;)Ljava/lang/Object;
 ATTEST com.tns.NativeScriptWeakHashMap$1$1#get(Ljava/util/Map$Entry;)Ljava/util/Map$Entry;
 ATTEST com.tns.NativeScriptWeakHashMap$3#contains(Ljava/lang/Object;)Z
@@ -774,12 +777,6 @@ ATTEST org.ow2.asmdex.util.RegisterShiftMethodAdapter#visitOperationInsn(IIIII)V
 ATTEST org.ow2.asmdex.util.RegisterShiftMethodAdapter#visitStringInsn(IILjava/lang/String;)V
 ATTEST org.ow2.asmdex.util.RegisterShiftMethodAdapter#visitTableSwitchInsn(IIILorg/ow2/asmdex/structureCommon/Label;[Lorg/ow2/asmdex/structureCommon/Label;)V
 REJECT androidx.appcompat.widget.ActivityChooserView$ActivityChooserViewAdapter#measureContentWidth()I
-REJECT androidx.appcompat.widget.AppCompatTextView#setCompoundDrawablesRelativeWithIntrinsicBounds(IIII)V
-REJECT androidx.cardview.widget.CardViewBaseImpl$1#drawRoundRect(Landroid/graphics/Canvas;Landroid/graphics/RectF;FLandroid/graphics/Paint;)V
 REJECT androidx.fragment.app.FragmentManager#findViewFragment(Landroid/view/View;)Landroidx/fragment/app/Fragment;
-REJECT androidx.recyclerview.widget.RecyclerView#onGenericMotionEvent(Landroid/view/MotionEvent;)Z
-REJECT androidx.transition.Fade$FadeAnimatorListener#onAnimationEnd(Landroid/animation/Animator;)V
-REJECT com.google.android.material.floatingactionbutton.FloatingActionButtonImpl#updateFromViewRotation()V
 REJECT com.google.android.material.textfield.IndicatorViewController#createCaptionTranslationYAnimator(Landroid/widget/TextView;)Landroid/animation/ObjectAnimator;
-REJECT com.tns.NativeScriptWeakHashMap#remove(Ljava/lang/Object;)Ljava/lang/Number;
 REJECT com.yalantis.ucrop.view.GestureCropImageView#getDoubleTapTargetScale()F

@@ -27,17 +27,17 @@ const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
 const REAL_APK_METHOD_TOTAL: usize = 89_516;
 
-const SELF_REPORTED_BODIES: usize = 82_788;
+const SELF_REPORTED_BODIES: usize = 82_906;
 
-const CANDIDATE_BODIES: usize = 82_756;
+const CANDIDATE_BODIES: usize = 82_874;
 
-const SAMPLED_BODIES: usize = 8_343;
+const SAMPLED_BODIES: usize = 8_355;
 
-const ATTESTED_PRESENTED: usize = 2_994;
+const ATTESTED_PRESENTED: usize = 2_989;
 
-const ATTESTED_CLEAN: usize = 2_960;
+const ATTESTED_CLEAN: usize = 2_975;
 
-const ATTESTED_REJECTED: usize = 34;
+const ATTESTED_REJECTED: usize = 14;
 
 struct BodyAttest {
     self_reported_bodies: usize,

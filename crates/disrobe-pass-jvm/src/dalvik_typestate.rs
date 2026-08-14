@@ -322,8 +322,8 @@ pub(crate) fn analyze(
     let n: usize = insns.len();
     let pc_to_idx: BTreeMap<u32, usize> =
         insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
-    let (_wide_doubles, narrow_floats): (BTreeSet<u16>, BTreeSet<u16>) =
-        crate::dalvik_to_jvm::const_wide_double_and_float_regs(dex, insns, parsed);
+    let narrow_float_pcs: BTreeSet<u32> =
+        crate::dalvik_to_jvm::narrow_const_float_pcs(dex, insns, parsed);
     let wide_double_pcs: BTreeSet<u32> =
         crate::dalvik_to_jvm::wide_const_double_pcs(dex, insns, parsed);
 
@@ -350,7 +350,7 @@ pub(crate) fn analyze(
     let tctx: TransferCtx<'_> = TransferCtx {
         move_result_type: &move_result_type,
         wide_double_pcs: &wide_double_pcs,
-        narrow_floats: &narrow_floats,
+        narrow_float_pcs: &narrow_float_pcs,
         move_exception_type,
         class_internal,
         materialize_new_pcs: shape.materialize_new_pcs,
@@ -679,7 +679,7 @@ fn resolve_null_constants(
 struct TransferCtx<'a> {
     move_result_type: &'a BTreeMap<u32, RegType>,
     wide_double_pcs: &'a BTreeSet<u32>,
-    narrow_floats: &'a BTreeSet<u16>,
+    narrow_float_pcs: &'a BTreeSet<u32>,
     move_exception_type: &'a BTreeMap<u32, String>,
     class_internal: &'a str,
     materialize_new_pcs: &'a BTreeSet<u32>,
@@ -695,7 +695,7 @@ fn transfer(
 ) -> Option<()> {
     let move_result_type: &BTreeMap<u32, RegType> = ctx.move_result_type;
     let wide_double_pcs: &BTreeSet<u32> = ctx.wide_double_pcs;
-    let narrow_floats: &BTreeSet<u16> = ctx.narrow_floats;
+    let narrow_float_pcs: &BTreeSet<u32> = ctx.narrow_float_pcs;
     let move_exception_type: &BTreeMap<u32, String> = ctx.move_exception_type;
     let class_internal: &str = ctx.class_internal;
     let materialize_new_pcs: &BTreeSet<u32> = ctx.materialize_new_pcs;
@@ -748,7 +748,7 @@ fn transfer(
         0x0F..=0x11 => {}
         0x12..=0x13 => {
             let lit: i64 = insn.literal.unwrap_or(0);
-            let is_float: bool = r.first().is_some_and(|d: &u16| narrow_floats.contains(d));
+            let is_float: bool = narrow_float_pcs.contains(&insn.pc);
             set(
                 regs,
                 r.first().copied(),
@@ -762,7 +762,7 @@ fn transfer(
             );
         }
         0x14 | 0x15 => {
-            let is_float: bool = r.first().is_some_and(|d: &u16| narrow_floats.contains(d));
+            let is_float: bool = narrow_float_pcs.contains(&insn.pc);
             set(
                 regs,
                 r.first().copied(),

@@ -116,7 +116,7 @@ struct Emitter<'a> {
     cp: &'a mut ConstantPool,
     code: Vec<u8>,
     reg_type: BTreeMap<u16, Slot>,
-    const_kind: BTreeMap<u16, Slot>,
+    const_float_pcs: BTreeSet<u32>,
     wide_double_pcs: BTreeSet<u32>,
     reg_array_elem: BTreeMap<u16, Slot>,
     param_array_elem: BTreeMap<u16, Slot>,
@@ -273,7 +273,7 @@ pub(crate) fn emit_method_code(
         insns.truncate(end + 1);
     }
     let parsed: MethodDescriptor = descriptor::parse_method(&item.method_descriptor)?;
-    let const_kind: BTreeMap<u16, Slot> = infer_const_kinds(dex, &insns, &parsed);
+    let const_float_pcs: BTreeSet<u32> = narrow_const_float_pcs(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
     if has_width_conflict(dex, &insns, &parsed, item, is_static) {
         return None;
@@ -300,7 +300,7 @@ pub(crate) fn emit_method_code(
         cp,
         code: Vec::with_capacity(insns.len() * 3),
         reg_type: BTreeMap::new(),
-        const_kind,
+        const_float_pcs,
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
@@ -628,7 +628,7 @@ pub(crate) fn emit_branch_method_code(
         record_bail_kind("max-locals-limit");
         return None;
     };
-    let const_kind: BTreeMap<u16, Slot> = infer_const_kinds(dex, &insns, &parsed);
+    let const_float_pcs: BTreeSet<u32> = narrow_const_float_pcs(dex, &insns, &parsed);
     let wide_double_pcs: BTreeSet<u32> = wide_const_double_pcs(dex, &insns, &parsed);
     let iinc_suppressed: BTreeSet<u32> = collect_iinc_suppressed(dex, &insns);
 
@@ -637,7 +637,7 @@ pub(crate) fn emit_branch_method_code(
         cp,
         code: Vec::with_capacity(insns.len() * 3),
         reg_type: BTreeMap::new(),
-        const_kind,
+        const_float_pcs,
         wide_double_pcs,
         reg_array_elem: BTreeMap::new(),
         param_array_elem: BTreeMap::new(),
@@ -2788,7 +2788,7 @@ impl Emitter<'_> {
         let Some(&dest): Option<&u16> = regs.first() else {
             return;
         };
-        self.emit_narrow_const(dest, insn.literal.unwrap_or(0) as i32);
+        self.emit_narrow_const(dest, insn.literal.unwrap_or(0) as i32, insn.pc);
     }
 
     fn const_high16_int(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -2796,7 +2796,7 @@ impl Emitter<'_> {
             return;
         };
         let value: i32 = (insn.literal.unwrap_or(0) as i32) << 16;
-        self.emit_narrow_const(dest, value);
+        self.emit_narrow_const(dest, value, insn.pc);
     }
 
     fn const_long(&mut self, regs: &[u16], insn: &DalvikInsn) {
@@ -2813,8 +2813,8 @@ impl Emitter<'_> {
         self.emit_wide_const(dest, insn.literal.unwrap_or(0) << 48, insn.pc);
     }
 
-    fn emit_narrow_const(&mut self, dest: u16, bits: i32) {
-        if matches!(self.const_kind.get(&dest), Some(Slot::Float)) {
+    fn emit_narrow_const(&mut self, dest: u16, bits: i32, pc: u32) {
+        if self.const_float_pcs.contains(&pc) {
             let idx: u16 = self.cp.float_bits(bits as u32);
             self.emit_ldc(idx);
             self.emit_store(dest, Slot::Float);
@@ -3861,26 +3861,44 @@ fn is_synthetic_class(descriptor: &str) -> bool {
         .is_some_and(|seg: &str| !seg.is_empty() && seg.bytes().all(|b: u8| b.is_ascii_digit()))
 }
 
-pub(crate) fn const_wide_double_and_float_regs(
+pub(crate) fn narrow_const_float_pcs(
     dex: &DexFile,
     insns: &[DalvikInsn],
     parsed: &MethodDescriptor,
-) -> (BTreeSet<u16>, BTreeSet<u16>) {
+) -> BTreeSet<u32> {
     let kinds: BTreeMap<u16, Slot> = infer_const_kinds(dex, insns, parsed);
-    let mut doubles: BTreeSet<u16> = BTreeSet::new();
-    let mut floats: BTreeSet<u16> = BTreeSet::new();
-    for (&reg, slot) in &kinds {
-        match slot {
-            Slot::Double => {
-                doubles.insert(reg);
-            }
-            Slot::Float => {
-                floats.insert(reg);
-            }
-            _ => {}
-        }
+    let mut out: BTreeSet<u32> = BTreeSet::new();
+    if kinds.is_empty() {
+        return out;
     }
-    (doubles, floats)
+    let pc_to_idx: BTreeMap<u32, usize> =
+        insns.iter().enumerate().map(|(i, n)| (n.pc, i)).collect();
+    for (idx, insn) in insns.iter().enumerate() {
+        if !matches!(insn.op, 0x12..=0x15) {
+            continue;
+        }
+        let Some(&dest): Option<&u16> = insn.regs.first() else {
+            continue;
+        };
+        if !matches!(kinds.get(&dest), Some(Slot::Float)) {
+            continue;
+        }
+        let flow: ConstFlow = const_value_int_or_float_use(
+            dex,
+            insns,
+            &pc_to_idx,
+            parsed,
+            dest,
+            Slot::Float,
+            idx,
+            true,
+        );
+        if matches!(flow, ConstFlow::Int) {
+            continue;
+        }
+        out.insert(insn.pc);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4163,8 +4181,9 @@ fn method_has_const_split_conflict(
                 if !(matches!(insn.op, 0x12..=0x19) && insn.regs.first() == Some(&reg)) {
                     continue;
                 }
-                match const_value_int_or_float_use(dex, insns, pc_to_idx, parsed, reg, probe, start)
-                {
+                match const_value_int_or_float_use(
+                    dex, insns, pc_to_idx, parsed, reg, probe, start, false,
+                ) {
                     ConstFlow::Float => reaches_fp = true,
                     ConstFlow::Int => reaches_int = true,
                     ConstFlow::Unknown => {}
@@ -4259,6 +4278,7 @@ enum ConstFlow {
     Unknown,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn const_value_int_or_float_use(
     dex: &DexFile,
     insns: &[DalvikInsn],
@@ -4267,6 +4287,7 @@ fn const_value_int_or_float_use(
     reg: u16,
     slot: Slot,
     start: usize,
+    branch_reads_are_int: bool,
 ) -> ConstFlow {
     let mut visited: BTreeSet<usize> = BTreeSet::new();
     let mut work: Vec<usize> = vec![start + 1];
@@ -4283,7 +4304,9 @@ fn const_value_int_or_float_use(
             FloatUse::Redefined => continue,
             FloatUse::Ambiguous | FloatUse::None => {}
         }
-        if const_int_use(dex, insn, reg) {
+        let branch_read: bool =
+            branch_reads_are_int && matches!(insn.op, 0x32..=0x3D) && insn.regs.contains(&reg);
+        if branch_read || const_int_use(dex, insn, reg) {
             saw_int = true;
             continue;
         }
@@ -4315,7 +4338,8 @@ fn const_int_use(dex: &DexFile, insn: &DalvikInsn, reg: u16) -> bool {
     }
     match op {
         0x0F => r.first() == Some(&reg),
-        0xB0..=0xE2 => true,
+        0xB0..=0xBA | 0xD0..=0xE2 => true,
+        0xC3..=0xC5 => r.get(1) == Some(&reg),
         0x90..=0xAF => r.iter().skip(1).any(|&x: &u16| x == reg),
         0x44 | 0x47..=0x4A => r.iter().skip(1).any(|&x: &u16| x == reg),
         0x4B | 0x4E..=0x51 => r.first() == Some(&reg),

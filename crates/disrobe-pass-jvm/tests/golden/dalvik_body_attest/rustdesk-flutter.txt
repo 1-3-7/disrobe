@@ -73,6 +73,7 @@ ATTEST a3.j#p(BII)I
 ATTEST a6.b#b(Ljava/lang/String;Ljava/lang/String;)V
 ATTEST a6.b#f(Ljava/lang/String;Ljava/lang/String;)V
 ATTEST a6.b#g(Ljava/lang/String;Ljava/lang/String;)V
+ATTEST a7.a0#a(I)I
 ATTEST a7.b$c#previousIndex()I
 ATTEST a7.b$d#i()I
 ATTEST a7.d#i()I
@@ -173,6 +174,7 @@ ATTEST androidx.window.layout.adapter.sidecar.SidecarCompat#f(Landroidx/window/l
 ATTEST b1.d#f()V
 ATTEST b1.d#k()V
 ATTEST b1.e#m([SIFI)I
+ATTEST b1.f#c()Z
 ATTEST b1.f#e(Ljava/nio/ByteBuffer;)V
 ATTEST b2.e$a$a#e(Lb2/e$a;)V
 ATTEST b2.h#c()V
@@ -708,7 +710,9 @@ ATTEST m3.a#c(Z)Lf2/x;
 ATTEST m3.b#h()Ljava/util/List;
 ATTEST m3.b$a#i(I)V
 ATTEST m5.c#d(Lo4/p;Lo4/p;Lo4/p;Lo4/p;I)Lu4/l;
+ATTEST m5.f#h()I
 ATTEST m5.f#k()[I
+ATTEST m5.f#m()Z
 ATTEST m5.g#c()Lm5/d;
 ATTEST n.b1#f()I
 ATTEST n.f1#h()I
@@ -1058,6 +1062,7 @@ ATTEST v7.l1#b(Lv7/h1;ILjava/lang/Object;)Lv7/s;
 ATTEST v7.l1#e(Lv7/h1;)V
 ATTEST v7.n0#b(Ljava/lang/Object;Ljava/lang/Throwable;)V
 ATTEST v7.o1#O(Ljava/lang/Throwable;)Z
+ATTEST v7.o1#U(Ljava/lang/Object;)Ljava/lang/Throwable;
 ATTEST v7.o1#b0(Ljava/lang/Throwable;)Z
 ATTEST v7.o1#f0()Z
 ATTEST v7.o1#g(Lc7/g$c;)Lc7/g;
@@ -1203,14 +1208,10 @@ ATTEST z5.g#a()[Lz5/g;
 ATTEST z5.g$a#a(I)Ln4/b0$c;
 ATTEST z6.g#c(Ljava/lang/Object;)Z
 ATTEST z7.e#c(Lc7/g;Ljava/lang/Object;Ljava/lang/Object;Lm7/p;Lc7/d;ILjava/lang/Object;)Ljava/lang/Object;
-REJECT a7.a0#a(I)I
 REJECT a8.s#k(La8/a0;)La8/s;
 REJECT a8.x#b(Ljava/lang/Throwable;Ljava/lang/String;ILjava/lang/Object;)La8/y;
-REJECT b1.f#c()Z
-REJECT com.carriez.flutter_hbb.InputService#n(II)V
 REJECT i1.s1#D0(Landroid/content/Context;)I
 REJECT n4.v0#F(Ljava/lang/Object;II)Z
 REJECT t0.k0#l0(Landroid/view/View;)Lt0/r;
 REJECT u4.j#a(Lu4/b;[F)V
-REJECT v7.o1#U(Ljava/lang/Object;)Ljava/lang/Throwable;
 REJECT v7.r1#p()Ljava/lang/String;
