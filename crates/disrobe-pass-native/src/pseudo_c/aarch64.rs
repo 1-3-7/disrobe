@@ -144,6 +144,13 @@ struct PcRelativeAddressFold {
     target: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PcRelativeMemoryFold {
+    page_index: usize,
+    target: u64,
+    discard_page: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum RelativeLoadKind {
     ByteUnsigned,
@@ -379,7 +386,31 @@ pub(super) fn recover_with_image<'image>(
     image: &dyn Fn(u64) -> Option<&'image [u8]>,
     relocations: &dyn Fn(u64) -> Option<u64>,
 ) -> Result<LeafRecovery> {
-    recover_with_calls_and_image(machine_code, base, &[], image, relocations)
+    recover_with_calls_and_image(
+        machine_code,
+        base,
+        &[],
+        image,
+        relocations,
+        &no_aarch64_instruction_relocation,
+    )
+}
+
+pub(super) fn recover_with_image_and_instruction_relocations<'image>(
+    machine_code: &[u8],
+    base: u64,
+    image: &dyn Fn(u64) -> Option<&'image [u8]>,
+    relocations: &dyn Fn(u64) -> Option<u64>,
+    instruction_relocations: &dyn Fn(u64) -> bool,
+) -> Result<LeafRecovery> {
+    recover_with_calls_and_image(
+        machine_code,
+        base,
+        &[],
+        image,
+        relocations,
+        instruction_relocations,
+    )
 }
 
 pub(super) fn recover_with_calls(
@@ -393,6 +424,7 @@ pub(super) fn recover_with_calls(
         calls,
         &no_aarch64_image,
         &no_aarch64_relocation,
+        &no_aarch64_instruction_relocation,
     )
 }
 
@@ -402,6 +434,10 @@ fn no_aarch64_image(_: u64) -> Option<&'static [u8]> {
 
 fn no_aarch64_relocation(_: u64) -> Option<u64> {
     None
+}
+
+fn no_aarch64_instruction_relocation(_: u64) -> bool {
+    false
 }
 
 fn instruction_accesses_fpcr(insn: &DisasmInsn) -> bool {
@@ -415,6 +451,7 @@ fn recover_with_calls_and_image<'image>(
     calls: &[ResolvedCall],
     image: &dyn Fn(u64) -> Option<&'image [u8]>,
     relocations: &dyn Fn(u64) -> Option<u64>,
+    instruction_relocations: &dyn Fn(u64) -> bool,
 ) -> Result<LeafRecovery> {
     if calls.iter().any(|call: &ResolvedCall| {
         call.signature.abi() != Abi::Aapcs64
@@ -441,6 +478,14 @@ fn recover_with_calls_and_image<'image>(
         return Err(reject("instruction bytes exceed the bounded lift"));
     }
     let insns: Vec<DisasmInsn> = disassemble(Arch::Aarch64, base, machine_code)?;
+    if insns
+        .iter()
+        .any(|instruction: &DisasmInsn| instruction_relocations(instruction.address))
+    {
+        return Err(reject(
+            "aarch64 function contains an unresolved instruction relocation",
+        ));
+    }
     if insns.is_empty() || insns.len() > MAX_INSTRUCTIONS {
         return Err(reject("instruction count is outside the bounded lift"));
     }
@@ -463,15 +508,26 @@ fn recover_with_calls_and_image<'image>(
         recover_aarch64_switches(&insns, base, machine_code.len(), &image_context);
     let address_folds: BTreeMap<usize, PcRelativeAddressFold> =
         recover_pc_relative_address_folds(&insns);
+    let memory_folds: BTreeMap<usize, PcRelativeMemoryFold> =
+        recover_pc_relative_memory_folds(&insns);
     let mut ignored_instructions: BTreeSet<usize> = BTreeSet::new();
     for dispatch in switches.values() {
         ignored_instructions.extend(dispatch.ignored_instructions.iter().copied());
     }
     ignored_instructions.extend(
         address_folds
+            .iter()
+            .filter(|(use_index, fold): &(&usize, &PcRelativeAddressFold)| {
+                fold.dest == fold.source
+                    && decoded_range_is_only_nops(&insns, fold.page_index, **use_index)
+            })
+            .map(|(_, fold): (&usize, &PcRelativeAddressFold)| fold.page_index),
+    );
+    ignored_instructions.extend(
+        memory_folds
             .values()
-            .filter(|fold: &&PcRelativeAddressFold| fold.dest == fold.source)
-            .map(|fold: &PcRelativeAddressFold| fold.page_index),
+            .filter(|fold: &&PcRelativeMemoryFold| fold.discard_page)
+            .map(|fold: &PcRelativeMemoryFold| fold.page_index),
     );
     let mut items: Vec<Item> = Vec::new();
     let mut return_width: Width = Width::W64;
@@ -633,8 +689,14 @@ fn recover_with_calls_and_image<'image>(
                 }
             }
             "ldr" | "str" | "ldur" | "stur" => {
-                let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
-                    lower_memory(insn, frame.info_at(index), outgoing_slots)?;
+                let (dest, stmts): (Option<RegRef>, Vec<Stmt>) = lower_memory(
+                    insn,
+                    frame.info_at(index),
+                    outgoing_slots,
+                    memory_folds
+                        .get(&index)
+                        .map(|fold: &PcRelativeMemoryFold| fold.target),
+                )?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if let Some(dest) = dest
                     && dest.reg == Reg::Rax
@@ -673,6 +735,12 @@ fn recover_with_calls_and_image<'image>(
                         "sized load writes back to its own transfer register",
                     ));
                 }
+                materialize_pc_relative_memory(
+                    &mut mem,
+                    memory_folds
+                        .get(&index)
+                        .map(|fold: &PcRelativeMemoryFold| fold.target),
+                );
                 let mut stmts: Vec<Stmt> = Vec::new();
                 if pre_index {
                     let delta: i64 = mem.disp;
@@ -731,6 +799,12 @@ fn recover_with_calls_and_image<'image>(
                         "sized store writes back to its own transfer register",
                     ));
                 }
+                materialize_pc_relative_memory(
+                    &mut mem,
+                    memory_folds
+                        .get(&index)
+                        .map(|fold: &PcRelativeMemoryFold| fold.target),
+                );
                 let mut stmts: Vec<Stmt> = Vec::new();
                 if pre_index {
                     let delta: i64 = mem.disp;
@@ -753,8 +827,14 @@ fn recover_with_calls_and_image<'image>(
                 push_stmts(&mut items, base, index, stmts)?;
             }
             "ldp" | "stp" => {
-                let (dest, stmts): (Option<RegRef>, Vec<Stmt>) =
-                    lower_pair_memory(insn, frame.info_at(index), outgoing_slots)?;
+                let (dest, stmts): (Option<RegRef>, Vec<Stmt>) = lower_pair_memory(
+                    insn,
+                    frame.info_at(index),
+                    outgoing_slots,
+                    memory_folds
+                        .get(&index)
+                        .map(|fold: &PcRelativeMemoryFold| fold.target),
+                )?;
                 push_stmts(&mut items, base, index, stmts)?;
                 if let Some(dest) = dest {
                     return_width = dest.width;
@@ -1371,6 +1451,9 @@ fn recover_with_calls_and_image<'image>(
                 if operands.is_empty() {
                     return Err(reject_at(insn, "malformed pc-relative address"));
                 }
+                if operands[0] == "xzr" {
+                    continue;
+                }
                 let dest: RegRef = parse_reg(operands[0])?;
                 if dest.width != Width::W64 {
                     return Err(reject_at(insn, "pc-relative address is not an x register"));
@@ -1982,11 +2065,8 @@ fn recover_pc_relative_address_folds(
     let block_leaders: Vec<bool> = basic_block_leaders(insns, &decoded);
     let mut folds: BTreeMap<usize, PcRelativeAddressFold> = BTreeMap::new();
     for (index, instruction) in decoded.iter().copied().enumerate() {
-        let SwitchInsn::AddImmediate {
-            dest,
-            lhs,
-            immediate,
-        } = instruction
+        let Some((dest, lhs, immediate)): Option<(u8, u8, u16)> =
+            pc_relative_low_offset(&insns[index], instruction)
         else {
             continue;
         };
@@ -2020,6 +2100,220 @@ fn recover_pc_relative_address_folds(
         );
     }
     folds
+}
+
+fn pc_relative_low_offset(insn: &DisasmInsn, decoded: SwitchInsn) -> Option<(u8, u8, u16)> {
+    if let SwitchInsn::AddImmediate {
+        dest,
+        lhs,
+        immediate,
+    } = decoded
+    {
+        return Some((dest, lhs, immediate));
+    }
+    if insn.mnemonic != "orr" {
+        return None;
+    }
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let [dest, lhs, immediate]: [&str; 3] = <[&str; 3]>::try_from(operands).ok()?;
+    let dest: RegRef = parse_reg(dest).ok()?;
+    let lhs: RegRef = parse_reg(lhs).ok()?;
+    if dest.width != Width::W64 || lhs.width != Width::W64 {
+        return None;
+    }
+    let immediate: u16 = u16::try_from(parse_immediate(immediate).ok()?).ok()?;
+    if immediate > 0x0fff {
+        return None;
+    }
+    Some((
+        aarch64_register_number(dest.reg)?,
+        aarch64_register_number(lhs.reg)?,
+        immediate,
+    ))
+}
+
+fn recover_pc_relative_memory_folds(insns: &[DisasmInsn]) -> BTreeMap<usize, PcRelativeMemoryFold> {
+    let decoded: Vec<SwitchInsn> = insns.iter().map(decode_switch_instruction).collect();
+    let block_leaders: Vec<bool> = basic_block_leaders(insns, &decoded);
+    let mut folds: BTreeMap<usize, PcRelativeMemoryFold> = BTreeMap::new();
+    for (index, insn) in insns.iter().enumerate() {
+        if !matches!(
+            insn.mnemonic.as_str(),
+            "ldr"
+                | "str"
+                | "ldur"
+                | "stur"
+                | "ldrb"
+                | "ldrh"
+                | "ldrsb"
+                | "ldrsh"
+                | "ldrsw"
+                | "ldurb"
+                | "ldurh"
+                | "ldursb"
+                | "ldursh"
+                | "ldursw"
+                | "strb"
+                | "strh"
+                | "sturb"
+                | "sturh"
+                | "ldp"
+                | "stp"
+        ) {
+            continue;
+        }
+        let Some(fold): Option<PcRelativeMemoryFold> =
+            recover_pc_relative_memory_fold(insns, &decoded, &block_leaders, index, insn)
+        else {
+            continue;
+        };
+        folds.insert(index, fold);
+    }
+    folds
+}
+
+fn recover_pc_relative_memory_fold(
+    insns: &[DisasmInsn],
+    decoded: &[SwitchInsn],
+    block_leaders: &[bool],
+    index: usize,
+    insn: &DisasmInsn,
+) -> Option<PcRelativeMemoryFold> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let memory_index: usize = if matches!(insn.mnemonic.as_str(), "ldp" | "stp") {
+        2
+    } else {
+        1
+    };
+    if operands.len() != memory_index.checked_add(1)? {
+        return None;
+    }
+    let (mem, pre_index): (MemRef, bool) =
+        parse_memory(operands.get(memory_index)?, Width::W8).ok()?;
+    if pre_index || mem.index.is_some() {
+        return None;
+    }
+    let base: Reg = mem.base?;
+    let base_number: u8 = aarch64_register_number(base)?;
+    let (page_index, page_definition): (usize, SwitchInsn) =
+        single_block_pc_relative_definition(insns, decoded, block_leaders, index, base_number)?;
+    let SwitchInsn::Adrp {
+        dest: page_dest,
+        target: page_target,
+    } = page_definition
+    else {
+        return None;
+    };
+    if page_dest != base_number {
+        return None;
+    }
+    let target: u64 = page_target.checked_add_signed(mem.disp)?;
+    let transfer: Option<RegRef> = parse_reg(operands[0]).ok();
+    let discard_page: bool = insn.mnemonic.starts_with('l')
+        && transfer.is_some_and(|register: RegRef| register.reg == base)
+        && page_index.checked_add(1) == Some(index)
+        && insns.get(page_index)?.address.checked_add(4) == Some(insn.address);
+    Some(PcRelativeMemoryFold {
+        page_index,
+        target,
+        discard_page,
+    })
+}
+
+fn decoded_range_is_only_nops(insns: &[DisasmInsn], start: usize, end: usize) -> bool {
+    start
+        .checked_add(1)
+        .and_then(|first: usize| insns.get(first..end))
+        .is_some_and(|between: &[DisasmInsn]| {
+            between
+                .iter()
+                .all(|instruction: &DisasmInsn| instruction.mnemonic == "nop")
+        })
+}
+
+fn single_block_pc_relative_definition(
+    insns: &[DisasmInsn],
+    decoded: &[SwitchInsn],
+    block_leaders: &[bool],
+    before: usize,
+    register: u8,
+) -> Option<(usize, SwitchInsn)> {
+    let bounded_start: usize = before.saturating_sub(MAX_SWITCH_SLICE_INSTRUCTIONS);
+    let block_start: usize = (bounded_start..=before)
+        .rev()
+        .find(|index: &usize| block_leaders.get(*index).copied().unwrap_or(false))?;
+    for index in (block_start..before).rev() {
+        let instruction: SwitchInsn = *decoded.get(index)?;
+        if instruction.defines(register) {
+            return Some((index, instruction));
+        }
+        if matches!(instruction, SwitchInsn::Other)
+            && !pc_relative_memory_preserves_base(insns.get(index)?, register)
+        {
+            return None;
+        }
+    }
+    None
+}
+
+fn pc_relative_memory_preserves_base(insn: &DisasmInsn, register: u8) -> bool {
+    let pair: bool = matches!(insn.mnemonic.as_str(), "ldp" | "stp");
+    if !matches!(
+        insn.mnemonic.as_str(),
+        "ldr"
+            | "str"
+            | "ldur"
+            | "stur"
+            | "ldrb"
+            | "ldrh"
+            | "ldrsb"
+            | "ldrsh"
+            | "ldrsw"
+            | "ldurb"
+            | "ldurh"
+            | "ldursb"
+            | "ldursh"
+            | "ldursw"
+            | "strb"
+            | "strh"
+            | "sturb"
+            | "sturh"
+            | "ldp"
+            | "stp"
+    ) {
+        return false;
+    }
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let memory_index: usize = if pair { 2 } else { 1 };
+    if operands.len() != memory_index.saturating_add(1) {
+        return false;
+    }
+    let Ok((memory, pre_index)): Result<(MemRef, bool)> =
+        parse_memory(operands[memory_index], Width::W8)
+    else {
+        return false;
+    };
+    let Some(base): Option<u8> = memory.base.and_then(aarch64_register_number) else {
+        return false;
+    };
+    if base != register || pre_index || memory.index.is_some() {
+        return false;
+    }
+    if !insn.mnemonic.starts_with('l') {
+        return true;
+    }
+    operands[..memory_index].iter().all(|operand: &&str| {
+        parse_reg(operand)
+            .ok()
+            .and_then(|destination: RegRef| aarch64_register_number(destination.reg))
+            != Some(register)
+    })
+}
+
+fn aarch64_register_number(reg: Reg) -> Option<u8> {
+    (0u8..=29).find(|number: &u8| {
+        aarch64_switch_register(*number).is_some_and(|candidate: RegRef| candidate.reg == reg)
+    })
 }
 
 fn basic_block_leaders(insns: &[DisasmInsn], decoded: &[SwitchInsn]) -> Vec<bool> {
@@ -4390,10 +4684,22 @@ fn try_lower_scalar_fp(
     }
 }
 
+fn materialize_pc_relative_memory(mem: &mut MemRef, address: Option<u64>) {
+    if let Some(address) = address {
+        *mem = MemRef {
+            base: None,
+            index: None,
+            disp: i64::from_ne_bytes(address.to_ne_bytes()),
+            width: mem.width,
+        };
+    }
+}
+
 fn lower_memory(
     insn: &DisasmInsn,
     frame: FrameInfo,
     outgoing: &[OutgoingSlot],
+    materialized_address: Option<u64>,
 ) -> Result<(Option<RegRef>, Vec<Stmt>)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     if !(2..=3).contains(&operands.len()) {
@@ -4422,6 +4728,7 @@ fn lower_memory(
             "address cannot be both pre-indexed and post-indexed",
         ));
     }
+    materialize_pc_relative_memory(&mut mem, materialized_address);
     let mut stmts: Vec<Stmt> = Vec::new();
     if pre_index {
         let delta: i64 = mem.disp;
@@ -4617,6 +4924,7 @@ fn lower_pair_memory(
     insn: &DisasmInsn,
     frame: FrameInfo,
     outgoing: &[OutgoingSlot],
+    materialized_address: Option<u64>,
 ) -> Result<(Option<RegRef>, Vec<Stmt>)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     if !(3..=4).contains(&operands.len()) {
@@ -4628,6 +4936,7 @@ fn lower_pair_memory(
         return Err(reject_at(insn, "mixed-width pair load or store"));
     }
     let (mut first_mem, pre_index): (MemRef, bool) = parse_memory(operands[2], first.width)?;
+    materialize_pc_relative_memory(&mut first_mem, materialized_address);
     let post_delta: Option<i64> = operands
         .get(3)
         .map(|token: &&str| parse_immediate(token))
@@ -6898,10 +7207,11 @@ fn reject_at(insn: &DisasmInsn, message: &str) -> Error {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        Aarch64DirectTransfer, DisasmInsn, ExtSource, FpToIntRound, FpWidth, IndexExtend, MemRef,
-        Reg, RegRef, Stmt, Width, aarch64_direct_transfer, encoded_extended_register, lower_alu,
-        lower_fp_fmov, lower_fp_to_int, lower_int_to_fp, parse_extend_modifier,
-        parse_index_modifier, parse_memory, parse_reg, split_operands,
+        Aarch64DirectTransfer, DisasmInsn, Error, ExtSource, FpToIntRound, FpWidth, IndexExtend,
+        LeafRecovery, MemRef, Reg, RegRef, Stmt, Width, aarch64_direct_transfer,
+        encoded_extended_register, lower_alu, lower_fp_fmov, lower_fp_to_int, lower_int_to_fp,
+        no_aarch64_image, no_aarch64_relocation, parse_extend_modifier, parse_index_modifier,
+        parse_memory, parse_reg, recover_with_image_and_instruction_relocations, split_operands,
     };
     use crate::error::Result;
 
@@ -7475,5 +7785,24 @@ mod tests {
             let _: Option<(bool, Width, i64)> = encoded_extended_register(&insn);
             let _: Result<(RegRef, Vec<Stmt>)> = lower_alu(&insn);
         }
+    }
+
+    #[test]
+    fn unresolved_instruction_relocation_refuses_before_address_materialization() {
+        let bytes: [u8; 12] = [
+            0x00, 0x00, 0x00, 0x90, 0x00, 0x90, 0x40, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
+        ];
+        let result: Result<LeafRecovery> = recover_with_image_and_instruction_relocations(
+            &bytes,
+            0x0021_0000,
+            &no_aarch64_image,
+            &no_aarch64_relocation,
+            &|address: u64| address == 0x0021_0000,
+        );
+        assert!(result.is_err_and(|error: Error| {
+            error
+                .to_string()
+                .contains("unresolved instruction relocation")
+        }));
     }
 }

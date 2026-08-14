@@ -1,5 +1,6 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use object::{
@@ -9,12 +10,13 @@ use object::{
 
 use super::aarch64::{
     Aarch64DirectTransfer, aarch64_direct_transfer, aarch64_is_indirect_branch, aarch64_is_return,
+    recover_with_image_and_instruction_relocations,
 };
 use super::{
     CallSiteIdentitySignature, CallSiteReturnProof, CallSiteScalar, CallSiteSignatureProof, Error,
     FpWidth, LeafRecovery, RecoveredFunction, RecoveredProgram, UnrecoveredFunction, Width,
-    aarch64_call_site_body_is_bounded, recover_aarch64_function_with_image,
-    recover_call_site_identity, rename_recovered_c_symbol, rename_recovered_rust_symbol,
+    aarch64_call_site_body_is_bounded, recover_call_site_identity, rename_recovered_c_symbol,
+    rename_recovered_rust_symbol,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 
@@ -133,6 +135,8 @@ pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
     let attributed: BTreeMap<usize, Vec<AttributedSite>> = attribute_call_sites(&file, &functions);
     let windows: Vec<ImageWindow<'data>> = image_windows(&file);
     let data_targets: BTreeMap<u64, u64> = absolute_data_targets(&file);
+    let instruction_relocations: BTreeMap<usize, BTreeSet<u64>> =
+        instruction_relocation_addresses(&file);
     let mut recovered: Vec<RecoveredFunction> = Vec::with_capacity(functions.len());
     let mut unrecovered: Vec<UnrecoveredFunction> = Vec::new();
     for function in &functions {
@@ -144,12 +148,18 @@ pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
             });
             continue;
         };
+        let function_instruction_relocations: Option<&BTreeSet<u64>> =
+            instruction_relocations.get(&function.section.0);
         let isolated: core::result::Result<LeafRecovery, Error> =
-            recover_aarch64_function_with_image(
+            recover_with_image_and_instruction_relocations(
                 code.as_ref(),
                 function.address,
                 &|address: u64| image_slice(&windows, address),
                 &|address: u64| data_targets.get(&address).copied(),
+                &|address: u64| {
+                    function_instruction_relocations
+                        .is_some_and(|relocations: &BTreeSet<u64>| relocations.contains(&address))
+                },
             );
         let recovery: core::result::Result<LeafRecovery, String> = match isolated {
             Ok(recovery) => Ok(recovery),
@@ -178,6 +188,47 @@ pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
     RecoveredProgram {
         recovered,
         unrecovered,
+    }
+}
+
+fn instruction_relocation_addresses(file: &object::File<'_>) -> BTreeMap<usize, BTreeSet<u64>> {
+    let mut addresses: BTreeMap<usize, BTreeSet<u64>> = BTreeMap::new();
+    for section in file.sections() {
+        let section_index: usize = section.index().0;
+        let section_address: u64 = section.address();
+        let section_data: Option<&[u8]> = section.data().ok();
+        for (offset, relocation) in section.relocations() {
+            let direct_branch: bool = match relocation.flags() {
+                RelocationFlags::Elf { r_type } => section_data
+                    .and_then(|data: &[u8]| aarch64_instruction_word(data, offset))
+                    .and_then(|word: u32| relocation_direct_branch_tail(r_type, word))
+                    .is_some(),
+                _ => false,
+            };
+            if direct_branch {
+                continue;
+            }
+            let Some(address): Option<u64> = section_address.checked_add(offset) else {
+                continue;
+            };
+            addresses.entry(section_index).or_default().insert(address);
+        }
+    }
+    addresses
+}
+
+fn aarch64_instruction_word(data: &[u8], offset: u64) -> Option<u32> {
+    let start: usize = usize::try_from(offset).ok()?;
+    let end: usize = start.checked_add(size_of::<u32>())?;
+    let bytes: [u8; 4] = data.get(start..end)?.try_into().ok()?;
+    Some(u32::from_le_bytes(bytes))
+}
+
+fn relocation_direct_branch_tail(r_type: u32, word: u32) -> Option<bool> {
+    match (r_type, word & BRANCH_OPCODE_MASK) {
+        (AARCH64_CALL26, BL_OPCODE) => Some(false),
+        (AARCH64_JUMP26, B_OPCODE) => Some(true),
+        _ => None,
     }
 }
 
@@ -509,13 +560,7 @@ fn relocated_target(
         RelocationFlags::Elf { r_type } => r_type,
         _ => return None,
     };
-    let tail: bool = if r_type == AARCH64_CALL26 && word & BRANCH_OPCODE_MASK == BL_OPCODE {
-        false
-    } else if r_type == AARCH64_JUMP26 && word & BRANCH_OPCODE_MASK == B_OPCODE {
-        true
-    } else {
-        return None;
-    };
+    let tail: bool = relocation_direct_branch_tail(r_type, word)?;
     let RelocationTarget::Symbol(target_index) = relocation.target() else {
         return None;
     };

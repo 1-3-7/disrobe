@@ -1,7 +1,15 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_pass_native::{
-    Arch, DisasmInsn, Error, LeafRecovery, disassemble, recover_aarch64_function,
+    Arch, DisasmInsn, Error, LeafRecovery, RecoveredProgram, disassemble, recover_aarch64_function,
+    recover_aarch64_program,
+};
+use object::write::{
+    Object as WriteObject, Relocation as WriteRelocation, StandardSection, Symbol as WriteSymbol,
+    SymbolSection as WriteSymbolSection,
+};
+use object::{
+    Architecture, BinaryFormat, Endianness, RelocationFlags, SymbolFlags, SymbolKind, SymbolScope,
 };
 
 #[test]
@@ -85,6 +93,36 @@ fn aarch64_real_clang_adrp_materializes_a_page_address_for_a_global_load() {
 }
 
 #[test]
+fn aarch64_adr_materializes_the_positive_signed_immediate_limit() {
+    let bytes: [u8; 8] = [0xe0, 0xff, 0x7f, 0x70, 0xc0, 0x03, 0x5f, 0xd6];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0020_0000).expect("maximum positive adr");
+    assert!(recovery.source.contains("3145727LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adr_materializes_the_negative_signed_immediate_limit() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x80, 0x10, 0xc0, 0x03, 0x5f, 0xd6];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0020_0000).expect("maximum negative adr");
+    assert!(recovery.source.contains("1048576LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_to_the_zero_register_discards_the_address() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x00, 0x90, 0x20, 0x00, 0x80, 0xd2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("discarded adrp address");
+    assert!(
+        !recovery.source.contains("2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
 fn aarch64_adrp_add_materializes_one_linked_address() {
     let bytes: [u8; 12] = [
         0x00, 0x00, 0x00, 0x90, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
@@ -92,6 +130,21 @@ fn aarch64_adrp_add_materializes_one_linked_address() {
     let recovery: LeafRecovery =
         recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus low address");
     assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+    assert!(
+        !recovery.source.contains("2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_adrp_orr_materializes_one_linked_address() {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x1c, 0x40, 0xb2, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus low address mask");
+    assert!(recovery.source.contains("2162943LL"), "{}", recovery.source);
     assert!(
         !recovery.source.contains("2162688LL"),
         "{}",
@@ -110,6 +163,212 @@ fn aarch64_split_adrp_add_tracks_the_page_definition() {
     assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
     assert!(
         !recovery.source.contains("2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_split_adrp_add_retains_a_page_value_read_before_the_fold() {
+    let bytes: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x90, 0x1f, 0x00, 0x00, 0x71, 0x00, 0x8c, 0x04, 0x91, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovery: LeafRecovery = recover_aarch64_function(&bytes, 0x0021_0000)
+        .expect("split address with an intervening page read");
+    assert!(recovery.source.contains("2162688LL"), "{}", recovery.source);
+    assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_load_folds_the_low_address_into_the_memory_operand() {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x90, 0x40, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked load");
+    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(
+        !recovery.source.contains("r_rax = 2162688LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_adrp_sized_load_folds_the_low_address_into_the_memory_operand() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x8d, 0x44, 0x39, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked byte load");
+    assert!(recovery.source.contains("2162979LL"), "{}", recovery.source);
+    assert!(
+        !recovery
+            .source
+            .contains("r_a64_x8 + (uint64_t)(int64_t)291LL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_reused_adrp_base_folds_each_memory_operand() {
+    let bytes: [u8; 16] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x91, 0x40, 0xf9, 0x01, 0x95, 0x40, 0xf9, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("one page base reused by two loads");
+    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(recovery.source.contains("2162984LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_store_folds_the_low_address_into_the_memory_operand() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x91, 0x00, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus linked store");
+    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_unscaled_load_folds_the_signed_memory_displacement() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x01, 0x48, 0xf8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus unscaled load");
+    assert!(recovery.source.contains("2162816LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_unscaled_load_folds_a_negative_memory_displacement() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x81, 0x5f, 0xf8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus negative unscaled load");
+    assert!(recovery.source.contains("2162680LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_signed_word_load_folds_the_low_address() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x21, 0x81, 0xb9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus signed word load");
+    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_pair_load_folds_the_low_address() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x05, 0x52, 0xa9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus pair load");
+    assert!(recovery.source.contains("2162976LL"), "{}", recovery.source);
+    assert!(recovery.source.contains("2162984LL"), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_adrp_indexed_load_keeps_the_runtime_index_computation() {
+    let bytes: [u8; 12] = [
+        0x08, 0x00, 0x00, 0x90, 0x00, 0x79, 0x61, 0xb8, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("adrp plus indexed load");
+    assert!(recovery.source.contains("2162688LL"), "{}", recovery.source);
+    assert!(
+        recovery.source.contains("r_a64_x8 + r_a64_x1 * 4ULL"),
+        "{}",
+        recovery.source
+    );
+}
+
+#[test]
+fn aarch64_relocatable_adrp_abstains_instead_of_fabricating_a_linked_address() {
+    let encoded: Vec<u8> =
+        relocatable_adrp_with_relocation(object::elf::R_AARCH64_ADR_PREL_PG_HI21);
+    let recovered: RecoveredProgram = recover_aarch64_program(&encoded);
+    assert!(recovered.recovered.is_empty(), "{recovered:?}");
+    assert!(
+        recovered.unrecovered.iter().any(|function| function
+            .reason
+            .contains("unresolved instruction relocation")),
+        "{recovered:?}"
+    );
+}
+
+#[test]
+fn aarch64_forged_call_relocation_on_adrp_remains_unresolved() {
+    let encoded: Vec<u8> = relocatable_adrp_with_relocation(object::elf::R_AARCH64_CALL26);
+    let recovered: RecoveredProgram = recover_aarch64_program(&encoded);
+    assert!(recovered.recovered.is_empty(), "{recovered:?}");
+    assert!(
+        recovered.unrecovered.iter().any(|function| function
+            .reason
+            .contains("unresolved instruction relocation")),
+        "{recovered:?}"
+    );
+}
+
+fn relocatable_adrp_with_relocation(r_type: u32) -> Vec<u8> {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x90, 0x40, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let mut object: WriteObject<'_> =
+        WriteObject::new(BinaryFormat::Elf, Architecture::Aarch64, Endianness::Little);
+    let text: object::write::SectionId = object.section_id(StandardSection::Text);
+    let _offset: u64 = object.append_section_data(text, &bytes, 4);
+    let _function: object::write::SymbolId = object.add_symbol(WriteSymbol {
+        name: b"load_global".to_vec(),
+        value: 0,
+        size: u64::try_from(bytes.len()).expect("fixture length fits"),
+        kind: SymbolKind::Text,
+        scope: SymbolScope::Dynamic,
+        weak: false,
+        section: WriteSymbolSection::Section(text),
+        flags: SymbolFlags::None,
+    });
+    let target: object::write::SymbolId = object.add_symbol(WriteSymbol {
+        name: b"global".to_vec(),
+        value: 0,
+        size: 8,
+        kind: SymbolKind::Data,
+        scope: SymbolScope::Dynamic,
+        weak: false,
+        section: WriteSymbolSection::Undefined,
+        flags: SymbolFlags::None,
+    });
+    object
+        .add_relocation(
+            text,
+            WriteRelocation {
+                offset: 0,
+                symbol: target,
+                addend: 0,
+                flags: RelocationFlags::Elf { r_type },
+            },
+        )
+        .expect("fixture relocation");
+    object.write().expect("relocatable aarch64 elf")
+}
+
+#[test]
+fn aarch64_adrp_load_does_not_cross_a_base_overwrite() {
+    let bytes: [u8; 16] = [
+        0x00, 0x00, 0x00, 0x90, 0xe0, 0x03, 0x01, 0xaa, 0x00, 0x90, 0x40, 0xf9, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0x0021_0000).expect("overwritten adrp load base");
+    assert!(
+        !recovery.source.contains("2162976LL"),
         "{}",
         recovery.source
     );
