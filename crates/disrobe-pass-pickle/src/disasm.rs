@@ -610,6 +610,138 @@ pub fn disassemble(bytes: &[u8]) -> Result<Disassembly> {
     Ok(result)
 }
 
+fn skip_arg(cur: &mut Cursor<'_>, info: &OpInfo) -> Result<()> {
+    match info.arg {
+        ArgKind::None => Ok(()),
+        ArgKind::Uint1 => cur.read_u8("uint1").map(drop),
+        ArgKind::Uint2 => cur.read_u16_le("uint2").map(drop),
+        ArgKind::Uint4 => cur.read_u32_le("uint4").map(drop),
+        ArgKind::Int4 => cur.read_i32_le("int4").map(drop),
+        ArgKind::Uint8 => cur.read_u64_le("uint8").map(drop),
+        ArgKind::Float8 => cur.read_u64_be("float8").map(drop),
+        ArgKind::Long1 => {
+            let n: usize = usize::from(cur.read_u8("long1-len")?);
+            cur.charge_long(n)?;
+            cur.take(n, "long1-body").map(drop)
+        }
+        ArgKind::Long4 => {
+            let n: usize = cur.read_u32_le("long4-len")? as usize;
+            cur.charge_long(n)?;
+            cur.take(n, "long4-body").map(drop)
+        }
+        ArgKind::String1 => {
+            let n: usize = usize::from(cur.read_u8("len1")?);
+            cur.take(n, "body1").map(drop)
+        }
+        ArgKind::Bytes1 => {
+            let n: usize = usize::from(cur.read_u8("len1")?);
+            cur.take(n, "body1").map(drop)
+        }
+        ArgKind::UnicodeString1 => {
+            let n: usize = usize::from(cur.read_u8("ulen1")?);
+            cur.take(n, "ubody1").map(drop)
+        }
+        ArgKind::String4 => {
+            let n: u32 = cur.read_u32_le("len4")?;
+            guard_len(cur, u64::from(n), "body4")?;
+            cur.take(n as usize, "body4").map(drop)
+        }
+        ArgKind::Bytes4 => {
+            let n: u32 = cur.read_u32_le("len4")?;
+            guard_len(cur, u64::from(n), "body4")?;
+            cur.take(n as usize, "body4").map(drop)
+        }
+        ArgKind::UnicodeString4 => {
+            let n: u32 = cur.read_u32_le("ulen4")?;
+            guard_len(cur, u64::from(n), "ubody4")?;
+            cur.take(n as usize, "ubody4").map(drop)
+        }
+        ArgKind::Bytes8 | ArgKind::ByteArray8 => {
+            let n: u64 = cur.read_u64_le("len8")?;
+            guard_len(cur, n, "body8")?;
+            cur.take(n as usize, "body8").map(drop)
+        }
+        ArgKind::UnicodeString8 => {
+            let n: u64 = cur.read_u64_le("ulen8")?;
+            guard_len(cur, n, "ubody8")?;
+            cur.take(n as usize, "ubody8").map(drop)
+        }
+        ArgKind::DecimalNlLong
+        | ArgKind::DecimalNlShort
+        | ArgKind::FloatNl
+        | ArgKind::StringNl
+        | ArgKind::StringNlNoEscape
+        | ArgKind::StringNlNoEscapePair
+        | ArgKind::UnicodeStringNl => decode_arg(cur, info).map(drop),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamEnd {
+    pub(crate) len: usize,
+    pub(crate) protocol: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamProbe {
+    pub(crate) opcodes: usize,
+    pub(crate) end: Option<StreamEnd>,
+}
+
+pub(crate) fn probe_stream(bytes: &[u8], opcode_budget: usize) -> StreamProbe {
+    let mut cur: Cursor<'_> = Cursor::new(bytes);
+    let mut protocol: u8 = 0;
+    let mut opcodes: usize = 0;
+    loop {
+        if opcodes >= opcode_budget || cur.remaining() == 0 {
+            return StreamProbe { opcodes, end: None };
+        }
+        opcodes += 1;
+        let offset: usize = cur.position();
+        let Ok(opcode): Result<u8> = cur.read_u8("opcode") else {
+            return StreamProbe { opcodes, end: None };
+        };
+        let Some(info): Option<&OpInfo> = lookup(opcode) else {
+            return StreamProbe { opcodes, end: None };
+        };
+        match info.effect {
+            Effect::Proto => {
+                let Ok(arg): Result<DecodedArg> = decode_arg(&mut cur, info) else {
+                    return StreamProbe { opcodes, end: None };
+                };
+                if let DecodedArg::Int(p) = arg {
+                    protocol = protocol.max(p as u8);
+                }
+            }
+            Effect::Frame => {
+                let Ok(arg): Result<DecodedArg> = decode_arg(&mut cur, info) else {
+                    return StreamProbe { opcodes, end: None };
+                };
+                let Ok(declared): Result<u64> = frame_len(&arg, offset) else {
+                    return StreamProbe { opcodes, end: None };
+                };
+                if guard_len(&cur, declared, "frame-body").is_err() {
+                    return StreamProbe { opcodes, end: None };
+                }
+            }
+            Effect::Stop => {
+                return StreamProbe {
+                    opcodes,
+                    end: Some(StreamEnd {
+                        len: cur.position(),
+                        protocol,
+                    }),
+                };
+            }
+            _ => {
+                if skip_arg(&mut cur, info).is_err() {
+                    return StreamProbe { opcodes, end: None };
+                }
+            }
+        }
+    }
+}
+
 fn py_float_repr(v: f64) -> String {
     if v.is_nan() {
         return "nan".to_string();
@@ -692,6 +824,182 @@ mod tests {
     #[test]
     fn empty_is_error() {
         assert!(matches!(disassemble(&[]), Err(Error::Empty)));
+    }
+
+    const ARG_SAMPLES: [(ArgKind, &[u8]); 25] = [
+        (ArgKind::None, b""),
+        (ArgKind::FloatNl, b"3.5\n"),
+        (ArgKind::Uint1, &[0x02]),
+        (ArgKind::Uint2, &[0x01, 0x00]),
+        (ArgKind::Uint4, &[0x01, 0x00, 0x00, 0x00]),
+        (ArgKind::Int4, &[0xff, 0xff, 0xff, 0xff]),
+        (ArgKind::Uint8, &[0x01, 0, 0, 0, 0, 0, 0, 0]),
+        (ArgKind::Float8, &[0x3f, 0xf0, 0, 0, 0, 0, 0, 0]),
+        (ArgKind::Long1, &[0x02, 0x01, 0x00]),
+        (ArgKind::Long4, &[0x02, 0, 0, 0, 0x01, 0x00]),
+        (ArgKind::String1, b"\x03abc"),
+        (ArgKind::String4, b"\x03\x00\x00\x00abc"),
+        (ArgKind::Bytes1, &[0x02, 0xff, 0x00]),
+        (ArgKind::Bytes4, &[0x02, 0, 0, 0, 0xff, 0x00]),
+        (ArgKind::Bytes8, &[0x02, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x00]),
+        (
+            ArgKind::ByteArray8,
+            &[0x02, 0, 0, 0, 0, 0, 0, 0, 0xff, 0x00],
+        ),
+        (ArgKind::UnicodeString1, b"\x02hi"),
+        (ArgKind::UnicodeString4, b"\x02\x00\x00\x00hi"),
+        (
+            ArgKind::UnicodeString8,
+            b"\x02\x00\x00\x00\x00\x00\x00\x00hi",
+        ),
+        (ArgKind::UnicodeStringNl, b"hi\n"),
+        (ArgKind::StringNl, b"'hi'\n"),
+        (ArgKind::StringNlNoEscape, b"persistent-id\n"),
+        (ArgKind::StringNlNoEscapePair, b"os\nsystem\n"),
+        (ArgKind::DecimalNlShort, b"42\n"),
+        (ArgKind::DecimalNlLong, b"42L\n"),
+    ];
+
+    fn probe_info(arg: ArgKind) -> OpInfo {
+        OpInfo {
+            code: 0x4e,
+            name: "SAMPLE",
+            arg,
+            proto: 0,
+            effect: Effect::PushConst,
+        }
+    }
+
+    fn committed_fixtures(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries): std::io::Result<std::fs::ReadDir> = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path: std::path::PathBuf = entry.path();
+            if path.is_dir() {
+                committed_fixtures(&path, out);
+            } else if path.extension().is_some_and(|e| e == "pkl") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn skipping_an_argument_advances_exactly_as_far_as_decoding_it() {
+        for (kind, body) in ARG_SAMPLES {
+            let info: OpInfo = probe_info(kind);
+            let mut decoding: Cursor<'_> = Cursor::new(body);
+            let decoded: Result<DecodedArg> = decode_arg(&mut decoding, &info);
+            assert!(
+                decoded.is_ok(),
+                "{kind:?} sample must decode: {:?}",
+                decoded.err()
+            );
+            let mut skipping: Cursor<'_> = Cursor::new(body);
+            let skipped: Result<()> = skip_arg(&mut skipping, &info);
+            assert!(
+                skipped.is_ok(),
+                "{kind:?} sample must skip: {:?}",
+                skipped.err()
+            );
+            assert_eq!(
+                decoding.position(),
+                body.len(),
+                "{kind:?} sample must be exactly one argument, or the comparison proves nothing"
+            );
+            assert_eq!(
+                skipping.position(),
+                decoding.position(),
+                "skipping a {kind:?} argument left the cursor somewhere else than decoding it, so \
+                 a probed stream end would disagree with the disassembler"
+            );
+        }
+    }
+
+    #[test]
+    fn every_opcode_argument_kind_has_a_skip_sample() {
+        for info in crate::opcode::OPCODES {
+            assert!(
+                ARG_SAMPLES
+                    .iter()
+                    .any(|(kind, _): &(ArgKind, &[u8])| *kind == info.arg),
+                "{} carries argument kind {:?}, which no skip/decode sample covers",
+                info.name,
+                info.arg
+            );
+        }
+    }
+
+    #[test]
+    fn a_probed_stream_end_matches_the_disassembler_on_the_committed_corpus() {
+        let root: std::path::PathBuf = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus")
+            .join("pickle");
+        assert!(
+            root.is_dir(),
+            "corpus/pickle must be committed: the probe is graded against the fixtures the \
+             disassembler is graded against, and a missing corpus is a failure, not a skip"
+        );
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        committed_fixtures(&root, &mut files);
+        assert!(!files.is_empty(), "no .pkl fixtures under {root:?}");
+        let mut checked: usize = 0;
+        let mut defects: Vec<String> = Vec::new();
+        for file in &files {
+            let bytes: Vec<u8> = std::fs::read(file).expect("read fixture");
+            let Ok(dis): Result<Disassembly> = disassemble(&bytes) else {
+                defects.push(format!("{file:?}: the committed fixture no longer disassembles"));
+                continue;
+            };
+            let Some(stop): Option<usize> = dis.stop_offset else {
+                defects.push(format!("{file:?}: the committed fixture carries no STOP"));
+                continue;
+            };
+            let probe: StreamProbe = probe_stream(&bytes, OPCODE_BUDGET);
+            let expected: Option<StreamEnd> = Some(StreamEnd {
+                len: stop + 1,
+                protocol: dis.protocol,
+            });
+            if probe.end == expected {
+                checked += 1;
+            } else {
+                defects.push(format!(
+                    "{file:?}: probed {:?}, the disassembler says {expected:?}",
+                    probe.end
+                ));
+            }
+        }
+        assert!(
+            defects.is_empty(),
+            "the probe must stay identical to the disassembler it measures for:\n{}",
+            defects.join("\n")
+        );
+        assert!(checked >= 100, "only {checked} fixtures were compared");
+    }
+
+    #[test]
+    fn a_probe_reports_no_end_for_a_stream_without_a_stop() {
+        let probe: StreamProbe = probe_stream(b"\x80\x02K\x07", OPCODE_BUDGET);
+        assert_eq!(probe.end, None);
+        assert!(probe.opcodes >= 2);
+    }
+
+    #[test]
+    fn a_probe_stops_when_its_opcode_budget_runs_out() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(std::iter::repeat_n(b'N', 64));
+        bytes.push(b'.');
+        assert_eq!(probe_stream(&bytes, 4).end, None);
+        assert_eq!(probe_stream(&bytes, 4).opcodes, 4);
+        assert_eq!(
+            probe_stream(&bytes, OPCODE_BUDGET).end,
+            Some(StreamEnd {
+                len: bytes.len(),
+                protocol: 2,
+            })
+        );
     }
 
     #[test]

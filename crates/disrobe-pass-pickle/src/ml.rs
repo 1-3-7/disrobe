@@ -4,13 +4,31 @@ use disrobe_core::byte_search;
 use serde::{Deserialize, Serialize};
 use zip::ZipArchive;
 
+use crate::disasm::{StreamEnd, StreamProbe, disassemble, probe_stream};
 use crate::error::{Error, Result};
+use crate::opcode::max_proto;
 use crate::polyglot::looks_like_pickle;
+use crate::vm::{PickleValue, VmTrace, execute};
 
 const MODEL_ARCHIVE_ENTRY_MAX: usize = 4096;
 const MODEL_ENTRY_BYTES_MAX: usize = 64 * 1024 * 1024;
 const MODEL_ENTRY_BYTES_MAX_U64: u64 = 64 * 1024 * 1024;
 const MODEL_TOTAL_BYTES_MAX: usize = 256 * 1024 * 1024;
+const STACKED_MEMBER_MAX: usize = 4096;
+const STACKED_MEMBER_MIN: usize = 2;
+const ANCHOR_OPCODE_BUDGET: usize = 1 << 16;
+const SCAN_OPCODES_PER_BYTE: usize = 2;
+const SCAN_OPCODE_FLOOR: usize = 1 << 16;
+const TORCH_LEGACY_MEMBERS: usize = 5;
+const TORCH_MAGIC_NUMBER_DECIMAL: &str = "119547037146038801333356";
+const TORCH_MAGIC_NUMBER_HEX: &str = "0x1950a86a20f9469cfc6c";
+const TORCH_LEGACY_MEMBER_NAMES: [&str; TORCH_LEGACY_MEMBERS] = [
+    "<magic>",
+    "<protocol_version>",
+    "<sys_info>",
+    "<module>",
+    "<storage_keys>",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,14 +59,16 @@ pub struct MlReport {
 
 #[must_use]
 pub fn detect(bytes: &[u8]) -> ModelFormat {
-    let format: ModelFormat = if bytes.starts_with(b"PK\x03\x04") {
+    let format: ModelFormat = if is_npz(bytes) {
+        ModelFormat::NumpyNpz
+    } else if bytes.starts_with(b"PK\x03\x04") {
         ModelFormat::PyTorchZip
     } else if is_npy(bytes) {
         ModelFormat::NumpyNpy
-    } else if is_npz(bytes) {
-        ModelFormat::NumpyNpz
     } else if is_legacy_tar(bytes) {
         ModelFormat::PyTorchLegacyTar
+    } else if stacked_layout(bytes).members.len() >= STACKED_MEMBER_MIN {
+        ModelFormat::PyTorchStackedPickle
     } else if looks_like_pickle(bytes) {
         ModelFormat::BarePickle
     } else {
@@ -66,22 +86,34 @@ pub fn extract(bytes: &[u8]) -> Result<MlReport> {
     let report: Result<MlReport> = match format {
         ModelFormat::PyTorchZip | ModelFormat::NumpyNpz => extract_zip(bytes, format),
         ModelFormat::PyTorchLegacyTar => extract_tar(bytes),
-        ModelFormat::BarePickle => Ok(MlReport {
-            format,
-            framing: Some("raw pickle stream".to_string()),
-            embedded: vec![EmbeddedPickle {
-                path: "<root>".to_string(),
-                offset: 0,
-                length: bytes.len(),
-                protocol: protocol_of(bytes),
-            }],
-        }),
+        ModelFormat::BarePickle => {
+            let member: Option<StreamEnd> = probe_stream(bytes, scan_budget(bytes.len())).end;
+            Ok(MlReport {
+                format,
+                framing: Some(bare_pickle_framing(bytes.len(), member)),
+                embedded: vec![EmbeddedPickle {
+                    path: "<root>".to_string(),
+                    offset: 0,
+                    length: member.map_or(bytes.len(), |end: StreamEnd| end.len),
+                    protocol: member
+                        .map_or_else(|| protocol_of(bytes), |end: StreamEnd| Some(end.protocol)),
+                }],
+            })
+        }
         ModelFormat::NumpyNpy => Ok(MlReport {
             format,
             framing: Some(numpy_object_array_note(bytes)),
             embedded: numpy_npy_embedded(bytes),
         }),
-        ModelFormat::PyTorchStackedPickle | ModelFormat::Unknown => Ok(MlReport {
+        ModelFormat::PyTorchStackedPickle => {
+            let layout: StackedLayout = stacked_layout(bytes);
+            Ok(MlReport {
+                format,
+                framing: Some(stacked_framing(&layout)),
+                embedded: layout.members,
+            })
+        }
+        ModelFormat::Unknown => Ok(MlReport {
             format,
             framing: None,
             embedded: scan_for_embedded(bytes),
@@ -233,47 +265,178 @@ fn charge_payload_budget(total: &mut usize, amount: usize, path: &str) -> Result
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct StackedLayout {
+    members: Vec<EmbeddedPickle>,
+    trailing: usize,
+    torch_legacy: bool,
+}
+
+const fn scan_budget(len: usize) -> usize {
+    len.saturating_mul(SCAN_OPCODES_PER_BYTE)
+        .saturating_add(SCAN_OPCODE_FLOOR)
+}
+
+fn stacked_layout(bytes: &[u8]) -> StackedLayout {
+    let mut spans: Vec<StreamEnd> = Vec::new();
+    let mut budget: usize = scan_budget(bytes.len());
+    let mut pos: usize = 0;
+    let mut torch_legacy: bool = false;
+    let mut limit: usize = STACKED_MEMBER_MAX;
+    while spans.len() < limit && pos < bytes.len() && budget > 0 {
+        let probe: StreamProbe = probe_stream(&bytes[pos..], budget);
+        budget = budget.saturating_sub(probe.opcodes.max(1));
+        let Some(end): Option<StreamEnd> = probe.end else {
+            break;
+        };
+        if spans.is_empty() && is_torch_magic(&bytes[pos..pos.saturating_add(end.len)]) {
+            torch_legacy = true;
+            limit = TORCH_LEGACY_MEMBERS;
+        }
+        spans.push(end);
+        pos = pos.saturating_add(end.len);
+    }
+    let named: bool = torch_legacy && spans.len() == TORCH_LEGACY_MEMBERS;
+    let mut members: Vec<EmbeddedPickle> = Vec::with_capacity(spans.len());
+    let mut offset: usize = 0;
+    for (index, span) in spans.iter().enumerate() {
+        members.push(EmbeddedPickle {
+            path: match TORCH_LEGACY_MEMBER_NAMES.get(index) {
+                Some(name) if named => (*name).to_owned(),
+                _ => format!("<stacked@{offset}>"),
+            },
+            offset,
+            length: span.len,
+            protocol: Some(span.protocol),
+        });
+        offset = offset.saturating_add(span.len);
+    }
+    StackedLayout {
+        members,
+        trailing: bytes.len().saturating_sub(offset),
+        torch_legacy,
+    }
+}
+
+const TORCH_MAGIC_MEMBER_MAX: usize = 64;
+
+fn is_torch_magic(member: &[u8]) -> bool {
+    if member.len() > TORCH_MAGIC_MEMBER_MAX {
+        return false;
+    }
+    let Ok(dis): Result<crate::disasm::Disassembly> = disassemble(member) else {
+        return false;
+    };
+    let Ok(trace): Result<VmTrace> = execute(&dis) else {
+        return false;
+    };
+    matches!(&trace.result, PickleValue::BigInt(value) if value == TORCH_MAGIC_NUMBER_DECIMAL)
+}
+
+fn stacked_framing(layout: &StackedLayout) -> String {
+    if layout.torch_legacy {
+        format!(
+            "legacy torch.save container: {} stacked pickle streams (magic number {}) + {} \
+             trailing bytes of storage payload",
+            layout.members.len(),
+            TORCH_MAGIC_NUMBER_HEX,
+            layout.trailing
+        )
+    } else {
+        format!(
+            "stacked pickle container: {} successive streams + {} trailing bytes",
+            layout.members.len(),
+            layout.trailing
+        )
+    }
+}
+
+fn bare_pickle_framing(len: usize, member: Option<StreamEnd>) -> String {
+    match member {
+        Some(end) if end.len < len => format!(
+            "raw pickle stream: {} bytes of opcodes + {} trailing bytes",
+            end.len,
+            len - end.len
+        ),
+        _ => "raw pickle stream".to_string(),
+    }
+}
+
 fn scan_for_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
     let mut out: Vec<EmbeddedPickle> = Vec::new();
+    let mut budget: usize = scan_budget(bytes.len());
     let mut i: usize = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == 0x80 && bytes[i + 1] <= 5 {
-            let Some(end): Option<usize> = find_stop(&bytes[i..]) else {
-                break;
-            };
-            out.push(EmbeddedPickle {
-                path: format!("<stacked@{i}>"),
-                offset: i,
-                length: end + 1,
-                protocol: Some(bytes[i + 1]),
-            });
-            i += end + 1;
-            continue;
+    while i + 1 < bytes.len() && out.len() < STACKED_MEMBER_MAX && budget > 0 {
+        if bytes[i] == 0x80 && bytes[i + 1] <= max_proto() {
+            let probe: StreamProbe = probe_stream(&bytes[i..], budget.min(ANCHOR_OPCODE_BUDGET));
+            budget = budget.saturating_sub(probe.opcodes.max(1));
+            if let Some(end) = probe.end {
+                out.push(EmbeddedPickle {
+                    path: format!("<stacked@{i}>"),
+                    offset: i,
+                    length: end.len,
+                    protocol: Some(end.protocol),
+                });
+                i = i.saturating_add(end.len);
+                continue;
+            }
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     out
 }
 
-fn find_stop(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&b: &u8| b == b'.')
-}
-
 const NPY_HEADER_SCAN: usize = 256;
 
+fn npy_body_offset(bytes: &[u8]) -> Option<usize> {
+    if !is_npy(bytes) {
+        return None;
+    }
+    let major: u8 = *bytes.get(6)?;
+    let declared: usize = match major {
+        1 => usize::from(u16::from_le_bytes([*bytes.get(8)?, *bytes.get(9)?])),
+        2 | 3 => u32::from_le_bytes([
+            *bytes.get(8)?,
+            *bytes.get(9)?,
+            *bytes.get(10)?,
+            *bytes.get(11)?,
+        ]) as usize,
+        _ => return None,
+    };
+    let prefix: usize = if major == 1 { 10 } else { 12 };
+    let body: usize = prefix.checked_add(declared)?;
+    (body <= bytes.len()).then_some(body)
+}
+
+fn npy_header(bytes: &[u8]) -> &[u8] {
+    let end: usize = npy_body_offset(bytes).unwrap_or(NPY_HEADER_SCAN);
+    &bytes[..bytes.len().min(end)]
+}
+
 fn is_npy_object_array(bytes: &[u8]) -> bool {
-    let header: &[u8] = &bytes[..bytes.len().min(NPY_HEADER_SCAN)];
+    let header: &[u8] = npy_header(bytes);
     byte_search::contains(header, b"'O'")
         || byte_search::contains(header, b"|O")
         || byte_search::contains(header, b"dtype('O')")
 }
 
 fn numpy_npy_embedded(bytes: &[u8]) -> Vec<EmbeddedPickle> {
-    if is_npy_object_array(bytes) {
-        scan_for_embedded(bytes)
-    } else {
-        Vec::new()
+    if !is_npy_object_array(bytes) {
+        return Vec::new();
     }
+    let Some(body): Option<usize> = npy_body_offset(bytes) else {
+        return scan_for_embedded(bytes);
+    };
+    let tail: &[u8] = &bytes[body..];
+    let Some(end): Option<StreamEnd> = probe_stream(tail, scan_budget(tail.len())).end else {
+        return scan_for_embedded(bytes);
+    };
+    vec![EmbeddedPickle {
+        path: "<array-body>".to_string(),
+        offset: body,
+        length: end.len,
+        protocol: Some(end.protocol),
+    }]
 }
 
 fn numpy_object_array_note(bytes: &[u8]) -> String {
@@ -286,12 +449,10 @@ fn numpy_object_array_note(bytes: &[u8]) -> String {
 
 #[inline]
 fn protocol_of(bytes: &[u8]) -> Option<u8> {
-    if bytes.len() >= 2 && bytes[0] == 0x80 {
-        Some(bytes[1])
-    } else if looks_like_pickle(bytes) {
-        Some(0)
-    } else {
-        None
+    match bytes {
+        [0x80, declared, ..] if *declared <= max_proto() => Some(*declared),
+        _ if looks_like_pickle(bytes) => Some(0),
+        _ => None,
     }
 }
 
@@ -409,7 +570,7 @@ mod tests {
 
     #[test]
     fn npy_object_array_extracts_embedded_pickle() {
-        let body: &[u8] = b"\x80\x04\x95\x05\x00\x00\x00\x00\x00\x00\x00}\x94.";
+        let body: &[u8] = b"\x80\x04\x95\n\x00\x00\x00\x00\x00\x00\x00}\x94\x8c\x01a\x94K\x01s.";
         let bytes: Vec<u8> = npy_with_descr(b"|O", body);
         assert_eq!(detect(&bytes), ModelFormat::NumpyNpy);
         let report: MlReport = extract(&bytes).expect("extract");
@@ -427,6 +588,28 @@ mod tests {
             "object-array .npy yielded no embedded pickle"
         );
         assert_eq!(report.embedded[0].protocol, Some(4));
+        assert_eq!(
+            report.embedded[0].length,
+            body.len(),
+            "the array body is one whole pickle stream"
+        );
+        assert_eq!(report.embedded[0].offset, bytes.len() - body.len());
+    }
+
+    #[test]
+    fn an_over_declared_frame_is_not_reported_as_an_embedded_pickle() {
+        let body: &[u8] = b"\x80\x04\x95\x05\x00\x00\x00\x00\x00\x00\x00}\x94.";
+        assert!(
+            disassemble(body).is_err(),
+            "the frame declares five bytes and three follow, so this is not a pickle at all"
+        );
+        let bytes: Vec<u8> = npy_with_descr(b"|O", body);
+        let report: MlReport = extract(&bytes).expect("extract");
+        assert!(
+            report.embedded.is_empty(),
+            "a stream the disassembler rejects must not be listed as an embedded pickle: {:?}",
+            report.embedded
+        );
     }
 
     #[test]
@@ -437,6 +620,69 @@ mod tests {
         assert_eq!(byte_search::find(header, b""), None);
         assert!(!is_npy_object_array(b""));
         assert!(is_npy_object_array(header));
+    }
+
+    #[test]
+    fn two_successive_streams_are_a_stacked_container() {
+        let bytes: &[u8] = b"\x80\x02N.\x80\x02K\x01.";
+        assert_eq!(detect(bytes), ModelFormat::PyTorchStackedPickle);
+        let report: MlReport = extract(bytes).expect("extract");
+        assert_eq!(report.embedded.len(), 2);
+        assert_eq!(report.embedded[1].offset, 4);
+        assert_eq!(report.embedded[1].length, 5);
+        assert_eq!(
+            report.framing.as_deref(),
+            Some("stacked pickle container: 2 successive streams + 0 trailing bytes")
+        );
+    }
+
+    #[test]
+    fn a_truncated_last_member_is_trailing_data_not_a_member() {
+        let bytes: &[u8] = b"\x80\x02N.\x80\x02K\x01.\x80\x02K";
+        let layout: StackedLayout = stacked_layout(bytes);
+        assert_eq!(layout.members.len(), 2);
+        assert_eq!(layout.trailing, 3);
+        assert!(!layout.torch_legacy);
+    }
+
+    #[test]
+    fn a_flood_of_tiny_streams_stops_at_the_member_ceiling() {
+        let mut bytes: Vec<u8> = Vec::new();
+        for _ in 0..STACKED_MEMBER_MAX + 64 {
+            bytes.extend_from_slice(b"\x80\x02N.");
+        }
+        let start: std::time::Instant = std::time::Instant::now();
+        let layout: StackedLayout = stacked_layout(&bytes);
+        assert_eq!(layout.members.len(), STACKED_MEMBER_MAX);
+        assert_eq!(layout.trailing, 64 * 4);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "a stream flood must stay bounded"
+        );
+    }
+
+    #[test]
+    fn an_npz_archive_is_not_reported_as_a_torch_zip() {
+        let mut bytes: Vec<u8> = b"PK\x03\x04".to_vec();
+        bytes.extend_from_slice(&[0x14, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        bytes.extend_from_slice(b"arr_0.npy");
+        assert_eq!(detect(&bytes), ModelFormat::NumpyNpz);
+    }
+
+    #[test]
+    fn a_declared_protocol_above_the_opcode_table_is_not_a_protocol() {
+        assert_eq!(protocol_of(&[0x80, 0xff, b'.']), None);
+        assert_eq!(protocol_of(b"\x80\x05N."), Some(5));
+        assert_eq!(protocol_of(b"N."), Some(0));
+    }
+
+    #[test]
+    fn npy_body_offset_follows_the_declared_header_length() {
+        let body: &[u8] = b"\x80\x04}\x94.";
+        let bytes: Vec<u8> = npy_with_descr(b"|O", body);
+        assert_eq!(npy_body_offset(&bytes), Some(bytes.len() - body.len()));
+        assert_eq!(npy_body_offset(b"\x93NUMPY\x01\x00"), None);
+        assert_eq!(npy_body_offset(b"not-an-npy"), None);
     }
 
     #[test]

@@ -1,0 +1,115 @@
+{
+ "fixtures": {
+  "bare_pickle_trailer.bin": {
+   "format": "bare_pickle",
+   "members": [
+    {
+     "first_dot_length": 26,
+     "length": 43,
+     "offset": 0,
+     "protocol": 4
+    }
+   ],
+   "note": "one pickle stream followed by 24 trailing bytes: a single member is not a stacked container, and the reported length is the stream, not the file",
+   "sha256": "42496fdecd9d97abdfdcdfc9d261280178c746dec69ded58460c613e53aa9656",
+   "size_bytes": 67,
+   "trailing_bytes": 24
+  },
+  "legacy_torch_p0.pt": {
+   "format": "py_torch_stacked_pickle",
+   "members": [
+    {
+     "first_dot_length": null,
+     "length": 28,
+     "offset": 0,
+     "protocol": 0
+    },
+    {
+     "first_dot_length": null,
+     "length": 7,
+     "offset": 28,
+     "protocol": 0
+    },
+    {
+     "first_dot_length": null,
+     "length": 117,
+     "offset": 35,
+     "protocol": 0
+    },
+    {
+     "first_dot_length": 29,
+     "length": 155,
+     "offset": 152,
+     "protocol": 0
+    },
+    {
+     "first_dot_length": null,
+     "length": 20,
+     "offset": 307,
+     "protocol": 0
+    }
+   ],
+   "note": "legacy torch.save container layout at pickle protocol 0: magic number, protocol version, sys_info, the persistent-id-bearing module pickle and the storage-key list, then an opaque storage region",
+   "sha256": "90139e6198dadd920eaf7c1736c0144a9862bd507518ff845076b34a22641fd3",
+   "size_bytes": 367,
+   "trailing_bytes": 40
+  },
+  "legacy_torch_p2.pt": {
+   "format": "py_torch_stacked_pickle",
+   "members": [
+    {
+     "first_dot_length": null,
+     "length": 15,
+     "offset": 0,
+     "protocol": 2
+    },
+    {
+     "first_dot_length": null,
+     "length": 6,
+     "offset": 15,
+     "protocol": 2
+    },
+    {
+     "first_dot_length": null,
+     "length": 116,
+     "offset": 21,
+     "protocol": 2
+    },
+    {
+     "first_dot_length": 34,
+     "length": 144,
+     "offset": 137,
+     "protocol": 2
+    },
+    {
+     "first_dot_length": null,
+     "length": 24,
+     "offset": 281,
+     "protocol": 2
+    }
+   ],
+   "note": "legacy torch.save container layout at pickle protocol 2: magic number, protocol version, sys_info, the persistent-id-bearing module pickle and the storage-key list, then an opaque storage region",
+   "sha256": "702efd49f6838ffc3e640d8887049d8649aefa6de406bca2edb77b42ea40cd01",
+   "size_bytes": 345,
+   "trailing_bytes": 40
+  },
+  "object_array.npy": {
+   "format": "numpy_npy",
+   "members": [
+    {
+     "first_dot_length": 23,
+     "length": 75,
+     "offset": 128,
+     "protocol": 2
+    }
+   ],
+   "note": "numpy .npy v1.0 object array whose body is a single pickle stream",
+   "sha256": "ddf1115616b1c201a540378bd55c7a94b6077386f44228768f3f95f165490b6a",
+   "size_bytes": 203,
+   "trailing_bytes": 0
+  }
+ },
+ "measured_by": "CPython pickle.Unpickler: the handle sits immediately after a member's STOP once load() returns, so successive load() calls give the real member spans",
+ "python": "CPython 3.10.11",
+ "schema": "disrobe-pickle-ml-ref/v1"
+}
