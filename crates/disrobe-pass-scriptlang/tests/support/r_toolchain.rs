@@ -27,6 +27,20 @@ pub(crate) const RSCRIPT: Toolchain = Toolchain {
                    binary",
 };
 
+pub(crate) const TCLSH: Toolchain = Toolchain {
+    program: "tclsh",
+    binary_var: "DISROBE_TCLSH_BIN",
+    require_var: "DISROBE_REQUIRE_TCL",
+    install_hint: "install Tcl 8.6 or newer and put tclsh on PATH, or point DISROBE_TCLSH_BIN at \
+                   the binary",
+};
+
+#[derive(Debug, Clone)]
+pub(crate) struct TclRuntime {
+    pub(crate) tclsh: PathBuf,
+    pub(crate) patchlevel: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Requirement {
     Optional,
@@ -159,6 +173,57 @@ pub(crate) fn require_r(graded: &str) -> Option<RRuntime> {
             skip_or_fail(&RSCRIPT, graded, &defect);
             None
         }
+    }
+}
+
+pub(crate) fn require_tclsh(graded: &str, scratch: &Path) -> Option<TclRuntime> {
+    let Some(tclsh): Option<PathBuf> = locate(&TCLSH) else {
+        skip_or_fail(
+            &TCLSH,
+            graded,
+            "`tclsh` is not on PATH and DISROBE_TCLSH_BIN does not name a file, so Tcl is not \
+             installed here",
+        );
+        return None;
+    };
+    match patchlevel(&tclsh, scratch) {
+        Ok(found) => Some(TclRuntime {
+            tclsh,
+            patchlevel: found,
+        }),
+        Err(defect) => {
+            skip_or_fail(&TCLSH, graded, &defect);
+            None
+        }
+    }
+}
+
+fn patchlevel(tclsh: &Path, scratch: &Path) -> Result<String, String> {
+    let probe: PathBuf = scratch.join("probe.tcl");
+    std::fs::write(&probe, b"puts [info patchlevel]\n").map_err(|error: std::io::Error| {
+        format!("could not write the Tcl probe script: {error}")
+    })?;
+    let mut cmd: Command = Command::new(tclsh);
+    cmd.arg(&probe);
+    let (ok, out, err): (bool, String, String) = run_bounded(cmd).ok_or_else(|| {
+        format!(
+            "`tclsh` at {} did not exit within {CALL_TIMEOUT:?}",
+            tclsh.display()
+        )
+    })?;
+    let reported: &str = out.trim();
+    let major: Option<u32> = reported
+        .split('.')
+        .next()
+        .and_then(|part: &str| part.parse::<u32>().ok());
+    match (ok, major) {
+        (true, Some(major)) if major >= 8 => Ok(reported.to_owned()),
+        _ => Err(format!(
+            "`tclsh` at {} did not answer a `puts [info patchlevel]` script (stdout {reported:?}, \
+             stderr {:?}), so Tcl is installed and unusable rather than absent",
+            tclsh.display(),
+            err.trim()
+        )),
     }
 }
 

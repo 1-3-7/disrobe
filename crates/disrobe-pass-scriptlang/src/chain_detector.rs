@@ -687,6 +687,42 @@ mod tests {
         );
     }
 
+    const SDX_KIT: &[u8] = include_bytes!("../tests/fixtures/sdx.kit");
+
+    #[test]
+    fn metakit_starkit_children_carry_the_real_member_bytes_into_the_chain() {
+        let a: Artifact = Artifact::new(Rung::Raw, SDX_KIT.to_vec(), [0u8; 32]);
+        let children: Vec<ChildArtifact> = SCRIPTLANG_PASS
+            .extract_children(&a)
+            .expect("metakit children must carve");
+        assert_eq!(
+            children.len(),
+            64,
+            "every metakit member must reach the chain as a child, not only the zipvfs ones",
+        );
+        let main_child: &ChildArtifact = children
+            .iter()
+            .find(|c: &&ChildArtifact| c.handle.relative_path == "main.tcl")
+            .expect("main.tcl member present");
+        assert!(
+            main_child.bytes.starts_with(b"package require starkit"),
+            "the carved entry point must be the real recovered script",
+        );
+        let listing: Artifact = SCRIPTLANG_PASS.run(&a).expect("metakit run must succeed");
+        let text: &str = std::str::from_utf8(&listing.envelope).expect("utf8 listing");
+        assert!(
+            text.contains("lib/app-sdx/sdx.tcl (1523 bytes)"),
+            "the listing must report recovered member sizes, not zeroes",
+        );
+        assert!(
+            matches!(
+                SCRIPTLANG_PASS.output_kind(&listing),
+                OutputKind::Mixed { .. }
+            ),
+            "a metakit starkit is a container; output_kind must be Mixed",
+        );
+    }
+
     const PERL_CONCISE: &[u8] = include_bytes!("../tests/fixtures/hello.concise.txt");
 
     #[test]

@@ -74,10 +74,16 @@ fn real_metakit_sdx_kit_is_detected() {
 }
 
 #[test]
-fn real_metakit_sdx_kit_recovers_tcl_filenames_oracle() {
+fn real_metakit_sdx_kit_recovers_tcl_members_under_their_directories() {
     let c: StarkitContainer = extract(SDX_KIT).expect("extract sdx.kit");
     assert_eq!(c.format, StarkitFormat::Metakit);
-    for expected in ["sdx.tcl", "base64.tcl", "ftpd.tcl", "httpd.tcl", "gui.tcl"] {
+    for expected in [
+        "lib/sdx/sdx.tcl",
+        "lib/base64/base64.tcl",
+        "lib/ftpd/ftpd.tcl",
+        "lib/app-sdx/httpd.tcl",
+        "lib/wikit/gui.tcl",
+    ] {
         assert!(
             c.tcl_source_files.iter().any(|p: &String| p == expected),
             "real starkit member '{expected}' must be recovered from the Metakit directory; got {} files",
@@ -122,7 +128,7 @@ fn real_zip_starkit_extraction_is_byte_complete() {
 }
 
 #[test]
-fn real_metakit_completeness_is_honest_about_filename_only_recovery() {
+fn real_metakit_extraction_is_byte_complete() {
     let c: StarkitContainer = extract(SDX_KIT).expect("extract sdx.kit");
     assert_eq!(c.format, StarkitFormat::Metakit);
     assert!(
@@ -131,8 +137,13 @@ fn real_metakit_completeness_is_honest_about_filename_only_recovery() {
         c.completeness.declared_entries
     );
     assert_eq!(
-        c.completeness.recovered_with_contents, 0,
-        "metakit recovery is filename-only (no byte payload), and the metric reports that honestly"
+        c.completeness.recovered_with_contents, c.completeness.declared_entries,
+        "every member the metakit directory lists must come back with its bytes"
     );
-    assert!(c.completeness.ratio() < 0.01);
+    assert!((c.completeness.ratio() - 1.0).abs() < f64::EPSILON);
+    let main: &StarkitEntry = entry(&c, "main.tcl");
+    assert!(
+        main.contents.starts_with(b"package require starkit"),
+        "the recovered entry point must be the real starkit main script"
+    );
 }

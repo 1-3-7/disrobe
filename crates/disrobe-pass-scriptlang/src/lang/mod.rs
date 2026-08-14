@@ -1,5 +1,6 @@
 pub mod hashlink;
 pub mod haxe;
+pub(crate) mod metakit;
 pub mod perl;
 pub mod perl_bytecode;
 pub mod perl_decompile;
@@ -139,7 +140,7 @@ pub fn analyze(bytes: &[u8]) -> Result<ScriptArtifact> {
         {
             dbg_line(|| {
                 format!(
-                    "wall: metakit b-tree payload not decoded, recovered {} filenames only (no contents)",
+                    "wall: metakit payload not decoded, recovered {} filenames only (no contents)",
                     container.entries.len()
                 )
             });

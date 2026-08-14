@@ -2,7 +2,9 @@ use std::io::{Cursor, Read};
 
 use serde::Serialize;
 
+use crate::debug::dbg_line;
 use crate::error::{Error, Result};
+use crate::lang::metakit::{self, MetakitMember};
 
 const STARKIT_SHEBANG: &[u8] = b"#!/bin/sh";
 const STARKIT_HEADER_MARKER: &[u8] = b"package require starkit";
@@ -199,7 +201,13 @@ fn extract_metakit(bytes: &[u8], has_header: bool) -> Result<StarkitContainer> {
     if !window_contains(bytes, METAKIT_SCHEMA) {
         return Err(Error::StarkitNoSchema);
     }
-    let entries: Vec<StarkitEntry> = scan_metakit_files(bytes);
+    let entries: Vec<StarkitEntry> = match decode_metakit(bytes) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            dbg_line(|| format!("metakit payload declined, listing filenames only: {error}"));
+            scan_metakit_files(bytes)
+        }
+    };
     let tcl_source_files: Vec<String> = collect_tcl(&entries);
     let obfuscation: TclObfuscation = analyze_obfuscation(&entries);
     let completeness: TclExtractionCompleteness = measure_completeness(&entries, &tcl_source_files);
@@ -211,6 +219,72 @@ fn extract_metakit(bytes: &[u8], has_header: bool) -> Result<StarkitContainer> {
         obfuscation,
         completeness,
     })
+}
+
+fn decode_metakit(bytes: &[u8]) -> Result<Vec<StarkitEntry>> {
+    decode_metakit_with_limits(bytes, MAX_ENTRY_BYTES, MAX_TOTAL_ENTRY_BYTES)
+}
+
+fn decode_metakit_with_limits(
+    bytes: &[u8],
+    max_entry_bytes: u64,
+    max_total_entry_bytes: u64,
+) -> Result<Vec<StarkitEntry>> {
+    let members: Vec<MetakitMember<'_>> = metakit::read_starkit_members(bytes)?;
+    let mut entries: Vec<StarkitEntry> = Vec::with_capacity(members.len().min(MAX_ENTRIES));
+    let mut total_uncompressed: u64 = 0u64;
+    for member in members {
+        let path: String = sanitize_path(&member.path)?;
+        let contents: Vec<u8> = match member_bytes(&member, max_entry_bytes) {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                dbg_line(|| format!("metakit member '{path}' payload declined: {error}"));
+                Vec::new()
+            }
+        };
+        let recovered: u64 = contents.len() as u64;
+        total_uncompressed = total_uncompressed
+            .checked_add(recovered)
+            .ok_or_else(|| Error::StarkitZip(format!("entry '{path}' aggregate size overflow")))?;
+        if total_uncompressed > max_total_entry_bytes {
+            return Err(Error::StarkitZip(format!(
+                "entry '{path}' aggregate size {total_uncompressed} exceeds quota {max_total_entry_bytes}"
+            )));
+        }
+        entries.push(StarkitEntry {
+            path,
+            size: contents.len(),
+            contents,
+        });
+    }
+    entries.sort_by(|a: &StarkitEntry, b: &StarkitEntry| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+fn member_bytes(member: &MetakitMember<'_>, max_entry_bytes: u64) -> Result<Vec<u8>> {
+    let declared: u64 = member.declared_size as u64;
+    if declared > max_entry_bytes {
+        return Err(Error::StarkitMetakit {
+            reason: format!("declared size {declared} exceeds quota {max_entry_bytes}"),
+        });
+    }
+    if member.stored.len() == member.declared_size {
+        return Ok(member.stored.to_vec());
+    }
+    let mut contents: Vec<u8> = Vec::with_capacity(entry_prealloc(declared, max_entry_bytes));
+    let mut reader: std::io::Take<flate2::read::ZlibDecoder<&[u8]>> =
+        flate2::read::ZlibDecoder::new(member.stored).take(declared.saturating_add(1u64));
+    let read: usize = reader.read_to_end(&mut contents)?;
+    if read != member.declared_size {
+        return Err(Error::StarkitMetakit {
+            reason: format!(
+                "the {} stored bytes inflate to {read}, not the declared {}",
+                member.stored.len(),
+                member.declared_size
+            ),
+        });
+    }
+    Ok(contents)
 }
 
 #[inline]
@@ -581,8 +655,7 @@ mod tests {
         assert_eq!(entries[0].path, "safe.tcl");
     }
 
-    #[test]
-    fn detects_metakit_schema() {
+    fn build_schema_only_metakit() -> Vec<u8> {
         let mut kit: Vec<u8> = Vec::new();
         kit.extend_from_slice(STARKIT_SHEBANG);
         kit.extend_from_slice(b"\n");
@@ -592,9 +665,73 @@ mod tests {
         kit.extend_from_slice(b"\x00\x01\xd1\x10<root>\x00");
         kit.extend_from_slice(METAKIT_SCHEMA);
         kit.extend_from_slice(b"main.tcl");
+        kit
+    }
+
+    #[test]
+    fn detects_metakit_schema() {
+        let kit: Vec<u8> = build_schema_only_metakit();
         let c: StarkitContainer = extract(&kit).expect("extract metakit");
         assert_eq!(c.format, StarkitFormat::Metakit);
         assert!(c.tcl_source_files.iter().any(|p: &String| p == "main.tcl"));
+    }
+
+    #[test]
+    fn a_metakit_body_without_a_commit_mark_lists_names_and_recovers_nothing() {
+        let kit: Vec<u8> = build_schema_only_metakit();
+        let c: StarkitContainer = extract(&kit).expect("extract metakit");
+        assert_eq!(c.completeness.recovered_with_contents, 0);
+        assert!(decode_metakit(&kit).is_err());
+    }
+
+    const SDX_KIT: &[u8] = include_bytes!("../../tests/fixtures/sdx.kit");
+
+    #[test]
+    fn metakit_extraction_rejects_total_uncompressed_bytes_over_cap() {
+        let err: Error =
+            decode_metakit_with_limits(SDX_KIT, MAX_ENTRY_BYTES, 4096u64).expect_err("cap");
+        assert!(matches!(err, Error::StarkitZip(message) if message.contains("exceeds quota")));
+    }
+
+    #[test]
+    fn metakit_extraction_declines_a_member_over_the_per_entry_cap_and_keeps_the_rest() {
+        let entries: Vec<StarkitEntry> =
+            decode_metakit_with_limits(SDX_KIT, 1024u64, MAX_TOTAL_ENTRY_BYTES)
+                .expect("small members still recover");
+        let recovered: usize = entries
+            .iter()
+            .filter(|entry: &&StarkitEntry| !entry.contents.is_empty())
+            .count();
+        assert!(recovered > 0 && recovered < entries.len());
+        assert!(
+            entries
+                .iter()
+                .all(|entry: &StarkitEntry| entry.contents.len() as u64 <= 1024u64)
+        );
+    }
+
+    #[test]
+    fn a_metakit_member_over_the_entry_quota_is_declined_without_allocating_it() {
+        let member: MetakitMember<'_> = MetakitMember {
+            path: "big.tcl".to_owned(),
+            declared_size: 1usize << 40,
+            stored: b"\x78\x9c",
+        };
+        let err: Error = member_bytes(&member, MAX_ENTRY_BYTES).expect_err("quota");
+        assert!(
+            matches!(err, Error::StarkitMetakit { ref reason } if reason.contains("exceeds quota"))
+        );
+    }
+
+    #[test]
+    fn a_metakit_member_whose_stream_underflows_its_declared_size_is_declined() {
+        let member: MetakitMember<'_> = MetakitMember {
+            path: "short.tcl".to_owned(),
+            declared_size: 4096usize,
+            stored: b"\x78\x9c\x03\x00\x00\x00\x00\x01",
+        };
+        let err: Error = member_bytes(&member, MAX_ENTRY_BYTES).expect_err("underflow");
+        assert!(matches!(err, Error::StarkitMetakit { ref reason } if reason.contains("inflate")));
     }
 
     const OBFUSCATED_TCL: &[u8] = b"\

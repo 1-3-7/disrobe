@@ -100,6 +100,12 @@ pub enum Error {
     #[error("DR-SCRIPT-0403: starkit Metakit schema not found")]
     StarkitNoSchema,
 
+    #[error("DR-SCRIPT-0404: malformed Metakit datafile: {reason}")]
+    StarkitMetakit { reason: String },
+
+    #[error("DR-SCRIPT-0405: unsupported Metakit datafile: {feature}")]
+    StarkitMetakitUnsupported { feature: &'static str },
+
     #[error("DR-SCRIPT-0500: input is not a Haxe-emitted target")]
     NotHaxe,
 }
