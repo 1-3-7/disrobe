@@ -2673,6 +2673,7 @@ fn finish(
     context: FinishContext<'_>,
     next_sel: &mut u32,
 ) -> Result<LeafRecovery> {
+    super::idiom::fuse_constant_division_idioms(items);
     let has_scalar_fp: bool = items
         .iter()
         .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));

@@ -264,8 +264,9 @@ const CONST_COUNT: usize = 2;
 const CONST_SHIFT: usize = 0;
 const CONST_PRE_SHIFT: usize = 1;
 const IDIOM_WINDOW_STATEMENTS: usize = 24;
-const IDIOM_LOOKBACK_STATEMENTS: usize = 6;
+const IDIOM_LOOKBACK_STATEMENTS: usize = 12;
 const REMAINDER_TAIL_STATEMENTS: usize = 14;
+const MAX_AFFINE_SHIFT: u8 = 126;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Amount {
@@ -700,9 +701,12 @@ enum Observed {
         dest: RegRef,
         src: RegRef,
         magic: i64,
+        widening: Option<Extension>,
     },
     WideMul {
-        src: RegRef,
+        dest: RegRef,
+        lhs: Reg,
+        rhs: Reg,
         signed: bool,
     },
     Shift {
@@ -716,6 +720,11 @@ enum Observed {
         rhs: Reg,
     },
     Sub {
+        dest: RegRef,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Or {
         dest: RegRef,
         lhs: Reg,
         rhs: Reg,
@@ -739,6 +748,14 @@ fn immediate_value(width: Width, value: i64) -> u64 {
         Width::W32 => u64::from(value as u32),
         Width::W64 => value as u64,
     }
+}
+
+fn carried_constant(value: u64, src: Width, dest: Width, extension: Extension) -> u64 {
+    let widened: u64 = match extension {
+        Extension::Sign => sign_extended_magic(value, src.bits()) as u64,
+        Extension::Zero | Extension::None => value,
+    };
+    immediate_value(dest, widened as i64)
 }
 
 fn classify(stmt: &Stmt, held: &BTreeMap<Reg, (Held, Width)>) -> Observed {
@@ -785,9 +802,15 @@ fn classify(stmt: &Stmt, held: &BTreeMap<Reg, (Held, Width)>) -> Observed {
             dest: *dest,
             src: *source,
             magic: *imm,
+            widening: None,
         },
         Stmt::WideMul { src, signed } => Observed::WideMul {
-            src: *src,
+            dest: RegRef {
+                reg: Reg::Rdx,
+                width: Width::W64,
+            },
+            lhs: Reg::Rax,
+            rhs: src.reg,
             signed: *signed,
         },
         Stmt::BinAssign { dest, op, src } => match (op, src) {
@@ -795,35 +818,70 @@ fn classify(stmt: &Stmt, held: &BTreeMap<Reg, (Held, Width)>) -> Observed {
                 dest: *dest,
                 src: *dest,
                 magic: *value,
+                widening: None,
             },
-            (BinOp::Imul, Source::Reg(source)) => {
+            (BinOp::Imul | BinOp::Umull | BinOp::Smull, Source::Reg(source)) => {
+                let widening: Option<Extension> = match op {
+                    BinOp::Umull => Some(Extension::Zero),
+                    BinOp::Smull => Some(Extension::Sign),
+                    _ => None,
+                };
                 match (held.get(&source.reg), held.get(&dest.reg)) {
                     (Some((Held::Constant(value), _)), _) => Observed::MulConst {
                         dest: *dest,
                         src: *dest,
                         magic: *value as i64,
+                        widening,
                     },
                     (_, Some((Held::Constant(value), _))) => Observed::MulConst {
                         dest: *dest,
                         src: *source,
                         magic: *value as i64,
+                        widening,
                     },
                     _ => Observed::Opaque,
                 }
             }
-            (BinOp::Shr | BinOp::Sar, Source::Imm(value)) => {
-                u8::try_from(*value).map_or(Observed::Opaque, |amount: u8| Observed::Shift {
+            (BinOp::Umulh | BinOp::Smulh, Source::Reg(source)) => Observed::WideMul {
+                dest: *dest,
+                lhs: dest.reg,
+                rhs: source.reg,
+                signed: matches!(op, BinOp::Smulh),
+            },
+            (BinOp::And | BinOp::Or | BinOp::Xor, Source::Imm(value)) => {
+                match held.get(&dest.reg) {
+                    Some((Held::Constant(current), _)) => {
+                        let operand: u64 = immediate_value(dest.width, *value);
+                        let folded: u64 = match op {
+                            BinOp::And => *current & operand,
+                            BinOp::Or => *current | operand,
+                            _ => *current ^ operand,
+                        };
+                        Observed::LoadConst {
+                            dest: *dest,
+                            value: immediate_value(dest.width, folded as i64),
+                        }
+                    }
+                    _ => Observed::Opaque,
+                }
+            }
+            (BinOp::Shr | BinOp::Sar | BinOp::Shl, Source::Imm(value)) => u8::try_from(*value)
+                .map_or(Observed::Opaque, |amount: u8| Observed::Shift {
                     dest: *dest,
                     op: *op,
                     amount,
-                })
-            }
+                }),
             (BinOp::Add, Source::Reg(source)) => Observed::Add {
                 dest: *dest,
                 lhs: dest.reg,
                 rhs: source.reg,
             },
             (BinOp::Sub, Source::Reg(source)) => Observed::Sub {
+                dest: *dest,
+                lhs: dest.reg,
+                rhs: source.reg,
+            },
+            (BinOp::Or, Source::Reg(source)) => Observed::Or {
                 dest: *dest,
                 lhs: dest.reg,
                 rhs: source.reg,
@@ -1179,6 +1237,7 @@ fn step_matches(
                 dest,
                 src,
                 magic: m,
+                ..
             },
         ) => {
             if !matcher.holds_slot(src.reg, step.lhs) {
@@ -1190,16 +1249,24 @@ fn step_matches(
             }
             Some((dest, None, value))
         }
-        (StepKind::WideMulMagic, Observed::WideMul { src, signed }) => {
+        (
+            StepKind::WideMulMagic,
+            Observed::WideMul {
+                dest,
+                lhs,
+                rhs,
+                signed,
+            },
+        ) => {
             if signed != rule_signed {
                 return None;
             }
             let (dividend, constant): (Reg, u64) = match (
-                matcher.held.get(&Reg::Rax).copied(),
-                matcher.held.get(&src.reg).copied(),
+                matcher.held.get(&lhs).copied(),
+                matcher.held.get(&rhs).copied(),
             ) {
-                (Some((Held::Constant(value), _)), _) => (src.reg, value),
-                (_, Some((Held::Constant(value), _))) => (Reg::Rax, value),
+                (Some((Held::Constant(value), _)), _) => (rhs, value),
+                (_, Some((Held::Constant(value), _))) => (lhs, value),
                 _ => return None,
             };
             if !matcher.holds_slot(dividend, step.lhs) {
@@ -1208,14 +1275,7 @@ fn step_matches(
             if magic.is_some_and(|prior: u64| prior != constant) {
                 return None;
             }
-            Some((
-                RegRef {
-                    reg: Reg::Rdx,
-                    width: Width::W64,
-                },
-                None,
-                constant,
-            ))
+            Some((dest, None, constant))
         }
         (StepKind::Shift, Observed::Shift { dest, op, amount }) => {
             if op != step.op || !matcher.holds_slot(dest.reg, step.lhs) {
@@ -1293,11 +1353,12 @@ fn try_rule(items: &[Item], anchor: usize, rule: &'static Rule) -> Option<IdiomM
         return None;
     };
     let constants: BTreeMap<Reg, (Held, Width)> = constant_environment(items, floor, anchor);
-    let multiplicand: Reg = match classify(anchor_stmt, &constants) {
-        Observed::MulConst { src, .. } => src.reg,
-        Observed::WideMul { src, .. } => match constants.get(&Reg::Rax) {
-            Some((Held::Constant(_), _)) => src.reg,
-            _ => Reg::Rax,
+    let (multiplicand, widening): (Reg, Option<Extension>) = match classify(anchor_stmt, &constants)
+    {
+        Observed::MulConst { src, widening, .. } => (src.reg, widening),
+        Observed::WideMul { lhs, rhs, .. } => match constants.get(&lhs) {
+            Some((Held::Constant(_), _)) => (rhs, None),
+            _ => (lhs, None),
         },
         _ => return None,
     };
@@ -1313,19 +1374,20 @@ fn try_rule(items: &[Item], anchor: usize, rule: &'static Rule) -> Option<IdiomM
     } else {
         Extension::Zero
     };
-    if dividend.extension != expected_extension {
+    if widening.unwrap_or(dividend.extension) != expected_extension {
         return None;
     }
+    let mut held: BTreeMap<Reg, (Held, Width)> = constant_environment(items, floor, dividend.start);
+    held.insert(
+        dividend.register,
+        (Held::Slot(SLOT_DIVIDEND), dividend.width),
+    );
     let mut matcher: Matcher = Matcher {
-        held: BTreeMap::new(),
+        held,
         captures: [None; CONST_COUNT],
         matched: vec![false; rule.steps.len()],
         quotient: None,
     };
-    matcher.held.insert(
-        dividend.register,
-        (Held::Slot(SLOT_DIVIDEND), dividend.width),
-    );
     let product_bits: u32 = if dividend_bits == 64 { 128 } else { 64 };
     let mut magic: Option<u64> = None;
     let mut end: usize = dividend.start;
@@ -1380,9 +1442,20 @@ fn try_rule(items: &[Item], anchor: usize, rule: &'static Rule) -> Option<IdiomM
             continue;
         }
         match observed {
-            Observed::Copy { dest, src, .. } => {
+            Observed::Copy {
+                dest,
+                src,
+                extension,
+            } => {
                 let carried: Option<(Held, Width)> = matcher.held.get(&src.reg).copied();
                 match carried {
+                    Some((Held::Constant(value), _)) => {
+                        let widened: u64 =
+                            carried_constant(value, src.width, dest.width, extension);
+                        matcher
+                            .held
+                            .insert(dest.reg, (Held::Constant(widened), dest.width));
+                    }
                     Some((held, _)) => {
                         matcher.held.insert(dest.reg, (held, dest.width));
                     }
@@ -1475,6 +1548,19 @@ fn constant_environment(
             Observed::LoadConst { dest, value } => {
                 held.insert(dest.reg, (Held::Constant(value), dest.width));
             }
+            Observed::Copy {
+                dest,
+                src,
+                extension,
+            } => match held.get(&src.reg).copied() {
+                Some((Held::Constant(value), _)) => {
+                    let carried: u64 = carried_constant(value, src.width, dest.width, extension);
+                    held.insert(dest.reg, (Held::Constant(carried), dest.width));
+                }
+                _ => {
+                    held.remove(&dest.reg);
+                }
+            },
             _ => match written_registers(stmt) {
                 Some(writes) => {
                     for reg in writes {
@@ -1488,7 +1574,7 @@ fn constant_environment(
     held
 }
 
-fn window_is_removable(items: &[Item], found: &IdiomMatch) -> bool {
+fn window_is_removable(items: &[Item], found: &IdiomMatch, redefined: Option<Reg>) -> bool {
     if !region_is_straight_line(items, found.start, found.end) {
         return false;
     }
@@ -1506,6 +1592,9 @@ fn window_is_removable(items: &[Item], found: &IdiomMatch) -> bool {
         }
     }
     clobbered.remove(&found.quotient.reg);
+    if let Some(reg) = redefined {
+        clobbered.remove(&reg);
+    }
     for held in &found.carried {
         clobbered.remove(&held.reg);
     }
@@ -1579,6 +1668,42 @@ impl Affine {
     }
 }
 
+fn quotient_ceiling(found: &IdiomMatch) -> Option<u128> {
+    if found.signed {
+        return None;
+    }
+    let bits: u32 = found.quotient.width.bits();
+    if bits == 0 || bits > MAX_DIVIDEND_BITS || found.divisor == 0 {
+        return None;
+    }
+    Some(((1u128 << bits) - 1) / u128::from(found.divisor))
+}
+
+fn disjoint_or(left: Affine, right: Affine, ceiling: u128, width_bits: u32) -> Option<Affine> {
+    if left.dividend != 0 || right.dividend != 0 || left.quotient <= 0 || right.quotient <= 0 {
+        return None;
+    }
+    if width_bits == 0 || width_bits > MAX_DIVIDEND_BITS {
+        return None;
+    }
+    let low: u128 = u128::try_from(left.quotient.min(right.quotient)).ok()?;
+    let high: u128 = u128::try_from(left.quotient.max(right.quotient)).ok()?;
+    if low == 0 || high % low != 0 {
+        return None;
+    }
+    let factor: u128 = high / low;
+    if !factor.is_power_of_two() {
+        return None;
+    }
+    if low.checked_mul(ceiling)? >= factor {
+        return None;
+    }
+    if high.checked_mul(ceiling)? >= (1u128 << width_bits) {
+        return None;
+    }
+    left.combined(right, false)
+}
+
 fn remainder_register(items: &[Item], found: &IdiomMatch) -> Option<(usize, RegRef)> {
     let mut affine: BTreeMap<Reg, Affine> = BTreeMap::new();
     affine.insert(
@@ -1600,11 +1725,17 @@ fn remainder_register(items: &[Item], found: &IdiomMatch) -> Option<(usize, RegR
         quotient: -i128::from(found.divisor),
     };
     let limit: usize = (found.end + 1 + REMAINDER_TAIL_STATEMENTS).min(items.len());
+    let ceiling: Option<u128> = quotient_ceiling(found);
+    let mut held: BTreeMap<Reg, (Held, Width)> = constant_environment(
+        items,
+        found.start.saturating_sub(IDIOM_LOOKBACK_STATEMENTS),
+        found.end + 1,
+    );
     for (index, item) in items.iter().enumerate().take(limit).skip(found.end + 1) {
         let ItemKind::Stmt(stmt) = &item.kind else {
             return None;
         };
-        let observed: Observed = classify(stmt, &BTreeMap::new());
+        let observed: Observed = classify(stmt, &held);
         let next: Option<(RegRef, Affine)> = match observed {
             Observed::Copy { dest, src, .. } => affine
                 .get(&src.reg)
@@ -1620,7 +1751,18 @@ fn remainder_register(items: &[Item], found: &IdiomMatch) -> Option<(usize, RegR
                 (Some(left), Some(right)) => left.combined(*right, true).map(|v: Affine| (dest, v)),
                 _ => None,
             },
-            Observed::MulConst { dest, src, magic } => affine
+            Observed::Or { dest, lhs, rhs } => {
+                match (ceiling, affine.get(&lhs), affine.get(&rhs)) {
+                    (Some(bound), Some(left), Some(right)) => {
+                        disjoint_or(*left, *right, bound, dest.width.bits())
+                            .map(|value: Affine| (dest, value))
+                    }
+                    _ => None,
+                }
+            }
+            Observed::MulConst {
+                dest, src, magic, ..
+            } => affine
                 .get(&src.reg)
                 .and_then(|value: &Affine| value.scaled(i128::from(magic)))
                 .map(|value: Affine| (dest, value)),
@@ -1628,7 +1770,7 @@ fn remainder_register(items: &[Item], found: &IdiomMatch) -> Option<(usize, RegR
                 dest,
                 op: BinOp::Shl,
                 amount,
-            } => affine
+            } if amount < MAX_AFFINE_SHIFT => affine
                 .get(&dest.reg)
                 .and_then(|value: &Affine| value.scaled(1i128 << amount))
                 .map(|value: Affine| (dest, value)),
@@ -1645,6 +1787,17 @@ fn remainder_register(items: &[Item], found: &IdiomMatch) -> Option<(usize, RegR
                 let writes: Vec<Reg> = written_registers(stmt)?;
                 for reg in writes {
                     affine.remove(&reg);
+                }
+            }
+        }
+        match observed {
+            Observed::LoadConst { dest, value } => {
+                held.insert(dest.reg, (Held::Constant(value), dest.width));
+            }
+            _ => {
+                let writes: Vec<Reg> = written_registers(stmt)?;
+                for reg in writes {
+                    held.remove(&reg);
                 }
             }
         }
@@ -1706,23 +1859,20 @@ pub(super) fn fuse_constant_division_idioms(items: &mut Vec<Item>) {
             index += 1;
             continue;
         };
-        if !window_is_removable(items, &found) {
+        let remainder: Option<(usize, RegRef)> =
+            remainder_register(items, &found).filter(|(tail_end, tail_dest): &(usize, RegRef)| {
+                let extended: IdiomMatch = IdiomMatch {
+                    end: *tail_end,
+                    ..found.clone()
+                };
+                window_is_removable(items, &extended, Some(tail_dest.reg))
+            });
+        if remainder.is_none() && !window_is_removable(items, &found, None) {
             index += 1;
             continue;
         }
-        let remainder: Option<(usize, RegRef)> = remainder_register(items, &found);
         let (last, replacement): (usize, Vec<Stmt>) = match remainder {
-            Some((tail_end, tail_dest))
-                if region_is_straight_line(items, found.start, tail_end) =>
-            {
-                let extended: IdiomMatch = IdiomMatch {
-                    end: tail_end,
-                    ..found.clone()
-                };
-                if !window_is_removable(items, &extended) {
-                    index += 1;
-                    continue;
-                }
+            Some((tail_end, tail_dest)) => {
                 let mut out: Vec<Stmt> = carried_statements(items, &found, tail_end);
                 if tail_dest.reg != found.quotient.reg
                     && !register_is_dead_after(items, tail_end, found.quotient.reg)
@@ -1905,6 +2055,131 @@ mod tests {
             None
         );
         assert_eq!(recovered_divisor(witness(0x5555_5556, 32, 64, true)), None);
+    }
+
+    const fn multiple_of_quotient(coefficient: i128) -> Affine {
+        Affine {
+            dividend: 0,
+            quotient: coefficient,
+        }
+    }
+
+    #[test]
+    fn a_shifted_or_folds_only_when_the_operand_bits_cannot_overlap() {
+        let ceiling: u128 = u128::from(u32::MAX) / 65537;
+        assert_eq!(
+            disjoint_or(
+                multiple_of_quotient(1),
+                multiple_of_quotient(65536),
+                ceiling,
+                32
+            ),
+            Some(multiple_of_quotient(65537))
+        );
+        assert_eq!(
+            disjoint_or(
+                multiple_of_quotient(1),
+                multiple_of_quotient(65536),
+                ceiling + 1,
+                32
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_shifted_or_is_rejected_when_the_quotient_reaches_the_shifted_term() {
+        let ceiling: u128 = u128::from(u32::MAX) / 3;
+        assert_eq!(
+            disjoint_or(
+                multiple_of_quotient(1),
+                multiple_of_quotient(2),
+                ceiling,
+                32
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_shifted_or_is_rejected_for_non_power_of_two_and_dividend_terms() {
+        assert_eq!(
+            disjoint_or(multiple_of_quotient(1), multiple_of_quotient(3), 1, 32),
+            None
+        );
+        assert_eq!(
+            disjoint_or(
+                Affine {
+                    dividend: 1,
+                    quotient: 0
+                },
+                multiple_of_quotient(256),
+                1,
+                32
+            ),
+            None
+        );
+        assert_eq!(
+            disjoint_or(multiple_of_quotient(-1), multiple_of_quotient(256), 1, 32),
+            None
+        );
+    }
+
+    #[test]
+    fn every_accepted_shifted_or_survives_an_exhaustive_check() {
+        let mut accepted: usize = 0;
+        for shift in 1u32..=8 {
+            let factor: u128 = 1u128 << shift;
+            for ceiling in 0u128..=(factor + 4) {
+                let Some(folded): Option<Affine> = disjoint_or(
+                    multiple_of_quotient(1),
+                    multiple_of_quotient(factor as i128),
+                    ceiling,
+                    16,
+                ) else {
+                    continue;
+                };
+                accepted += 1;
+                assert_eq!(folded, multiple_of_quotient((factor + 1) as i128));
+                for value in 0..=ceiling {
+                    let sum: u128 = value + (value << shift);
+                    assert_eq!(
+                        value | (value << shift),
+                        sum,
+                        "shift {shift} ceiling {ceiling} value {value} overlaps"
+                    );
+                    assert!(
+                        sum < (1u128 << 16),
+                        "shift {shift} ceiling {ceiling} value {value} leaves the register"
+                    );
+                }
+            }
+        }
+        assert!(
+            accepted > 0,
+            "the sweep accepted nothing, so it proved nothing"
+        );
+    }
+
+    #[test]
+    fn a_narrowing_copy_masks_the_carried_constant() {
+        assert_eq!(
+            carried_constant(
+                0xFFFF_FFFF_FFFF_FFFF,
+                Width::W64,
+                Width::W32,
+                Extension::Zero
+            ),
+            0xFFFF_FFFF
+        );
+        assert_eq!(
+            carried_constant(0x9249_2493, Width::W32, Width::W64, Extension::Sign),
+            0xFFFF_FFFF_9249_2493
+        );
+        assert_eq!(
+            carried_constant(0x9249_2493, Width::W32, Width::W64, Extension::Zero),
+            0x9249_2493
+        );
     }
 
     #[test]
