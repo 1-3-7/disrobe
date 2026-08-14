@@ -200,16 +200,14 @@ fn decompile_native(
     let module: disrobe_query::Module = load_native_module(&input, &bytes)?;
     let obj: object::File<'_> = object::File::parse(bytes.as_slice())
         .map_err(|e| miette::miette!("DR-NATIVE-0161: cannot parse native object: {e}"))?;
-    match obj.architecture() {
-        object::Architecture::X86_64 => {}
-        object::Architecture::Aarch64 => {
-            return decompile_native_aarch64(&input, &bytes, &obj, &module, out, format, devirt);
-        }
-        other => {
+    if !matches!(obj.architecture(), object::Architecture::X86_64) {
+        let Some(arch): Option<DecompileArch> = DecompileArch::of(&obj) else {
             return Err(miette::miette!(
-                "DR-NATIVE-0162: the in-tree decompiler supports x86-64 and aarch64 only (got {other:?}); use --backend ghidra for other architectures"
+                "DR-NATIVE-0162: the in-tree decompiler supports x86-64, aarch64, arm32 and mips32 (got {:?}); use --backend ghidra for other architectures",
+                obj.architecture()
             ));
-        }
+        };
+        return decompile_native_pcode(arch, &input, &bytes, &obj, &module, out, format, devirt);
     }
     let abi: PseudoAbi = if matches!(
         obj.format(),
@@ -481,20 +479,50 @@ impl PcodeRecovery {
     }
 }
 
-#[cfg(feature = "nir-lift")]
-fn aarch64_recover_source(
-    code: &[u8],
-    address: u64,
-    name: &str,
-    devirt: bool,
-) -> Result<PcodeRecovery, String> {
-    pcode_recover_source(
-        disrobe_nir_lift::PcodeArch::AArch64,
-        code,
-        address,
-        name,
-        devirt,
-    )
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecompileArch {
+    AArch64,
+    Arm32,
+    Mips32Be,
+    Mips32Le,
+}
+
+impl DecompileArch {
+    pub(crate) fn of(obj: &object::File<'_>) -> Option<Self> {
+        match obj.architecture() {
+            object::Architecture::Aarch64 => Some(Self::AArch64),
+            object::Architecture::Arm => Some(Self::Arm32),
+            object::Architecture::Mips => Some(if obj.is_little_endian() {
+                Self::Mips32Le
+            } else {
+                Self::Mips32Be
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::AArch64 => "aarch64",
+            Self::Arm32 => "arm32",
+            Self::Mips32Be => "mips32be",
+            Self::Mips32Le => "mips32le",
+        }
+    }
+
+    pub(crate) const fn has_whole_program_engine(self) -> bool {
+        matches!(self, Self::AArch64)
+    }
+
+    #[cfg(feature = "nir-lift")]
+    pub(crate) const fn pcode_arch(self) -> disrobe_nir_lift::PcodeArch {
+        match self {
+            Self::AArch64 => disrobe_nir_lift::PcodeArch::AArch64,
+            Self::Arm32 => disrobe_nir_lift::PcodeArch::Arm32A32,
+            Self::Mips32Be => disrobe_nir_lift::PcodeArch::Mips32Be,
+            Self::Mips32Le => disrobe_nir_lift::PcodeArch::Mips32Le,
+        }
+    }
 }
 
 #[cfg(feature = "nir-lift")]
@@ -647,7 +675,8 @@ fn devirt_folded_edges(report: &serde_json::Value) -> u64 {
 }
 
 #[cfg(feature = "nir-lift")]
-fn decompile_native_aarch64<'data>(
+fn decompile_native_pcode<'data>(
+    arch: DecompileArch,
     input: &Path,
     bytes: &'data [u8],
     obj: &object::File<'data>,
@@ -659,14 +688,15 @@ fn decompile_native_aarch64<'data>(
     use disrobe_pass_native::{RecoveredFunction, RecoveredProgram, recover_aarch64_program};
     use std::fmt::Write as _;
 
+    let arch_label: &'static str = arch.label();
     if matches!(format, DecompileLang::Rust) {
         return Err(miette::miette!(
-            "DR-NATIVE-0174: `--format rust` is unavailable for aarch64 native recovery; retry with `--format c` to emit pseudo-C"
+            "DR-NATIVE-0174: `--format rust` is unavailable for {arch_label} native recovery; retry with `--format c` to emit pseudo-C"
         ));
     }
     if matches!(obj.kind(), object::ObjectKind::Relocatable) {
         return Err(miette::miette!(
-            "DR-NATIVE-0175: aarch64 relocatable-object recovery requires section-qualified function identity; link the object before native decompile"
+            "DR-NATIVE-0175: {arch_label} relocatable-object recovery requires section-qualified function identity; link the object before native decompile"
         ));
     }
     let stem: String = input
@@ -679,17 +709,17 @@ fn decompile_native_aarch64<'data>(
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-NATIVE-0170: cannot create out dir: {e}"))?;
 
-    let program: RecoveredProgram = recover_aarch64_program(bytes);
-    let whole_program: BTreeMap<u64, &RecoveredFunction> =
-        if obj.format() == object::BinaryFormat::Elf {
-            program
-                .recovered
-                .iter()
-                .map(|function: &RecoveredFunction| (function.address, function))
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
+    let program: Option<RecoveredProgram> = arch
+        .has_whole_program_engine()
+        .then(|| recover_aarch64_program(bytes));
+    let whole_program: BTreeMap<u64, &RecoveredFunction> = match program.as_ref() {
+        Some(program) if obj.format() == object::BinaryFormat::Elf => program
+            .recovered
+            .iter()
+            .map(|function: &RecoveredFunction| (function.address, function))
+            .collect(),
+        _ => BTreeMap::new(),
+    };
 
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut bodies: String = String::new();
@@ -738,8 +768,13 @@ fn decompile_native_aarch64<'data>(
                 false
             }
         };
-        let lifted: Result<PcodeRecovery, String> =
-            aarch64_recover_source(&code, f.address, &emitted_name, effective_devirt);
+        let lifted: Result<PcodeRecovery, String> = pcode_recover_source(
+            arch.pcode_arch(),
+            &code,
+            f.address,
+            &emitted_name,
+            effective_devirt,
+        );
         let decode_coverage: Option<serde_json::Value> = lifted
             .as_ref()
             .ok()
@@ -759,6 +794,7 @@ fn decompile_native_aarch64<'data>(
                     )
                 })
                 .or_else(|| {
+                    arch.has_whole_program_engine().then_some(())?;
                     aarch64_recover_image_source(&code, f.address, &emitted_name, obj)
                         .ok()
                         .map(|source: String| (source, "image-leaf"))
@@ -867,7 +903,8 @@ fn decompile_native_aarch64<'data>(
     let total: usize = module.functions().len();
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.native.decompile/v1",
-        "backend": "native-in-tree-aarch64",
+        "backend": format!("native-in-tree-{arch_label}"),
+        "architecture": arch_label,
         "language": "pseudo-C",
         "requested_language": format.label(),
         "input": input.display().to_string(),
@@ -890,7 +927,7 @@ fn decompile_native_aarch64<'data>(
     .map_err(|e| miette::miette!("DR-NATIVE-0173: cannot write manifest: {e}"))?;
 
     println!(
-        "native decompile (in-tree aarch64 -> pseudo-C): recovered {}/{} function(s), {} structured ({} whole-program, {} image-leaf) -> {}",
+        "native decompile (in-tree {arch_label} -> pseudo-C): recovered {}/{} function(s), {} structured ({} whole-program, {} image-leaf) -> {}",
         recovered.len(),
         total,
         structured_count,
@@ -907,7 +944,8 @@ fn decompile_native_aarch64<'data>(
 }
 
 #[cfg(not(feature = "nir-lift"))]
-fn decompile_native_aarch64(
+fn decompile_native_pcode(
+    arch: DecompileArch,
     input: &Path,
     _bytes: &[u8],
     _obj: &object::File<'_>,
@@ -917,7 +955,8 @@ fn decompile_native_aarch64(
     _devirt: bool,
 ) -> miette::Result<()> {
     Err(miette::miette!(
-        "DR-NATIVE-0169: aarch64 in-tree decompile needs the nir-lift feature, which is not built into this binary; rebuild with a default (full) build or `--features nir-lift`, or use --backend ghidra for {}",
+        "DR-NATIVE-0169: {} in-tree decompile needs the nir-lift feature, which is not built into this binary; rebuild with a default (full) build or `--features nir-lift`, or use --backend ghidra for {}",
+        arch.label(),
         input.display()
     ))
 }
@@ -4063,8 +4102,14 @@ mod tests {
             .iter()
             .flat_map(|word: &u32| word.to_le_bytes())
             .collect();
-        let recovery: PcodeRecovery =
-            aarch64_recover_source(&bytes, 0x1000, "arith", false).expect("aarch64 leaf recovers");
+        let recovery: PcodeRecovery = pcode_recover_source(
+            disrobe_nir_lift::PcodeArch::AArch64,
+            &bytes,
+            0x1000,
+            "arith",
+            false,
+        )
+        .expect("aarch64 leaf recovers");
         let source: String = recovery.source;
         assert!(recovery.structured, "leaf must structure:\n{source}");
         assert!(
@@ -4094,8 +4139,14 @@ mod tests {
             .iter()
             .flat_map(|word: &u32| word.to_le_bytes())
             .collect();
-        let recovery: PcodeRecovery =
-            aarch64_recover_source(&bytes, 0x1000, "arith", true).expect("aarch64 leaf recovers");
+        let recovery: PcodeRecovery = pcode_recover_source(
+            disrobe_nir_lift::PcodeArch::AArch64,
+            &bytes,
+            0x1000,
+            "arith",
+            true,
+        )
+        .expect("aarch64 leaf recovers");
         let source: String = recovery.source;
         let structured: bool = recovery.structured;
         let devirt_report: serde_json::Value = recovery.devirt_report;
