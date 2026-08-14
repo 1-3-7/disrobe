@@ -3877,6 +3877,132 @@ fn indent_string(level: usize) -> String {
 
 const MAX_RENDER_BYTES: usize = 4 * 1024 * 1024;
 
+fn collect_continue_latches(region: &Region, latches: &mut BTreeSet<BlockId>) {
+    match region {
+        Region::Sequence(items) => {
+            for item in items {
+                collect_continue_latches(item, latches);
+            }
+        }
+        Region::IfThen { then_body, .. } => collect_continue_latches(then_body, latches),
+        Region::IfThenElse {
+            then_body,
+            else_body,
+            ..
+        } => {
+            collect_continue_latches(then_body, latches);
+            collect_continue_latches(else_body, latches);
+        }
+        Region::Try { try_body, handlers } => {
+            collect_continue_latches(try_body, latches);
+            for (_, handler) in handlers {
+                collect_continue_latches(handler, latches);
+            }
+        }
+        Region::TryFinally {
+            try_body,
+            handlers,
+            finally_body,
+            ..
+        } => {
+            collect_continue_latches(try_body, latches);
+            for (_, handler) in handlers {
+                collect_continue_latches(handler, latches);
+            }
+            collect_continue_latches(finally_body, latches);
+        }
+        Region::Synchronized { body, .. }
+        | Region::LabeledLoop { body, .. }
+        | Region::TryWithResources { try_body: body, .. } => {
+            collect_continue_latches(body, latches);
+        }
+        Region::Continue {
+            label: None,
+            latch: Some(latch),
+        } => {
+            latches.insert(*latch);
+        }
+        Region::Block(_)
+        | Region::While { .. }
+        | Region::DoWhile { .. }
+        | Region::Switch { .. }
+        | Region::Break { .. }
+        | Region::Continue { .. }
+        | Region::Irreducible { .. } => {}
+    }
+}
+
+fn finally_continue_latch(
+    ctx: &RenderCtx<'_>,
+    region: &Region,
+    header: BlockId,
+) -> Option<BlockId> {
+    let Region::Sequence(items) = region else {
+        return None;
+    };
+    let mut latches: BTreeSet<BlockId> = BTreeSet::new();
+    for item in items {
+        if let Region::TryFinally { finally_body, .. } = item {
+            collect_continue_latches(finally_body, &mut latches);
+        }
+    }
+    let [latch]: [BlockId; 1] = latches
+        .into_iter()
+        .collect::<Vec<BlockId>>()
+        .try_into()
+        .ok()?;
+    let terminal_uses_latch: bool = match items.last()? {
+        Region::Continue {
+            label: None,
+            latch: Some(terminal_latch),
+        } => *terminal_latch == latch,
+        Region::Block(terminal_latch) => {
+            *terminal_latch == latch
+                && ctx
+                    .cfg
+                    .blocks
+                    .get(terminal_latch.0 as usize)
+                    .and_then(single_normal_successor)
+                    == Some(header)
+        }
+        _ => false,
+    };
+    terminal_uses_latch.then_some(latch)
+}
+
+fn render_for_update(ctx: &RenderCtx<'_>, latch: BlockId) -> Option<String> {
+    let mut rendered: String = String::new();
+    render_latch_inline(ctx, latch, &mut rendered, 0);
+    let trimmed: &str = rendered.trim();
+    if trimmed.lines().count() != 1 {
+        return None;
+    }
+    trimmed.strip_suffix(';').map(str::to_owned)
+}
+
+fn render_loop_body(
+    ctx: &mut RenderCtx<'_>,
+    body: &Region,
+    update_latch: BlockId,
+    out: &mut String,
+    level: usize,
+) {
+    let Region::Sequence(items) = body else {
+        render_region(ctx, body, out, level);
+        return;
+    };
+    let end: usize = items.len().saturating_sub(usize::from(matches!(
+        items.last(),
+        Some(Region::Continue {
+            label: None,
+            latch: Some(latch)
+        }) if *latch == update_latch
+    )));
+    for item in &items[..end] {
+        render_region(ctx, item, out, level);
+    }
+}
+
 fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, level: usize) {
     if out.len() > MAX_RENDER_BYTES {
         return;
@@ -3937,8 +4063,18 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
                 matches!(exit, Some(e) if header_cond_true_target(ctx.cfg, *header) == Some(*e));
             let displayed_cond: String = if negated { invert(&cond) } else { cond };
             let pad: String = indent_string(level);
-            let _ = writeln!(out, "{pad}while ({displayed_cond}) {{");
-            render_region(ctx, body, out, level + 1);
+            let update: Option<(BlockId, String)> = finally_continue_latch(ctx, body, *header)
+                .and_then(|latch: BlockId| {
+                    render_for_update(ctx, latch).map(|s: String| (latch, s))
+                });
+            if let Some((latch, update)) = update {
+                let _ = writeln!(out, "{pad}for (; {displayed_cond}; {update}) {{");
+                ctx.rendered_blocks.insert(latch);
+                render_loop_body(ctx, body, latch, out, level + 1);
+            } else {
+                let _ = writeln!(out, "{pad}while ({displayed_cond}) {{");
+                render_region(ctx, body, out, level + 1);
+            }
             let _ = writeln!(out, "{pad}}}");
             if let Some(exit_bid) = exit
                 && ctx.rendered_blocks.contains(exit_bid)
@@ -4069,7 +4205,9 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             }
         }
         Region::Continue { label, latch } => {
-            if let Some(latch_bid) = latch {
+            if let Some(latch_bid) = latch
+                && !ctx.rendered_blocks.contains(latch_bid)
+            {
                 render_latch_inline(ctx, *latch_bid, out, level);
             }
             let pad: String = indent_string(level);

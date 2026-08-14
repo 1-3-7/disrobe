@@ -492,6 +492,35 @@ const FINALLY_THROW_VOID_SRC: &str = "public class FinallyThrowVoid {\n\
     }\n\
 }\n";
 
+const FINALLY_CONTINUE_SRC: &str = "public class FinallyContinue {\n\
+    static int run(int[] xs) {\n\
+        int acc = 0;\n\
+        for (int x : xs) {\n\
+            try {\n\
+                acc += x;\n\
+            } finally {\n\
+                if (acc > 5) { continue; }\n\
+                acc += 100;\n\
+            }\n\
+        }\n\
+        return acc;\n\
+    }\n\
+}\n";
+
+const FINALLY_CONDITIONAL_CONTINUE_SRC: &str = "public class FinallyConditionalContinue {\n\
+    static int run(int limit, boolean take) {\n\
+        int i = 0;\n\
+        while (i < limit) {\n\
+            try {\n\
+                i += 2;\n\
+            } finally {\n\
+                if (take) { i++; continue; }\n\
+            }\n\
+        }\n\
+        return i;\n\
+    }\n\
+}\n";
+
 struct RecompiledClass {
     source: String,
     original: Vec<String>,
@@ -602,6 +631,40 @@ fn finally_that_throws_from_a_void_method_recompiles_to_equivalent_bytecode() {
     );
 }
 
+#[test]
+fn finally_that_continues_an_enclosing_loop_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyContinue", FINALLY_CONTINUE_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("continue;"),
+        "finally continue missing:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled finally-continue bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_continue_only_latch_is_not_hoisted_to_the_normal_loop_path() {
+    let recompiled: RecompiledClass = recompile_recovered_class(
+        "FinallyConditionalContinue",
+        FINALLY_CONDITIONAL_CONTINUE_SRC,
+    );
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("continue;"),
+        "conditional finally continue missing:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "a continue-only latch became a universal loop update:\n{}",
+        recompiled.source
+    );
+}
+
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     static int CTR = 0;\n\
     static int finallyWithIf(int a) {\n\
@@ -668,11 +731,7 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[&str] = &[
-    "finallyContinues",
-    "finallyNestedTry",
-    "finallyThrowsAlways",
-];
+const UNMODELLED_FINALLY_METHODS: &[&str] = &["finallyNestedTry", "finallyThrowsAlways"];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {

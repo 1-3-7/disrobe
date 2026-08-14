@@ -1131,13 +1131,27 @@ impl<'a> Structurer<'a> {
         let mut copy: Vec<Instruction> = Vec::new();
         let mut blocks: Vec<BlockId> = Vec::new();
         let mut current: BlockId = start;
+        let mut trailing_exit_pc: Option<u32> = None;
         while copy.len() < body.len() {
             if blocks.len() >= MAX_BLOCKS || blocks.contains(&current) {
                 return None;
             }
             let instructions: &[Instruction] = self.block_instructions(current);
-            if instructions.is_empty() || copy.len().checked_add(instructions.len())? > body.len() {
+            if instructions.is_empty() {
                 return None;
+            }
+            let remaining: usize = body.len().checked_sub(copy.len())?;
+            if instructions.len() > remaining {
+                let (prefix, suffix): (&[Instruction], &[Instruction]) =
+                    instructions.split_at(remaining);
+                let [trailing]: &[Instruction; 1] = suffix.try_into().ok()?;
+                if !matches!(trailing.opcode, 0xA7 | 0xC8) {
+                    return None;
+                }
+                trailing_exit_pc = Some(branch_target(trailing)?);
+                copy.extend_from_slice(prefix);
+                blocks.push(current);
+                break;
             }
             copy.extend_from_slice(instructions);
             blocks.push(current);
@@ -1146,7 +1160,12 @@ impl<'a> Structurer<'a> {
             }
         }
         let matched: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
-        let exit: Option<BlockId> = match matched.exit_pc {
+        let exit_pc: Option<u32> = match (matched.exit_pc, trailing_exit_pc) {
+            (Some(left), Some(right)) if left != right => return None,
+            (Some(pc), _) | (_, Some(pc)) => Some(pc),
+            (None, None) => None,
+        };
+        let exit: Option<BlockId> = match exit_pc {
             Some(pc) => Some(self.cfg.pc_to_block.get(&pc).copied()?),
             None => None,
         };
