@@ -1,0 +1,5 @@
+function 0
+GETGLOBAL
+LOADK
+CALL
+RETURN
