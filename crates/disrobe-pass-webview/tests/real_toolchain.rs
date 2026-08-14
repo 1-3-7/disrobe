@@ -363,6 +363,12 @@ fn graded_fixtures() -> Vec<FixtureRecord> {
              compare against",
             record.path
         );
+        assert!(
+            !record.tree.is_empty(),
+            "{}: the manifest names no source tree, and an empty name resolves to the corpus root, \
+             which would satisfy a directory check while recording nothing",
+            record.path
+        );
         let tree: PathBuf = corpus_root().join(&record.tree);
         assert!(
             tree.is_dir(),
