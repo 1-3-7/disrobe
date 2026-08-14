@@ -495,10 +495,16 @@ fn resolve_call_target(module: &Module, insn: &InsnView, imports: &ImportMap) ->
         return None;
     }
     if let Some(target) = insn.branch_target
-        && let Some(sym) = module.symbol_ref(target)
-        && matches!(sym.kind, SymbolKind::Import)
+        && target != 0
     {
-        return Some(sym.name.clone());
+        if let Some(sym) = module.symbol_ref(target)
+            && matches!(sym.kind, SymbolKind::Import)
+        {
+            return Some(sym.name.clone());
+        }
+        if let Some(name) = imports.name_at_thunk(target) {
+            return Some(name.to_owned());
+        }
     }
     for operand in &insn.operands {
         if let Some(va) = parse_operand_memory_address(operand)
@@ -773,6 +779,61 @@ mod tests {
         assert_eq!(
             scoped.file.matches(&Feature::Api("connect".to_owned())),
             vec![0x0]
+        );
+    }
+
+    #[test]
+    fn a_branch_to_address_zero_does_not_borrow_an_undefined_symbol_name() {
+        let payload: DisasmPayload = DisasmPayload {
+            source_hash: [0u8; 32],
+            instructions: vec![
+                insn(0x10, "call", &["0x0"], InsnFlow::Call, Some(0x0)),
+                insn(0x15, "ret", &[], InsnFlow::Return, None),
+            ],
+            symbol_table: vec![
+                DisasmSymbol {
+                    address: 0x10,
+                    name: "main".to_owned(),
+                    kind: DisasmSymbolKind::Function,
+                },
+                DisasmSymbol {
+                    address: 0x0,
+                    name: "connect".to_owned(),
+                    kind: DisasmSymbolKind::Import,
+                },
+            ],
+        };
+        let module: Module = Module::from_disasm(&payload);
+        let scoped: ScopedFeatures = extract(&module, b"", &ImportMap::default());
+        assert!(
+            scoped
+                .file
+                .matches(&Feature::Api("connect".to_owned()))
+                .is_empty(),
+            "an undefined symbol parked at address zero is not a call target"
+        );
+    }
+
+    #[test]
+    fn a_branch_to_a_registered_thunk_resolves_to_its_import() {
+        let payload: DisasmPayload = DisasmPayload {
+            source_hash: [0u8; 32],
+            instructions: vec![
+                insn(0x10, "call", &["0x1030"], InsnFlow::Call, Some(0x1030)),
+                insn(0x15, "ret", &[], InsnFlow::Return, None),
+            ],
+            symbol_table: vec![DisasmSymbol {
+                address: 0x10,
+                name: "main".to_owned(),
+                kind: DisasmSymbolKind::Function,
+            }],
+        };
+        let module: Module = Module::from_disasm(&payload);
+        let imports: ImportMap = ImportMap::from_thunks(&[(0x1030, "connect".to_owned())]);
+        let scoped: ScopedFeatures = extract(&module, b"", &imports);
+        assert_eq!(
+            scoped.file.matches(&Feature::Api("connect".to_owned())),
+            vec![0x10]
         );
     }
 
