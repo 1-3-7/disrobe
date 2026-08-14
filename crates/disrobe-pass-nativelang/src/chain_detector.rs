@@ -416,6 +416,56 @@ mod tests {
     }
 
     #[test]
+    fn pass_run_surfaces_recovered_pseudo_c_and_pseudo_rust_bodies() {
+        let Some(bytes): Option<Vec<u8>> = read_fixture("zig/hello.zig.elf") else {
+            eprintln!("SKIP: zig corpus fixture missing");
+            return;
+        };
+        let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+        let output: Artifact = NATIVELANG_PASS
+            .run(&artifact)
+            .expect("zig run must succeed");
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.envelope).expect("report must be valid json");
+        assert_eq!(report["body_arch_supported"].as_bool(), Some(true));
+        let recovered: u64 = report["recovered_body_count"]
+            .as_u64()
+            .expect("the report must count recovered bodies");
+        let rust: u64 = report["rust_body_count"]
+            .as_u64()
+            .expect("the report must count emitted pseudo-Rust bodies");
+        assert!(recovered >= 311, "recovered {recovered} bodies");
+        assert!(rust >= 244, "emitted {rust} pseudo-Rust bodies");
+        let bodies: &[serde_json::Value] = report["bodies"]["bodies"]
+            .as_array()
+            .map(Vec::as_slice)
+            .expect("the report must carry one record per carved function");
+        let function_count: u64 = report["recovered_function_count"]
+            .as_u64()
+            .expect("carved function count");
+        assert_eq!(bodies.len() as u64, function_count);
+        let sum: u64 = recovered
+            + report["elided_body_count"].as_u64().unwrap_or_default()
+            + report["rejected_body_count"].as_u64().unwrap_or_default()
+            + report["not_attempted_body_count"]
+                .as_u64()
+                .unwrap_or_default();
+        assert_eq!(sum, function_count);
+        let sample: &serde_json::Value = bodies
+            .iter()
+            .find(|body: &&serde_json::Value| body["status"]["state"].as_str() == Some("recovered"))
+            .expect("at least one carved zig function must carry a body");
+        let source: &str = sample["status"]["pseudo_c"]
+            .as_str()
+            .expect("a recovered body carries pseudo-C");
+        let emitted: &str = sample["emitted_name"]
+            .as_str()
+            .expect("a recovered body names its emitted identifier");
+        assert!(source.contains("#include <stdint.h>"), "{source}");
+        assert!(source.contains(emitted), "{emitted} missing from {source}");
+    }
+
+    #[test]
     fn catalog_lists_all_four_languages_with_partial_quality() {
         let entries: Vec<&'static dyn CatalogEntry> =
             ObfuscatorCatalog::catalog(&NativeLangDetector);

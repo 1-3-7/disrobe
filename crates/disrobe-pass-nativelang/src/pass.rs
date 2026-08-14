@@ -2,6 +2,7 @@ use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
 
 use crate::NativeLangAnalysis;
+use crate::bodies::BodyRecovery;
 use crate::demangle::DemangledSymbol;
 use crate::disasm::DisasmListing;
 use crate::dwarf::DwarfAggregate;
@@ -23,6 +24,14 @@ pub struct NativeLangPassReport {
     pub reconstructed_types: Vec<ReconstructedTypeReport>,
     pub disasm_arch_supported: bool,
     pub disassembled_function_count: u32,
+    pub body_arch_supported: bool,
+    pub recovered_body_count: u32,
+    pub elided_body_count: u32,
+    pub rejected_body_count: u32,
+    pub not_attempted_body_count: u32,
+    pub rust_body_count: u32,
+    pub retained_body_source_bytes: u64,
+    pub bodies: BodyRecovery,
     pub nir_function_count: u32,
     pub nir_symbol_count: u32,
     pub disasm: DisasmListing,
@@ -64,6 +73,14 @@ pub fn build_report(source_path: String, analysis: NativeLangAnalysis) -> Native
         disasm_arch_supported: analysis.disasm.arch_supported,
         disassembled_function_count: u32::try_from(analysis.disasm.listings.len())
             .unwrap_or(u32::MAX),
+        body_arch_supported: analysis.bodies.arch_supported,
+        recovered_body_count: analysis.bodies.recovered,
+        elided_body_count: analysis.bodies.recovered_elided,
+        rejected_body_count: analysis.bodies.rejected,
+        not_attempted_body_count: analysis.bodies.not_attempted,
+        rust_body_count: analysis.bodies.rust_bodies,
+        retained_body_source_bytes: analysis.bodies.retained_source_bytes,
+        bodies: analysis.bodies,
         nir_function_count: u32::try_from(analysis.nir.functions.len()).unwrap_or(u32::MAX),
         nir_symbol_count: u32::try_from(analysis.nir.symbols.len()).unwrap_or(u32::MAX),
         reconstructed_types: analysis.types.types,

@@ -30,6 +30,47 @@ pub fn fixture_or_skip(rel: &str) -> Option<Vec<u8>> {
     bytes
 }
 
+pub fn fixture_or_fail(rel: &str) -> Vec<u8> {
+    let p: PathBuf = corpus_path(rel);
+    match std::fs::read(&p) {
+        Ok(bytes) => bytes,
+        Err(error) => panic!(
+            "committed fixture {} is the graded reference for this suite and could not be read \
+             ({error}); restore it from git rather than skipping the measurement",
+            p.display()
+        ),
+    }
+}
+
+pub const REQUIRE_TOOLCHAIN_VAR: &str = "DISROBE_REQUIRE_NATIVE_TOOLCHAIN";
+
+pub fn tool_or_unmeasured(candidates: &[&'static str], graded: &str) -> Option<String> {
+    for candidate in candidates {
+        let runs: bool = std::process::Command::new(candidate)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output: std::process::Output| output.status.success());
+        if runs {
+            return Some((*candidate).to_owned());
+        }
+    }
+    let names: String = candidates
+        .iter()
+        .map(|c: &&'static str| format!("`{c}`"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    assert!(
+        std::env::var_os(REQUIRE_TOOLCHAIN_VAR).is_none(),
+        "{REQUIRE_TOOLCHAIN_VAR} makes an external toolchain mandatory, so {graded} cannot be \
+         measured and must not report success: none of {names} is callable on PATH"
+    );
+    println!(
+        "\nNOT MEASURED: {graded} was skipped because none of {names} is callable on PATH. Set \
+         {REQUIRE_TOOLCHAIN_VAR}=1 to fail instead of skipping.\n"
+    );
+    None
+}
+
 pub const ZIG_ELF: &str = "zig/hello.zig.elf";
 pub const NIM_ELF: &str = "nim/hello.nim.elf";
 pub const CRYSTAL_PE: &str = "crystal/hello.cr.exe";

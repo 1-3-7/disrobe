@@ -2,6 +2,7 @@
 #![deny(unreachable_pub)]
 #![deny(missing_debug_implementations)]
 #![allow(clippy::redundant_pub_crate)]
+pub mod bodies;
 #[cfg(feature = "chain")]
 pub mod chain_detector;
 pub(crate) mod d_mangle;
@@ -21,6 +22,10 @@ pub mod recover;
 use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
 
+pub use bodies::{
+    BodyAbi, BodyRecovery, BodyRejection, BodySkip, BodyStatus, FunctionBody, RuntimeRole,
+    RustBody, recover_bodies,
+};
 #[cfg(feature = "chain")]
 pub use chain_detector::{NATIVELANG_PASS, NativeLangDetector, NativeLangPassAdapter};
 pub use demangle::{DemangledSymbol, demangle_crystal, demangle_d, demangle_nim, demangle_zig};
@@ -34,7 +39,8 @@ pub use dwarf_types::{
 };
 pub use error::{Error, Result};
 pub use functions::{
-    FunctionOrigin, FunctionRecovery, LineRange, RecoveredFunction, recover_functions,
+    BoundaryConfidence, EndBasis, FunctionExtent, FunctionOrigin, FunctionRecovery, LineRange,
+    RecoveredFunction, recover_functions,
 };
 pub use image::{CodeArch, FuncSymbol, ImageKind, NativeImage, Section};
 pub use nir::lift_native_nir;
@@ -59,6 +65,7 @@ pub struct NativeLangAnalysis {
     pub types: TypeReport,
     pub function_recovery: FunctionRecovery,
     pub disasm: DisasmListing,
+    pub bodies: BodyRecovery,
     pub nir: NirModule,
 }
 
@@ -93,6 +100,19 @@ pub fn analyze(bytes: &[u8]) -> Result<NativeLangAnalysis> {
     });
     let function_recovery: FunctionRecovery = recover_functions(&image, fp.lang, &dwarf);
     let disasm: DisasmListing = disassemble_functions(&image, &function_recovery.functions);
+    let bodies: BodyRecovery = recover_bodies(&image, fp.lang, &function_recovery.functions);
+    debug::dbg_kv("bodies", || {
+        format!(
+            "arch-supported={} recovered={} elided={} rejected={} not-attempted={} \
+             retained-source-bytes={}",
+            bodies.arch_supported,
+            bodies.recovered,
+            bodies.recovered_elided,
+            bodies.rejected,
+            bodies.not_attempted,
+            bodies.retained_source_bytes
+        )
+    });
     let nir: NirModule = lift_native_nir(bytes, image.arch, &function_recovery, &disasm);
     debug::dbg_kv("function-recovery", || {
         format!(
@@ -122,6 +142,7 @@ pub fn analyze(bytes: &[u8]) -> Result<NativeLangAnalysis> {
         types,
         function_recovery,
         disasm,
+        bodies,
         nir,
     })
 }

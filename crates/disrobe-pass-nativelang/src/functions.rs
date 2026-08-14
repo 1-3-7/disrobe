@@ -435,6 +435,120 @@ fn direct_call_target(operands: &str) -> Option<u64> {
     u64::from_str_radix(cleaned, 16).ok()
 }
 
+pub(crate) const MAX_FUNCTION_BYTES: u64 = 256 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EndBasis {
+    Declared,
+    NextStart,
+    SectionEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionExtent {
+    pub end: u64,
+    pub basis: EndBasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BoundaryConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[must_use]
+pub(crate) fn sorted_function_starts(functions: &[RecoveredFunction]) -> Vec<u64> {
+    let mut starts: Vec<u64> = functions
+        .iter()
+        .filter(|f: &&RecoveredFunction| f.address_assigned)
+        .map(|f: &RecoveredFunction| f.start)
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
+#[must_use]
+pub(crate) fn function_extent(
+    image: &NativeImage<'_>,
+    func: &RecoveredFunction,
+    sorted_starts: &[u64],
+) -> Option<FunctionExtent> {
+    if let Some(end) = func.end.filter(|e: &u64| *e > func.start) {
+        return Some(FunctionExtent {
+            end,
+            basis: EndBasis::Declared,
+        });
+    }
+    let next_start: Option<u64> = sorted_starts
+        .iter()
+        .copied()
+        .find(|s: &u64| *s > func.start);
+    let section_end: Option<u64> = image
+        .sections
+        .iter()
+        .find(|s: &&Section<'_>| {
+            let sec_end: u64 = s.address.saturating_add(s.data.len() as u64);
+            !s.data.is_empty() && func.start >= s.address && func.start < sec_end
+        })
+        .map(|s: &Section<'_>| s.address.saturating_add(s.data.len() as u64));
+    let (inferred, basis): (u64, EndBasis) = match (next_start, section_end) {
+        (Some(next), Some(section)) if next <= section => (next, EndBasis::NextStart),
+        (Some(next), None) => (next, EndBasis::NextStart),
+        (Some(_) | None, Some(section)) => (section, EndBasis::SectionEnd),
+        (None, None) => return None,
+    };
+    if inferred <= func.start {
+        return None;
+    }
+    Some(FunctionExtent {
+        end: inferred.min(func.start.saturating_add(MAX_FUNCTION_BYTES)),
+        basis,
+    })
+}
+
+#[must_use]
+pub(crate) const fn boundary_confidence(
+    func: &RecoveredFunction,
+    extent: FunctionExtent,
+) -> BoundaryConfidence {
+    if !func.address_assigned {
+        return BoundaryConfidence::Low;
+    }
+    match extent.basis {
+        EndBasis::Declared => match func.origin {
+            FunctionOrigin::SymbolTable | FunctionOrigin::Dwarf => BoundaryConfidence::High,
+            FunctionOrigin::EhFrame | FunctionOrigin::RecursiveTraversal => {
+                BoundaryConfidence::Medium
+            }
+        },
+        EndBasis::NextStart => BoundaryConfidence::Medium,
+        EndBasis::SectionEnd => BoundaryConfidence::Low,
+    }
+}
+
+#[must_use]
+pub(crate) fn carve_function<'a>(
+    image: &NativeImage<'a>,
+    start: u64,
+    end: u64,
+) -> Option<&'a [u8]> {
+    let len: u64 = end.checked_sub(start)?;
+    if len == 0 || len > MAX_FUNCTION_BYTES {
+        return None;
+    }
+    let section: &Section<'a> = image.sections.iter().find(|s: &&Section<'a>| {
+        let sec_end: u64 = s.address.saturating_add(s.data.len() as u64);
+        !s.data.is_empty() && start >= s.address && end <= sec_end
+    })?;
+    let rel: usize = usize::try_from(start.checked_sub(section.address)?).ok()?;
+    let span: usize = usize::try_from(len).ok()?;
+    section.data.get(rel..rel.checked_add(span)?)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

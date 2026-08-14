@@ -2,8 +2,10 @@ use disrobe_pass_native::{Arch, DisasmInsn, disassemble};
 use serde::{Deserialize, Serialize};
 
 use crate::debug;
-use crate::functions::RecoveredFunction;
-use crate::image::{CodeArch, NativeImage, Section};
+use crate::functions::{
+    FunctionExtent, RecoveredFunction, carve_function, function_extent, sorted_function_starts,
+};
+use crate::image::{CodeArch, NativeImage};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisasmInstruction {
@@ -40,8 +42,7 @@ impl DisasmListing {
     }
 }
 
-const MAX_LISTED_FUNCTIONS: usize = 4096;
-const MAX_FUNCTION_BYTES: u64 = 256 * 1024;
+pub(crate) const MAX_LISTED_FUNCTIONS: usize = 4096;
 const MAX_INSTRUCTIONS_PER_FUNCTION: usize = 8192;
 
 #[must_use]
@@ -59,13 +60,7 @@ pub fn disassemble_functions(
         });
         return DisasmListing::unsupported();
     };
-    let mut sorted_starts: Vec<u64> = functions
-        .iter()
-        .filter(|f: &&RecoveredFunction| f.address_assigned)
-        .map(|f: &RecoveredFunction| f.start)
-        .collect();
-    sorted_starts.sort_unstable();
-    sorted_starts.dedup();
+    let sorted_starts: Vec<u64> = sorted_function_starts(functions);
 
     let mut listings: Vec<FunctionListing> = Vec::new();
     for func in functions {
@@ -75,10 +70,12 @@ pub fn disassemble_functions(
         if !func.address_assigned {
             continue;
         }
-        let Some(end): Option<u64> = end_boundary(image, func, &sorted_starts) else {
+        let Some(extent): Option<FunctionExtent> = function_extent(image, func, &sorted_starts)
+        else {
             continue;
         };
-        let Some(code): Option<&[u8]> = carve(image, func.start, end) else {
+        let end: u64 = extent.end;
+        let Some(code): Option<&[u8]> = carve_function(image, func.start, end) else {
             continue;
         };
         let byte_len: u64 = code.len() as u64;
@@ -114,59 +111,13 @@ pub fn disassemble_functions(
     }
 }
 
-fn end_boundary(
-    image: &NativeImage<'_>,
-    func: &RecoveredFunction,
-    sorted_starts: &[u64],
-) -> Option<u64> {
-    if let Some(end) = func.end.filter(|e: &u64| *e > func.start) {
-        return Some(end);
-    }
-    let next_start: Option<u64> = sorted_starts
-        .iter()
-        .copied()
-        .find(|s: &u64| *s > func.start);
-    let section_end: Option<u64> = image
-        .sections
-        .iter()
-        .find(|s: &&Section<'_>| {
-            let sec_end: u64 = s.address.saturating_add(s.data.len() as u64);
-            !s.data.is_empty() && func.start >= s.address && func.start < sec_end
-        })
-        .map(|s: &Section<'_>| s.address.saturating_add(s.data.len() as u64));
-    let inferred: u64 = match (next_start, section_end) {
-        (Some(n), Some(s)) => n.min(s),
-        (Some(n), None) => n,
-        (None, Some(s)) => s,
-        (None, None) => return None,
-    };
-    if inferred <= func.start {
-        return None;
-    }
-    Some(inferred.min(func.start.saturating_add(MAX_FUNCTION_BYTES)))
-}
-
-const fn map_arch(arch: CodeArch) -> Option<Arch> {
+pub(crate) const fn map_arch(arch: CodeArch) -> Option<Arch> {
     match arch {
         CodeArch::X86 => Some(Arch::X86),
         CodeArch::X86_64 => Some(Arch::X86_64),
         CodeArch::Aarch64 => Some(Arch::Aarch64),
         CodeArch::Other => None,
     }
-}
-
-fn carve<'a>(image: &NativeImage<'a>, start: u64, end: u64) -> Option<&'a [u8]> {
-    let len: u64 = end.checked_sub(start)?;
-    if len == 0 || len > MAX_FUNCTION_BYTES {
-        return None;
-    }
-    let section: &Section<'a> = image.sections.iter().find(|s: &&Section<'a>| {
-        let sec_end: u64 = s.address.saturating_add(s.data.len() as u64);
-        !s.data.is_empty() && start >= s.address && end <= sec_end
-    })?;
-    let rel: usize = usize::try_from(start - section.address).ok()?;
-    let span: usize = usize::try_from(len).ok()?;
-    section.data.get(rel..rel.checked_add(span)?)
 }
 
 fn render_insn(insn: DisasmInsn) -> DisasmInstruction {
