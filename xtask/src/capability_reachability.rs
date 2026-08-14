@@ -111,7 +111,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-native",
-        65,
+        64,
         "the largest single group in this sweep: convenience wrappers over a sibling variant the \
          real caller uses (apply_patches over apply_patches_reported, collect_recovered_symbols \
          over the _with_oep form, discover_functions over discover_functions_with_status, and \
