@@ -261,10 +261,14 @@ pub struct RejectedFunction {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleStreamCoverage {
     pub modules_declared: usize,
+    pub modules_beyond_bound: usize,
     pub modules_with_symbol_streams: usize,
     pub modules_without_symbol_streams: usize,
     pub modules_with_unreadable_symbols: usize,
+    pub modules_truncated_by_unreadable_symbol: usize,
+    pub modules_truncated_at_symbol_bound: usize,
     pub procedure_records_seen: usize,
+    pub procedure_records_beyond_bound: usize,
     pub compiler_generated_records_skipped: usize,
     pub thunk_records_skipped: usize,
     pub inline_site_records_skipped: usize,

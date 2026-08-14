@@ -467,11 +467,20 @@ fn recovers_free_function_signatures_from_the_module_symbol_streams() {
     let accounted: usize = rec.functions.len()
         + rec.rejected_functions.len()
         + coverage.compiler_generated_records_skipped
-        + coverage.duplicate_records_folded;
+        + coverage.duplicate_records_folded
+        + coverage.procedure_records_beyond_bound;
     assert_eq!(
         accounted, coverage.procedure_records_seen,
-        "every procedure record must be emitted, rejected, or explicitly counted as skipped; \
-         a record that vanishes silently is an unreported gap: {coverage:?}"
+        "every procedure record must be emitted, rejected, or explicitly counted as skipped or \
+         bound-dropped; a record that vanishes silently is an unreported gap: {coverage:?}"
+    );
+    let module_outcomes: usize = coverage.modules_beyond_bound
+        + coverage.modules_with_symbol_streams
+        + coverage.modules_without_symbol_streams
+        + coverage.modules_with_unreadable_symbols;
+    assert_eq!(
+        module_outcomes, coverage.modules_declared,
+        "every declared module must land in exactly one open outcome: {coverage:?}"
     );
 
     let undetailed: Vec<&RejectedFunction> = rec

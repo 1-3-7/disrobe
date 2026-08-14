@@ -91,10 +91,11 @@ pub(crate) fn recover_module_procedures<'s, S: pdb::Source<'s> + 's>(
     let mut seen: BTreeSet<ProcedureIdentity> = BTreeSet::new();
 
     while let Some(module) = module_iter.next().map_err(pdb_err)? {
-        if coverage.modules_declared >= MAX_MODULES {
-            break;
-        }
         coverage.modules_declared += 1;
+        if coverage.modules_declared > MAX_MODULES {
+            coverage.modules_beyond_bound += 1;
+            continue;
+        }
         let module_name: String = module.module_name().into_owned();
         let Some(module_info) = pdb_file.module_info(&module).map_err(pdb_err)? else {
             coverage.modules_without_symbol_streams += 1;
@@ -109,12 +110,13 @@ pub(crate) fn recover_module_procedures<'s, S: pdb::Source<'s> + 's>(
         let mut symbols_read: usize = 0;
         loop {
             if symbols_read >= MAX_SYMBOLS_PER_MODULE {
+                coverage.modules_truncated_at_symbol_bound += 1;
                 break;
             }
             let stepped: std::result::Result<Option<pdb::Symbol<'_>>, pdb::Error> =
                 symbol_iter.next();
             let Ok(stepped) = stepped else {
-                coverage.modules_with_unreadable_symbols += 1;
+                coverage.modules_truncated_by_unreadable_symbol += 1;
                 break;
             };
             let Some(symbol) = stepped else {
@@ -143,7 +145,8 @@ pub(crate) fn recover_module_procedures<'s, S: pdb::Source<'s> + 's>(
             };
             coverage.procedure_records_seen += 1;
             if functions.len() + rejected.len() >= MAX_PROCEDURES {
-                break;
+                coverage.procedure_records_beyond_bound += 1;
+                continue;
             }
 
             let Ok(pdb::SymbolData::Procedure(procedure)) = symbol.parse() else {
