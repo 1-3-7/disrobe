@@ -44,6 +44,7 @@ struct FunctionMetadata {
     address: u64,
     section: SectionIndex,
     section_offset: u64,
+    section_size: u64,
     size: u64,
 }
 
@@ -123,8 +124,13 @@ pub(super) fn recover<'data>(object_bytes: &'data [u8]) -> RecoveredProgram {
     if file.architecture() != object::Architecture::Aarch64 {
         return object_refusal("object is not aarch64".to_owned());
     }
-    if file.format() != object::BinaryFormat::Elf {
-        return object_refusal("aarch64 call-site recovery requires an elf object".to_owned());
+    if !matches!(
+        file.format(),
+        object::BinaryFormat::Elf | object::BinaryFormat::MachO
+    ) {
+        return object_refusal(
+            "aarch64 call-site recovery requires an elf or mach-o object".to_owned(),
+        );
     }
     if !file.is_little_endian() {
         return object_refusal(
@@ -354,12 +360,16 @@ fn collect_functions(file: &object::File<'_>) -> Vec<FunctionSymbol> {
         if start > data.len() {
             continue;
         }
+        let Ok(section_size): core::result::Result<u64, _> = u64::try_from(data.len()) else {
+            continue;
+        };
         metadata.push(FunctionMetadata {
             index: symbol.index().0,
             name: name.to_owned(),
             address: symbol.address(),
             section: section_index,
             section_offset: section_offset_u64,
+            section_size,
             size: symbol.size(),
         });
     }
@@ -372,6 +382,15 @@ fn collect_functions(file: &object::File<'_>) -> Vec<FunctionSymbol> {
                 .insert(entry.size);
         }
     }
+    let mut section_offsets: BTreeMap<usize, BTreeSet<u64>> = BTreeMap::new();
+    if file.format() == object::BinaryFormat::MachO {
+        for entry in &metadata {
+            section_offsets
+                .entry(entry.section.0)
+                .or_default()
+                .insert(entry.section_offset);
+        }
+    }
     let mut bodies: BTreeMap<(usize, u64, u64), Arc<[u8]>> = BTreeMap::new();
     let mut functions: Vec<FunctionSymbol> = Vec::with_capacity(metadata.len());
     for entry in &metadata {
@@ -380,6 +399,24 @@ fn collect_functions(file: &object::File<'_>) -> Vec<FunctionSymbol> {
                 .get(&(entry.section.0, entry.section_offset))
                 .filter(|sizes: &&BTreeSet<u64>| sizes.len() == 1)
                 .and_then(|sizes: &BTreeSet<u64>| sizes.first().copied())
+                .or_else(|| {
+                    if file.format() != object::BinaryFormat::MachO {
+                        return None;
+                    }
+                    let next_offset: Option<u64> =
+                        entry.section_offset.checked_add(1).and_then(|start: u64| {
+                            section_offsets
+                                .get(&entry.section.0)?
+                                .range(start..)
+                                .next()
+                                .copied()
+                        });
+                    let body_end: u64 =
+                        next_offset.map_or(entry.section_size, |offset: u64| offset);
+                    body_end
+                        .checked_sub(entry.section_offset)
+                        .filter(|size: &u64| *size > 0)
+                })
         } else {
             Some(entry.size)
         };

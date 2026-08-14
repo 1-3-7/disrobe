@@ -7,6 +7,7 @@ const MAX_NODES: usize = 1 << 18;
 const MAX_REPEAT_COUNT: u32 = 2048;
 const MAX_SYMBOL_LEN: usize = 1 << 16;
 const REABSTRACTION_THUNK_OPERATORS: [&[u8; 2]; 4] = [b"TR", b"Tr", b"Ty", b"TU"];
+const SWIFT_MACRO_FILENAME_PREFIX: &str = "@__swiftmacro_";
 
 #[must_use]
 pub fn looks_like_swift_mangled(s: &str) -> bool {
@@ -15,6 +16,7 @@ pub fn looks_like_swift_mangled(s: &str) -> bool {
         || s.starts_with("_$S")
         || s.starts_with("$S")
         || s.starts_with("_T")
+        || s.starts_with(SWIFT_MACRO_FILENAME_PREFIX)
 }
 
 #[must_use]
@@ -29,6 +31,24 @@ pub fn demangle(symbol: &str) -> Result<String> {
             "{truncated}... ({} bytes, over the {MAX_SYMBOL_LEN}-byte bound)",
             symbol.len()
         )));
+    }
+    if let Some(body) = symbol.strip_prefix(SWIFT_MACRO_FILENAME_PREFIX) {
+        let mut demangler: Demangler<'_> = Demangler::new(body);
+        let node: NodeRef = demangler
+            .demangle_freestanding_macro_filename()
+            .ok_or_else(|| Error::Demangle(symbol.to_owned()))?;
+        if demangler.pos != demangler.src.len() {
+            return Err(Error::DemangleResidue {
+                symbol: symbol.to_owned(),
+                consumed: demangler.pos,
+                total: demangler.src.len(),
+            });
+        }
+        let rendered: String = print_node(&Node::unary(Kind::Global, node), Mode::Symbol);
+        if rendered.is_empty() || rendered.bytes().any(|byte: u8| byte < 0x20) {
+            return Err(Error::Demangle(symbol.to_owned()));
+        }
+        return Ok(rendered);
     }
     let trimmed: &str = symbol.strip_prefix('_').unwrap_or(symbol);
     let body: &str = trimmed
@@ -189,6 +209,7 @@ enum Kind {
     Variadic,
     OpaqueReturnType,
     MacroExpansion,
+    MacroExpansionLocation,
     AsyncFunctionPointer,
     MergedFunction,
     PackExpansion,
@@ -215,6 +236,9 @@ enum Kind {
     ReabstractionThunkHelper,
     ReabstractionThunkHelperWithSelf,
     ReabstractionThunkHelperWithGlobalActor,
+    AutoDiffFunction,
+    AutoDiffSubsetParametersThunk,
+    AutoDiffSelfReorderingReabstractionThunk,
     KeyPathThunk,
     LazyWitnessTableCacheVariable,
     LazyWitnessTableAccessor,
@@ -409,6 +433,22 @@ impl<'a> Demangler<'a> {
     }
 
     fn demangle_global_inner(&mut self) -> Option<NodeRef> {
+        if self.src.ends_with(b"TJOf")
+            || self.src.ends_with(b"TJOr")
+            || self.src.ends_with(b"TJOd")
+            || self.src.ends_with(b"TJOp")
+        {
+            let cp: Checkpoint = self.checkpoint();
+            if let Some(thunk) = self.try_demangle_autodiff_self_reordering_thunk() {
+                return Some(thunk);
+            }
+            self.restore(cp);
+        }
+        let autodiff_cp: Checkpoint = self.checkpoint();
+        if let Some(thunk) = self.try_demangle_autodiff_subset_parameters_thunk_global() {
+            return Some(thunk);
+        }
+        self.restore(autodiff_cp);
         if self.ends_with_reabstraction_thunk_operator()
             && let Some(thunk) = self.try_demangle_reabstraction_thunk()
         {
@@ -423,6 +463,77 @@ impl<'a> Demangler<'a> {
         let entity: NodeRef = self.demangle_entity_or_type()?;
         let entity: NodeRef = self.demangle_trailing_entity_spec(entity)?;
         self.demangle_operator_suffix(entity)
+    }
+
+    fn demangle_freestanding_macro_filename(&mut self) -> Option<NodeRef> {
+        let module: NodeRef = self.demangle_identifier(Kind::Module)?;
+        let buffer: NodeRef = self.demangle_identifier(Kind::Identifier)?;
+        if !(self.next_if(b'f') && self.next_if(b'M') && self.next_if(b'X')) {
+            return None;
+        }
+        let line: i32 = self.demangle_swift_signed_index()?;
+        let column: i32 = self.demangle_swift_signed_index()?;
+        let macro_name: NodeRef = self.demangle_identifier(Kind::Identifier)?;
+        if !(self.next_if(b'f') && self.next_if(b'M') && self.next_if(b'f')) {
+            return None;
+        }
+        let discriminator_index: i32 = self.demangle_swift_signed_index()?;
+        if discriminator_index < 0 {
+            return None;
+        }
+        let discriminator: i32 = discriminator_index.wrapping_add(1);
+        let discriminator_text: String = if discriminator >= 0 {
+            discriminator.to_string()
+        } else {
+            String::new()
+        };
+        let suffix_bytes: &[u8] = self.src.get(self.pos..)?;
+        let suffix: &str = std::str::from_utf8(suffix_bytes).ok()?;
+        if !suffix.is_empty() && !suffix.starts_with('.') {
+            return None;
+        }
+        self.pos = self.src.len();
+        let location: NodeRef = Node::branch(
+            Kind::MacroExpansionLocation,
+            vec![
+                module,
+                buffer,
+                Node::leaf(Kind::Identifier, (line as i64 as u64).to_string()),
+                Node::leaf(Kind::Identifier, (column as i64 as u64).to_string()),
+            ],
+        );
+        let mut children: Vec<NodeRef> = vec![
+            location,
+            macro_name,
+            Node::leaf(Kind::Identifier, discriminator_text),
+        ];
+        if !suffix.is_empty() {
+            children.push(Node::leaf(Kind::Identifier, suffix.to_owned()));
+        }
+        Some(Node::branch_with_text(
+            Kind::MacroExpansion,
+            "freestanding".to_owned(),
+            children,
+        ))
+    }
+
+    fn demangle_swift_signed_index(&mut self) -> Option<i32> {
+        if self.next_if(b'_') {
+            return Some(0);
+        }
+        let mut value: i32 = 0;
+        let mut consumed: bool = false;
+        while let Some(digit) = self.peek().filter(u8::is_ascii_digit) {
+            value = value
+                .checked_mul(10)?
+                .checked_add(i32::from(digit - b'0'))?;
+            self.pos += 1;
+            consumed = true;
+        }
+        if !consumed || !self.next_if(b'_') {
+            return None;
+        }
+        Some(value.wrapping_add(1))
     }
 
     fn ends_with_reabstraction_thunk_operator(&self) -> bool {
@@ -479,9 +590,51 @@ impl<'a> Demangler<'a> {
         parsed
     }
 
+    fn try_demangle_autodiff_self_reordering_thunk(&mut self) -> Option<NodeRef> {
+        let from: NodeRef = self.demangle_impl_function_type()?;
+        let to: NodeRef = self.demangle_impl_function_type()?;
+        if !(self.next_if(b'T') && self.next_if(b'J') && self.next_if(b'O')) {
+            return None;
+        }
+        let kind: &'static str = self.demangle_autodiff_function_kind()?;
+        if self.pos != self.src.len() {
+            return None;
+        }
+        Some(Node::branch_with_text(
+            Kind::AutoDiffSelfReorderingReabstractionThunk,
+            kind.to_owned(),
+            vec![from, to],
+        ))
+    }
+
+    fn try_demangle_autodiff_subset_parameters_thunk_global(&mut self) -> Option<NodeRef> {
+        let base: NodeRef = self.demangle_impl_function_type()?;
+        let (kind, from_parameters, results, to_parameters): (
+            &'static str,
+            NodeRef,
+            NodeRef,
+            NodeRef,
+        ) = self.demangle_autodiff_subset_parameters_suffix()?;
+        if self.pos != self.src.len() {
+            return None;
+        }
+        Some(Node::branch_with_text(
+            Kind::AutoDiffSubsetParametersThunk,
+            kind.to_owned(),
+            vec![base, from_parameters, results, to_parameters],
+        ))
+    }
+
     fn demangle_impl_function_type(&mut self) -> Option<NodeRef> {
+        self.demangle_impl_function_type_with_trailing_type(None)
+    }
+
+    fn demangle_impl_function_type_with_trailing_type(
+        &mut self,
+        trailing_type: Option<NodeRef>,
+    ) -> Option<NodeRef> {
         let mut preamble: Vec<ImplPreamble> = Vec::new();
-        while self.peek() != Some(b'I') || !self.pending_substitutions.is_empty() {
+        while self.peek() != Some(b'I') {
             self.spend()?;
             if let Some(signature) = self.try_demangle_generic_signature_node() {
                 preamble.push(ImplPreamble::Signature(signature));
@@ -627,7 +780,19 @@ impl<'a> Demangler<'a> {
             let convention: &'static str = self.demangle_impl_result_convention()?;
             conventions.push((Kind::ImplErrorResult, convention.to_owned()));
         }
-        if !self.next_if(b'_') || conventions.len() != types.len() {
+        if !self.next_if(b'_') {
+            return None;
+        }
+        let trailing_count: usize = usize::from(trailing_type.is_some());
+        let pending_count: usize = conventions
+            .len()
+            .checked_sub(types.len().checked_add(trailing_count)?)?;
+        if pending_count > self.pending_substitutions.len() {
+            return None;
+        }
+        types.extend(self.pending_substitutions.drain(..pending_count));
+        types.extend(trailing_type);
+        if conventions.len() != types.len() {
             return None;
         }
         let mut children: Vec<NodeRef> = Vec::with_capacity(types.len() + 4);
@@ -1330,7 +1495,8 @@ impl<'a> Demangler<'a> {
                     self.demangle_related_entity(node.clone())
                 }
                 _ => self
-                    .try_demangle_specialization(&node)
+                    .try_demangle_autodiff_subset_parameters_thunk(&node)
+                    .or_else(|| self.try_demangle_specialization(&node))
                     .or_else(|| self.try_demangle_keypath_thunk(&node)),
             };
             let Some(next): Option<NodeRef> = consumed else {
@@ -1400,6 +1566,65 @@ impl<'a> Demangler<'a> {
             role.to_owned(),
             vec![base.clone(), containing],
         ))
+    }
+
+    fn try_demangle_autodiff_subset_parameters_thunk(&mut self, base: &NodeRef) -> Option<NodeRef> {
+        let cp: Checkpoint = self.checkpoint();
+        let type_cp: Checkpoint = self.checkpoint();
+        let to_type: NodeRef = if let Some(mut impl_function) = self.demangle_impl_function_type() {
+            while self.peek() == Some(b'I') {
+                impl_function =
+                    self.demangle_impl_function_type_with_trailing_type(Some(impl_function))?;
+            }
+            impl_function
+        } else {
+            self.restore(type_cp);
+            let Some(ty) = self.try_demangle_type() else {
+                self.restore(cp);
+                return None;
+            };
+            ty
+        };
+        let Some((kind, from_parameters, results, to_parameters)): Option<(
+            &'static str,
+            NodeRef,
+            NodeRef,
+            NodeRef,
+        )> = self.demangle_autodiff_subset_parameters_suffix() else {
+            self.restore(cp);
+            return None;
+        };
+        Some(Node::branch_with_text(
+            Kind::AutoDiffSubsetParametersThunk,
+            kind.to_owned(),
+            vec![
+                base.clone(),
+                to_type,
+                from_parameters,
+                results,
+                to_parameters,
+            ],
+        ))
+    }
+
+    fn demangle_autodiff_subset_parameters_suffix(
+        &mut self,
+    ) -> Option<(&'static str, NodeRef, NodeRef, NodeRef)> {
+        if !(self.next_if(b'T') && self.next_if(b'J') && self.next_if(b'S')) {
+            return None;
+        }
+        let kind: &'static str = self.demangle_autodiff_function_kind()?;
+        let from_parameters: NodeRef = self.demangle_autodiff_index_subset()?;
+        if !self.next_if(b'p') {
+            return None;
+        }
+        let results: NodeRef = self.demangle_autodiff_index_subset()?;
+        if !self.next_if(b'r') {
+            return None;
+        }
+        let to_parameters: NodeRef = self.demangle_autodiff_index_subset()?;
+        self.next_if(b'P')
+            .then_some((kind, from_parameters, results, to_parameters))
     }
 
     fn demangle_specialization_kind(&mut self) -> Option<&'static str> {
@@ -1542,10 +1767,58 @@ impl<'a> Demangler<'a> {
             }
             b'o' => Some(Node::unary(Kind::ObjCAttribute, base)),
             b'O' => Some(Node::unary(Kind::NonObjCAttribute, base)),
+            b'J' => {
+                let vtable_thunk: bool = self.next_if(b'V');
+                self.demangle_autodiff_function(base, vtable_thunk)
+            }
             b'f' => self.demangle_function_signature_specialization(base),
             b'D' | b'd' | b'V' | b'I' | b'X' | b'F' | b'c' => Some(base),
             _ => None,
         }
+    }
+
+    fn demangle_autodiff_function(&mut self, base: NodeRef, vtable_thunk: bool) -> Option<NodeRef> {
+        let kind: &'static str = self.demangle_autodiff_function_kind()?;
+        let rendered_kind: String = if vtable_thunk {
+            format!("vtable thunk for {kind}")
+        } else {
+            kind.to_owned()
+        };
+        let parameters: NodeRef = self.demangle_autodiff_index_subset()?;
+        if !self.next_if(b'p') {
+            return None;
+        }
+        let results: NodeRef = self.demangle_autodiff_index_subset()?;
+        if !self.next_if(b'r') {
+            return None;
+        }
+        Some(Node::branch_with_text(
+            Kind::AutoDiffFunction,
+            rendered_kind,
+            vec![base, parameters, results],
+        ))
+    }
+
+    fn demangle_autodiff_function_kind(&mut self) -> Option<&'static str> {
+        match self.next()? {
+            b'f' => Some("forward-mode derivative"),
+            b'r' => Some("reverse-mode derivative"),
+            b'd' => Some("differential"),
+            b'p' => Some("pullback"),
+            _ => None,
+        }
+    }
+
+    fn demangle_autodiff_index_subset(&mut self) -> Option<NodeRef> {
+        let start: usize = self.pos;
+        while self.next_if(b'S') || self.next_if(b'U') {}
+        if self.pos == start {
+            return None;
+        }
+        let text: String = std::str::from_utf8(self.src.get(start..self.pos)?)
+            .ok()?
+            .to_owned();
+        Some(Node::leaf(Kind::Identifier, text))
     }
 
     fn demangle_function_signature_specialization(&mut self, base: NodeRef) -> Option<NodeRef> {
@@ -4522,6 +4795,11 @@ fn print_node(node: &Node, mode: Mode) -> String {
             print_child(node, 0),
             print_child(node, 1)
         ),
+        Kind::AutoDiffFunction => print_autodiff_function(node),
+        Kind::AutoDiffSubsetParametersThunk => print_autodiff_subset_parameters_thunk(node),
+        Kind::AutoDiffSelfReorderingReabstractionThunk => {
+            print_autodiff_self_reordering_thunk(node)
+        }
         Kind::KeyPathThunk => print_keypath_thunk(node),
         Kind::LazyWitnessTableCacheVariable => {
             print_lazy_witness_accessor(node, "lazy protocol witness table cache variable")
@@ -4602,6 +4880,7 @@ fn print_node(node: &Node, mode: Mode) -> String {
         Kind::DependentGenericParamPackMarker => format!("each {}", print_child(node, 0)),
         Kind::OpaqueReturnType => "some".to_owned(),
         Kind::MacroExpansion => print_macro_expansion(node),
+        Kind::MacroExpansionLocation => print_macro_expansion_location(node),
         Kind::AsyncFunctionPointer => {
             format!("async function pointer to {}", print_child(node, 0))
         }
@@ -4738,6 +5017,33 @@ fn print_async_resume_partial(node: &Node) -> String {
 
 fn print_macro_expansion(node: &Node) -> String {
     let role: &str = node.text.as_deref().unwrap_or("macro");
+    if role == "freestanding" {
+        let location: String = node
+            .children
+            .first()
+            .map_or_else(String::new, |child: &NodeRef| {
+                print_macro_expansion_location(child)
+            });
+        let macro_name: String = node
+            .children
+            .get(1)
+            .map_or_else(String::new, |child: &NodeRef| print_context_path(child));
+        let discriminator: &str = node
+            .children
+            .get(2)
+            .and_then(|child: &NodeRef| child.text.as_deref())
+            .unwrap_or("1");
+        let suffix: String = node
+            .children
+            .get(3)
+            .map_or_else(String::new, |child: &NodeRef| {
+                let quoted: String = quote_swift_bytes(child.text.as_deref().unwrap_or_default());
+                format!(" with unmangled suffix {quoted}")
+            });
+        return format!(
+            "freestanding macro expansion #{discriminator} of {macro_name} {location}{suffix}"
+        );
+    }
     let context: String = node
         .children
         .first()
@@ -4756,6 +5062,52 @@ fn print_macro_expansion(node: &Node) -> String {
         .and_then(|c: &NodeRef| c.text.as_deref())
         .unwrap_or("1");
     format!("{role} macro @{macro_name} expansion #{discriminator} of {attached_name} in {context}")
+}
+
+fn quote_swift_bytes(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut quoted: String = String::with_capacity(value.len().saturating_add(2));
+    quoted.push('"');
+    for byte in value.bytes() {
+        match byte {
+            b'\\' => quoted.push_str("\\\\"),
+            b'\t' => quoted.push_str("\\t"),
+            b'\n' => quoted.push_str("\\n"),
+            b'\r' => quoted.push_str("\\r"),
+            b'"' => quoted.push_str("\\\""),
+            b'\0' => quoted.push_str("\\0"),
+            0x20..=0x7e => quoted.push(char::from(byte)),
+            _ => {
+                quoted.push_str("\\x");
+                quoted.push(char::from(HEX[usize::from(byte >> 4)]));
+                quoted.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+fn print_macro_expansion_location(node: &Node) -> String {
+    let module: String = node
+        .children
+        .first()
+        .map_or_else(String::new, |child: &NodeRef| print_context_path(child));
+    let buffer: String = node
+        .children
+        .get(1)
+        .map_or_else(String::new, |child: &NodeRef| print_context_path(child));
+    let line: &str = node
+        .children
+        .get(2)
+        .and_then(|child: &NodeRef| child.text.as_deref())
+        .unwrap_or_default();
+    let column: &str = node
+        .children
+        .get(3)
+        .and_then(|child: &NodeRef| child.text.as_deref())
+        .unwrap_or_default();
+    format!("in module {module} file {buffer} line {line} column {column}")
 }
 
 fn entity_path(node: &Node) -> String {
@@ -5275,6 +5627,80 @@ fn print_reabstraction_thunk_with_self(node: &Node) -> String {
         print_child(node, index + 1),
         print_child(node, index + 2)
     )
+}
+
+fn print_autodiff_function(node: &Node) -> String {
+    let kind: &str = node.text.as_deref().unwrap_or_default();
+    let base: String = print_child(node, 0);
+    let parameters: String = node
+        .children
+        .get(1)
+        .map_or_else(String::new, |child: &NodeRef| {
+            print_autodiff_index_subset(child)
+        });
+    let results: String = node
+        .children
+        .get(2)
+        .map_or_else(String::new, |child: &NodeRef| {
+            print_autodiff_index_subset(child)
+        });
+    format!("{kind} of {base} with respect to parameters {parameters} and results {results}")
+}
+
+fn print_autodiff_subset_parameters_thunk(node: &Node) -> String {
+    let kind: &str = node.text.as_deref().unwrap_or_default();
+    let base: String = print_child(node, 0);
+    let has_target_type: bool = node.children.len() == 5;
+    let subset_offset: usize = usize::from(has_target_type);
+    let from_parameters: String = node
+        .children
+        .get(1 + subset_offset)
+        .map_or_else(String::new, |child: &NodeRef| {
+            print_autodiff_index_subset(child)
+        });
+    let results: String = node
+        .children
+        .get(2 + subset_offset)
+        .map_or_else(String::new, |child: &NodeRef| {
+            print_autodiff_index_subset(child)
+        });
+    let to_parameters: String = node
+        .children
+        .get(3 + subset_offset)
+        .map_or_else(String::new, |child: &NodeRef| {
+            print_autodiff_index_subset(child)
+        });
+    let rendered: String = format!(
+        "autodiff subset parameters thunk for {kind} from {base} with respect to parameters \
+         {from_parameters} and results {results} to parameters {to_parameters}"
+    );
+    if has_target_type {
+        format!("{rendered} of type {}", print_child(node, 1))
+    } else {
+        rendered
+    }
+}
+
+fn print_autodiff_self_reordering_thunk(node: &Node) -> String {
+    let kind: &str = node.text.as_deref().unwrap_or_default();
+    format!(
+        "autodiff self-reordering reabstraction thunk for {kind} from {} to {}",
+        print_child(node, 0),
+        print_child(node, 1)
+    )
+}
+
+fn print_autodiff_index_subset(node: &Node) -> String {
+    let indices: Vec<String> = node
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .bytes()
+        .enumerate()
+        .filter(|(_index, state): &(usize, u8)| *state == b'S')
+        .map(|(index, _state): (usize, u8)| index.to_string())
+        .collect();
+    format!("{{{}}}", indices.join(", "))
 }
 
 fn print_argument_tuple(node: &Node) -> String {
@@ -6235,6 +6661,45 @@ mod tests {
                 demangle(symbol).is_err(),
                 "{symbol} must abstain instead of accepting a partial or unknown encoding"
             );
+        }
+    }
+
+    #[test]
+    fn autodiff_subset_parameters_suffix_consumes_its_impl_function_type() {
+        let source: &str = "S5fIegnr_Iegnnro_TJSfSSpSrSUP";
+        let mut repeat_probe: Demangler<'_> = Demangler::new(source);
+        let _: NodeRef = repeat_probe
+            .demangle_type()
+            .expect("parse the repeated Float substitution");
+        assert_eq!(repeat_probe.pending_substitutions.len(), 4);
+        let mut type_probe: Demangler<'_> = Demangler::new(source);
+        let nested_result: NodeRef = type_probe
+            .demangle_impl_function_type()
+            .expect("parse the nested result function");
+        assert_eq!(type_probe.pos, 9);
+        let _: NodeRef = type_probe
+            .demangle_impl_function_type_with_trailing_type(Some(nested_result))
+            .expect("parse the outer function");
+        assert_eq!(type_probe.pos, 17);
+        let mut demangler: Demangler<'_> = Demangler::new(source);
+        let base: NodeRef = Node::leaf(Kind::Identifier, "base".to_owned());
+        let node: NodeRef = demangler
+            .try_demangle_autodiff_subset_parameters_thunk(&base)
+            .expect("parse the compiler-emitted subset parameters suffix");
+        assert_eq!(demangler.pos, source.len());
+        assert_eq!(node.kind, Kind::AutoDiffSubsetParametersThunk);
+    }
+
+    #[test]
+    fn malformed_autodiff_suffixes_abstain() {
+        for symbol in [
+            "$s13AutoDiffProbe21differentiateMultiplyyS2fFTJfpr",
+            "$s13AutoDiffProbe21differentiateMultiplyyS2fFTJxSpSr",
+            "$sS3fIegnnr_TJSdpSrSUP",
+            "$sS3fIegnnr_TJSdSSpSrSU",
+            "$sS2f8mangling3FooV13TangentVectorVIegydd_SfAESfIegydd_TJOx",
+        ] {
+            assert!(demangle(symbol).is_err(), "accepted malformed {symbol}");
         }
     }
 }

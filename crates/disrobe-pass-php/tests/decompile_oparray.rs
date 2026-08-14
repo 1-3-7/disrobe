@@ -14,8 +14,8 @@
 
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
-    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, OperandType, UnrecoveredOp,
-    build_cfg, decompile_oparray, opcode_name, parse_oparray,
+    Branch, Decompilation, Fidelity, OPARRAY_MAGIC, OPARRAY_VERSION, OpArray, OperandType,
+    UnrecoveredOp, build_cfg, decompile_oparray, opcode_name, parse_oparray,
 };
 
 const T_UNUSED: u8 = 0;
@@ -92,6 +92,13 @@ impl OpArrayBuilder {
         let idx: u32 = self.literal_count;
         self.literals.push(L_LONG);
         self.literals.extend_from_slice(&n.to_le_bytes());
+        self.literal_count += 1;
+        idx
+    }
+
+    fn lit_null(&mut self) -> u32 {
+        let idx: u32 = self.literal_count;
+        self.literals.push(L_NULL);
         self.literal_count += 1;
         idx
     }
@@ -615,6 +622,278 @@ fn recovered_variables_use_source_names_from_the_v2_table() {
 }
 
 #[test]
+fn assignment_results_snapshot_values_before_the_target_is_overwritten() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_TMP, 0, one, 5, 0, 1);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_TMP, 0, two, 6, 0, 1);
+    b.op(op::ADD, T_TMP, T_TMP, T_TMP, 5, 6, 7, 0, 1);
+    b.op(op::RETURN, T_TMP, T_UNUSED, T_UNUSED, 7, 0, 0, 0, 1);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    let skel: &str = &decomp.php_skeleton;
+    assert!(
+        skel.contains("$_disrobe_assign_0 = ($v0 = 1);"),
+        "skeleton: {skel}"
+    );
+    assert!(
+        skel.contains("$_disrobe_assign_1 = ($v0 = 2);"),
+        "skeleton: {skel}"
+    );
+    assert!(
+        skel.contains("return $_disrobe_assign_0 + $_disrobe_assign_1;"),
+        "skeleton: {skel}"
+    );
+    assert!(!skel.contains("return $v0 + $v0;"), "skeleton: {skel}");
+}
+
+#[test]
+fn ambiguous_and_malformed_returns_are_refused() {
+    let mut explicit_one: OpArrayBuilder = OpArrayBuilder::main();
+    let one: u32 = explicit_one.lit_long(1);
+    explicit_one.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 1);
+    let explicit_one_bytes: Vec<u8> = explicit_one.build_container();
+    let explicit_one_parsed: OpArray = parse_oparray(&explicit_one_bytes).expect("parse");
+    let explicit_one_decomp: Decompilation = decompile_oparray(&explicit_one_parsed);
+    assert_eq!(explicit_one_decomp.unrecovered_total, 0);
+    assert!(
+        explicit_one_decomp.php_skeleton.contains("return 1;"),
+        "skeleton: {}",
+        explicit_one_decomp.php_skeleton
+    );
+
+    let mut marked_one: OpArrayBuilder = OpArrayBuilder::main();
+    let marked: u32 = marked_one.lit_long(1);
+    marked_one.op(
+        op::RETURN,
+        T_CONST,
+        T_UNUSED,
+        T_UNUSED,
+        marked,
+        0,
+        0,
+        u32::MAX,
+        1,
+    );
+    let marked_one_bytes: Vec<u8> = marked_one.build_container();
+    let marked_one_parsed: OpArray = parse_oparray(&marked_one_bytes).expect("parse");
+    let marked_one_decomp: Decompilation = decompile_oparray(&marked_one_parsed);
+    assert_eq!(marked_one_decomp.unrecovered_total, 0);
+    assert!(
+        !marked_one_decomp.php_skeleton.contains("return 1;"),
+        "skeleton: {}",
+        marked_one_decomp.php_skeleton
+    );
+
+    let mut marked_null: OpArrayBuilder = OpArrayBuilder::main();
+    let marked_null_literal: u32 = marked_null.lit_null();
+    marked_null.op(
+        op::RETURN,
+        T_CONST,
+        T_UNUSED,
+        T_UNUSED,
+        marked_null_literal,
+        0,
+        0,
+        u32::MAX,
+        1,
+    );
+    let marked_null_bytes: Vec<u8> = marked_null.build_container();
+    let marked_null_parsed: OpArray = parse_oparray(&marked_null_bytes).expect("parse");
+    let marked_null_decomp: Decompilation = decompile_oparray(&marked_null_parsed);
+    assert_eq!(marked_null_decomp.unrecovered_total, 0);
+    assert!(
+        !marked_null_decomp.php_skeleton.contains("return null;"),
+        "skeleton: {}",
+        marked_null_decomp.php_skeleton
+    );
+
+    let mut explicit_null: OpArrayBuilder = OpArrayBuilder::main();
+    let null: u32 = explicit_null.lit_null();
+    explicit_null.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, null, 0, 0, 0, 1);
+    let explicit_null_bytes: Vec<u8> = explicit_null.build_container();
+    let explicit_null_parsed: OpArray = parse_oparray(&explicit_null_bytes).expect("parse");
+    let explicit_null_decomp: Decompilation = decompile_oparray(&explicit_null_parsed);
+    assert_eq!(explicit_null_decomp.unrecovered_total, 0);
+    assert!(
+        explicit_null_decomp.php_skeleton.contains("return null;"),
+        "skeleton: {}",
+        explicit_null_decomp.php_skeleton
+    );
+
+    let mut unused: OpArrayBuilder = OpArrayBuilder::main();
+    unused.op(op::RETURN, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
+    let unused_bytes: Vec<u8> = unused.build_container();
+    let unused_parsed: OpArray = parse_oparray(&unused_bytes).expect("parse");
+    let unused_decomp: Decompilation = decompile_oparray(&unused_parsed);
+    assert_eq!(unused_decomp.unrecovered_total, 1);
+    assert!(
+        unused_decomp.unrecovered[0]
+            .reason
+            .contains("reaching definition")
+    );
+
+    let mut by_ref_one: OpArrayBuilder = OpArrayBuilder::main();
+    let by_ref_literal: u32 = by_ref_one.lit_long(1);
+    by_ref_one.op(
+        op::RETURN_BY_REF,
+        T_CONST,
+        T_UNUSED,
+        T_UNUSED,
+        by_ref_literal,
+        0,
+        0,
+        0,
+        1,
+    );
+    let by_ref_one_bytes: Vec<u8> = by_ref_one.build_container();
+    let by_ref_one_parsed: OpArray = parse_oparray(&by_ref_one_bytes).expect("parse");
+    let by_ref_one_decomp: Decompilation = decompile_oparray(&by_ref_one_parsed);
+    assert_eq!(by_ref_one_decomp.unrecovered_total, 1);
+    assert_eq!(
+        by_ref_one_decomp.unrecovered[0].mnemonic,
+        "ZEND_RETURN_BY_REF"
+    );
+    assert!(
+        by_ref_one_decomp.unrecovered[0]
+            .reason
+            .contains("compiler-final provenance")
+    );
+
+    let mut by_ref_final: OpArrayBuilder = OpArrayBuilder::main();
+    let by_ref_final_literal: u32 = by_ref_final.lit_long(1);
+    by_ref_final.op(
+        op::RETURN_BY_REF,
+        T_CONST,
+        T_UNUSED,
+        T_UNUSED,
+        by_ref_final_literal,
+        0,
+        0,
+        u32::MAX,
+        1,
+    );
+    let by_ref_final_bytes: Vec<u8> = by_ref_final.build_container();
+    let by_ref_final_parsed: OpArray = parse_oparray(&by_ref_final_bytes).expect("parse");
+    let by_ref_final_decomp: Decompilation = decompile_oparray(&by_ref_final_parsed);
+    assert_eq!(by_ref_final_decomp.unrecovered_total, 0);
+    assert!(
+        !by_ref_final_decomp.php_skeleton.contains("return 1;"),
+        "skeleton: {}",
+        by_ref_final_decomp.php_skeleton
+    );
+
+    let mut by_ref_unused: OpArrayBuilder = OpArrayBuilder::main();
+    by_ref_unused.op(
+        op::RETURN_BY_REF,
+        T_UNUSED,
+        T_UNUSED,
+        T_UNUSED,
+        0,
+        0,
+        0,
+        0,
+        1,
+    );
+    let by_ref_unused_bytes: Vec<u8> = by_ref_unused.build_container();
+    let by_ref_unused_parsed: OpArray = parse_oparray(&by_ref_unused_bytes).expect("parse");
+    let by_ref_unused_decomp: Decompilation = decompile_oparray(&by_ref_unused_parsed);
+    assert_eq!(by_ref_unused_decomp.unrecovered_total, 1);
+    assert_eq!(
+        by_ref_unused_decomp.unrecovered[0].mnemonic,
+        "ZEND_RETURN_BY_REF"
+    );
+    assert!(
+        by_ref_unused_decomp.unrecovered[0]
+            .reason
+            .contains("reaching definition")
+    );
+}
+
+#[test]
+fn a_definition_from_only_one_conditional_path_does_not_reach_the_join() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
+    b.op(op::JMPZ, T_CV, T_UNUSED, T_UNUSED, 0, 2, 0, 0, 1);
+    b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 5, 0, 2);
+    b.op(op::RETURN, T_TMP, T_UNUSED, T_UNUSED, 5, 0, 0, 0, 3);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.mnemonic == "ZEND_RETURN"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        !decomp.php_skeleton.contains("return 1 + 2;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn an_if_else_definition_from_only_one_arm_does_not_reach_the_join() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
+    b.op(op::JMPZ, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 1);
+    b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 5, 0, 2);
+    b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 4, 0, 0, 0, 3);
+    b.op(op::OP_DATA, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 4);
+    b.op(op::RETURN, T_TMP, T_UNUSED, T_UNUSED, 5, 0, 0, 0, 5);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.mnemonic == "ZEND_RETURN"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        !decomp.php_skeleton.contains("return 1 + 2;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn an_identical_if_else_definition_reaches_the_join() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
+    b.op(op::JMPZ, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 1);
+    b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 5, 0, 2);
+    b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 4, 0, 0, 0, 3);
+    b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 5, 0, 4);
+    b.op(op::RETURN, T_TMP, T_UNUSED, T_UNUSED, 5, 0, 0, 0, 5);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
+    assert!(
+        decomp.php_skeleton.contains("return 1 + 2;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
 fn missing_name_table_falls_back_to_synthetic_slot_ids() {
     let mut b: OpArrayBuilder = OpArrayBuilder::main();
     let nine: u32 = b.lit_long(9);
@@ -727,9 +1006,10 @@ fn an_opcode_the_lifter_does_not_model_is_named_instead_of_vanishing() {
     let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
         b.var("k");
         let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
         b.op(op::SWITCH_LONG, T_CV, T_UNUSED, T_UNUSED, 0, 2, 0, 0, 1);
         b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
-        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 3);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, two, 0, 0, 0, 3);
     });
 
     assert_eq!(
@@ -828,11 +1108,11 @@ fn a_cast_php_can_spell_recovers_as_that_cast() {
 fn a_constructed_object_nobody_consumes_stays_a_statement() {
     let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
         let class: u32 = b.lit_str("Worker");
-        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
         b.op(op::NEW, T_CONST, T_UNUSED, T_VAR, class, 0, 0, 0, 1);
         b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
         b.op(op::FREE, T_VAR, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
-        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, two, 0, 0, 0, 2);
     });
 
     assert_eq!(decomp.unrecovered_total, 0);
@@ -849,11 +1129,11 @@ fn a_constructed_object_someone_assigns_becomes_the_right_hand_side() {
     let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
         b.var("worker");
         let class: u32 = b.lit_str("Worker");
-        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
         b.op(op::NEW, T_CONST, T_UNUSED, T_VAR, class, 0, 0, 0, 1);
         b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 1);
         b.op(op::ASSIGN, T_CV, T_VAR, T_UNUSED, 0, 0, 0, 0, 1);
-        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 2);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, two, 0, 0, 0, 2);
     });
 
     assert_eq!(decomp.unrecovered_total, 0);
@@ -941,7 +1221,7 @@ fn the_refusal_detail_list_is_capped_while_the_reported_total_stays_exact() {
     const OVER_CAP: u32 = 4097;
     let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
         b.var("k");
-        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
         for line in 0..OVER_CAP {
             b.op(
                 op::SWITCH_LONG,
@@ -960,7 +1240,7 @@ fn the_refusal_detail_list_is_capped_while_the_reported_total_stays_exact() {
             T_CONST,
             T_UNUSED,
             T_UNUSED,
-            one,
+            two,
             0,
             0,
             0,
@@ -985,10 +1265,11 @@ fn two_decompiles_of_one_container_produce_the_same_bytes_and_the_same_refusals(
     let mut b: OpArrayBuilder = OpArrayBuilder::main();
     b.var("k");
     let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
     b.op(op::SWITCH_STRING, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 1);
     b.op(op::MATCH, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 2);
     b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 3);
-    b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, one, 0, 0, 0, 4);
+    b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, two, 0, 0, 0, 4);
     let bytes: Vec<u8> = b.build_container();
     let parsed = parse_oparray(&bytes).expect("parse oparray");
 

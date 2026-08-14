@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_pass_native::{
-    Arch, DisasmInsn, Error, LeafRecovery, RecoveredProgram, disassemble, recover_aarch64_function,
-    recover_aarch64_program,
+    Arch, DisasmInsn, Error, LeafRecovery, RecoveredFunction, RecoveredProgram, disassemble,
+    recover_aarch64_function, recover_aarch64_program,
 };
 use object::write::{
     Object as WriteObject, Relocation as WriteRelocation, StandardSection, Symbol as WriteSymbol,
@@ -315,6 +315,38 @@ fn aarch64_forged_call_relocation_on_adrp_remains_unresolved() {
             .contains("unresolved instruction relocation")),
         "{recovered:?}"
     );
+}
+
+#[test]
+fn aarch64_macho_zero_sized_function_uses_its_bounded_text_extent() {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x04, 0x91, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let mut object: WriteObject<'_> = WriteObject::new(
+        BinaryFormat::MachO,
+        Architecture::Aarch64,
+        Endianness::Little,
+    );
+    let text: object::write::SectionId = object.section_id(StandardSection::Text);
+    let _offset: u64 = object.append_section_data(text, &bytes, 4);
+    let _function: object::write::SymbolId = object.add_symbol(WriteSymbol {
+        name: b"direct_address".to_vec(),
+        value: 0,
+        size: 0,
+        kind: SymbolKind::Text,
+        scope: SymbolScope::Dynamic,
+        weak: false,
+        section: WriteSymbolSection::Section(text),
+        flags: SymbolFlags::None,
+    });
+    let encoded: Vec<u8> = object.write().expect("Mach-O fixture must serialize");
+    let recovered: RecoveredProgram = recover_aarch64_program(&encoded);
+    let function: &RecoveredFunction = recovered
+        .recovered
+        .iter()
+        .find(|function| function.name == "_direct_address")
+        .unwrap_or_else(|| panic!("zero-sized Mach-O function must recover: {recovered:?}"));
+    assert!(function.source.contains("256LL"), "{}", function.source);
 }
 
 fn relocatable_adrp_with_relocation(r_type: u32) -> Vec<u8> {

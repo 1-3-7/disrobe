@@ -8,7 +8,8 @@ use disrobe_pass_native::{
     RecoveredFunction, RecoveredProgram, recover_aarch64_program,
 };
 use object::{
-    Object as _, ObjectSection as _, ObjectSymbol as _, RelocationFlags, RelocationTarget,
+    Object as _, ObjectSection as _, ObjectSymbol as _, ObjectSymbolTable as _, RelocationFlags,
+    RelocationTarget,
 };
 use tempfile::TempDir;
 
@@ -130,9 +131,60 @@ fn compile_translation_unit(
     object_path
 }
 
+fn compile_macho_translation_unit(directory: &Path, source: &str) -> PathBuf {
+    let source_path: PathBuf = directory.join("address.c");
+    let object_path: PathBuf = directory.join("address.macho.o");
+    fs::write(&source_path, source).expect("fixture source must be writable");
+    let mut command: Command = Command::new("clang");
+    command
+        .arg("--target=arm64-apple-darwin")
+        .arg("-O2")
+        .arg("-ffreestanding")
+        .arg("-fno-stack-protector")
+        .arg("-c")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object_path);
+    let _: Output = command_output(&mut command);
+    object_path
+}
+
+fn compile_pic_translation_unit(directory: &Path, source: &str) -> PathBuf {
+    let source_path: PathBuf = directory.join("pic.c");
+    let object_path: PathBuf = directory.join("pic.o");
+    fs::write(&source_path, source).expect("fixture source must be writable");
+    let mut command: Command = Command::new("clang");
+    command
+        .arg("--target=aarch64-unknown-linux-gnu")
+        .arg("-O2")
+        .arg("-ffreestanding")
+        .arg("-fno-stack-protector")
+        .arg("-ffunction-sections")
+        .arg("-fPIC")
+        .arg("-c")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&object_path);
+    let _: Output = command_output(&mut command);
+    object_path
+}
+
 fn linker_path() -> PathBuf {
     let mut locate: Command = Command::new("clang");
     locate.arg("--print-prog-name=ld.lld");
+    let located: Output = command_output(&mut locate);
+    let printed: String = String::from_utf8(located.stdout).expect("linker path must be utf-8");
+    let candidate: PathBuf = PathBuf::from(printed.trim());
+    if candidate.is_file() {
+        candidate
+    } else {
+        PathBuf::from(format!("{}.exe", candidate.display()))
+    }
+}
+
+fn macho_linker_path() -> PathBuf {
+    let mut locate: Command = Command::new("clang");
+    locate.arg("--print-prog-name=ld64.lld");
     let located: Output = command_output(&mut locate);
     let printed: String = String::from_utf8(located.stdout).expect("linker path must be utf-8");
     let candidate: PathBuf = PathBuf::from(printed.trim());
@@ -163,6 +215,139 @@ fn link_shared(directory: &Path, objects: &[PathBuf]) -> Vec<u8> {
     link_with(directory, objects, "-shared", "combined.so")
 }
 
+fn link_macho(directory: &Path, object: &Path) -> Vec<u8> {
+    let output_path: PathBuf = directory.join("combined.macho");
+    let mut command: Command = Command::new(macho_linker_path());
+    command
+        .args([
+            "-arch",
+            "arm64",
+            "-platform_version",
+            "macos",
+            "11.0",
+            "11.0",
+            "-e",
+            "_direct_address",
+            "-sectalign",
+            "__TEXT",
+            "__const",
+            "0x200000",
+        ])
+        .arg(object)
+        .arg("-o")
+        .arg(&output_path);
+    let _: Output = command_output(&mut command);
+    fs::read(output_path).expect("linked Mach-O fixture must be readable")
+}
+
+fn link_macho_dylib(directory: &Path, object: &Path) -> Vec<u8> {
+    let output_path: PathBuf = directory.join("combined.dylib");
+    let mut command: Command = Command::new(macho_linker_path());
+    command
+        .args([
+            "-arch",
+            "arm64",
+            "-platform_version",
+            "macos",
+            "11.0",
+            "11.0",
+            "-dylib",
+            "-install_name",
+            "@rpath/libfixture.dylib",
+            "-undefined",
+            "dynamic_lookup",
+            "-sectalign",
+            "__DATA_CONST",
+            "__got",
+            "0x200000",
+        ])
+        .arg(object)
+        .arg("-o")
+        .arg(&output_path);
+    let _: Output = command_output(&mut command);
+    fs::read(output_path).expect("linked Mach-O dylib fixture must be readable")
+}
+
+fn symbol_address(object_bytes: &[u8], name: &str) -> u64 {
+    let file: object::File<'_> =
+        object::File::parse(object_bytes).expect("linked object must parse");
+    file.symbols()
+        .find(|symbol: &object::Symbol<'_, '_>| {
+            symbol.is_definition() && symbol.name().is_ok_and(|candidate: &str| candidate == name)
+        })
+        .unwrap_or_else(|| panic!("linked object lacks symbol {name}"))
+        .address()
+}
+
+fn symbol_bytes_to_section_end<'data>(object_bytes: &'data [u8], name: &str) -> &'data [u8] {
+    let file: object::File<'data> =
+        object::File::parse(object_bytes).expect("linked object must parse");
+    let symbol: object::Symbol<'_, '_> = file
+        .symbols()
+        .find(|symbol: &object::Symbol<'_, '_>| {
+            symbol.is_definition() && symbol.name().is_ok_and(|candidate: &str| candidate == name)
+        })
+        .unwrap_or_else(|| panic!("linked object lacks symbol {name}"));
+    let object::SymbolSection::Section(section_index) = symbol.section() else {
+        panic!("linked symbol {name} lacks a section");
+    };
+    let section: object::Section<'_, '_> = file
+        .section_by_index(section_index)
+        .expect("linked symbol section must exist");
+    let section_offset: u64 = symbol
+        .address()
+        .checked_sub(section.address())
+        .expect("linked symbol must lie inside its section");
+    let start: usize =
+        usize::try_from(section_offset).expect("linked symbol offset must fit usize");
+    section
+        .data()
+        .expect("linked symbol section must have data")
+        .get(start..)
+        .expect("linked symbol offset must be in section data")
+}
+
+fn linked_adrp_ldr_slot(function_address: u64, machine_code: &[u8]) -> u64 {
+    let adrp_bytes: [u8; 4] = machine_code
+        .get(..4)
+        .expect("linked function must contain adrp")
+        .try_into()
+        .expect("adrp must contain four bytes");
+    let ldr_bytes: [u8; 4] = machine_code
+        .get(4..8)
+        .expect("linked function must contain ldr")
+        .try_into()
+        .expect("ldr must contain four bytes");
+    let adrp: u32 = u32::from_le_bytes(adrp_bytes);
+    let ldr: u32 = u32::from_le_bytes(ldr_bytes);
+    assert_eq!(
+        adrp & 0x9f00_0000,
+        0x9000_0000,
+        "unexpected first words {adrp:08x} {ldr:08x}"
+    );
+    assert_eq!(
+        ldr & 0xffc0_0000,
+        0xf940_0000,
+        "unexpected first words {adrp:08x} {ldr:08x}"
+    );
+    let destination: u32 = adrp & 0x1f;
+    assert_eq!((ldr >> 5) & 0x1f, destination);
+    assert_eq!(ldr & 0x1f, destination);
+    let immediate: u64 = u64::from((adrp >> 29) & 0x3) | (u64::from((adrp >> 5) & 0x7ffff) << 2);
+    let signed_pages: i64 = ((immediate << 43) as i64) >> 43;
+    let page_delta: i64 = signed_pages
+        .checked_mul(4096)
+        .expect("adrp page delta must fit i64");
+    let page: u64 = (function_address & !0xfff)
+        .checked_add_signed(page_delta)
+        .expect("adrp page address must fit u64");
+    let byte_offset: u64 = u64::from((ldr >> 10) & 0xfff)
+        .checked_mul(8)
+        .expect("ldr byte offset must fit u64");
+    page.checked_add(byte_offset)
+        .expect("got slot address must fit u64")
+}
+
 fn compile_c_pair(callee: &str, caller: &str, optimization: &str) -> Vec<u8> {
     let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
     let callee_object: PathBuf =
@@ -188,6 +373,266 @@ fn compile_single_asm(source: &str) -> Vec<u8> {
     let object_path: PathBuf =
         compile_translation_unit(directory.path(), "fixture", "s", source, "O1");
     fs::read(object_path).expect("fixture object must be readable")
+}
+
+#[test]
+#[ignore = "requires clang and ld.lld"]
+fn linked_elf_hidden_address_matches_the_symbol_layout() {
+    let source: &str = r#"
+__attribute__((visibility("hidden"))) const unsigned long long local_value = 0x1234ULL;
+const unsigned long long *direct_address(void) { return &local_value; }
+"#;
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object: PathBuf = compile_translation_unit(directory.path(), "address", "c", source, "O2");
+    let linked: Vec<u8> = link_shared(directory.path(), &[object]);
+    let expected: u64 = symbol_address(&linked, "local_value");
+    let program: RecoveredProgram = recover_aarch64_program(&linked);
+    let function: &RecoveredFunction = recovered(&program, "direct_address");
+    assert!(
+        function.source.contains(&format!("{expected}LL")),
+        "{}",
+        function.source
+    );
+}
+
+#[test]
+#[ignore = "requires clang and ld.lld"]
+fn linked_elf_got_address_remains_an_indirect_load() {
+    let definition: &str = "unsigned long long external_value = 0x123456789abcdef0ULL;\n";
+    let caller: &str = r"
+extern unsigned long long external_value;
+unsigned long long read_external(void) { return external_value; }
+";
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let definition_object: PathBuf =
+        compile_translation_unit(directory.path(), "definition", "c", definition, "O2");
+    let caller_object: PathBuf =
+        compile_translation_unit(directory.path(), "caller", "c", caller, "O2");
+    let linked: Vec<u8> = link_shared(directory.path(), &[definition_object, caller_object]);
+    let shape: CompiledFunctionShape = compiled_function_shape(&linked, "read_external");
+    let function_address: u64 = symbol_address(&linked, "read_external");
+    let slot: u64 = linked_adrp_ldr_slot(function_address, &shape.code);
+    let file: object::File<'_> = object::File::parse(linked.as_slice()).expect("elf must parse");
+    let slot_section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            section
+                .size()
+                .checked_add(start)
+                .is_some_and(|end: u64| slot >= start && slot < end)
+        })
+        .expect("got slot must lie in a mapped section");
+    assert_eq!(
+        slot_section.name().expect("section name must decode"),
+        ".got"
+    );
+    let dynamic_symbols: object::SymbolTable<'_, '_> = file
+        .dynamic_symbol_table()
+        .expect("linked shared object must have a dynamic symbol table");
+    let relocation: object::Relocation = file
+        .dynamic_relocations()
+        .expect("linked shared object must have dynamic relocations")
+        .find_map(|(address, relocation): (u64, object::Relocation)| {
+            (address == slot).then_some(relocation)
+        })
+        .expect("got slot must have a dynamic relocation");
+    assert_eq!(
+        relocation.flags(),
+        RelocationFlags::Elf {
+            r_type: object::elf::R_AARCH64_GLOB_DAT,
+        }
+    );
+    let RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+        panic!("got relocation must target a symbol");
+    };
+    let target: object::Symbol<'_, '_> = dynamic_symbols
+        .symbol_by_index(symbol_index)
+        .expect("got relocation symbol must exist");
+    assert_eq!(
+        target.name().expect("symbol name must decode"),
+        "external_value"
+    );
+    let program: RecoveredProgram = recover_aarch64_program(&linked);
+    let recovered_function: &RecoveredFunction = recovered(&program, "read_external");
+    assert!(
+        recovered_function.source.contains(&format!("{slot}LL"))
+            && recovered_function.source.matches("*(uint64_t*)").count() >= 2,
+        "{}",
+        recovered_function.source
+    );
+}
+
+#[test]
+#[ignore = "requires clang"]
+fn relocatable_elf_tls_address_forms_remain_unresolved() {
+    let source: &str = r#"
+extern __thread unsigned long long tls_dynamic __attribute__((tls_model("global-dynamic")));
+extern __thread unsigned long long tls_initial __attribute__((tls_model("initial-exec")));
+unsigned long long read_tls_dynamic(void) { return tls_dynamic; }
+unsigned long long read_tls_initial(void) { return tls_initial; }
+"#;
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object_path: PathBuf = compile_pic_translation_unit(directory.path(), source);
+    let object: Vec<u8> = fs::read(object_path).expect("tls object must be readable");
+    let dynamic: CompiledFunctionShape = compiled_function_shape(&object, "read_tls_dynamic");
+    let initial: CompiledFunctionShape = compiled_function_shape(&object, "read_tls_initial");
+    assert!(
+        dynamic
+            .relocations
+            .iter()
+            .any(|(_, r_type, _, _): &(u64, u32, i64, String)| {
+                *r_type == object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
+            }),
+        "{:?}",
+        dynamic.relocations
+    );
+    assert!(
+        initial
+            .relocations
+            .iter()
+            .any(|(_, r_type, _, _): &(u64, u32, i64, String)| {
+                *r_type == object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21
+            }),
+        "{:?}",
+        initial.relocations
+    );
+    let program: RecoveredProgram = recover_aarch64_program(&object);
+    let dynamic_reason: String = refused_reason(&program, "read_tls_dynamic");
+    let initial_reason: String = refused_reason(&program, "read_tls_initial");
+    assert!(dynamic_reason.contains("unresolved instruction relocation"));
+    assert!(initial_reason.contains("unresolved instruction relocation"));
+}
+
+#[test]
+#[ignore = "requires clang and ld64.lld"]
+fn linked_macho_page_address_matches_the_symbol_layout() {
+    let source: &str = r"
+static const unsigned long long local_value = 0x1234ULL;
+const unsigned long long *direct_address(void) { return &local_value; }
+";
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object: PathBuf = compile_macho_translation_unit(directory.path(), source);
+    let linked: Vec<u8> = link_macho(directory.path(), &object);
+    let expected: u64 = symbol_address(&linked, "_local_value");
+    let machine_code: &[u8] = symbol_bytes_to_section_end(&linked, "_direct_address");
+    let words: Vec<u32> = machine_code
+        .chunks_exact(4)
+        .map(|bytes: &[u8]| {
+            u32::from_le_bytes(
+                bytes
+                    .try_into()
+                    .expect("instruction must contain four bytes"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        words.first().copied().map(|word: u32| word & 0x9f00_0000),
+        Some(0x9000_0000)
+    );
+    assert_eq!(
+        words.get(1).copied().map(|word: u32| word & 0xffc0_0000),
+        Some(0x9100_0000)
+    );
+    let program: RecoveredProgram = recover_aarch64_program(&linked);
+    let function: &RecoveredFunction = recovered(&program, "_direct_address");
+    assert!(
+        function.source.contains(&format!("{expected}LL")),
+        "{}",
+        function.source
+    );
+}
+
+#[test]
+#[ignore = "requires clang and ld64.lld"]
+fn linked_macho_got_address_remains_an_indirect_load() {
+    let source: &str = r"
+extern unsigned long long external_value;
+unsigned long long read_external(void) { return external_value; }
+";
+    let directory: TempDir = tempfile::tempdir().expect("temporary directory must be available");
+    let object: PathBuf = compile_macho_translation_unit(directory.path(), source);
+    let relocatable: Vec<u8> = fs::read(&object).expect("Mach-O object must be readable");
+    let relocatable_file: object::File<'_> =
+        object::File::parse(relocatable.as_slice()).expect("Mach-O object must parse");
+    let relocation_types: Vec<u8> = relocatable_file
+        .sections()
+        .flat_map(|section: object::Section<'_, '_>| section.relocations())
+        .filter_map(
+            |(_, relocation): (u64, object::Relocation)| match relocation.flags() {
+                RelocationFlags::MachO { r_type, .. } => Some(r_type),
+                _ => None,
+            },
+        )
+        .collect();
+    assert!(
+        relocation_types.contains(&object::macho::ARM64_RELOC_GOT_LOAD_PAGE21)
+            && relocation_types.contains(&object::macho::ARM64_RELOC_GOT_LOAD_PAGEOFF12),
+        "{relocation_types:?}"
+    );
+    let relocation_targets: Vec<String> = relocatable_file
+        .sections()
+        .flat_map(|section: object::Section<'_, '_>| section.relocations())
+        .filter_map(|(_, relocation): (u64, object::Relocation)| {
+            let RelocationFlags::MachO { r_type, .. } = relocation.flags() else {
+                return None;
+            };
+            if !matches!(
+                r_type,
+                object::macho::ARM64_RELOC_GOT_LOAD_PAGE21
+                    | object::macho::ARM64_RELOC_GOT_LOAD_PAGEOFF12
+            ) {
+                return None;
+            }
+            let RelocationTarget::Symbol(symbol_index) = relocation.target() else {
+                return None;
+            };
+            relocatable_file
+                .symbol_by_index(symbol_index)
+                .ok()?
+                .name()
+                .ok()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        relocation_targets,
+        ["_external_value".to_owned(), "_external_value".to_owned()]
+    );
+    let relocatable_program: RecoveredProgram = recover_aarch64_program(&relocatable);
+    let reason: String = refused_reason(&relocatable_program, "_read_external");
+    assert!(
+        reason.contains("unresolved instruction relocation"),
+        "{reason}"
+    );
+    let linked: Vec<u8> = link_macho_dylib(directory.path(), &object);
+    let function_address: u64 = symbol_address(&linked, "_read_external");
+    let machine_code: &[u8] = symbol_bytes_to_section_end(&linked, "_read_external");
+    let slot: u64 = linked_adrp_ldr_slot(function_address, machine_code);
+    let file: object::File<'_> =
+        object::File::parse(linked.as_slice()).expect("Mach-O dylib must parse");
+    let slot_section: object::Section<'_, '_> = file
+        .sections()
+        .find(|section: &object::Section<'_, '_>| {
+            let start: u64 = section.address();
+            section
+                .size()
+                .checked_add(start)
+                .is_some_and(|end: u64| slot >= start && slot < end)
+        })
+        .expect("Mach-O got slot must lie in a mapped section");
+    assert_eq!(
+        slot_section.name().expect("section name must decode"),
+        "__got"
+    );
+    let program: RecoveredProgram = recover_aarch64_program(&linked);
+    let recovered_function: &RecoveredFunction = recovered(&program, "_read_external");
+    assert!(
+        recovered_function.source.contains(&format!("{slot}LL"))
+            && recovered_function.source.matches("*(uint64_t*)").count() >= 2,
+        "{}",
+        recovered_function.source
+    );
 }
 
 fn compiled_function_shape(object_bytes: &[u8], name: &str) -> CompiledFunctionShape {

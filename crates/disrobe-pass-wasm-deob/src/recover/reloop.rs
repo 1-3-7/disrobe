@@ -226,10 +226,22 @@ fn resolve_local_selector(loop_body: &Body, temp: LocalId) -> Option<StateCell> 
 }
 
 fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
-    let set_index: usize = loop_body
-        .iter()
-        .position(|(instr, _)| matches!(instr, Instr::LocalSet(set) if set.local == temp))?;
-    let source_index: usize = set_index.checked_sub(1)?;
+    let definition_index: usize = loop_body.iter().position(|(instr, _)| {
+        matches!(instr, Instr::LocalSet(set) if set.local == temp)
+            || matches!(instr, Instr::LocalTee(tee) if tee.local == temp)
+    })?;
+    let stack_neutral: bool = match &loop_body.get(definition_index)?.0 {
+        Instr::LocalSet(_) => true,
+        Instr::LocalTee(_) => matches!(
+            loop_body.get(definition_index.checked_add(1)?)?.0,
+            Instr::Drop(_)
+        ),
+        _ => false,
+    };
+    if !stack_neutral {
+        return None;
+    }
+    let source_index: usize = definition_index.checked_sub(1)?;
     match &loop_body.get(source_index)?.0 {
         Instr::LocalGet(get) => Some(StateCell::Local(get.local)),
         Instr::GlobalGet(get) => Some(StateCell::Global(get.global)),

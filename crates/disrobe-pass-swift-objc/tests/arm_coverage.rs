@@ -18,8 +18,9 @@ use swift_toolchain::{
 const GRADED: &str =
     "byte-exact agreement with swift-demangle on the FEAT-023 named-arm fixture corpus";
 
-const COMPILED: &str =
-    "the pinned reabstraction-thunk symbols being emitted by a real Swift compiler";
+const COMPILED: &str = "the pinned arm symbols being emitted by a real Swift compiler";
+const FREESTANDING_MACRO_SYMBOL: &str =
+    "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX4_4_6expectfMf_.swift";
 
 #[derive(Debug, Clone, Copy)]
 struct ArmFixture {
@@ -98,6 +99,11 @@ const ARM_FIXTURES: &[ArmFixture] = &[
         arm: "attached_macro_expansion",
         mangled: "$s4Arms7CounterC9increment3FoofMm0_",
         expected: "member macro @Foo expansion #2 of increment in Arms.Counter",
+    },
+    ArmFixture {
+        arm: "freestanding_macro_expansion",
+        mangled: FREESTANDING_MACRO_SYMBOL,
+        expected: "freestanding macro expansion #1 of expect in module MacroProbe file macro_probe.swift line 5 column 5 with unmangled suffix \".swift\"",
     },
     ArmFixture {
         arm: "partial_apply_forwarder",
@@ -265,6 +271,51 @@ const ARM_FIXTURES: &[ArmFixture] = &[
         expected: "reabstraction thunk helper from @callee_guaranteed () -> (@error @guaranteed Swift.Int) to @callee_guaranteed () -> (@error @inout Swift.Int)",
     },
     ArmFixture {
+        arm: "autodiff_function",
+        mangled: "$s13AutoDiffProbe21differentiateMultiplyyS2fFTJfSpSr",
+        expected: "forward-mode derivative of AutoDiffProbe.differentiateMultiply(Swift.Float) -> Swift.Float with respect to parameters {0} and results {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_function",
+        mangled: "$s13AutoDiffProbe21differentiateMultiplyyS2fFTJrSpSr",
+        expected: "reverse-mode derivative of AutoDiffProbe.differentiateMultiply(Swift.Float) -> Swift.Float with respect to parameters {0} and results {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_function",
+        mangled: "$s13AutoDiffProbe21differentiateMultiplyyS2fFTJpSpSr",
+        expected: "pullback of AutoDiffProbe.differentiateMultiply(Swift.Float) -> Swift.Float with respect to parameters {0} and results {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$s13AutoDiffProbe8multiplyyxx_xtSjRzlFS5fIegnr_Iegnnro_TJSfSSpSrSUP",
+        expected: "autodiff subset parameters thunk for forward-mode derivative from AutoDiffProbe.multiply<A where A: Swift.Numeric>(A, A) -> A with respect to parameters {0, 1} and results {0} to parameters {0} of type @escaping @callee_guaranteed (@in_guaranteed Swift.Float, @in_guaranteed Swift.Float) -> (@out Swift.Float, @owned @escaping @callee_guaranteed (@in_guaranteed Swift.Float) -> (@out Swift.Float))",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$s13AutoDiffProbe8multiplyyxx_xtSjRzlFS5fIegnr_Iegnnro_TJSrSSpSrSUP",
+        expected: "autodiff subset parameters thunk for reverse-mode derivative from AutoDiffProbe.multiply<A where A: Swift.Numeric>(A, A) -> A with respect to parameters {0, 1} and results {0} to parameters {0} of type @escaping @callee_guaranteed (@in_guaranteed Swift.Float, @in_guaranteed Swift.Float) -> (@out Swift.Float, @owned @escaping @callee_guaranteed (@in_guaranteed Swift.Float) -> (@out Swift.Float))",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$sS3fIegnnr_TJSdSSpSrSUP",
+        expected: "autodiff subset parameters thunk for differential from @escaping @callee_guaranteed (@in_guaranteed Swift.Float, @in_guaranteed Swift.Float) -> (@out Swift.Float) with respect to parameters {0, 1} and results {0} to parameters {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$sS3fIegnrr_TJSpSSpSrSUP",
+        expected: "autodiff subset parameters thunk for pullback from @escaping @callee_guaranteed (@in_guaranteed Swift.Float) -> (@out Swift.Float, @out Swift.Float) with respect to parameters {0, 1} and results {0} to parameters {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$s6vtable5SuperC6methodyS2f_SftFTJVfSUUpSr",
+        expected: "vtable thunk for forward-mode derivative of vtable.Super.method(Swift.Float, Swift.Float) -> Swift.Float with respect to parameters {0} and results {0}",
+    },
+    ArmFixture {
+        arm: "autodiff_thunk",
+        mangled: "$sS2f8mangling3FooV13TangentVectorVIegydd_SfAESfIegydd_TJOp",
+        expected: "autodiff self-reordering reabstraction thunk for pullback from @escaping @callee_guaranteed (@unowned Swift.Float) -> (@unowned Swift.Float, @unowned mangling.Foo.TangentVector) to @escaping @callee_guaranteed (@unowned Swift.Float) -> (@unowned mangling.Foo.TangentVector, @unowned Swift.Float)",
+    },
+    ArmFixture {
         arm: "protocol_witness_thunk",
         mangled: "$s4Arms14EnglishGreeterVAA0C0A2aDP5greetSSyFTW",
         expected: "protocol witness for Arms.Greeter.greet() -> Swift.String in conformance Arms.EnglishGreeter : Arms.Greeter in Arms",
@@ -321,7 +372,7 @@ const ARM_FIXTURES: &[ArmFixture] = &[
     },
 ];
 
-const OPEN_ARMS: &[&str] = &["freestanding_macro_expansion", "autodiff_thunk"];
+const OPEN_ARMS: &[&str] = &[];
 
 fn windows_sdk(swiftc: &Path) -> Option<PathBuf> {
     let swift_root: &Path = swiftc.ancestors().nth(5)?;
@@ -354,6 +405,11 @@ const COMPILED_FIXTURES: &[CompiledFixture] = &[
         source: "dynamic_self_reabstraction.swift",
         module: "dynamic_self",
         symbol: "$s12dynamic_self22FunctionConversionTestCIgg_ACIegn_ACXMTTy",
+    },
+    CompiledFixture {
+        source: "autodiff_thunk.swift",
+        module: "AutoDiffProbe",
+        symbol: "$s13AutoDiffProbe8multiplyyxx_xtSjRzlFS5fIegnr_Iegnnro_TJSfSSpSrSUP",
     },
 ];
 
@@ -587,6 +643,152 @@ fn mangling_prefixes_across_swift_releases_are_all_accepted() {
     assert!(
         demangle::demangle("_$t4Arms7GreeterP").is_err(),
         "an unrecognized prefix must abstain rather than guess"
+    );
+}
+
+#[test]
+fn swift_macro_filename_prefix_and_suffix_are_bounded() {
+    let symbol: &str = FREESTANDING_MACRO_SYMBOL
+        .strip_suffix(".swift")
+        .expect("the compiler-emitted fixture must carry its unmangled suffix");
+    assert!(demangle::looks_like_swift_mangled(symbol));
+    assert_eq!(
+        demangle::demangle(symbol).expect("the compiler-emitted macro filename must demangle"),
+        "freestanding macro expansion #1 of expect in module MacroProbe file macro_probe.swift line 5 column 5"
+    );
+    for malformed in [
+        "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX4_4_6expectfMf",
+        "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX4_4_6expectfMf_bad",
+    ] {
+        assert!(
+            demangle::demangle(malformed).is_err(),
+            "a truncated or non-suffix macro filename must abstain: {malformed}"
+        );
+    }
+}
+
+#[test]
+fn swift_macro_suffixes_use_swift_byte_escaping() {
+    let stem: &str = FREESTANDING_MACRO_SYMBOL
+        .strip_suffix(".swift")
+        .expect("the compiler-emitted fixture must carry its unmangled suffix");
+    assert_eq!(
+        demangle::demangle(&format!("{stem}.é")).expect("a UTF-8 suffix must demangle"),
+        r#"freestanding macro expansion #1 of expect in module MacroProbe file macro_probe.swift line 5 column 5 with unmangled suffix ".\xC3\xA9""#
+    );
+    assert_eq!(
+        demangle::demangle(&format!("{stem}.\t\n\r\"\\\0\u{1f}"))
+            .expect("a suffix with escaped bytes must demangle"),
+        r#"freestanding macro expansion #1 of expect in module MacroProbe file macro_probe.swift line 5 column 5 with unmangled suffix ".\t\n\r\"\\\0\x1F""#
+    );
+}
+
+#[test]
+fn swift_macro_locations_match_swift_signed_index_boundaries() {
+    let symbol: &str =
+        "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX2147483647_4_6expectfMf_.swift";
+    assert_eq!(
+        demangle::demangle(symbol).expect("Swift accepts the maximum signed line operand"),
+        "freestanding macro expansion #1 of expect in module MacroProbe file macro_probe.swift line 18446744071562067968 column 5 with unmangled suffix \".swift\""
+    );
+    assert!(
+        demangle::demangle(
+            "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX2147483648_4_6expectfMf_.swift"
+        )
+        .is_err(),
+        "Swift refuses a line operand beyond its signed parser boundary"
+    );
+    assert_eq!(
+        demangle::demangle(
+            "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX4_4_6expectfMf2147483646_.swift"
+        )
+        .expect("Swift accepts the maximum nonnegative discriminator"),
+        "freestanding macro expansion # of expect in module MacroProbe file macro_probe.swift line 5 column 5 with unmangled suffix \".swift\""
+    );
+    assert!(
+        demangle::demangle(
+            "@__swiftmacro_10MacroProbe0022macro_probeswift_tiAIefMX4_4_6expectfMf2147483647_.swift"
+        )
+        .is_err(),
+        "Swift refuses a discriminator whose decoded index is negative"
+    );
+}
+
+#[test]
+fn a_real_compiler_emits_the_pinned_freestanding_macro_filename() {
+    let Some(swiftc): Option<PathBuf> = resolve_swift_compiler(COMPILED) else {
+        return;
+    };
+    let source: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("macro_probe.swift");
+    let output_dir: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("MacroProbe");
+    fs::create_dir_all(&output_dir).expect("create the macro fixture output directory");
+    let object: PathBuf = output_dir.join(if cfg!(windows) {
+        "MacroProbe.obj"
+    } else {
+        "MacroProbe.o"
+    });
+    let mut command: Command = Command::new(&swiftc);
+    if cfg!(windows) {
+        let sdk: PathBuf = windows_sdk(&swiftc).unwrap_or_else(|| {
+            panic!(
+                "no Windows SDK sits beside {}; a present Swift compiler must be usable",
+                swiftc.display()
+            )
+        });
+        let swift_root: &Path = swiftc
+            .ancestors()
+            .nth(5)
+            .expect("the Windows Swift compiler must sit under its installation root");
+        let toolchain: &str = swiftc
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .expect("the Windows Swift toolchain directory must carry its version");
+        let version: &str = toolchain
+            .split_once('+')
+            .map_or(toolchain, |pair: (&str, &str)| pair.0);
+        let testing: PathBuf = swift_root
+            .join("Platforms")
+            .join(version)
+            .join("Windows.platform")
+            .join("Developer")
+            .join("Library")
+            .join(format!("Testing-{version}"))
+            .join("usr")
+            .join("lib")
+            .join("swift")
+            .join("windows");
+        command.arg("-sdk").arg(sdk).arg("-I").arg(testing);
+    }
+    let compiled: Output = command
+        .arg("-g")
+        .arg("-parse-as-library")
+        .arg("-emit-object")
+        .arg("-module-name")
+        .arg("MacroProbe")
+        .arg(&source)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .expect("run swiftc for the freestanding macro fixture");
+    assert!(
+        compiled.status.success(),
+        "{} failed to compile {}: {}",
+        swiftc.display(),
+        source.display(),
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let bytes: Vec<u8> = fs::read(&object).expect("read the compiled macro fixture object");
+    assert!(
+        bytes
+            .windows(FREESTANDING_MACRO_SYMBOL.len())
+            .any(|window: &[u8]| window == FREESTANDING_MACRO_SYMBOL.as_bytes()),
+        "{} did not emit the pinned macro filename",
+        object.display()
     );
 }
 

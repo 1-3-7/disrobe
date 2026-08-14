@@ -271,7 +271,9 @@ fn decompile_if_container(
     dbg_kv("skeleton-named-params", || {
         total_named_params(&parsed).to_string()
     });
-    notes.push("decrypted payload is a Zend op_array container; lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned());
+    notes.push(oparray_lift_note(
+        "decrypted payload is a Zend op_array container",
+    ));
     if let Some(refusal) = unrecovered_note(&decomp) {
         notes.push(refusal);
     }
@@ -318,9 +320,7 @@ fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
             dbg_line(|| format!("skeleton| {line}"));
         }
     }
-    let mut notes: Vec<String> = vec![
-        "raw Zend op_array container lifted to structured PHP statements (temporaries folded into expressions, if/while/foreach reconstructed from the opcode jumps); local variable names remain $vN since they are not carried in the opcode stream".to_owned(),
-    ];
+    let mut notes: Vec<String> = vec![oparray_lift_note("raw Zend op_array container")];
     if let Some(refusal) = unrecovered_note(&decomp) {
         notes.push(refusal);
     }
@@ -334,6 +334,14 @@ fn try_oparray_container(bytes: &[u8]) -> Result<Option<RecoveryReport>> {
         residual_ciphertext_len: 0,
         notes,
     }))
+}
+
+fn oparray_lift_note(subject: &str) -> String {
+    format!(
+        "{subject}; lifted to structured PHP statements (temporaries folded into expressions, \
+         if/while/foreach reconstructed from opcode jumps); local-variable metadata is preserved \
+         when present, and unnamed CV slots use deterministic $vN names"
+    )
 }
 
 fn unrecovered_note(decomp: &Decompilation) -> Option<String> {

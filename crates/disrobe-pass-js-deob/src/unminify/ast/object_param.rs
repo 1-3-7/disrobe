@@ -1,13 +1,16 @@
 use indexmap::IndexSet;
 use oxc_allocator::Allocator;
-use oxc_ast::AstKind;
-use oxc_ast::ast::{BindingPatternKind, Expression, Function, Statement, VariableDeclarator};
+use oxc_ast::ast::{
+    BindingIdentifier, BindingPatternKind, Expression, FormalParameter, Function, Statement,
+    VariableDeclarator,
+};
+use oxc_ast::{AstKind, Visit};
 use oxc_parser::Parser;
 use oxc_semantic::{AstNodes, NodeId, Reference, Semantic, SemanticBuilder, SymbolId, SymbolTable};
 use oxc_span::{GetSpan, SourceType, Span};
 
 use super::rename_scope::is_reserved_binding_name;
-use super::{Edit, RuleOutcome};
+use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ObjectParamStats {
@@ -40,16 +43,23 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ObjectParamStats) {
         let Some(plan) = plan_function(func, source, symbols, nodes) else {
             continue;
         };
-        edits.push(Edit {
+        let parameter_edit: Edit = Edit {
             start: plan.param_span.start as usize,
             end: plan.param_span.end as usize,
             replacement: plan.pattern_text,
-        });
-        edits.push(Edit {
+        };
+        let declaration_edit: Edit = Edit {
             start: plan.declaration_span.start as usize,
             end: plan.declaration_span.end as usize,
             replacement: String::new(),
-        });
+        };
+        if edit_overlaps_comments(&parameter_edit, &parsed.program.comments)
+            || edit_overlaps_comments(&declaration_edit, &parsed.program.comments)
+        {
+            continue;
+        }
+        edits.push(parameter_edit);
+        edits.push(declaration_edit);
         stats.params_restructured += 1;
     }
 
@@ -68,6 +78,7 @@ struct ParamPlan {
 struct Field {
     key: String,
     local: String,
+    local_symbol_id: SymbolId,
 }
 
 fn plan_function(
@@ -78,11 +89,14 @@ fn plan_function(
 ) -> Option<ParamPlan> {
     let body: &oxc_ast::ast::FunctionBody<'_> = func.body.as_ref()?;
     let mut found: Option<ParamPlan> = None;
-    for param in &func.params.items {
+    for (param_index, param) in func.params.items.iter().enumerate() {
         if param.pattern.type_annotation.is_some() {
             continue;
         }
-        let BindingPatternKind::BindingIdentifier(binding) = &param.pattern.kind else {
+        let Some((binding, default_expression)): Option<(
+            &BindingIdentifier<'_>,
+            Option<&Expression<'_>>,
+        )> = synthetic_parameter(&param.pattern.kind) else {
             continue;
         };
         if !is_synthetic_destructure_name(binding.name.as_str()) {
@@ -91,7 +105,19 @@ fn plan_function(
         let Some(symbol_id) = binding.symbol_id.get() else {
             continue;
         };
-        let Some(plan) = plan_param(param.span, symbol_id, body, source, symbols, nodes) else {
+        if !following_parameters_are_plain(func, param_index) {
+            continue;
+        }
+        let Some(plan) = plan_param(
+            func,
+            param.span,
+            symbol_id,
+            default_expression,
+            body,
+            source,
+            symbols,
+            nodes,
+        ) else {
             continue;
         };
         if found.is_some() {
@@ -102,9 +128,34 @@ fn plan_function(
     found
 }
 
+fn following_parameters_are_plain(func: &Function<'_>, candidate_index: usize) -> bool {
+    func.params.rest.is_none()
+        && func
+            .params
+            .items
+            .iter()
+            .skip(candidate_index + 1)
+            .all(plain_parameter)
+}
+
+fn plain_parameter(parameter: &FormalParameter<'_>) -> bool {
+    parameter.decorators.is_empty()
+        && parameter.accessibility.is_none()
+        && !parameter.readonly
+        && !parameter.r#override
+        && !parameter.pattern.optional
+        && parameter.pattern.type_annotation.is_none()
+        && matches!(
+            &parameter.pattern.kind,
+            BindingPatternKind::BindingIdentifier(_)
+        )
+}
+
 fn plan_param(
+    func: &Function<'_>,
     param_span: Span,
     symbol_id: SymbolId,
+    default_expression: Option<&Expression<'_>>,
     body: &oxc_ast::ast::FunctionBody<'_>,
     source: &str,
     symbols: &SymbolTable,
@@ -148,14 +199,116 @@ fn plan_param(
             return None;
         }
     }
+    if fields_collide_with_parameters(&fields, func, param_span, symbols) {
+        return None;
+    }
+    if let Some(default_expression) = default_expression
+        && default_initializer_captures_field(default_expression, &fields, symbols)
+    {
+        return None;
+    }
 
-    let pattern_text: String = build_pattern(&fields);
+    let mut pattern_text: String = build_pattern(&fields);
+    if let Some(default_expression) = default_expression {
+        let default_text: &str = default_expression.span().source_text(source);
+        pattern_text.push_str(" = ");
+        pattern_text.push_str(default_text);
+    }
     let removal: Span = declaration_removal_span(declaration_span, source);
     Some(ParamPlan {
         param_span,
         pattern_text,
         declaration_span: removal,
     })
+}
+
+fn synthetic_parameter<'a>(
+    kind: &'a BindingPatternKind<'a>,
+) -> Option<(&'a BindingIdentifier<'a>, Option<&'a Expression<'a>>)> {
+    match kind {
+        BindingPatternKind::BindingIdentifier(binding) => Some((binding, None)),
+        BindingPatternKind::AssignmentPattern(assignment) => {
+            if assignment.left.optional || assignment.left.type_annotation.is_some() {
+                return None;
+            }
+            let BindingPatternKind::BindingIdentifier(binding) = &assignment.left.kind else {
+                return None;
+            };
+            Some((binding, Some(&assignment.right)))
+        }
+        _ => None,
+    }
+}
+
+fn fields_collide_with_parameters(
+    fields: &[Field],
+    func: &Function<'_>,
+    candidate_span: Span,
+    symbols: &SymbolTable,
+) -> bool {
+    let mut collector: BindingSymbolCollector = BindingSymbolCollector {
+        symbol_ids: Vec::new(),
+    };
+    for parameter in &func.params.items {
+        if parameter.span != candidate_span {
+            collector.visit_binding_pattern(&parameter.pattern);
+        }
+    }
+    collector.symbol_ids.iter().any(|&symbol_id: &SymbolId| {
+        let parameter_name: &str = symbols.get_name(symbol_id);
+        fields
+            .iter()
+            .any(|field: &Field| field.local == parameter_name)
+    })
+}
+
+struct BindingSymbolCollector {
+    symbol_ids: Vec<SymbolId>,
+}
+
+impl<'a> Visit<'a> for BindingSymbolCollector {
+    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
+        if let Some(symbol_id) = identifier.symbol_id.get() {
+            self.symbol_ids.push(symbol_id);
+        }
+    }
+}
+
+fn default_initializer_captures_field(
+    default_expression: &Expression<'_>,
+    fields: &[Field],
+    symbols: &SymbolTable,
+) -> bool {
+    let mut probe: DefaultCaptureProbe<'_> = DefaultCaptureProbe {
+        fields,
+        symbols,
+        captured: false,
+    };
+    probe.visit_expression(default_expression);
+    probe.captured
+}
+
+struct DefaultCaptureProbe<'a> {
+    fields: &'a [Field],
+    symbols: &'a SymbolTable,
+    captured: bool,
+}
+
+impl<'a> Visit<'a> for DefaultCaptureProbe<'_> {
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        let Some(reference_id) = identifier.reference_id.get() else {
+            return;
+        };
+        let reference: &Reference = self.symbols.get_reference(reference_id);
+        if reference.is_value()
+            && self.fields.iter().any(|field: &Field| {
+                field.local == identifier.name.as_str()
+                    && reference.symbol_id() != Some(field.local_symbol_id)
+            })
+        {
+            self.captured = true;
+        }
+    }
 }
 
 fn enclosing_declaration_span(node_id: NodeId, nodes: &AstNodes<'_>) -> Option<Span> {
@@ -178,12 +331,10 @@ fn leading_declaration<'a>(
     body: &'a oxc_ast::ast::FunctionBody<'a>,
     declaration_span: Span,
 ) -> Option<&'a oxc_ast::ast::VariableDeclaration<'a>> {
-    body.statements.iter().find_map(|stmt: &Statement<'a>| {
-        let Statement::VariableDeclaration(decl) = stmt else {
-            return None;
-        };
-        (decl.span == declaration_span).then_some(decl.as_ref())
-    })
+    let Statement::VariableDeclaration(declaration) = body.statements.first()? else {
+        return None;
+    };
+    (declaration.span == declaration_span).then_some(declaration.as_ref())
 }
 
 fn collect_fields(
@@ -210,6 +361,7 @@ fn declarator_field(
     let BindingPatternKind::BindingIdentifier(local) = &declarator.id.kind else {
         return None;
     };
+    let local_symbol_id: SymbolId = local.symbol_id.get()?;
     let init: &Expression<'_> = declarator.init.as_ref()?;
     let (object, key): (&Expression<'_>, String) = match init {
         Expression::StaticMemberExpression(member) => {
@@ -232,6 +384,7 @@ fn declarator_field(
     Some(Field {
         key,
         local: local.name.as_str().to_owned(),
+        local_symbol_id,
     })
 }
 
@@ -368,5 +521,30 @@ mod tests {
             outcome.edits.is_empty(),
             "a non-extraction declarator in the same decl must block whole-decl removal"
         );
+    }
+
+    #[test]
+    fn write_only_default_capture_is_left_byte_identical() {
+        let source: &str = "var value; function read(_ref = (value = { value: 11 })) { var value = _ref.value; return value; }";
+        assert_eq!(apply(source), source);
+    }
+
+    #[test]
+    fn later_non_plain_parameters_block_recovery() {
+        let sources: [&str; 4] = [
+            "function f(_ref, x = side()) { var value = _ref.value; return value; }",
+            "function f(_ref, { x }) { var value = _ref.value; return value + x; }",
+            "function f(_ref, [x]) { var value = _ref.value; return value + x; }",
+            "function f(_ref, ...rest) { var value = _ref.value; return value + rest.length; }",
+        ];
+        for source in sources {
+            assert_eq!(apply(source), source);
+        }
+    }
+
+    #[test]
+    fn plain_parameters_before_and_after_candidate_allow_recovery() {
+        let source: &str = "function f(before, _ref, after) { var value = _ref.value; return before + value + after; }";
+        assert!(apply(source).contains("function f(before, { value }, after)"));
     }
 }

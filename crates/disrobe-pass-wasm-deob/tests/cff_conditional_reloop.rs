@@ -231,6 +231,25 @@ fn state_held_in_a_global_reloops_under_wasmtime() {
 }
 
 #[test]
+fn state_global_copied_through_local_tee_reloops_under_wasmtime() {
+    assert_fixture_reloops(
+        "cff_global_state.clean.wat",
+        "cff_global_tee_state.obf.wat",
+        "classify_global",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_global_tee_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_global_state.clean.wat");
+    let mutant_bytes: Vec<u8> = assemble_fixture("cff_global_tee_state.mutant.wat");
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_global");
+}
+
+#[test]
 fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
     assert_fixture_reloops(
         "cff_memory_state.clean.wat",

@@ -1401,13 +1401,21 @@ impl<'a> Lifter<'a> {
             return None;
         }
         let cond_expr: Expr = self.operand_expr(jmpz.op1_type, jmpz.op1)?;
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
         let then_last: u32 = target - 1;
         let then_terminator: &Op = self.ops.get(then_last as usize)?;
         if then_terminator.opcode == op::JMP {
             let join: u32 = then_terminator.op1;
             if join > target && join <= end {
+                self.slots = incoming_slots.clone();
                 let then_body: Vec<Stmt> = self.lift_range(i + 1, then_last, depth + 1);
+                let then_slots: BTreeMap<(OperandType, u32), Expr> =
+                    std::mem::take(&mut self.slots);
+                self.slots = incoming_slots;
                 let else_body: Vec<Stmt> = self.lift_range(target, join, depth + 1);
+                let else_slots: BTreeMap<(OperandType, u32), Expr> =
+                    std::mem::take(&mut self.slots);
+                self.slots = Self::common_slots(&then_slots, &else_slots);
                 return Some((
                     vec![Stmt::If {
                         cond: cond_expr.text,
@@ -1418,7 +1426,10 @@ impl<'a> Lifter<'a> {
                 ));
             }
         }
+        self.slots = incoming_slots.clone();
         let then_body: Vec<Stmt> = self.lift_range(i + 1, target, depth + 1);
+        let then_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
+        self.slots = Self::common_slots(&incoming_slots, &then_slots);
         Some((
             vec![Stmt::If {
                 cond: cond_expr.text,
@@ -1427,6 +1438,22 @@ impl<'a> Lifter<'a> {
             }],
             target,
         ))
+    }
+
+    fn common_slots(
+        left: &BTreeMap<(OperandType, u32), Expr>,
+        right: &BTreeMap<(OperandType, u32), Expr>,
+    ) -> BTreeMap<(OperandType, u32), Expr> {
+        left.iter()
+            .filter_map(|(key, left_expr): (&(OperandType, u32), &Expr)| {
+                right
+                    .get(key)
+                    .filter(|right_expr: &&Expr| {
+                        left_expr.text == right_expr.text && left_expr.prec == right_expr.prec
+                    })
+                    .map(|_: &Expr| (*key, left_expr.clone()))
+            })
+            .collect()
     }
 
     fn structure_while(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -1539,10 +1566,7 @@ impl<'a> Lifter<'a> {
         let op: &Op = &op;
         match op.opcode {
             o if o == op::OP_DATA || o == op::GENERATOR_CREATE => None,
-            o if is_binary(o) => {
-                self.fold_binary(op);
-                None
-            }
+            o if is_binary(o) => self.fold_binary(idx, op),
             o if o == op::BOOL || o == op::QM_ASSIGN => {
                 if let Some(v) = self.operand_expr(op.op1_type, op.op1) {
                     self.store_result(op, v);
@@ -1779,14 +1803,35 @@ impl<'a> Lifter<'a> {
                 Some(format!("echo {};", arg.text))
             }
             o if o == op::ASSIGN => {
-                let lhs: Expr = self.operand_expr(op.op1_type, op.op1)?;
-                let rhs: Expr = self
-                    .operand_expr(op.op2_type, op.op2)
-                    .unwrap_or_else(|| Expr::atom("null".to_owned()));
-                if op.result_type != OperandType::Unused {
-                    self.store_result(op, Expr::atom(lhs.text.clone()));
+                if !matches!(
+                    op.result_type,
+                    OperandType::Unused | OperandType::TmpVar | OperandType::Var
+                ) {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
                 }
-                Some(format!("{} = {};", lhs.text, rhs.text))
+                let lhs: Option<Expr> = match op.op1_type {
+                    OperandType::Cv | OperandType::Var => {
+                        self.defined_operand_expr(op.op1_type, op.op1)
+                    }
+                    _ => None,
+                };
+                let Some(lhs): Option<Expr> = lhs else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let Some(rhs): Option<Expr> = self.defined_operand_expr(op.op2_type, op.op2) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                let use_count: u32 = self
+                    .result_use_counts
+                    .get(idx as usize)
+                    .copied()
+                    .unwrap_or(0);
+                if op.result_type == OperandType::Unused || use_count == 0 {
+                    return Some(format!("{} = {};", lhs.text, rhs.text));
+                }
+                let spill_name: String = self.reserve_spill("assign", idx);
+                self.store_result(op, Expr::atom(format!("${spill_name}")));
+                Some(format!("${spill_name} = ({} = {});", lhs.text, rhs.text))
             }
             o if o == op::ASSIGN_DIM => {
                 let target: Expr = self.operand_expr(op.op1_type, op.op1)?;
@@ -1833,19 +1878,29 @@ impl<'a> Lifter<'a> {
                     .map(|value: Expr| format!("return {};", value.text))
             }
             o if o == op::RETURN || o == op::RETURN_BY_REF => {
-                if op.op1_type == OperandType::Unused {
-                    return Some("return;".to_owned());
+                if op.op2_type != OperandType::Unused || op.result_type != OperandType::Unused {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
                 }
-                self.operand_expr(op.op1_type, op.op1).map_or_else(
-                    || Some("return;".to_owned()),
-                    |v: Expr| {
-                        if v.text == "null" || v.text == "1" {
-                            None
-                        } else {
-                            Some(format!("return {};", v.text))
-                        }
-                    },
-                )
+                if op.op1_type == OperandType::Unused {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                }
+                if op.op1_type == OperandType::Const
+                    && matches!(
+                        self.literals.get(op.op1 as usize),
+                        Some(Literal::Null | Literal::Long(1))
+                    )
+                {
+                    if op.extended_value == u32::MAX {
+                        return None;
+                    }
+                    if o == op::RETURN_BY_REF {
+                        return Some(self.refuse(idx, o, REASON_FINAL_RETURN_PROVENANCE));
+                    }
+                }
+                let Some(v): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1) else {
+                    return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
+                };
+                Some(format!("return {};", v.text))
             }
             o if o == op::THROW => {
                 let v: Expr = self
@@ -1899,20 +1954,36 @@ impl<'a> Lifter<'a> {
             .or_else(|| self.literal_string(op.op1_type, op.op1))
     }
 
-    fn fold_binary(&mut self, op: &Op) {
-        let lhs: Option<Expr> = self.operand_expr(op.op1_type, op.op1);
-        let rhs: Option<Expr> = self.operand_expr(op.op2_type, op.op2);
-        if let (Some(l), Some(r)) = (lhs, rhs) {
-            let (sym, prec): (&str, u8) = binary_symbol(op.opcode);
-            let (left_prec, right_prec): (u8, u8) = if is_right_associative(op.opcode) {
-                (prec + 1, prec)
-            } else {
-                (prec, prec + 1)
-            };
-            let text: String =
-                format!("{} {} {}", l.wrapped(left_prec), sym, r.wrapped(right_prec));
-            self.store_result(op, Expr { text, prec });
+    fn fold_binary(&mut self, idx: u32, op: &Op) -> Option<String> {
+        if !matches!(op.result_type, OperandType::TmpVar | OperandType::Var) {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
         }
+        let Some(lhs): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let Some(rhs): Option<Expr> = self.defined_operand_expr(op.op2_type, op.op2) else {
+            return Some(self.refuse(idx, op.opcode, REASON_EXPRESSION_OPERAND));
+        };
+        let (symbol, precedence): (&str, u8) = binary_symbol(op.opcode);
+        let (left_precedence, right_precedence): (u8, u8) = if is_right_associative(op.opcode) {
+            (precedence + 1, precedence)
+        } else {
+            (precedence, precedence + 1)
+        };
+        let text: String = format!(
+            "{} {} {}",
+            lhs.wrapped(left_precedence),
+            symbol,
+            rhs.wrapped(right_precedence)
+        );
+        self.store_result(
+            op,
+            Expr {
+                text,
+                prec: precedence,
+            },
+        );
+        None
     }
 
     fn fold_yield(&mut self, idx: u32, op: &Op) -> Option<String> {
@@ -1941,7 +2012,7 @@ impl<'a> Lifter<'a> {
             return Some(format!("{text};"));
         }
         if use_count > 1 {
-            let spill_name: String = self.reserve_yield_spill(idx);
+            let spill_name: String = self.reserve_spill("yield", idx);
             self.store_result(op, Expr::atom(format!("${spill_name}")));
             return Some(format!("${spill_name} = {text};"));
         }
@@ -1955,8 +2026,8 @@ impl<'a> Lifter<'a> {
         None
     }
 
-    fn reserve_yield_spill(&mut self, idx: u32) -> String {
-        let base: String = format!("_disrobe_yield_{idx}");
+    fn reserve_spill(&mut self, family: &str, idx: u32) -> String {
+        let base: String = format!("_disrobe_{family}_{idx}");
         if self.reserved_names.insert(base.clone()) {
             return base;
         }
@@ -2124,11 +2195,28 @@ impl<'a> Lifter<'a> {
                 .or_else(|| Some(Expr::atom(slot_fallback(ty, value)))),
         }
     }
+
+    fn defined_operand_expr(&self, ty: OperandType, value: u32) -> Option<Expr> {
+        match ty {
+            OperandType::Unused => None,
+            OperandType::Const => self
+                .literals
+                .get(value as usize)
+                .map(Literal::render)
+                .map(Expr::atom),
+            OperandType::Cv => Some(Expr::atom(format!("${}", self.cv(value)))),
+            OperandType::TmpVar | OperandType::Var => self.slots.get(&(ty, value)).cloned(),
+        }
+    }
 }
 
 const REASON_CAST_KIND: &str = "the cast target type is not a php 8 cast";
 const REASON_ISSET_MODE: &str = "the isset or empty mode flag is not a php 8 mode";
 const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
+const REASON_EXPRESSION_OPERAND: &str =
+    "an expression operand has no literal or reaching definition";
+const REASON_FINAL_RETURN_PROVENANCE: &str =
+    "a constant null or 1 return lacks compiler-final provenance";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
 const REASON_DISPATCH: &str = "switch and match dispatch is not reconstructed";
 const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";

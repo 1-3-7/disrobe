@@ -17,7 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
-    OPARRAY_MAGIC, OPARRAY_VERSION, RecoveryReport, RecoveryStage, recover_php,
+    Decompilation, OPARRAY_MAGIC, OPARRAY_VERSION, RecoveryReport, RecoveryStage, recover_php,
 };
 
 fn build_oparray_echo(literal: &str) -> Vec<u8> {
@@ -34,6 +34,104 @@ fn build_oparray_echo(literal: &str) -> Vec<u8> {
     body.extend_from_slice(&2u32.to_le_bytes());
     push_op(&mut body, op::ECHO, 1, 0, 0, 0, 0, 0, 0, 1);
     push_op(&mut body, op::RETURN, 1, 0, 0, 0, 0, 0, 0, 1);
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn build_expression_oparray(missing_definition: bool) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&3u32.to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&7i64.to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&2i64.to_le_bytes());
+    body.push(4);
+    body.extend_from_slice(&7u32.to_le_bytes());
+    body.extend_from_slice(b" apples");
+    body.extend_from_slice(&5u32.to_le_bytes());
+    push_op(&mut body, op::ASSIGN, 8, 1, 0, 0, 0, 0, 0, 1);
+    push_op(
+        &mut body,
+        op::ADD,
+        if missing_definition { 2 } else { 8 },
+        1,
+        2,
+        if missing_definition { 99 } else { 0 },
+        1,
+        5,
+        0,
+        2,
+    );
+    push_op(&mut body, op::CONCAT, 2, 1, 2, 5, 2, 6, 0, 3);
+    push_op(&mut body, op::ASSIGN, 8, 2, 0, 1, 6, 0, 0, 4);
+    push_op(
+        &mut body,
+        op::RETURN,
+        if missing_definition { 2 } else { 8 },
+        0,
+        0,
+        if missing_definition { 77 } else { 1 },
+        0,
+        0,
+        0,
+        5,
+    );
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn build_conditional_definition_oparray() -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&2u32.to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&1i64.to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&2i64.to_le_bytes());
+    body.extend_from_slice(&3u32.to_le_bytes());
+    push_op(&mut body, op::JMPZ, 8, 0, 0, 0, 2, 0, 0, 1);
+    push_op(&mut body, op::ADD, 1, 1, 2, 0, 1, 5, 0, 2);
+    push_op(&mut body, op::RETURN, 2, 0, 0, 5, 0, 0, 0, 3);
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn build_terminal_return_oparray(opcode: u8, extended_value: u32) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&1i64.to_le_bytes());
+    body.extend_from_slice(&1u32.to_le_bytes());
+    push_op(&mut body, opcode, 1, 0, 0, 0, 0, 0, extended_value, 1);
     body.extend_from_slice(&0u32.to_le_bytes());
 
     let mut out: Vec<u8> = Vec::new();
@@ -91,9 +189,138 @@ fn pipeline_decompiles_raw_oparray_container_to_skeleton() {
         "output: {}",
         report.output
     );
-    let decomp = report.decompilation.expect("decompilation present");
+    let decomp: Decompilation = report.decompilation.expect("decompilation present");
     assert_eq!(decomp.op_count, 2);
     assert_eq!(decomp.literal_count, 1);
+}
+
+#[test]
+fn pipeline_reconstructs_assignment_arithmetic_concatenation_and_return() {
+    let bytes: Vec<u8> = build_expression_oparray(false);
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover");
+    assert_eq!(report.stage, RecoveryStage::OpArrayDecompiled);
+    assert!(report.output.contains("$v0 = 7;"), "{}", report.output);
+    assert!(
+        report.output.contains("$v1 = $v0 + 2 . ' apples';"),
+        "{}",
+        report.output
+    );
+    assert!(report.output.contains("return $v1;"), "{}", report.output);
+    let decomp: Decompilation = report.decompilation.expect("decompilation present");
+    assert_eq!(decomp.unrecovered_total, 0);
+}
+
+#[test]
+fn pipeline_refuses_expression_operands_without_reaching_definitions() {
+    let bytes: Vec<u8> = build_expression_oparray(true);
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover");
+    assert_eq!(report.stage, RecoveryStage::OpArrayDecompiled);
+    let decomp: &Decompilation = report
+        .decompilation
+        .as_ref()
+        .expect("decompilation present");
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry| entry.mnemonic == "ZEND_ADD"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry| entry.mnemonic == "ZEND_ASSIGN"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry| entry.mnemonic == "ZEND_RETURN"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        !report.output.contains("$tmp99")
+            && !report.output.contains("$var99")
+            && !report.output.contains("$tmp77"),
+        "{}",
+        report.output
+    );
+}
+
+#[test]
+fn pipeline_refuses_a_definition_that_exists_on_only_one_conditional_path() {
+    let bytes: Vec<u8> = build_conditional_definition_oparray();
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover");
+    assert_eq!(report.stage, RecoveryStage::OpArrayDecompiled);
+    let decomp: &Decompilation = report
+        .decompilation
+        .as_ref()
+        .expect("decompilation present");
+    assert!(
+        decomp
+            .unrecovered
+            .iter()
+            .any(|entry| entry.mnemonic == "ZEND_RETURN"
+                && entry.reason.contains("reaching definition")),
+        "unrecovered: {:?}",
+        decomp.unrecovered
+    );
+    assert!(
+        !report.output.contains("return 1 + 2;"),
+        "{}",
+        report.output
+    );
+}
+
+#[test]
+fn pipeline_uses_return_provenance_instead_of_terminal_position() {
+    let explicit_bytes: Vec<u8> = build_terminal_return_oparray(op::RETURN, 0);
+    let explicit: RecoveryReport = recover_php(&explicit_bytes, None).expect("recover");
+    assert!(explicit.output.contains("return 1;"), "{}", explicit.output);
+    assert_eq!(
+        explicit
+            .decompilation
+            .as_ref()
+            .expect("decompilation present")
+            .unrecovered_total,
+        0
+    );
+
+    let final_bytes: Vec<u8> = build_terminal_return_oparray(op::RETURN, u32::MAX);
+    let final_report: RecoveryReport = recover_php(&final_bytes, None).expect("recover");
+    assert!(
+        !final_report.output.contains("return 1;"),
+        "{}",
+        final_report.output
+    );
+    assert_eq!(
+        final_report
+            .decompilation
+            .as_ref()
+            .expect("decompilation present")
+            .unrecovered_total,
+        0
+    );
+
+    let by_ref_bytes: Vec<u8> = build_terminal_return_oparray(op::RETURN_BY_REF, u32::MAX);
+    let by_ref: RecoveryReport = recover_php(&by_ref_bytes, None).expect("recover");
+    assert!(!by_ref.output.contains("return 1;"), "{}", by_ref.output);
+    assert_eq!(
+        by_ref
+            .decompilation
+            .as_ref()
+            .expect("decompilation present")
+            .unrecovered_total,
+        0
+    );
 }
 
 fn build_oparray_with_unmodelled_opcode(literal: &str) -> Vec<u8> {

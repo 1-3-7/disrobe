@@ -36,7 +36,7 @@ fn registered_pass_recovers_committed_oparray_to_php_source() {
     assert_eq!(output.root_hash, input.root_hash);
     assert_eq!(
         std::str::from_utf8(&output.envelope).expect("recovered source must be UTF-8"),
-        "<?php\necho 'hello from ioncube container';\n"
+        "<?php\necho 'hello from ioncube container';\nreturn 1;\n"
     );
 }
 
