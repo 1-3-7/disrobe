@@ -13,6 +13,8 @@ mod vba_source_grade;
 #[allow(clippy::redundant_pub_crate, dead_code)]
 mod vba_stomp_harness;
 
+use std::fmt::Write as _;
+
 use disrobe_pass_shell::{
     Error, ExtractedModule, ExtractedProject, ModuleStompReport, StompReport, StompVerdict,
     analyze_stomp, extract_from_bytes,
@@ -37,8 +39,6 @@ const SHORT_DECOY: &str = "Attribute VB_Name = \"Module1\"\nSub Harmless()\nEnd 
 const BENIGN_DECOY: &str = "Attribute VB_Name = \"Module1\"\nSub Harmless()\n    Debug.Print \"nothing to see\"\nEnd Sub\n";
 
 fn long_decoy(module: &str, at_least: usize) -> String {
-    use std::fmt::Write as _;
-
     let mut text: String = format!("Attribute VB_Name = \"{module}\"\nSub Harmless()\n");
     let mut filler: usize = 0;
     while text.len() < at_least {
@@ -138,6 +138,46 @@ fn every_stomping_variant_recovers_the_behavior_from_pcode() {
             module.pcode_only_strings
         );
     }
+}
+
+#[test]
+fn a_decoy_that_keeps_the_real_procedure_name_is_still_flagged() {
+    let raw: Vec<u8> = read_corpus("vba/vbaProject.bin");
+    let clean: StompReport = analyze_stomp(&raw).expect("analyze the clean project");
+    let procedures: Vec<String> = module_report(&clean, HELLO_MODULE).pcode_procedures.clone();
+    assert!(
+        !procedures.is_empty(),
+        "the corpus module must declare at least one procedure to impersonate"
+    );
+    let mut decoy: String = format!("Attribute VB_Name = \"{HELLO_MODULE}\"\n");
+    for name in &procedures {
+        write!(
+            decoy,
+            "Sub {name}()\n    MsgBox \"nothing to see\"\nEnd Sub\n"
+        )
+        .expect("write to a String");
+    }
+    let offset: usize = module_text_offset(&raw, HELLO_MODULE);
+    let stomped: Vec<u8> = stomp_with_decoy_source(&raw, HELLO_MODULE, offset, &decoy);
+    let report: StompReport = analyze_stomp(&stomped).expect("analyze the impersonating decoy");
+    let module: &ModuleStompReport = module_report(&report, HELLO_MODULE);
+    assert!(
+        module.pcode_only_procedures.is_empty(),
+        "the decoy keeps every procedure name, so the procedure channel must not be what fires"
+    );
+    assert_eq!(
+        module.verdict,
+        StompVerdict::Stomped,
+        "a decoy that keeps the entry-point name but changes the body must still be flagged; \
+         report={module:?}"
+    );
+    assert!(
+        module
+            .pcode_only_strings
+            .contains(&"hello world".to_owned()),
+        "the behavior the decoy hid must be listed; got {:?}",
+        module.pcode_only_strings
+    );
 }
 
 #[test]

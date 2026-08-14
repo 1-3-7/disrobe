@@ -349,8 +349,9 @@ fn analyze_module(
     let source_has_behavior: bool = !source_facts.procedures.is_empty()
         || !source_facts.calls.is_empty()
         || !source_facts.strings.is_empty();
-    let structural_mismatch: bool =
-        !pcode_only_procedures.is_empty() || !pcode_only_calls.is_empty();
+    let structural_mismatch: bool = !pcode_only_procedures.is_empty()
+        || !pcode_only_calls.is_empty()
+        || !pcode_only_strings.is_empty();
     let source_undecodable: bool = source_module.source_error.is_some();
     let verdict: StompVerdict = if source_undecodable
         || (pcode_has_behavior && (!source_has_behavior || structural_mismatch))
