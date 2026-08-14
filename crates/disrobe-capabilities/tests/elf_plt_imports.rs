@@ -16,6 +16,10 @@ const NIM: &str = "corpus/native/nim/hello.nim.elf";
 const PYARMOR: &str =
     "corpus/python/pyarmor/v9/platform_linux/pyarmor_runtime_000000/pyarmor_runtime.so";
 const FREESTANDING: &str = "corpus/native/discovery/disc.unstripped.elf";
+const AARCH64: &[&str] = &[
+    "corpus/python/pyarmor/v8/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so",
+    "corpus/python/pyarmor/v9/platform_linux_aarch64/pyarmor_runtime_000000/pyarmor_runtime.so",
+];
 const MAX_REFERENCE_LINES: usize = 8192;
 const PLT_ENTRY_SIZE: u64 = 0x10;
 
@@ -235,12 +239,40 @@ fn elf_call_sites_resolve_only_to_reference_symbols() {
             "{name} is not an imported symbol of the fixture, so the call site was misresolved"
         );
     }
+    let sites: usize = scoped
+        .file
+        .hits()
+        .iter()
+        .filter(|hit: &&FeatureHit| matches!(hit.value, FeatureValue::Api(_)))
+        .count();
     let reached: usize = resolved.len();
+    println!(
+        "reached {reached} of {} reference symbols across {sites} resolved call sites",
+        expected.len()
+    );
     assert!(
-        reached >= 100,
+        sites >= reached,
+        "{sites} call sites cannot cover {reached} distinct symbols"
+    );
+    assert!(
+        reached >= 200,
         "{reached} of {} reference symbols were reached from a call site",
         expected.len()
     );
+}
+
+#[test]
+fn an_aarch64_table_yields_no_stub_from_the_x86_64_decoder() {
+    for fixture in AARCH64 {
+        let bytes: Vec<u8> = read_required(fixture);
+        let map: ImportMap = ImportMap::from_bytes(&bytes);
+        assert!(
+            map.is_empty(),
+            "{fixture}: an aarch64 table is not decodable as x86-64, so it must yield no stub, \
+             got {:?}",
+            map.names()
+        );
+    }
 }
 
 #[test]
