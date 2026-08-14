@@ -7,8 +7,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use disrobe_pass_webview::{
-    CarveConfig, CarveReport, Compression, Error, RecoveredAsset, WebviewFamily, carve_report,
-    carve_with_config,
+    CarveConfig, CarveReport, Compression, Error, ExtractionQuota, RecoveredAsset, WebviewFamily,
+    carve_report, carve_with_config,
 };
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1054,6 +1054,117 @@ fn a_mixed_encoding_map_recovers_each_entry_under_its_own_codec() {
             "{}: wrong codec reported for the recovered bytes",
             asset.path
         );
+    }
+}
+
+const CAP_TARGET_KEY: &str = "/assets/large.bin";
+const CAP_TARGET_LEN: usize = 16 * 1024;
+
+fn cap_target_bytes() -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(CAP_TARGET_LEN);
+    let mut state: u32 = 0x9E37_79B9;
+    for _ in 0..CAP_TARGET_LEN {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        out.push((state >> 24) as u8);
+    }
+    out
+}
+
+fn cap_tree() -> Vec<(&'static str, Vec<u8>)> {
+    let mut tree: Vec<(&'static str, Vec<u8>)> = tauri_asset_tree();
+    tree.push((CAP_TARGET_KEY, cap_target_bytes()));
+    tree
+}
+
+fn cap_image(tree: &[(&'static str, Vec<u8>)]) -> Vec<u8> {
+    let encoded: Vec<(&str, Vec<u8>)> = encode_tree(tree, zstd_encode);
+    image_from_entries(&encoded, TAURI_TRAILER)
+}
+
+fn cap_config(max_per_entry_uncompressed: u64) -> CarveConfig {
+    let base: CarveConfig = CarveConfig::default();
+    CarveConfig {
+        quota: ExtractionQuota {
+            max_per_entry_uncompressed,
+            ..base.quota
+        },
+        ..base
+    }
+}
+
+fn assert_only_the_target_can_reach_the_cap(tree: &[(&'static str, Vec<u8>)], cap: u64) {
+    for (name, data) in tree {
+        if *name == CAP_TARGET_KEY {
+            continue;
+        }
+        assert!(
+            (data.len() as u64) < cap,
+            "{name} decodes to {} bytes against a {cap} byte cap, so this grade would be measuring \
+             whichever entry the walk reached first rather than the one it tuned",
+            data.len()
+        );
+    }
+    let compressed: u64 = zstd_encode(&cap_target_bytes()).len() as u64;
+    let ratio_ceiling: u64 =
+        compressed.saturating_mul(CarveConfig::default().quota.max_per_entry_ratio);
+    assert!(
+        ratio_ceiling >= cap,
+        "the expansion-ratio ceiling {ratio_ceiling} is below the {cap} byte cap under test, so \
+         the ratio would decide the outcome and the cap would never be consulted"
+    );
+}
+
+#[test]
+fn an_asset_whose_decoded_size_equals_the_per_entry_cap_is_admitted() {
+    let tree: Vec<(&'static str, Vec<u8>)> = cap_tree();
+    let cap: u64 = CAP_TARGET_LEN as u64;
+    assert_only_the_target_can_reach_the_cap(&tree, cap);
+    let image: Vec<u8> = cap_image(&tree);
+
+    let report: CarveReport = carve_with_config(&image, &cap_config(cap))
+        .expect("an asset whose decoded size equals the cap is inside the budget");
+    let recovered: BTreeMap<String, Vec<u8>> = assets_map(&report);
+    assert_eq!(
+        recovered.get(CAP_TARGET_KEY.trim_start_matches('/')),
+        Some(&cap_target_bytes()),
+        "an asset that lands exactly on the cap must be returned whole, because refusing it would \
+         drop a file the build really ships"
+    );
+    for (name, data) in &tree {
+        let key: String = name.trim_start_matches('/').to_owned();
+        assert_eq!(
+            recovered.get(&key),
+            Some(data),
+            "{key}: tightening the per-entry cap to the size of the largest asset must not cost \
+             any other asset"
+        );
+    }
+}
+
+#[test]
+fn an_asset_one_byte_past_the_per_entry_cap_is_refused_by_the_quota() {
+    let tree: Vec<(&'static str, Vec<u8>)> = cap_tree();
+    let cap: u64 = CAP_TARGET_LEN as u64 - 1;
+    assert_only_the_target_can_reach_the_cap(&tree, cap);
+    let image: Vec<u8> = cap_image(&tree);
+
+    match carve_with_config(&image, &cap_config(cap)) {
+        Err(Error::Quota { entry, reason }) => {
+            assert_eq!(
+                entry,
+                CAP_TARGET_KEY.trim_start_matches('/'),
+                "the refusal must name the asset that exceeded the cap, or an analyst cannot tell \
+                 which file was withheld"
+            );
+            assert!(
+                !reason.is_empty(),
+                "a refusal with no reason tells the caller nothing about which limit fired"
+            );
+        }
+        other => panic!(
+            "an asset one byte past the {cap} byte cap must be a quota outcome rather than \
+             truncated bytes under a codec label, got {other:?}"
+        ),
     }
 }
 

@@ -1,13 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use disrobe_binfmt::{ContainerKind, ExtractedEntry, ExtractionResult, extract_to};
 use disrobe_pass_webview::{
-    CarveReport, Compression, Error, IntegrityStatus, RecoveredAsset, WebviewFamily, carve_report,
+    CarveReport, Compression, Error, FamilyEvidence, IntegrityStatus, RecoveredAsset,
+    WebviewFamily, carve_report, classify, classify_all, detect_family,
 };
+use sha2::{Digest, Sha256};
 
 fn corpus_root() -> PathBuf {
     let mut root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -197,6 +200,366 @@ fn a_truncated_image_yields_a_typed_error_rather_than_a_panic() {
                     && !asset.path.contains(':'),
                 "a mutated image produced the escaping key {}",
                 asset.path
+            );
+        }
+    }
+}
+
+const MANIFEST_NAME: &str = "MANIFEST.toml";
+
+const RECORDED_DIGESTS: [(&str, &str); 3] = [
+    (
+        "tauri/wvfix.exe",
+        "f85e04343ff8c23d3cf2d0ac743e90c6c98185004baacbf6b7ea794612e2c78e",
+    ),
+    (
+        "tauri-v1/wvfix1.exe",
+        "20fdf90304909dcd747112c4cf635d6a3ed858b458d6e6b3a366f7fa803f6829",
+    ),
+    (
+        "wails/wvfix.exe",
+        "02f3910461b9890fca774e07105722637938504e0e3ac2d108a0b17e780ac91f",
+    ),
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FixtureRecord {
+    path: String,
+    family: String,
+    tree: String,
+}
+
+fn manifest_path() -> PathBuf {
+    corpus_root().join(MANIFEST_NAME)
+}
+
+fn manifest_text() -> String {
+    let path: PathBuf = manifest_path();
+    fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing fixture manifest {}: {e}; without it nothing records which family each \
+             committed build was produced as",
+            path.display()
+        )
+    })
+}
+
+fn quoted_value(line: &str, key: &str) -> Option<String> {
+    let after_key: &str = line.strip_prefix(key)?.trim_start();
+    let after_equals: &str = after_key.strip_prefix('=')?.trim();
+    let inner: &str = after_equals.strip_prefix('"')?.strip_suffix('"')?;
+    Some(inner.replace("\\\"", "\""))
+}
+
+fn fixture_blocks(text: &str) -> Vec<Vec<&str>> {
+    let mut blocks: Vec<Vec<&str>> = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    for raw in text.lines() {
+        let line: &str = raw.trim();
+        if line == "[[fixture]]" {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            current = Some(Vec::new());
+            continue;
+        }
+        if line.starts_with('[') {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            continue;
+        }
+        if let Some(block) = current.as_mut() {
+            block.push(line);
+        }
+    }
+    if let Some(block) = current.take() {
+        blocks.push(block);
+    }
+    blocks
+}
+
+fn manifest_fixtures() -> Vec<FixtureRecord> {
+    let text: String = manifest_text();
+    fixture_blocks(&text)
+        .into_iter()
+        .map(|block: Vec<&str>| {
+            let field = |key: &str| -> String {
+                block
+                    .iter()
+                    .find_map(|line: &&str| quoted_value(line, key))
+                    .unwrap_or_default()
+            };
+            FixtureRecord {
+                path: field("path"),
+                family: field("family"),
+                tree: field("tree"),
+            }
+        })
+        .collect()
+}
+
+fn collect_images(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
+    let entries: fs::ReadDir = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("corpus directory {} is unreadable: {e}", dir.display()));
+    for entry in entries {
+        let entry: fs::DirEntry = entry.expect("directory entry");
+        let path: PathBuf = entry.path();
+        if path.is_dir() {
+            collect_images(root, &path, out);
+            continue;
+        }
+        if path
+            .extension()
+            .is_some_and(|ext: &OsStr| ext.eq_ignore_ascii_case("exe"))
+        {
+            out.insert(
+                path.strip_prefix(root)
+                    .expect("child of the corpus root")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+}
+
+fn discovered_images() -> BTreeSet<String> {
+    let root: PathBuf = corpus_root();
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    collect_images(&root, &root, &mut out);
+    out
+}
+
+fn graded_fixtures() -> Vec<FixtureRecord> {
+    let records: Vec<FixtureRecord> = manifest_fixtures();
+    let discovered: BTreeSet<String> = discovered_images();
+    assert!(
+        !discovered.is_empty(),
+        "no application image was found under {}, so every grade that loops over the committed \
+         builds would pass over an empty set",
+        corpus_root().display()
+    );
+    let declared: BTreeSet<String> = records
+        .iter()
+        .map(|record: &FixtureRecord| record.path.clone())
+        .collect();
+    assert_eq!(
+        declared,
+        discovered,
+        "the fixture manifest {} and the committed images disagree, so the manifest no longer \
+         records what the tree holds",
+        manifest_path().display()
+    );
+    assert_eq!(
+        records.len(),
+        declared.len(),
+        "the manifest declares one image twice, which would let a single record stand in for two \
+         builds"
+    );
+    for record in &records {
+        assert!(
+            !record.family.is_empty(),
+            "{}: the manifest records no family, so a detection grade would have nothing to \
+             compare against",
+            record.path
+        );
+        let tree: PathBuf = corpus_root().join(&record.tree);
+        assert!(
+            tree.is_dir(),
+            "{}: the manifest names the source tree {}, which is not a directory",
+            record.path,
+            tree.display()
+        );
+    }
+    records
+}
+
+fn fixture_named(path: &str) -> FixtureRecord {
+    graded_fixtures()
+        .into_iter()
+        .find(|record: &FixtureRecord| record.path == path)
+        .unwrap_or_else(|| {
+            panic!(
+                "the manifest {} declares no fixture `{path}`, so this grade has no reference \
+                 build",
+                manifest_path().display()
+            )
+        })
+}
+
+fn declared_family(record: &FixtureRecord) -> WebviewFamily {
+    match record.family.as_str() {
+        "electron" => WebviewFamily::Electron,
+        "tauri" => WebviewFamily::Tauri,
+        "wails" => WebviewFamily::Wails,
+        other => panic!(
+            "{}: the manifest declares the family `{other}`, which names no family this pass can \
+             report",
+            record.path
+        ),
+    }
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    let mut out: String = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        out.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn assert_named_family(path: &str, markers: &[&'static str]) {
+    let record: FixtureRecord = fixture_named(path);
+    let image: Vec<u8> = read_fixture(&record.path);
+    let want: WebviewFamily = declared_family(&record);
+    let evidence: FamilyEvidence = classify(&image).unwrap_or_else(|| {
+        panic!("{path}: the detection surface named no family at all for a real build of one")
+    });
+    assert_eq!(
+        evidence.family, want,
+        "{path}: the toolchain recorded in the manifest built a {want} application, so detection \
+         must name {want}"
+    );
+    assert_eq!(
+        detect_family(&image),
+        Some(want),
+        "{path}: the family helper must agree with the ranked evidence it reads"
+    );
+    assert_eq!(
+        evidence.markers.as_slice(),
+        markers,
+        "{path}: the marker set is the whole evidence for the family, so a needle that starts \
+         matching a different run of bytes changes what the verdict rests on while leaving the \
+         verdict itself intact"
+    );
+}
+
+#[test]
+fn every_committed_build_matches_its_recorded_digest() {
+    let records: Vec<FixtureRecord> = graded_fixtures();
+    let pinned: BTreeMap<&str, &str> = RECORDED_DIGESTS.iter().copied().collect();
+    assert_eq!(
+        pinned.len(),
+        RECORDED_DIGESTS.len(),
+        "one image is pinned twice, so a second entry silently never runs"
+    );
+    let pinned_paths: BTreeSet<String> = pinned
+        .keys()
+        .map(|path: &&str| (*path).to_owned())
+        .collect();
+    let declared: BTreeSet<String> = records
+        .iter()
+        .map(|record: &FixtureRecord| record.path.clone())
+        .collect();
+    assert_eq!(
+        pinned_paths, declared,
+        "every committed build must carry a recorded digest, because a build that is graded but \
+         never pinned can be replaced without anything noticing"
+    );
+    for record in &records {
+        let bytes: Vec<u8> = read_fixture(&record.path);
+        let want: &str = pinned
+            .get(record.path.as_str())
+            .expect("pinned path set equals the declared path set");
+        assert_eq!(
+            hex_digest(&bytes),
+            *want,
+            "{}: the committed image is not the build these grades were written against, so every \
+             result below describes a different binary",
+            record.path
+        );
+    }
+}
+
+#[test]
+fn a_real_tauri_build_is_named_tauri_by_the_public_detection_surface() {
+    assert_named_family(
+        "tauri/wvfix.exe",
+        &[
+            "tauri-internals",
+            "tauri-localhost",
+            "tauri-scheme",
+            "is-tauri",
+            "wry-webview",
+        ],
+    );
+}
+
+#[test]
+fn a_real_tauri_v1_build_is_named_tauri_by_the_public_detection_surface() {
+    assert_named_family(
+        "tauri-v1/wvfix1.exe",
+        &[
+            "tauri-localhost",
+            "tauri-global",
+            "tauri-scheme",
+            "wry-webview",
+        ],
+    );
+}
+
+#[test]
+fn a_real_wails_build_is_named_wails_by_the_public_detection_surface() {
+    assert_named_family(
+        "wails/wvfix.exe",
+        &[
+            "wails-runtime-route",
+            "wails-invoke",
+            "wails-module-path",
+            "wails-window-runtime",
+        ],
+    );
+}
+
+#[test]
+fn a_real_build_raises_no_evidence_for_a_family_it_is_not() {
+    let records: Vec<FixtureRecord> = graded_fixtures();
+    for record in &records {
+        let image: Vec<u8> = read_fixture(&record.path);
+        let want: WebviewFamily = declared_family(record);
+        let ranked: Vec<FamilyEvidence> = classify_all(&image);
+        let first: &FamilyEvidence = ranked.first().unwrap_or_else(|| {
+            panic!(
+                "{}: a real build of a {want} application produced no evidence at all",
+                record.path
+            )
+        });
+        assert_eq!(
+            first.family, want,
+            "{}: the declared family must rank first, because a caller reads the top entry",
+            record.path
+        );
+        let foreign: Vec<&'static str> = ranked
+            .iter()
+            .filter(|evidence: &&FamilyEvidence| evidence.family != want)
+            .map(|evidence: &FamilyEvidence| evidence.family.label())
+            .collect();
+        assert!(
+            foreign.is_empty(),
+            "{}: a real {want} build raised evidence for {foreign:?} as well, so a needle in \
+             another family's table matches bytes this build really contains",
+            record.path
+        );
+    }
+}
+
+#[test]
+fn no_real_embedded_build_is_mistaken_for_an_archive() {
+    let records: Vec<FixtureRecord> = graded_fixtures();
+    for record in &records {
+        let image: Vec<u8> = read_fixture(&record.path);
+        for evidence in classify_all(&image) {
+            assert!(
+                !evidence.archive_verified,
+                "{}: the archive header scan claimed a parsed archive inside a {} byte image that \
+                 embeds its frontend instead, and a false header sends the carve down the archive \
+                 path",
+                record.path,
+                image.len()
             );
         }
     }

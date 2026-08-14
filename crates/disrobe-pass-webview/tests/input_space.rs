@@ -232,6 +232,50 @@ const ASSET_KINDS: [(&str, Coverage); 6] = [
     ),
 ];
 
+const SIZE_CLASSES: [(&str, Coverage); 3] = [
+    (
+        "one-byte asset",
+        Coverage::GradedBy(
+            "tauri_style_brotli_map_recovers_the_original_tree_without_a_frame_to_detect",
+        ),
+    ),
+    (
+        "asset whose decoded size lands exactly on the per-entry cap",
+        Coverage::GradedBy("an_asset_whose_decoded_size_equals_the_per_entry_cap_is_admitted"),
+    ),
+    (
+        "asset whose decoded size passes the per-entry cap by one byte",
+        Coverage::GradedBy("an_asset_one_byte_past_the_per_entry_cap_is_refused_by_the_quota"),
+    ),
+];
+
+const FAMILY_DETECTION: [(&str, Coverage); 6] = [
+    (
+        "tauri v2 named through the public detection surface rather than through a carve",
+        Coverage::GradedBy("a_real_tauri_build_is_named_tauri_by_the_public_detection_surface"),
+    ),
+    (
+        "tauri v1 named through the public detection surface, whose marker set differs from v2",
+        Coverage::GradedBy("a_real_tauri_v1_build_is_named_tauri_by_the_public_detection_surface"),
+    ),
+    (
+        "wails named through the public detection surface",
+        Coverage::GradedBy("a_real_wails_build_is_named_wails_by_the_public_detection_surface"),
+    ),
+    (
+        "real build of one family raising no evidence for another family",
+        Coverage::GradedBy("a_real_build_raises_no_evidence_for_a_family_it_is_not"),
+    ),
+    (
+        "archive header scan run across a real image that holds no archive",
+        Coverage::GradedBy("no_real_embedded_build_is_mistaken_for_an_archive"),
+    ),
+    (
+        "committed build whose identity is pinned to a recorded digest",
+        Coverage::GradedBy("every_committed_build_matches_its_recorded_digest"),
+    ),
+];
+
 const INTEGRITY: [(&str, Coverage); 3] = [
     (
         "integrity metadata absent",
@@ -295,6 +339,8 @@ fn all_members() -> Vec<(&'static str, Coverage)> {
     members.extend(PACKAGED_FORMS);
     members.extend(ENCODINGS);
     members.extend(ASSET_KINDS);
+    members.extend(SIZE_CLASSES);
+    members.extend(FAMILY_DETECTION);
     members.extend(INTEGRITY);
     members.extend(HOSTILE_SHAPES);
     members
