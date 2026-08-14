@@ -65,14 +65,7 @@ const PLUGIN_INPUT: &str =
 
 const SWEPT_DIRS: [&str; 4] = ["docs/assets", "docs/src/assets", "docs/src/demo", "editors"];
 
-const SWEEP_SKIPPED_DIR_NAMES: [&str; 6] = [
-    ".git",
-    "node_modules",
-    "out",
-    "dist",
-    "target",
-    ".vscode-test",
-];
+const SWEEP_SKIPPED_DIR_NAMES: [&str; 4] = ["node_modules", "out", "dist", "target"];
 
 const GENERATED_ARTIFACTS: [GeneratedArtifact; 25] = [
     GeneratedArtifact {
@@ -375,10 +368,9 @@ fn joined(root: &Path, relative: &str) -> PathBuf {
 
 fn skipped_dir(dirent: &walkdir::DirEntry) -> bool {
     dirent.file_type().is_dir()
-        && dirent
-            .file_name()
-            .to_str()
-            .is_some_and(|name: &str| SWEEP_SKIPPED_DIR_NAMES.contains(&name))
+        && dirent.file_name().to_str().is_some_and(|name: &str| {
+            name.starts_with('.') || SWEEP_SKIPPED_DIR_NAMES.contains(&name)
+        })
 }
 
 fn sweep(root: &Path, dir: &str, faults: &mut Vec<String>) -> Result<()> {

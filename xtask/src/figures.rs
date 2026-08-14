@@ -68,20 +68,16 @@ pub(crate) struct Figure {
     pub(crate) suppressed: bool,
 }
 
-const SKIPPED_DIR_NAMES: [&str; 12] = [
-    ".git",
-    ".claude",
-    ".developer",
+const SKIPPED_DIR_NAMES: [&str; 6] = [
     "target",
     "node_modules",
     "dist",
     "out",
-    ".venv",
     "venv",
-    "__pycache__",
-    ".pytest_cache",
     "site-packages",
 ];
+
+const SCANNED_DOT_DIR_NAMES: [&str; 1] = [".github"];
 
 const EXCLUDED_TREES: [(&str, &str); 4] = [
     (
@@ -579,10 +575,12 @@ fn manifest(root: &Path) -> Result<Vec<PathBuf>> {
 
 fn skipped_dir(dirent: &walkdir::DirEntry) -> bool {
     dirent.file_type().is_dir()
-        && dirent
-            .file_name()
-            .to_str()
-            .is_some_and(|name: &str| SKIPPED_DIR_NAMES.contains(&name))
+        && dirent.file_name().to_str().is_some_and(|name: &str| {
+            !SCANNED_DOT_DIR_NAMES.contains(&name)
+                && (name.starts_with('.')
+                    || name.starts_with("__")
+                    || SKIPPED_DIR_NAMES.contains(&name))
+        })
 }
 
 fn relative_label(root: &Path, path: &Path) -> String {
@@ -839,10 +837,48 @@ mod tests {
     }
 
     #[test]
-    fn an_excluded_tree_still_detects_a_new_figure_in_its_files() {
-        let text: &str = "the page states 42.5% recovery\n";
-        assert_eq!(shapes_of(text), [FigureShape::Percent]);
+    fn an_excluded_tree_is_matched_by_prefix_and_nothing_else() {
         assert!(excluded_tree("docs/errors/DR-CLI-0001.md").is_some());
         assert!(excluded_tree("docs/src/introduction.md").is_none());
+        assert!(excluded_tree("docs/errors-notes.md").is_none());
+    }
+
+    #[test]
+    fn a_figure_added_to_a_file_with_no_budget_entry_is_detected() {
+        let unlisted: FigureBudget = budget_for("docs/src/a-page-nobody-pinned.md");
+        assert_eq!(unlisted.figures, 0);
+        assert_eq!(unlisted.digest, EMPTY_DIGEST);
+        let text: &str = "the new page states 42.5% recovery\n";
+        let figures: Vec<Figure> = detect(text, &[], &[]);
+        let loose: Vec<&str> = figures
+            .iter()
+            .filter(|figure: &&Figure| figure.shape.is_budgeted())
+            .map(|figure: &Figure| text.get(figure.start..figure.end).unwrap_or_default())
+            .collect();
+        assert_eq!(loose, ["42.5%"]);
+        assert_ne!(loose.len(), unlisted.figures);
+        assert_ne!(figure_digest(&loose), unlisted.digest);
+    }
+
+    #[test]
+    fn a_budget_entry_for_a_vanished_file_cannot_be_satisfied_silently() {
+        let paths: Vec<&'static str> = DOCUMENT_FIGURE_BUDGET
+            .iter()
+            .map(|budget: &FigureBudget| budget.path)
+            .collect();
+        let mut sorted: Vec<&'static str> = paths.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            paths.len(),
+            "one path is pinned twice, so one entry would never be reached"
+        );
+        for path in paths {
+            assert!(
+                !path.is_empty() && !path.starts_with('/') && !path.contains('\\'),
+                "{path} must be a repository-relative path with forward slashes"
+            );
+        }
     }
 }
