@@ -2484,6 +2484,8 @@ enum Hazard {
     UnicodeIdentifiers,
     SecondOccurrenceOtherScope,
     Shadowing,
+    ConsumedMatch,
+    StatefulRegexFlags,
 }
 
 const HAZARDS: &[Hazard] = &[
@@ -2493,7 +2495,42 @@ const HAZARDS: &[Hazard] = &[
     Hazard::UnicodeIdentifiers,
     Hazard::SecondOccurrenceOtherScope,
     Hazard::Shadowing,
+    Hazard::ConsumedMatch,
+    Hazard::StatefulRegexFlags,
 ];
+
+#[derive(Debug, Clone, Copy)]
+enum Expectation {
+    Rewritten,
+    Refused {
+        without_escape: &'static str,
+        without_escape_clean: &'static str,
+    },
+}
+
+struct GradingExclusion {
+    subject: &'static str,
+    reason: &'static str,
+}
+
+static HAZARD_EXCLUSIONS: &[GradingExclusion] = &[
+    GradingExclusion {
+        subject: "zero-width match",
+        reason: "no whole-match pattern in the three named families can match zero width because \
+                 every pattern is anchored by literal text, so only a capture group can be empty; \
+                 the empty-capture splice is exercised by the empty if (true) block inside the \
+                 SelfDefendingStrip consumed-match fixture",
+    },
+    GradingExclusion {
+        subject: "capture-group expansion in a replacement string",
+        reason: "the three named families splice through replace_in_scope and their own apply_edits, \
+                 which push the replacement verbatim and never expand a dollar sigil, so this is \
+                 kept as the dollar_sigil_payloads_survive_every_named_family regression guard \
+                 rather than a per-family hazard row",
+    },
+];
+
+const HAZARD_EXCLUSION_COUNT: usize = 2;
 
 const PROXY_STRING_CLEAN: &str = r#"
 function calculate(op, a, b) {
@@ -2615,7 +2652,8 @@ const PROXY_UNICODE_CLEAN: &str = r"
 function calculate(op, a, b) {
   var café = 2;
   var naïve = 3;
-  if (op === 'add') { return a + b + café + naïve; }
+  var d\u00e9lta = 4;
+  if (op === 'add') { return a + b + café + naïve + délta; }
   return a - b;
 }
 console.log(calculate('add', 7, 3));
@@ -2627,7 +2665,8 @@ function calculate(op, a, b) {
   var _0xw1 = { 'poLyL': function (x, y) { return x + y; }, 'FatOg': function (x, y) { return x - y; } };
   var café = 2;
   var naïve = 3;
-  if (op === 'add') { return _0xw1['poLyL'](a, b) + café + naïve; }
+  var d\u00e9lta = 4;
+  if (op === 'add') { return _0xw1['poLyL'](a, b) + café + naïve + délta; }
   return _0xw1['FatOg'](a, b);
 }
 console.log(calculate('add', 7, 3));
@@ -2638,7 +2677,8 @@ const PROXY_UNICODE_WRONG: &str = r"
 function calculate(op, a, b) {
   var café = 2;
   var naïve = 3;
-  if (op === 'add') { return a + b + caf + naïve; }
+  var d\u00e9lta = 4;
+  if (op === 'add') { return a + b + caf + naïve + délta; }
   return a - b;
 }
 console.log(calculate('add', 7, 3));
@@ -2850,10 +2890,11 @@ console.log(compute());
 
 const DISPATCH_UNICODE_CLEAN: &str = r"
 function compute() {
+  var s\u0074ep = 2;
   var acc = 0;
   acc = acc + 5;
   acc = acc * 3;
-  acc = acc * 2;
+  acc = acc * step;
   acc = acc - 1;
   return acc;
 }
@@ -2862,6 +2903,7 @@ console.log(compute());
 
 const DISPATCH_UNICODE_OBF: &str = r"
 function compute() {
+  var s\u0074ep = 2;
   var acc = 0;
   var ordré = '0|1'['split']('|');
   var ptr = 0;
@@ -2877,7 +2919,7 @@ function compute() {
   while (true) {
     switch (ordère[idx++]) {
       case '0': acc = acc - 1; continue;
-      case '1': acc = acc * 2; continue;
+      case '1': acc = acc * step; continue;
     }
     break;
   }
@@ -2888,10 +2930,11 @@ console.log(compute());
 
 const DISPATCH_UNICODE_WRONG: &str = r"
 function compute() {
+  var s\u0074ep = 2;
   var acc = 0;
   acc = acc * 3;
   acc = acc + 5;
-  acc = acc * 2;
+  acc = acc * step;
   acc = acc - 1;
   return acc;
 }
@@ -3110,7 +3153,7 @@ console.log(report());
 
 const GUARD_UNICODE_CLEAN: &str = r"
 function report() {
-  var verzögerung = 4000;
+  var verz\u00f6gerung = 4000;
   var café = 3;
   var total = 0;
   console.log(verzögerung);
@@ -3122,7 +3165,7 @@ console.log(report());
 
 const GUARD_UNICODE_OBF: &str = r"
 function report() {
-  var verzögerung = 4000;
+  var verz\u00f6gerung = 4000;
   var café = 3;
   var total = 0;
   setInterval(function () { debugger; }, verzögerung);
@@ -3135,7 +3178,7 @@ console.log(report());
 
 const GUARD_UNICODE_WRONG: &str = r"
 function report() {
-  var verzögerung = 4000;
+  var verz\u00f6gerung = 4000;
   var café = 3;
   var total = 0;
   console.log(verzögerung);
@@ -3234,6 +3277,297 @@ console.log(report());
 console.log(local());
 ";
 
+const PROXY_CONSUMED_CLEAN: &str = r"
+function through(table, a, b) {
+  return table['poLyL'](a, b);
+}
+function calculate(a, b) {
+  var helpers = { 'poLyL': function (x, y) { return x + y; } };
+  return through(helpers, a, b);
+}
+console.log(calculate(7, 3));
+";
+
+const PROXY_CONSUMED_OBF: &str = r"
+function through(table, a, b) {
+  return table['poLyL'](a, b);
+}
+function calculate(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  return through(_0xw1, a, b);
+}
+console.log(calculate(7, 3));
+";
+
+const PROXY_CONSUMED_WRONG: &str = r"
+function through(table, a, b) {
+  return table['poLyL'](a, b);
+}
+function calculate(a, b) {
+  return through(_0xw1, a, b);
+}
+console.log(calculate(7, 3));
+";
+
+const PROXY_CONSUMED_WITHOUT_ESCAPE: &str = r"
+function through(table, a, b) {
+  return table['poLyL'](a, b);
+}
+function calculate(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  return _0xw1['poLyL'](a, b);
+}
+console.log(calculate(7, 3));
+";
+
+const PROXY_CONSUMED_WITHOUT_ESCAPE_CLEAN: &str = r"
+function through(table, a, b) {
+  return table['poLyL'](a, b);
+}
+function calculate(a, b) {
+  return a + b;
+}
+console.log(calculate(7, 3));
+";
+
+const DISPATCH_CONSUMED_CLEAN: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc + 2 + 3;
+}
+console.log(compute());
+";
+
+const DISPATCH_CONSUMED_OBF: &str = r"
+function compute() {
+  var acc = 0;
+  var order = '0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  return acc + order.length + ptr;
+}
+console.log(compute());
+";
+
+const DISPATCH_CONSUMED_WRONG: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc + order.length + ptr;
+}
+console.log(compute());
+";
+
+const DISPATCH_CONSUMED_WITHOUT_ESCAPE: &str = r"
+function compute() {
+  var acc = 0;
+  var order = '0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc + 5; continue;
+      case '1': acc = acc * 3; continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute());
+";
+
+const DISPATCH_CONSUMED_WITHOUT_ESCAPE_CLEAN: &str = r"
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+console.log(compute());
+";
+
+const GUARD_CONSUMED_CLEAN: &str = r"
+function report() {
+  var handle = setInterval(function () { debugger; }, 4000);
+  return handle + 10;
+}
+console.log(report());
+";
+
+const GUARD_CONSUMED_OBF: &str = r"
+function report() {
+  if (true) { }
+  var handle = setInterval(function () { debugger; }, 4000);
+  return handle + 10;
+}
+console.log(report());
+";
+
+const GUARD_CONSUMED_WRONG: &str = r"
+function report() {
+  return handle + 10;
+}
+console.log(report());
+";
+
+const GUARD_CONSUMED_WITHOUT_ESCAPE: &str = r"
+function report() {
+  if (true) { }
+  setInterval(function () { debugger; }, 4000);
+  return 10;
+}
+console.log(report());
+";
+
+const GUARD_CONSUMED_WITHOUT_ESCAPE_CLEAN: &str = r"
+function report() {
+  return 10;
+}
+console.log(report());
+";
+
+const PROXY_STATEFUL_CLEAN: &str = r"
+var scanner = /a/g;
+var sticky = /an/y;
+function step(text) {
+  var hit = scanner.exec(text) ? scanner.lastIndex : 0;
+  sticky.lastIndex = 1;
+  var anchored = sticky.test(text) ? 1 : 0;
+  var scaled = hit * 10;
+  return scaled + anchored;
+}
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(scanner.lastIndex);
+";
+
+const PROXY_STATEFUL_OBF: &str = r"
+var scanner = /a/g;
+var sticky = /an/y;
+function step(text) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x * y; }, 'FatOg': function (x, y) { return x + y; } };
+  var hit = scanner.exec(text) ? scanner.lastIndex : 0;
+  sticky.lastIndex = 1;
+  var anchored = sticky.test(text) ? 1 : 0;
+  var scaled = _0xw1['poLyL'](hit, 10);
+  return _0xw1['FatOg'](scaled, anchored);
+}
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(scanner.lastIndex);
+";
+
+const PROXY_STATEFUL_WRONG: &str = r"
+var scanner = /a/g;
+var sticky = /an/y;
+function step(text) {
+  var hit = scanner.exec(text) ? scanner.lastIndex : 0;
+  sticky.lastIndex = 1;
+  var anchored = sticky.test(text) ? 1 : 0;
+  var scaled = (scanner.exec(text) ? scanner.lastIndex : 0) * 10;
+  return scaled + anchored;
+}
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(step('banana'));
+console.log(scanner.lastIndex);
+";
+
+const DISPATCH_STATEFUL_CLEAN: &str = r"
+var scanner = /a/g;
+function compute(text) {
+  var acc = 0;
+  acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0);
+  acc = acc * 3;
+  acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0);
+  return acc;
+}
+console.log(compute('banana'));
+console.log(scanner.lastIndex);
+";
+
+const DISPATCH_STATEFUL_OBF: &str = r"
+var scanner = /a/g;
+function compute(text) {
+  var acc = 0;
+  var order = '2|0|1'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc * 3; continue;
+      case '1': acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0); continue;
+      case '2': acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0); continue;
+    }
+    break;
+  }
+  return acc;
+}
+console.log(compute('banana'));
+console.log(scanner.lastIndex);
+";
+
+const DISPATCH_STATEFUL_WRONG: &str = r"
+var scanner = /a/g;
+function compute(text) {
+  var acc = 0;
+  acc = acc * 3;
+  acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0);
+  acc = acc + (scanner.exec(text) ? scanner.lastIndex : 0);
+  return acc;
+}
+console.log(compute('banana'));
+console.log(scanner.lastIndex);
+";
+
+const GUARD_STATEFUL_CLEAN: &str = r"
+var scanner = /a/g;
+function report(text) {
+  var total = 0;
+  total = total + (scanner.exec(text) ? scanner.lastIndex : 0);
+  total = total + (scanner.exec(text) ? scanner.lastIndex : 0);
+  return total;
+}
+console.log(report('banana'));
+console.log(scanner.lastIndex);
+";
+
+const GUARD_STATEFUL_OBF: &str = r"
+var scanner = /a/g;
+function report(text) {
+  var total = 0;
+  total = total + (scanner.exec(text) ? scanner.lastIndex : 0);
+  setInterval(function () { debugger; }, 4000);
+  total = total + (scanner.exec(text) ? scanner.lastIndex : 0);
+  return total;
+}
+console.log(report('banana'));
+console.log(scanner.lastIndex);
+";
+
+const GUARD_STATEFUL_WRONG: &str = r"
+var scanner = /a/g;
+function report(text) {
+  var total = 0;
+  total = total + (scanner.exec(text) ? scanner.lastIndex : 0);
+  return total;
+}
+console.log(report('banana'));
+console.log(scanner.lastIndex);
+";
+
 struct HazardCase {
     family: RewriterFamily,
     hazard: Hazard,
@@ -3243,6 +3577,7 @@ struct HazardCase {
     trace_marker: Option<&'static str>,
     probe: ActivityProbe,
     obfuscation_is_trace_neutral: bool,
+    expectation: Expectation,
 }
 
 const PROXY_PROBE: ActivityProbe =
@@ -3261,6 +3596,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("doc: _0xw1['poLyL'](1, 2)"),
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ProxyObjectInlining,
@@ -3271,6 +3607,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("tpl: _0xw1['poLyL'](1, 2)"),
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ProxyObjectInlining,
@@ -3281,6 +3618,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ProxyObjectInlining,
@@ -3291,6 +3629,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ProxyObjectInlining,
@@ -3301,6 +3640,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ProxyObjectInlining,
@@ -3311,6 +3651,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: PROXY_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3321,6 +3662,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("legacy: var order = '0|1'['split']('|'); var ptr = 0;"),
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3331,6 +3673,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("tpl: var order = '0|1'['split']('|'); var ptr = 0;"),
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3341,6 +3684,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3351,6 +3695,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3361,6 +3706,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::ControlFlowFlattening,
@@ -3371,6 +3717,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("outer"),
         probe: DISPATCH_PROBE,
         obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3381,6 +3728,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("guard: setInterval(function () { debugger; }, 4000);"),
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3391,6 +3739,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: Some("tpl: setInterval(function () { debugger; }, 4000);"),
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3401,6 +3750,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3411,6 +3761,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3421,6 +3772,7 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
     HazardCase {
         family: RewriterFamily::SelfDefendingStrip,
@@ -3431,10 +3783,86 @@ static HAZARD_CASES: &[HazardCase] = &[
         trace_marker: None,
         probe: GUARD_PROBE,
         obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::ConsumedMatch,
+        clean: PROXY_CONSUMED_CLEAN,
+        obfuscated: PROXY_CONSUMED_OBF,
+        wrong_rewrite: PROXY_CONSUMED_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Refused {
+            without_escape: PROXY_CONSUMED_WITHOUT_ESCAPE,
+            without_escape_clean: PROXY_CONSUMED_WITHOUT_ESCAPE_CLEAN,
+        },
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::ConsumedMatch,
+        clean: DISPATCH_CONSUMED_CLEAN,
+        obfuscated: DISPATCH_CONSUMED_OBF,
+        wrong_rewrite: DISPATCH_CONSUMED_WRONG,
+        trace_marker: None,
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Refused {
+            without_escape: DISPATCH_CONSUMED_WITHOUT_ESCAPE,
+            without_escape_clean: DISPATCH_CONSUMED_WITHOUT_ESCAPE_CLEAN,
+        },
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::ConsumedMatch,
+        clean: GUARD_CONSUMED_CLEAN,
+        obfuscated: GUARD_CONSUMED_OBF,
+        wrong_rewrite: GUARD_CONSUMED_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Refused {
+            without_escape: GUARD_CONSUMED_WITHOUT_ESCAPE,
+            without_escape_clean: GUARD_CONSUMED_WITHOUT_ESCAPE_CLEAN,
+        },
+    },
+    HazardCase {
+        family: RewriterFamily::ProxyObjectInlining,
+        hazard: Hazard::StatefulRegexFlags,
+        clean: PROXY_STATEFUL_CLEAN,
+        obfuscated: PROXY_STATEFUL_OBF,
+        wrong_rewrite: PROXY_STATEFUL_WRONG,
+        trace_marker: None,
+        probe: PROXY_PROBE,
+        obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
+    },
+    HazardCase {
+        family: RewriterFamily::ControlFlowFlattening,
+        hazard: Hazard::StatefulRegexFlags,
+        clean: DISPATCH_STATEFUL_CLEAN,
+        obfuscated: DISPATCH_STATEFUL_OBF,
+        wrong_rewrite: DISPATCH_STATEFUL_WRONG,
+        trace_marker: None,
+        probe: DISPATCH_PROBE,
+        obfuscation_is_trace_neutral: true,
+        expectation: Expectation::Rewritten,
+    },
+    HazardCase {
+        family: RewriterFamily::SelfDefendingStrip,
+        hazard: Hazard::StatefulRegexFlags,
+        clean: GUARD_STATEFUL_CLEAN,
+        obfuscated: GUARD_STATEFUL_OBF,
+        wrong_rewrite: GUARD_STATEFUL_WRONG,
+        trace_marker: None,
+        probe: GUARD_PROBE,
+        obfuscation_is_trace_neutral: false,
+        expectation: Expectation::Rewritten,
     },
 ];
 
-const HAZARD_CASE_COUNT: usize = 18;
+const HAZARD_CASE_COUNT: usize = 24;
 
 fn trace_mentions(outcome: &EvalOutcome, needle: &str) -> bool {
     outcome.trace.iter().any(|event: &TraceEvent| {
@@ -3479,6 +3907,50 @@ fn hazard_roster_covers_every_named_family_and_edge_case() {
             );
         }
     }
+    for family in NAMED_FAMILIES {
+        let refusals: usize = HAZARD_CASES
+            .iter()
+            .filter(|case: &&HazardCase| {
+                case.family == *family && matches!(case.expectation, Expectation::Refused { .. })
+            })
+            .count();
+        assert!(
+            refusals > 0,
+            "{family:?} has no case where the rewrite must be refused, so a rewriter that never declines grades green"
+        );
+    }
+}
+
+#[test]
+fn hazard_exclusions_are_recorded_with_a_reason() {
+    assert_eq!(
+        HAZARD_EXCLUSIONS.len(),
+        HAZARD_EXCLUSION_COUNT,
+        "the exclusion roster is pinned by equality so a silently added exclusion fails the gate"
+    );
+    let graded: BTreeSet<String> = HAZARDS
+        .iter()
+        .map(|hazard: &Hazard| format!("{hazard:?}"))
+        .collect();
+    let mut subjects: BTreeSet<&'static str> = BTreeSet::new();
+    for exclusion in HAZARD_EXCLUSIONS {
+        assert!(
+            subjects.insert(exclusion.subject),
+            "{} appears twice in the exclusion roster",
+            exclusion.subject
+        );
+        assert!(
+            !exclusion.reason.is_empty(),
+            "{} is excluded without a reason",
+            exclusion.subject
+        );
+        assert!(
+            !graded.contains(exclusion.subject),
+            "{} is recorded as excluded while it is also a graded hazard",
+            exclusion.subject
+        );
+        eprintln!("  excluded {}: {}", exclusion.subject, exclusion.reason);
+    }
 }
 
 #[test]
@@ -3516,11 +3988,43 @@ fn text_rewrite_hazards_preserve_behavior_in_each_named_family() {
             .unwrap_or_else(|reason: String| panic!("{label}: recovery failed: {reason}"));
         aggregate.merge(&recovery.activity);
         let fired: u64 = (case.probe)(&recovery.activity);
-        assert!(
-            fired > 0,
-            "{label}: the hazard fixture no longer exercises its family, so it grades nothing; recovered source:\n{}",
-            recovery.source
-        );
+        match case.expectation {
+            Expectation::Rewritten => assert!(
+                fired > 0,
+                "{label}: the hazard fixture no longer exercises its family, so it grades nothing; recovered source:\n{}",
+                recovery.source
+            ),
+            Expectation::Refused {
+                without_escape,
+                without_escape_clean,
+            } => {
+                assert_eq!(
+                    fired, 0,
+                    "{label}: the rewrite must be refused because the match escapes its span; recovered source:\n{}",
+                    recovery.source
+                );
+                let reachable: Recovery = recover_with(Pipeline::ObfuscatorIo, without_escape)
+                    .unwrap_or_else(|reason: String| {
+                        panic!("{label}: reachability variant failed: {reason}")
+                    });
+                aggregate.merge(&reachable.activity);
+                let reachable_fired: u64 = (case.probe)(&reachable.activity);
+                assert!(
+                    reachable_fired > 0,
+                    "{label}: the same fixture without the escape does not fire either, so the refusal proves nothing; recovered source:\n{}",
+                    reachable.source
+                );
+                let reachable_want: EvalOutcome =
+                    single_outcome(without_escape_clean, &format!("{label} reachable clean"));
+                let reachable_got: EvalOutcome =
+                    single_outcome(&reachable.source, &format!("{label} reachable recovered"));
+                assert_eq!(
+                    reachable_want, reachable_got,
+                    "{label}: the reachability variant diverged from its clean original once the family fired\n--recovered src--\n{}",
+                    reachable.source
+                );
+            }
+        }
         let got: EvalOutcome = single_outcome(&recovery.source, &format!("{label} recovered"));
         assert_eq!(
             want, got,
@@ -3543,8 +4047,12 @@ fn text_rewrite_hazards_preserve_behavior_in_each_named_family() {
             );
         }
         graded += 1;
+        let verdict: &str = match case.expectation {
+            Expectation::Rewritten => "rewritten",
+            Expectation::Refused { .. } => "refused",
+        };
         eprintln!(
-            "  {label}: behavior preserved, probe fired {fired} time(s), wrong rewrite rejected"
+            "  {label}: behavior preserved, {verdict}, probe fired {fired} time(s), wrong rewrite rejected"
         );
     }
     assert_eq!(
@@ -3554,6 +4062,95 @@ fn text_rewrite_hazards_preserve_behavior_in_each_named_family() {
     eprintln!(
         "text-rewrite hazard differential: {graded} of {HAZARD_CASE_COUNT} cases graded, families exercised {:?}",
         aggregate.families()
+    );
+}
+
+const DOLLAR_SIGIL_CLEAN: &str = r#"
+function calculate(a, b) {
+  return a + b;
+}
+function compute() {
+  var acc = 0;
+  acc = acc + 5;
+  acc = acc * 3;
+  return acc;
+}
+function report() {
+  var total = 0;
+  total = total + 11;
+  return total;
+}
+console.log("sigils: $& $1 $$ $0");
+console.log("ab".replace(/(a)(b)/, "[$2$1$$]"));
+console.log(calculate(7, 3));
+console.log(compute());
+console.log(report());
+"#;
+
+const DOLLAR_SIGIL_OBF: &str = r#"
+function calculate(a, b) {
+  var _0xw1 = { 'poLyL': function (x, y) { return x + y; } };
+  return _0xw1['poLyL'](a, b);
+}
+function compute() {
+  var acc = 0;
+  var order = '1|0'['split']('|');
+  var ptr = 0;
+  while (true) {
+    switch (order[ptr++]) {
+      case '0': acc = acc * 3; continue;
+      case '1': acc = acc + 5; continue;
+    }
+    break;
+  }
+  return acc;
+}
+function report() {
+  var total = 0;
+  setInterval(function () { debugger; }, 4000);
+  total = total + 11;
+  return total;
+}
+console.log("sigils: $& $1 $$ $0");
+console.log("ab".replace(/(a)(b)/, "[$2$1$$]"));
+console.log(calculate(7, 3));
+console.log(compute());
+console.log(report());
+"#;
+
+const DOLLAR_SIGIL_MARKERS: &[&str] = &["sigils: $& $1 $$ $0", "[ba$]"];
+
+#[test]
+fn dollar_sigil_payloads_survive_every_named_family() {
+    let want: EvalOutcome = single_outcome(DOLLAR_SIGIL_CLEAN, "dollar sigil clean");
+    assert!(
+        matches!(want.terminal, Terminal::Completed(_)),
+        "the dollar-sigil reference must run to completion; got {want:?}"
+    );
+    for marker in DOLLAR_SIGIL_MARKERS {
+        assert!(
+            trace_mentions(&want, marker),
+            "the dollar-sigil reference must observe {marker:?}, otherwise a corrupted payload is invisible"
+        );
+    }
+    let recovery: Recovery = recover_with(Pipeline::ObfuscatorIo, DOLLAR_SIGIL_OBF)
+        .unwrap_or_else(|reason: String| panic!("dollar sigil recovery failed: {reason}"));
+    for (family, probe) in [
+        (RewriterFamily::ProxyObjectInlining, PROXY_PROBE),
+        (RewriterFamily::ControlFlowFlattening, DISPATCH_PROBE),
+        (RewriterFamily::SelfDefendingStrip, GUARD_PROBE),
+    ] {
+        assert!(
+            probe(&recovery.activity) > 0,
+            "{family:?} never fired on the dollar-sigil fixture, so the payload is unrewritten and grades nothing; recovered source:\n{}",
+            recovery.source
+        );
+    }
+    let got: EvalOutcome = single_outcome(&recovery.source, "dollar sigil recovered");
+    assert_eq!(
+        want, got,
+        "a dollar sigil in the payload changed observable behavior across the named families\n--recovered src--\n{}",
+        recovery.source
     );
 }
 

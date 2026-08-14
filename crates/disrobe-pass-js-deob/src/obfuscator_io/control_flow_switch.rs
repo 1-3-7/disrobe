@@ -68,9 +68,15 @@ pub(super) fn unflatten_control_flow_switch(source: &str) -> ControlFlowSwitchRe
         if !ok {
             continue;
         }
-        let _ = iter_name;
+        let span: Range<usize> = block_start..loop_end;
+        let scope: Range<usize> = enclosing_function_body(source, &skips, block_start);
+        if identifier_escapes(source, &skips, seq_name, &scope, &span)
+            || identifier_escapes(source, &skips, &iter_name, &scope, &span)
+        {
+            continue;
+        }
         let replacement: String = ordered.join("\n");
-        edits.push((block_start..loop_end, Some(replacement)));
+        edits.push((span, Some(replacement)));
         count += 1;
     }
 
@@ -89,6 +95,140 @@ fn passthrough(source: &str) -> ControlFlowSwitchResult {
         switches_unflattened: 0,
         rewritten_source: source.to_owned(),
     }
+}
+
+const fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || byte >= 0x80
+}
+
+const fn trim_whitespace_back(bytes: &[u8], end: usize) -> usize {
+    let mut index: usize = end;
+    while index > 0 && matches!(bytes[index - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        index -= 1;
+    }
+    index
+}
+
+const fn trim_identifier_back(bytes: &[u8], end: usize) -> usize {
+    let mut index: usize = end;
+    while index > 0 && is_identifier_byte(bytes[index - 1]) {
+        index -= 1;
+    }
+    index
+}
+
+const fn find_paren_open(bytes: &[u8], close: usize) -> Option<usize> {
+    if close >= bytes.len() {
+        return None;
+    }
+    let mut depth: i32 = 0;
+    let mut index: usize = close;
+    loop {
+        match bytes[index] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        if index == 0 {
+            return None;
+        }
+        index -= 1;
+    }
+}
+
+fn opens_function_body(source: &str, open: usize) -> bool {
+    let bytes: &[u8] = source.as_bytes();
+    let before_brace: usize = trim_whitespace_back(bytes, open);
+    if before_brace >= 2 && bytes[before_brace - 1] == b'>' && bytes[before_brace - 2] == b'=' {
+        return true;
+    }
+    if before_brace == 0 || bytes[before_brace - 1] != b')' {
+        return false;
+    }
+    let Some(paren_open): Option<usize> = find_paren_open(bytes, before_brace - 1) else {
+        return false;
+    };
+    let after_name: usize = trim_whitespace_back(bytes, paren_open);
+    let before_name: usize = trim_identifier_back(bytes, after_name);
+    let mut keyword_end: usize = trim_whitespace_back(bytes, before_name);
+    if keyword_end > 0 && bytes[keyword_end - 1] == b'*' {
+        keyword_end = trim_whitespace_back(bytes, keyword_end - 1);
+    }
+    let head: &str = &source[..keyword_end];
+    if !head.ends_with("function") {
+        return false;
+    }
+    let keyword_start: usize = keyword_end - "function".len();
+    keyword_start == 0 || !is_identifier_byte(bytes[keyword_start - 1])
+}
+
+fn enclosing_function_body(source: &str, skips: &[Range<usize>], position: usize) -> Range<usize> {
+    let bytes: &[u8] = source.as_bytes();
+    let mut open_stack: Vec<usize> = Vec::new();
+    let mut skip_cursor: usize = 0;
+    let mut index: usize = 0;
+    while index < position && index < bytes.len() {
+        while skips
+            .get(skip_cursor)
+            .is_some_and(|range: &Range<usize>| range.end <= index)
+        {
+            skip_cursor += 1;
+        }
+        if let Some(range) = skips.get(skip_cursor)
+            && range.start <= index
+            && index < range.end
+        {
+            index = range.end;
+            continue;
+        }
+        match bytes[index] {
+            b'{' => open_stack.push(index),
+            b'}' => {
+                open_stack.pop();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    while let Some(open) = open_stack.pop() {
+        if !opens_function_body(source, open) {
+            continue;
+        }
+        let Some(close): Option<usize> = find_brace_close(bytes, open + 1) else {
+            continue;
+        };
+        let body_end: usize = close.saturating_add(1);
+        return open..body_end;
+    }
+    0..source.len()
+}
+
+fn identifier_escapes(
+    source: &str,
+    skips: &[Range<usize>],
+    name: &str,
+    scope: &Range<usize>,
+    span: &Range<usize>,
+) -> bool {
+    let bytes: &[u8] = source.as_bytes();
+    source
+        .match_indices(name)
+        .any(|(start, matched): (usize, &str)| {
+            let end: usize = start + matched.len();
+            if start < scope.start || end > scope.end || span.contains(&start) {
+                return false;
+            }
+            let attached_before: bool = start > 0 && is_identifier_byte(bytes[start - 1]);
+            let attached_after: bool = bytes
+                .get(end)
+                .is_some_and(|byte: &u8| is_identifier_byte(*byte));
+            !attached_before && !attached_after && span_is_code(skips, start, end)
+        })
 }
 
 fn locate_switch(source: &str, seq_name: &str, after_seq: usize) -> Option<(String, usize, usize)> {
@@ -247,6 +387,22 @@ mod tests {
         let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
         assert_eq!(r.switches_unflattened, 0);
         assert_eq!(r.rewritten_source, src);
+    }
+
+    #[test]
+    fn a_dispatcher_whose_sequence_is_read_after_the_loop_is_left_alone() {
+        let src: &str = "function f(){var acc=0;const _s='0|1'['split']('|');let _i=0;while(!![]){switch(_s[_i++]){case '0':acc=acc+5;continue;case '1':acc=acc*3;continue;}break;}return acc+_s.length+_i;}";
+        let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
+        assert_eq!(r.switches_unflattened, 0);
+        assert_eq!(r.rewritten_source, src);
+    }
+
+    #[test]
+    fn the_same_dispatcher_names_in_a_sibling_function_still_unflatten() {
+        let src: &str = "function f(){var acc=1;const _s='0|1'['split']('|');let _i=0;while(!![]){switch(_s[_i++]){case '0':acc=acc+5;continue;case '1':acc=acc*3;continue;}break;}return acc;}\nfunction g(){var acc=1;const _s='1|0'['split']('|');let _i=0;while(!![]){switch(_s[_i++]){case '0':acc=acc+5;continue;case '1':acc=acc*3;continue;}break;}return acc;}";
+        let r: ControlFlowSwitchResult = unflatten_control_flow_switch(src);
+        assert_eq!(r.switches_unflattened, 2);
+        assert!(!r.rewritten_source.contains("switch"));
     }
 
     #[test]
