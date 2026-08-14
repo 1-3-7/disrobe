@@ -189,6 +189,42 @@ fn clang_select_transition_reloops_through_the_public_recovery_api() {
 }
 
 #[test]
+fn arithmetic_select_successors_reloop_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let obf_bytes: Vec<u8> = computed_select_state_variant(false);
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_local",
+        "computed select successors",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_arithmetic_select_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let mutant_bytes: Vec<u8> = computed_select_state_variant(true);
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_local");
+}
+
+#[test]
+fn effectful_select_successor_expression_remains_walled() {
+    let mut source: String = computed_select_state_source(
+        "call 1",
+        "i32.const 1\n              i32.const 1\n              i32.add",
+    );
+    let module_end: usize = source.rfind(')').expect("module terminator");
+    source.insert_str(module_end, "  (func (result i32) i32.const 1)\n");
+    let bytes: Vec<u8> = wat::parse_str(&source).expect("assemble effectful select state");
+    let recovered: RecoveredModule = recover_module(&bytes).expect("recover effectful select");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+}
+
+#[test]
 fn runtime_differential_rejects_swapped_select_successors() {
     let clean_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.clean.wasm");
     let mutant_bytes: &[u8] = include_bytes!("fixtures/cff_cond_select.mutant.wasm");
@@ -219,6 +255,239 @@ fn state_held_in_a_local_reloops_under_wasmtime() {
         "cff_local_state.obf.wat",
         "classify_local",
     );
+}
+
+#[test]
+fn constant_arithmetic_state_updates_reloop_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let obf_bytes: Vec<u8> = assemble_fixture("cff_computed_state.obf.wat");
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_local",
+        "cff_computed_state.obf.wat",
+    );
+
+    let recovered: RecoveredModule = recover_module(&obf_bytes).expect("recover computed state");
+    assert!(!contains_computed_state_binop(&recovered.bytes));
+}
+
+#[test]
+fn wrapping_and_masked_shift_state_updates_reloop_under_wasmtime() {
+    let overflow: Vec<u8> = computed_state_variant(
+        "i32.const 2147483647\n            i32.const 1\n            i32.add\n            i32.const -2147483645\n            i32.add",
+    );
+    let shifted: Vec<u8> = computed_state_variant(
+        "i32.const 1\n            i32.const 33\n            i32.shl\n            i32.const 1\n            i32.or",
+    );
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    assert_reloops_to_clean_behavior(&clean_bytes, &overflow, "classify_local", "wrapping state");
+    assert_reloops_to_clean_behavior(&clean_bytes, &shifted, "classify_local", "shifted state");
+}
+
+#[test]
+fn observed_entry_state_write_is_preserved_when_relooping() {
+    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let original: &str = "i32.const 5\n    i32.const 5\n    i32.xor\n    local.set 2";
+    let replacement: &str = concat!(
+        "i32.const 5\n    i32.const 5\n    i32.xor\n    local.set 2\n    ",
+        "local.get 2\n    drop"
+    );
+    let variant: String = source.replacen(original, replacement, 1);
+    assert_ne!(variant, source, "entry-state read must be inserted");
+    let obf_bytes: Vec<u8> = wat::parse_str(&variant).expect("assemble observed entry state");
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_local",
+        "observed entry state",
+    );
+    let recovered: RecoveredModule = recover_module(&obf_bytes).expect("recover observed entry");
+    assert!(contains_computed_state_binop(&recovered.bytes));
+}
+
+#[test]
+fn guarded_arithmetic_state_updates_reloop_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let obf_bytes: Vec<u8> = computed_guard_state_variant(false);
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_local",
+        "computed guarded states",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_guarded_arithmetic_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let mutant_bytes: Vec<u8> = computed_guard_state_variant(true);
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_local");
+}
+
+#[test]
+fn effectful_guarded_state_expression_remains_walled() {
+    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let mut variant: String = source.replacen(
+        "i32.const 1\n                  local.set 2",
+        "call 1\n                  local.set 2",
+        1,
+    );
+    assert_ne!(variant, source, "guarded state expression must be replaced");
+    let module_end: usize = variant.rfind(')').expect("module terminator");
+    variant.insert_str(module_end, "  (func (result i32) i32.const 1)\n");
+    let bytes: Vec<u8> = wat::parse_str(&variant).expect("assemble effectful guarded state");
+    let recovered: RecoveredModule = recover_module(&bytes).expect("recover effectful guard");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+}
+
+#[test]
+fn unsafe_or_oversized_state_expressions_remain_walled() {
+    let input_dependent: Vec<u8> =
+        computed_state_variant("local.get 0\n            i32.const 0\n            i32.add");
+    let trapping: Vec<u8> =
+        computed_state_variant("i32.const 1\n            i32.const 0\n            i32.div_s");
+    let unsupported: Vec<u8> = computed_state_variant("i32.const 3\n            i32.clz");
+    let effectful: Vec<u8> = computed_state_call_variant();
+    let mut oversized_expression: String = String::from("i32.const 3");
+    for _index in 0..64 {
+        oversized_expression.push_str("\n            i32.const 0\n            i32.add");
+    }
+    let oversized: Vec<u8> = computed_state_variant(&oversized_expression);
+
+    for (name, bytes) in [
+        ("input-dependent", input_dependent),
+        ("trapping", trapping),
+        ("unsupported", unsupported),
+        ("effectful", effectful),
+        ("oversized", oversized),
+    ] {
+        let recovered: RecoveredModule =
+            recover_module(&bytes).unwrap_or_else(|error| panic!("recover {name}: {error}"));
+        assert_eq!(
+            recovered.report.flattened_conditional_restructured, 0,
+            "{name}"
+        );
+        assert_eq!(recovered.report.flattened_dispatchers_walled, 1, "{name}");
+    }
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_computed_state_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
+    let mutant_bytes: Vec<u8> = assemble_fixture("cff_computed_state.mutant.wat");
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+
+    assert_distinguished(&mut clean, &mut mutant, "classify_local");
+}
+
+fn computed_state_variant(replacement: &str) -> Vec<u8> {
+    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let original: &str = "i32.const 5\n            i32.const 6\n            i32.xor";
+    let variant: String = source.replacen(original, replacement, 1);
+    assert_ne!(
+        variant, source,
+        "computed-state expression must be replaced"
+    );
+    wat::parse_str(&variant).expect("assemble computed-state variant")
+}
+
+fn computed_state_call_variant() -> Vec<u8> {
+    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let original: &str = "i32.const 5\n            i32.const 6\n            i32.xor";
+    let mut variant: String = source.replacen(original, "call 1", 1);
+    assert_ne!(
+        variant, source,
+        "computed-state expression must be replaced"
+    );
+    let module_end: usize = variant.rfind(')').expect("module terminator");
+    variant.insert_str(module_end, "  (func (result i32) i32.const 3)\n");
+    wat::parse_str(&variant).expect("assemble effectful computed-state variant")
+}
+
+fn computed_guard_state_variant(swapped: bool) -> Vec<u8> {
+    let path: PathBuf = fixture_dir().join("cff_computed_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read computed-state fixture");
+    let (nonzero, zero): (&str, &str) = if swapped {
+        (
+            "i32.const 6\n                  i32.const 4\n                  i32.xor",
+            "i32.const 5\n                i32.const 4\n                i32.xor",
+        )
+    } else {
+        (
+            "i32.const 5\n                  i32.const 4\n                  i32.xor",
+            "i32.const 6\n                i32.const 4\n                i32.xor",
+        )
+    };
+    let with_nonzero: String = source.replacen(
+        "i32.const 1\n                  local.set 2",
+        &format!("{nonzero}\n                  local.set 2"),
+        1,
+    );
+    let variant: String = with_nonzero.replacen(
+        "i32.const 2\n                local.set 2",
+        &format!("{zero}\n                local.set 2"),
+        1,
+    );
+    assert_ne!(
+        variant, source,
+        "guarded state expressions must be replaced"
+    );
+    wat::parse_str(&variant).expect("assemble computed guarded states")
+}
+
+fn computed_select_state_variant(swapped: bool) -> Vec<u8> {
+    let (then_expression, else_expression): (&str, &str) = if swapped {
+        (
+            "i32.const 1\n              i32.const 1\n              i32.add",
+            "i32.const 1\n              i32.const 0\n              i32.add",
+        )
+    } else {
+        (
+            "i32.const 1\n              i32.const 0\n              i32.add",
+            "i32.const 1\n              i32.const 1\n              i32.add",
+        )
+    };
+    let source: String = computed_select_state_source(then_expression, else_expression);
+    wat::parse_str(&source).expect("assemble computed select states")
+}
+
+fn computed_select_state_source(then_expression: &str, else_expression: &str) -> String {
+    let path: PathBuf = fixture_dir().join("cff_local_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read local-state fixture");
+    let original: &str = r"block ;; label = @6
+                block ;; label = @7
+                  local.get 0
+                  i32.const 10
+                  i32.gt_s
+                  i32.const 1
+                  i32.and
+                  i32.eqz
+                  br_if 0 (;@7;)
+                  i32.const 1
+                  local.set 2
+                  br 1 (;@6;)
+                end
+                i32.const 2
+                local.set 2
+              end";
+    let replacement: String = format!(
+        "{then_expression}\n              {else_expression}\n              local.get 0\n              i32.const 10\n              i32.gt_s\n              select\n              local.set 2"
+    );
+    let variant: String = source.replacen(original, &replacement, 1);
+    assert_ne!(variant, source, "select transition must be replaced");
+    variant
 }
 
 #[test]
@@ -507,6 +776,22 @@ fn contains_br_table(bytes: &[u8]) -> bool {
                 .instrs
                 .iter()
                 .any(|(instr, _)| matches!(instr, walrus::ir::Instr::BrTable(_)))
+        })
+    })
+}
+
+fn contains_computed_state_binop(bytes: &[u8]) -> bool {
+    let module: walrus::Module = walrus::Module::from_buffer(bytes).expect("round-trip");
+    module.funcs.iter_local().any(|(_, func)| {
+        func_seq_ids(func).into_iter().any(|seq| {
+            func.block(seq).instrs.iter().any(|(instr, _)| {
+                matches!(
+                    instr,
+                    walrus::ir::Instr::Binop(walrus::ir::Binop {
+                        op: walrus::ir::BinaryOp::I32Xor | walrus::ir::BinaryOp::I32Or,
+                    })
+                )
+            })
         })
     })
 }

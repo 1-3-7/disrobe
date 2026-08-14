@@ -1,13 +1,14 @@
 use indexmap::IndexSet;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    BindingIdentifier, BindingPatternKind, Expression, FormalParameter, Function, Statement,
-    VariableDeclarator,
+    BinaryOperator, BindingIdentifier, BindingPatternKind, Expression, FormalParameter, Function,
+    FunctionType, LogicalOperator, Statement, VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast::{AstKind, Visit};
 use oxc_parser::Parser;
 use oxc_semantic::{AstNodes, NodeId, Reference, Semantic, SemanticBuilder, SymbolId, SymbolTable};
 use oxc_span::{GetSpan, SourceType, Span};
+use std::collections::BTreeSet;
 
 use super::rename_scope::is_reserved_binding_name;
 use super::{Edit, RuleOutcome, edit_overlaps_comments};
@@ -73,6 +74,7 @@ struct ParamPlan {
     param_span: Span,
     pattern_text: String,
     declaration_span: Span,
+    field_symbol_ids: Vec<SymbolId>,
 }
 
 struct Field {
@@ -81,12 +83,22 @@ struct Field {
     local_symbol_id: SymbolId,
 }
 
+struct ParamCandidate<'a> {
+    param_span: Span,
+    symbol_id: SymbolId,
+    default_expression: Option<&'a Expression<'a>>,
+    declaration_index: usize,
+}
+
 fn plan_function(
     func: &Function<'_>,
     source: &str,
     symbols: &SymbolTable,
     nodes: &AstNodes<'_>,
 ) -> Option<ParamPlan> {
+    if let Some(plan) = plan_raw_arguments_function(func, source, symbols, nodes) {
+        return Some(plan);
+    }
     let body: &oxc_ast::ast::FunctionBody<'_> = func.body.as_ref()?;
     let mut found: Option<ParamPlan> = None;
     for (param_index, param) in func.params.items.iter().enumerate() {
@@ -110,9 +122,12 @@ fn plan_function(
         }
         let Some(plan) = plan_param(
             func,
-            param.span,
-            symbol_id,
-            default_expression,
+            ParamCandidate {
+                param_span: param.span,
+                symbol_id,
+                default_expression,
+                declaration_index: 0,
+            },
             body,
             source,
             symbols,
@@ -151,16 +166,342 @@ fn plain_parameter(parameter: &FormalParameter<'_>) -> bool {
         )
 }
 
-fn plan_param(
+fn plan_raw_arguments_function(
     func: &Function<'_>,
-    param_span: Span,
-    symbol_id: SymbolId,
-    default_expression: Option<&Expression<'_>>,
+    source: &str,
+    symbols: &SymbolTable,
+    nodes: &AstNodes<'_>,
+) -> Option<ParamPlan> {
+    if !matches!(
+        func.r#type,
+        FunctionType::FunctionDeclaration | FunctionType::FunctionExpression
+    ) || func.r#async
+        || func.generator
+        || func.declare
+        || func.this_param.is_some()
+        || func.type_parameters.is_some()
+        || func.return_type.is_some()
+        || func.params.rest.is_some()
+        || !func.params.items.iter().all(plain_parameter)
+        || !plain_parameter_names_are_unique(func)
+    {
+        return None;
+    }
+    let body: &oxc_ast::ast::FunctionBody<'_> = func.body.as_ref()?;
+    if !body.directives.is_empty() || body.statements.len() < 2 {
+        return None;
+    }
+    let Statement::VariableDeclaration(scaffold) = &body.statements[0] else {
+        return None;
+    };
+    let Statement::VariableDeclaration(extraction) = &body.statements[1] else {
+        return None;
+    };
+    if scaffold.kind != VariableDeclarationKind::Var
+        || extraction.kind != VariableDeclarationKind::Var
+        || scaffold.declarations.len() != 1
+    {
+        return None;
+    }
+    let declarator: &VariableDeclarator<'_> = &scaffold.declarations[0];
+    if declarator.id.type_annotation.is_some() {
+        return None;
+    }
+    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
+        return None;
+    };
+    if !is_synthetic_destructure_name(binding.name.as_str()) {
+        return None;
+    }
+    let symbol_id: SymbolId = binding.symbol_id.get()?;
+    let expected_index: usize = func.params.items.len();
+    let default_expression: &Expression<'_> =
+        raw_babel_default(declarator.init.as_ref()?, expected_index, symbols)?;
+    if body_has_raw_recovery_hazard(body)
+        || default_binding_resolution_changes(default_expression, body, symbols, nodes)
+    {
+        return None;
+    }
+    let insert_at: u32 = func.params.span.end.checked_sub(1)?;
+    let mut plan: ParamPlan = plan_param(
+        func,
+        ParamCandidate {
+            param_span: Span::new(insert_at, insert_at),
+            symbol_id,
+            default_expression: Some(default_expression),
+            declaration_index: 1,
+        },
+        body,
+        source,
+        symbols,
+        nodes,
+    )?;
+    let expected_extraction: Span = declaration_removal_span(extraction.span, source);
+    if plan.declaration_span != expected_extraction
+        || duplicate_body_bindings(body, extraction.span, &plan.field_symbol_ids)
+    {
+        return None;
+    }
+    let separator: &str = match func.params.items.last() {
+        None => "",
+        Some(last) => {
+            let tail: &str = source.get(last.span.end as usize..insert_at as usize)?;
+            match tail.trim() {
+                "" => ", ",
+                "," => " ",
+                _ => return None,
+            }
+        }
+    };
+    plan.pattern_text = format!("{separator}{}", plan.pattern_text);
+    plan.declaration_span =
+        declaration_removal_span(Span::new(scaffold.span.start, extraction.span.end), source);
+    Some(plan)
+}
+
+fn plain_parameter_names_are_unique(func: &Function<'_>) -> bool {
+    let mut names: BTreeSet<&str> = BTreeSet::new();
+    func.params
+        .items
+        .iter()
+        .all(|parameter: &FormalParameter<'_>| {
+            let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+                return false;
+            };
+            names.insert(binding.name.as_str())
+        })
+}
+
+fn duplicate_body_bindings(
+    body: &oxc_ast::ast::FunctionBody<'_>,
+    extraction_span: Span,
+    field_symbol_ids: &[SymbolId],
+) -> bool {
+    let mut probe: DuplicateBindingProbe<'_> = DuplicateBindingProbe {
+        extraction_span,
+        field_symbol_ids,
+        duplicate: false,
+    };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    probe.duplicate
+}
+
+struct DuplicateBindingProbe<'a> {
+    extraction_span: Span,
+    field_symbol_ids: &'a [SymbolId],
+    duplicate: bool,
+}
+
+impl<'a> Visit<'a> for DuplicateBindingProbe<'_> {
+    fn visit_variable_declaration(&mut self, declaration: &oxc_ast::ast::VariableDeclaration<'a>) {
+        if declaration.span == self.extraction_span {
+            return;
+        }
+        oxc_ast::visit::walk::walk_variable_declaration(self, declaration);
+    }
+
+    fn visit_binding_identifier(&mut self, binding: &oxc_ast::ast::BindingIdentifier<'a>) {
+        if binding
+            .symbol_id
+            .get()
+            .is_some_and(|symbol_id: SymbolId| self.field_symbol_ids.contains(&symbol_id))
+        {
+            self.duplicate = true;
+        }
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+}
+
+fn raw_babel_default<'a>(
+    expression: &'a Expression<'a>,
+    expected_index: usize,
+    symbols: &SymbolTable,
+) -> Option<&'a Expression<'a>> {
+    let Expression::ConditionalExpression(conditional) = expression else {
+        return None;
+    };
+    let Expression::LogicalExpression(guard) = &conditional.test else {
+        return None;
+    };
+    if guard.operator != LogicalOperator::And {
+        return None;
+    }
+    let Expression::BinaryExpression(length_check) = &guard.left else {
+        return None;
+    };
+    if length_check.operator != BinaryOperator::GreaterThan
+        || !is_arguments_length(&length_check.left, symbols)
+        || !is_numeric_index(&length_check.right, expected_index)
+    {
+        return None;
+    }
+    let Expression::BinaryExpression(undefined_check) = &guard.right else {
+        return None;
+    };
+    if undefined_check.operator != BinaryOperator::StrictInequality
+        || !is_arguments_index(&undefined_check.left, expected_index, symbols)
+        || !is_unbound_identifier(&undefined_check.right, "undefined", symbols)
+        || !is_arguments_index(&conditional.consequent, expected_index, symbols)
+    {
+        return None;
+    }
+    Some(&conditional.alternate)
+}
+
+fn is_arguments_length(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    let Expression::StaticMemberExpression(member) = expression else {
+        return false;
+    };
+    member.property.name == "length" && is_unbound_arguments(&member.object, symbols)
+}
+
+fn is_arguments_index(
+    expression: &Expression<'_>,
+    expected_index: usize,
+    symbols: &SymbolTable,
+) -> bool {
+    let Expression::ComputedMemberExpression(member) = expression else {
+        return false;
+    };
+    is_unbound_arguments(&member.object, symbols)
+        && is_numeric_index(&member.expression, expected_index)
+}
+
+fn is_unbound_arguments(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    is_unbound_identifier(expression, "arguments", symbols)
+}
+
+fn is_unbound_identifier(
+    expression: &Expression<'_>,
+    expected_name: &str,
+    symbols: &SymbolTable,
+) -> bool {
+    let Expression::Identifier(identifier) = expression else {
+        return false;
+    };
+    if identifier.name != expected_name {
+        return false;
+    }
+    let Some(reference_id) = identifier.reference_id.get() else {
+        return false;
+    };
+    symbols.get_reference(reference_id).symbol_id().is_none()
+}
+
+fn is_numeric_index(expression: &Expression<'_>, expected_index: usize) -> bool {
+    let Expression::NumericLiteral(number) = expression else {
+        return false;
+    };
+    number.value.fract() == 0.0
+        && number.value >= 0.0
+        && number.value <= usize::MAX as f64
+        && number.value as usize == expected_index
+}
+
+fn body_has_raw_recovery_hazard(body: &oxc_ast::ast::FunctionBody<'_>) -> bool {
+    let mut probe: RawRecoveryHazardProbe = RawRecoveryHazardProbe {
+        arguments_uses: 0,
+        unsafe_construct: false,
+    };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    probe.arguments_uses != 3 || probe.unsafe_construct
+}
+
+struct RawRecoveryHazardProbe {
+    arguments_uses: usize,
+    unsafe_construct: bool,
+}
+
+impl<'a> Visit<'a> for RawRecoveryHazardProbe {
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        if identifier.name == "arguments" {
+            self.arguments_uses = self.arguments_uses.saturating_add(1);
+        } else if identifier.name == "eval" {
+            self.unsafe_construct = true;
+        }
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        _arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+        self.unsafe_construct = true;
+    }
+
+    fn visit_with_statement(&mut self, _statement: &oxc_ast::ast::WithStatement<'a>) {
+        self.unsafe_construct = true;
+    }
+}
+
+fn default_binding_resolution_changes(
+    expression: &Expression<'_>,
+    body: &oxc_ast::ast::FunctionBody<'_>,
+    symbols: &SymbolTable,
+    nodes: &AstNodes<'_>,
+) -> bool {
+    let mut probe: DefaultBindingProbe<'_> = DefaultBindingProbe {
+        body_span: body.span,
+        symbols,
+        nodes,
+        changes: false,
+    };
+    probe.visit_expression(expression);
+    probe.changes
+}
+
+struct DefaultBindingProbe<'a> {
+    body_span: Span,
+    symbols: &'a SymbolTable,
+    nodes: &'a AstNodes<'a>,
+    changes: bool,
+}
+
+impl<'a> Visit<'a> for DefaultBindingProbe<'a> {
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        if identifier.name == "eval" {
+            self.changes = true;
+            return;
+        }
+        let Some(reference_id) = identifier.reference_id.get() else {
+            return;
+        };
+        let reference: &Reference = self.symbols.get_reference(reference_id);
+        let Some(symbol_id) = reference.symbol_id() else {
+            return;
+        };
+        let declaration: NodeId = self.symbols.get_declaration(symbol_id);
+        let declaration_span: Span = self.nodes.get_node(declaration).kind().span();
+        if self.body_span.start <= declaration_span.start
+            && declaration_span.end <= self.body_span.end
+        {
+            self.changes = true;
+        }
+    }
+}
+
+fn plan_param<'a>(
+    func: &Function<'_>,
+    candidate: ParamCandidate<'a>,
     body: &oxc_ast::ast::FunctionBody<'_>,
     source: &str,
     symbols: &SymbolTable,
     nodes: &AstNodes<'_>,
 ) -> Option<ParamPlan> {
+    let ParamCandidate {
+        param_span,
+        symbol_id,
+        default_expression,
+        declaration_index,
+    }: ParamCandidate<'a> = candidate;
     let refs: &Vec<oxc_semantic::ReferenceId> = symbols.get_resolved_reference_ids(symbol_id);
     if refs.is_empty() {
         return None;
@@ -181,7 +522,7 @@ fn plan_param(
     let declaration_span: Span = declaration_span?;
 
     let declaration: &oxc_ast::ast::VariableDeclaration<'_> =
-        leading_declaration(body, declaration_span)?;
+        declaration_at(body, declaration_span, declaration_index)?;
     let fields: Vec<Field> = collect_fields(declaration, symbol_id, symbols)?;
     if fields.len() != declaration.declarations.len() {
         return None;
@@ -215,10 +556,15 @@ fn plan_param(
         pattern_text.push_str(default_text);
     }
     let removal: Span = declaration_removal_span(declaration_span, source);
+    let field_symbol_ids: Vec<SymbolId> = fields
+        .iter()
+        .map(|field: &Field| field.local_symbol_id)
+        .collect();
     Some(ParamPlan {
         param_span,
         pattern_text,
         declaration_span: removal,
+        field_symbol_ids,
     })
 }
 
@@ -327,11 +673,13 @@ fn enclosing_declaration_span(node_id: NodeId, nodes: &AstNodes<'_>) -> Option<S
     Some(declaration_node.kind().span())
 }
 
-fn leading_declaration<'a>(
+fn declaration_at<'a>(
     body: &'a oxc_ast::ast::FunctionBody<'a>,
     declaration_span: Span,
+    declaration_index: usize,
 ) -> Option<&'a oxc_ast::ast::VariableDeclaration<'a>> {
-    let Statement::VariableDeclaration(declaration) = body.statements.first()? else {
+    let Statement::VariableDeclaration(declaration) = body.statements.get(declaration_index)?
+    else {
         return None;
     };
     (declaration.span == declaration_span).then_some(declaration.as_ref())

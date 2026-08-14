@@ -106,14 +106,23 @@ fn const_condition(instrs: &[Instr], if_index: usize) -> Option<ConstVerdict> {
     if let Some(collatz) = collatz {
         return Some(collatz);
     }
-    let mut cursor: usize = if_index;
-    let mut budget: usize = 64;
-    let value: i32 = eval_value(instrs, &mut cursor, &mut budget)?;
+    let (value, cursor): (i32, usize) = eval_i32_expression_suffix(instrs, if_index, 64)?;
     Some(ConstVerdict {
         value,
         cond_start: cursor,
         collatz: None,
     })
+}
+
+pub(super) fn eval_i32_expression_suffix(
+    instrs: &[Instr],
+    end: usize,
+    limit: usize,
+) -> Option<(i32, usize)> {
+    let mut cursor: usize = end;
+    let mut budget: usize = limit;
+    let value: i32 = eval_value(instrs, &mut cursor, &mut budget)?;
+    Some((value, cursor))
 }
 
 fn eval_value(instrs: &[Instr], cursor: &mut usize, budget: &mut usize) -> Option<i32> {
@@ -161,7 +170,9 @@ fn eval_binop(op: BinaryOp, a: i32, b: i32) -> Option<i32> {
         BinaryOp::I32Mul => a.wrapping_mul(b),
         BinaryOp::I32DivS => a.checked_div(b)?,
         BinaryOp::I32DivU => ua.checked_div(ub)?.cast_signed(),
-        BinaryOp::I32RemS => a.checked_rem(b)?,
+        BinaryOp::I32RemS if b == 0 => return None,
+        BinaryOp::I32RemS if a == i32::MIN && b == -1 => 0,
+        BinaryOp::I32RemS => a % b,
         BinaryOp::I32RemU => ua.checked_rem(ub)?.cast_signed(),
         BinaryOp::I32And => a & b,
         BinaryOp::I32Or => a | b,
@@ -493,6 +504,12 @@ mod tests {
         let verdict: ConstVerdict = const_condition(&instrs, 3).expect("const verdict");
         assert_eq!(verdict.value, 1);
         assert_eq!(verdict.cond_start, 0);
+    }
+
+    #[test]
+    fn signed_remainder_matches_wasm_overflow_and_trap_semantics() {
+        assert_eq!(eval_binop(BinaryOp::I32RemS, i32::MIN, -1), Some(0));
+        assert_eq!(eval_binop(BinaryOp::I32RemS, 7, 0), None);
     }
 
     fn recover(wat: &str) -> crate::recover::RecoveredModule {

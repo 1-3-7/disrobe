@@ -5,6 +5,7 @@ use disrobe_bytes::bounded_element_capacity;
 use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
+use super::invoke_map::attach_invoke_map_entrypoints;
 use super::{
     AotSection, ReadyToRunHeader, container_address_base, decode_metadata_unsigned,
     section_bytes_for_address, section_views_agree, supported_native_format,
@@ -51,7 +52,8 @@ pub struct AotMetadataAttribution {
 impl AotMetadataAttribution {
     pub(crate) fn rejected(error: crate::error::Error) -> Self {
         let section_offset: Option<u32> = match &error {
-            crate::error::Error::InvalidAotMetadata { offset, .. } => Some(*offset),
+            crate::error::Error::InvalidAotMetadata { offset, .. }
+            | crate::error::Error::InvalidAotInvokeMap { offset, .. } => Some(*offset),
             _ => None,
         };
         let reason: String = error.to_string();
@@ -105,6 +107,8 @@ pub struct AotMethod {
     pub name: String,
     #[serde(default)]
     pub signature: Option<AotMethodSignature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint_rva: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1938,6 +1942,7 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
             record_offset: method.offset,
             name: method.name,
             signature: Some(public_method_signature(signature)?),
+            entrypoint_rva: None,
         });
     }
     Ok((attributed_types, attributed_methods))
@@ -2028,7 +2033,8 @@ pub fn recover_metadata_attribution(
         });
     }
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
-    let (types, methods): (Vec<AotType>, Vec<AotMethod>) = parse_metadata_records(bytes)?;
+    let (types, mut methods): (Vec<AotType>, Vec<AotMethod>) = parse_metadata_records(bytes)?;
+    attach_invoke_map_entrypoints(image, header, &mut methods)?;
     Ok(AotMetadataAttribution {
         status: AotMetadataStatus::Recovered,
         types,

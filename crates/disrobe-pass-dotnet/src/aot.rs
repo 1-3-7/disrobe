@@ -14,6 +14,7 @@ use object::{RelocationFlags, RelocationTarget};
 
 use serde::{Deserialize, Serialize};
 
+mod invoke_map;
 mod metadata_records;
 
 pub use metadata_records::{

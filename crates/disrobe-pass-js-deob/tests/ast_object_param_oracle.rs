@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
-use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
 use std::process::{Command, Output};
 
 const LOOP_LIMIT: u64 = 2_000_000;
@@ -33,6 +33,21 @@ fn eval_capture_node(program: &str) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn assert_node_equivalent(input: &str, recovered: &str) {
+    let expected: String = eval_capture_node(input).expect("input must evaluate in Node");
+    let actual: String = eval_capture_node(recovered)
+        .unwrap_or_else(|| panic!("recovered source must evaluate in Node:\n{recovered}"));
+    assert_eq!(actual, expected, "recovered source:\n{recovered}");
+}
+
+fn unminify_object_param(input: &str) -> (String, AstUnminifyStats) {
+    AstPipeline::default()
+        .with_rule(AstRuleId::AliasInline, false)
+        .with_rule(AstRuleId::DefaultParam, false)
+        .with_rule(AstRuleId::VarToBlock, false)
+        .run(input)
 }
 
 fn assert_faithful_input(label: &str, original: &str, input: &str) {
@@ -396,4 +411,170 @@ fn comment_inside_assignment_parameter_causes_byte_preserving_refusal() {
         eval_capture(&recovered).expect("refused source must evaluate"),
         expected
     );
+}
+
+const RAW_DEFAULTED_OBJECT: &str = r#"
+var trace = [];
+var fallback = function() {
+  trace.push("default");
+  return { get value() { trace.push("default-getter"); return 11; } };
+};
+function read() {
+  var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : fallback();
+  var value = _ref.value;
+  return value;
+}
+print(read());
+print(trace.join(","));
+trace.length = 0;
+print(read(undefined));
+print(trace.join(","));
+trace.length = 0;
+print(read({ get value() { trace.push("explicit-getter"); return 17; } }));
+print(trace.join(","));
+"#;
+
+#[test]
+fn raw_babel_defaulted_object_scaffold_recovers_end_to_end() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(RAW_DEFAULTED_OBJECT);
+    assert_eq!(stats.object_params_restructured, 1, "source:\n{recovered}");
+    assert_eq!(stats.default_params_recovered, 0, "source:\n{recovered}");
+    assert!(
+        recovered.contains("function read({ value } = fallback())"),
+        "source:\n{recovered}"
+    );
+    assert!(!recovered.contains("arguments"), "source:\n{recovered}");
+    assert!(!recovered.contains("_ref"), "source:\n{recovered}");
+    assert_node_equivalent(RAW_DEFAULTED_OBJECT, &recovered);
+
+    let (second, second_stats): (String, AstUnminifyStats) = unminify_ast(RAW_DEFAULTED_OBJECT);
+    assert_eq!(second, recovered);
+    assert_eq!(second_stats.object_params_restructured, 1);
+}
+
+const RAW_DEFAULTED_AFTER_PLAIN_PARAMETER: &str = r#"
+var outer = { value: 5 };
+var writes = 0;
+function read(prefix) {
+  var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : (writes++, outer);
+  var value = _ref.value;
+  return prefix + value;
+}
+print(read("a"));
+print(read("b", undefined));
+print(read("c", { value: 9 }));
+print(writes);
+"#;
+
+#[test]
+fn raw_scaffold_preserves_safe_outer_read_and_write_captures() {
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(RAW_DEFAULTED_AFTER_PLAIN_PARAMETER);
+    assert_eq!(stats.object_params_restructured, 1, "source:\n{recovered}");
+    assert!(
+        recovered.contains("function read(prefix, { value } = (writes++, outer))"),
+        "source:\n{recovered}"
+    );
+    assert_node_equivalent(RAW_DEFAULTED_AFTER_PLAIN_PARAMETER, &recovered);
+}
+
+#[test]
+fn raw_scaffold_preserves_an_existing_trailing_parameter_comma() {
+    let source: &str = r#"
+function read(prefix,) {
+  var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : { value: 5 };
+  var value = _ref.value;
+  return prefix + value;
+}
+print(read("a"));
+print(read("b", { value: 9 }));
+"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.object_params_restructured, 1, "source:\n{recovered}");
+    assert!(
+        recovered.contains("function read(prefix, { value } = { value: 5 })"),
+        "source:\n{recovered}"
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn raw_scaffold_refuses_duplicate_plain_parameters_before_adding_a_default() {
+    let source: &str = r#"
+function read(prefix, prefix) {
+  var _ref = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : { value: 5 };
+  var value = _ref.value;
+  return prefix + value;
+}
+print(read("a", "b"));
+print(read("a", "b", { value: 9 }));
+"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert_eq!(recovered, source);
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn raw_scaffold_refuses_semantic_near_misses_byte_for_byte() {
+    let sources: [&str; 16] = [
+        "function f() { side(); var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return arguments.length + x; }",
+        "function f() { var _ref = arguments.length >= 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 1 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] != undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[1] : {}; var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; side(); var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return _ref; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; _ref = {}; return x; }",
+        "function f(value) { var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {}; var value = _ref.value; return value; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var value = _ref.value; var value; return value; }",
+        "function f(x = side()) { var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {}; var value = _ref.value; return value; }",
+        "function f(undefined) { var _ref = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {}; var value = _ref.value; return value; }",
+        "function f() { var _ref /* keep */ = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "var arguments = [{ x: 1 }]; function f() { var arguments; var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; }",
+        "var f = () => { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return x; };",
+    ];
+    for source in sources {
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+        assert_eq!(
+            stats.object_params_restructured, 0,
+            "input:\n{source}\noutput:\n{recovered}"
+        );
+        assert_eq!(recovered, source);
+    }
+}
+
+#[test]
+fn raw_scaffold_refuses_defaults_whose_binding_resolution_would_change() {
+    let sources: [&str; 3] = [
+        "var value = { value: 5 }; function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : value; var value = _ref.value; return value; }",
+        "var value; function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : (value = { value: 5 }); var value = _ref.value; return value; }",
+        "var fallback = function() { return { value: 5 }; }; function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : fallback(); var value = _ref.value; function fallback() { return { value: 7 }; } return value; }",
+    ];
+    for source in sources {
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+        assert_eq!(
+            stats.object_params_restructured, 0,
+            "input:\n{source}\noutput:\n{recovered}"
+        );
+        assert_eq!(recovered, source);
+    }
+}
+
+#[test]
+fn raw_scaffold_refuses_eval_and_arrow_capture_hazards() {
+    let sources: [&str; 3] = [
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : eval('({x: 1})'); var x = _ref.x; return x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return (() => arguments.length)() + x; }",
+        "function f() { var _ref = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {}; var x = _ref.x; return (() => _ref.x)(); }",
+    ];
+    for source in sources {
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+        assert_eq!(
+            stats.object_params_restructured, 0,
+            "input:\n{source}\noutput:\n{recovered}"
+        );
+        assert_eq!(recovered, source);
+    }
 }

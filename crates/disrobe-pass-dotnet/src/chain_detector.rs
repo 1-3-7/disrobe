@@ -706,6 +706,8 @@ struct NativeAotOutputMethod<'a> {
     declaring_types: Vec<&'a str>,
     name: &'a str,
     signature: Option<&'a crate::aot::AotMethodSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entrypoint_rva: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -843,6 +845,7 @@ fn native_aot_symbols_document<'a>(
             declaring_types,
             name: &method.name,
             signature: method.signature.as_ref(),
+            entrypoint_rva: method.entrypoint_rva,
         });
     }
     Ok(NativeAotSymbolsDocument {

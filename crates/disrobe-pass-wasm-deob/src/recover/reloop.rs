@@ -1,14 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_cfg::{Flow, FlowGraph, PostDominator};
-use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind, Value};
+use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind};
 use walrus::{GlobalId, LocalFunction, LocalId, MemoryId};
+
+use super::opaque::eval_i32_expression_suffix;
 
 type Body = Vec<(Instr, walrus::ir::InstrLocId)>;
 
 const NODE_LIMIT: usize = 512;
 const RENDER_GUARD: usize = 4096;
 const TRANSITION_INSTRUCTION_LIMIT: usize = 512;
+const STATE_EXPRESSION_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WallReason {
@@ -79,10 +82,6 @@ impl StateCell {
             Self::MemorySlot { .. } => 1,
             Self::Local(_) | Self::Global(_) => 0,
         }
-    }
-
-    const fn write_sequence_len(self) -> usize {
-        self.address_prefix_len() + 2
     }
 
     fn address_prefix_matches(self, prefix: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
@@ -188,9 +187,13 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     let default_body: Body = case_body(func, default, &parents)?;
     state_to_body.entry(default_state).or_insert(default_body);
 
-    let preamble: Body = entry_instrs[..loop_index].to_vec();
+    let mut preamble: Body = entry_instrs[..loop_index].to_vec();
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
-    let entry_state: i32 = initial_state(&preamble, cell)?;
+    let (entry_state, entry_write): (i32, Option<std::ops::Range<usize>>) =
+        initial_state(&preamble, cell)?;
+    if let Some(span) = entry_write {
+        drop(preamble.drain(span));
+    }
 
     Some(Dispatcher {
         preamble,
@@ -347,32 +350,55 @@ fn case_body(
     Some(parent_instrs.get(index + 1..)?.to_vec())
 }
 
-fn initial_state(preamble: &Body, cell: StateCell) -> Option<i32> {
-    let mut found: Option<i32> = None;
-    for window in preamble.windows(cell.write_sequence_len()) {
-        if let Some(value) = state_write_constant(window, cell) {
-            found = Some(value);
+fn initial_state(
+    preamble: &Body,
+    cell: StateCell,
+) -> Option<(i32, Option<std::ops::Range<usize>>)> {
+    let mut found: Option<(i32, usize, usize)> = None;
+    for end in 1..=preamble.len() {
+        if let Some((value, write_start)) = state_write_expression(preamble.get(..end)?, cell) {
+            found = Some((value, write_start, end));
         }
     }
-    found
+    let (value, write_start, write_end): (i32, usize, usize) = found?;
+    let entry_write: Option<std::ops::Range<usize>> =
+        (!reads_cell(preamble.get(write_end..)?, cell)).then_some(write_start..write_end);
+    Some((value, entry_write))
 }
 
-fn state_write_constant(
-    window: &[(Instr, walrus::ir::InstrLocId)],
+fn state_write_expression(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+) -> Option<(i32, usize)> {
+    let (commit, prefix): (
+        &(Instr, walrus::ir::InstrLocId),
+        &[(Instr, walrus::ir::InstrLocId)],
+    ) = body.split_last()?;
+    if !cell.commit_matches(&commit.0) {
+        return None;
+    }
+    let expression_floor: usize = prefix.len().saturating_sub(STATE_EXPRESSION_LIMIT);
+    let expression: Vec<Instr> = prefix
+        .get(expression_floor..)?
+        .iter()
+        .map(|(instr, _location): &(Instr, walrus::ir::InstrLocId)| instr.clone())
+        .collect();
+    let (value, relative_start): (i32, usize) =
+        eval_i32_expression_suffix(&expression, expression.len(), STATE_EXPRESSION_LIMIT)?;
+    let expression_start: usize = expression_floor.checked_add(relative_start)?;
+    let write_start: usize = expression_start.checked_sub(cell.address_prefix_len())?;
+    if !cell.address_prefix_matches(prefix.get(write_start..expression_start)?) {
+        return None;
+    }
+    Some((value, write_start))
+}
+
+fn state_write_full_expression(
+    body: &[(Instr, walrus::ir::InstrLocId)],
     cell: StateCell,
 ) -> Option<i32> {
-    if window.len() != cell.write_sequence_len() {
-        return None;
-    }
-    let prefix: usize = cell.address_prefix_len();
-    if !cell.address_prefix_matches(window.get(..prefix)?) {
-        return None;
-    }
-    let value: i32 = i32_constant(&window.get(prefix)?.0)?;
-    if !cell.commit_matches(&window.get(prefix.checked_add(1)?)?.0) {
-        return None;
-    }
-    Some(value)
+    let (value, write_start): (i32, usize) = state_write_expression(body, cell)?;
+    (write_start == 0).then_some(value)
 }
 
 #[derive(Debug, Clone)]
@@ -495,8 +521,7 @@ fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
 }
 
 fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> Option<Node> {
-    let head_len: usize = stripped.len().checked_sub(cell.write_sequence_len())?;
-    let next: i32 = state_write_constant(stripped.get(head_len..)?, cell)?;
+    let (next, head_len): (i32, usize) = state_write_expression(stripped, cell)?;
     let work: Body = stripped.get(..head_len)?.to_vec();
     if !is_flat(&work) {
         return None;
@@ -522,16 +547,11 @@ fn classify_select_conditional(
     }
     let commit: &Instr = &stripped.get(commit_index)?.0;
     let prefix: &[(Instr, walrus::ir::InstrLocId)] = stripped.get(..select_index)?;
-    let anchor_window: usize = cell.write_sequence_len();
-    let (anchor, then_state, else_state): (usize, i32, i32) =
-        prefix.windows(anchor_window).enumerate().rev().find_map(
-            |(index, window): (usize, &[(Instr, walrus::ir::InstrLocId)])| {
-                select_transition_candidate(index, window, commit, cell)
-            },
-        )?;
-    let condition_start: usize = anchor.checked_add(anchor_window)?;
-    let work: Body = stripped.get(..anchor)?.to_vec();
-    let cond: Body = stripped.get(condition_start..select_index)?.to_vec();
+    let candidate: SelectTransition = select_transition_candidate(prefix, commit, cell)?;
+    let work: Body = stripped.get(..candidate.anchor)?.to_vec();
+    let cond: Body = stripped
+        .get(candidate.condition_start..select_index)?
+        .to_vec();
     if cond.is_empty()
         || !is_flat(&work)
         || !is_flat(&cond)
@@ -543,13 +563,13 @@ fn classify_select_conditional(
         work,
         cond,
         trans: Trans::Cond {
-            then_state,
-            else_state,
+            then_state: candidate.then_state,
+            else_state: candidate.else_state,
         },
     })
 }
 
-fn condition_has_isolated_value_stack(condition: &Body) -> bool {
+fn condition_has_isolated_value_stack(condition: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
     let mut height: usize = 0;
     for (instr, _) in condition {
         let (pops, pushes): (usize, usize) = match instr {
@@ -571,22 +591,62 @@ fn condition_has_isolated_value_stack(condition: &Body) -> bool {
     height == 1
 }
 
+struct SelectTransition {
+    anchor: usize,
+    condition_start: usize,
+    then_state: i32,
+    else_state: i32,
+}
+
 fn select_transition_candidate(
-    index: usize,
-    window: &[(Instr, walrus::ir::InstrLocId)],
+    prefix: &[(Instr, walrus::ir::InstrLocId)],
     commit: &Instr,
     cell: StateCell,
-) -> Option<(usize, i32, i32)> {
-    if window.len() != cell.write_sequence_len() || !cell.commit_matches(commit) {
+) -> Option<SelectTransition> {
+    if !cell.commit_matches(commit) {
         return None;
     }
-    let prefix: usize = cell.address_prefix_len();
-    if !cell.address_prefix_matches(window.get(..prefix)?) {
-        return None;
+    let address_len: usize = cell.address_prefix_len();
+    let instructions: Vec<Instr> = prefix
+        .iter()
+        .map(|(instr, _location): &(Instr, walrus::ir::InstrLocId)| instr.clone())
+        .collect();
+    let mut found: Option<SelectTransition> = None;
+    for anchor in 0..=prefix.len().checked_sub(address_len)? {
+        let values_start: usize = anchor.checked_add(address_len)?;
+        if !cell.address_prefix_matches(prefix.get(anchor..values_start)?) {
+            continue;
+        }
+        for condition_start in values_start.checked_add(2)?..instructions.len() {
+            let Some((else_state, else_start)): Option<(i32, usize)> =
+                eval_i32_expression_suffix(&instructions, condition_start, STATE_EXPRESSION_LIMIT)
+            else {
+                continue;
+            };
+            let Some((then_state, then_start)): Option<(i32, usize)> =
+                eval_i32_expression_suffix(&instructions, else_start, STATE_EXPRESSION_LIMIT)
+            else {
+                continue;
+            };
+            if then_start != values_start {
+                continue;
+            }
+            if !condition_has_isolated_value_stack(prefix.get(condition_start..)?) {
+                continue;
+            }
+            let candidate: SelectTransition = SelectTransition {
+                anchor,
+                condition_start,
+                then_state,
+                else_state,
+            };
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
     }
-    let then_state: i32 = i32_constant(&window.get(prefix)?.0)?;
-    let else_state: i32 = i32_constant(&window.get(prefix.checked_add(1)?)?.0)?;
-    Some((index, then_state, else_state))
+    found
 }
 
 fn classify_conditional(
@@ -633,7 +693,7 @@ fn condition_from_blocks(
     };
     let inner_id: InstrSeqId = inner.seq;
     let sb_store: &[(Instr, walrus::ir::InstrLocId)] = outer_body.get(1..)?;
-    let guard_nonzero_state: i32 = state_write_constant(sb_store, cell)?;
+    let guard_nonzero_state: i32 = state_write_full_expression(sb_store, cell)?;
 
     let inner_body: &Body = &func.block(inner_id).instrs;
     let brif_index: usize = inner_body
@@ -651,22 +711,12 @@ fn condition_from_blocks(
     if !matches!(&br_out.0, Instr::Br(br) if br.block == outer.seq) {
         return None;
     }
-    let guard_zero_state: i32 = state_write_constant(sa_store, cell)?;
+    let guard_zero_state: i32 = state_write_full_expression(sa_store, cell)?;
     Some(Conditional {
         cond,
         then_state: guard_nonzero_state,
         else_state: guard_zero_state,
     })
-}
-
-const fn i32_constant(instr: &Instr) -> Option<i32> {
-    let Instr::Const(constant) = instr else {
-        return None;
-    };
-    match constant.value {
-        Value::I32(v) => Some(v),
-        _ => None,
-    }
 }
 
 fn is_flat(instrs: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
