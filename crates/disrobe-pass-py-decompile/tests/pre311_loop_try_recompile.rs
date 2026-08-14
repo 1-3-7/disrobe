@@ -124,8 +124,196 @@ const NESTED_TRY_IN_EXCEPT: &str = concat!(
     "    return f(data)\n",
 );
 
+const HANDLER_CONTINUES_LOOP: &str = concat!(
+    "def near_keyword(command, args, keywords, get_word_index):\n",
+    "    stdout = command_stdout(command, args)\n",
+    "    if stdout is None:\n",
+    "        return None\n",
+    "    first_local = None\n",
+    "    for line in stdout:\n",
+    "        words = line.lower().rstrip().split()\n",
+    "        for i in range(len(words)):\n",
+    "            if words[i] in keywords:\n",
+    "                try:\n",
+    "                    word = words[get_word_index(i)]\n",
+    "                    mac = int(word.replace(DELIM, b''), 16)\n",
+    "                except (ValueError, IndexError):\n",
+    "                    pass\n",
+    "                else:\n",
+    "                    if is_universal(mac):\n",
+    "                        return mac\n",
+    "                    first_local = first_local or mac\n",
+    "    return first_local or None\n",
+    "\n",
+    "\n",
+    "def body_handler_continues(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            record(row)\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def bare_handler_continues(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except:\n",
+    "            note(row)\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def two_handlers_continue(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            note(row)\n",
+    "        except KeyError:\n",
+    "            warn(row)\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def outer_loop_inner_handler(groups, sink):\n",
+    "    seen = 0\n",
+    "    for group in groups:\n",
+    "        for row in group:\n",
+    "            try:\n",
+    "                value = parse(row)\n",
+    "            except ValueError:\n",
+    "                continue\n",
+    "            else:\n",
+    "                sink.add(value)\n",
+    "                seen += 1\n",
+    "        sink.flush(group)\n",
+    "    return seen\n",
+);
+
+const HANDLER_CONTINUE_WRITTEN_OUT: &str = concat!(
+    "def handler_continue_explicit(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            note(row)\n",
+    "            continue\n",
+    "        sink.add(value)\n",
+    "        seen += 1\n",
+    "    return seen\n",
+);
+
+const HANDLER_LEAVES_LOOP: &str = concat!(
+    "def handler_breaks(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            break\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def handler_returns(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            return seen\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def handler_outside_loop(source, sink):\n",
+    "    try:\n",
+    "        value = source.take()\n",
+    "    except LookupError:\n",
+    "        note(source)\n",
+    "    else:\n",
+    "        sink.add(value)\n",
+    "    return sink\n",
+);
+
+const HANDLER_FALLS_TO_LOOP_END: &str = concat!(
+    "def tail_handler_pass(mods):\n",
+    "    for m in mods:\n",
+    "        try:\n",
+    "            m.a = abspath(m.a)\n",
+    "        except (AttributeError, OSError, TypeError):\n",
+    "            pass\n",
+    "        try:\n",
+    "            m.b = abspath(m.b)\n",
+    "        except (AttributeError, OSError, TypeError):\n",
+    "            pass\n",
+    "\n",
+    "\n",
+    "def only_handler_pass(rows):\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            consume(row)\n",
+    "        except ValueError:\n",
+    "            pass\n",
+    "\n",
+    "\n",
+    "def tail_handler_body_then_loop_end(rows, sink):\n",
+    "    for row in rows:\n",
+    "        step(row)\n",
+    "        try:\n",
+    "            sink.add(parse(row))\n",
+    "        except ValueError:\n",
+    "            sink.miss(row)\n",
+);
+
+const HANDLER_TERMINATES_IN_LOOP: &str = concat!(
+    "def handler_returns(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            return seen\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+    "\n",
+    "\n",
+    "def handler_raises(rows, sink):\n",
+    "    seen = 0\n",
+    "    for row in rows:\n",
+    "        try:\n",
+    "            value = parse(row)\n",
+    "        except ValueError:\n",
+    "            raise RuntimeError(row)\n",
+    "        else:\n",
+    "            sink.add(value)\n",
+    "            seen += 1\n",
+    "    return seen\n",
+);
+
 const ALIASES: &[&str] = &["3.8", "3.9", "3.10", "3.11"];
 const PRE311_ALIASES: &[&str] = &["3.8", "3.9", "3.10"];
+const LEGACY_BLOCK_ALIASES: &[&str] = &["3.8", "3.9"];
+const CONTINUE_FLIP_ALIASES: &[&str] = &["3.10", "3.11"];
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {
     let output: std::process::Output = Command::new("uv")
@@ -362,5 +550,55 @@ fn nested_try_in_except_recompiles_equivalent() {
         NESTED_TRY_IN_EXCEPT,
         "nested-try-in-except",
         ALIASES,
+    );
+}
+
+#[test]
+fn handler_that_continues_the_loop_keeps_the_else_arm_guarded() {
+    assert_recompiles_equivalent(
+        "py-handler-continues-loop",
+        HANDLER_CONTINUES_LOOP,
+        "handler-continues-loop",
+        CONTINUE_FLIP_ALIASES,
+    );
+}
+
+#[test]
+fn handler_continue_written_out_survives_the_pre311_block_model() {
+    assert_recompiles_equivalent(
+        "py-handler-continue-explicit",
+        HANDLER_CONTINUE_WRITTEN_OUT,
+        "handler-continue-explicit",
+        ALIASES,
+    );
+}
+
+#[test]
+fn handler_that_leaves_the_loop_does_not_become_a_continue() {
+    assert_recompiles_equivalent(
+        "py-handler-leaves-loop",
+        HANDLER_LEAVES_LOOP,
+        "handler-leaves-loop",
+        LEGACY_BLOCK_ALIASES,
+    );
+}
+
+#[test]
+fn handler_that_falls_through_to_the_loop_end_stays_a_fallthrough() {
+    assert_recompiles_equivalent(
+        "py-handler-falls-to-loop-end",
+        HANDLER_FALLS_TO_LOOP_END,
+        "handler-falls-to-loop-end",
+        ALIASES,
+    );
+}
+
+#[test]
+fn handler_that_terminates_does_not_become_a_continue() {
+    assert_recompiles_equivalent(
+        "py-handler-terminates",
+        HANDLER_TERMINATES_IN_LOOP,
+        "handler-terminates",
+        CONTINUE_FLIP_ALIASES,
     );
 }

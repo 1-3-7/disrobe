@@ -8100,6 +8100,7 @@ fn parse_pre311_except_handlers(
 ) -> Result<Vec<ExceptHandler>> {
     let mut handlers: Vec<ExceptHandler> = Vec::new();
     let mut i: usize = handler_start;
+    let continuation: Option<usize> = pre311_construct_continuation(stream, handler_start);
     while i < region_end {
         while i < region_end
             && matches!(
@@ -8119,7 +8120,8 @@ fn parse_pre311_except_handlers(
         let is_bare: bool = matches!(stream.ops[clause_start], CanonicalOp::Pop);
         if is_bare {
             let body_start: usize = pre311_skip_three_pops(stream, clause_start, region_end);
-            let body_end: usize = pre311_handler_body_end(stream, body_start, region_end);
+            let body_end: usize =
+                pre311_handler_body_end(stream, body_start, region_end, continuation);
             let next: usize = pre311_advance_after_handler(stream, body_end, region_end);
             let body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
             let body: Vec<Stmt> = append_handler_loop_jump(stream, body, body_start, body_end);
@@ -8199,7 +8201,8 @@ fn parse_pre311_except_handlers(
             }
             _ => {}
         }
-        let body_end: usize = pre311_handler_body_end(stream, body_start, next_handler);
+        let body_end: usize =
+            pre311_handler_body_end(stream, body_start, next_handler, continuation);
         let mut handler_body: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
         if let Some(bound) = name.as_deref() {
             strip_named_exc_cleanup(&mut handler_body, bound);
@@ -8273,7 +8276,12 @@ fn pre311_skip_first_pop(stream: &DecodedStream, lo: usize, hi: usize) -> usize 
     k
 }
 
-fn pre311_handler_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
+fn pre311_handler_body_end(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    continuation: Option<usize>,
+) -> usize {
     let mut end: usize = hi;
     while end > lo
         && matches!(
@@ -8289,12 +8297,71 @@ fn pre311_handler_body_end(stream: &DecodedStream, lo: usize, hi: usize) -> usiz
             )
         )
     {
-        if matches!(trailing_loop_jump_stmt(stream, lo, end), Some(Stmt::Break)) {
+        let stops_here: bool = match trailing_loop_jump_stmt(stream, lo, end) {
+            Some(Stmt::Break) => true,
+            Some(Stmt::Continue) => {
+                pre311_handler_tail_skips_continuation(stream, lo, end, continuation)
+            }
+            _ => false,
+        };
+        if stops_here {
             return end;
         }
         end -= 1;
     }
     end
+}
+
+fn pre311_construct_continuation(stream: &DecodedStream, handler_start: usize) -> Option<usize> {
+    let pop_block: usize = stream
+        .pre311_pop_block_idx
+        .range(..handler_start)
+        .next_back()
+        .copied()?;
+    pre311_body_exit_jump_target(stream, pop_block, handler_start)
+}
+
+fn pre311_handler_tail_skips_continuation(
+    stream: &DecodedStream,
+    lo: usize,
+    end: usize,
+    continuation: Option<usize>,
+) -> bool {
+    let Some(cont): Option<usize> = continuation else {
+        return false;
+    };
+    let Some(tail_idx): Option<usize> = (lo..end).rev().find(|&k: &usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            !matches!(
+                op,
+                CanonicalOp::Cache | CanonicalOp::Nop | CanonicalOp::ExtendedArg(_)
+            )
+        })
+    }) else {
+        return false;
+    };
+    let reachable: bool = !(lo..tail_idx).any(|k: usize| {
+        stream.ops.get(k).is_some_and(|op: &CanonicalOp| {
+            matches!(
+                op,
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+                    | CanonicalOp::Return
+                    | CanonicalOp::ReturnConst(_)
+                    | CanonicalOp::Raise(_)
+                    | CanonicalOp::Reraise(_)
+            )
+        })
+    });
+    if !reachable {
+        return false;
+    }
+    let Some(tail_op): Option<&CanonicalOp> = stream.ops.get(tail_idx) else {
+        return false;
+    };
+    resolve_jump_target(stream, tail_idx, tail_op).is_some_and(|target: usize| target != cont)
 }
 
 fn pre311_advance_after_handler(stream: &DecodedStream, lo: usize, hi: usize) -> usize {
