@@ -689,11 +689,12 @@ pub(crate) struct StreamProbe {
 }
 
 pub(crate) fn probe_stream(bytes: &[u8], opcode_budget: usize) -> StreamProbe {
+    let ceiling: usize = opcode_budget.min(OPCODE_BUDGET);
     let mut cur: Cursor<'_> = Cursor::new(bytes);
     let mut protocol: u8 = 0;
     let mut opcodes: usize = 0;
     loop {
-        if opcodes >= opcode_budget || cur.remaining() == 0 {
+        if opcodes >= ceiling || cur.remaining() == 0 {
             return StreamProbe { opcodes, end: None };
         }
         opcodes += 1;
@@ -950,7 +951,9 @@ mod tests {
         for file in &files {
             let bytes: Vec<u8> = std::fs::read(file).expect("read fixture");
             let Ok(dis): Result<Disassembly> = disassemble(&bytes) else {
-                defects.push(format!("{file:?}: the committed fixture no longer disassembles"));
+                defects.push(format!(
+                    "{file:?}: the committed fixture no longer disassembles"
+                ));
                 continue;
             };
             let Some(stop): Option<usize> = dis.stop_offset else {
@@ -977,6 +980,24 @@ mod tests {
             defects.join("\n")
         );
         assert!(checked >= 100, "only {checked} fixtures were compared");
+    }
+
+    #[test]
+    fn a_probe_never_walks_past_the_disassemblers_own_opcode_ceiling() {
+        let mut bytes: Vec<u8> = vec![0x80, 0x02];
+        bytes.extend(std::iter::repeat_n(b'N', OPCODE_BUDGET));
+        bytes.push(b'.');
+        let probe: StreamProbe = probe_stream(&bytes, usize::MAX);
+        assert_eq!(
+            probe.end, None,
+            "a stream past the disassembler's opcode budget must not probe as complete, or the \
+             recovered member would be one the disassembler refuses"
+        );
+        assert_eq!(probe.opcodes, OPCODE_BUDGET);
+        assert!(matches!(
+            disassemble(&bytes),
+            Err(Error::OpcodeBudget { .. })
+        ));
     }
 
     #[test]
