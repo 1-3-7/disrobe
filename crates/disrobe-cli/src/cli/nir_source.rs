@@ -3,9 +3,23 @@ use std::path::Path;
 use disrobe_core::Rung;
 use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
-use disrobe_nir::{NirModule, decode_nir};
+use disrobe_nir::{NirModule, SourceLang, decode_nir};
 use disrobe_pass_native::build_disasm_payload;
-use disrobe_query::disasm_to_nir;
+use disrobe_query::{disasm_to_nir, disasm_to_nir_as};
+
+fn native_source_lang(bytes: &[u8]) -> SourceLang {
+    use object::Object as _;
+
+    let Ok(obj): Result<object::File<'_>, object::Error> = object::File::parse(bytes) else {
+        return SourceLang::NativeX86;
+    };
+    match obj.architecture() {
+        object::Architecture::X86_64 | object::Architecture::I386 => SourceLang::NativeX86,
+        object::Architecture::Aarch64 | object::Architecture::Arm => SourceLang::NativeArm,
+        object::Architecture::Mips | object::Architecture::Mips64 => SourceLang::NativeMips,
+        _ => SourceLang::Unknown,
+    }
+}
 
 pub(crate) fn lift_module_from_bytes(input: &Path, bytes: &[u8]) -> miette::Result<NirModule> {
     if let Ok(env) = Envelope::decode(bytes) {
@@ -20,7 +34,7 @@ pub(crate) fn lift_module_from_bytes(input: &Path, bytes: &[u8]) -> miette::Resu
             input.display()
         )
     })?;
-    Ok(disasm_to_nir(&payload))
+    Ok(disasm_to_nir_as(&payload, native_source_lang(bytes)))
 }
 
 fn module_from_envelope(env: &Envelope, input: &Path) -> miette::Result<NirModule> {

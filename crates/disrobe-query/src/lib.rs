@@ -14,7 +14,7 @@ use disrobe_ir::{Envelope, EnvelopeError};
 use disrobe_nir::{NirCodecError, NirModule, decode_nir};
 
 pub use eval::evaluate;
-pub use lift::disasm_to_nir;
+pub use lift::{disasm_to_nir, disasm_to_nir_as};
 pub use model::{
     BasicBlock, BlockKind, CallGraph, CallGraphEdge, CallGraphNode, Function, InsnClass,
     InsnSegmentsView, InsnView, IsaView, Module, StackEffectView, SymbolKind, SymbolRef,

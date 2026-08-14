@@ -25,6 +25,7 @@ const CLEAN_VS_VIRTUALIZED_NAMED_CHANGES: u64 = 2;
 const WASM_FUNCTIONS: u64 = 2;
 const FULL_LISTING: usize = 100_000;
 const AARCH64: &str = "corpus/native/discovery/disc_aarch64.unstripped.elf";
+const ARM32: &str = "corpus/native/arch/arm32_forms.elf";
 const LINEAGE_COMPLETE_FAMILIES: u64 = 317;
 
 const KNOWN_REASONS: [&str; 6] = [
@@ -353,6 +354,24 @@ fn lineage_refuses_a_variant_whose_architecture_differs_from_the_anchor() {
     assert!(
         stderr.contains("DR-CLI-0874"),
         "a mixed-architecture variant must be refused, saw: {stderr}"
+    );
+}
+
+#[test]
+fn a_native_image_lifts_under_the_language_of_its_own_architecture() {
+    let x86: Value = parse(&run_semdiff(CLEAN, CLEAN));
+    assert_eq!(
+        x86["base_lang"], "native-x86",
+        "an x86-64 image must lift as x86"
+    );
+    let arm: Value = parse(&run_semdiff(ARM32, ARM32));
+    assert_eq!(
+        arm["base_lang"], "native-arm",
+        "an arm image must not inherit the x86 default the native lift used to apply to every architecture"
+    );
+    assert_ne!(
+        x86["base_lang"], arm["base_lang"],
+        "two different machine architectures must not report one source language"
     );
 }
 

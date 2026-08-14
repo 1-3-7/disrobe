@@ -46,6 +46,11 @@ fn instruction_end(offset: u64, byte_len: usize) -> u64 {
 
 #[must_use]
 pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
+    disasm_to_nir_as(payload, SourceLang::NativeX86)
+}
+
+#[must_use]
+pub fn disasm_to_nir_as(payload: &DisasmPayload, lang: SourceLang) -> NirModule {
     let function_symbols: Vec<FunctionSymbol<'_>> = disasm_function_symbols(&payload.symbol_table);
 
     let mut sorted_insns: Vec<&DisasmInstruction> = payload.instructions.iter().collect();
@@ -71,7 +76,7 @@ pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
             };
             let instructions: Vec<NirInstr> = sorted_insns[lo..hi]
                 .iter()
-                .map(|i: &&DisasmInstruction| lift_instruction(i))
+                .map(|i: &&DisasmInstruction| lift_instruction(i, lang))
                 .collect();
             NirFunction {
                 name: sym.name.to_owned(),
@@ -79,7 +84,7 @@ pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
                 end,
                 is_export: sym.is_export,
                 instructions,
-                source: SourceRef::labelled(SourceLang::NativeX86, start, sym.name.to_owned()),
+                source: SourceRef::labelled(lang, start, sym.name.to_owned()),
             }
         })
         .collect();
@@ -96,13 +101,13 @@ pub fn disasm_to_nir(payload: &DisasmPayload) -> NirModule {
 
     NirModule {
         source_hash: payload.source_hash,
-        lang: SourceLang::NativeX86,
+        lang,
         functions,
         symbols,
     }
 }
 
-fn lift_instruction(insn: &DisasmInstruction) -> NirInstr {
+fn lift_instruction(insn: &DisasmInstruction, lang: SourceLang) -> NirInstr {
     let op: NirOp = lift_op(insn);
     let (reads_memory, writes_memory): (bool, bool) = memory_access(insn);
     NirInstr {
@@ -113,7 +118,7 @@ fn lift_instruction(insn: &DisasmInstruction) -> NirInstr {
         reads_memory,
         writes_memory,
         byte_width: is_byte_width(insn),
-        source: SourceRef::new(SourceLang::NativeX86, insn.offset),
+        source: SourceRef::new(lang, insn.offset),
     }
 }
 
