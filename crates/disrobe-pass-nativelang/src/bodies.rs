@@ -63,6 +63,7 @@ pub enum BodySkip {
 pub enum BodyRejection {
     Decompiler(String),
     UnboundIdentifier(String),
+    GateBudgetExhausted,
     EmptySource,
 }
 
@@ -370,18 +371,14 @@ fn body_status(found: &NativeRecoveredFunction, retained: &mut u64, budget: u64)
             reason: BodyRejection::EmptySource,
         };
     }
-    if let Some(unbound) = first_unbound_identifier(&found.source) {
-        return BodyStatus::Rejected {
-            reason: BodyRejection::UnboundIdentifier(unbound),
-        };
+    if let Some(reason) = first_unbound_identifier(&found.source) {
+        return BodyStatus::Rejected { reason };
     }
     let rust: RustBody = match found.rust_source.as_ref() {
         None => RustBody::NotEmitted,
         Some(source) if source.trim().is_empty() => RustBody::Rejected(BodyRejection::EmptySource),
-        Some(source) => first_undeclared_rust_call(source).map_or_else(
-            || RustBody::Emitted(source.clone()),
-            |unbound: String| RustBody::Rejected(BodyRejection::UnboundIdentifier(unbound)),
-        ),
+        Some(source) => first_undeclared_rust_call(source)
+            .map_or_else(|| RustBody::Emitted(source.clone()), RustBody::Rejected),
     };
     let c_bytes: u64 = found.source.len() as u64;
     let rust_bytes: u64 = match &rust {
@@ -519,7 +516,14 @@ enum CToken {
     Literal,
 }
 
-fn tokenize_c(source: &str) -> (Vec<CToken>, BTreeSet<String>) {
+#[derive(Debug)]
+struct CTokens {
+    tokens: Vec<CToken>,
+    provided: BTreeSet<String>,
+    truncated: bool,
+}
+
+fn tokenize_c(source: &str) -> CTokens {
     let mut tokens: Vec<CToken> = Vec::new();
     let mut provided: BTreeSet<String> = BTreeSet::new();
     for line in source.lines() {
@@ -572,8 +576,19 @@ fn tokenize_c(source: &str) -> (Vec<CToken>, BTreeSet<String>) {
                 index = index.saturating_add(1);
             }
         }
+        if tokens.len() >= MAX_GATE_TOKENS {
+            return CTokens {
+                tokens,
+                provided,
+                truncated: true,
+            };
+        }
     }
-    (tokens, provided)
+    CTokens {
+        tokens,
+        provided,
+        truncated: false,
+    }
 }
 
 fn strip_attribute_groups(tokens: Vec<CToken>) -> Vec<CToken> {
@@ -614,9 +629,13 @@ fn strip_attribute_groups(tokens: Vec<CToken>) -> Vec<CToken> {
     out
 }
 
-fn first_unbound_identifier(source: &str) -> Option<String> {
-    let (raw_tokens, provided): (Vec<CToken>, BTreeSet<String>) = tokenize_c(source);
-    let tokens: Vec<CToken> = strip_attribute_groups(raw_tokens);
+fn first_unbound_identifier(source: &str) -> Option<BodyRejection> {
+    let scan: CTokens = tokenize_c(source);
+    if scan.truncated {
+        return Some(BodyRejection::GateBudgetExhausted);
+    }
+    let provided: BTreeSet<String> = scan.provided;
+    let tokens: Vec<CToken> = strip_attribute_groups(scan.tokens);
     let mut type_names: BTreeSet<String> = BTreeSet::new();
     let mut typedef_depth: Option<usize> = None;
     let mut brace_depth: usize = 0;
@@ -683,7 +702,7 @@ fn first_unbound_identifier(source: &str) -> Option<String> {
     }
     used.into_iter()
         .find(|name: &&str| !bound.contains(*name))
-        .map(str::to_owned)
+        .map(|name: &str| BodyRejection::UnboundIdentifier(name.to_owned()))
 }
 
 const RUST_CALL_KEYWORDS: &[&str] = &[
@@ -691,8 +710,12 @@ const RUST_CALL_KEYWORDS: &[&str] = &[
     "match", "move", "mut", "pub", "return", "static", "unsafe", "while",
 ];
 
-fn first_undeclared_rust_call(source: &str) -> Option<String> {
-    let (tokens, _): (Vec<CToken>, BTreeSet<String>) = tokenize_c(source);
+fn first_undeclared_rust_call(source: &str) -> Option<BodyRejection> {
+    let scan: CTokens = tokenize_c(source);
+    if scan.truncated {
+        return Some(BodyRejection::GateBudgetExhausted);
+    }
+    let tokens: Vec<CToken> = scan.tokens;
     let mut declared: BTreeSet<String> = BTreeSet::new();
     for (index, token) in tokens.iter().enumerate() {
         if matches!(token, CToken::Ident(name) if name == "fn")
@@ -721,7 +744,7 @@ fn first_undeclared_rust_call(source: &str) -> Option<String> {
         if qualified {
             continue;
         }
-        return Some(name.clone());
+        return Some(BodyRejection::UnboundIdentifier(name.clone()));
     }
     None
 }
@@ -998,7 +1021,7 @@ mod tests {
                             a0;\n    if (sel_cc_0 == 0) { return r_rax; }\n    return 0;\n}\n";
         assert_eq!(
             first_unbound_identifier(source),
-            Some("sel_cc_0".to_owned())
+            Some(BodyRejection::UnboundIdentifier("sel_cc_0".to_owned()))
         );
     }
 
@@ -1020,7 +1043,9 @@ mod tests {
                             r_rax\n}\n";
         assert_eq!(
             first_undeclared_rust_call(source),
-            Some("system_osTryAllocPages_1009d50".to_owned())
+            Some(BodyRejection::UnboundIdentifier(
+                "system_osTryAllocPages_1009d50".to_owned()
+            ))
         );
     }
 
@@ -1038,7 +1063,29 @@ mod tests {
     fn gate_rejects_an_undeclared_call_without_its_header() {
         let source: &str = "#include <stdint.h>\nuint64_t f(uint64_t a0) {\n    memcpy(&a0, &a0, \
                             8);\n    return a0;\n}\n";
-        assert_eq!(first_unbound_identifier(source), Some("memcpy".to_owned()));
+        assert_eq!(
+            first_unbound_identifier(source),
+            Some(BodyRejection::UnboundIdentifier("memcpy".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_token_flood_exhausts_the_gate_budget_instead_of_passing_unchecked() {
+        let mut source: String = String::from("#include <stdint.h>\nuint64_t f(void) {\n");
+        for index in 0..(MAX_GATE_TOKENS / 4) {
+            source.push_str("    a");
+            source.push_str(&index.to_string());
+            source.push_str(" = 0;\n");
+        }
+        source.push_str("    return 0;\n}\n");
+        assert_eq!(
+            first_unbound_identifier(&source),
+            Some(BodyRejection::GateBudgetExhausted)
+        );
+        assert_eq!(
+            first_undeclared_rust_call(&source),
+            Some(BodyRejection::GateBudgetExhausted)
+        );
     }
 
     #[test]
