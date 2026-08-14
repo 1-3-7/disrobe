@@ -2685,14 +2685,70 @@ enum PayloadWrap {
     Compressed(CompressionWrap),
 }
 
+const EOCD_SIGNATURE: [u8; 4] = [b'P', b'K', 0x05, 0x06];
+const EOCD_MIN_LEN: usize = 22;
+const EOCD_MAX_COMMENT: usize = 0xFFFF;
+const ZIP64_ENTRY_SENTINEL: u16 = 0xFFFF;
+
+fn find_eocd(bytes: &[u8]) -> Option<usize> {
+    let window: usize = EOCD_MIN_LEN
+        .saturating_add(EOCD_MAX_COMMENT)
+        .min(bytes.len());
+    let start: usize = bytes.len().saturating_sub(window);
+    bytes
+        .get(start..)?
+        .windows(EOCD_SIGNATURE.len())
+        .rposition(|w: &[u8]| w == EOCD_SIGNATURE)
+        .map(|offset: usize| start + offset)
+}
+
+fn diagnose_zip_failure(bytes: &[u8], upstream: &str) -> String {
+    if bytes.is_empty() {
+        return "the input is empty, so it holds no archive".to_owned();
+    }
+    let Some(eocd): Option<usize> = find_eocd(bytes) else {
+        return format!(
+            "no end-of-central-directory record in the last {} byte(s), so this is not a zip archive whatever its leading bytes say ({upstream})",
+            EOCD_MIN_LEN
+                .saturating_add(EOCD_MAX_COMMENT)
+                .min(bytes.len())
+        );
+    };
+    let Some(record): Option<&[u8]> = bytes.get(eocd..eocd + EOCD_MIN_LEN) else {
+        return format!(
+            "the end-of-central-directory record at offset {eocd} is truncated; {} byte(s) remain of the {EOCD_MIN_LEN} it needs ({upstream})",
+            bytes.len().saturating_sub(eocd)
+        );
+    };
+    let declared: u16 = u16::from_le_bytes([record[10], record[11]]);
+    let directory_size: u32 = u32::from_le_bytes([record[12], record[13], record[14], record[15]]);
+    let directory_offset: u32 =
+        u32::from_le_bytes([record[16], record[17], record[18], record[19]]);
+    if declared == ZIP64_ENTRY_SENTINEL {
+        return format!(
+            "the end-of-central-directory record declares the zip64 entry-count sentinel, so the zip64 locator must be read and was not ({upstream})"
+        );
+    }
+    let end_of_directory: u64 = u64::from(directory_offset) + u64::from(directory_size);
+    if end_of_directory > bytes.len() as u64 {
+        return format!(
+            "the central directory is declared at offset {directory_offset} for {directory_size} byte(s), which ends past the {} byte file ({upstream})",
+            bytes.len()
+        );
+    }
+    format!(
+        "the end-of-central-directory record declares {declared} entr(y/ies) the archive does not satisfy ({upstream})"
+    )
+}
+
 fn extract_zip(
     kind: ContainerKind,
     bytes: &[u8],
     out_dir: &Path,
     quota: ExtractionQuota,
 ) -> Result<ExtractionResult> {
-    let mut archive: zip::ZipArchive<Cursor<&[u8]>> =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| Error::Zip(e.to_string()))?;
+    let mut archive: zip::ZipArchive<Cursor<&[u8]>> = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| Error::Zip(diagnose_zip_failure(bytes, &e.to_string())))?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let count: usize = archive.len();
     let max_entries: usize = quota.max_entries.min(crate::quota::ABSOLUTE_MAX_ENTRIES);
