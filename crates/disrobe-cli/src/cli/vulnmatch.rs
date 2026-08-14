@@ -6,7 +6,7 @@ use disrobe_ir::Envelope;
 use disrobe_ir::payload::{DisasmPayload, decode_disasm};
 use disrobe_nir::{NirModule, decode_nir};
 use disrobe_pass_native::build_disasm_payload;
-use disrobe_query::{CallGraph, Module, disasm_to_nir};
+use disrobe_query::{CallGraph, Module, disasm_to_nir, disasm_to_nir_as};
 use disrobe_taint::{TaintConfig, TaintReport};
 use disrobe_vulnmatch::{
     Budget, Finding, FindingTier, FunctionId, PathWitness, QueryCallGraphView, Report, RuleStore,
@@ -149,7 +149,7 @@ fn load_module(input: &Path) -> miette::Result<LoadedModule> {
     })?;
     Ok(LoadedModule {
         query: Module::from_disasm(&payload),
-        nir: disasm_to_nir(&payload),
+        nir: disasm_to_nir_as(&payload, crate::cli::nir_source::native_source_lang(&bytes)),
         product_sha256,
     })
 }

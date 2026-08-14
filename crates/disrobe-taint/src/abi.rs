@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(
             CallAbi::detect(&module),
             CallAbi::Aarch64,
-            "the native disasm lift tags every architecture as native-x86, so the register file has to come from the operands"
+            "a module can still carry the x86 language while holding aarch64 operands, from an envelope or a headerless image, so the register file has to come from the operands rather than the language"
         );
     }
 

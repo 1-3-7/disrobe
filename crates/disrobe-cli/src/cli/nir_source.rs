@@ -7,7 +7,7 @@ use disrobe_nir::{NirModule, SourceLang, decode_nir};
 use disrobe_pass_native::build_disasm_payload;
 use disrobe_query::{disasm_to_nir, disasm_to_nir_as};
 
-fn native_source_lang(bytes: &[u8]) -> SourceLang {
+pub(crate) fn native_source_lang(bytes: &[u8]) -> SourceLang {
     use object::Object as _;
 
     let Ok(obj): Result<object::File<'_>, object::Error> = object::File::parse(bytes) else {
@@ -156,4 +156,58 @@ fn is_managed_pe(bytes: &[u8]) -> bool {
         .ok()
         .and_then(|pe| disrobe_pass_dotnet::parse_clr_header(bytes, &pe).ok())
         .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn elf64_header(machine: u16) -> Vec<u8> {
+        let mut header: Vec<u8> = vec![0u8; 64];
+        header[..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        header[4] = 2;
+        header[5] = 1;
+        header[6] = 1;
+        header[16..18].copy_from_slice(&2u16.to_le_bytes());
+        header[18..20].copy_from_slice(&machine.to_le_bytes());
+        header[20..24].copy_from_slice(&1u32.to_le_bytes());
+        header[52..54].copy_from_slice(&64u16.to_le_bytes());
+        header
+    }
+
+    #[test]
+    fn a_recognized_machine_maps_to_its_own_source_language() {
+        assert_eq!(
+            native_source_lang(&elf64_header(0x3e)),
+            SourceLang::NativeX86
+        );
+        assert_eq!(
+            native_source_lang(&elf64_header(0xb7)),
+            SourceLang::NativeArm
+        );
+        assert_eq!(
+            native_source_lang(&elf64_header(0x08)),
+            SourceLang::NativeMips
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_machine_reaches_unknown_rather_than_defaulting_to_x86() {
+        let riscv: Vec<u8> = elf64_header(0xf3);
+        assert_eq!(
+            native_source_lang(&riscv),
+            SourceLang::Unknown,
+            "a machine the mapping does not name must not be silently reported as x86"
+        );
+    }
+
+    #[test]
+    fn an_image_no_object_parser_accepts_keeps_the_x86_default() {
+        let flat: Vec<u8> = vec![0x90u8; 64];
+        assert_eq!(
+            native_source_lang(&flat),
+            SourceLang::NativeX86,
+            "a headerless image still reaches the x86 disassembler, so the default must survive"
+        );
+    }
 }
