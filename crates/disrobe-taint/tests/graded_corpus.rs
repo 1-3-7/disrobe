@@ -502,8 +502,11 @@ fn expected_group_counts() -> Vec<(juliet_corpus::Category, usize)> {
 #[test]
 fn juliet_corpus_selection_matches_the_declared_population() {
     let case: &str = "juliet_corpus_selection_matches_the_declared_population";
-    let Some(content) = juliet_corpus::load_corpus_content(case, juliet_corpus::CorpusSlice::C)
-    else {
+    let Some(content) = juliet_corpus::load_corpus_content(
+        case,
+        juliet_corpus::CorpusSlice::C,
+        juliet_corpus::SinkFamily::System,
+    ) else {
         return;
     };
     let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
@@ -530,12 +533,13 @@ fn juliet_corpus_selection_matches_the_declared_population() {
 fn run_juliet_corpus_grading(
     opt_flag: &'static str,
     slice: juliet_corpus::CorpusSlice,
+    family: juliet_corpus::SinkFamily,
     case: &str,
 ) -> Option<juliet_corpus::GradedReport> {
     let content: juliet_corpus::JulietCorpusContent =
-        juliet_corpus::load_corpus_content(case, slice)?;
+        juliet_corpus::load_corpus_content(case, slice, family)?;
     let _compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
-    let config: TaintConfig = juliet_corpus::default_taint_config();
+    let config: TaintConfig = juliet_corpus::taint_config_for(family);
     let report: juliet_corpus::GradedReport =
         juliet_corpus::grade_corpus(&content, opt_flag, &config);
     println!("{}", report.render());
@@ -671,6 +675,7 @@ fn juliet_cwe78_command_injection_precision_recall_o0() {
     let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
         "-O0",
         juliet_corpus::CorpusSlice::C,
+        juliet_corpus::SinkFamily::System,
         "juliet_cwe78_command_injection_precision_recall_o0",
     ) else {
         return;
@@ -683,6 +688,236 @@ fn juliet_cwe78_command_injection_precision_recall_o0() {
         "aggregate 12 of 190 (6.3%) at -O0, published in docs/src/anti-analysis.md and in the \
          taint-juliet-cwe78 evidence descriptor's note",
     );
+}
+
+#[test]
+fn juliet_execl_corpus_selection_matches_the_declared_population() {
+    let case: &str = "juliet_execl_corpus_selection_matches_the_declared_population";
+    let Some(content) = juliet_corpus::load_corpus_content(
+        case,
+        juliet_corpus::CorpusSlice::C,
+        juliet_corpus::SinkFamily::Execl,
+    ) else {
+        return;
+    };
+    let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
+        std::collections::BTreeMap::new();
+    for group in &content.groups {
+        *actual.entry(group.category).or_insert(0) += 1;
+        assert!(
+            group.flaw_file.contains("_execl_"),
+            "{}: the execl selection took a file the execl sink family does not name",
+            group.flaw_file
+        );
+    }
+    for (category, expected) in expected_group_counts() {
+        let got: usize = actual.get(&category).copied().unwrap_or(0);
+        assert_eq!(
+            got,
+            expected,
+            "{}: the execl sink family is generated from the same flow-variant templates as the \
+             system family, so its per-category population must match group for group; expected \
+             {expected}, found {got}",
+            category.label()
+        );
+    }
+    assert_eq!(
+        content.groups.len(),
+        190,
+        "the char/execl-sink/.c-only CWE-78 slice must total 190 testcase groups"
+    );
+}
+
+const EXECL_EXCLUSION_PROBE_GROUPS: usize = 4;
+
+fn group_named<'a>(
+    content: &'a juliet_corpus::JulietCorpusContent,
+    flaw_file: &str,
+) -> &'a juliet_corpus::TestcaseGroup {
+    content
+        .groups
+        .iter()
+        .find(|group: &&juliet_corpus::TestcaseGroup| group.flaw_file == flaw_file)
+        .unwrap_or_else(|| {
+            panic!(
+                "the {} slice has no group named {flaw_file}; the two sink families are generated \
+                 from the same templates, so a missing counterpart means the paired control is \
+                 comparing different testcases",
+                content.family.label()
+            )
+        })
+}
+
+#[test]
+fn the_execl_family_stays_excluded_only_while_the_lift_path_cannot_name_its_import() {
+    let case: &str =
+        "the_execl_family_stays_excluded_only_while_the_lift_path_cannot_name_its_import";
+    let slice: juliet_corpus::CorpusSlice = juliet_corpus::CorpusSlice::C;
+    let execl: juliet_corpus::SinkFamily = juliet_corpus::SinkFamily::Execl;
+    let system: juliet_corpus::SinkFamily = juliet_corpus::SinkFamily::System;
+    let Some(execl_content): Option<juliet_corpus::JulietCorpusContent> =
+        juliet_corpus::load_corpus_content(case, slice, execl)
+    else {
+        return;
+    };
+    let Some(system_content): Option<juliet_corpus::JulietCorpusContent> =
+        juliet_corpus::load_corpus_content(case, slice, system)
+    else {
+        return;
+    };
+    let compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
+    let execl_config: TaintConfig = juliet_corpus::taint_config_for(execl);
+    let system_config: TaintConfig = juliet_corpus::taint_config_for(system);
+    assert!(
+        execl_config.is_sink("_execl"),
+        "{case}: execl must be a configured sink, or a miss would only mean nobody asked for it"
+    );
+    let execl_run: juliet_corpus::GradeRun<'_> =
+        juliet_corpus::GradeRun::new(compiler, "-O2", &execl_content, &execl_config);
+    let system_run: juliet_corpus::GradeRun<'_> =
+        juliet_corpus::GradeRun::new(compiler, "-O2", &system_content, &system_config);
+
+    let probed: Vec<&juliet_corpus::TestcaseGroup> = execl_content
+        .groups
+        .iter()
+        .filter(|group: &&juliet_corpus::TestcaseGroup| group.flaw_file.contains("_console_execl_"))
+        .take(EXECL_EXCLUSION_PROBE_GROUPS)
+        .collect();
+    assert_eq!(
+        probed.len(),
+        EXECL_EXCLUSION_PROBE_GROUPS,
+        "{case}: the console source family supplies the pair's fixed variable, a source the lift \
+         path names in both arms, and the selection no longer holds \
+         {EXECL_EXCLUSION_PROBE_GROUPS} of its groups"
+    );
+
+    let mut counterpart_sinks_named: usize = 0;
+    for group in probed {
+        let grade: juliet_corpus::GroupGrade =
+            juliet_corpus::grade_group(&execl_run, &execl_content, group);
+        assert_eq!(
+            grade.unanalysable_reason, None,
+            "{}: the execl family builds on this host, so its exclusion must rest on import \
+             naming rather than on a compile failure like the w32_spawnv family's",
+            group.flaw_file
+        );
+        assert_ne!(
+            grade.bad_verdict,
+            juliet_corpus::CaseVerdict::Timeout,
+            "{}: a timeout would make this probe measure the clock, not import naming",
+            group.flaw_file
+        );
+        assert!(
+            !grade.sink_resolved,
+            "{}: the lifted module now names this binary's execl call. gcc reaches _execl through \
+             an indirect call on the import address table, and ImportThunks keys names by a direct \
+             call target, so no name has ever reached the sink here. A host or lifter that does \
+             name it removes the reason this family is left out of the graded population, and the \
+             family must be enrolled and graded instead of excluded",
+            group.flaw_file
+        );
+        assert_eq!(
+            grade.bad_verdict,
+            juliet_corpus::CaseVerdict::FalseNegative,
+            "{}: an unnamed sink cannot produce a source-to-sink finding",
+            group.flaw_file
+        );
+        assert_eq!(
+            grade.reported_flows, 0,
+            "{}: no configured sink is named in this binary, so it can report no flow at all",
+            group.flaw_file
+        );
+        assert!(
+            grade.source_resolved,
+            "{}: the lift path could not even name this binary's fgets source, so a missing sink \
+             name proves nothing about the sink; the pair needs a source both arms resolve",
+            group.flaw_file
+        );
+
+        let counterpart_file: String = group.flaw_file.replace("_execl_", "_system_");
+        let counterpart: &juliet_corpus::TestcaseGroup =
+            group_named(&system_content, &counterpart_file);
+        let counterpart_grade: juliet_corpus::GroupGrade =
+            juliet_corpus::grade_group(&system_run, &system_content, counterpart);
+        assert_eq!(
+            counterpart_grade.unanalysable_reason, None,
+            "{counterpart_file}: the system counterpart must build for the pair to isolate the \
+             sink as the only difference"
+        );
+        assert!(
+            counterpart_grade.source_resolved,
+            "{counterpart_file}: both arms of the pair must name the same source for the sink to \
+             be the only difference between them"
+        );
+        if counterpart_grade.sink_resolved {
+            counterpart_sinks_named += 1;
+        }
+    }
+
+    assert_eq!(
+        counterpart_sinks_named, EXECL_EXCLUSION_PROBE_GROUPS,
+        "{case}: only {counterpart_sinks_named} of {EXECL_EXCLUSION_PROBE_GROUPS} system \
+         counterparts had their own sink named. The pair is what proves the execl exclusion is a \
+         property of how that import is called rather than of these testcases, and it stops \
+         holding once the control stops naming its sink"
+    );
+}
+
+const SPAWNV_EXCLUSION_PROBE_GROUPS: usize = 3;
+
+#[test]
+fn the_w32_spawnv_family_stays_excluded_only_while_this_host_cannot_build_it() {
+    let case: &str = "the_w32_spawnv_family_stays_excluded_only_while_this_host_cannot_build_it";
+    let slice: juliet_corpus::CorpusSlice = juliet_corpus::CorpusSlice::C;
+    let family: juliet_corpus::SinkFamily = juliet_corpus::SinkFamily::Win32SpawnV;
+    let Some(content): Option<juliet_corpus::JulietCorpusContent> =
+        juliet_corpus::load_corpus_content(case, slice, family)
+    else {
+        return;
+    };
+    let compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
+    let config: TaintConfig = juliet_corpus::taint_config_for(family);
+    assert_eq!(
+        content.groups.len(),
+        190,
+        "{case}: the char/w32_spawnv-sink/.c-only CWE-78 slice must select the same 190 testcase \
+         groups the other sink families ship; a probe over an empty selection would prove nothing"
+    );
+    let run: juliet_corpus::GradeRun<'_> =
+        juliet_corpus::GradeRun::new(compiler, "-O2", &content, &config);
+
+    for group in content.groups.iter().take(SPAWNV_EXCLUSION_PROBE_GROUPS) {
+        let grade: juliet_corpus::GroupGrade = juliet_corpus::grade_group(&run, &content, group);
+        let reason: &str = grade.unanalysable_reason.as_deref().unwrap_or("");
+        assert_eq!(
+            grade.bad_verdict,
+            juliet_corpus::CaseVerdict::Unanalysable,
+            "{}: this host built a w32_spawnv testcase. The family is left out of the graded \
+             population only because the host toolchain rejects the `char *argv[]` Juliet passes \
+             to _spawnv's `const char * const *` parameter, so a host that accepts it removes the \
+             reason for the exclusion and the family must be enrolled and graded instead of \
+             skipped. Recorded outcome: {reason}",
+            group.flaw_file
+        );
+        assert_eq!(
+            grade.good_verdict,
+            juliet_corpus::CaseVerdict::Unanalysable,
+            "{}: a group that cannot be built must record the same unanalysable verdict on both \
+             sides rather than crediting its good side as a true negative",
+            group.flaw_file
+        );
+        assert!(
+            reason.contains("compiler exited"),
+            "{}: the exclusion must be carried by a captured compiler diagnostic, not by an \
+             unexplained absence; recorded outcome: {reason}",
+            group.flaw_file
+        );
+        assert_eq!(
+            grade.reported_flows, 0,
+            "{}: a group that never produced a binary cannot have produced findings",
+            group.flaw_file
+        );
+    }
 }
 
 fn expected_cpp_group_counts() -> Vec<(juliet_corpus::Category, usize)> {
@@ -709,8 +944,11 @@ fn expected_cpp_group_counts() -> Vec<(juliet_corpus::Category, usize)> {
 #[test]
 fn juliet_cpp_corpus_selection_matches_the_declared_population() {
     let case: &str = "juliet_cpp_corpus_selection_matches_the_declared_population";
-    let Some(content) = juliet_corpus::load_corpus_content(case, juliet_corpus::CorpusSlice::Cpp)
-    else {
+    let Some(content) = juliet_corpus::load_corpus_content(
+        case,
+        juliet_corpus::CorpusSlice::Cpp,
+        juliet_corpus::SinkFamily::System,
+    ) else {
         return;
     };
     let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
@@ -854,6 +1092,7 @@ fn juliet_cwe78_cpp_precision_recall_o2() {
     let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
         "-O2",
         juliet_corpus::CorpusSlice::Cpp,
+        juliet_corpus::SinkFamily::System,
         "juliet_cwe78_cpp_precision_recall_o2",
     ) else {
         return;
@@ -872,6 +1111,7 @@ fn juliet_cwe78_cpp_precision_recall_o0() {
     let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
         "-O0",
         juliet_corpus::CorpusSlice::Cpp,
+        juliet_corpus::SinkFamily::System,
         "juliet_cwe78_cpp_precision_recall_o0",
     ) else {
         return;
@@ -892,32 +1132,35 @@ fn leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss() {
     let case: &str = "leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss";
     let slice: juliet_corpus::CorpusSlice = juliet_corpus::CorpusSlice::Cpp;
     let Some(content): Option<juliet_corpus::JulietCorpusContent> =
-        juliet_corpus::load_corpus_content(case, slice)
+        juliet_corpus::load_corpus_content(case, slice, juliet_corpus::SinkFamily::System)
     else {
         return;
     };
     let compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
     let config: TaintConfig = juliet_corpus::default_taint_config();
-    let support_dir: &std::path::Path = content.testcasesupport_dir.path();
     assert!(
         content.groups.len() <= MATCH_RULE_CONTROL_SCAN_LIMIT,
         "{case}: the c++ selection grew to {} groups, past the {MATCH_RULE_CONTROL_SCAN_LIMIT} this \
          control is bounded to compile",
         content.groups.len()
     );
+    let demangling_run: juliet_corpus::GradeRun<'_> = juliet_corpus::GradeRun {
+        compiler,
+        opt_flag: "-O2",
+        resolution: juliet_corpus::NameResolution::Demangled,
+        config: &config,
+    };
+    let as_reported_run: juliet_corpus::GradeRun<'_> = juliet_corpus::GradeRun {
+        compiler,
+        opt_flag: "-O2",
+        resolution: juliet_corpus::NameResolution::AsReported,
+        config: &config,
+    };
 
     let mut control: Option<(&juliet_corpus::TestcaseGroup, juliet_corpus::GroupGrade)> = None;
     for group in content.groups.iter().take(MATCH_RULE_CONTROL_SCAN_LIMIT) {
-        let grade: juliet_corpus::GroupGrade = juliet_corpus::grade_group(
-            compiler,
-            "-O2",
-            slice,
-            juliet_corpus::NameResolution::Demangled,
-            group,
-            &content.files,
-            support_dir,
-            &config,
-        );
+        let grade: juliet_corpus::GroupGrade =
+            juliet_corpus::grade_group(&demangling_run, &content, group);
         if grade.bad_verdict == juliet_corpus::CaseVerdict::TruePositive {
             control = Some((group, grade));
             break;
@@ -942,16 +1185,8 @@ fn leaving_a_cpp_symbol_mangled_turns_a_recovered_flow_into_a_miss() {
         group.flaw_file
     );
 
-    let unresolved_grade: juliet_corpus::GroupGrade = juliet_corpus::grade_group(
-        compiler,
-        "-O2",
-        slice,
-        juliet_corpus::NameResolution::AsReported,
-        group,
-        &content.files,
-        support_dir,
-        &config,
-    );
+    let unresolved_grade: juliet_corpus::GroupGrade =
+        juliet_corpus::grade_group(&as_reported_run, &content, group);
     assert_eq!(
         unresolved_grade.reported_flows, resolved_grade.reported_flows,
         "{}: only the match rule changed, so the engine must report the same number of flows both \
@@ -1036,6 +1271,7 @@ fn juliet_cwe78_command_injection_precision_recall_o2() {
     let Some(report): Option<juliet_corpus::GradedReport> = run_juliet_corpus_grading(
         "-O2",
         juliet_corpus::CorpusSlice::C,
+        juliet_corpus::SinkFamily::System,
         "juliet_cwe78_command_injection_precision_recall_o2",
     ) else {
         return;

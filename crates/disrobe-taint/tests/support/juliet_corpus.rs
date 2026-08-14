@@ -125,6 +125,46 @@ impl CorpusSlice {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SinkFamily {
+    System,
+    Execl,
+    Win32SpawnV,
+}
+
+impl SinkFamily {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Execl => "execl",
+            Self::Win32SpawnV => "w32_spawnv",
+        }
+    }
+
+    const fn file_token(self) -> &'static str {
+        match self {
+            Self::System => "_system_",
+            Self::Execl => "_execl_",
+            Self::Win32SpawnV => "_w32_spawnv_",
+        }
+    }
+
+    const fn extra_sinks(self) -> &'static [&'static str] {
+        match self {
+            Self::System | Self::Execl => &[],
+            Self::Win32SpawnV => &["spawnv"],
+        }
+    }
+
+    pub(crate) const fn corpus_sink_names(self) -> &'static [&'static str] {
+        match self {
+            Self::System => &["system"],
+            Self::Execl => &["execl"],
+            Self::Win32SpawnV => &["spawnv"],
+        }
+    }
+}
+
 pub(crate) const DEFAULT_SOURCES: &[&str] = &[
     "recv",
     "recvfrom",
@@ -178,11 +218,19 @@ pub(crate) const DEFAULT_SINKS: &[&str] = &[
     "subprocess.check_output",
 ];
 
-pub(crate) fn default_taint_config() -> TaintConfig {
-    TaintConfig::from_lists(
+pub(crate) fn taint_config_for(family: SinkFamily) -> TaintConfig {
+    let mut config: TaintConfig = TaintConfig::from_lists(
         DEFAULT_SOURCES.iter().copied(),
         DEFAULT_SINKS.iter().copied(),
-    )
+    );
+    for sink in family.extra_sinks() {
+        config = config.with_sink(*sink);
+    }
+    config
+}
+
+pub(crate) fn default_taint_config() -> TaintConfig {
+    taint_config_for(SinkFamily::System)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,9 +473,9 @@ fn has_extension(name: &str, extension: &str) -> bool {
         .is_some_and(|found: &OsStr| found.eq_ignore_ascii_case(extension))
 }
 
-fn is_selected_flaw_file(name: &str, slice: CorpusSlice) -> bool {
+fn is_selected_flaw_file(name: &str, slice: CorpusSlice, family: SinkFamily) -> bool {
     name.starts_with("CWE78_OS_Command_Injection__char_")
-        && name.contains("_system_")
+        && name.contains(family.file_token())
         && has_extension(name, slice.flaw_extension())
 }
 
@@ -637,6 +685,7 @@ pub(crate) struct TestcaseGroup {
 
 pub(crate) struct JulietCorpusContent {
     pub(crate) slice: CorpusSlice,
+    pub(crate) family: SinkFamily,
     pub(crate) files: BTreeMap<String, Vec<u8>>,
     pub(crate) testcasesupport_dir: ScratchDir,
     pub(crate) groups: Vec<TestcaseGroup>,
@@ -841,7 +890,11 @@ fn read_manifest_bytes(zip_bytes: &[u8]) -> Vec<u8> {
     bytes
 }
 
-pub(crate) fn load_corpus_content(case: &str, slice: CorpusSlice) -> Option<JulietCorpusContent> {
+pub(crate) fn load_corpus_content(
+    case: &str,
+    slice: CorpusSlice,
+    family: SinkFamily,
+) -> Option<JulietCorpusContent> {
     let zip_bytes: Vec<u8> = ensure_corpus_zip(case)?;
     let manifest_bytes: Vec<u8> = read_manifest_bytes(&zip_bytes);
     let manifest_text: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&manifest_bytes);
@@ -851,7 +904,7 @@ pub(crate) fn load_corpus_content(case: &str, slice: CorpusSlice) -> Option<Juli
     for testcase in testcases {
         let flaw_entry: Option<(String, ManifestFlaw)> =
             testcase.files.iter().find_map(|f: &ManifestFile| {
-                if !is_selected_flaw_file(&f.path, slice) || f.flaws.is_empty() {
+                if !is_selected_flaw_file(&f.path, slice, family) || f.flaws.is_empty() {
                     return None;
                 }
                 assert_eq!(
@@ -907,6 +960,7 @@ pub(crate) fn load_corpus_content(case: &str, slice: CorpusSlice) -> Option<Juli
 
     Some(JulietCorpusContent {
         slice,
+        family,
         files: content,
         testcasesupport_dir,
         groups,
@@ -1219,6 +1273,7 @@ pub(crate) struct GroupGrade {
     pub(crate) reported_flows: usize,
     pub(crate) source_resolved: bool,
     pub(crate) sink_resolved: bool,
+    pub(crate) unanalysable_reason: Option<String>,
 }
 
 pub(crate) fn grade_findings(
@@ -1279,23 +1334,54 @@ fn case_label(group: &TestcaseGroup) -> String {
     )
 }
 
+pub(crate) struct GradeRun<'a> {
+    pub(crate) compiler: &'a Path,
+    pub(crate) opt_flag: &'a str,
+    pub(crate) resolution: NameResolution,
+    pub(crate) config: &'a TaintConfig,
+}
+
+impl<'a> GradeRun<'a> {
+    pub(crate) const fn new(
+        compiler: &'a Path,
+        opt_flag: &'a str,
+        content: &JulietCorpusContent,
+        config: &'a TaintConfig,
+    ) -> Self {
+        Self {
+            compiler,
+            opt_flag,
+            resolution: NameResolution::for_slice(content.slice),
+            config,
+        }
+    }
+}
+
 pub(crate) fn grade_group(
-    compiler: &Path,
-    opt_flag: &str,
-    slice: CorpusSlice,
-    resolution: NameResolution,
+    run: &GradeRun<'_>,
+    content: &JulietCorpusContent,
     group: &TestcaseGroup,
-    files: &BTreeMap<String, Vec<u8>>,
-    testcasesupport_dir: &Path,
-    config: &TaintConfig,
 ) -> GroupGrade {
+    let slice: CorpusSlice = content.slice;
+    let family: SinkFamily = content.family;
+    let resolution: NameResolution = run.resolution;
+    let config: &TaintConfig = run.config;
+    let files: &BTreeMap<String, Vec<u8>> = &content.files;
+    let testcasesupport_dir: &Path = content.testcasesupport_dir.path();
     assert!(
         group.bad_chain.is_disjoint(&group.good_chain),
         "{}: bad_chain and good_chain share a function name, which the corpus's own naming \
          convention never does",
         case_label(group)
     );
-    match compile_group(compiler, opt_flag, slice, group, files, testcasesupport_dir) {
+    match compile_group(
+        run.compiler,
+        run.opt_flag,
+        slice,
+        group,
+        files,
+        testcasesupport_dir,
+    ) {
         CompileOutcome::TimedOut => {
             eprintln!("juliet corpus {}: compile timed out", case_label(group));
             GroupGrade {
@@ -1305,6 +1391,7 @@ pub(crate) fn grade_group(
                 reported_flows: 0,
                 source_resolved: false,
                 sink_resolved: false,
+                unanalysable_reason: None,
             }
         }
         CompileOutcome::Failed(reason) => {
@@ -1319,6 +1406,7 @@ pub(crate) fn grade_group(
                 reported_flows: 0,
                 source_resolved: false,
                 sink_resolved: false,
+                unanalysable_reason: Some(reason),
             }
         }
         CompileOutcome::Compiled {
@@ -1327,7 +1415,7 @@ pub(crate) fn grade_group(
         } => {
             let exe_bytes: Vec<u8> = match std::fs::read(&exe_path) {
                 Ok(bytes) => bytes,
-                Err(_) => {
+                Err(err) => {
                     return GroupGrade {
                         category: group.category,
                         bad_verdict: CaseVerdict::Unanalysable,
@@ -1335,6 +1423,7 @@ pub(crate) fn grade_group(
                         reported_flows: 0,
                         source_resolved: false,
                         sink_resolved: false,
+                        unanalysable_reason: Some(format!("read {}: {err}", exe_path.display())),
                     };
                 }
             };
@@ -1348,6 +1437,7 @@ pub(crate) fn grade_group(
                         reported_flows: 0,
                         source_resolved: false,
                         sink_resolved: false,
+                        unanalysable_reason: None,
                     }
                 }
                 AnalyzeOutcome::Analyzed { module, report } => {
@@ -1364,7 +1454,8 @@ pub(crate) fn grade_group(
                         good_verdict,
                         reported_flows: report.findings().len(),
                         source_resolved: any_call_resolves_to(&module, DEFAULT_SOURCES),
-                        sink_resolved: any_call_resolves_to(&module, DEFAULT_SINKS),
+                        sink_resolved: any_call_resolves_to(&module, family.corpus_sink_names()),
+                        unanalysable_reason: None,
                     }
                 }
             }
@@ -1449,6 +1540,7 @@ impl CategoryTally {
 
 pub(crate) struct GradedReport {
     pub(crate) slice: CorpusSlice,
+    pub(crate) family: SinkFamily,
     pub(crate) opt_flag: &'static str,
     pub(crate) tallies: BTreeMap<Category, CategoryTally>,
 }
@@ -1456,7 +1548,8 @@ pub(crate) struct GradedReport {
 impl GradedReport {
     pub(crate) fn render(&self) -> String {
         let mut out: String = format!(
-            "juliet cwe-78 char/system {} corpus grade at {}\n{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7}\n",
+            "juliet cwe-78 char/{} {} corpus grade at {}\n{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7} {:>7} {:>7}\n",
+            self.family.label(),
             self.slice.label(),
             self.opt_flag,
             "category",
@@ -1468,6 +1561,8 @@ impl GradedReport {
             "tn",
             "to",
             "unanl",
+            "srcres",
+            "snkres",
             "prec",
             "recall",
         );
@@ -1476,7 +1571,7 @@ impl GradedReport {
             let tally: CategoryTally = self.tallies.get(&category).copied().unwrap_or_default();
             let _: std::fmt::Result = writeln!(
                 out,
-                "{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7}",
+                "{:<48} {:>6} {:>6} {:>4} {:>4} {:>4} {:>4} {:>4} {:>7} {:>7} {:>7} {:>7} {:>7}",
                 category.label(),
                 tally.groups,
                 tally.labeled_flows,
@@ -1486,6 +1581,8 @@ impl GradedReport {
                 tally.true_negatives,
                 tally.timeouts,
                 tally.unanalysable,
+                tally.source_resolved_count,
+                tally.sink_resolved_count,
                 tally.precision(),
                 tally.recall(),
             );
@@ -1503,7 +1600,7 @@ pub(crate) fn grade_corpus(
     let compiler: &Path = slice
         .host_compiler()
         .expect("host compiler must be resolved before grading");
-    let resolution: NameResolution = NameResolution::for_slice(slice);
+    let run: GradeRun<'_> = GradeRun::new(compiler, opt_flag, content, config);
     let pool: rayon::ThreadPool = rayon::ThreadPoolBuilder::new()
         .num_threads(CASE_WORKERS)
         .build()
@@ -1513,18 +1610,7 @@ pub(crate) fn grade_corpus(
         content
             .groups
             .par_iter()
-            .map(|group: &TestcaseGroup| {
-                grade_group(
-                    compiler,
-                    opt_flag,
-                    slice,
-                    resolution,
-                    group,
-                    &content.files,
-                    content.testcasesupport_dir.path(),
-                    config,
-                )
-            })
+            .map(|group: &TestcaseGroup| grade_group(&run, content, group))
             .collect()
     });
     let mut tallies: BTreeMap<Category, CategoryTally> = BTreeMap::new();
@@ -1533,6 +1619,7 @@ pub(crate) fn grade_corpus(
     }
     GradedReport {
         slice,
+        family: content.family,
         opt_flag,
         tallies,
     }
@@ -1556,23 +1643,28 @@ mod tests {
     fn selection_predicate_accepts_only_char_system_dot_c_cwe78_files() {
         assert!(is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_system_01.c",
-            CorpusSlice::C
+            CorpusSlice::C,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_system_33.cpp",
-            CorpusSlice::C
+            CorpusSlice::C,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__wchar_t_console_system_01.c",
-            CorpusSlice::C
+            CorpusSlice::C,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_popen_01.c",
-            CorpusSlice::C
+            CorpusSlice::C,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE789_Uncontrolled_Mem_Alloc__malloc_char_rand_32.c",
-            CorpusSlice::C
+            CorpusSlice::C,
+            SinkFamily::System
         ));
     }
 
@@ -1580,24 +1672,80 @@ mod tests {
     fn the_cpp_selection_predicate_takes_the_files_the_c_predicate_rejects() {
         assert!(is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_system_72b.cpp",
-            CorpusSlice::Cpp
+            CorpusSlice::Cpp,
+            SinkFamily::System
         ));
         assert!(is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_listen_socket_system_81_bad.cpp",
-            CorpusSlice::Cpp
+            CorpusSlice::Cpp,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_system_01.c",
-            CorpusSlice::Cpp
+            CorpusSlice::Cpp,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__wchar_t_console_system_72b.cpp",
-            CorpusSlice::Cpp
+            CorpusSlice::Cpp,
+            SinkFamily::System
         ));
         assert!(!is_selected_flaw_file(
             "CWE78_OS_Command_Injection__char_console_execl_72b.cpp",
-            CorpusSlice::Cpp
+            CorpusSlice::Cpp,
+            SinkFamily::System
         ));
+    }
+
+    #[test]
+    fn each_sink_family_token_rejects_the_longer_family_names_it_prefixes() {
+        assert!(is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_execl_01.c",
+            CorpusSlice::C,
+            SinkFamily::Execl
+        ));
+        assert!(
+            !is_selected_flaw_file(
+                "CWE78_OS_Command_Injection__char_console_execlp_01.c",
+                CorpusSlice::C,
+                SinkFamily::Execl
+            ),
+            "execlp is a different sink family whose name starts with execl; folding it into the \
+             execl grade would double-weight one category against a population the corpus counts \
+             separately"
+        );
+        assert!(is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_file_w32_spawnv_54d.c",
+            CorpusSlice::C,
+            SinkFamily::Win32SpawnV
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_file_w32_spawnvp_54d.c",
+            CorpusSlice::C,
+            SinkFamily::Win32SpawnV
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_execl_01.c",
+            CorpusSlice::C,
+            SinkFamily::System
+        ));
+        assert!(!is_selected_flaw_file(
+            "CWE78_OS_Command_Injection__char_console_system_01.c",
+            CorpusSlice::C,
+            SinkFamily::Execl
+        ));
+    }
+
+    #[test]
+    fn the_execl_family_needs_no_extra_sink_but_the_spawnv_family_does() {
+        assert!(taint_config_for(SinkFamily::Execl).is_sink("_execl"));
+        assert!(
+            !default_taint_config().is_sink("_spawnv"),
+            "spawnv is absent from the shared sink list, so the spawnv family must add it rather \
+             than score against a sink nobody configured"
+        );
+        assert!(taint_config_for(SinkFamily::Win32SpawnV).is_sink("_spawnv"));
+        assert!(taint_config_for(SinkFamily::Win32SpawnV).is_sink("system"));
     }
 
     #[test]
