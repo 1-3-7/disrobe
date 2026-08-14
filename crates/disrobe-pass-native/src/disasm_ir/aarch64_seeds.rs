@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_binfmt::native::{Arch as BinArch, Endian, NativeFile, NativeFormat};
+use disrobe_bytes::ByteReader;
 use gimli::{
     BaseAddresses, CieOrFde, CommonInformationEntry, EhFrame, EhFrameOffset, EndianSlice,
     FrameDescriptionEntry, LittleEndian, UnwindSection as _,
 };
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
+use object::{
+    Object as _, ObjectSection as _, ObjectSegment as _, ObjectSymbol as _,
+    SymbolKind as ObjSymbolKind,
+};
 
 use crate::debug::{dbg_kv, dbg_section};
 use crate::elf::{ElfDynamicReport, SegmentMapping, SymbolType, analyze};
@@ -24,6 +28,8 @@ pub(super) enum SeedOrigin {
     DynamicInit,
     RelocationPointer,
     DataPointer,
+    MachFunctionStarts,
+    MachCompactUnwind,
 }
 
 impl SeedOrigin {
@@ -39,6 +45,8 @@ impl SeedOrigin {
             Self::DynamicInit => "dt-init",
             Self::RelocationPointer => "relocation",
             Self::DataPointer => "data-pointer",
+            Self::MachFunctionStarts => "macho-function-starts",
+            Self::MachCompactUnwind => "macho-compact-unwind",
         }
     }
 }
@@ -55,11 +63,86 @@ const MAX_POINTER_SLOTS: usize = 1 << 21;
 
 const MAX_EXECUTABLE_RANGES: usize = 1 << 12;
 
+const MACH_COMPACT_UNWIND_VERSION: u32 = 1;
+
+const MACH_COMPACT_UNWIND_REGULAR_PAGE: u32 = 2;
+
+const MACH_COMPACT_UNWIND_COMPRESSED_PAGE: u32 = 3;
+
+const MACH_COMPACT_UNWIND_PAGE_BYTES: usize = 4096;
+
+const MACH_COMPACT_UNWIND_HEADER_BYTES: usize = 28;
+
+const MACH_COMPACT_UNWIND_INDEX_BYTES: usize = 12;
+
+const MACH_COMPACT_UNWIND_NOT_FUNCTION_START: u32 = 0x8000_0000;
+
 const MIN_POINTER_RUN: usize = 2;
 
 const R_AARCH64_RELATIVE: u32 = 1027;
 
 const R_AARCH64_IRELATIVE: u32 = 1032;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactUnwindError {
+    Header,
+    Version,
+    Index,
+    Page,
+    Entry,
+    Address,
+    Limit,
+}
+
+impl CompactUnwindError {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Header => "header",
+            Self::Version => "version",
+            Self::Index => "index",
+            Self::Page => "page",
+            Self::Entry => "entry",
+            Self::Address => "address",
+            Self::Limit => "limit",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactUnwindOutcome {
+    accepted: usize,
+    error: Option<CompactUnwindError>,
+}
+
+impl CompactUnwindOutcome {
+    const fn success(accepted: usize) -> Self {
+        Self {
+            accepted,
+            error: None,
+        }
+    }
+
+    const fn failure(accepted: usize, error: CompactUnwindError) -> Self {
+        Self {
+            accepted,
+            error: Some(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactUnwindIndex {
+    function: u32,
+    page: u32,
+    lsda: u32,
+}
+
+#[derive(Debug, Default)]
+struct CompactUnwindState {
+    previous: Option<u32>,
+    processed: usize,
+    accepted: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExecutableRange {
@@ -476,6 +559,562 @@ fn collect_data_pointers(view: &ImageView<'_>, seeds: &mut SeedSet) {
     }
 }
 
+fn read_compact_u16(data: &[u8], offset: usize) -> Option<u16> {
+    let mut reader: ByteReader<'_> = ByteReader::new(data);
+    reader.seek(offset).ok()?;
+    reader.read_u16_le().ok()
+}
+
+fn read_compact_u32(data: &[u8], offset: usize) -> Option<u32> {
+    let mut reader: ByteReader<'_> = ByteReader::new(data);
+    reader.seek(offset).ok()?;
+    reader.read_u32_le().ok()
+}
+
+fn compact_table_span(
+    offset: u32,
+    count: u32,
+    width: usize,
+    limit: usize,
+) -> Option<(usize, usize)> {
+    let start: usize = usize::try_from(offset).ok()?;
+    let entries: usize = usize::try_from(count).ok()?;
+    let size: usize = entries.checked_mul(width)?;
+    let end: usize = start.checked_add(size)?;
+    (end <= limit).then_some((start, end))
+}
+
+fn read_compact_index(data: &[u8], index_start: usize, index: usize) -> Option<CompactUnwindIndex> {
+    let offset: usize =
+        index_start.checked_add(index.checked_mul(MACH_COMPACT_UNWIND_INDEX_BYTES)?)?;
+    Some(CompactUnwindIndex {
+        function: read_compact_u32(data, offset)?,
+        page: read_compact_u32(data, offset.checked_add(4)?)?,
+        lsda: read_compact_u32(data, offset.checked_add(8)?)?,
+    })
+}
+
+fn admit_compact_offset(
+    function_offset: u32,
+    encoding: u32,
+    current_offset: u32,
+    next_offset: u32,
+    image_base: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+    state: &mut CompactUnwindState,
+) -> core::result::Result<(), CompactUnwindError> {
+    if state.previous.is_none() && function_offset != current_offset {
+        return Err(CompactUnwindError::Entry);
+    }
+    if function_offset < current_offset || function_offset >= next_offset {
+        return Err(CompactUnwindError::Entry);
+    }
+    if state
+        .previous
+        .is_some_and(|previous: u32| function_offset <= previous)
+    {
+        return Err(CompactUnwindError::Entry);
+    }
+    if state.processed >= MAX_UNWIND_ENTRIES {
+        return Err(CompactUnwindError::Limit);
+    }
+    state.previous = Some(function_offset);
+    state.processed = state.processed.saturating_add(1);
+    if encoding & MACH_COMPACT_UNWIND_NOT_FUNCTION_START != 0 {
+        return Ok(());
+    }
+    let address: u64 = image_base
+        .checked_add(u64::from(function_offset))
+        .ok_or(CompactUnwindError::Address)?;
+    if !view.is_candidate(address) {
+        return Err(CompactUnwindError::Address);
+    }
+    seeds.admit(address, SeedOrigin::MachCompactUnwind);
+    state.accepted = state.accepted.saturating_add(1);
+    Ok(())
+}
+
+fn decode_macho_compact_unwind(
+    data: &[u8],
+    image_base: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+) -> CompactUnwindOutcome {
+    if data.len() < MACH_COMPACT_UNWIND_HEADER_BYTES {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    }
+    let mut header: ByteReader<'_> = ByteReader::new(data);
+    let Ok(version): core::result::Result<u32, disrobe_bytes::ByteReadError> = header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    if version != MACH_COMPACT_UNWIND_VERSION {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Version);
+    }
+    let Ok(common_offset): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Ok(common_count): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Ok(personality_offset): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Ok(personality_count): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Ok(index_offset): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Ok(index_count): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+        header.read_u32_le()
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    let Some((common_start, _)): Option<(usize, usize)> =
+        compact_table_span(common_offset, common_count, 4, data.len())
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    };
+    if compact_table_span(personality_offset, personality_count, 4, data.len()).is_none() {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Header);
+    }
+    let Ok(index_entries): core::result::Result<usize, core::num::TryFromIntError> =
+        usize::try_from(index_count)
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+    };
+    if !(2..=MAX_UNWIND_ENTRIES.saturating_add(1)).contains(&index_entries) {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+    }
+    let Some((index_start, _)): Option<(usize, usize)> = compact_table_span(
+        index_offset,
+        index_count,
+        MACH_COMPACT_UNWIND_INDEX_BYTES,
+        data.len(),
+    ) else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+    };
+    for index in 0..index_entries.saturating_sub(1) {
+        let (Some(current), Some(next)): (Option<CompactUnwindIndex>, Option<CompactUnwindIndex>) = (
+            read_compact_index(data, index_start, index),
+            read_compact_index(data, index_start, index.saturating_add(1)),
+        ) else {
+            return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+        };
+        if current.function >= next.function || current.page == 0 {
+            return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+        }
+        let Ok(current_page): core::result::Result<usize, core::num::TryFromIntError> =
+            usize::try_from(current.page)
+        else {
+            return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+        };
+        if current_page >= data.len()
+            || (next.page != 0 && next.page <= current.page)
+            || usize::try_from(current.lsda).map_or(true, |offset: usize| offset > data.len())
+            || next.lsda < current.lsda
+            || (next.lsda - current.lsda) % 8 != 0
+        {
+            return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+        }
+    }
+    let Some(sentinel): Option<CompactUnwindIndex> =
+        read_compact_index(data, index_start, index_entries.saturating_sub(1))
+    else {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+    };
+    if sentinel.page != 0
+        || usize::try_from(sentinel.lsda).map_or(true, |offset: usize| offset > data.len())
+    {
+        return CompactUnwindOutcome::failure(0, CompactUnwindError::Index);
+    }
+
+    let mut state: CompactUnwindState = CompactUnwindState::default();
+    for index in 0..index_entries.saturating_sub(1) {
+        let (Some(current), Some(next)): (Option<CompactUnwindIndex>, Option<CompactUnwindIndex>) = (
+            read_compact_index(data, index_start, index),
+            read_compact_index(data, index_start, index.saturating_add(1)),
+        ) else {
+            return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Index);
+        };
+        let Ok(page_start): core::result::Result<usize, core::num::TryFromIntError> =
+            usize::try_from(current.page)
+        else {
+            return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+        };
+        let Some(page_capacity_end): Option<usize> = page_start
+            .checked_add(MACH_COMPACT_UNWIND_PAGE_BYTES)
+            .map(|end: usize| end.min(data.len()))
+        else {
+            return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+        };
+        let page_end: usize = if next.page == 0 {
+            page_capacity_end
+        } else {
+            let Ok(next_page): core::result::Result<usize, core::num::TryFromIntError> =
+                usize::try_from(next.page)
+            else {
+                return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+            };
+            page_capacity_end.min(next_page)
+        };
+        let Some(kind): Option<u32> = read_compact_u32(data, page_start) else {
+            return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+        };
+        state.previous = None;
+        match kind {
+            MACH_COMPACT_UNWIND_REGULAR_PAGE => {
+                let (Some(entries_relative), Some(entry_count)): (Option<u16>, Option<u16>) = (
+                    read_compact_u16(data, page_start.saturating_add(4)),
+                    read_compact_u16(data, page_start.saturating_add(6)),
+                ) else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(entries_start): Option<usize> =
+                    page_start.checked_add(usize::from(entries_relative))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(entries_end): Option<usize> = usize::from(entry_count)
+                    .checked_mul(8)
+                    .and_then(|size: usize| entries_start.checked_add(size))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                if entry_count == 0 || usize::from(entries_relative) < 8 || entries_end > page_end {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                }
+                for entry in 0..usize::from(entry_count) {
+                    let Some(entry_offset): Option<usize> = entry
+                        .checked_mul(8)
+                        .and_then(|relative: usize| entries_start.checked_add(relative))
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(function_offset): Option<u32> = read_compact_u32(data, entry_offset)
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(encoding_offset): Option<usize> = entry_offset.checked_add(4) else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(encoding): Option<u32> = read_compact_u32(data, encoding_offset)
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    if let Err(error) = admit_compact_offset(
+                        function_offset,
+                        encoding,
+                        current.function,
+                        next.function,
+                        image_base,
+                        view,
+                        seeds,
+                        &mut state,
+                    ) {
+                        return CompactUnwindOutcome::failure(state.accepted, error);
+                    }
+                }
+            }
+            MACH_COMPACT_UNWIND_COMPRESSED_PAGE => {
+                let (
+                    Some(entries_relative),
+                    Some(entry_count),
+                    Some(encodings_relative),
+                    Some(encodings_count),
+                ): (Option<u16>, Option<u16>, Option<u16>, Option<u16>) = (
+                    read_compact_u16(data, page_start.saturating_add(4)),
+                    read_compact_u16(data, page_start.saturating_add(6)),
+                    read_compact_u16(data, page_start.saturating_add(8)),
+                    read_compact_u16(data, page_start.saturating_add(10)),
+                )
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(entries_start): Option<usize> =
+                    page_start.checked_add(usize::from(entries_relative))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(encodings_start): Option<usize> =
+                    page_start.checked_add(usize::from(encodings_relative))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(entries_end): Option<usize> = usize::from(entry_count)
+                    .checked_mul(4)
+                    .and_then(|size: usize| entries_start.checked_add(size))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(encodings_end): Option<usize> = usize::from(encodings_count)
+                    .checked_mul(4)
+                    .and_then(|size: usize| encodings_start.checked_add(size))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                let Some(total_encodings): Option<u32> =
+                    common_count.checked_add(u32::from(encodings_count))
+                else {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                };
+                if entry_count == 0
+                    || usize::from(entries_relative) < 12
+                    || usize::from(encodings_relative) < 12
+                    || entries_end > page_end
+                    || encodings_end > page_end
+                    || total_encodings > 256
+                {
+                    return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+                }
+                for entry in 0..usize::from(entry_count) {
+                    let Some(entry_offset): Option<usize> = entry
+                        .checked_mul(4)
+                        .and_then(|relative: usize| entries_start.checked_add(relative))
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(packed): Option<u32> = read_compact_u32(data, entry_offset) else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let encoding_index: u32 = packed >> 24;
+                    if encoding_index >= total_encodings {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    }
+                    let raw_encoding_index: u32 = if encoding_index < common_count {
+                        encoding_index
+                    } else {
+                        encoding_index - common_count
+                    };
+                    let Ok(resolved_encoding_index): core::result::Result<
+                        usize,
+                        core::num::TryFromIntError,
+                    > = usize::try_from(raw_encoding_index) else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let encoding_base: usize = if encoding_index < common_count {
+                        common_start
+                    } else {
+                        encodings_start
+                    };
+                    let Some(encoding_offset): Option<usize> = resolved_encoding_index
+                        .checked_mul(4)
+                        .and_then(|relative: usize| encoding_base.checked_add(relative))
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(encoding): Option<u32> = read_compact_u32(data, encoding_offset)
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    let Some(function_offset): Option<u32> =
+                        current.function.checked_add(packed & 0x00ff_ffff)
+                    else {
+                        return CompactUnwindOutcome::failure(
+                            state.accepted,
+                            CompactUnwindError::Entry,
+                        );
+                    };
+                    if let Err(error) = admit_compact_offset(
+                        function_offset,
+                        encoding,
+                        current.function,
+                        next.function,
+                        image_base,
+                        view,
+                        seeds,
+                        &mut state,
+                    ) {
+                        return CompactUnwindOutcome::failure(state.accepted, error);
+                    }
+                }
+            }
+            _ => {
+                return CompactUnwindOutcome::failure(state.accepted, CompactUnwindError::Page);
+            }
+        }
+    }
+    CompactUnwindOutcome::success(state.accepted)
+}
+
+fn macho_text_base(view: &ImageView<'_>) -> Option<u64> {
+    let parsed: &object::File<'_> = view.file.as_ref()?;
+    let mut base: Option<u64> = None;
+    for segment in parsed.segments() {
+        if segment.name().ok().flatten() != Some("__TEXT") {
+            continue;
+        }
+        if base.replace(segment.address()).is_some() {
+            return None;
+        }
+    }
+    base
+}
+
+fn collect_macho_compact_unwind(view: &ImageView<'_>, image_base: u64, seeds: &mut SeedSet) {
+    let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
+        return;
+    };
+    let mut data: Option<&[u8]> = None;
+    for section in parsed.sections() {
+        if section.name().ok() != Some("__unwind_info")
+            || section.segment_name().ok().flatten() != Some("__TEXT")
+        {
+            continue;
+        }
+        let Ok(section_data): core::result::Result<&[u8], object::Error> = section.data() else {
+            return;
+        };
+        if data.replace(section_data).is_some() {
+            return;
+        }
+    }
+    let Some(data): Option<&[u8]> = data else {
+        return;
+    };
+    let outcome: CompactUnwindOutcome = decode_macho_compact_unwind(data, image_base, view, seeds);
+    dbg_kv("macho_compact_unwind_entries", || {
+        outcome.accepted.to_string()
+    });
+    if let Some(error) = outcome.error {
+        dbg_kv("macho_compact_unwind_error", || error.label().to_owned());
+    }
+}
+
+fn decode_macho_function_starts(
+    data: &[u8],
+    image_base: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+) {
+    let mut address: u64 = image_base;
+    let mut cursor: usize = 0;
+    let mut count: usize = 0;
+    while cursor < data.len() && count < MAX_SEEDS {
+        let Ok((delta, consumed)): core::result::Result<(u64, usize), disrobe_bytes::LebError> =
+            disrobe_bytes::read_uleb128_at(data, cursor)
+        else {
+            return;
+        };
+        if delta == 0 || consumed == 0 {
+            return;
+        }
+        let Some(next_cursor): Option<usize> = cursor.checked_add(consumed) else {
+            return;
+        };
+        let Some(next_address): Option<u64> = address.checked_add(delta) else {
+            return;
+        };
+        if !view.is_candidate(next_address) {
+            return;
+        }
+        seeds.admit(next_address, SeedOrigin::MachFunctionStarts);
+        cursor = next_cursor;
+        address = next_address;
+        count = count.saturating_add(1);
+    }
+}
+
+fn collect_macho_function_starts(
+    bytes: &[u8],
+    image_base: u64,
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+) {
+    let Ok(file): core::result::Result<
+        object::read::macho::MachOFile64<'_, object::Endianness, &[u8]>,
+        object::Error,
+    > = object::read::macho::MachOFile64::parse(bytes) else {
+        return;
+    };
+    let endian: object::Endianness = file.endian();
+    let Ok(mut commands): core::result::Result<
+        object::read::macho::LoadCommandIterator<'_, object::Endianness>,
+        object::Error,
+    > = file.macho_load_commands() else {
+        return;
+    };
+    let mut function_starts: Option<(usize, usize)> = None;
+    while let Ok(Some(command)) = commands.next() {
+        let Ok(variant): core::result::Result<
+            object::read::macho::LoadCommandVariant<'_, object::Endianness>,
+            object::Error,
+        > = command.variant() else {
+            return;
+        };
+        match variant {
+            object::read::macho::LoadCommandVariant::LinkeditData(linkedit)
+                if command.cmd() == object::macho::LC_FUNCTION_STARTS =>
+            {
+                let Ok(start): core::result::Result<usize, core::num::TryFromIntError> =
+                    usize::try_from(linkedit.dataoff.get(endian))
+                else {
+                    return;
+                };
+                let Ok(size): core::result::Result<usize, core::num::TryFromIntError> =
+                    usize::try_from(linkedit.datasize.get(endian))
+                else {
+                    return;
+                };
+                function_starts = Some((start, size));
+            }
+            _ => {}
+        }
+    }
+    let Some((start, size)): Option<(usize, usize)> = function_starts else {
+        return;
+    };
+    let Some(end): Option<usize> = start.checked_add(size) else {
+        return;
+    };
+    let Some(data): Option<&[u8]> = bytes.get(start..end) else {
+        return;
+    };
+    decode_macho_function_starts(data, image_base, view, seeds);
+}
+
 fn admit_pointer_run(run: &mut Vec<u64>, view: &ImageView<'_>, seeds: &mut SeedSet) {
     let shaped_like_a_table: bool = run.len() >= MIN_POINTER_RUN;
     for address in &*run {
@@ -493,10 +1132,24 @@ fn admit_pointer_run(run: &mut Vec<u64>, view: &ImageView<'_>, seeds: &mut SeedS
 
 pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
     let mut seeds: SeedSet = SeedSet::default();
-    if !matches!(native.arch, BinArch::Aarch64)
-        || !matches!(native.format, NativeFormat::Elf64)
-        || !matches!(native.endian, Endian::Little)
-    {
+    if !matches!(native.arch, BinArch::Aarch64) || !matches!(native.endian, Endian::Little) {
+        return seeds;
+    }
+    if matches!(native.format, NativeFormat::MachO64) {
+        let view: ImageView<'_> = ImageView::new(bytes, None);
+        if view.executable.is_empty() {
+            return seeds;
+        }
+        collect_object_symbols(&view, &mut seeds);
+        collect_exports(native, &view, &mut seeds);
+        if let Some(image_base) = macho_text_base(&view) {
+            collect_macho_function_starts(bytes, image_base, &view, &mut seeds);
+            collect_macho_compact_unwind(&view, image_base, &mut seeds);
+        }
+        report_seeds(&seeds);
+        return seeds;
+    }
+    if !matches!(native.format, NativeFormat::Elf64) {
         return seeds;
     }
     let report: Option<ElfDynamicReport> = analyze(bytes);
@@ -528,7 +1181,11 @@ fn report_seeds(seeds: &SeedSet) {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{MAX_SEEDS, SeedOrigin, SeedSet, collect, is_boundary_word, is_prologue_word};
+    use super::{
+        CompactUnwindError, CompactUnwindOutcome, ExecutableRange, ImageView, MAX_SEEDS,
+        MAX_UNWIND_ENTRIES, SeedOrigin, SeedSet, collect, decode_macho_compact_unwind,
+        decode_macho_function_starts, is_boundary_word, is_prologue_word,
+    };
 
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
@@ -768,6 +1425,456 @@ mod tests {
                 fixture.stripped
             );
         }
+    }
+
+    fn decode_function_starts(data: &[u8]) -> SeedSet {
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: Vec::new(),
+        };
+        let mut seeds: SeedSet = SeedSet::default();
+        decode_macho_function_starts(data, 0x1000, &view, &mut seeds);
+        seeds
+    }
+
+    fn push_u16(data: &mut Vec<u8>, value: u16) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(data: &mut Vec<u8>, value: u32) {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn compact_unwind_page(kind: u32, entries: &[u32], common_count: u32) -> Vec<u8> {
+        let page_offset: u32 = 56;
+        let mut data: Vec<u8> = Vec::new();
+        push_u32(&mut data, 1);
+        push_u32(&mut data, 28);
+        push_u32(&mut data, common_count);
+        push_u32(&mut data, 32);
+        push_u32(&mut data, 0);
+        push_u32(&mut data, 32);
+        push_u32(&mut data, 2);
+        for _ in 0..common_count {
+            push_u32(&mut data, 0x0300_0000);
+        }
+        data.resize(32, 0);
+        push_u32(&mut data, 0);
+        push_u32(&mut data, page_offset);
+        push_u32(&mut data, 0);
+        push_u32(&mut data, 0x40);
+        push_u32(&mut data, 0);
+        push_u32(&mut data, 0);
+        data.resize(page_offset as usize, 0);
+        push_u32(&mut data, kind);
+        match kind {
+            2 => {
+                push_u16(&mut data, 8);
+                push_u16(&mut data, entries.len() as u16);
+                for function_offset in entries {
+                    push_u32(&mut data, *function_offset);
+                    push_u32(&mut data, 0x0300_0000);
+                }
+            }
+            3 => {
+                push_u16(&mut data, 12);
+                push_u16(&mut data, entries.len() as u16);
+                push_u16(&mut data, 12_u16.saturating_add((entries.len() as u16) * 4));
+                push_u16(&mut data, 0);
+                for packed in entries {
+                    push_u32(&mut data, *packed);
+                }
+            }
+            _ => {}
+        }
+        data
+    }
+
+    fn decode_compact_unwind(data: &[u8]) -> (SeedSet, CompactUnwindOutcome) {
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: Vec::new(),
+        };
+        let mut seeds: SeedSet = SeedSet::default();
+        let outcome: CompactUnwindOutcome =
+            decode_macho_compact_unwind(data, 0x1000, &view, &mut seeds);
+        (seeds, outcome)
+    }
+
+    #[test]
+    fn compact_unwind_regular_and_compressed_pages_recover_exact_starts() {
+        for (kind, entries) in [(2, vec![0, 4]), (3, vec![0, 4])] {
+            let data: Vec<u8> = compact_unwind_page(kind, &entries, 1);
+            let (seeds, outcome): (SeedSet, CompactUnwindOutcome) = decode_compact_unwind(&data);
+            assert_eq!(outcome, CompactUnwindOutcome::success(2), "kind {kind}");
+            assert_eq!(seeds.addresses(), vec![0x1000, 0x1004], "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn compact_unwind_excludes_ranges_that_are_not_function_starts() {
+        let mut regular: Vec<u8> = compact_unwind_page(2, &[0, 4], 1);
+        regular[76..80].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+
+        let mut compressed_common: Vec<u8> = compact_unwind_page(3, &[0, 0x0100_0004], 1);
+        compressed_common[28..32].copy_from_slice(&0x8000_0000_u32.to_le_bytes());
+        compressed_common[66..68].copy_from_slice(&1_u16.to_le_bytes());
+        push_u32(&mut compressed_common, 0x0300_0000);
+
+        let mut compressed_local: Vec<u8> = compact_unwind_page(3, &[0, 0x0100_0004], 1);
+        compressed_local[66..68].copy_from_slice(&1_u16.to_le_bytes());
+        push_u32(&mut compressed_local, 0x8000_0000);
+
+        for (name, data, expected) in [
+            ("regular", regular, vec![0x1000]),
+            ("compressed common", compressed_common, vec![0x1004]),
+            ("compressed local", compressed_local, vec![0x1000]),
+        ] {
+            let (seeds, outcome): (SeedSet, CompactUnwindOutcome) = decode_compact_unwind(&data);
+            assert_eq!(outcome, CompactUnwindOutcome::success(1), "{name}");
+            assert_eq!(seeds.addresses(), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn compact_unwind_refuses_invalid_headers_before_admission() {
+        let mut unsupported: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        unsupported[..4].copy_from_slice(&2_u32.to_le_bytes());
+        let mut excessive_indices: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        excessive_indices[24..28].copy_from_slice(
+            &(u32::try_from(MAX_UNWIND_ENTRIES).expect("the seed cap fits u32") + 2).to_le_bytes(),
+        );
+        for (name, data, error) in [
+            (
+                "truncated",
+                unsupported[..20].to_vec(),
+                CompactUnwindError::Header,
+            ),
+            ("version", unsupported, CompactUnwindError::Version),
+            ("index cap", excessive_indices, CompactUnwindError::Index),
+        ] {
+            let (seeds, outcome): (SeedSet, CompactUnwindOutcome) = decode_compact_unwind(&data);
+            assert!(seeds.addresses().is_empty(), "{name}");
+            assert_eq!(outcome.error, Some(error), "{name}");
+            assert_eq!(outcome.accepted, 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn compact_unwind_refuses_malformed_indices_and_pages() {
+        let mut missing_sentinel: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        missing_sentinel[48..52].copy_from_slice(&60_u32.to_le_bytes());
+        let mut outside_page: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        let outside_offset: u32 =
+            u32::try_from(outside_page.len()).expect("the test page fits u32") + 4;
+        outside_page[36..40].copy_from_slice(&outside_offset.to_le_bytes());
+        let mut one_index: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        one_index[24..28].copy_from_slice(&1_u32.to_le_bytes());
+        let mut truncated_regular: Vec<u8> = compact_unwind_page(2, &[0, 4], 1);
+        truncated_regular.truncate(truncated_regular.len() - 4);
+        let mut invalid_local_encodings: Vec<u8> = compact_unwind_page(3, &[0, 4], 1);
+        invalid_local_encodings[66..68].copy_from_slice(&1_u16.to_le_bytes());
+        let unknown_page: Vec<u8> = compact_unwind_page(9, &[], 1);
+        let empty_page: Vec<u8> = compact_unwind_page(3, &[], 1);
+        for (name, data, error) in [
+            ("sentinel", missing_sentinel, CompactUnwindError::Index),
+            ("page extent", outside_page, CompactUnwindError::Index),
+            ("missing index", one_index, CompactUnwindError::Index),
+            (
+                "regular extent",
+                truncated_regular,
+                CompactUnwindError::Page,
+            ),
+            (
+                "local encodings",
+                invalid_local_encodings,
+                CompactUnwindError::Page,
+            ),
+            ("page kind", unknown_page, CompactUnwindError::Page),
+            ("empty page", empty_page, CompactUnwindError::Page),
+        ] {
+            let (seeds, outcome): (SeedSet, CompactUnwindOutcome) = decode_compact_unwind(&data);
+            assert!(seeds.addresses().is_empty(), "{name}");
+            assert_eq!(outcome, CompactUnwindOutcome::failure(0, error), "{name}");
+        }
+    }
+
+    #[test]
+    fn compact_unwind_preserves_a_valid_prefix_on_entry_corruption() {
+        let mut outside: Vec<u8> = compact_unwind_page(3, &[0, 0x104], 1);
+        outside[44..48].copy_from_slice(&0x200_u32.to_le_bytes());
+        let cases: [(&str, Vec<u8>, CompactUnwindError); 3] = [
+            (
+                "encoding",
+                compact_unwind_page(3, &[0, 0x0200_0004], 1),
+                CompactUnwindError::Entry,
+            ),
+            (
+                "unaligned",
+                compact_unwind_page(3, &[0, 2], 1),
+                CompactUnwindError::Address,
+            ),
+            ("outside", outside, CompactUnwindError::Address),
+        ];
+        for (name, data, error) in cases {
+            let (seeds, outcome): (SeedSet, CompactUnwindOutcome) = decode_compact_unwind(&data);
+            assert_eq!(seeds.addresses(), vec![0x1000], "{name}");
+            assert_eq!(outcome, CompactUnwindOutcome::failure(1, error), "{name}");
+        }
+    }
+
+    #[test]
+    fn compact_unwind_refuses_image_base_overflow() {
+        let mut data: Vec<u8> = compact_unwind_page(3, &[0], 1);
+        data[32..36].copy_from_slice(&4_u32.to_le_bytes());
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: 0,
+                end: u64::MAX,
+            }],
+            segments: Vec::new(),
+        };
+        let mut seeds: SeedSet = SeedSet::default();
+        let outcome: CompactUnwindOutcome =
+            decode_macho_compact_unwind(&data, u64::MAX, &view, &mut seeds);
+        assert!(seeds.addresses().is_empty());
+        assert_eq!(
+            outcome,
+            CompactUnwindOutcome::failure(0, CompactUnwindError::Address)
+        );
+    }
+
+    #[test]
+    fn malformed_macho_function_starts_preserve_only_the_valid_prefix() {
+        let cases: [(&str, Vec<u8>); 4] = [
+            ("truncated", vec![4, 4, 0x80]),
+            ("overflow", [vec![4, 4], vec![0xff; 10], vec![2]].concat()),
+            ("unaligned", vec![4, 4, 2]),
+            ("outside text", vec![4, 4, 0x80, 0x02]),
+        ];
+        for (name, data) in cases {
+            let seeds: SeedSet = decode_function_starts(&data);
+            assert_eq!(seeds.addresses(), vec![0x1004, 0x1008], "{name}");
+            for address in seeds.addresses() {
+                assert_eq!(
+                    seeds.origins_of(address),
+                    BTreeSet::from([SeedOrigin::MachFunctionStarts]),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn macho_function_start_terminator_ignores_padding() {
+        let seeds: SeedSet = decode_function_starts(&[4, 0, 4, 4]);
+        assert_eq!(seeds.addresses(), vec![0x1004]);
+    }
+
+    #[test]
+    fn macho_function_starts_match_the_independent_text_symbol_table() {
+        let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus/mobile/macho-mac/SwiftHello.original");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        let native: NativeFile =
+            parse_native(&bytes).expect("the tracked arm64 Mach-O fixture must parse");
+        let file: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the symbol reference must parse");
+        let expected: BTreeSet<u64> = file
+            .symbols()
+            .filter(|symbol: &object::Symbol<'_, '_>| {
+                matches!(symbol.kind(), ObjSymbolKind::Text)
+                    && !symbol.is_undefined()
+                    && symbol
+                        .name()
+                        .is_ok_and(|name: &str| name != "__mh_execute_header")
+            })
+            .map(|symbol: object::Symbol<'_, '_>| symbol.address())
+            .collect();
+        assert_eq!(expected.len(), 46, "the tracked symbol reference changed");
+        let seeds: SeedSet = collect(&native, &bytes);
+        let recovered: BTreeSet<u64> = seeds
+            .addresses()
+            .into_iter()
+            .filter(|address: &u64| {
+                seeds
+                    .origins_of(*address)
+                    .contains(&SeedOrigin::MachFunctionStarts)
+            })
+            .collect();
+        assert_eq!(recovered, expected);
+    }
+
+    #[test]
+    fn macho_compact_unwind_matches_the_llvm_function_index() {
+        let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus/mobile/macho-mac/SwiftHello.original");
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        let native: NativeFile = parse_native(&bytes).expect("the arm64 Mach-O fixture must parse");
+        let expected_offsets: [u64; 24] = [
+            0x0f68, 0x1154, 0x123c, 0x1244, 0x1354, 0x1374, 0x15d4, 0x1654, 0x1724, 0x1744, 0x1854,
+            0x188c, 0x1980, 0x19a0, 0x1a90, 0x1acc, 0x1af4, 0x1be4, 0x1c14, 0x1c50, 0x200c, 0x204c,
+            0x209c, 0x20a0,
+        ];
+        let expected: BTreeSet<u64> = expected_offsets
+            .into_iter()
+            .map(|offset: u64| 0x1_0000_0000_u64 + offset)
+            .collect();
+        let seeds: SeedSet = collect(&native, &bytes);
+        let recovered: BTreeSet<u64> = seeds
+            .addresses()
+            .into_iter()
+            .filter(|address: &u64| {
+                seeds
+                    .origins_of(*address)
+                    .contains(&SeedOrigin::MachCompactUnwind)
+            })
+            .collect();
+        assert_eq!(recovered, expected);
+    }
+
+    #[test]
+    fn stripped_macho_function_starts_reach_the_disassembly_payload() {
+        let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus/mobile/macho-mac/SwiftHello.original");
+        let mut bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        let reference: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the symbol reference must parse");
+        let expected: BTreeSet<u64> = reference
+            .symbols()
+            .filter(|symbol: &object::Symbol<'_, '_>| {
+                matches!(symbol.kind(), ObjSymbolKind::Text)
+                    && !symbol.is_undefined()
+                    && symbol
+                        .name()
+                        .is_ok_and(|name: &str| name != "__mh_execute_header")
+            })
+            .map(|symbol: object::Symbol<'_, '_>| symbol.address())
+            .collect();
+        let ncmds: usize =
+            u32::from_le_bytes(bytes[16..20].try_into().expect("Mach header ncmds")) as usize;
+        let mut cursor: usize = 32;
+        let mut cleared: bool = false;
+        for _ in 0..ncmds {
+            let header_end: usize = cursor.checked_add(8).expect("bounded load header");
+            let header: &[u8] = bytes
+                .get(cursor..header_end)
+                .expect("load command header must be in the fixture");
+            let cmd: u32 = u32::from_le_bytes(header[..4].try_into().expect("load command id"));
+            let cmdsize: usize =
+                u32::from_le_bytes(header[4..8].try_into().expect("load command size")) as usize;
+            assert!(cmdsize >= 8, "load command must include its header");
+            let command_end: usize = cursor
+                .checked_add(cmdsize)
+                .expect("bounded load command size");
+            assert!(
+                command_end <= bytes.len(),
+                "load command must stay in the fixture"
+            );
+            if cmd == object::macho::LC_SYMTAB {
+                assert!(cmdsize >= 16, "LC_SYMTAB must contain its symbol count");
+                bytes[cursor + 12..cursor + 16].copy_from_slice(&0_u32.to_le_bytes());
+                cleared = true;
+            } else if cmd == object::macho::LC_DYSYMTAB {
+                bytes[header_end..command_end].fill(0);
+            }
+            cursor = command_end;
+        }
+        assert!(cleared, "the real fixture must carry LC_SYMTAB");
+        let stripped: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the stripped view must parse");
+        assert_eq!(
+            stripped
+                .symbols()
+                .filter(|symbol: &object::Symbol<'_, '_>| {
+                    matches!(symbol.kind(), ObjSymbolKind::Text)
+                })
+                .count(),
+            0,
+            "the caller case must not retain text symbols"
+        );
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(&bytes)
+                .expect("the stripped Mach-O must reach disassembly discovery");
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        let missing: Vec<u64> = expected.difference(&recovered).copied().collect();
+        assert!(missing.is_empty(), "missing stripped starts: {missing:#x?}");
+    }
+
+    #[test]
+    fn macho_function_starts_use_text_instead_of_the_lowest_segment() {
+        let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("corpus/mobile/macho-mac/SwiftHello.original");
+        let mut bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("read {}: {error}", path.display()));
+        let ncmds: usize =
+            u32::from_le_bytes(bytes[16..20].try_into().expect("Mach header ncmds")) as usize;
+        let mut cursor: usize = 32;
+        let mut changed: bool = false;
+        for _ in 0..ncmds {
+            let header_end: usize = cursor.checked_add(8).expect("bounded load header");
+            let header: &[u8] = bytes
+                .get(cursor..header_end)
+                .expect("load command header must be in the fixture");
+            let cmd: u32 = u32::from_le_bytes(header[..4].try_into().expect("load command id"));
+            let cmdsize: usize =
+                u32::from_le_bytes(header[4..8].try_into().expect("load command size")) as usize;
+            assert!(cmdsize >= 8, "load command must include its header");
+            let command_end: usize = cursor
+                .checked_add(cmdsize)
+                .expect("bounded load command size");
+            assert!(command_end <= bytes.len(), "load command must be bounded");
+            if cmd == object::macho::LC_SEGMENT_64 && cmdsize >= 72 {
+                let name: &[u8] = &bytes[cursor + 8..cursor + 24];
+                if !name.starts_with(b"__TEXT") && !name.starts_with(b"__PAGEZERO") {
+                    bytes[cursor + 24..cursor + 32].copy_from_slice(&0x1000_u64.to_le_bytes());
+                    changed = true;
+                    break;
+                }
+            }
+            cursor = command_end;
+        }
+        assert!(changed, "the fixture must contain a non-text segment");
+        let native: NativeFile = parse_native(&bytes).expect("the unusual Mach-O must parse");
+        let seeds: SeedSet = collect(&native, &bytes);
+        assert_eq!(
+            seeds.counts().get(&SeedOrigin::MachFunctionStarts).copied(),
+            Some(46)
+        );
     }
 
     #[test]
