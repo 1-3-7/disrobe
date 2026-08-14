@@ -3565,6 +3565,32 @@ fn switch_merge_pos(stmts: &[Stmt], plan: &SwitchPlan, last_start: usize) -> usi
     stmts.len()
 }
 
+fn default_target_is_the_join(
+    stmts: &[Stmt],
+    plan: &SwitchPlan,
+    sw: usize,
+    scanned_merge: usize,
+    default_label: usize,
+) -> bool {
+    if scanned_merge < stmts.len() || plan.ordered_targets.len() < 2 {
+        return false;
+    }
+    if plan.ordered_targets.last() != Some(&default_label) {
+        return false;
+    }
+    let Some(&last_start): Option<&usize> = plan.label_pos.get(&default_label) else {
+        return false;
+    };
+    if last_start <= sw {
+        return false;
+    }
+    let Some(region): Option<&[Stmt]> = stmts.get(sw + 1..last_start) else {
+        return false;
+    };
+    label_ref_count(region, default_label) > 0
+        && label_ref_count(stmts, default_label) == label_ref_count(region, default_label)
+}
+
 fn build_switch_case(
     stmts: &[Stmt],
     seg_start: usize,
@@ -3633,7 +3659,14 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
         return None;
     }
     let last_start: usize = *plan.label_pos.get(plan.ordered_targets.last()?)?;
-    let merge_pos: usize = switch_merge_pos(stmts, &plan, last_start);
+    let scanned_merge: usize = switch_merge_pos(stmts, &plan, last_start);
+    let trailing_default_join: bool =
+        default_target_is_the_join(stmts, &plan, sw, scanned_merge, *default_label);
+    let merge_pos: usize = if trailing_default_join {
+        last_start
+    } else {
+        scanned_merge
+    };
     let conflict_end: usize = merge_pos.saturating_add(2).min(stmts.len());
     if stmts[sw + 1..conflict_end].iter().any(|statement: &Stmt| {
         matches!(
@@ -3650,17 +3683,29 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
         Some(Stmt::Label(l)) => Some(*l),
         _ => None,
     };
+    let body_targets: &[usize] = if trailing_default_join {
+        plan.ordered_targets.get(..plan.ordered_targets.len() - 1)?
+    } else {
+        plan.ordered_targets.as_slice()
+    };
     let mut cases: Vec<SwitchCase> = Vec::with_capacity(plan.ordered_targets.len());
-    for (n, target) in plan.ordered_targets.iter().enumerate() {
-        let seg_start: usize = plan.label_pos[target];
-        let seg_end: usize = plan
-            .ordered_targets
-            .get(n + 1)
-            .map_or(merge_pos, |next: &usize| plan.label_pos[next]);
-        let keys: Vec<CaseLabel> = plan.target_keys[target].clone();
+    for (n, target) in body_targets.iter().enumerate() {
+        let seg_start: usize = *plan.label_pos.get(target)?;
+        let seg_end: usize = match body_targets.get(n + 1) {
+            Some(next) => *plan.label_pos.get(next)?,
+            None => merge_pos,
+        };
+        let keys: Vec<CaseLabel> = plan.target_keys.get(target)?.clone();
         let case: SwitchCase =
             build_switch_case(stmts, seg_start, seg_end, merge_label, keys, depth)?;
         cases.push(case);
+    }
+    if trailing_default_join {
+        cases.push(SwitchCase {
+            labels: plan.target_keys.get(default_label)?.clone(),
+            body: Vec::new(),
+            breaks: true,
+        });
     }
     let stmt: Stmt = Stmt::StructuredSwitch {
         selector: selector.clone(),

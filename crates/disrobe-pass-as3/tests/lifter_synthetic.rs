@@ -2691,3 +2691,232 @@ fn structures_while_with_conditional_continue_into_continue_statement() {
         lifted.fidelity_warning()
     );
 }
+
+fn switch_with_default_at_the_join() -> (AbcFile, usize) {
+    let mut code: Vec<u8> = vec![0x24, 0x00, 0xD6, 0xD1];
+    let sw_pos: usize = code.len();
+    code.push(0x1B);
+    let default_patch: usize = code.len();
+    s24(0, &mut code);
+    u30(2, &mut code);
+    let case0_patch: usize = code.len();
+    s24(0, &mut code);
+    let case1_patch: usize = code.len();
+    s24(0, &mut code);
+    let case2_patch: usize = code.len();
+    s24(0, &mut code);
+
+    let case0_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let break0_operand: usize = code.len();
+    s24(0, &mut code);
+    let after_break0: usize = code.len();
+
+    let case1_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let break1_operand: usize = code.len();
+    s24(0, &mut code);
+    let after_break1: usize = code.len();
+
+    let case2_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x1E, 0xD6]);
+
+    let merge_off: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    let patch_sw = |code: &mut Vec<u8>, at: usize, target: usize| {
+        let rel: i32 = target as i32 - sw_pos as i32;
+        let raw: u32 = rel as u32;
+        code[at] = (raw & 0xFF) as u8;
+        code[at + 1] = ((raw >> 8) & 0xFF) as u8;
+        code[at + 2] = ((raw >> 16) & 0xFF) as u8;
+    };
+    patch_sw(&mut code, default_patch, merge_off);
+    patch_sw(&mut code, case0_patch, case0_off);
+    patch_sw(&mut code, case1_patch, case1_off);
+    patch_sw(&mut code, case2_patch, case2_off);
+    patch_branch(&mut code, break0_operand, after_break0, merge_off);
+    patch_branch(&mut code, break1_operand, after_break1, merge_off);
+
+    let abc: AbcFile = mk_abc(
+        &["", "C", "Object", "x", "classify"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Vec::new(),
+        one_param_method(),
+        code,
+    );
+    (abc, merge_off)
+}
+
+fn dispatch_table_in_layout_order(abc: &AbcFile) -> Vec<Vec<i64>> {
+    use disrobe_pass_as3::abc::{DisasmLine, disasm};
+
+    let lines: Vec<DisasmLine> = disasm(&abc.method_bodies[0].code).expect("disasm");
+    let switch_line: &DisasmLine = lines
+        .iter()
+        .find(|line: &&DisasmLine| line.mnemonic == "lookupswitch")
+        .expect("the fixture must carry one lookupswitch");
+    let base: i64 = switch_line.offset as i64;
+    let mut by_target: std::collections::BTreeMap<i64, Vec<i64>> =
+        std::collections::BTreeMap::new();
+    for (value, relative) in switch_line.operands[2..].iter().enumerate() {
+        by_target
+            .entry(base + *relative)
+            .or_default()
+            .push(value as i64);
+    }
+    by_target
+        .entry(base + switch_line.operands[0])
+        .or_default()
+        .push(-1);
+    by_target.into_values().collect()
+}
+
+#[test]
+fn structures_a_switch_whose_default_target_is_the_join() {
+    use disrobe_pass_as3::lifter::{CaseLabel, Stmt, SwitchCase};
+
+    let (abc, merge_off): (AbcFile, usize) = switch_with_default_at_the_join();
+    let expected_groups: Vec<Vec<i64>> = dispatch_table_in_layout_order(&abc);
+    assert_eq!(
+        expected_groups,
+        vec![vec![0], vec![1], vec![2], vec![-1]],
+        "the assembled dispatch table must read back as three values then the default"
+    );
+
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    let folded: Option<&Stmt> = lifted
+        .statements
+        .iter()
+        .find(|s: &&Stmt| matches!(s, Stmt::StructuredSwitch { .. }));
+    assert!(
+        folded.is_some(),
+        "a switch whose default target is the join must still fold: {rendered}"
+    );
+    let Some(Stmt::StructuredSwitch { cases, .. }) = folded else {
+        unreachable!()
+    };
+
+    let recovered_groups: Vec<Vec<i64>> = cases
+        .iter()
+        .map(|case: &SwitchCase| {
+            case.labels
+                .iter()
+                .map(|label: &CaseLabel| match label {
+                    CaseLabel::Value(value) => *value,
+                    CaseLabel::Default => -1,
+                    CaseLabel::Expr(_) => i64::MIN,
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        recovered_groups, expected_groups,
+        "recovered case order and labels must match the dispatch table the bytecode carries: \
+         {rendered}"
+    );
+
+    assert!(
+        cases[0].breaks && cases[1].breaks,
+        "the two cases that jump to the join must carry a break: {cases:?}"
+    );
+    assert!(
+        !cases[2].breaks,
+        "the case that falls into the join needs no break: {cases:?}"
+    );
+    let default_case: &SwitchCase = &cases[3];
+    assert!(
+        default_case.body.is_empty() && default_case.breaks,
+        "the default edge lands on the join, so its arm is empty and breaks, keeping the edge the \
+         bytecode has: {default_case:?}"
+    );
+    assert!(
+        rendered.contains("    default:\n        break;\n"),
+        "the empty default arm must be rendered, not dropped: {rendered}"
+    );
+    assert!(
+        rendered.contains("return loc2;"),
+        "the join continuation must survive the fold: {rendered}"
+    );
+    assert!(
+        !rendered.contains("goto") && !rendered.contains(&format!("L{merge_off}:")),
+        "folding must leave no goto or label residue: {rendered}"
+    );
+    assert!(
+        lifted.fully_structured,
+        "the folded body carries no unstructured residue: {rendered}"
+    );
+    assert!(
+        lifted.structurally_recovered,
+        "the folded body drops nothing: {:?}",
+        lifted.fidelity_warning()
+    );
+}
+
+#[test]
+fn keeps_the_raw_switch_when_the_join_is_a_case_value_target() {
+    use disrobe_pass_as3::lifter::Stmt;
+
+    let mut code: Vec<u8> = vec![0x24, 0x00, 0xD6, 0xD1];
+    let sw_pos: usize = code.len();
+    code.push(0x1B);
+    let default_patch: usize = code.len();
+    s24(0, &mut code);
+    u30(1, &mut code);
+    let case0_patch: usize = code.len();
+    s24(0, &mut code);
+    let case1_patch: usize = code.len();
+    s24(0, &mut code);
+
+    let case0_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let break0_operand: usize = code.len();
+    s24(0, &mut code);
+    let after_break0: usize = code.len();
+
+    let default_off: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x1E, 0xD6, 0x10]);
+    let break1_operand: usize = code.len();
+    s24(0, &mut code);
+    let after_break1: usize = code.len();
+
+    let case1_off: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    let patch_sw = |code: &mut Vec<u8>, at: usize, target: usize| {
+        let rel: i32 = target as i32 - sw_pos as i32;
+        let raw: u32 = rel as u32;
+        code[at] = (raw & 0xFF) as u8;
+        code[at + 1] = ((raw >> 8) & 0xFF) as u8;
+        code[at + 2] = ((raw >> 16) & 0xFF) as u8;
+    };
+    patch_sw(&mut code, default_patch, default_off);
+    patch_sw(&mut code, case0_patch, case0_off);
+    patch_sw(&mut code, case1_patch, case1_off);
+    patch_branch(&mut code, break0_operand, after_break0, case1_off);
+    patch_branch(&mut code, break1_operand, after_break1, case1_off);
+
+    let abc: AbcFile = mk_abc(
+        &["", "C", "Object", "x", "classify"],
+        &[(1, 1), (1, 2), (1, 3), (1, 4)],
+        Vec::new(),
+        one_param_method(),
+        code,
+    );
+    let (rendered, lifted): (String, LiftedBody) = lift_only(&abc);
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|s: &Stmt| matches!(s, Stmt::StructuredSwitch { .. })),
+        "a join that is a real case body, not the default edge, must not be folded away as an \
+         empty arm: {rendered}"
+    );
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|s: &Stmt| matches!(s, Stmt::Switch { .. })),
+        "the refused dispatch must stay in its raw form: {rendered}"
+    );
+}

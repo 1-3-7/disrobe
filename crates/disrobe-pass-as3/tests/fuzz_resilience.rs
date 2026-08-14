@@ -266,3 +266,44 @@ fn malformed_lookupswitch_case_count_is_rejected_by_the_parser_path() {
         "a truncated case table must fail closed in the production parser: {lifted:?}"
     );
 }
+
+fn structured_switch_arms(code: Vec<u8>) -> Vec<Vec<disrobe_pass_as3::lifter::CaseLabel>> {
+    let lifted: disrobe_pass_as3::LiftedBody = lift_body(&bare_abc(), &body(code), None)
+        .expect("a bounded lookupswitch shape must lift without failing");
+    lifted
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            disrobe_pass_as3::lifter::Stmt::StructuredSwitch { cases, .. } => Some(cases),
+            _ => None,
+        })
+        .flatten()
+        .map(|case| case.labels.clone())
+        .collect()
+}
+
+#[test]
+fn a_lookupswitch_whose_default_and_only_case_share_a_target_folds_into_one_arm() {
+    use disrobe_pass_as3::lifter::CaseLabel;
+
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x47,
+    ];
+    assert_eq!(
+        structured_switch_arms(code),
+        vec![vec![CaseLabel::Value(0), CaseLabel::Default]],
+        "a target shared by the default edge and a case value is one arm carrying both labels, \
+         never two arms or a dropped edge"
+    );
+}
+
+#[test]
+fn a_lookupswitch_that_targets_itself_is_not_folded() {
+    let code: Vec<u8> = vec![
+        0x24, 0x00, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x47,
+    ];
+    assert!(
+        structured_switch_arms(code).is_empty(),
+        "a dispatch whose targets resolve to the dispatch itself is cyclic, not a switch region"
+    );
+}

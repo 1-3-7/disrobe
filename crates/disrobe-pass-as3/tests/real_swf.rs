@@ -245,6 +245,125 @@ fn property_access_never_leaks_a_namespace_uri() {
     );
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct DispatchTotals {
+    disassembled: usize,
+    lifted: usize,
+    folded: usize,
+}
+
+fn count_raw_switches(stmts: &[Stmt]) -> usize {
+    stmts
+        .iter()
+        .map(|stmt: &Stmt| match stmt {
+            Stmt::Switch { .. } => 1,
+            Stmt::For { body, .. }
+            | Stmt::ForEach { body, .. }
+            | Stmt::ForIn { body, .. }
+            | Stmt::While { body, .. }
+            | Stmt::DoWhile { body, .. }
+            | Stmt::IfBlock { body, .. }
+            | Stmt::With { body, .. } => count_raw_switches(body),
+            Stmt::IfElse {
+                then_body,
+                else_body,
+                ..
+            } => count_raw_switches(then_body) + count_raw_switches(else_body),
+            Stmt::Try { body, catches } => {
+                count_raw_switches(body)
+                    + catches
+                        .iter()
+                        .map(|catch| count_raw_switches(&catch.body))
+                        .sum::<usize>()
+            }
+            Stmt::StructuredSwitch { cases, .. } => cases
+                .iter()
+                .map(|case| count_raw_switches(&case.body))
+                .sum(),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn dispatch_totals() -> Option<DispatchTotals> {
+    let dir: PathBuf = corpus_root();
+    let entries: std::fs::ReadDir = std::fs::read_dir(&dir).ok()?;
+    let mut totals: DispatchTotals = DispatchTotals::default();
+    let mut seen: usize = 0;
+    for entry in entries {
+        let path: PathBuf = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("swf") {
+            continue;
+        }
+        seen += 1;
+        let bytes: Vec<u8> = std::fs::read(&path).expect("read swf");
+        let Ok(parsed): Result<Swf, _> = swf::parse(&bytes) else {
+            continue;
+        };
+        for blob in parsed.collect_do_abc() {
+            let Ok(abc): Result<AbcFile, _> = abc::parse(&blob.abc_bytes) else {
+                continue;
+            };
+            for body in &abc.method_bodies {
+                if let Ok(lines) = disasm(&body.code) {
+                    totals.disassembled += lines
+                        .iter()
+                        .filter(|line: &&DisasmLine| line.mnemonic == "lookupswitch")
+                        .count();
+                }
+                let info: Option<&MethodInfo> = abc.methods.get(body.method as usize);
+                let Ok(raw): Result<Vec<Stmt>, _> =
+                    disrobe_pass_as3::lifter::lift_body_raw(&abc, body, info)
+                else {
+                    continue;
+                };
+                let Ok(lifted): Result<LiftedBody, _> = lift_body(&abc, body, info) else {
+                    continue;
+                };
+                let before: usize = count_raw_switches(&raw);
+                let after: usize = count_raw_switches(&lifted.statements);
+                totals.lifted += before;
+                totals.folded += before.saturating_sub(after);
+            }
+        }
+    }
+    (seen > 0).then_some(totals)
+}
+
+#[test]
+fn corpus_lookupswitch_dispatch_recovery_holds_its_measured_floor() {
+    let Some(totals): Option<DispatchTotals> = dispatch_totals() else {
+        eprintln!("skip: corpus absent");
+        return;
+    };
+    let pct: f64 = 100.0 * totals.folded as f64 / totals.lifted as f64;
+    eprintln!(
+        "AS3 corpus lookupswitch folds: {}/{} = {pct:.2}% (disassembled {})",
+        totals.folded, totals.lifted, totals.disassembled
+    );
+    assert!(
+        totals.lifted >= 150,
+        "the dispatch population must stay large enough to measure; got {} lifted from {} \
+         disassembled lookupswitch instructions",
+        totals.lifted,
+        totals.disassembled
+    );
+    assert!(
+        totals.disassembled >= totals.lifted,
+        "every lifted dispatch must come from a lookupswitch the disassembler also found; got \
+         {} lifted against {} disassembled",
+        totals.lifted,
+        totals.disassembled
+    );
+    assert!(
+        totals.folded * 1000 >= totals.lifted * 198,
+        "real compiler-emitted lookupswitch dispatch must keep folding into structured switches \
+         at its measured floor (>=19.8%); got {}/{} = {pct:.2}%",
+        totals.folded,
+        totals.lifted
+    );
+}
+
 #[test]
 fn corpus_recovery_rate_holds_an_honest_floor() {
     let Some((bodies, full, _leak)): Option<(usize, usize, String)> = rendered_corpus_bodies()
