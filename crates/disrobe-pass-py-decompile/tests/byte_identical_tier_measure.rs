@@ -23,7 +23,7 @@ use common::stdlib_measure::{
     manifest_dir, run_strict_measure, workspace_target,
 };
 
-const FIRST_PINNED_SERIES: (u8, u8) = (3, 10);
+const FIRST_PINNED_SERIES: (u8, u8) = (3, 8);
 const GATE_PREFIX: &str = "arbitrary_recompile_gate";
 const UNSUFFIXED_GATE_SERIES: (u8, u8) = (3, 14);
 const EXCLUDED_DIMENSIONS: &str = "co_filename,co_linetable,co_firstlineno";
