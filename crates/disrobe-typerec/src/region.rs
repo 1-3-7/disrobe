@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use iced_x86::{Instruction, OpKind, Register};
-use object::{File, Object, ObjectSection, SectionFlags};
+use object::{File, Object, ObjectSection, ObjectSymbol, SectionFlags, SymbolKind, SymbolSection};
 
 use crate::import_map::ImportMap;
 use crate::lattice::Width;
@@ -394,6 +394,12 @@ pub enum SectionKind {
 
 const MAX_SECTIONS: usize = 1 << 12;
 const MAX_RELOC_TARGETS: usize = 1 << 16;
+const MAX_ALLOCATOR_SITES: usize = 1 << 12;
+const MAX_ALLOCATOR_SYMBOLS: usize = 1 << 20;
+const MAX_THUNK_SCAN: usize = 1 << 24;
+const THUNK_LENGTH: usize = 6;
+const ENDBR64: [u8; 4] = [0xf3, 0x0f, 0x1e, 0xfa];
+const BND_PREFIX: u8 = 0xf2;
 const ELF_SHF_WRITE: u64 = 0x1;
 const ELF_SHF_ALLOC: u64 = 0x2;
 const ELF_SHF_EXECINSTR: u64 = 0x4;
@@ -408,9 +414,82 @@ const MACHO_THREAD_LOCAL_LAST: u32 = 0x15;
 const MACHO_ATTR_PURE_INSTRUCTIONS: u32 = 0x8000_0000;
 const MACHO_ATTR_SOME_INSTRUCTIONS: u32 = 0x0000_0400;
 
+const ALLOCATOR_NAMES: &[&str] = &[
+    "??2@YAPAXI@Z",
+    "??2@YAPEAX_K@Z",
+    "??2@YAPEAX_KAEBUnothrow_t@std@@@Z",
+    "??_U@YAPAXI@Z",
+    "??_U@YAPEAX_K@Z",
+    "??_U@YAPEAX_KAEBUnothrow_t@std@@@Z",
+    "CoTaskMemAlloc",
+    "CoTaskMemRealloc",
+    "GlobalAlloc",
+    "GlobalReAlloc",
+    "HeapAlloc",
+    "HeapReAlloc",
+    "LocalAlloc",
+    "LocalReAlloc",
+    "MIDL_user_allocate",
+    "RtlAllocateHeap",
+    "RtlReAllocateHeap",
+    "SysAllocString",
+    "SysAllocStringByteLen",
+    "SysAllocStringLen",
+    "VirtualAlloc",
+    "_ZnajRKSt9nothrow_t",
+    "_ZnamRKSt9nothrow_t",
+    "_ZnamSt11align_val_t",
+    "_ZnamSt11align_val_tRKSt9nothrow_t",
+    "_ZnwjRKSt9nothrow_t",
+    "_ZnwmRKSt9nothrow_t",
+    "_ZnwmSt11align_val_t",
+    "_ZnwmSt11align_val_tRKSt9nothrow_t",
+    "_Znaj",
+    "_Znam",
+    "_Znwj",
+    "_Znwm",
+    "__libc_calloc",
+    "__libc_malloc",
+    "__libc_memalign",
+    "__libc_realloc",
+    "__strdup",
+    "_aligned_malloc",
+    "_aligned_offset_malloc",
+    "_aligned_realloc",
+    "_calloc_base",
+    "_expand",
+    "_malloc_base",
+    "_mbsdup",
+    "_realloc_base",
+    "_recalloc",
+    "_strdup",
+    "_wcsdup",
+    "aligned_alloc",
+    "calloc",
+    "malloc",
+    "memalign",
+    "pvalloc",
+    "realloc",
+    "reallocarray",
+    "strdup",
+    "strndup",
+    "valloc",
+];
+
+fn allocator_key(name: &str) -> &str {
+    if name.starts_with('?') {
+        return name;
+    }
+    name.split_once('@')
+        .map_or(name, |(head, _): (&str, &str)| head)
+}
+
+fn is_allocator_name(name: &str) -> bool {
+    ALLOCATOR_NAMES.contains(&allocator_key(name))
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RegionModel {
-    heap_regs: Vec<Register>,
     frame_regs: Vec<Register>,
     rodata: Vec<(u64, u64)>,
     data: Vec<(u64, u64)>,
@@ -418,6 +497,7 @@ pub struct RegionModel {
     tls: Vec<(u64, u64)>,
     code: Vec<(u64, u64)>,
     reloc_targets: BTreeSet<u64>,
+    allocator_sites: BTreeSet<u64>,
 }
 
 fn contains(ranges: &[(u64, u64)], addr: u64) -> bool {
@@ -499,9 +579,11 @@ impl RegionModel {
         let Ok(file): core::result::Result<File<'_>, object::Error> = File::parse(data) else {
             return model;
         };
+        let imports: ImportMap = ImportMap::from_image(data);
         model.absorb_sections(&file);
         model.absorb_relocations(&file);
-        model.absorb_import_slots(data);
+        model.absorb_import_slots(&imports);
+        model.absorb_allocators(&file, &imports);
         model
     }
 
@@ -545,13 +627,127 @@ impl RegionModel {
         }
     }
 
-    fn absorb_import_slots(&mut self, data: &[u8]) {
-        let imports: ImportMap = ImportMap::from_image(data);
+    fn absorb_import_slots(&mut self, imports: &ImportMap) {
         for slot in imports.by_slot_va.keys() {
             if !self.record_reloc_target(*slot) {
                 return;
             }
         }
+    }
+
+    fn absorb_allocators(&mut self, file: &File<'_>, imports: &ImportMap) {
+        let mut slots: BTreeSet<u64> = BTreeSet::new();
+        for (slot_va, import) in &imports.by_slot_va {
+            let Some(name): Option<&str> = import.name() else {
+                continue;
+            };
+            if !is_allocator_name(name) {
+                continue;
+            }
+            slots.insert(*slot_va);
+            if !self.record_allocator_site(*slot_va) {
+                return;
+            }
+        }
+        if !self.absorb_allocator_definitions(file) {
+            return;
+        }
+        if !slots.is_empty() {
+            self.absorb_allocator_thunks(file, &slots);
+        }
+    }
+
+    fn absorb_allocator_definitions(&mut self, file: &File<'_>) -> bool {
+        for symbol in file
+            .symbols()
+            .chain(file.dynamic_symbols())
+            .take(MAX_ALLOCATOR_SYMBOLS)
+        {
+            if symbol.kind() != SymbolKind::Text
+                || !matches!(symbol.section(), SymbolSection::Section(_))
+            {
+                continue;
+            }
+            let Ok(name): core::result::Result<&str, object::Error> = symbol.name() else {
+                continue;
+            };
+            if !is_allocator_name(name) {
+                continue;
+            }
+            let address: u64 = symbol.address();
+            if address == 0 {
+                continue;
+            }
+            if !self.record_allocator_site(address) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn absorb_allocator_thunks(&mut self, file: &File<'_>, slots: &BTreeSet<u64>) {
+        let mut budget: usize = MAX_THUNK_SCAN;
+        for section in file.sections().take(MAX_SECTIONS) {
+            if budget == 0 {
+                return;
+            }
+            if section_kind_of(&section) != SectionKind::Code {
+                continue;
+            }
+            let base: u64 = section.address();
+            let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
+                continue;
+            };
+            let window: &[u8] = &data[..data.len().min(budget)];
+            budget -= window.len();
+            if !self.scan_thunks(window, base, slots) {
+                return;
+            }
+        }
+    }
+
+    fn scan_thunks(&mut self, data: &[u8], base: u64, slots: &BTreeSet<u64>) -> bool {
+        for (offset, window) in data.windows(THUNK_LENGTH).enumerate() {
+            let [0xff, 0x25, low, second, third, high]: &[u8] = window else {
+                continue;
+            };
+            let relative: i32 = i32::from_le_bytes([*low, *second, *third, *high]);
+            let site: u64 = base.wrapping_add(offset as u64);
+            let slot: u64 = site
+                .wrapping_add(THUNK_LENGTH as u64)
+                .wrapping_add(relative as i64 as u64);
+            if !slots.contains(&slot) {
+                continue;
+            }
+            if !self.record_allocator_site(site) {
+                return false;
+            }
+            if !self.record_guarded_entry(data, offset, site) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn record_guarded_entry(&mut self, data: &[u8], offset: usize, site: u64) -> bool {
+        for lead in [ENDBR64.len(), ENDBR64.len() + 1] {
+            let Some(start): Option<usize> = offset.checked_sub(lead) else {
+                continue;
+            };
+            let Some(prefix): Option<&[u8]> = data.get(start..start + ENDBR64.len()) else {
+                continue;
+            };
+            if prefix != ENDBR64 {
+                continue;
+            }
+            if lead > ENDBR64.len() && data.get(offset - 1) != Some(&BND_PREFIX) {
+                continue;
+            }
+            if !self.record_allocator_site(site.wrapping_sub(lead as u64)) {
+                return false;
+            }
+        }
+        true
     }
 
     fn record_reloc_target(&mut self, address: u64) -> bool {
@@ -564,16 +760,27 @@ impl RegionModel {
         true
     }
 
-    pub fn mark_heap(&mut self, reg: Register) {
-        let full: Register = reg.full_register();
-        if !self.heap_regs.contains(&full) {
-            self.heap_regs.push(full);
+    fn record_allocator_site(&mut self, address: u64) -> bool {
+        if self.allocator_sites.len() >= MAX_ALLOCATOR_SITES {
+            return false;
         }
+        self.allocator_sites.insert(address);
+        true
     }
 
-    pub fn clear_heap(&mut self, reg: Register) {
-        let full: Register = reg.full_register();
-        self.heap_regs.retain(|held: &Register| *held != full);
+    #[cfg(test)]
+    pub(crate) fn mark_allocator_site(&mut self, address: u64) {
+        self.allocator_sites.insert(address);
+    }
+
+    #[must_use]
+    pub(crate) fn is_allocator_site(&self, address: u64) -> bool {
+        self.allocator_sites.contains(&address)
+    }
+
+    #[must_use]
+    pub(crate) fn has_allocator_sites(&self) -> bool {
+        !self.allocator_sites.is_empty()
     }
 
     pub fn mark_frame(&mut self, reg: Register) {
@@ -605,11 +812,6 @@ impl RegionModel {
 
     pub fn add_reloc_target(&mut self, target: u64) {
         self.reloc_targets.insert(target);
-    }
-
-    #[must_use]
-    fn is_heap(&self, reg: Register) -> bool {
-        self.heap_regs.contains(&reg.full_register())
     }
 
     #[must_use]
@@ -731,9 +933,6 @@ fn classify_region(
     }
     if model.is_frame(base) {
         return Region::Stack;
-    }
-    if model.is_heap(base) {
-        return Region::Heap;
     }
     if base == Register::None {
         return model.region_of(u64::from_ne_bytes(disp.to_ne_bytes()));
@@ -884,15 +1083,33 @@ mod tests {
     }
 
     #[test]
-    fn model_marks_heap_and_frame_registers() {
+    fn model_marks_frame_registers() {
         let mut model: RegionModel = RegionModel::new();
-        model.mark_heap(Register::EAX);
-        assert!(model.is_heap(Register::RAX));
-        model.clear_heap(Register::RAX);
-        assert!(!model.is_heap(Register::RAX));
         model.mark_frame(Register::R12);
         assert!(model.is_frame(Register::R12));
         assert!(model.is_frame(Register::RBP));
+    }
+
+    #[test]
+    fn allocator_names_normalize_decoration_but_keep_microsoft_mangling() {
+        assert!(is_allocator_name("malloc"));
+        assert!(is_allocator_name("malloc@GLIBC_2.2.5"));
+        assert!(is_allocator_name("_Znwm"));
+        assert!(is_allocator_name("??2@YAPEAX_K@Z"));
+        assert!(!is_allocator_name("free"));
+        assert!(!is_allocator_name("mmap"));
+        assert!(!is_allocator_name("posix_memalign"));
+        assert!(!is_allocator_name("VirtualAllocEx"));
+        assert!(!is_allocator_name("malloc_usable_size"));
+    }
+
+    #[test]
+    fn an_allocator_site_is_only_the_recorded_address() {
+        let mut model: RegionModel = RegionModel::new();
+        model.mark_allocator_site(0x1400);
+        assert!(model.is_allocator_site(0x1400));
+        assert!(!model.is_allocator_site(0x1401));
+        assert!(!model.is_allocator_site(0));
     }
 
     #[test]

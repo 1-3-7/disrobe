@@ -698,7 +698,7 @@ fn call_slot_va(
     follow_thunk(image_text, text_base, target, imports)
 }
 
-fn indirect_slot_va(insn: &Instruction) -> Option<u64> {
+pub(crate) fn indirect_slot_va(insn: &Instruction) -> Option<u64> {
     if insn.op0_kind() != OpKind::Memory {
         return None;
     }
@@ -711,7 +711,7 @@ fn indirect_slot_va(insn: &Instruction) -> Option<u64> {
     None
 }
 
-fn direct_call_target(insn: &Instruction) -> Option<u64> {
+pub(crate) fn direct_call_target(insn: &Instruction) -> Option<u64> {
     matches!(
         insn.op0_kind(),
         OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64

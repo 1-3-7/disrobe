@@ -5,6 +5,7 @@ use iced_x86::{
     Register, UsedMemory,
 };
 
+use crate::callsite::{direct_call_target, indirect_slot_va};
 use crate::cells::CellStore;
 use crate::cfg::{BasicBlock, Cfg};
 use crate::lattice::{TypeClass, TypeVar, Width};
@@ -14,6 +15,39 @@ pub type VersionId = u32;
 
 const MAX_STACK_SLOTS: usize = 1 << 12;
 const MAX_REGION_CELLS: usize = 1 << 8;
+const MAX_HEAP_BLOCKS: usize = 1 << 12;
+const MAX_HEAP_SLOTS: usize = 1 << 6;
+const MAX_HEAP_ROUNDS: usize = 1 << 3;
+const POINTER_BYTES: i64 = 8;
+
+const HEAP_REGISTERS: [Register; 14] = [
+    Register::RAX,
+    Register::RCX,
+    Register::RDX,
+    Register::RBX,
+    Register::RSI,
+    Register::RDI,
+    Register::R8,
+    Register::R9,
+    Register::R10,
+    Register::R11,
+    Register::R12,
+    Register::R13,
+    Register::R14,
+    Register::R15,
+];
+
+const CALLER_SAVED: [Register; 9] = [
+    Register::RAX,
+    Register::RCX,
+    Register::RDX,
+    Register::RSI,
+    Register::RDI,
+    Register::R8,
+    Register::R9,
+    Register::R10,
+    Register::R11,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessKind {
@@ -284,6 +318,363 @@ fn forces_whole_frame_escape(insn: &Instruction) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct HeapRegs(u16);
+
+fn heap_bit(reg: Register) -> Option<u16> {
+    let full: Register = reg.full_register();
+    let index: usize = HEAP_REGISTERS
+        .iter()
+        .position(|candidate: &Register| *candidate == full)?;
+    Some(1_u16 << index)
+}
+
+impl HeapRegs {
+    fn holds(self, reg: Register) -> bool {
+        heap_bit(reg).is_some_and(|bit: u16| self.0 & bit != 0)
+    }
+
+    fn assign(&mut self, reg: Register, heap: bool) {
+        let Some(bit): Option<u16> = heap_bit(reg) else {
+            return;
+        };
+        if heap {
+            self.0 |= bit;
+        } else {
+            self.0 &= !bit;
+        }
+    }
+
+    const fn meet(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct HeapState {
+    regs: HeapRegs,
+    slots: BTreeSet<i64>,
+}
+
+impl HeapState {
+    fn meet(&self, other: &Self) -> Self {
+        Self {
+            regs: self.regs.meet(other.regs),
+            slots: self
+                .slots
+                .intersection(&other.slots)
+                .copied()
+                .collect::<BTreeSet<i64>>(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotEffect {
+    Keep,
+    ClearAll,
+    Write {
+        rbp_disp: i64,
+        width: i64,
+        heap: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Propagation {
+    dst: Register,
+    heap: bool,
+}
+
+fn pointer_register(kind: OpKind, reg: Register) -> Option<Register> {
+    if !matches!(kind, OpKind::Register) || reg.size() != 8 {
+        return None;
+    }
+    Some(reg)
+}
+
+fn frame_slot_operand(insn: &Instruction) -> Option<i64> {
+    if insn.is_ip_rel_memory_operand()
+        || insn.memory_base() != Register::RBP
+        || insn.memory_index() != Register::None
+        || insn.memory_size().size() != 8
+    {
+        return None;
+    }
+    Some(i64::from_ne_bytes(
+        insn.memory_displacement64().to_ne_bytes(),
+    ))
+}
+
+fn stored_pointer(insn: &Instruction) -> Option<Register> {
+    if insn.mnemonic() != Mnemonic::Mov || insn.op0_kind() != OpKind::Memory {
+        return None;
+    }
+    pointer_register(insn.op1_kind(), insn.op1_register())
+}
+
+fn call_target(insn: &Instruction) -> Option<u64> {
+    direct_call_target(insn).or_else(|| indirect_slot_va(insn))
+}
+
+fn propagation_of(insn: &Instruction, state: &HeapState, track_slots: bool) -> Option<Propagation> {
+    match insn.mnemonic() {
+        Mnemonic::Mov => {
+            let dst: Register = pointer_register(insn.op0_kind(), insn.op0_register())?;
+            if let Some(src) = pointer_register(insn.op1_kind(), insn.op1_register()) {
+                return Some(Propagation {
+                    dst,
+                    heap: state.regs.holds(src),
+                });
+            }
+            if !track_slots || insn.op1_kind() != OpKind::Memory {
+                return None;
+            }
+            let rbp_disp: i64 = frame_slot_operand(insn)?;
+            Some(Propagation {
+                dst,
+                heap: state.slots.contains(&rbp_disp),
+            })
+        }
+        Mnemonic::Lea => {
+            let dst: Register = pointer_register(insn.op0_kind(), insn.op0_register())?;
+            Some(Propagation {
+                dst,
+                heap: state.regs.holds(insn.memory_base()),
+            })
+        }
+        Mnemonic::Add | Mnemonic::Sub => {
+            let dst: Register = pointer_register(insn.op0_kind(), insn.op0_register())?;
+            matches!(
+                insn.op1_kind(),
+                OpKind::Immediate8 | OpKind::Immediate8to64 | OpKind::Immediate32to64
+            )
+            .then(|| Propagation {
+                dst,
+                heap: state.regs.holds(dst),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn slot_effect(
+    insn: &Instruction,
+    factory: &mut InstructionInfoFactory,
+    model: &RegionModel,
+    state: &HeapState,
+) -> SlotEffect {
+    let pushes: bool = insn.stack_pointer_increment() != 0;
+    let mut written: Option<UsedMemory> = None;
+    let mut count: usize = 0;
+    for used in factory.info(insn).used_memory() {
+        if !matches!(
+            memory_access_kind(used.access()),
+            Some(AccessKind::Store | AccessKind::Rmw)
+        ) {
+            continue;
+        }
+        if pushes && used.base() == Register::RSP {
+            continue;
+        }
+        count += 1;
+        written = Some(*used);
+    }
+    let Some(used): Option<UsedMemory> = written else {
+        return SlotEffect::Keep;
+    };
+    if count > 1 {
+        return SlotEffect::ClearAll;
+    }
+    if used.base() == Register::RBP {
+        if used.index() != Register::None {
+            return SlotEffect::ClearAll;
+        }
+        let rbp_disp: i64 = i64::from_ne_bytes(used.displacement().to_ne_bytes());
+        let width: i64 = i64::try_from(used.memory_size().size()).unwrap_or(i64::MAX);
+        let heap: bool = frame_slot_operand(insn).is_some_and(|slot: i64| slot == rbp_disp)
+            && stored_pointer(insn).is_some_and(|src: Register| state.regs.holds(src));
+        return SlotEffect::Write {
+            rbp_disp,
+            width,
+            heap,
+        };
+    }
+    let Some(memop): Option<u32> = single_memory_operand(insn) else {
+        return SlotEffect::ClearAll;
+    };
+    let Some(access): Option<MemoryAccess> = region::classify(insn, memop, model) else {
+        return SlotEffect::ClearAll;
+    };
+    match heap_refined_region(&access, state.regs) {
+        Region::Global | Region::Heap | Region::Tls | Region::ConstPool => SlotEffect::Keep,
+        Region::Stack | Region::Unknown => SlotEffect::ClearAll,
+    }
+}
+
+fn heap_refined_region(access: &MemoryAccess, heap: HeapRegs) -> Region {
+    if matches!(access.region, Region::Unknown) && heap.holds(access.base) {
+        return Region::Heap;
+    }
+    access.region
+}
+
+fn heap_transfer(
+    state: &mut HeapState,
+    insn: &Instruction,
+    factory: &mut InstructionInfoFactory,
+    model: &RegionModel,
+    track_slots: bool,
+) {
+    let propagation: Option<Propagation> = propagation_of(insn, state, track_slots);
+    let effect: SlotEffect = if track_slots {
+        slot_effect(insn, factory, model, state)
+    } else {
+        SlotEffect::Keep
+    };
+    for used in factory.info(insn).used_registers() {
+        if writes_register(used.access()) {
+            state.regs.assign(used.register(), false);
+        }
+    }
+    if matches!(
+        insn.flow_control(),
+        FlowControl::Call | FlowControl::IndirectCall
+    ) {
+        for reg in CALLER_SAVED {
+            state.regs.assign(reg, false);
+        }
+        if call_target(insn).is_some_and(|target: u64| model.is_allocator_site(target)) {
+            state.regs.assign(Register::RAX, true);
+        }
+    } else if let Some(step) = propagation {
+        state.regs.assign(step.dst, step.heap);
+    }
+    match effect {
+        SlotEffect::Keep => {}
+        SlotEffect::ClearAll => state.slots.clear(),
+        SlotEffect::Write {
+            rbp_disp,
+            width,
+            heap,
+        } => {
+            let end: i64 = rbp_disp.saturating_add(width);
+            state.slots.retain(|slot: &i64| {
+                *slot >= end || slot.saturating_add(POINTER_BYTES) <= rbp_disp
+            });
+            if heap && state.slots.len() < MAX_HEAP_SLOTS {
+                state.slots.insert(rbp_disp);
+            }
+        }
+    }
+}
+
+fn walk_heap_block(
+    state: &mut HeapState,
+    instrs: &[Instruction],
+    block: &BasicBlock,
+    factory: &mut InstructionInfoFactory,
+    model: &RegionModel,
+    track_slots: bool,
+    record: &mut [HeapRegs],
+) {
+    for index in block.start..block.end {
+        let Some(insn): Option<&Instruction> = instrs.get(index) else {
+            return;
+        };
+        if let Some(slot) = record.get_mut(index) {
+            *slot = state.regs;
+        }
+        heap_transfer(state, insn, factory, model, track_slots);
+    }
+}
+
+fn heap_block_entry(exits: &[HeapState], block: &BasicBlock) -> HeapState {
+    let mut merged: Option<HeapState> = None;
+    for pred in &block.preds {
+        let Some(exit): Option<&HeapState> = exits.get(*pred) else {
+            continue;
+        };
+        merged = Some(merged.map_or_else(|| exit.clone(), |current: HeapState| current.meet(exit)));
+    }
+    merged.unwrap_or_default()
+}
+
+fn allocates(instrs: &[Instruction], model: &RegionModel) -> bool {
+    instrs.iter().any(|insn: &Instruction| {
+        matches!(
+            insn.flow_control(),
+            FlowControl::Call | FlowControl::IndirectCall
+        ) && call_target(insn).is_some_and(|target: u64| model.is_allocator_site(target))
+    })
+}
+
+fn heap_registers(instrs: &[Instruction], cfg: &Cfg, model: &RegionModel) -> Vec<HeapRegs> {
+    let mut record: Vec<HeapRegs> = vec![HeapRegs::default(); instrs.len()];
+    if !model.has_allocator_sites()
+        || cfg.blocks.len() > MAX_HEAP_BLOCKS
+        || !allocates(instrs, model)
+    {
+        return record;
+    }
+    let track_slots: bool = !instrs
+        .iter()
+        .any(|insn: &Instruction| forces_whole_frame_escape(insn) || escaped_slot(insn).is_some());
+    let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
+    let mut exits: Vec<HeapState> = vec![HeapState::default(); cfg.blocks.len()];
+    let rounds: usize = cfg.blocks.len().saturating_add(2).min(MAX_HEAP_ROUNDS);
+    let mut settled: bool = false;
+    for _ in 0..rounds {
+        let mut changed: bool = false;
+        for (index, block) in cfg.blocks.iter().enumerate() {
+            let mut state: HeapState = if index == 0 {
+                HeapState::default()
+            } else {
+                heap_block_entry(&exits, block)
+            };
+            walk_heap_block(
+                &mut state,
+                instrs,
+                block,
+                &mut factory,
+                model,
+                track_slots,
+                &mut record,
+            );
+            if exits.get(index) != Some(&state) {
+                if let Some(exit) = exits.get_mut(index) {
+                    *exit = state;
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            settled = true;
+            break;
+        }
+    }
+    if !settled {
+        return vec![HeapRegs::default(); instrs.len()];
+    }
+    for (index, block) in cfg.blocks.iter().enumerate() {
+        let mut state: HeapState = if index == 0 {
+            HeapState::default()
+        } else {
+            heap_block_entry(&exits, block)
+        };
+        walk_heap_block(
+            &mut state,
+            instrs,
+            block,
+            &mut factory,
+            model,
+            track_slots,
+            &mut record,
+        );
+    }
+    record
+}
+
 #[must_use]
 pub fn build(instrs: &[Instruction], cfg: &Cfg, store: &mut CellStore) -> MemSsa {
     build_with_model(instrs, cfg, store, &RegionModel::default())
@@ -326,8 +717,9 @@ fn build_with_oracle(
     let mut ssa: MemSsa = MemSsa::default();
     build_stack_cells(&mut ssa, store, cfg, instrs, &stack, &events, oracle);
 
+    let heap: Vec<HeapRegs> = heap_registers(instrs, cfg, model);
     let (region_events, barriers): (Vec<Option<RegionEvent>>, BTreeSet<usize>) =
-        collect_region_events(instrs, cfg, model, &stack);
+        collect_region_events(instrs, cfg, model, &stack, &heap);
     build_region_cells(
         &mut ssa,
         store,
@@ -522,6 +914,7 @@ fn region_event(
     block: usize,
     writes: &BTreeMap<Register, usize>,
     call_barrier: Option<usize>,
+    heap: HeapRegs,
 ) -> Option<RegionEvent> {
     if insn.mnemonic() == Mnemonic::Lea {
         return None;
@@ -535,6 +928,7 @@ fn region_event(
     if access.region == Region::Stack {
         return None;
     }
+    access.region = heap_refined_region(&access, heap);
     access.index_symbol = access
         .index
         .map(|index: Register| symbol_of(index, block, writes, call_barrier));
@@ -564,6 +958,7 @@ fn collect_region_events(
     cfg: &Cfg,
     model: &RegionModel,
     stack: &[Option<StackEvent>],
+    heap: &[HeapRegs],
 ) -> (Vec<Option<RegionEvent>>, BTreeSet<usize>) {
     let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
     let mut events: Vec<Option<RegionEvent>> = vec![None; instrs.len()];
@@ -586,6 +981,7 @@ fn collect_region_events(
                     block_index,
                     &writes,
                     call_barrier,
+                    heap.get(index).copied().unwrap_or_default(),
                 )
             };
             let calls: bool = matches!(
@@ -1337,23 +1733,25 @@ mod tests {
         );
     }
 
+    const ALLOCATOR_SITE: u64 = 0x1009;
+
     const EVERY_REGION: &[u8] = &[
-        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00,
-        0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34, 0x25, 0x28, 0x00, 0x00, 0x00,
-        0x8b, 0x78, 0x10, 0x44, 0x8b, 0x43, 0x10, 0x5d, 0xc3,
+        0x55, 0x48, 0x89, 0xe5, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c,
+        0x25, 0x00, 0x33, 0x20, 0x00, 0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34,
+        0x25, 0x28, 0x00, 0x00, 0x00, 0x8b, 0x78, 0x10, 0x44, 0x8b, 0x43, 0x10, 0x5d, 0xc3,
     ];
 
     const FIVE_KNOWN_REGIONS: &[u8] = &[
-        0x55, 0x48, 0x89, 0xe5, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c, 0x25, 0x00, 0x33, 0x20, 0x00,
-        0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34, 0x25, 0x28, 0x00, 0x00, 0x00,
-        0x8b, 0x78, 0x10, 0x5d, 0xc3,
+        0x55, 0x48, 0x89, 0xe5, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x45, 0xf8, 0x8b, 0x0c,
+        0x25, 0x00, 0x33, 0x20, 0x00, 0x8b, 0x14, 0x25, 0x00, 0x02, 0x20, 0x00, 0x64, 0x8b, 0x34,
+        0x25, 0x28, 0x00, 0x00, 0x00, 0x8b, 0x78, 0x10, 0x5d, 0xc3,
     ];
 
     fn seeded_model() -> RegionModel {
         let mut model: RegionModel = RegionModel::new();
         model.add_data(0x0020_3300, 0x0020_3310);
         model.add_rodata(0x0020_0200, 0x0020_0210);
-        model.mark_heap(Register::RAX);
+        model.mark_allocator_site(ALLOCATOR_SITE);
         model
     }
 
@@ -1387,6 +1785,42 @@ mod tests {
                 Region::Unknown,
             ]),
             "every region the code touches enters memory ssa",
+        );
+    }
+
+    const SPILLED_ALLOCATION: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x45, 0xf0, 0x48, 0x8b,
+        0x45, 0xf0, 0x8b, 0x10, 0x5d, 0xc3,
+    ];
+
+    const PARTLY_OVERWRITTEN_ALLOCATION: &[u8] = &[
+        0x55, 0x48, 0x89, 0xe5, 0xe8, 0x00, 0x00, 0x00, 0x00, 0x48, 0x89, 0x45, 0xf0, 0x89, 0x4d,
+        0xf4, 0x48, 0x8b, 0x45, 0xf0, 0x8b, 0x10, 0x5d, 0xc3,
+    ];
+
+    #[test]
+    fn a_spilled_allocation_pointer_survives_the_reload() {
+        let model: RegionModel = seeded_model();
+        let found: BTreeSet<Region> = accesses(SPILLED_ALLOCATION, &model)
+            .into_iter()
+            .map(|(region, _): (Region, TypeVar)| region)
+            .collect();
+        assert!(
+            found.contains(&Region::Heap),
+            "a pointer stored and reloaded through one frame slot stays an allocation: {found:?}",
+        );
+    }
+
+    #[test]
+    fn a_partly_overwritten_frame_slot_loses_the_allocation() {
+        let model: RegionModel = seeded_model();
+        let found: BTreeSet<Region> = accesses(PARTLY_OVERWRITTEN_ALLOCATION, &model)
+            .into_iter()
+            .map(|(region, _): (Region, TypeVar)| region)
+            .collect();
+        assert!(
+            !found.contains(&Region::Heap),
+            "a four byte store across the spilled pointer destroys the proof: {found:?}",
         );
     }
 
