@@ -33,6 +33,34 @@ const MAX_DATA_BYTES: u64 = 4 * 1024 * 1024;
 
 const MIRRORED: [&str; 1] = ["recovery.svg"];
 
+const MAX_RENDERER_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+
+const CHART_RENDERER_SOURCES: [&str; 13] = [
+    "build.mjs",
+    "charts/architecture.mjs",
+    "charts/ecosystems.mjs",
+    "charts/ladder.mjs",
+    "charts/python.mjs",
+    "charts/recovery.mjs",
+    "charts/verification.mjs",
+    "lib/data.mjs",
+    "lib/echart.mjs",
+    "lib/kit.mjs",
+    "lib/tiers.mjs",
+    "package.json",
+    "pnpm-lock.yaml",
+];
+
+const CHART_RENDERER_OWNED_ELSEWHERE: [&str; 3] = [
+    "lib/social_card.mjs",
+    "render_social_card.mjs",
+    "rasterize_all.mjs",
+];
+
+const CHART_RENDERER_SCANNED_DIRS: [&str; 3] = [".", "charts", "lib"];
+
+const CHART_RENDERER_DIGEST: &str = "e598e6c1574a700b0cc57c88bf099220";
+
 const VERIFICATION_CHART: &str = "verification.svg";
 const RECOVERY_CHART: &str = "recovery.svg";
 const RECOVERY_DATA: &str = "recovery.json";
@@ -88,6 +116,74 @@ const RECOVERY_FORBIDDEN_PRESENTATION_ATTRIBUTES: [&str; 9] = [
     "clip-path",
     "overflow",
 ];
+
+#[derive(Debug, Deserialize)]
+struct EcosystemsDoc {
+    title: String,
+    subtitle: String,
+    kinds: BTreeMap<String, String>,
+    cells: Vec<EcosystemsCell>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EcosystemsCell {
+    label: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchitectureDoc {
+    title: String,
+    subtitle: String,
+    chains: Vec<ArchitectureChain>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchitectureChain {
+    name: String,
+    nodes: Vec<ArchitectureNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArchitectureNode {
+    label: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LadderDoc {
+    title: String,
+    subtitle: String,
+    #[serde(default)]
+    footnote: Option<String>,
+    rungs: Vec<LadderRung>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LadderRung {
+    label: String,
+    sub: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PythonVersionsDoc {
+    title: String,
+    subtitle: String,
+    tools: Vec<PythonVersionsTool>,
+    legend: Vec<PythonVersionsLegend>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PythonVersionsTool {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PythonVersionsLegend {
+    label: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct RecoveryDoc {
@@ -150,6 +246,7 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         if name == VERIFICATION_CHART {
             verification_cells_are_rendered(root, name, rendered)?;
         }
+        data_cells_are_rendered(root, name, rendered)?;
         if name == RECOVERY_CHART {
             recovery_value_labels_are_rendered(root, name, rendered)?;
             recovery_tiers_match_their_evidence(root, name, rendered)?;
@@ -158,13 +255,17 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
     for name in MIRRORED {
         published_copy_matches(root, name)?;
     }
+    chart_renderer_is_complete(root)?;
+    chart_renderer_is_pinned(root)?;
     if check {
         println!(
-            "xtask graphs --check: {} committed chart assets well-formed, and each of the {} \
+            "xtask graphs --check: {} committed chart assets well-formed, each of the {} \
              data-backed ones carries the digest of the committed data file it was rendered from, \
-             so a chart cannot show numbers its data no longer states",
+             so a chart cannot show numbers its data no longer states, and the {} renderer \
+             source(s) that draw them still hash to the digest the committed charts were pinned to",
             ASSETS.len(),
-            DATA_BACKED.len()
+            DATA_BACKED.len(),
+            CHART_RENDERER_SOURCES.len()
         );
     } else {
         println!(
@@ -202,6 +303,109 @@ fn source_digest(raw: &[u8]) -> String {
     hasher.update(raw);
     let full: String = format!("{:x}", hasher.finalize());
     full.chars().take(32).collect()
+}
+
+fn renderer_root(root: &Path) -> PathBuf {
+    root.join("xtask").join("graphgen")
+}
+
+fn renderer_source_path(root: &Path, relative: &str) -> PathBuf {
+    let mut path: PathBuf = renderer_root(root);
+    for part in relative.split('/') {
+        path.push(part);
+    }
+    path
+}
+
+fn chart_renderer_digest(root: &Path) -> Result<String> {
+    let mut hasher: Sha256 = Sha256::new();
+    for relative in CHART_RENDERER_SOURCES {
+        let path: PathBuf = renderer_source_path(root, relative);
+        let raw: Vec<u8> = read_bytes_bounded(&path, MAX_RENDERER_SOURCE_BYTES)
+            .wrap_err_with(|| format!("reading chart renderer source {}", path.display()))?;
+        let len: u64 = u64::try_from(raw.len()).unwrap_or(u64::MAX);
+        hasher.update(relative.as_bytes());
+        hasher.update([0_u8]);
+        hasher.update(len.to_le_bytes());
+        hasher.update(&raw);
+    }
+    let full: String = format!("{:x}", hasher.finalize());
+    Ok(full.chars().take(32).collect())
+}
+
+fn chart_renderer_is_pinned(root: &Path) -> Result<()> {
+    let computed: String = chart_renderer_digest(root)?;
+    if computed != CHART_RENDERER_DIGEST {
+        bail!(
+            "the chart renderer under xtask/graphgen hashes to sha256:{computed}, but the \
+             committed charts under docs/assets were pinned to sha256:{CHART_RENDERER_DIGEST}. \
+             the charts are drawn out of process, so their committed bytes cannot be rebuilt \
+             here; a renderer change with no re-render leaves a picture the current renderer \
+             would not draw. re-render with `node xtask/graphgen/build.mjs`, then set \
+             CHART_RENDERER_DIGEST in xtask/src/graphs.rs to sha256:{computed}"
+        );
+    }
+    Ok(())
+}
+
+fn chart_renderer_is_complete(root: &Path) -> Result<()> {
+    let base: PathBuf = renderer_root(root);
+    let mut unlisted: Vec<String> = Vec::new();
+    for dir in CHART_RENDERER_SCANNED_DIRS {
+        let scanned: PathBuf = if dir == "." {
+            base.clone()
+        } else {
+            base.join(dir)
+        };
+        if !scanned.is_dir() {
+            bail!(
+                "{} is scanned for chart renderer sources but is not a directory",
+                scanned.display()
+            );
+        }
+        for entry in std::fs::read_dir(&scanned)
+            .wrap_err_with(|| format!("reading {}", scanned.display()))?
+        {
+            let dirent: std::fs::DirEntry =
+                entry.wrap_err_with(|| format!("reading entry in {}", scanned.display()))?;
+            let path: PathBuf = dirent.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name): Option<&str> = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let is_module: bool = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext: &str| ext.eq_ignore_ascii_case("mjs"));
+            if !is_module || name.ends_with(".test.mjs") {
+                continue;
+            }
+            let relative: String = if dir == "." {
+                name.to_owned()
+            } else {
+                format!("{dir}/{name}")
+            };
+            if !CHART_RENDERER_SOURCES.contains(&relative.as_str())
+                && !CHART_RENDERER_OWNED_ELSEWHERE.contains(&relative.as_str())
+            {
+                unlisted.push(relative);
+            }
+        }
+    }
+    if !unlisted.is_empty() {
+        bail!(
+            "{} chart renderer source(s) under xtask/graphgen are outside the digest that pins \
+             the committed charts to the renderer that drew them, so editing them would change \
+             the charts with nothing to notice: {}. add each one to CHART_RENDERER_SOURCES in \
+             xtask/src/graphs.rs, or to CHART_RENDERER_OWNED_ELSEWHERE when another check \
+             re-executes it",
+            unlisted.len(),
+            unlisted.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn svg_reflects_its_data(root: &Path, asset: &str, data_file: &str, rendered: &str) -> Result<()> {
@@ -252,6 +456,124 @@ fn recovery_tiers_match_their_evidence(root: &Path, asset: &str, rendered: &str)
              reference could reject, so a descriptor whose oracle_strength or ci changed without a \
              re-render leaves the picture claiming more than the evidence does. regenerate it with \
              `node xtask/graphgen/build.mjs`"
+        );
+    }
+    Ok(())
+}
+
+fn load_chart_data<T: serde::de::DeserializeOwned>(root: &Path, data_file: &str) -> Result<T> {
+    let path: PathBuf = root.join("xtask").join("data").join(data_file);
+    let raw: Vec<u8> = read_bytes_bounded(&path, MAX_DATA_BYTES)
+        .wrap_err_with(|| format!("reading chart data {}", path.display()))?;
+    serde_json::from_slice(&raw).wrap_err_with(|| format!("parsing {}", path.display()))
+}
+
+fn ecosystems_cells(root: &Path) -> Result<Vec<(String, String)>> {
+    let doc: EcosystemsDoc = load_chart_data(root, "ecosystems.json")?;
+    let mut cells: Vec<(String, String)> = vec![
+        ("title".to_owned(), doc.title),
+        ("subtitle".to_owned(), doc.subtitle),
+    ];
+    for (key, name) in doc.kinds {
+        cells.push((format!("kinds.{key}"), name));
+    }
+    for cell in doc.cells {
+        cells.push((format!("cell `{}` label", cell.label), cell.label.clone()));
+        if let Some(note) = cell.note {
+            cells.push((format!("cell `{}` note", cell.label), note));
+        }
+    }
+    Ok(cells)
+}
+
+fn architecture_cells(root: &Path) -> Result<Vec<(String, String)>> {
+    let doc: ArchitectureDoc = load_chart_data(root, "architecture.json")?;
+    let mut cells: Vec<(String, String)> = vec![
+        ("title".to_owned(), doc.title),
+        ("subtitle".to_owned(), doc.subtitle),
+    ];
+    for chain in doc.chains {
+        cells.push((format!("chain `{}` name", chain.name), chain.name.clone()));
+        for node in chain.nodes {
+            cells.push((
+                format!("chain `{}` node label", chain.name),
+                node.label.clone(),
+            ));
+            if let Some(note) = node.note {
+                cells.push((
+                    format!("chain `{}` node `{}` note", chain.name, node.label),
+                    note,
+                ));
+            }
+        }
+    }
+    Ok(cells)
+}
+
+fn ladder_cells(root: &Path) -> Result<Vec<(String, String)>> {
+    let doc: LadderDoc = load_chart_data(root, "ir_ladder.json")?;
+    let mut cells: Vec<(String, String)> = vec![
+        ("title".to_owned(), doc.title),
+        ("subtitle".to_owned(), doc.subtitle),
+    ];
+    if let Some(footnote) = doc.footnote {
+        cells.push(("footnote".to_owned(), footnote));
+    }
+    for rung in doc.rungs {
+        cells.push((format!("rung `{}` label", rung.label), rung.label.clone()));
+        cells.push((format!("rung `{}` sub", rung.label), rung.sub));
+    }
+    Ok(cells)
+}
+
+fn python_versions_cells(root: &Path) -> Result<Vec<(String, String)>> {
+    let doc: PythonVersionsDoc = load_chart_data(root, "python_versions.json")?;
+    let mut cells: Vec<(String, String)> = vec![
+        ("title".to_owned(), doc.title),
+        ("subtitle".to_owned(), doc.subtitle),
+    ];
+    for tool in doc.tools {
+        cells.push((format!("tool `{}` name", tool.name), tool.name.clone()));
+    }
+    for entry in doc.legend {
+        cells.push((
+            format!("legend `{}` label", entry.label),
+            entry.label.clone(),
+        ));
+    }
+    Ok(cells)
+}
+
+fn missing_data_cells(cells: &[(String, String)], rendered: &str) -> Vec<String> {
+    cells
+        .iter()
+        .filter(|(_, text): &&(String, String)| {
+            !text.is_empty() && !rendered.contains(&escape_svg_text(text))
+        })
+        .map(|(origin, text): &(String, String)| format!("{origin} -> {text:?}"))
+        .collect()
+}
+
+fn data_cells_are_rendered(root: &Path, asset: &str, rendered: &str) -> Result<()> {
+    let Some((data_file, cells)): Option<(&str, Vec<(String, String)>)> = (match asset {
+        "ecosystems.svg" => Some(("ecosystems.json", ecosystems_cells(root)?)),
+        "architecture.svg" => Some(("architecture.json", architecture_cells(root)?)),
+        "ir-ladder.svg" => Some(("ir_ladder.json", ladder_cells(root)?)),
+        "python-versions.svg" => Some(("python_versions.json", python_versions_cells(root)?)),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let missing: Vec<String> = missing_data_cells(&cells, rendered);
+    if !missing.is_empty() {
+        bail!(
+            "docs/assets/{asset} does not render {} of the {} cell(s) {data_file} states, so the \
+             published chart shows something other than the data behind it: {}. the digest stamp \
+             cannot catch this on its own, because editing the chart text by hand leaves the data \
+             file untouched. regenerate with `node xtask/graphgen/build.mjs`",
+            missing.len(),
+            cells.len(),
+            missing.join("; ")
         );
     }
     Ok(())
@@ -1045,6 +1367,86 @@ mod tests {
             "a root viewBox that crops an owned recovery label must fail validation"
         );
         Ok(())
+    }
+
+    fn seed_renderer_tree(root: &Path) -> Result<()> {
+        for relative in CHART_RENDERER_SOURCES {
+            let path: PathBuf = renderer_source_path(root, relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, relative.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_renderer_source_edit_moves_the_pinned_digest() -> Result<()> {
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        seed_renderer_tree(dir.path())?;
+        let before: String = chart_renderer_digest(dir.path())?;
+        std::fs::write(
+            renderer_source_path(dir.path(), "charts/ecosystems.mjs"),
+            b"const CELL_H = 52;",
+        )?;
+        let after: String = chart_renderer_digest(dir.path())?;
+        assert_ne!(
+            before, after,
+            "a chart renderer edit must move the digest the committed charts are pinned to"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_renderer_source_the_digest_does_not_cover_is_reported() -> Result<()> {
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        seed_renderer_tree(dir.path())?;
+        chart_renderer_is_complete(dir.path())?;
+        std::fs::write(
+            renderer_source_path(dir.path(), "charts/unlisted.mjs"),
+            b"export const x = 1;",
+        )?;
+        let error: String = match chart_renderer_is_complete(dir.path()) {
+            Ok(()) => bail!("an unlisted renderer source must be reported"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("charts/unlisted.mjs"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_renderer_test_file_is_not_a_renderer_source() -> Result<()> {
+        let dir: tempfile::TempDir = tempfile::tempdir()?;
+        seed_renderer_tree(dir.path())?;
+        std::fs::write(
+            renderer_source_path(dir.path(), "charts/recovery.test.mjs"),
+            b"import test from 'node:test';",
+        )?;
+        chart_renderer_is_complete(dir.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_chart_that_drops_a_data_cell_is_reported() {
+        let cells: Vec<(String, String)> = vec![
+            (
+                "cell `Python pyc` label".to_owned(),
+                "Python pyc".to_owned(),
+            ),
+            ("cell `PyArmor` label".to_owned(), "PyArmor".to_owned()),
+        ];
+        let rendered: &str = "<svg><text>Python pyd</text><text>PyArmor</text></svg>";
+        let missing: Vec<String> = missing_data_cells(&cells, rendered);
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].contains("Python pyc"), "{missing:?}");
+    }
+
+    #[test]
+    fn a_chart_that_renders_every_data_cell_reports_nothing() {
+        let cells: Vec<(String, String)> =
+            vec![("kinds.unpack".to_owned(), "unpack & extract".to_owned())];
+        let rendered: &str = "<svg><text>unpack &amp; extract</text></svg>";
+        assert!(missing_data_cells(&cells, rendered).is_empty());
     }
 
     #[test]

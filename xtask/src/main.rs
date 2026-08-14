@@ -5,6 +5,7 @@
     clippy::redundant_pub_crate
 )]
 
+mod artifact_map;
 mod attack_surface;
 mod capability_reachability;
 mod card;
@@ -21,6 +22,7 @@ mod evidence;
 mod evidence_tiers;
 mod facts;
 mod feature_gated_tests;
+mod figures;
 mod fileio;
 mod floors;
 mod fuzz_scope;

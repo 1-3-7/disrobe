@@ -1099,6 +1099,24 @@ fn scan_line(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct MarkerCoverage {
+    pub(crate) spans: Vec<(usize, usize)>,
+    pub(crate) suppressed_lines: Vec<usize>,
+}
+
+pub(crate) fn marker_coverage(text: &str) -> Result<MarkerCoverage> {
+    let mut suppressed_lines: Vec<usize> = Vec::new();
+    let spans: Vec<MarkerSpan> = parse_spans(text, &mut suppressed_lines)?;
+    Ok(MarkerCoverage {
+        spans: spans
+            .iter()
+            .map(|span: &MarkerSpan| (span.content_start, span.content_end))
+            .collect(),
+        suppressed_lines,
+    })
+}
+
 fn rewrite_text(text: &str, sources: &MetricSources) -> Result<String> {
     let mut suppressed: Vec<usize> = Vec::new();
     let spans: Vec<MarkerSpan> = parse_spans(text, &mut suppressed)?;

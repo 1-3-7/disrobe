@@ -125,11 +125,23 @@ pub(crate) fn run(root: &Path, check: bool) -> Result<()> {
         || crate::capability_reachability::run(root),
         &mut stale,
     )?;
+    run_one(
+        "artifact-classification",
+        check,
+        || crate::artifact_map::run(root),
+        &mut stale,
+    )?;
+    run_one(
+        "published-figures",
+        check,
+        || crate::figures::run(root),
+        &mut stale,
+    )?;
 
     if check {
         if stale.is_empty() {
             println!(
-                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from and the copies mdbook serves, no published markdown document carries a long dash or an emoji, no rust source opens a comment, the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold, and every pass crate's count of uncalled graded capabilities matches its declared ceiling in xtask/src/capability_reachability.rs"
+                "xtask regen --check: every generated artifact is byte-fresh (schemas, bindings, error docs, demo, card, plugins, evidence), every documentation count inside a marker span matches recovery.json or the catalog tables the binary carries, the charts match the digest of the data they were rendered from, render every cell that data states, and match the copies mdbook serves, the out-of-process chart renderer still hashes to the digest those charts were pinned to, every committed artifact under docs/assets, docs/src/assets, docs/src/demo and editors carries a check classification in xtask/src/artifact_map.rs, every published figure in a committed markdown file is inside a marker span or pinned in xtask/src/figures.rs, no published markdown document carries a long dash or an emoji, no rust source opens a comment, the README stat, attack-surface, fuzz-scope and tiered-results cross-checks all hold, and every pass crate's count of uncalled graded capabilities matches its declared ceiling in xtask/src/capability_reachability.rs"
             );
             Ok(())
         } else {
