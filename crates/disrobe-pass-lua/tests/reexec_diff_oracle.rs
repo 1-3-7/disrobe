@@ -898,6 +898,46 @@ fn prometheus_vmify_upvalue_closure_recovers_and_reexecutes_identically() {
 }
 
 #[test]
+fn prometheus_vmify_refusal_reaches_a_consumer_surface_naming_its_cause() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let stripped: String = PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED
+        .replace("X[K]=X[K]-1 if X[K]==0 then X[K],x[K]=nil,nil end", "");
+    assert_ne!(
+        stripped, PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED,
+        "the reference-counted release helper must be present in the tracked fixture, otherwise \
+         this case removes nothing and proves nothing"
+    );
+
+    let peeled: PeelResult = prometheus::peel(stripped.as_bytes(), &DeobfOptions::default())
+        .expect("a sample whose capture helpers cannot be fingerprinted must still peel");
+    assert!(
+        !peeled.fully_recovered,
+        "a chunk that captures a variable this pass cannot resolve must never report full \
+         recovery; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    assert!(
+        peeled.residual_markers.iter().any(|m: &String| m
+            .contains("refused rather than emitted partly wrong")
+            && m.contains("capture helpers could not be fingerprinted")),
+        "the refusal reason must reach a consumer-visible surface naming the real cause rather \
+         than being silently discarded; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    let emitted: String =
+        String::from_utf8(peeled.deobfuscated).expect("emitted artifact must be UTF-8");
+    assert!(
+        !emitted.contains("prometheus-vmify:"),
+        "a refused sample must not leave one of this pass's own stubs in the emitted artifact"
+    );
+    assert!(
+        !emitted.contains("__vu"),
+        "a refused sample must not emit a partly resolved captured variable\n--- emitted ---\n{emitted}"
+    );
+}
+
+#[test]
 fn prometheus_vmify_never_reports_full_recovery_while_emitting_an_unrecovered_closure() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
