@@ -13,8 +13,9 @@ use std::time::Duration;
 use disrobe_core::scratch::ScratchDir;
 use disrobe_core::subprocess::{self, CapturedOutput};
 use disrobe_pass_native::{
-    EmittedBase, EmittedUdt, PdbCxxReconstruction, perturb_first_offset, reconstruct_pdb_cxx,
-    render_static_assert_tu,
+    CvCallingConvention, EmittedBase, EmittedFunction, EmittedUdt, FunctionRejectReason,
+    ModuleStreamCoverage, PdbCxxReconstruction, RejectedFunction, perturb_first_offset,
+    reconstruct_pdb_cxx, render_static_assert_tu,
 };
 
 #[expect(
@@ -326,6 +327,181 @@ fn recovers_the_real_msvc_pdb_type_graph() {
         shape_tag.offset, 8,
         "shape_tag must sit past the 8-byte vfptr, got offset {}",
         shape_tag.offset
+    );
+}
+
+#[derive(Debug)]
+struct DeclaredSignature {
+    name: &'static str,
+    return_type: &'static str,
+    parameters: &'static [&'static str],
+}
+
+const SOURCE_DECLARED_FREE_FUNCTIONS: &[DeclaredSignature] = &[
+    DeclaredSignature {
+        name: "compute_sum",
+        return_type: "int",
+        parameters: &["const struct Node *", "int"],
+    },
+    DeclaredSignature {
+        name: "find_next",
+        return_type: "struct Node *",
+        parameters: &["struct Node *"],
+    },
+    DeclaredSignature {
+        name: "touch_shape",
+        return_type: "int",
+        parameters: &["const struct Shape *"],
+    },
+    DeclaredSignature {
+        name: "EntryPoint",
+        return_type: "void",
+        parameters: &[],
+    },
+];
+
+fn normalize_spacing(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+#[test]
+fn recovers_free_function_signatures_from_the_module_symbol_streams() {
+    let bytes: Vec<u8> = fixture_pdb_bytes();
+    let rec: PdbCxxReconstruction =
+        reconstruct_pdb_cxx(&bytes).expect("reconstruct real compiler-built pdb");
+
+    let coverage: &ModuleStreamCoverage = &rec.module_stream_coverage;
+    eprintln!("[evidence] module stream coverage: {coverage:?}");
+    for f in &rec.functions {
+        eprintln!(
+            "[evidence] function: original={:?} emitted={:?} module={:?} cc={:?} static={} ret={:?} params={:?} varargs={} decl={:?}",
+            f.original_name,
+            f.name,
+            f.module,
+            f.calling_convention,
+            f.is_static,
+            f.return_type,
+            f.parameters,
+            f.varargs,
+            f.declaration
+        );
+    }
+    for r in &rec.rejected_functions {
+        eprintln!("[evidence] rejected function: {r:?}");
+    }
+
+    assert!(
+        coverage.modules_with_symbol_streams > 0,
+        "the fixture pdb must expose at least one per-module symbol stream; \
+         a recovery that reports zero must say so instead of emitting nothing silently: {coverage:?}"
+    );
+    assert!(
+        coverage.procedure_records_seen >= SOURCE_DECLARED_FREE_FUNCTIONS.len(),
+        "the module streams must yield at least the {} procedure records the source declares, saw {}",
+        SOURCE_DECLARED_FREE_FUNCTIONS.len(),
+        coverage.procedure_records_seen
+    );
+
+    let mut matched: usize = 0;
+    for declared in SOURCE_DECLARED_FREE_FUNCTIONS {
+        let recovered: &EmittedFunction = rec
+            .functions
+            .iter()
+            .find(|f: &&EmittedFunction| f.original_name == declared.name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "must recover `{}` from the per-module symbol streams; recovered originals were {:?}",
+                    declared.name,
+                    rec.functions
+                        .iter()
+                        .map(|f: &EmittedFunction| f.original_name.as_str())
+                        .collect::<Vec<&str>>()
+                )
+            });
+        assert_eq!(
+            normalize_spacing(&recovered.return_type),
+            declared.return_type,
+            "return type of `{}` must match what the source declared",
+            declared.name
+        );
+        let recovered_params: Vec<String> = recovered
+            .parameters
+            .iter()
+            .map(|p: &String| normalize_spacing(p))
+            .collect();
+        assert_eq!(
+            recovered_params, declared.parameters,
+            "parameter list of `{}` must match what the source declared",
+            declared.name
+        );
+        assert!(
+            !recovered.varargs,
+            "`{}` is not variadic in the source",
+            declared.name
+        );
+        assert_eq!(
+            recovered.calling_convention,
+            CvCallingConvention::NearC,
+            "`{}` is a default-convention function in this x64 build",
+            declared.name
+        );
+        assert!(
+            recovered.declaration.contains(&recovered.name),
+            "the emitted declaration for `{}` must carry its emitted name: {:?}",
+            declared.name,
+            recovered.declaration
+        );
+        matched += 1;
+    }
+
+    assert!(
+        !rec.functions
+            .iter()
+            .any(|f: &EmittedFunction| f.original_name.contains("::")),
+        "a member function must never be emitted as an ordinary free function: {:?}",
+        rec.functions
+            .iter()
+            .map(|f: &EmittedFunction| f.original_name.as_str())
+            .collect::<Vec<&str>>()
+    );
+    let accounted: usize = rec.functions.len()
+        + rec.rejected_functions.len()
+        + coverage.compiler_generated_records_skipped
+        + coverage.duplicate_records_folded;
+    assert_eq!(
+        accounted, coverage.procedure_records_seen,
+        "every procedure record must be emitted, rejected, or explicitly counted as skipped; \
+         a record that vanishes silently is an unreported gap: {coverage:?}"
+    );
+
+    let undetailed: Vec<&RejectedFunction> = rec
+        .rejected_functions
+        .iter()
+        .filter(|r: &&RejectedFunction| r.detail.is_empty())
+        .collect();
+    assert!(
+        undetailed.is_empty(),
+        "every rejection must carry the observed value that caused it: {undetailed:?}"
+    );
+    let malformed: Vec<&RejectedFunction> = rec
+        .rejected_functions
+        .iter()
+        .filter(|r: &&RejectedFunction| {
+            matches!(
+                r.reason,
+                FunctionRejectReason::Malformed | FunctionRejectReason::TypeIndexNotAFunction
+            )
+        })
+        .collect();
+    assert!(
+        malformed.is_empty(),
+        "a well-formed compiler-produced pdb must not trip the malformed-record paths: {malformed:?}"
+    );
+
+    println!(
+        "[evidence] free-function signature grade: {matched}/{} functions declared by the fixture source recover with matching return and parameter types from {} module symbol stream(s)",
+        SOURCE_DECLARED_FREE_FUNCTIONS.len(),
+        coverage.modules_with_symbol_streams
     );
 }
 

@@ -258,8 +258,9 @@ pub use patch::{
     AppliedEdit, PatchEdit, PatchReport, apply_patches, apply_patches_reported, default_nop_fill,
 };
 pub use pdb_cxx::{
-    BitfieldSpec, EmittedBase, EmittedEnum, EmittedEnumerator, EmittedField, EmittedFunction,
-    EmittedGlobal, EmittedTypedef, EmittedUdt, PdbCxxReconstruction, RejectReason, RejectedType,
+    BitfieldSpec, CvCallingConvention, EmittedBase, EmittedEnum, EmittedEnumerator, EmittedField,
+    EmittedFunction, EmittedGlobal, EmittedTypedef, EmittedUdt, FunctionRejectReason,
+    ModuleStreamCoverage, PdbCxxReconstruction, RejectReason, RejectedFunction, RejectedType,
     UdtTagKeyword, perturb_first_offset, reconstruct_pdb_cxx, render_static_assert_tu,
 };
 pub use plt_resolve::{

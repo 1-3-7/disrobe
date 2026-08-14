@@ -19,6 +19,8 @@ mod names;
 #[allow(clippy::redundant_pub_crate)]
 mod primitive;
 #[allow(clippy::redundant_pub_crate)]
+mod procedures;
+#[allow(clippy::redundant_pub_crate)]
 mod spelling;
 mod validate;
 
@@ -114,10 +116,160 @@ pub struct EmittedGlobal {
     pub declaration: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CvCallingConvention {
+    NearC,
+    FarC,
+    NearPascal,
+    FarPascal,
+    NearFast,
+    FarFast,
+    NearStdCall,
+    FarStdCall,
+    NearSysCall,
+    FarSysCall,
+    ThisCall,
+    MipsCall,
+    Generic,
+    AlphaCall,
+    PpcCall,
+    ShCall,
+    ArmCall,
+    Am33Call,
+    TriCall,
+    Sh5Call,
+    M32rCall,
+    ClrCall,
+    Inline,
+    NearVector,
+    Swift,
+    Unknown(u8),
+}
+
+impl CvCallingConvention {
+    pub(crate) const fn from_raw(raw: u8) -> Self {
+        match raw {
+            0x00 => Self::NearC,
+            0x01 => Self::FarC,
+            0x02 => Self::NearPascal,
+            0x03 => Self::FarPascal,
+            0x04 => Self::NearFast,
+            0x05 => Self::FarFast,
+            0x07 => Self::NearStdCall,
+            0x08 => Self::FarStdCall,
+            0x09 => Self::NearSysCall,
+            0x0a => Self::FarSysCall,
+            0x0b => Self::ThisCall,
+            0x0c => Self::MipsCall,
+            0x0d => Self::Generic,
+            0x0e => Self::AlphaCall,
+            0x0f => Self::PpcCall,
+            0x10 => Self::ShCall,
+            0x11 => Self::ArmCall,
+            0x12 => Self::Am33Call,
+            0x13 => Self::TriCall,
+            0x14 => Self::Sh5Call,
+            0x15 => Self::M32rCall,
+            0x16 => Self::ClrCall,
+            0x17 => Self::Inline,
+            0x18 => Self::NearVector,
+            0x19 => Self::Swift,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub(crate) const fn raw(self) -> u8 {
+        match self {
+            Self::NearC => 0x00,
+            Self::FarC => 0x01,
+            Self::NearPascal => 0x02,
+            Self::FarPascal => 0x03,
+            Self::NearFast => 0x04,
+            Self::FarFast => 0x05,
+            Self::NearStdCall => 0x07,
+            Self::FarStdCall => 0x08,
+            Self::NearSysCall => 0x09,
+            Self::FarSysCall => 0x0a,
+            Self::ThisCall => 0x0b,
+            Self::MipsCall => 0x0c,
+            Self::Generic => 0x0d,
+            Self::AlphaCall => 0x0e,
+            Self::PpcCall => 0x0f,
+            Self::ShCall => 0x10,
+            Self::ArmCall => 0x11,
+            Self::Am33Call => 0x12,
+            Self::TriCall => 0x13,
+            Self::Sh5Call => 0x14,
+            Self::M32rCall => 0x15,
+            Self::ClrCall => 0x16,
+            Self::Inline => 0x17,
+            Self::NearVector => 0x18,
+            Self::Swift => 0x19,
+            Self::Unknown(raw) => raw,
+        }
+    }
+
+    pub(crate) const fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::NearC => Some("__cdecl"),
+            Self::NearFast => Some("__fastcall"),
+            Self::NearStdCall => Some("__stdcall"),
+            Self::ThisCall => Some("__thiscall"),
+            Self::NearVector => Some("__vectorcall"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmittedFunction {
     pub name: String,
     pub declaration: String,
+    pub original_name: String,
+    pub module: String,
+    pub type_index: u32,
+    pub return_type: String,
+    pub parameters: Vec<String>,
+    pub varargs: bool,
+    pub calling_convention: CvCallingConvention,
+    pub is_static: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FunctionRejectReason {
+    MemberFunctionScope,
+    IdIndexedProcedureRecord,
+    UnknownCallingConvention,
+    UnrepresentableCallingConvention,
+    UnresolvedReturnType,
+    UnresolvedParameterType,
+    TypeIndexNotAFunction,
+    Malformed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedFunction {
+    pub original_name: String,
+    pub module: String,
+    pub type_index: u32,
+    pub reason: FunctionRejectReason,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleStreamCoverage {
+    pub modules_declared: usize,
+    pub modules_with_symbol_streams: usize,
+    pub modules_without_symbol_streams: usize,
+    pub modules_with_unreadable_symbols: usize,
+    pub procedure_records_seen: usize,
+    pub compiler_generated_records_skipped: usize,
+    pub thunk_records_skipped: usize,
+    pub inline_site_records_skipped: usize,
+    pub separated_code_records_skipped: usize,
+    pub duplicate_records_folded: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +298,8 @@ pub struct PdbCxxReconstruction {
     pub functions: Vec<EmittedFunction>,
     pub opaque_enum_forward_decls: Vec<String>,
     pub rejected: Vec<RejectedType>,
+    pub rejected_functions: Vec<RejectedFunction>,
+    pub module_stream_coverage: ModuleStreamCoverage,
     pub header_text: String,
 }
 
@@ -231,7 +385,6 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
 
     let mut typedefs: Vec<EmittedTypedef> = Vec::new();
     let mut globals: Vec<EmittedGlobal> = Vec::new();
-    let mut functions: Vec<EmittedFunction> = Vec::new();
     let symbol_table: pdb::SymbolTable<'_> = pdb_file.global_symbols().map_err(pdb_err)?;
     let mut sym_iter: pdb::SymbolIter<'_> = symbol_table.iter();
     while let Some(symbol) = sym_iter.next().map_err(pdb_err)? {
@@ -251,14 +404,24 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
                     globals.push(g);
                 }
             }
-            pdb::SymbolData::Procedure(p) if !is_compiler_generated_symbol(&p.name.to_string()) => {
-                if let Some(f) = emit::build_function(&catalog, &p, &mut opaque_refs) {
-                    functions.push(f);
-                }
-            }
             _ => {}
         }
     }
+
+    let emitted_type_indices: BTreeSet<u32> = udts
+        .iter()
+        .map(|u: &EmittedUdt| u.type_index)
+        .chain(enums.iter().map(|e: &EmittedEnum| e.type_index))
+        .collect();
+    let recovery: procedures::ProcedureRecovery = procedures::recover_module_procedures(
+        &mut pdb_file,
+        &catalog,
+        &emitted_type_indices,
+        &mut opaque_refs,
+    )?;
+    let functions: Vec<EmittedFunction> = recovery.functions;
+    let rejected_functions: Vec<RejectedFunction> = recovery.rejected;
+    let module_stream_coverage: ModuleStreamCoverage = recovery.coverage;
 
     let opaque_enum_names: BTreeSet<String> = opaque_refs
         .iter()
@@ -291,6 +454,8 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
         functions,
         opaque_enum_forward_decls,
         rejected,
+        rejected_functions,
+        module_stream_coverage,
         header_text,
     })
 }

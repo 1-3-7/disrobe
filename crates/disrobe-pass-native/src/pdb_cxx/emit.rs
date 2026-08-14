@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Result;
 use crate::pdb_cxx::catalog::{TypeCatalog, UdtFamily};
-use crate::pdb_cxx::functions::resolve_free_function_signature;
 use crate::pdb_cxx::names::{Deduper, sanitize_identifier};
 use crate::pdb_cxx::spelling::{self, ResolvedSpelling, SpellError};
 use crate::pdb_cxx::{
-    BitfieldSpec, EmittedBase, EmittedEnum, EmittedEnumerator, EmittedField, EmittedFunction,
-    EmittedGlobal, EmittedTypedef, EmittedUdt, RejectReason, UdtTagKeyword,
+    BitfieldSpec, EmittedBase, EmittedEnum, EmittedEnumerator, EmittedField, EmittedGlobal,
+    EmittedTypedef, EmittedUdt, RejectReason, UdtTagKeyword,
 };
 
 const MAX_FIELDLIST_CHAIN: usize = 256;
@@ -370,23 +369,6 @@ pub(crate) fn build_global(
     Some(EmittedGlobal {
         name: name.clone(),
         declaration: format!("extern {};", spelling.declare(&name)),
-    })
-}
-
-pub(crate) fn build_function(
-    catalog: &TypeCatalog<'_>,
-    p: &pdb::ProcedureSymbol<'_>,
-    opaque_out: &mut OpaqueRefs,
-) -> Option<EmittedFunction> {
-    if p.name.is_empty() {
-        return None;
-    }
-    let spelling: ResolvedSpelling = resolve_free_function_signature(catalog, p.type_index).ok()?;
-    opaque_out.extend(spelling.opaque_refs.iter().cloned());
-    let name: String = sanitize_identifier(&p.name.to_string());
-    Some(EmittedFunction {
-        name: name.clone(),
-        declaration: format!("{};", spelling.declare(&name)),
     })
 }
 

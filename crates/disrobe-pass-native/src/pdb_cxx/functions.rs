@@ -1,8 +1,6 @@
-use crate::error::Error;
 use crate::pdb_cxx::catalog::{TypeCatalog, UdtFamily};
 use crate::pdb_cxx::spelling::{
-    MAX_RECURSION_BUDGET, NOTYPE_INDEX, ResolvedSpelling, SpellError, SpellResult, TypeOp,
-    resolve_spelling_bounded,
+    NOTYPE_INDEX, ResolvedSpelling, SpellResult, TypeOp, resolve_spelling_bounded,
 };
 
 pub(crate) fn finish_procedure(
@@ -82,54 +80,7 @@ pub(crate) fn finish_member_function(
     })
 }
 
-pub(crate) fn resolve_free_function_signature(
-    catalog: &TypeCatalog<'_>,
-    type_index: pdb::TypeIndex,
-) -> SpellResult<ResolvedSpelling> {
-    let data: pdb::TypeData<'_> = catalog.get(type_index)?;
-    match data {
-        pdb::TypeData::Procedure(proc) => {
-            let cc: Option<&'static str> =
-                calling_convention_keyword(proc.attributes.calling_convention());
-            finish_procedure(
-                catalog,
-                &proc,
-                Vec::new(),
-                MAX_RECURSION_BUDGET,
-                cc,
-                Vec::new(),
-            )
-        }
-        pdb::TypeData::MemberFunction(mf) => {
-            let cc: Option<&'static str> =
-                calling_convention_keyword(mf.attributes.calling_convention());
-            finish_member_function(
-                catalog,
-                &mf,
-                Vec::new(),
-                MAX_RECURSION_BUDGET,
-                cc,
-                Vec::new(),
-            )
-        }
-        _ => Err(SpellError::Pdb(Error::Pdb(
-            "symbol type index does not refer to a function type".to_owned(),
-        ))),
-    }
-}
-
-fn calling_convention_keyword(code: u8) -> Option<&'static str> {
-    match code {
-        0x00 => Some("__cdecl"),
-        0x04 => Some("__fastcall"),
-        0x07 => Some("__stdcall"),
-        0x0b => Some("__thiscall"),
-        0x18 => Some("__vectorcall"),
-        _ => None,
-    }
-}
-
-fn void_spelling() -> ResolvedSpelling {
+pub(crate) fn void_spelling() -> ResolvedSpelling {
     ResolvedSpelling {
         base_text: "void".to_owned(),
         ops: Vec::new(),
