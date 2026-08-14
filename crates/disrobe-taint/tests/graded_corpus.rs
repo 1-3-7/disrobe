@@ -691,44 +691,53 @@ fn juliet_cwe78_command_injection_precision_recall_o0() {
 }
 
 #[test]
-fn juliet_execl_corpus_selection_matches_the_declared_population() {
-    let case: &str = "juliet_execl_corpus_selection_matches_the_declared_population";
-    let Some(content) = juliet_corpus::load_corpus_content(
-        case,
-        juliet_corpus::CorpusSlice::C,
-        juliet_corpus::SinkFamily::Execl,
-    ) else {
-        return;
-    };
-    let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
-        std::collections::BTreeMap::new();
-    for group in &content.groups {
-        *actual.entry(group.category).or_insert(0) += 1;
-        assert!(
-            group.flaw_file.contains("_execl_"),
-            "{}: the execl selection took a file the execl sink family does not name",
-            group.flaw_file
-        );
-    }
-    for (category, expected) in expected_group_counts() {
-        let got: usize = actual.get(&category).copied().unwrap_or(0);
+fn every_selectable_sink_family_matches_the_system_family_population() {
+    let case: &str = "every_selectable_sink_family_matches_the_system_family_population";
+    for family in IMPORT_INDIRECT_FAMILIES {
+        let label: &str = family.label();
+        let Some(content) =
+            juliet_corpus::load_corpus_content(case, juliet_corpus::CorpusSlice::C, family)
+        else {
+            return;
+        };
+        let token: String = format!("_{label}_");
+        let mut actual: std::collections::BTreeMap<juliet_corpus::Category, usize> =
+            std::collections::BTreeMap::new();
+        for group in &content.groups {
+            *actual.entry(group.category).or_insert(0) += 1;
+            assert!(
+                group.flaw_file.contains(token.as_str()),
+                "{}: the {label} selection took a file that sink family does not name",
+                group.flaw_file
+            );
+        }
+        for (category, expected) in expected_group_counts() {
+            let got: usize = actual.get(&category).copied().unwrap_or(0);
+            assert_eq!(
+                got,
+                expected,
+                "{label}, {}: this sink family is generated from the same flow-variant templates \
+                 as the system family, so its per-category population must match group for group; \
+                 expected {expected}, found {got}",
+                category.label()
+            );
+        }
         assert_eq!(
-            got,
-            expected,
-            "{}: the execl sink family is generated from the same flow-variant templates as the \
-             system family, so its per-category population must match group for group; expected \
-             {expected}, found {got}",
-            category.label()
+            content.groups.len(),
+            190,
+            "{label}: the char/.c-only CWE-78 slice for this sink family must total 190 testcase \
+             groups"
         );
     }
-    assert_eq!(
-        content.groups.len(),
-        190,
-        "the char/execl-sink/.c-only CWE-78 slice must total 190 testcase groups"
-    );
 }
 
-const EXECL_EXCLUSION_PROBE_GROUPS: usize = 4;
+const EXECL_EXCLUSION_PROBE_GROUPS: usize = 2;
+
+const IMPORT_INDIRECT_FAMILIES: [juliet_corpus::SinkFamily; 3] = [
+    juliet_corpus::SinkFamily::Execl,
+    juliet_corpus::SinkFamily::Execlp,
+    juliet_corpus::SinkFamily::Popen,
+];
 
 fn group_named<'a>(
     content: &'a juliet_corpus::JulietCorpusContent,
@@ -749,118 +758,128 @@ fn group_named<'a>(
 }
 
 #[test]
-fn the_execl_family_stays_excluded_only_while_the_lift_path_cannot_name_its_import() {
-    let case: &str =
-        "the_execl_family_stays_excluded_only_while_the_lift_path_cannot_name_its_import";
+fn sink_families_reached_through_the_import_table_stay_excluded_until_the_lift_path_names_them() {
+    let case: &str = "sink_families_reached_through_the_import_table_stay_excluded_until_the_lift_path_names_them";
     let slice: juliet_corpus::CorpusSlice = juliet_corpus::CorpusSlice::C;
-    let execl: juliet_corpus::SinkFamily = juliet_corpus::SinkFamily::Execl;
     let system: juliet_corpus::SinkFamily = juliet_corpus::SinkFamily::System;
-    let Some(execl_content): Option<juliet_corpus::JulietCorpusContent> =
-        juliet_corpus::load_corpus_content(case, slice, execl)
-    else {
-        return;
-    };
     let Some(system_content): Option<juliet_corpus::JulietCorpusContent> =
         juliet_corpus::load_corpus_content(case, slice, system)
     else {
         return;
     };
     let compiler: &std::path::Path = juliet_corpus::require_host_compiler(case, slice);
-    let execl_config: TaintConfig = juliet_corpus::taint_config_for(execl);
     let system_config: TaintConfig = juliet_corpus::taint_config_for(system);
-    assert!(
-        execl_config.is_sink("_execl"),
-        "{case}: execl must be a configured sink, or a miss would only mean nobody asked for it"
-    );
-    let execl_run: juliet_corpus::GradeRun<'_> =
-        juliet_corpus::GradeRun::new(compiler, "-O2", &execl_content, &execl_config);
     let system_run: juliet_corpus::GradeRun<'_> =
         juliet_corpus::GradeRun::new(compiler, "-O2", &system_content, &system_config);
 
-    let probed: Vec<&juliet_corpus::TestcaseGroup> = execl_content
-        .groups
-        .iter()
-        .filter(|group: &&juliet_corpus::TestcaseGroup| group.flaw_file.contains("_console_execl_"))
-        .take(EXECL_EXCLUSION_PROBE_GROUPS)
-        .collect();
-    assert_eq!(
-        probed.len(),
-        EXECL_EXCLUSION_PROBE_GROUPS,
-        "{case}: the console source family supplies the pair's fixed variable, a source the lift \
-         path names in both arms, and the selection no longer holds \
-         {EXECL_EXCLUSION_PROBE_GROUPS} of its groups"
-    );
-
-    let mut counterpart_sinks_named: usize = 0;
-    for group in probed {
-        let grade: juliet_corpus::GroupGrade =
-            juliet_corpus::grade_group(&execl_run, &execl_content, group);
+    for family in IMPORT_INDIRECT_FAMILIES {
+        let label: &str = family.label();
+        let Some(content): Option<juliet_corpus::JulietCorpusContent> =
+            juliet_corpus::load_corpus_content(case, slice, family)
+        else {
+            return;
+        };
         assert_eq!(
-            grade.unanalysable_reason, None,
-            "{}: the execl family builds on this host, so its exclusion must rest on import \
-             naming rather than on a compile failure like the w32_spawnv family's",
-            group.flaw_file
+            content.groups.len(),
+            190,
+            "{label}: every CWE-78 sink family ships the same 190 char/.c testcase groups, so a \
+             different count means the selection is probing something other than this family"
         );
-        assert_ne!(
-            grade.bad_verdict,
-            juliet_corpus::CaseVerdict::Timeout,
-            "{}: a timeout would make this probe measure the clock, not import naming",
-            group.flaw_file
-        );
-        assert!(
-            !grade.sink_resolved,
-            "{}: the lifted module now names this binary's execl call. gcc reaches _execl through \
-             an indirect call on the import address table, and ImportThunks keys names by a direct \
-             call target, so no name has ever reached the sink here. A host or lifter that does \
-             name it removes the reason this family is left out of the graded population, and the \
-             family must be enrolled and graded instead of excluded",
-            group.flaw_file
-        );
+        let config: TaintConfig = juliet_corpus::taint_config_for(family);
+        for sink in family.corpus_sink_names() {
+            assert!(
+                config.is_sink(sink),
+                "{label}: {sink} must be a configured sink, or a miss would only mean nobody asked \
+                 for it"
+            );
+        }
+        let run: juliet_corpus::GradeRun<'_> =
+            juliet_corpus::GradeRun::new(compiler, "-O2", &content, &config);
+        let console_token: String = format!("_console_{label}_");
+        let probed: Vec<&juliet_corpus::TestcaseGroup> = content
+            .groups
+            .iter()
+            .filter(|group: &&juliet_corpus::TestcaseGroup| {
+                group.flaw_file.contains(console_token.as_str())
+            })
+            .take(EXECL_EXCLUSION_PROBE_GROUPS)
+            .collect();
         assert_eq!(
-            grade.bad_verdict,
-            juliet_corpus::CaseVerdict::FalseNegative,
-            "{}: an unnamed sink cannot produce a source-to-sink finding",
-            group.flaw_file
-        );
-        assert_eq!(
-            grade.reported_flows, 0,
-            "{}: no configured sink is named in this binary, so it can report no flow at all",
-            group.flaw_file
-        );
-        assert!(
-            grade.source_resolved,
-            "{}: the lift path could not even name this binary's fgets source, so a missing sink \
-             name proves nothing about the sink; the pair needs a source both arms resolve",
-            group.flaw_file
+            probed.len(),
+            EXECL_EXCLUSION_PROBE_GROUPS,
+            "{label}: the console source family supplies the pair's fixed variable, a source the \
+             lift path names in both arms, and the selection no longer holds \
+             {EXECL_EXCLUSION_PROBE_GROUPS} of its groups"
         );
 
-        let counterpart_file: String = group.flaw_file.replace("_execl_", "_system_");
-        let counterpart: &juliet_corpus::TestcaseGroup =
-            group_named(&system_content, &counterpart_file);
-        let counterpart_grade: juliet_corpus::GroupGrade =
-            juliet_corpus::grade_group(&system_run, &system_content, counterpart);
-        assert_eq!(
-            counterpart_grade.unanalysable_reason, None,
-            "{counterpart_file}: the system counterpart must build for the pair to isolate the \
-             sink as the only difference"
-        );
-        assert!(
-            counterpart_grade.source_resolved,
-            "{counterpart_file}: both arms of the pair must name the same source for the sink to \
-             be the only difference between them"
-        );
-        if counterpart_grade.sink_resolved {
-            counterpart_sinks_named += 1;
+        for group in probed {
+            let grade: juliet_corpus::GroupGrade =
+                juliet_corpus::grade_group(&run, &content, group);
+            assert_eq!(
+                grade.unanalysable_reason, None,
+                "{}: this family builds on this host, so its exclusion must rest on import naming \
+                 rather than on a compile failure like the w32_spawnv family's",
+                group.flaw_file
+            );
+            assert_ne!(
+                grade.bad_verdict,
+                juliet_corpus::CaseVerdict::Timeout,
+                "{}: a timeout would make this probe measure the clock, not import naming",
+                group.flaw_file
+            );
+            assert!(
+                grade.source_resolved,
+                "{}: the lift path could not even name this binary's fgets source, so a missing \
+                 sink name proves nothing about the sink; the pair needs a source both arms resolve",
+                group.flaw_file
+            );
+            assert!(
+                !grade.sink_resolved,
+                "{}: the lifted module now names this binary's {label} call. gcc reaches the \
+                 underscore-prefixed C runtime entry points through an indirect call on the import \
+                 address table, while it reaches system through a named local thunk, and \
+                 ImportThunks keys names by a direct call target. A host or lifter that does name \
+                 this one removes the reason the family is left out of the graded population, and \
+                 it must be enrolled and graded instead of excluded",
+                group.flaw_file
+            );
+            assert_eq!(
+                grade.bad_verdict,
+                juliet_corpus::CaseVerdict::FalseNegative,
+                "{}: an unnamed sink cannot produce a source-to-sink finding",
+                group.flaw_file
+            );
+            assert_eq!(
+                grade.reported_flows, 0,
+                "{}: no configured sink is named in this binary, so it can report no flow at all",
+                group.flaw_file
+            );
+
+            let counterpart_file: String = group
+                .flaw_file
+                .replace(console_token.as_str(), "_console_system_");
+            let counterpart: &juliet_corpus::TestcaseGroup =
+                group_named(&system_content, &counterpart_file);
+            let counterpart_grade: juliet_corpus::GroupGrade =
+                juliet_corpus::grade_group(&system_run, &system_content, counterpart);
+            assert_eq!(
+                counterpart_grade.unanalysable_reason, None,
+                "{counterpart_file}: the system counterpart must build for the pair to isolate the \
+                 sink as the only difference"
+            );
+            assert!(
+                counterpart_grade.source_resolved,
+                "{counterpart_file}: both arms of the pair must name the same source for the sink \
+                 to be the only difference between them"
+            );
+            assert!(
+                counterpart_grade.sink_resolved,
+                "{counterpart_file}: the pair is what proves the {label} exclusion is a property \
+                 of how that import is called rather than of these testcases, and it stops holding \
+                 once the control stops naming its own sink"
+            );
         }
     }
-
-    assert_eq!(
-        counterpart_sinks_named, EXECL_EXCLUSION_PROBE_GROUPS,
-        "{case}: only {counterpart_sinks_named} of {EXECL_EXCLUSION_PROBE_GROUPS} system \
-         counterparts had their own sink named. The pair is what proves the execl exclusion is a \
-         property of how that import is called rather than of these testcases, and it stops \
-         holding once the control stops naming its sink"
-    );
 }
 
 const SPAWNV_EXCLUSION_PROBE_GROUPS: usize = 3;

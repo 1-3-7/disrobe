@@ -129,6 +129,8 @@ impl CorpusSlice {
 pub(crate) enum SinkFamily {
     System,
     Execl,
+    Execlp,
+    Popen,
     Win32SpawnV,
 }
 
@@ -137,6 +139,8 @@ impl SinkFamily {
         match self {
             Self::System => "system",
             Self::Execl => "execl",
+            Self::Execlp => "execlp",
+            Self::Popen => "popen",
             Self::Win32SpawnV => "w32_spawnv",
         }
     }
@@ -145,13 +149,16 @@ impl SinkFamily {
         match self {
             Self::System => "_system_",
             Self::Execl => "_execl_",
+            Self::Execlp => "_execlp_",
+            Self::Popen => "_popen_",
             Self::Win32SpawnV => "_w32_spawnv_",
         }
     }
 
     const fn extra_sinks(self) -> &'static [&'static str] {
         match self {
-            Self::System | Self::Execl => &[],
+            Self::System | Self::Execl | Self::Popen => &[],
+            Self::Execlp => &["execlp"],
             Self::Win32SpawnV => &["spawnv"],
         }
     }
@@ -160,6 +167,8 @@ impl SinkFamily {
         match self {
             Self::System => &["system"],
             Self::Execl => &["execl"],
+            Self::Execlp => &["execlp"],
+            Self::Popen => &["popen"],
             Self::Win32SpawnV => &["spawnv"],
         }
     }
