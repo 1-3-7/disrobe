@@ -122,6 +122,54 @@ const TARGETS: &[Target] = &[
         type_name: "Money",
         is_static: false,
     },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "AsyncDisposableScope",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "CollectionPlayground",
+        is_static: true,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "ConfigParser",
+        is_static: true,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "DeconstructPlayground",
+        is_static: true,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "DisposableScope",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "EventSource",
+        is_static: false,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "JsonLite",
+        is_static: true,
+    },
+    Target {
+        dll: "../../corpus/dotnet/megafile/EdgeCases.baseline.dll",
+        origin_namespace: "EdgeCases",
+        type_name: "TargetTypedNewPlayground",
+        is_static: true,
+    },
 ];
 
 fn manifest(rel: &str) -> PathBuf {
@@ -2550,10 +2598,22 @@ fn collection_field_rva_recovery_recompiles_and_preserves_runtime_values() {
 const IL_EQUIVALENCE_FLOOR: usize = 66;
 const IL_BRANCHING_FLOOR: usize = 45;
 
-const GRADED_TYPE_COUNT: usize = 19;
-const GRADED_MEMBER_TOTAL: usize = 92;
+const GRADED_TYPE_COUNT: usize = 27;
+const GRADED_MEMBER_TOTAL: usize = 107;
 
-const IL_RESIDUAL: &[&str] = &["Pipeline.RunSteps"];
+const IL_RESIDUAL: &[&str] = &[
+    "AsyncDisposableScope.DisposeAsync",
+    "CollectionPlayground.CollectionExpression",
+    "ConfigParser.Parse",
+    "DeconstructPlayground.Stats",
+    "DeconstructPlayground.Use",
+    "EventSource.add_Pulse",
+    "EventSource.remove_Pulse",
+    "JsonLite.Escape",
+    "JsonLite.Object",
+    "Pipeline.RunSteps",
+    "TargetTypedNewPlayground.Build",
+];
 
 const REFERENCE_LIMITED: &[&str] = &[];
 
@@ -2689,8 +2749,11 @@ const INPUT_SPACE: &[(&str, Coverage)] = &[
     (
         "member: event",
         Coverage::Ungraded(
-            "EdgeCases.EventSource recompiles in the whole-type recompile fraction but is not an \
-             IL-equivalence target",
+            "EdgeCases.EventSource is an IL-equivalence target and its add_Pulse and remove_Pulse \
+             bodies are in the graded population, but the event declaration does not round trip: \
+             the whole-type builder emits the delegate as a private field and the accessors as \
+             plain methods, so csc compiles a Delegate::op_Inequality call where the original \
+             accessor carries a bne.un reference test",
         ),
     ),
     (
@@ -2727,7 +2790,12 @@ const INPUT_SPACE: &[(&str, Coverage)] = &[
     ),
     (
         "member: params and optional parameters",
-        Coverage::Ungraded("no graded type declares one"),
+        Coverage::Ungraded(
+            "EdgeCases.CollectionPlayground.SpreadInto is graded and IL-equivalent, but its \
+             recovered declaration renders SpreadInto<T>(T[] items) without params, because the \
+             modifier lives in a ParamArrayAttribute on the parameter that a body-only IL \
+             comparison cannot see; no graded type declares an optional parameter",
+        ),
     ),
     (
         "reverser: closure_reverse",
