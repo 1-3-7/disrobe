@@ -809,9 +809,16 @@ enum Cmd {
         base: PathBuf,
         #[arg(
             value_name = "OTHER",
-            help = "the build to pair against BASE; must lift to the same source language"
+            num_args = 1..,
+            required = true,
+            help = "the build to pair against BASE; must lift to the same source language. Pass more than one only with --lineage"
         )]
-        other: PathBuf,
+        others: Vec<PathBuf>,
+        #[arg(
+            long = "lineage",
+            help = "track each BASE function across every OTHER build at once and group the correspondences into families, instead of reporting one pair"
+        )]
+        lineage: bool,
         #[arg(
             long = "limit",
             value_name = "N",
@@ -1929,7 +1936,12 @@ fn main() -> miette::Result<()> {
             source,
             sink,
         } => taint::run(input, source, sink, fmt, &llm_flags),
-        Cmd::Semdiff { base, other, limit } => semdiff::run(base, other, limit, fmt),
+        Cmd::Semdiff {
+            base,
+            others,
+            lineage,
+            limit,
+        } => semdiff::run(base, others, lineage, limit, fmt),
         Cmd::Vulnmatch {
             input,
             osv_db,

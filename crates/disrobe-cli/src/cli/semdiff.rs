@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 
 use disrobe_nir::{NirFunction, NirModule};
 use disrobe_semdiff::{
-    ChangeKind, FunctionChange, Indeterminate, MAX_FUNCTIONS_PER_MODULE, MAX_PROPAGATION_ROUNDS,
-    MatchTier, SemanticDiff, StructuralMatchReport, StructuralPair, SummaryDecline,
+    ChangeKind, FunctionChange, Indeterminate, LineageMember, LineageReport, LineageVariant,
+    MAX_FUNCTIONS_PER_MODULE, MAX_LINEAGE_VARIANTS, MAX_PROPAGATION_ROUNDS, MatchTier,
+    SemanticDiff, StructuralMatchReport, StructuralPair, SummaryDecline, VariantFamily,
 };
 use serde::Serialize;
 
@@ -86,12 +87,32 @@ struct NamedChangeOut<'a> {
 
 pub(crate) fn run(
     base: PathBuf,
+    others: Vec<PathBuf>,
+    lineage: bool,
+    limit: Option<usize>,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    if lineage {
+        return run_lineage(base, others, limit, fmt);
+    }
+    let [other]: [PathBuf; 1] = <[PathBuf; 1]>::try_from(others).map_err(|got: Vec<PathBuf>| {
+        miette::miette!(
+            "DR-CLI-0872: semdiff pairs exactly two builds, got {} OTHER argument(s); pass --lineage to track one base across several builds at once",
+            got.len()
+        )
+    })?;
+    run_pairwise(base, other, limit, fmt)
+}
+
+fn run_pairwise(
+    base: PathBuf,
     other: PathBuf,
     limit: Option<usize>,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
     let base_bytes: Vec<u8> = read_capped(&base)?;
     let other_bytes: Vec<u8> = read_capped(&other)?;
+    ensure_same_native_architecture(&base, &base_bytes, &other, &other_bytes)?;
     let base_module: NirModule = lift_module_from_bytes(&base, &base_bytes)?;
     let other_module: NirModule = lift_module_from_bytes(&other, &other_bytes)?;
 
@@ -140,6 +161,271 @@ pub(crate) fn run(
     };
 
     output::emit(fmt, &payload, || render_text(&payload))
+}
+
+#[derive(Debug, Serialize)]
+struct VariantOut {
+    label: String,
+    lang: &'static str,
+    functions: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct MemberOut {
+    variant: usize,
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tier: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct FamilyOut {
+    anchor_address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor_name: Option<String>,
+    matched: usize,
+    complete: bool,
+    members: Vec<MemberOut>,
+}
+
+#[derive(Debug, Serialize)]
+struct RefusedOut {
+    variant: usize,
+    label: String,
+    reason: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct LineageOutput<'a> {
+    anchor: String,
+    anchor_lang: &'a str,
+    anchor_functions: usize,
+    variant_count: usize,
+    max_variants: usize,
+    variants: Vec<VariantOut>,
+    families: usize,
+    complete_families: usize,
+    listed: usize,
+    family_rows: Vec<FamilyOut>,
+    refused: Vec<RefusedOut>,
+}
+
+fn run_lineage(
+    base: PathBuf,
+    others: Vec<PathBuf>,
+    limit: Option<usize>,
+    fmt: OutputFormat,
+) -> miette::Result<()> {
+    if others.len() > MAX_LINEAGE_VARIANTS {
+        return Err(miette::miette!(
+            "DR-CLI-0873: semdiff --lineage tracks at most {MAX_LINEAGE_VARIANTS} variants, got {}; split the run rather than letting variants be dropped",
+            others.len()
+        ));
+    }
+    let base_bytes: Vec<u8> = read_capped(&base)?;
+    let anchor_module: NirModule = lift_module_from_bytes(&base, &base_bytes)?;
+
+    let mut variant_bytes: Vec<Vec<u8>> = Vec::with_capacity(others.len());
+    for path in &others {
+        let bytes: Vec<u8> = read_capped(path)?;
+        ensure_same_native_architecture(&base, &base_bytes, path, &bytes)?;
+        variant_bytes.push(bytes);
+    }
+    let mut variant_modules: Vec<NirModule> = Vec::with_capacity(others.len());
+    for (path, bytes) in others.iter().zip(variant_bytes.iter()) {
+        variant_modules.push(lift_module_from_bytes(path, bytes)?);
+    }
+
+    let labels: Vec<String> = others
+        .iter()
+        .map(|path: &PathBuf| path.display().to_string())
+        .collect();
+    let anchor_label: String = base.display().to_string();
+    let anchor: LineageVariant<'_> = LineageVariant {
+        label: anchor_label.as_str(),
+        module: &anchor_module,
+    };
+    let variants: Vec<LineageVariant<'_>> = labels
+        .iter()
+        .zip(variant_modules.iter())
+        .map(|(label, module): (&String, &NirModule)| LineageVariant {
+            label: label.as_str(),
+            module,
+        })
+        .collect();
+
+    let report: LineageReport = disrobe_semdiff::variant_lineage(&anchor, &variants);
+    let listing_limit: usize = limit.unwrap_or(DEFAULT_LISTING_LIMIT);
+    let anchor_names: BTreeMap<u64, &str> = name_index(&anchor_module);
+    let complete: usize = report
+        .families
+        .iter()
+        .filter(|family: &&VariantFamily| family.is_complete())
+        .count();
+
+    let payload: LineageOutput<'_> = LineageOutput {
+        anchor: anchor_label.clone(),
+        anchor_lang: anchor_module.lang.label(),
+        anchor_functions: anchor_module.functions.len(),
+        variant_count: variants.len(),
+        max_variants: MAX_LINEAGE_VARIANTS,
+        variants: labels
+            .iter()
+            .zip(variant_modules.iter())
+            .map(|(label, module): (&String, &NirModule)| VariantOut {
+                label: label.clone(),
+                lang: module.lang.label(),
+                functions: module.functions.len(),
+            })
+            .collect(),
+        families: report.families.len(),
+        complete_families: complete,
+        listed: listing_limit,
+        family_rows: family_rows(&report, &anchor_names, &labels, listing_limit),
+        refused: report
+            .refused
+            .iter()
+            .map(|&(variant, reason): &(usize, Indeterminate)| RefusedOut {
+                variant,
+                label: labels.get(variant).cloned().unwrap_or_default(),
+                reason: indeterminate_label(reason),
+            })
+            .collect(),
+    };
+
+    output::emit(fmt, &payload, || render_lineage(&payload))
+}
+
+fn family_rows(
+    report: &LineageReport,
+    anchor_names: &BTreeMap<u64, &str>,
+    labels: &[String],
+    limit: usize,
+) -> Vec<FamilyOut> {
+    report
+        .families
+        .iter()
+        .take(limit)
+        .map(|family: &VariantFamily| FamilyOut {
+            anchor_address: format!("{:#x}", family.anchor_address),
+            anchor_name: anchor_names
+                .get(&family.anchor_address)
+                .map(|n: &&str| (*n).to_owned()),
+            matched: family.matched_count(),
+            complete: family.is_complete(),
+            members: family
+                .members
+                .iter()
+                .map(|member: &LineageMember| member_row(member, labels))
+                .collect(),
+        })
+        .collect()
+}
+
+fn member_row(member: &LineageMember, labels: &[String]) -> MemberOut {
+    match *member {
+        LineageMember::Matched {
+            variant,
+            address,
+            tier,
+        } => MemberOut {
+            variant,
+            label: labels.get(variant).cloned().unwrap_or_default(),
+            address: Some(format!("{address:#x}")),
+            tier: Some(tier_label(tier)),
+            reason: None,
+        },
+        LineageMember::Absent { variant, reason } => MemberOut {
+            variant,
+            label: labels.get(variant).cloned().unwrap_or_default(),
+            address: None,
+            tier: None,
+            reason: Some(indeterminate_label(reason)),
+        },
+    }
+}
+
+fn render_lineage(payload: &LineageOutput<'_>) {
+    println!("semdiff lineage: OK");
+    println!(
+        "  anchor:       {} [{}]",
+        payload.anchor, payload.anchor_lang
+    );
+    println!("  functions:    {}", payload.anchor_functions);
+    println!(
+        "  variants:     {} of {} allowed",
+        payload.variant_count, payload.max_variants
+    );
+    for variant in &payload.variants {
+        println!(
+            "    {} [{}] {} function(s)",
+            variant.label, variant.lang, variant.functions
+        );
+    }
+    println!(
+        "  families:     {} ({} present in every variant)",
+        payload.families, payload.complete_families
+    );
+    for family in &payload.family_rows {
+        let name: &str = family.anchor_name.as_deref().unwrap_or("<unnamed>");
+        println!(
+            "    {} @ {} matched {}/{}",
+            name,
+            family.anchor_address,
+            family.matched,
+            family.members.len()
+        );
+        for member in &family.members {
+            match (&member.address, member.tier, member.reason) {
+                (Some(address), Some(tier), _) => {
+                    println!("      [{}] {address} [{tier}]", member.variant);
+                }
+                (_, _, Some(reason)) => println!("      [{}] absent [{reason}]", member.variant),
+                _ => {}
+            }
+        }
+    }
+    print_elision(payload.families, payload.family_rows.len());
+    for refused in &payload.refused {
+        println!(
+            "  refused variant [{}] {}: {}",
+            refused.variant, refused.label, refused.reason
+        );
+    }
+}
+
+fn native_architecture(bytes: &[u8]) -> Option<object::Architecture> {
+    use object::Object as _;
+
+    object::File::parse(bytes)
+        .ok()
+        .map(|obj: object::File<'_>| obj.architecture())
+}
+
+fn ensure_same_native_architecture(
+    base: &Path,
+    base_bytes: &[u8],
+    other: &Path,
+    other_bytes: &[u8],
+) -> miette::Result<()> {
+    let (Some(left), Some(right)): (Option<object::Architecture>, Option<object::Architecture>) = (
+        native_architecture(base_bytes),
+        native_architecture(other_bytes),
+    ) else {
+        return Ok(());
+    };
+    if left == right {
+        return Ok(());
+    }
+    Err(miette::miette!(
+        "DR-CLI-0874: {} is {left:?} and {} is {right:?}; every native image lifts under one source language, so pairing across architectures would compare unrelated code instead of refusing it",
+        base.display(),
+        other.display()
+    ))
 }
 
 fn read_capped(path: &Path) -> miette::Result<Vec<u8>> {
