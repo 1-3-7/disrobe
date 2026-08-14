@@ -89,7 +89,7 @@ The authoritative source is always `disrobe <command> --help` for the binary you
 | `disrobe macho dump\|classdump\|fat <input>` | Mach-O dump including `.ipa`; raw thin/fat Mach-O class-dump and slice inspection. |
 | `disrobe as3 disasm\|tags <swf>` | AS3 DoABC disasm / SWF tag list. |
 | `disrobe hermes decompile\|disasm\|info <bundle>` | Hermes JS-surface lift / disasm / header. |
-| `disrobe flutter dump\|decompile\|kernel\|disasm\|map\|inventory\|inventory-standalone <input>` | Flutter Dart AOT + kernel inspection. `inventory` and `inventory-standalone` recover the full library/class/method/field declaration graph on a pinned Dart snapshot version. |
+| `disrobe flutter dump\|decompile\|kernel\|disasm\|map\|inventory\|inventory-standalone <input>` | Flutter Dart AOT + kernel inspection. `flutter dump --format ghidra\|ida\|json` emits recovered function names through the shared symbol exporter. `inventory` and `inventory-standalone` recover the full library/class/method/field declaration graph on a pinned Dart snapshot version. |
 | `disrobe mobile detect\|extract\|hermes\|flutter\|recon <input>` | Mobile runtime pipeline. |
 
 ## Chain, envelope, and forensics

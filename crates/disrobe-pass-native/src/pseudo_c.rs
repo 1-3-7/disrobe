@@ -358,6 +358,7 @@ enum FpToIntRound {
     Floor,
     Ceil,
     Away,
+    Javascript,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14599,9 +14600,13 @@ fn collect_fp_semantics_helpers(body: &Block, acc: &mut BTreeSet<&'static str>) 
                                 *width,
                             ));
                         }
+                        FpToIntRound::Javascript => {
+                            acc.insert(fp_semantics::javascript_to_int_helper());
+                        }
                     }
-                    if let Some(helper) =
-                        fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width)
+                    if *round != FpToIntRound::Javascript
+                        && let Some(helper) =
+                            fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width)
                     {
                         acc.insert(helper);
                     }
@@ -19442,9 +19447,12 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
                 FpToIntRound::Away => {
                     c_fp_rint(FpRoundKind::Integral(RoundMode::TiesAway), &value, *width)
                 }
+                FpToIntRound::Javascript => value,
             };
             let bits: u32 = dest.width.bits();
-            let convert: Option<&'static str> = if fbits.is_some() && *width == FpWidth::F16 {
+            let convert: Option<&'static str> = if *round == FpToIntRound::Javascript {
+                Some(fp_semantics::javascript_to_int_helper())
+            } else if fbits.is_some() && *width == FpWidth::F16 {
                 None
             } else {
                 fp_semantics::cvt_helper(*saturating, *signed, dest.width, *width)
@@ -21958,10 +21966,16 @@ fn rs_fp_to_int_stmt(out: &mut String, plan: RsFpToIntPlan, indent: &str) -> Opt
             &value,
             plan.width,
         ),
+        FpToIntRound::Javascript => value,
     };
     let ity: &str = rs_int_ty(plan.dest.width);
     let uty: &str = rs_uint_ty(plan.dest.width);
-    let truncated: String = if !plan.saturating && plan.signed {
+    let truncated: String = if plan.round == FpToIntRound::Javascript {
+        format!(
+            "{}({rounded}) as u64",
+            fp_semantics::javascript_to_int_helper()
+        )
+    } else if !plan.saturating && plan.signed {
         let ty: &str = plan.width.rust_value_type();
         let bound: String = format!("2{ty}.powi({})", plan.dest.width.bits() - 1);
         format!(

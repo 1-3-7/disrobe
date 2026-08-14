@@ -242,6 +242,50 @@ fn walk_exprs_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
+fn collect_block_bound_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
+    for stat in &block.stats {
+        match &stat.kind {
+            StatKind::Local { targets, .. } => out.extend(targets.iter().copied()),
+            StatKind::Do(body) | StatKind::While { body, .. } | StatKind::Repeat { body, .. } => {
+                collect_block_bound_locals(body, out);
+            }
+            StatKind::If { arms, else_body } => {
+                for (_, body) in arms {
+                    collect_block_bound_locals(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_block_bound_locals(body, out);
+                }
+            }
+            StatKind::NumericFor { var, body, .. } => {
+                out.insert(*var);
+                collect_block_bound_locals(body, out);
+            }
+            StatKind::GenericFor { vars, body, .. } => {
+                out.extend(vars.iter().copied());
+                collect_block_bound_locals(body, out);
+            }
+            StatKind::Assign { .. }
+            | StatKind::ExprStat(_)
+            | StatKind::Return(_)
+            | StatKind::Break => {}
+        }
+    }
+}
+
+fn collect_function_bound_locals(params: &[LocalId], body: &Block, out: &mut BTreeSet<LocalId>) {
+    out.extend(params.iter().copied());
+    collect_block_bound_locals(body, out);
+    let mut nested: Vec<&Expr> = Vec::new();
+    walk_exprs(body, &mut nested);
+    for expr in nested {
+        if let ExprKind::Function { params, body, .. } = &expr.kind {
+            out.extend(params.iter().copied());
+            collect_block_bound_locals(body, out);
+        }
+    }
+}
+
 fn collect_expr_locals(expr: &Expr, subst: &BTreeMap<u64, String>, out: &mut BTreeSet<LocalId>) {
     if subst.contains_key(&span_key(expr.span)) {
         return;
@@ -266,7 +310,14 @@ fn collect_expr_locals(expr: &Expr, subst: &BTreeMap<u64, String>, out: &mut BTr
                 collect_expr_locals(argument, subst, out);
             }
         }
-        ExprKind::Function { body, .. } => collect_block_locals(body, subst, out),
+        ExprKind::Function { params, body, .. } => {
+            let mut referenced: BTreeSet<LocalId> = BTreeSet::new();
+            collect_block_locals(body, subst, &mut referenced);
+            let mut bound: BTreeSet<LocalId> = BTreeSet::new();
+            collect_function_bound_locals(params, body, &mut bound);
+            referenced.retain(|id: &LocalId| !bound.contains(id));
+            out.extend(referenced);
+        }
         ExprKind::Table(fields) => {
             for field in fields {
                 match field {
@@ -1205,32 +1256,38 @@ fn resolve_and_expr<'a>(
     }
 }
 
-fn contains_local_decl_anywhere(block: &Block) -> bool {
-    block.stats.iter().any(stat_contains_local_decl)
+fn contains_local_decl_in_current_function(block: &Block) -> bool {
+    block
+        .stats
+        .iter()
+        .any(stat_contains_local_decl_in_current_function)
 }
 
-fn stat_contains_local_decl(stat: &Stat) -> bool {
-    if matches!(stat.kind, StatKind::Local { .. }) {
-        return true;
-    }
+fn stat_contains_local_decl_in_current_function(stat: &Stat) -> bool {
     match &stat.kind {
-        StatKind::Local { values, .. } => values.iter().any(expr_contains_local_decl),
+        StatKind::Local { .. } => true,
         StatKind::Assign { targets, values } => {
             targets.iter().any(|t: &AssignTarget| match t {
                 AssignTarget::Index(base, key, _) => {
-                    expr_contains_local_decl(base) || expr_contains_local_decl(key)
+                    expr_contains_local_decl_in_current_function(base)
+                        || expr_contains_local_decl_in_current_function(key)
                 }
                 AssignTarget::Var(..) => false,
-            }) || values.iter().any(expr_contains_local_decl)
+            }) || values
+                .iter()
+                .any(expr_contains_local_decl_in_current_function)
         }
-        StatKind::ExprStat(e) => expr_contains_local_decl(e),
+        StatKind::ExprStat(e) => expr_contains_local_decl_in_current_function(e),
         StatKind::Do(b) | StatKind::While { body: b, .. } | StatKind::Repeat { body: b, .. } => {
-            contains_local_decl_anywhere(b)
+            contains_local_decl_in_current_function(b)
         }
         StatKind::If { arms, else_body } => {
             arms.iter().any(|(cond, body): &(Expr, Block)| {
-                expr_contains_local_decl(cond) || contains_local_decl_anywhere(body)
-            }) || else_body.as_ref().is_some_and(contains_local_decl_anywhere)
+                expr_contains_local_decl_in_current_function(cond)
+                    || contains_local_decl_in_current_function(body)
+            }) || else_body
+                .as_ref()
+                .is_some_and(contains_local_decl_in_current_function)
         }
         StatKind::NumericFor {
             start,
@@ -1239,38 +1296,60 @@ fn stat_contains_local_decl(stat: &Stat) -> bool {
             body,
             ..
         } => {
-            expr_contains_local_decl(start)
-                || expr_contains_local_decl(stop)
-                || step.as_ref().is_some_and(expr_contains_local_decl)
-                || contains_local_decl_anywhere(body)
+            expr_contains_local_decl_in_current_function(start)
+                || expr_contains_local_decl_in_current_function(stop)
+                || step
+                    .as_ref()
+                    .is_some_and(expr_contains_local_decl_in_current_function)
+                || contains_local_decl_in_current_function(body)
         }
         StatKind::GenericFor { exprs, body, .. } => {
-            exprs.iter().any(expr_contains_local_decl) || contains_local_decl_anywhere(body)
+            exprs
+                .iter()
+                .any(expr_contains_local_decl_in_current_function)
+                || contains_local_decl_in_current_function(body)
         }
-        StatKind::Return(values) => values.iter().any(expr_contains_local_decl),
+        StatKind::Return(values) => values
+            .iter()
+            .any(expr_contains_local_decl_in_current_function),
         StatKind::Break => false,
     }
 }
 
-fn expr_contains_local_decl(expr: &Expr) -> bool {
+fn expr_contains_local_decl_in_current_function(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Function { body, .. } => contains_local_decl_anywhere(body),
+        ExprKind::Function { .. } => false,
         ExprKind::Index(base, key) => {
-            expr_contains_local_decl(base) || expr_contains_local_decl(key)
+            expr_contains_local_decl_in_current_function(base)
+                || expr_contains_local_decl_in_current_function(key)
         }
         ExprKind::Call { base, args } => {
-            expr_contains_local_decl(base) || args.iter().any(expr_contains_local_decl)
+            expr_contains_local_decl_in_current_function(base)
+                || args
+                    .iter()
+                    .any(expr_contains_local_decl_in_current_function)
         }
         ExprKind::MethodCall { base, args, .. } => {
-            expr_contains_local_decl(base) || args.iter().any(expr_contains_local_decl)
+            expr_contains_local_decl_in_current_function(base)
+                || args
+                    .iter()
+                    .any(expr_contains_local_decl_in_current_function)
         }
         ExprKind::Table(fields) => fields.iter().any(|field: &TableField| match field {
-            TableField::Positional(v) => expr_contains_local_decl(v),
-            TableField::Named(_, v) => expr_contains_local_decl(v),
-            TableField::Indexed(k, v) => expr_contains_local_decl(k) || expr_contains_local_decl(v),
+            TableField::Positional(v) => expr_contains_local_decl_in_current_function(v),
+            TableField::Named(_, v) => expr_contains_local_decl_in_current_function(v),
+            TableField::Indexed(k, v) => {
+                expr_contains_local_decl_in_current_function(k)
+                    || expr_contains_local_decl_in_current_function(v)
+            }
         }),
-        ExprKind::Binary(_, l, r) => expr_contains_local_decl(l) || expr_contains_local_decl(r),
-        ExprKind::Unary(_, e) | ExprKind::Paren(e) => expr_contains_local_decl(e),
+        ExprKind::Binary(_, l, r) => {
+            expr_contains_local_decl_in_current_function(l)
+                || expr_contains_local_decl_in_current_function(r)
+        }
+        ExprKind::Unary(_, e) | ExprKind::Paren(e) => {
+            expr_contains_local_decl_in_current_function(e)
+        }
         ExprKind::Nil
         | ExprKind::True
         | ExprKind::False
@@ -1287,9 +1366,9 @@ fn terminal_transfer<'a>(
     return_local: LocalId,
     substitutions: &BTreeMap<u64, String>,
 ) -> Result<(Transfer<'a>, LeafPlan)> {
-    if contains_local_decl_anywhere(leaf) {
+    if contains_local_decl_in_current_function(leaf) {
         return Err(refuse(
-            "a reachable leaf carries a real local declaration, directly or inside a nested closure it builds; this is the shape of a nested Vmify layer's own bootstrap code and is not yet peeled through a second recognizer pass",
+            "a reachable leaf carries a local declaration in its own function scope and cannot be re-emitted without changing scope",
         ));
     }
     let Some((pos_terminal_span, rhs)) = nth_last_target_stmt(&leaf.stats, pos_local, 0) else {
@@ -3456,7 +3535,7 @@ pub fn recover_with_string_pool(
     }
     if unclassified_leaves > 0 && unreached_structural_leaves > 0 {
         return Err(refuse_owned(format!(
-            "{unclassified_leaves} dispatch-tree leaf(ves) could not be classified for their jump targets (they carry a nested closure's own local declarations) while {unreached_structural_leaves} leaf(ves) remain unreached; whether any unreached leaf is a real jump target of an unclassified leaf cannot be proven, so full recovery is refused rather than assumed"
+            "{unclassified_leaves} dispatch-tree leaf(ves) could not be classified for their jump targets (they carry a local declaration in their own function scope) while {unreached_structural_leaves} leaf(ves) remain unreached; whether any unreached leaf is a real jump target of an unclassified leaf cannot be proven, so full recovery is refused rather than assumed"
         )));
     }
     for (_call_expr, _creator, entry_arg, _upvals_arg) in &ctx.all_creation_calls {

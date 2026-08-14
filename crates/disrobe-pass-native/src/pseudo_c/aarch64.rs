@@ -572,9 +572,17 @@ fn recover_with_calls_and_image<'image>(
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
         }
-        if let Some(stmts) =
-            try_lower_scalar_fp(insn, frame.info_at(index), vector_context, &image_context)?
-        {
+        let javascript_flags_dead: bool = insn.mnemonic == "fjcvtzs"
+            && insns
+                .get(index + 1)
+                .is_some_and(|next: &DisasmInsn| next.mnemonic == "ret");
+        if let Some(stmts) = try_lower_scalar_fp(
+            insn,
+            frame.info_at(index),
+            vector_context,
+            &image_context,
+            javascript_flags_dead,
+        )? {
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -4247,6 +4255,42 @@ fn lower_fp_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }])
 }
 
+fn lower_fp_javascript_to_int(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
+    if operands.len() != 2 {
+        return Err(reject_at(
+            insn,
+            "malformed javascript floating-point-to-integer conversion",
+        ));
+    }
+    let dest: RegRef = parse_reg(operands[0]).map_err(|_| {
+        reject_at(
+            insn,
+            "javascript floating-point-to-integer destination is not w",
+        )
+    })?;
+    let (src, width): (Xmm, FpWidth) = parse_fp_register(operands[1])?.ok_or_else(|| {
+        reject_at(
+            insn,
+            "javascript floating-point-to-integer source is not scalar",
+        )
+    })?;
+    if dest.width != Width::W32 || width != FpWidth::F64 {
+        return Err(reject_at(
+            insn,
+            "javascript floating-point-to-integer conversion requires w and d registers",
+        ));
+    }
+    Ok(vec![Stmt::FpToInt {
+        dest,
+        src,
+        width,
+        signed: true,
+        round: FpToIntRound::Javascript,
+        fbits: None,
+        saturating: false,
+    }])
+}
+
 fn lower_fp_convert(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     if operands.len() != 2 {
         return Err(reject_at(
@@ -4558,6 +4602,7 @@ fn try_lower_scalar_fp(
     frame: FrameInfo,
     vector_context: bool,
     image: &ImageContext<'_, '_>,
+    javascript_flags_dead: bool,
 ) -> Result<Option<Vec<Stmt>>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
@@ -4595,7 +4640,7 @@ fn try_lower_scalar_fp(
         "fcvt" if has_scalar_fp_destination(&operands) => {
             lower_fp_convert(insn, &operands).map(Some)
         }
-        "frintm" | "frintp" | "frintz" | "frintn" | "frinta" | "frintx" | "frinti"
+        "frintm" | "frintp" | "frintz" | "frintn" | "frinta"
             if has_scalar_fp_destination(&operands) =>
         {
             let mode: RoundMode = match insn.mnemonic.as_str() {
@@ -4607,24 +4652,36 @@ fn try_lower_scalar_fp(
             };
             lower_fp_round(insn, &operands, FpRoundKind::Integral(mode)).map(Some)
         }
-        "frint32z" | "frint64z" | "frint32x" | "frint64x"
-            if has_scalar_fp_destination(&operands) =>
-        {
+        "frintx" | "frinti" if has_scalar_fp_destination(&operands) => Err(reject_at(
+            insn,
+            "round to integral uses the untracked FPCR rounding mode",
+        )),
+        "frint32z" | "frint64z" if has_scalar_fp_destination(&operands) => {
             let range: FpRoundRange = if insn.mnemonic.starts_with("frint32") {
                 FpRoundRange::I32
             } else {
                 FpRoundRange::I64
             };
-            let mode: RoundMode = if insn.mnemonic.ends_with('x') {
-                RoundMode::Nearest
-            } else {
-                RoundMode::Trunc
-            };
-            lower_fp_round(insn, &operands, FpRoundKind::SignedRange { range, mode }).map(Some)
+            lower_fp_round(
+                insn,
+                &operands,
+                FpRoundKind::SignedRange {
+                    range,
+                    mode: RoundMode::Trunc,
+                },
+            )
+            .map(Some)
+        }
+        "frint32x" | "frint64x" if has_scalar_fp_destination(&operands) => Err(reject_at(
+            insn,
+            "range-limited rounding uses the untracked FPCR rounding mode",
+        )),
+        "fjcvtzs" if has_scalar_gpr_destination(&operands) && javascript_flags_dead => {
+            lower_fp_javascript_to_int(insn, &operands).map(Some)
         }
         "fjcvtzs" if has_scalar_gpr_destination(&operands) => Err(reject_at(
             insn,
-            "javascript float-to-integer conversion needs a modular wrap policy and an exact-result flag definition",
+            "javascript float-to-integer exactness flags remain live",
         )),
         "fadd" | "fsub" | "fmul" | "fdiv" | "fmaxnm" | "fminnm" | "fmax" | "fmin" | "fmadd"
         | "fmsub" | "fnmadd" | "fnmsub" | "fabd" | "fnmul" | "fneg" | "fabs" | "scvtf"

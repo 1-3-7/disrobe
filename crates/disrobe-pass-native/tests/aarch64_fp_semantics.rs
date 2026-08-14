@@ -455,6 +455,10 @@ const LITERAL_F32_BYTES: &[u8] = &[0x00, 0x00, 0xc0, 0x3f];
 const LDR_LITERAL_F64_BACKWARD: &[u8] = &[0xc0, 0xff, 0xff, 0x5c, 0xc0, 0x03, 0x5f, 0xd6];
 const LITERAL_F64_BYTES: &[u8] = &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80];
 const WRITES_FPCR: &[u8] = &[0x00, 0x44, 0x1b, 0xd5, 0xc0, 0x03, 0x5f, 0xd6];
+const FJCVTZS_RETURN: &[u8] = &[0x00, 0x00, 0x7e, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+const FJCVTZS_LIVE_FLAGS: &[u8] = &[
+    0x00, 0x00, 0x7e, 0x1e, 0x20, 0x00, 0x00, 0x54, 0xc0, 0x03, 0x5f, 0xd6,
+];
 const LITERAL_POOL_ELF: &[u8] = include_bytes!("fixtures/aarch64_recovery/literal_pool.elf");
 
 fn recovered_fixture<'program>(
@@ -578,6 +582,103 @@ fn fpcr_dependent_semantics_refuse_with_a_distinct_reason() {
 }
 
 #[test]
+fn javascript_float_to_integer_return_recovers_with_modular_semantics() {
+    let recovery: LeafRecovery = recover_aarch64_function(FJCVTZS_RETURN, 0)
+        .expect("fjcvtzs w0, d0; ret has dead exactness flags and must recover");
+    assert!(
+        recovery.source.contains("fpx_js_i32_f64"),
+        "recovered C must use exact JavaScript ToInt32 semantics:\n{}",
+        recovery.source
+    );
+    let rust: &str = recovery
+        .rust_source
+        .as_deref()
+        .expect("fjcvtzs must recover Rust too");
+    assert!(
+        rust.contains("fpx_js_i32_f64"),
+        "recovered Rust must use exact JavaScript ToInt32 semantics:\n{rust}"
+    );
+}
+
+#[test]
+fn javascript_float_to_integer_executes_directed_boundaries() {
+    let compiler: String = cc().expect("javascript conversion execution needs a host C compiler");
+    let recovery: LeafRecovery =
+        recover_aarch64_function(FJCVTZS_RETURN, 0).expect("fjcvtzs w0, d0; ret must recover");
+    let directory: tempfile::TempDir = tempfile::tempdir().expect("javascript conversion scratch");
+    let c_source: String = format!(
+        "{}\nint main(void) {{ return recovered(0.0) == 0u && recovered(-0.0) == 0u && recovered(1.75) == 1u && recovered(-1.75) == UINT32_MAX && recovered(2147483648.0) == UINT32_C(0x80000000) && recovered(4294967297.75) == 1u && recovered(-4294967297.75) == UINT32_MAX && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000001))) == 0u && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == 0u && recovered(0x1p84) == 0u ? 0 : 1; }}\n",
+        recovery.source
+    );
+    let c_path: PathBuf = directory.path().join("javascript_conversion.c");
+    let c_exe: PathBuf = directory.path().join("javascript_conversion.exe");
+    std::fs::write(&c_path, c_source).expect("write javascript conversion C");
+    let mut c_build: Command = Command::new(&compiler);
+    c_build
+        .args(["-std=c11", "-Werror"])
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&c_exe);
+    let built: std::process::Output = run_bounded(c_build, "javascript conversion C build");
+    assert!(
+        built.status.success(),
+        "javascript conversion C failed to build:\n{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(
+        run_bounded(Command::new(&c_exe), "javascript conversion C execution")
+            .status
+            .success(),
+        "javascript conversion C boundary execution failed"
+    );
+
+    let rust: &str = recovery
+        .rust_source
+        .as_deref()
+        .expect("javascript conversion must recover Rust");
+    let rust_path: PathBuf = directory.path().join("javascript_conversion.rs");
+    let rust_exe: PathBuf = directory.path().join("javascript_conversion_rust.exe");
+    let assertions: &str = "assert_eq!(recovered(0.0) as u32, 0); assert_eq!(recovered(-0.0) as u32, 0); assert_eq!(recovered(1.75) as u32, 1); assert_eq!(recovered(-1.75) as u32, u32::MAX); assert_eq!(recovered(2_147_483_648.0) as u32, 0x8000_0000); assert_eq!(recovered(4_294_967_297.75) as u32, 1); assert_eq!(recovered(-4_294_967_297.75) as u32, u32::MAX); assert_eq!(recovered(f64::from_bits(0x7ff8_0000_0000_0001)) as u32, 0); assert_eq!(recovered(f64::INFINITY) as u32, 0); assert_eq!(recovered(2_f64.powi(84)) as u32, 0);";
+    std::fs::write(
+        &rust_path,
+        format!("{rust}\n#[test]\nfn boundaries() {{ {assertions} }}\n"),
+    )
+    .expect("write javascript conversion Rust");
+    let mut rust_build: Command = Command::new("rustc");
+    rust_build
+        .args(["--edition", "2024", "--test", "-D", "warnings"])
+        .arg(&rust_path)
+        .arg("-o")
+        .arg(&rust_exe);
+    let built: std::process::Output = run_bounded(rust_build, "javascript conversion Rust build");
+    assert!(
+        built.status.success(),
+        "javascript conversion Rust failed to build:\n{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert!(
+        run_bounded(
+            Command::new(&rust_exe),
+            "javascript conversion Rust execution"
+        )
+        .status
+        .success(),
+        "javascript conversion Rust boundary execution failed"
+    );
+}
+
+#[test]
+fn javascript_float_to_integer_refuses_when_exactness_flags_are_live() {
+    let refusal: String = recover_aarch64_function(FJCVTZS_LIVE_FLAGS, 0)
+        .expect_err("fjcvtzs followed by b.eq consumes the exactness flag")
+        .to_string();
+    assert!(
+        refusal.contains("exactness flags remain live"),
+        "the refusal must name the unmodelled live flag state: {refusal}"
+    );
+}
+
+#[test]
 fn scalar_range_limited_rounding_recovers_through_exact_helpers() {
     for (bytes, helper) in [
         (FRINT32Z_F32, "fpx_rint32z_f32"),
@@ -604,27 +705,14 @@ fn scalar_range_limited_rounding_recovers_through_exact_helpers() {
 }
 
 #[test]
-fn scalar_range_limited_exact_rounding_recovers_through_nearest_helpers() {
-    for (bytes, helper, truncating) in [
-        (FRINT32X_F32, "fpx_rint32x_f32", "fpx_rint32z_f32"),
-        (FRINT32X_F64, "fpx_rint32x_f64", "fpx_rint32z_f64"),
-        (FRINT64X_F32, "fpx_rint64x_f32", "fpx_rint64z_f32"),
-        (FRINT64X_F64, "fpx_rint64x_f64", "fpx_rint64z_f64"),
-    ] {
-        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0)
-            .unwrap_or_else(|error| panic!("range-limited exact rounding must recover: {error}"));
+fn fpcr_selected_range_limited_rounding_refuses_instead_of_assuming_nearest() {
+    for bytes in [FRINT32X_F32, FRINT32X_F64, FRINT64X_F32, FRINT64X_F64] {
+        let refusal: String = recover_aarch64_function(bytes, 0)
+            .expect_err("the caller's FPCR rounding mode is not statically known")
+            .to_string();
         assert!(
-            recovery.source.contains(helper) && !recovery.source.contains(truncating),
-            "recovered c must call {helper} and never the toward-zero {truncating}:\n{}",
-            recovery.source
-        );
-        let rust: &str = recovery
-            .rust_source
-            .as_deref()
-            .expect("range-limited exact rounding must recover rust");
-        assert!(
-            rust.contains(helper) && !rust.contains(truncating),
-            "recovered rust must call {helper} and never the toward-zero {truncating}:\n{rust}"
+            refusal.contains("untracked FPCR rounding mode"),
+            "the refusal must identify the missing architectural state: {refusal}"
         );
     }
 }
@@ -656,7 +744,7 @@ fn run_bounded(mut command: Command, label: &str) -> std::process::Output {
 #[test]
 fn scalar_range_limited_rounding_executes_boundary_values() {
     let compiler: String = cc().expect("range-limited execution needs a host C compiler");
-    let cases: [(&[u8], &str, &str); 8] = [
+    let cases: [(&[u8], &str, &str); 4] = [
         (
             FRINT32Z_F32,
             "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 1.0f && recovered(-1.75f) == -1.0f && recovered(0x1p31f) == -0x1p31f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p31f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p31f",
@@ -676,26 +764,6 @@ fn scalar_range_limited_rounding_executes_boundary_values() {
             FRINT64Z_F64,
             "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 1.0 && recovered(-1.75) == -1.0 && recovered(0x1p63) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p63",
             "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 1.0); assert_eq!(recovered(-1.75), -1.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::NAN), -9_223_372_036_854_775_808.0);",
-        ),
-        (
-            FRINT32X_F32,
-            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 2.0f && recovered(-1.75f) == -2.0f && recovered(2.5f) == 2.0f && recovered(3.5f) == 4.0f && recovered(0x1p31f) == -0x1p31f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p31f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p31f",
-            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f32::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f32::NAN), -2_147_483_648.0);",
-        ),
-        (
-            FRINT32X_F64,
-            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 2.0 && recovered(-1.75) == -2.0 && recovered(2.5) == 2.0 && recovered(3.5) == 4.0 && recovered(2147483647.5) == -0x1p31 && recovered(0x1p31) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p31 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p31",
-            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(2_147_483_647.5), -2_147_483_648.0); assert_eq!(recovered(2_147_483_648.0), -2_147_483_648.0); assert_eq!(recovered(f64::INFINITY), -2_147_483_648.0); assert_eq!(recovered(f64::NAN), -2_147_483_648.0);",
-        ),
-        (
-            FRINT64X_F32,
-            "fp_f_to_bits(recovered(fp_f_from_bits(0x80000000u))) == 0x80000000u && recovered(1.75f) == 2.0f && recovered(-1.75f) == -2.0f && recovered(2.5f) == 2.0f && recovered(3.5f) == 4.0f && recovered(0x1p63f) == -0x1p63f && recovered(fp_f_from_bits(0x7f800000u)) == -0x1p63f && recovered(fp_f_from_bits(0x7fc00000u)) == -0x1p63f",
-            "assert_eq!(recovered(f32::from_bits(0x8000_0000)).to_bits(), 0x8000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f32::NAN), -9_223_372_036_854_775_808.0);",
-        ),
-        (
-            FRINT64X_F64,
-            "fp_d_to_bits(recovered(fp_d_from_bits(UINT64_C(0x8000000000000000)))) == UINT64_C(0x8000000000000000) && recovered(1.75) == 2.0 && recovered(-1.75) == -2.0 && recovered(2.5) == 2.0 && recovered(3.5) == 4.0 && recovered(0x1p63) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == -0x1p63 && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000000))) == -0x1p63",
-            "assert_eq!(recovered(f64::from_bits(0x8000_0000_0000_0000)).to_bits(), 0x8000_0000_0000_0000); assert_eq!(recovered(1.75), 2.0); assert_eq!(recovered(-1.75), -2.0); assert_eq!(recovered(2.5), 2.0); assert_eq!(recovered(3.5), 4.0); assert_eq!(recovered(9_223_372_036_854_775_808.0), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::INFINITY), -9_223_372_036_854_775_808.0); assert_eq!(recovered(f64::NAN), -9_223_372_036_854_775_808.0);",
         ),
     ];
     let directory: tempfile::TempDir = tempfile::tempdir().expect("range-limited scratch dir");

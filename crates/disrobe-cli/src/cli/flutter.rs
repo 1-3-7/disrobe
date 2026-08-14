@@ -1,6 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
 
@@ -10,6 +10,10 @@ use disrobe_pass_mobile::{
     LibAppLayout, decompile_dart_aot, decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel,
     parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_pinned_elf,
     recover_dart_pinned_standalone,
+};
+use disrobe_pass_native::{
+    ExportFormat, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass, SymbolMap, SymbolOrigin,
+    render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
 
 #[derive(Subcommand, Debug)]
@@ -26,6 +30,12 @@ pub(crate) enum FlutterCmd {
             help = "output path for the layout JSON (default: ./out/<stem>-flutter.json)"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            help = "also emit recovered function names for an analysis tool"
+        )]
+        format: Option<FlutterExportTarget>,
     },
     #[command(
         about = "best-effort decompile of a Dart AOT snapshot (header + class table estimate + readable strings)"
@@ -137,6 +147,23 @@ pub(crate) enum ObfuscationNames {
     Opaque,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum FlutterExportTarget {
+    Ghidra,
+    Ida,
+    Json,
+}
+
+impl FlutterExportTarget {
+    const fn into_pass(self) -> ExportFormat {
+        match self {
+            Self::Ghidra => ExportFormat::Ghidra,
+            Self::Ida => ExportFormat::Ida,
+            Self::Json => ExportFormat::Json,
+        }
+    }
+}
+
 impl ObfuscationNames {
     const fn hint(self) -> DartGraphObfuscationHint {
         match self {
@@ -149,7 +176,7 @@ impl ObfuscationNames {
 
 pub(crate) fn run(action: FlutterCmd) -> miette::Result<()> {
     match action {
-        FlutterCmd::Dump { input, out } => dump(input, out),
+        FlutterCmd::Dump { input, out, format } => dump(input, out, format),
         FlutterCmd::Decompile { input, out, emit } => decompile(input, out, emit),
         FlutterCmd::Kernel {
             input,
@@ -268,7 +295,11 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, emit_listing: bool) -> miette::R
     Ok(())
 }
 
-fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
+fn dump(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    export_target: Option<FlutterExportTarget>,
+) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0750: cannot read input: {e}"))?;
     let layout: LibAppLayout =
@@ -288,6 +319,11 @@ fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-CLI-0753: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0754: cannot write output: {e}"))?;
+    let sidecar_path: Option<PathBuf> = export_target
+        .map(|target: FlutterExportTarget| {
+            write_flutter_symbol_export(&input, &out_path, &layout, target)
+        })
+        .transpose()?;
     println!("flutter dump: OK");
     println!("  input:        {}", input.display());
     println!("  sections:     {}", layout.section_names.len());
@@ -322,7 +358,63 @@ fn dump(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {
             .map_or("<missing>", |s| s.symbol.as_str())
     );
     println!("  wrote:        {}", out_path.display());
+    if let Some(path) = sidecar_path {
+        println!("  symbols:      {}", path.display());
+    }
     Ok(())
+}
+
+fn write_flutter_symbol_export(
+    input: &Path,
+    out_path: &Path,
+    layout: &LibAppLayout,
+    target: FlutterExportTarget,
+) -> miette::Result<PathBuf> {
+    let mut symbols: Vec<RecoveredSymbol> = layout
+        .function_symbols
+        .iter()
+        .map(
+            |symbol: &disrobe_pass_mobile::DartFunctionSymbol| RecoveredSymbol {
+                address: symbol.address,
+                name: symbol.name.clone(),
+                demangled: None,
+                class: SymbolClass::Function,
+                origin: SymbolOrigin::SymbolTable,
+                note: Some(format!(
+                    "Flutter AOT function, file offset {}, size {}",
+                    symbol.offset, symbol.size
+                )),
+            },
+        )
+        .collect();
+    symbols.sort_unstable_by(|left: &RecoveredSymbol, right: &RecoveredSymbol| {
+        left.address
+            .cmp(&right.address)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    symbols.dedup_by(|left: &mut RecoveredSymbol, right: &mut RecoveredSymbol| {
+        left.address == right.address && left.name == right.name
+    });
+    let format: ExportFormat = target.into_pass();
+    let symbol_map: SymbolMap = SymbolMap {
+        schema: SYMBOL_MAP_SCHEMA,
+        source: input.display().to_string(),
+        format: "elf-flutter-aot".to_owned(),
+        image_base: 0,
+        original_entry_point: None,
+        symbol_count: symbols.len(),
+        symbols,
+    };
+    let rendered: String = match format {
+        ExportFormat::Ghidra => render_ghidra_postscript(&symbol_map),
+        ExportFormat::Ida => render_idapython(&symbol_map),
+        ExportFormat::Json => render_symbol_map_json(&symbol_map)
+            .map_err(|error| miette::miette!("DR-CLI-0755: symbol export: {error}"))?,
+    };
+    let sidecar_path: PathBuf = out_path.with_extension(format.sidecar_extension());
+    std::fs::write(&sidecar_path, rendered.as_bytes())
+        .map_err(|error| miette::miette!("DR-CLI-0756: cannot write symbol export: {error}"))?;
+    Ok(sidecar_path)
 }
 
 fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {

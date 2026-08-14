@@ -829,6 +829,65 @@ fn prometheus_vmify_nested_double_layer_sample_recovers_and_reexecutes_identical
     );
 }
 
+#[test]
+fn prometheus_vmify_dispatch_leaf_with_nested_local_function_recovers_and_reexecutes() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let obfuscated: String = PROMETHEUS_VMIFY_NESTED_OBFUSCATED.replace(
+        "N=\"F\"y=N g={y}",
+        "N=(function() local q=\"F\" local get=function() return q end return get() end)() y=N g={y}",
+    );
+    assert_ne!(
+        obfuscated, PROMETHEUS_VMIFY_NESTED_OBFUSCATED,
+        "the tracked real nested fixture must retain the selected reachable handler expression"
+    );
+
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_local_function_orig",
+        PROMETHEUS_VMIFY_NESTED_CLEAN,
+    )
+    .expect("the clean nested source must run under real Lua 5.1");
+    let obfuscated_output: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_local_function_obfuscated",
+        &obfuscated,
+    )
+    .expect("the nested-closure variant must run under real Lua 5.1");
+    assert_eq!(
+        expected, obfuscated_output,
+        "the nested local function must preserve the real fixture's behavior"
+    );
+
+    let peeled: PeelResult = prometheus::peel(obfuscated.as_bytes(), &DeobfOptions::default())
+        .expect(
+            "prometheus peel must run on a dispatch leaf that constructs a nested local function",
+        );
+    assert!(
+        peeled.fully_recovered,
+        "a local declaration owned by a nested function must not make the enclosing dispatcher leaf refuse; residual_markers={:?}",
+        peeled.residual_markers
+    );
+    let recovered: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_local_function_recovered",
+        &recovered,
+    )
+    .expect("the recovered nested-closure variant must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "the recovered nested-closure variant must re-execute identically to the real original\n--- recovered ---\n{recovered}"
+    );
+}
+
 const PROMETHEUS_VMIFY_UPVALUE_CLEAN: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_upvalue/clean.lua");
 const PROMETHEUS_VMIFY_UPVALUE_OBFUSCATED: &str =

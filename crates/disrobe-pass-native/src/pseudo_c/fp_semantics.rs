@@ -12,6 +12,20 @@ pub struct FpHelper {
 const SIGNED_WRAP: &str = "static inline int32_t fpx_i32_of(uint32_t v) { return v < 0x80000000u ? (int32_t)v : -(int32_t)(0xffffffffu - v) - 1; }
 static inline int64_t fpx_i64_of(uint64_t v) { return v < 0x8000000000000000ull ? (int64_t)v : -(int64_t)(0xffffffffffffffffull - v) - 1; }";
 
+const JS_TO_I32: &str = r"static inline uint32_t fpx_js_i32_f64(double x) {
+    uint64_t bits = fp_d_to_bits(x);
+    unsigned exponent = (unsigned)((bits >> 52) & 0x7ffull);
+    unsigned shift;
+    uint64_t significand;
+    uint32_t magnitude;
+    if (exponent < 1023u || exponent == 0x7ffu) return 0u;
+    shift = exponent - 1023u;
+    if (shift >= 84u) return 0u;
+    significand = (1ull << 52) | (bits & 0x000fffffffffffffull);
+    magnitude = shift >= 52u ? (uint32_t)(significand << (shift - 52u)) : (uint32_t)(significand >> (52u - shift));
+    return (bits >> 63) != 0ull ? 0u - magnitude : magnitude;
+}";
+
 const WIDE: &str = r"typedef struct { uint64_t hi; uint64_t lo; } fpx_w128;
 static inline fpx_w128 fpx_w128_of(uint64_t v) { fpx_w128 r; r.hi = 0; r.lo = v; return r; }
 static inline fpx_w128 fpx_w128_shl(fpx_w128 v, unsigned n) {
@@ -621,6 +635,11 @@ pub fn helpers() -> Vec<FpHelper> {
             deps: &[],
             source: CVT_CORE,
         },
+        FpHelper {
+            name: "fpx_js_i32_f64",
+            deps: &[],
+            source: JS_TO_I32,
+        },
     ];
     out.extend(wrapper_table(RINT_WRAPPERS, &["fpx_rint_core"]));
     out.extend(wrapper_table(MINMAX_WRAPPERS, &["fpx_minmax_core"]));
@@ -682,6 +701,30 @@ fn fpx_rint_f32(x: f32, mode: u32) -> f32 {
         3 => x.trunc(),
         4 => x.round(),
         _ => x.round_ties_even(),
+    }
+}";
+
+const RS_JS_TO_I32: &str = r"#[allow(dead_code)]
+fn fpx_js_i32_f64(x: f64) -> u32 {
+    let bits: u64 = x.to_bits();
+    let exponent: u32 = ((bits >> 52) & 0x7ff) as u32;
+    if exponent < 1023 || exponent == 0x7ff {
+        return 0;
+    }
+    let shift: u32 = exponent - 1023;
+    if shift >= 84 {
+        return 0;
+    }
+    let significand: u64 = (1_u64 << 52) | (bits & 0x000f_ffff_ffff_ffff);
+    let magnitude: u32 = if shift >= 52 {
+        (significand << (shift - 52)) as u32
+    } else {
+        (significand >> (52 - shift)) as u32
+    };
+    if bits >> 63 != 0 {
+        0_u32.wrapping_sub(magnitude)
+    } else {
+        magnitude
     }
 }";
 
@@ -1227,6 +1270,11 @@ fn rust_helpers() -> Vec<FpHelper> {
             deps: &[],
             source: RS_MINMAX_F64,
         },
+        FpHelper {
+            name: "fpx_js_i32_f64",
+            deps: &[],
+            source: RS_JS_TO_I32,
+        },
     ];
     for (name, dep, source) in RS_WRAPPERS {
         out.push(FpHelper {
@@ -1428,4 +1476,8 @@ pub(super) fn cvt_helper(
         .into_iter()
         .find(|helper: &FpHelper| helper.name == name)
         .map(|helper: FpHelper| helper.name)
+}
+
+pub(super) const fn javascript_to_int_helper() -> &'static str {
+    "fpx_js_i32_f64"
 }

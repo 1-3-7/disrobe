@@ -139,3 +139,273 @@ fn direct_loop_using_the_index_is_left_intact() {
     let got: String = eval_capture(&recovered).expect("recovered evaluates");
     assert_eq!(want, got, "behavior preserved");
 }
+
+const NESTED_DEFAULTED_BINDING: &str = r"
+var rows = [[{ value: 2 }, undefined], [{ value: 4 }, 6]];
+var total = 0;
+for (var _i = 0; _i < rows.length; _i++) {
+  let [{ value }, scale = 3] = rows[_i];
+  value += 1;
+  total += value * scale;
+}
+print(total);
+";
+
+#[test]
+fn direct_index_loop_recovers_nested_defaulted_binding() {
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(NESTED_DEFAULTED_BINDING);
+    assert_eq!(
+        stats.index_loops_to_for_of, 1,
+        "the nested binding must recover exactly once"
+    );
+    assert!(
+        recovered.contains("for (let [{ value }, scale = 3] of rows)"),
+        "the exact nested/defaulted binding must move into the loop head:\n{recovered}"
+    );
+    assert!(
+        !recovered.contains("rows[_i]") && !recovered.contains("_i <"),
+        "the complete index scaffold must be removed:\n{recovered}"
+    );
+    assert_recovered_equivalent(
+        "nested_defaulted_binding",
+        NESTED_DEFAULTED_BINDING,
+        &recovered,
+    );
+}
+
+#[test]
+fn snapshotted_iterable_recovers_object_binding_defaults() {
+    let source: &str = r"
+var rows = [{ value: 2 }, {}];
+var total = 0;
+for (var _i = 0, _rows = rows; _i < _rows.length; _i++) {
+  const { value: current = 5 } = _rows[_i];
+  total += current;
+}
+print(total);
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 1);
+    assert!(
+        recovered.contains("for (const { value: current = 5 } of rows)"),
+        "the snapshotted iterable must retain its object binding:\n{recovered}"
+    );
+    assert_recovered_equivalent("snapshotted_object_binding", source, &recovered);
+}
+
+#[test]
+fn destructuring_loop_with_observable_index_is_left_intact() {
+    let source: &str = r"
+var rows = [[1, 2], [3, 4]];
+for (var _i = 0; _i < rows.length; _i++) {
+  const [left, right] = rows[_i];
+  print(_i + ':' + (left + right));
+}
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(
+        stats.index_loops_to_for_of, 0,
+        "an observable index must preserve the original loop"
+    );
+    assert!(
+        recovered.contains("rows[_i]") && recovered.contains("_i < rows.length"),
+        "the original loop must remain intact:\n{recovered}"
+    );
+    assert_recovered_equivalent("observable_destructuring_index", source, &recovered);
+}
+
+#[test]
+fn comment_inside_destructuring_scaffold_causes_byte_preserving_refusal() {
+    let source: &str = r"for (var _i = 0; _i < rows.length; _i++) {
+  let /* keep binding context */ [left, right] = rows[_i];
+  print(left + right);
+}";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 0);
+    assert_eq!(recovered, source);
+}
+
+#[test]
+fn binding_default_using_the_removed_index_is_left_intact() {
+    let source: &str = r"
+var rows = [[undefined], [9]];
+var seen = [];
+for (var _i = 0; _i < rows.length; _i++) {
+  const [value = _i] = rows[_i];
+  seen.push(value);
+}
+print(seen.join(','));
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 0);
+    assert!(
+        recovered.contains("const [value = _i] = rows[_i]")
+            && recovered.contains("_i < rows.length"),
+        "the index-dependent binding must retain its scaffold:\n{recovered}"
+    );
+    assert_recovered_equivalent("index_dependent_binding_default", source, &recovered);
+}
+
+#[test]
+fn destructuring_reassignment_keeps_the_loop_binding_mutable() {
+    let source: &str = r"
+var rows = [[1, 2], [3, 4]];
+var seen = [];
+for (var _i = 0; _i < rows.length; _i++) {
+  let [left, right] = rows[_i];
+  [left, right] = [right, left];
+  seen.push(left - right);
+}
+print(seen.join(','));
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 1);
+    assert!(
+        recovered.contains("for (let [left, right] of rows)"),
+        "a destructuring assignment must prevent const recovery:\n{recovered}"
+    );
+    assert_recovered_equivalent("destructuring_reassignment", source, &recovered);
+}
+
+#[test]
+fn member_mutation_preserves_a_const_destructuring_binding() {
+    let source: &str = r"
+var rows = [{ item: { value: 1 } }, { item: { value: 3 } }];
+var seen = [];
+for (var _i = 0; _i < rows.length; _i++) {
+  const { item } = rows[_i];
+  item.value++;
+  seen.push(item.value);
+}
+print(seen.join(','));
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 1);
+    assert!(
+        recovered.contains("for (const { item } of rows)"),
+        "mutating a member must not make the binding mutable:\n{recovered}"
+    );
+    assert_recovered_equivalent("const_member_mutation", source, &recovered);
+}
+
+#[test]
+fn original_const_binding_preserves_assignment_failure() {
+    let source: &str = r"
+var rows = [[1]];
+var result = 'no error';
+try {
+  for (var _i = 0; _i < rows.length; _i++) {
+    const [value] = rows[_i];
+    value = 7;
+  }
+} catch (error) {
+  result = error.name;
+}
+print(result);
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 1);
+    assert!(
+        recovered.contains("for (const [value] of rows)"),
+        "an original const binding must remain const:\n{recovered}"
+    );
+    assert_recovered_equivalent("const_assignment_failure", source, &recovered);
+}
+
+#[test]
+fn computed_key_and_default_keep_their_evaluation_order() {
+    let source: &str = r"
+var trace = [];
+function key() { trace.push('key'); return 'value'; }
+function fallback() { trace.push('default'); return 5; }
+var rows = [{}, { value: 3 }];
+for (var _i = 0; _i < rows.length; _i++) {
+  const { [key()]: current = fallback() } = rows[_i];
+  trace.push('body:' + current);
+}
+print(trace.join(','));
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 1);
+    assert!(
+        recovered.contains("for (const { [key()]: current = fallback() } of rows)"),
+        "the exact computed/defaulted binding must move into the loop head:\n{recovered}"
+    );
+    assert!(
+        !recovered.contains("rows[_i]") && !recovered.contains("_i < rows.length"),
+        "the complete index scaffold must be removed:\n{recovered}"
+    );
+    assert_recovered_equivalent("computed_key_default_order", source, &recovered);
+}
+
+#[test]
+fn binding_default_using_the_removed_length_cache_is_left_intact() {
+    let source: &str = r"
+var rows = [[undefined], [9]];
+var seen = [];
+for (var _i = 0, _len = rows.length; _i < _len; _i++) {
+  const [value = _len] = rows[_i];
+  seen.push(value);
+}
+print(seen.join(','));
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.index_loops_to_for_of, 0);
+    assert!(
+        recovered.contains("const [value = _len] = rows[_i]") && recovered.contains("_i < _len"),
+        "the cache-dependent binding must retain its scaffold:\n{recovered}"
+    );
+    assert_recovered_equivalent("length_cache_dependent_default", source, &recovered);
+}
+
+#[test]
+fn binding_named_after_the_removed_index_preserves_tdz_failure() {
+    let source: &str = r"
+var rows = [[7]];
+var result = 'completed';
+try {
+  for (var _i = 0; _i < rows.length; _i++) {
+    const [_i] = rows[_i];
+  }
+} catch (error) {
+  result = error.name;
+}
+print(result);
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(
+        stats.index_loops_to_for_of, 0,
+        "a binding that shadows the removed index must preserve the TDZ failure"
+    );
+    assert!(
+        recovered.contains("const [_i] = rows[_i]") && recovered.contains("_i < rows.length"),
+        "the shadowing loop must retain its scaffold:\n{recovered}"
+    );
+    assert_recovered_equivalent("index_binding_tdz", source, &recovered);
+}
+
+#[test]
+fn snapshot_binding_named_after_the_iterable_preserves_rhs_scope() {
+    let source: &str = r"
+var items = [[7]];
+var result = 'completed';
+try {
+  for (var _i = 0, _rows = items; _i < _rows.length; _i++) {
+    const [items] = _rows[_i];
+  }
+} catch (error) {
+  result = error.name;
+}
+print(result);
+";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(
+        stats.index_loops_to_for_of, 0,
+        "a binding that shadows the snapshot iterable must retain its original RHS scope"
+    );
+    assert!(
+        recovered.contains("_rows = items") && recovered.contains("const [items] = _rows[_i]"),
+        "the snapshot loop must retain its scaffold:\n{recovered}"
+    );
+    assert_recovered_equivalent("snapshot_iterable_binding_scope", source, &recovered);
+}

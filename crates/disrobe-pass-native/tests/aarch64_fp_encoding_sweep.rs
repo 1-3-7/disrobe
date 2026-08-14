@@ -10,8 +10,20 @@ const GENERIC_REJECTS: &[&str] = &["unsupported instruction", "unsupported wide 
 
 const EXPECTED_ABSTENTIONS: &[(&str, &str)] = &[
     (
-        "e_fjcvtzs",
-        "javascript float-to-integer conversion needs a modular wrap policy and an exact-result flag definition",
+        "g_frint32x_d",
+        "range-limited rounding uses the untracked FPCR rounding mode",
+    ),
+    (
+        "g_frint64x_s",
+        "range-limited rounding uses the untracked FPCR rounding mode",
+    ),
+    (
+        "g_frinti_d",
+        "round to integral uses the untracked FPCR rounding mode",
+    ),
+    (
+        "g_frintx_d",
+        "round to integral uses the untracked FPCR rounding mode",
     ),
     (
         "h_fmov_top_half",

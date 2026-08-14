@@ -1301,6 +1301,8 @@ const SWITCH_ANALYSIS_BUDGET_MARKER: &str = "switch analysis budget exhausted";
 const SWITCH_INVALID_TARGET_REFUSAL_MARKER: &str = "switch dispatch has an invalid target";
 const SWITCH_MID_ENTRY_REFUSAL_MARKER: &str = "switch dispatch has a mid-region entry";
 const SWITCH_IRREDUCIBLE_REFUSAL_MARKER: &str = "switch dispatch region is irreducible";
+const SWITCH_EFFECT_REFUSAL_MARKER: &str = "forward dispatch selector or case has effects";
+const SWITCH_COMPARISON_REFUSAL_MARKER: &str = "forward dispatch requires strict equality";
 const MAX_SWITCH_ANALYSIS_FUEL: usize = 65_536;
 
 fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> {
@@ -3249,6 +3251,63 @@ fn forward_dispatch_selector(cond: &Expr) -> Option<(Expr, Expr)> {
     Some(((**lhs).clone(), (**rhs).clone()))
 }
 
+fn forward_dispatch_operand_is_stable(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::This
+            | Expr::Local(_)
+            | Expr::Param(_)
+            | Expr::IntLit(_)
+            | Expr::UintLit(_)
+            | Expr::DoubleLit(_)
+            | Expr::StringLit(_)
+            | Expr::BoolLit(_)
+            | Expr::Null
+            | Expr::Undefined
+            | Expr::NaN
+            | Expr::ScopeObject
+            | Expr::CaughtException
+    )
+}
+
+fn preflight_strict_forward_dispatch(
+    stmts: &[Stmt],
+    start: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<bool, &'static str> {
+    let mut index: usize = start;
+    let mut test_count: usize = 0;
+    let mut comparisons_are_strict: bool = true;
+    let mut operands_are_stable: bool = true;
+    while let Some(Stmt::If {
+        cond: Expr::Binary { op, lhs, rhs },
+        ..
+    }) = stmts.get(index)
+    {
+        if *op != "===" && *op != "==" {
+            break;
+        }
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        test_count = test_count.saturating_add(1);
+        comparisons_are_strict &= *op == "===";
+        operands_are_stable &=
+            forward_dispatch_operand_is_stable(lhs) && forward_dispatch_operand_is_stable(rhs);
+        index = index.saturating_add(1);
+    }
+    if test_count < 2 {
+        return Ok(false);
+    }
+    if !comparisons_are_strict {
+        return Err(SWITCH_COMPARISON_REFUSAL_MARKER);
+    }
+    if !operands_are_stable {
+        return Err(SWITCH_EFFECT_REFUSAL_MARKER);
+    }
+    Ok(true)
+}
+
 struct DispatchTest {
     case_const: Expr,
     target: usize,
@@ -3306,30 +3365,6 @@ fn const_to_case_label(e: &Expr) -> CaseLabel {
     }
 }
 
-fn forward_dispatch_follow(
-    region: &[Stmt],
-    case_label_positions: &[(usize, usize)],
-) -> Option<usize> {
-    let mut follow: Option<usize> = None;
-    for (index, (label_pos, _)) in case_label_positions.iter().enumerate() {
-        let segment_end: usize = case_label_positions
-            .get(index + 1)
-            .map_or(region.len(), |(next_pos, _): &(usize, usize)| *next_pos);
-        let tail: &Stmt = region.get(label_pos + 1..segment_end)?.last()?;
-        let target_label: &usize = match tail {
-            Stmt::Jump { target_label } => target_label,
-            Stmt::Return(_) | Stmt::Throw(_) => continue,
-            _ => return None,
-        };
-        match follow {
-            Some(existing) if existing != *target_label => return None,
-            Some(_) => {}
-            None => follow = Some(*target_label),
-        }
-    }
-    follow
-}
-
 fn structure_forward_dispatch_body(
     stmts: &[Stmt],
     body_slice: &[Stmt],
@@ -3356,34 +3391,58 @@ fn structure_forward_dispatch_body(
     slice_is_structured(&body).then_some(body)
 }
 
-fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn forward_dispatch_follow(
+    region: &[Stmt],
+    case_label_positions: &[(usize, usize)],
+) -> Option<usize> {
+    let mut follow: Option<usize> = None;
+    for (index, (label_pos, _)) in case_label_positions.iter().enumerate() {
+        let segment_end: usize = case_label_positions
+            .get(index + 1)
+            .map_or(region.len(), |(next_pos, _): &(usize, usize)| *next_pos);
+        let tail: &Stmt = region.get(label_pos + 1..segment_end)?.last()?;
+        let target_label: &usize = match tail {
+            Stmt::Jump { target_label } => target_label,
+            Stmt::Return(_) | Stmt::Throw(_) => continue,
+            _ => return None,
+        };
+        match follow {
+            Some(existing) if existing != *target_label => return None,
+            Some(_) => {}
+            None => follow = Some(*target_label),
+        }
+    }
+    follow
+}
+
+fn try_match_tail_dispatch(stmts: &[Stmt], index: usize, depth: usize) -> Option<(usize, Stmt)> {
     if depth == 0 {
         return None;
     }
     let Stmt::Jump {
         target_label: dispatch_label,
-    }: &Stmt = &stmts[i]
+    }: &Stmt = &stmts[index]
     else {
         return None;
     };
     let dispatch_label: usize = *dispatch_label;
-    let d_pos: usize = stmts[i + 1..]
+    let dispatch_position: usize = stmts[index + 1..]
         .iter()
-        .position(|s: &Stmt| matches!(s, Stmt::Label(l) if *l == dispatch_label))
-        .map(|p: usize| i + 1 + p)?;
-    if d_pos <= i + 1 {
+        .position(
+            |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == dispatch_label),
+        )
+        .map(|position: usize| index + 1 + position)?;
+    if dispatch_position <= index + 1 {
         return None;
     }
     let (selector, tests, after_tests): (Expr, Vec<DispatchTest>, usize) =
-        collect_dispatch_tests(stmts, d_pos + 1)?;
-
-    let region: &[Stmt] = &stmts[i + 1..d_pos];
+        collect_dispatch_tests(stmts, dispatch_position + 1)?;
+    let region: &[Stmt] = &stmts[index + 1..dispatch_position];
     let mut target_consts: BTreeMap<usize, Vec<Expr>> = BTreeMap::new();
     for test in &tests {
-        if !region
-            .iter()
-            .any(|s: &Stmt| matches!(s, Stmt::Label(l) if *l == test.target))
-        {
+        if !region.iter().any(
+            |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == test.target),
+        ) {
             return None;
         }
         target_consts
@@ -3391,12 +3450,11 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             .or_default()
             .push(test.case_const.clone());
     }
-
     let case_label_positions: Vec<(usize, usize)> = region
         .iter()
         .enumerate()
-        .filter_map(|(pos, s): (usize, &Stmt)| match s {
-            Stmt::Label(l) => Some((pos, *l)),
+        .filter_map(|(position, statement): (usize, &Stmt)| match statement {
+            Stmt::Label(label) => Some((position, *label)),
             _ => None,
         })
         .collect();
@@ -3408,7 +3466,6 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
             return None;
         }
     }
-
     let merge_label: usize = match stmts.get(after_tests) {
         Some(Stmt::Label(label)) => *label,
         Some(Stmt::Jump { target_label }) => *target_label,
@@ -3419,14 +3476,15 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
     }
     let end: usize = stmts[after_tests..]
         .iter()
-        .position(|s: &Stmt| matches!(s, Stmt::Label(label) if *label == merge_label))
+        .position(
+            |statement: &Stmt| matches!(statement, Stmt::Label(label) if *label == merge_label),
+        )
         .map(|position: usize| after_tests + position)?;
-
     let mut cases: Vec<SwitchCase> = Vec::with_capacity(case_label_positions.len() + 1);
-    for (n, (label_pos, label)) in case_label_positions.iter().enumerate() {
+    for (case_index, (label_pos, label)) in case_label_positions.iter().enumerate() {
         let body_start: usize = label_pos + 1;
         let body_end: usize = case_label_positions
-            .get(n + 1)
+            .get(case_index + 1)
             .map_or(region.len(), |(next_pos, _): &(usize, usize)| *next_pos);
         let segment: &[Stmt] = &region[body_start..body_end];
         let (body_slice, breaks): (&[Stmt], bool) = match segment.last() {
@@ -3437,9 +3495,10 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
         };
         let body: Vec<Stmt> =
             structure_forward_dispatch_body(stmts, body_slice, merge_label, depth)?;
-        let labels: Vec<CaseLabel> = target_consts[label]
+        let labels: Vec<CaseLabel> = target_consts
+            .get(label)?
             .iter()
-            .map(|e: &Expr| const_to_case_label(e))
+            .map(const_to_case_label)
             .collect();
         cases.push(SwitchCase {
             labels,
@@ -3454,9 +3513,279 @@ fn try_match_forward_dispatch(stmts: &[Stmt], i: usize, depth: usize) -> Option<
         body: default_body,
         breaks: false,
     });
+    Some((end - index, Stmt::StructuredSwitch { selector, cases }))
+}
+
+fn forward_dispatch_segment(
+    case_positions: &[usize],
+    first_case: usize,
+    statement: usize,
+) -> Option<usize> {
+    if statement < first_case {
+        return Some(usize::MAX);
+    }
+    switch_case_index(case_positions, statement)
+}
+
+fn validate_forward_dispatch_region(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    dispatch_start: usize,
+    after_tests: usize,
+    case_positions: &[usize],
+    merge_pos: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<(), &'static str> {
+    let Some(first_case): Option<usize> = case_positions.first().copied() else {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    };
+    let case_position_set: BTreeSet<usize> = case_positions.iter().copied().collect();
+    for target in after_tests..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let Some(predecessors): Option<&BTreeSet<usize>> = cfg.predecessors.get(target) else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if !fuel.charge(predecessors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        for source in predecessors {
+            if *source >= dispatch_start
+                && *source < after_tests
+                && case_position_set.contains(&target)
+            {
+                continue;
+            }
+            if source.saturating_add(1) == after_tests && target == after_tests {
+                continue;
+            }
+            if *source < after_tests || *source >= merge_pos {
+                return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
+            }
+        }
+    }
+    for source in after_tests..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let Some(source_segment): Option<usize> =
+            forward_dispatch_segment(case_positions, first_case, source)
+        else {
+            return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+        };
+        let Some(successors): Option<&BTreeSet<usize>> = cfg.successors.get(source) else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if !fuel.charge(successors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        for target in successors {
+            if *target == merge_pos {
+                continue;
+            }
+            if *target < after_tests || *target >= merge_pos {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            }
+            let Some(target_segment): Option<usize> =
+                forward_dispatch_segment(case_positions, first_case, *target)
+            else {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            };
+            if source_segment == target_segment {
+                continue;
+            }
+            let is_case_fallthrough: bool = source_segment != usize::MAX
+                && target_segment == source_segment.saturating_add(1)
+                && source.saturating_add(1) == *target
+                && case_position_set.contains(target);
+            if !is_case_fallthrough {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            }
+        }
+    }
+    if stmts[dispatch_start..merge_pos]
+        .iter()
+        .any(|statement: &Stmt| statement_has_invalid_target(statement, &cfg.label_positions))
+    {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    }
+    Ok(())
+}
+
+fn try_match_strict_forward_dispatch(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    index: usize,
+    depth: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<Option<(usize, Stmt)>, &'static str> {
+    if depth == 0 {
+        return Ok(None);
+    }
+    if index
+        .checked_sub(1)
+        .and_then(|previous: usize| stmts.get(previous))
+        .is_some_and(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
+    {
+        return Ok(None);
+    }
+    if !preflight_strict_forward_dispatch(stmts, index, fuel)? {
+        return Ok(None);
+    }
+    let (selector, tests, after_tests): (Expr, Vec<DispatchTest>, usize) =
+        match collect_dispatch_tests(stmts, index) {
+            Some(plan) => plan,
+            None => return Ok(None),
+        };
+    let mut target_consts: BTreeMap<usize, Vec<Expr>> = BTreeMap::new();
+    let mut case_positions: Vec<usize> = Vec::new();
+    let mut last_target: Option<usize> = None;
+    for (test_index, test) in tests.iter().enumerate() {
+        if !fuel.charge(test_index) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        if tests[..test_index].iter().any(|previous: &DispatchTest| {
+            previous.case_const == test.case_const && previous.target != test.target
+        }) {
+            return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+        }
+        let Some(target_position): Option<usize> = cfg.label_positions.get(&test.target).copied()
+        else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if target_position <= index.saturating_add(test_index) {
+            return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+        }
+        if target_position < after_tests {
+            return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+        }
+        if target_consts.contains_key(&test.target) && last_target != Some(test.target) {
+            return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+        }
+        if !target_consts.contains_key(&test.target) {
+            if case_positions
+                .last()
+                .is_some_and(|previous: &usize| *previous >= target_position)
+            {
+                return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+            }
+            case_positions.push(target_position);
+        }
+        let case_values: &mut Vec<Expr> = target_consts.entry(test.target).or_default();
+        if !fuel.charge(case_values.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        if !case_values.contains(&test.case_const) {
+            case_values.push(test.case_const.clone());
+        }
+        last_target = Some(test.target);
+    }
+    let first_case: usize = case_positions
+        .first()
+        .copied()
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    if first_case <= after_tests {
+        return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
+    }
+    let default_segment: &[Stmt] = &stmts[after_tests..first_case];
+    let merge_label: usize = match default_segment.last() {
+        Some(Stmt::Jump { target_label }) => *target_label,
+        _ => return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER),
+    };
+    if target_consts.contains_key(&merge_label) {
+        return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+    }
+    let merge_pos: usize = cfg
+        .label_positions
+        .get(&merge_label)
+        .copied()
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    if case_positions
+        .last()
+        .is_none_or(|last_case: &usize| merge_pos <= *last_case)
+    {
+        return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+    }
+    if !fuel.charge(merge_pos.saturating_sub(index)) {
+        return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+    }
+    if stmts[index..merge_pos].iter().any(|statement: &Stmt| {
+        matches!(statement, Stmt::Comment(reason) if reason == STACK_CONFLICT_MARKER || reason == STACK_HEIGHT_CONFLICT_MARKER)
+    }) {
+        return Err(STACK_HEIGHT_CONFLICT_MARKER);
+    }
+    validate_forward_dispatch_region(
+        stmts,
+        cfg,
+        index,
+        after_tests,
+        &case_positions,
+        merge_pos,
+        fuel,
+    )?;
+
+    let mut cases: Vec<SwitchCase> = Vec::with_capacity(case_positions.len().saturating_add(1));
+    for (case_index, label_pos) in case_positions.iter().enumerate() {
+        let body_start: usize = label_pos.saturating_add(1);
+        let body_end: usize = case_positions
+            .get(case_index.saturating_add(1))
+            .copied()
+            .unwrap_or(merge_pos);
+        let segment: &[Stmt] = &stmts[body_start..body_end];
+        let (body_slice, breaks): (&[Stmt], bool) = match segment.last() {
+            Some(Stmt::Jump { target_label }) if *target_label == merge_label => {
+                (&segment[..segment.len() - 1], true)
+            }
+            _ => (
+                segment,
+                case_index.saturating_add(1) == case_positions.len(),
+            ),
+        };
+        let body: Vec<Stmt> =
+            structure_forward_dispatch_body(stmts, body_slice, merge_label, depth)
+                .ok_or(SWITCH_IRREDUCIBLE_REFUSAL_MARKER)?;
+        let label: usize = match stmts.get(*label_pos) {
+            Some(Stmt::Label(label)) => *label,
+            _ => return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER),
+        };
+        let labels: Vec<CaseLabel> = target_consts
+            .get(&label)
+            .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?
+            .iter()
+            .map(|e: &Expr| const_to_case_label(e))
+            .collect();
+        cases.push(SwitchCase {
+            labels,
+            body,
+            breaks,
+        });
+    }
+    let default_body_slice: &[Stmt] = &default_segment[..default_segment.len().saturating_sub(1)];
+    let default_body: Vec<Stmt> =
+        structure_forward_dispatch_body(stmts, default_body_slice, merge_label, depth)
+            .ok_or(SWITCH_IRREDUCIBLE_REFUSAL_MARKER)?;
+    cases.push(SwitchCase {
+        labels: vec![CaseLabel::Default],
+        body: default_body,
+        breaks: true,
+    });
 
     let stmt: Stmt = Stmt::StructuredSwitch { selector, cases };
-    Some((end - i, stmt))
+    Ok(Some((merge_pos - index, stmt)))
+}
+
+fn try_match_forward_dispatch(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    index: usize,
+    depth: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<Option<(usize, Stmt)>, &'static str> {
+    try_match_strict_forward_dispatch(stmts, cfg, index, depth, fuel)?.map_or_else(
+        || Ok(try_match_tail_dispatch(stmts, index, depth)),
+        |matched: (usize, Stmt)| Ok(Some(matched)),
+    )
 }
 
 fn structure_forward_dispatch(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
@@ -3464,6 +3793,8 @@ fn structure_forward_dispatch(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
         return stmts;
     }
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let cfg: StatementCfg = StatementCfg::new(&stmts);
+    let mut fuel: SwitchAnalysisFuel = SwitchAnalysisFuel::new();
     let mut i: usize = 0;
     while i < stmts.len() {
         if let Stmt::With { object, body } = &stmts[i] {
@@ -3474,10 +3805,21 @@ fn structure_forward_dispatch(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
             i += 1;
             continue;
         }
-        if let Some((consumed, stmt)) = try_match_forward_dispatch(&stmts, i, depth) {
-            out.push(stmt);
-            i += consumed;
-            continue;
+        match try_match_forward_dispatch(&stmts, &cfg, i, depth, &mut fuel) {
+            Ok(Some((consumed, stmt))) => {
+                out.push(stmt);
+                i += consumed;
+                continue;
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let already_recorded: bool = out
+                    .last()
+                    .is_some_and(|statement: &Stmt| matches!(statement, Stmt::Comment(existing) if existing == reason));
+                if !already_recorded {
+                    out.push(Stmt::Comment(reason.to_owned()));
+                }
+            }
         }
         out.push(stmts[i].clone());
         i += 1;
@@ -5721,47 +6063,460 @@ mod tests {
     }
 
     #[test]
-    fn forward_dispatch_follow_requires_one_exact_target() {
-        let matching: Vec<Stmt> = vec![
+    fn tail_dispatch_layout_remains_structured() {
+        let statements: Vec<Stmt> = vec![
+            Stmt::Jump { target_label: 50 },
             Stmt::Label(10),
+            Stmt::Expression(Expr::IntLit(10)),
             Stmt::Jump { target_label: 90 },
             Stmt::Label(20),
+            Stmt::Expression(Expr::IntLit(20)),
             Stmt::Jump { target_label: 90 },
-        ];
-        let conflicting: Vec<Stmt> = vec![
-            Stmt::Label(10),
+            Stmt::Label(50),
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(Expr::Local(1)),
+                    rhs: Box::new(Expr::IntLit(0)),
+                },
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(Expr::Local(1)),
+                    rhs: Box::new(Expr::IntLit(1)),
+                },
+                target_label: 20,
+            },
             Stmt::Jump { target_label: 90 },
-            Stmt::Label(20),
-            Stmt::Jump { target_label: 91 },
-        ];
-        let no_follow: Vec<Stmt> = vec![Stmt::Label(10), Stmt::Return(None)];
-        let terminal_case: Vec<Stmt> = vec![
-            Stmt::Label(10),
-            Stmt::Jump { target_label: 90 },
-            Stmt::Label(20),
+            Stmt::Label(90),
             Stmt::Return(None),
         ];
-        let nonterminal_fallthrough: Vec<Stmt> = vec![
-            Stmt::Label(10),
-            Stmt::Jump { target_label: 90 },
-            Stmt::Label(20),
-            Stmt::Assign {
-                target: Expr::Local(2),
-                value: Expr::IntLit(7),
+        let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        );
+    }
+
+    #[test]
+    fn effectful_forward_dispatch_selector_is_refused_by_named_reason() {
+        let selectors: Vec<Expr> = vec![
+            Expr::Call {
+                callee: Box::new(Expr::Name("source".to_owned())),
+                property: String::new(),
+                args: Vec::new(),
+            },
+            Expr::Delete {
+                object: Box::new(Expr::Local(1)),
+                property: "value".to_owned(),
+            },
+            Expr::Get {
+                object: Box::new(Expr::Local(1)),
+                property: "value".to_owned(),
+            },
+            Expr::Index {
+                object: Box::new(Expr::Local(1)),
+                index: Box::new(Expr::IntLit(0)),
             },
         ];
-        let two_cases: Vec<(usize, usize)> = vec![(0, 10), (2, 20)];
-        let one_case: Vec<(usize, usize)> = vec![(0, 10)];
-        assert_eq!(forward_dispatch_follow(&matching, &two_cases), Some(90));
-        assert_eq!(forward_dispatch_follow(&conflicting, &two_cases), None);
-        assert_eq!(forward_dispatch_follow(&no_follow, &one_case), None);
-        assert_eq!(
-            forward_dispatch_follow(&terminal_case, &two_cases),
-            Some(90)
+        for selector in selectors {
+            let statements: Vec<Stmt> = vec![
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: "===",
+                        lhs: Box::new(selector.clone()),
+                        rhs: Box::new(Expr::IntLit(0)),
+                    },
+                    target_label: 10,
+                },
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: "===",
+                        lhs: Box::new(selector),
+                        rhs: Box::new(Expr::IntLit(1)),
+                    },
+                    target_label: 20,
+                },
+                Stmt::Expression(Expr::IntLit(0)),
+                Stmt::Jump { target_label: 30 },
+                Stmt::Label(10),
+                Stmt::Expression(Expr::IntLit(10)),
+                Stmt::Jump { target_label: 30 },
+                Stmt::Label(20),
+                Stmt::Expression(Expr::IntLit(20)),
+                Stmt::Label(30),
+                Stmt::Return(None),
+            ];
+            let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+            assert!(structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_EFFECT_REFUSAL_MARKER
+            )));
+            assert!(
+                structured
+                    .iter()
+                    .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
+            );
+        }
+    }
+
+    fn assert_forward_dispatch_operand_refused(operand: Expr, is_selector: bool) {
+        let selector: Expr = if is_selector {
+            operand.clone()
+        } else {
+            Expr::Local(1)
+        };
+        let first_case: Expr = if is_selector {
+            Expr::IntLit(0)
+        } else {
+            operand
+        };
+        let statements: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(selector.clone()),
+                    rhs: Box::new(first_case),
+                },
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(selector),
+                    rhs: Box::new(Expr::IntLit(1)),
+                },
+                target_label: 20,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Expression(Expr::IntLit(10)),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(20),
+            Stmt::Expression(Expr::IntLit(20)),
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+        assert!(structured.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Comment(reason) if reason == SWITCH_EFFECT_REFUSAL_MARKER
+        )));
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
         );
-        assert_eq!(
-            forward_dispatch_follow(&nonterminal_fallthrough, &two_cases),
-            None
+        assert!(
+            !structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        );
+    }
+
+    #[test]
+    fn repeated_binary_forward_dispatch_selector_is_refused() {
+        let selector: Expr = Expr::Binary {
+            op: "+",
+            lhs: Box::new(Expr::Local(1)),
+            rhs: Box::new(Expr::IntLit(0)),
+        };
+        assert_forward_dispatch_operand_refused(selector, true);
+    }
+
+    #[test]
+    fn repeated_number_coercion_forward_dispatch_selector_is_refused() {
+        let selector: Expr = Expr::Coerce {
+            ty: "Number".to_owned(),
+            operand: Box::new(Expr::Local(1)),
+        };
+        assert_forward_dispatch_operand_refused(selector, true);
+    }
+
+    #[test]
+    fn composite_forward_dispatch_case_is_refused() {
+        let case_expression: Expr = Expr::Binary {
+            op: "+",
+            lhs: Box::new(Expr::Local(2)),
+            rhs: Box::new(Expr::IntLit(0)),
+        };
+        assert_forward_dispatch_operand_refused(case_expression, false);
+    }
+
+    #[test]
+    fn deeply_composite_forward_dispatch_is_refused_without_expression_walk() {
+        let mut selector: Expr = Expr::Local(1);
+        for _depth in 0..256_usize {
+            selector = Expr::Unary {
+                op: "+",
+                operand: Box::new(selector),
+            };
+        }
+        let statements: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(selector.clone()),
+                    rhs: Box::new(Expr::IntLit(0)),
+                },
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(selector),
+                    rhs: Box::new(Expr::IntLit(1)),
+                },
+                target_label: 20,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(20),
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+        assert!(structured.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Comment(reason) if reason == SWITCH_EFFECT_REFUSAL_MARKER
+        )));
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
+        );
+        assert!(
+            !structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        );
+    }
+
+    #[test]
+    fn loose_and_mixed_forward_dispatch_equality_is_refused() {
+        let operator_sets: Vec<Vec<&'static str>> = vec![vec!["==", "=="], vec!["===", "=="]];
+        for operators in operator_sets {
+            let statements: Vec<Stmt> = vec![
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: operators[0],
+                        lhs: Box::new(Expr::Local(1)),
+                        rhs: Box::new(Expr::IntLit(0)),
+                    },
+                    target_label: 10,
+                },
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: operators[1],
+                        lhs: Box::new(Expr::Local(1)),
+                        rhs: Box::new(Expr::IntLit(1)),
+                    },
+                    target_label: 20,
+                },
+                Stmt::Jump { target_label: 30 },
+                Stmt::Label(10),
+                Stmt::Jump { target_label: 30 },
+                Stmt::Label(20),
+                Stmt::Jump { target_label: 30 },
+                Stmt::Label(30),
+                Stmt::Return(None),
+            ];
+            let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+            assert!(structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_COMPARISON_REFUSAL_MARKER
+            )));
+            assert!(
+                structured
+                    .iter()
+                    .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_forward_dispatch_regions_are_refused_by_named_reason() {
+        let cond: fn(i64) -> Expr = |value: i64| Expr::Binary {
+            op: "===",
+            lhs: Box::new(Expr::Local(1)),
+            rhs: Box::new(Expr::IntLit(value)),
+        };
+        let missing_target: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 99,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let backward_entry: Vec<Stmt> = vec![
+            Stmt::Jump { target_label: 10 },
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 20,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let irreducible: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 20,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 20 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let duplicate_case: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(0),
+                target_label: 20,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 30,
+            },
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(30),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(40),
+            Stmt::Return(None),
+        ];
+        let interleaved_target: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 20,
+            },
+            Stmt::If {
+                cond: cond(2),
+                target_label: 10,
+            },
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let mismatched_stack: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: cond(0),
+                target_label: 10,
+            },
+            Stmt::If {
+                cond: cond(1),
+                target_label: 20,
+            },
+            Stmt::Comment(STACK_HEIGHT_CONFLICT_MARKER.to_owned()),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(10),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(20),
+            Stmt::Jump { target_label: 30 },
+            Stmt::Label(30),
+            Stmt::Return(None),
+        ];
+        let fixtures: Vec<(Vec<Stmt>, &'static str)> = vec![
+            (missing_target, SWITCH_INVALID_TARGET_REFUSAL_MARKER),
+            (backward_entry, SWITCH_MID_ENTRY_REFUSAL_MARKER),
+            (irreducible, SWITCH_IRREDUCIBLE_REFUSAL_MARKER),
+            (duplicate_case, SWITCH_IRREDUCIBLE_REFUSAL_MARKER),
+            (interleaved_target, SWITCH_IRREDUCIBLE_REFUSAL_MARKER),
+            (mismatched_stack, STACK_HEIGHT_CONFLICT_MARKER),
+        ];
+        for (statements, expected_reason) in fixtures {
+            let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+            assert!(structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == expected_reason
+            )));
+            assert!(
+                structured
+                    .iter()
+                    .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
+            );
+        }
+    }
+
+    #[test]
+    fn forward_dispatch_duplicate_analysis_is_budget_bounded() {
+        const CASE_COUNT: usize = 400;
+        const FIRST_LABEL: usize = 10_000;
+        const MERGE_LABEL: usize = 20_000;
+        let mut statements: Vec<Stmt> = Vec::with_capacity(CASE_COUNT.saturating_mul(3));
+        for case_index in 0..CASE_COUNT {
+            let case_value: i64 = i64::try_from(case_index).expect("bounded case index");
+            statements.push(Stmt::If {
+                cond: Expr::Binary {
+                    op: "===",
+                    lhs: Box::new(Expr::Local(1)),
+                    rhs: Box::new(Expr::IntLit(case_value)),
+                },
+                target_label: FIRST_LABEL.saturating_add(case_index),
+            });
+        }
+        statements.push(Stmt::Jump {
+            target_label: MERGE_LABEL,
+        });
+        for case_index in 0..CASE_COUNT {
+            statements.push(Stmt::Label(FIRST_LABEL.saturating_add(case_index)));
+            statements.push(Stmt::Jump {
+                target_label: MERGE_LABEL,
+            });
+        }
+        statements.push(Stmt::Label(MERGE_LABEL));
+        statements.push(Stmt::Return(None));
+
+        let structured: Vec<Stmt> = structure_forward_dispatch(statements, MAX_STRUCTURE_DEPTH);
+        assert!(structured.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Comment(reason) if reason == SWITCH_ANALYSIS_BUDGET_MARKER
+        )));
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::If { .. }))
         );
     }
 

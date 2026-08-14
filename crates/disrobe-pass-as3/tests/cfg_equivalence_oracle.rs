@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
-use disrobe_pass_as3::lifter::{LiftedBody, Stmt, lift_body, lift_body_raw};
+use disrobe_pass_as3::lifter::{CaseLabel, LiftedBody, Stmt, lift_body, lift_body_raw};
 use disrobe_pass_as3::swf::{self, Swf};
 
 const VIRTUAL_EXIT: usize = usize::MAX;
@@ -692,6 +692,69 @@ fn patch_branch_target(code: &mut [u8], operand: usize, target: usize) {
     code[operand] = (raw & 0xFF) as u8;
     code[operand + 1] = ((raw >> 8) & 0xFF) as u8;
     code[operand + 2] = ((raw >> 16) & 0xFF) as u8;
+}
+
+#[test]
+fn dense_forward_if_dispatch_preserves_shared_and_fallthrough_edges() {
+    let mut code: Vec<u8> = Vec::new();
+    let mut case_operands: Vec<usize> = Vec::new();
+    for value in 0..=2 {
+        code.extend_from_slice(&[0xD1, 0x24, value, 0x19]);
+        case_operands.push(code.len());
+        push_s24(&mut code, 0);
+    }
+    code.extend_from_slice(&[0x24, 40, 0xD6, 0x10]);
+    let default_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let shared_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 10, 0xD6]);
+    let fallthrough_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 20, 0xD6, 0x10]);
+    let case_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, case_operands[0], shared_case);
+    patch_branch_target(&mut code, case_operands[1], shared_case);
+    patch_branch_target(&mut code, case_operands[2], fallthrough_case);
+    patch_branch_target(&mut code, default_break_operand, merge);
+    patch_branch_target(&mut code, case_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw forward dispatch lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("forward dispatch lift");
+    let structured: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "dense forward equality dispatch must structure: {:?}",
+                lifted.statements
+            )
+        });
+    let Stmt::StructuredSwitch { cases, .. } = structured else {
+        unreachable!()
+    };
+    assert_eq!(cases.len(), 3);
+    assert_eq!(
+        cases[0].labels,
+        vec![CaseLabel::Value(0), CaseLabel::Value(1)]
+    );
+    assert!(!cases[0].breaks);
+    assert_eq!(cases[1].labels, vec![CaseLabel::Value(2)]);
+    assert!(cases[1].breaks);
+    assert_eq!(cases[2].labels, vec![CaseLabel::Default]);
+    assert!(cases[2].breaks);
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
 }
 
 #[test]

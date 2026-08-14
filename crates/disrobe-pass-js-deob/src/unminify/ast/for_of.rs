@@ -10,7 +10,7 @@ use oxc_ast::ast::{
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
-use super::{Edit, RuleOutcome};
+use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ForOfStats {
@@ -41,6 +41,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         edits: Vec::new(),
         helper_loops_converted: 0,
         loose_helpers: helper_collector.valid,
+        comments: &parsed.program.comments,
     };
     collector.visit_program(&parsed.program);
 
@@ -65,6 +66,7 @@ struct Collector<'s> {
     edits: Vec<Edit>,
     helper_loops_converted: usize,
     loose_helpers: BTreeSet<String>,
+    comments: &'s [oxc_ast::ast::Comment],
 }
 
 struct LooseHelperCollector<'s> {
@@ -123,11 +125,15 @@ fn is_babel_loose_helper(source: &str, name: &str) -> bool {
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_for_statement(&mut self, for_stmt: &ForStatement<'a>) {
         if let Some(edit) = try_convert(for_stmt, self.source) {
-            self.edits.push(edit);
+            if !edit_overlaps_comments(&edit, self.comments) {
+                self.edits.push(edit);
+            }
             return;
         }
         if let Some(edit) = try_convert_direct(for_stmt, self.source) {
-            self.edits.push(edit);
+            if !edit_overlaps_comments(&edit, self.comments) {
+                self.edits.push(edit);
+            }
             return;
         }
         oxc_ast::visit::walk::walk_for_statement(self, for_stmt);
@@ -145,14 +151,21 @@ impl<'a> Visit<'a> for Collector<'_> {
                     &self.loose_helpers,
                 )
             {
-                self.edits.push(edit);
-                self.helper_loops_converted += 1;
+                if !edit_overlaps_comments(&edit, self.comments) {
+                    self.edits.push(edit);
+                    self.helper_loops_converted += 1;
+                }
                 index += 1;
                 continue;
             }
             if let Some(values_edits) = try_convert_values_at(slice, index, self.source) {
-                self.edits.extend(values_edits);
-                self.helper_loops_converted += 1;
+                if values_edits
+                    .iter()
+                    .all(|edit: &Edit| !edit_overlaps_comments(edit, self.comments))
+                {
+                    self.edits.extend(values_edits);
+                    self.helper_loops_converted += 1;
+                }
                 index += 1;
                 continue;
             }
@@ -160,8 +173,10 @@ impl<'a> Visit<'a> for Collector<'_> {
                 && let Some((edit, consumed)) =
                     try_convert_helper_sequence(&slice[index..], self.source)
             {
-                self.edits.push(edit);
-                self.helper_loops_converted += 1;
+                if !edit_overlaps_comments(&edit, self.comments) {
+                    self.edits.push(edit);
+                    self.helper_loops_converted += 1;
+                }
                 index += consumed;
                 continue;
             }
@@ -198,7 +213,7 @@ fn try_convert_loose(
     {
         return None;
     }
-    let kind: &str = binding_kind(matched.element_kind, &matched.element, matched.body);
+    let kind: &str = binding_kind(matched.element_kind, &matched.element, matched.body)?;
     let iterable_src: &str = matched.iterable.span().source_text(source);
     let body_src: String = remaining_body_source(matched.body, source);
     Some(Edit {
@@ -301,32 +316,33 @@ fn is_loose_helper_test(test: &Expression<'_>, iterator_name: &str, step_name: &
 struct Match<'a> {
     iterable: &'a Expression<'a>,
     element_kind: VariableDeclarationKind,
-    element_name: &'a str,
+    element: ElementBinding<'a>,
     remaining: &'a [Statement<'a>],
     index_name: &'a str,
     array_name: &'a str,
 }
 
 fn try_convert(for_stmt: &ForStatement<'_>, source: &str) -> Option<Edit> {
-    let m: Match<'_> = match_loop(for_stmt)?;
-    if body_uses(m.remaining, m.index_name) || body_uses(m.remaining, m.array_name) {
+    let m: Match<'_> = match_loop(for_stmt, source)?;
+    if body_uses(m.remaining, m.index_name)
+        || body_uses(m.remaining, m.array_name)
+        || m.element.binds_name(m.index_name)
+        || m.element.binds_name(m.array_name)
+        || binding_shadows_expression(&m.element, m.iterable)
+        || m.element.references_name(m.index_name)
+        || m.element.references_name(m.array_name)
+    {
         return None;
     }
-    let kind: &str = if m.element_kind == VariableDeclarationKind::Var {
-        "var"
-    } else if body_reassigns(m.remaining, m.element_name) {
-        "let"
-    } else {
-        "const"
-    };
+    let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
     let iterable_src: &str = m.iterable.span().source_text(source);
     let body_src: String = remaining_body_source(m.remaining, source);
     Some(Edit {
         start: for_stmt.span.start as usize,
         end: for_stmt.span.end as usize,
         replacement: format!(
-            "for ({kind} {name} of {iterable_src}) {{{body_src}}}",
-            name = m.element_name
+            "for ({kind} {element} of {iterable_src}) {{{body_src}}}",
+            element = m.element.text
         ),
     })
 }
@@ -334,7 +350,7 @@ fn try_convert(for_stmt: &ForStatement<'_>, source: &str) -> Option<Edit> {
 struct DirectMatch<'a> {
     iterable: &'a Expression<'a>,
     element_kind: VariableDeclarationKind,
-    element_name: &'a str,
+    element: ElementBinding<'a>,
     remaining: &'a [Statement<'a>],
     index_name: &'a str,
     length_cache_name: Option<&'a str>,
@@ -342,29 +358,28 @@ struct DirectMatch<'a> {
 
 fn try_convert_direct(for_stmt: &ForStatement<'_>, source: &str) -> Option<Edit> {
     let m: DirectMatch<'_> = match_direct_loop(for_stmt, source)?;
-    if body_uses(m.remaining, m.index_name) {
-        return None;
-    }
-    if let Some(cache) = m.length_cache_name
-        && body_uses(m.remaining, cache)
+    if body_uses(m.remaining, m.index_name)
+        || m.element.binds_name(m.index_name)
+        || m.element.references_name(m.index_name)
     {
         return None;
     }
-    let kind: &str = if m.element_kind == VariableDeclarationKind::Var {
-        "var"
-    } else if body_reassigns(m.remaining, m.element_name) {
-        "let"
-    } else {
-        "const"
-    };
+    if let Some(cache) = m.length_cache_name
+        && (body_uses(m.remaining, cache)
+            || m.element.binds_name(cache)
+            || m.element.references_name(cache))
+    {
+        return None;
+    }
+    let kind: &str = binding_kind(m.element_kind, &m.element, m.remaining)?;
     let iterable_src: &str = m.iterable.span().source_text(source);
     let body_src: String = remaining_body_source(m.remaining, source);
     Some(Edit {
         start: for_stmt.span.start as usize,
         end: for_stmt.span.end as usize,
         replacement: format!(
-            "for ({kind} {name} of {iterable_src}) {{{body_src}}}",
-            name = m.element_name
+            "for ({kind} {element} of {iterable_src}) {{{body_src}}}",
+            element = m.element.text
         ),
     })
 }
@@ -387,19 +402,19 @@ fn match_direct_loop<'a>(for_stmt: &'a ForStatement<'a>, source: &str) -> Option
     let first: &Statement<'_> = block.body.first()?;
     let remaining: &[Statement<'_>] = &block.body.as_slice()[1..];
 
-    let (iterable, element_kind, element_name, length_cache_name): (
+    let (iterable, element_kind, element, length_cache_name): (
         &Expression<'_>,
         VariableDeclarationKind,
-        &str,
+        ElementBinding<'_>,
         Option<&str>,
     ) = match init.declarations.len() {
         1 => {
             let iterable: &Expression<'_> =
                 test_length_object(for_stmt.test.as_ref()?, index_name)?;
             let iterable_src: &str = iterable.span().source_text(source);
-            let (kind, name): (VariableDeclarationKind, &str) =
+            let (kind, element): (VariableDeclarationKind, ElementBinding<'_>) =
                 element_from_iterable_access(first, iterable_src, index_name, source)?;
-            (iterable, kind, name, None)
+            (iterable, kind, element, None)
         }
         2 => {
             let cache_name: &str = declarator_name(init, 1)?;
@@ -409,9 +424,9 @@ fn match_direct_loop<'a>(for_stmt: &'a ForStatement<'a>, source: &str) -> Option
                 return None;
             }
             let iterable_src: &str = iterable.span().source_text(source);
-            let (kind, name): (VariableDeclarationKind, &str) =
+            let (kind, element): (VariableDeclarationKind, ElementBinding<'_>) =
                 element_from_iterable_access(first, iterable_src, index_name, source)?;
-            (iterable, kind, name, Some(cache_name))
+            (iterable, kind, element, Some(cache_name))
         }
         _ => return None,
     };
@@ -419,7 +434,7 @@ fn match_direct_loop<'a>(for_stmt: &'a ForStatement<'a>, source: &str) -> Option
     Some(DirectMatch {
         iterable,
         element_kind,
-        element_name,
+        element,
         remaining,
         index_name,
         length_cache_name,
@@ -476,7 +491,7 @@ fn element_from_iterable_access<'a>(
     iterable_src: &str,
     index_name: &str,
     source: &str,
-) -> Option<(VariableDeclarationKind, &'a str)> {
+) -> Option<(VariableDeclarationKind, ElementBinding<'a>)> {
     let Statement::VariableDeclaration(decl) = stmt else {
         return None;
     };
@@ -484,9 +499,6 @@ fn element_from_iterable_access<'a>(
         return None;
     }
     let declarator: &oxc_ast::ast::VariableDeclarator<'_> = &decl.declarations[0];
-    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
-        return None;
-    };
     let init: &Expression<'_> = declarator.init.as_ref()?;
     let Expression::ComputedMemberExpression(member) = init else {
         return None;
@@ -497,10 +509,10 @@ fn element_from_iterable_access<'a>(
     if !matches!(&member.expression, Expression::Identifier(id) if id.name == index_name) {
         return None;
     }
-    Some((decl.kind, binding.name.as_str()))
+    Some((decl.kind, element_binding(&declarator.id, source)?))
 }
 
-fn match_loop<'a>(for_stmt: &'a ForStatement<'a>) -> Option<Match<'a>> {
+fn match_loop<'a>(for_stmt: &'a ForStatement<'a>, source: &str) -> Option<Match<'a>> {
     let Some(ForStatementInit::VariableDeclaration(init)) = &for_stmt.init else {
         return None;
     };
@@ -525,13 +537,13 @@ fn match_loop<'a>(for_stmt: &'a ForStatement<'a>) -> Option<Match<'a>> {
         return None;
     };
     let first: &Statement<'_> = block.body.first()?;
-    let (element_kind, element_name): (VariableDeclarationKind, &str) =
-        element_from_index_access(first, array_name, index_name)?;
+    let (element_kind, element): (VariableDeclarationKind, ElementBinding<'_>) =
+        element_from_index_access(first, array_name, index_name, source)?;
 
     Some(Match {
         iterable,
         element_kind,
-        element_name,
+        element,
         remaining: &block.body.as_slice()[1..],
         index_name,
         array_name,
@@ -552,18 +564,22 @@ fn binding_kind(
     element_kind: VariableDeclarationKind,
     binding: &ElementBinding<'_>,
     body: &[Statement<'_>],
-) -> &'static str {
-    if element_kind == VariableDeclarationKind::Var {
-        return "var";
-    }
-    if binding
-        .bound_names
-        .iter()
-        .any(|name: &&str| body_reassigns(body, name))
-    {
-        "let"
-    } else {
-        "const"
+) -> Option<&'static str> {
+    match element_kind {
+        VariableDeclarationKind::Var => Some("var"),
+        VariableDeclarationKind::Const => Some("const"),
+        VariableDeclarationKind::Let => Some(
+            if binding
+                .bound_names
+                .iter()
+                .any(|name: &&str| body_reassigns(body, name))
+            {
+                "let"
+            } else {
+                "const"
+            },
+        ),
+        _ => None,
     }
 }
 
@@ -572,7 +588,7 @@ fn try_convert_helper_sequence(
     source: &str,
 ) -> Option<(Edit, usize)> {
     let m: HelperMatch<'_> = match_helper_sequence(statements)?;
-    let kind: &str = binding_kind(m.element_kind, &m.element, m.body);
+    let kind: &str = binding_kind(m.element_kind, &m.element, m.body)?;
     let iterable_src: &str = m.iterable.span().source_text(source);
     let body_src: String = remaining_body_source(m.body, source);
     let edit: Edit = Edit {
@@ -681,7 +697,7 @@ fn try_convert_values_at(
         return None;
     }
 
-    let kind: &str = binding_kind(element_kind, &element, body);
+    let kind: &str = binding_kind(element_kind, &element, body)?;
     let element_text: &str = element.text.as_str();
     let iterable_src: &str = iterable.span().source_text(source);
     let body_src: String = remaining_body_source(body, source);
@@ -1041,6 +1057,64 @@ struct ElementBinding<'a> {
     text: String,
     temp_ref: Option<&'a str>,
     bound_names: Vec<&'a str>,
+    referenced_names: Vec<&'a str>,
+}
+
+struct BindingNameCollector<'a> {
+    names: Vec<&'a str>,
+    references: Vec<&'a str>,
+}
+
+impl<'a> Visit<'a> for BindingNameCollector<'a> {
+    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
+        self.names.push(identifier.name.as_str());
+    }
+
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        self.references.push(identifier.name.as_str());
+    }
+}
+
+impl ElementBinding<'_> {
+    fn binds_name(&self, name: &str) -> bool {
+        self.bound_names.contains(&name)
+    }
+
+    fn references_name(&self, name: &str) -> bool {
+        self.referenced_names.contains(&name)
+    }
+}
+
+fn binding_shadows_expression(binding: &ElementBinding<'_>, expression: &Expression<'_>) -> bool {
+    let mut collector: BindingNameCollector<'_> = BindingNameCollector {
+        names: Vec::new(),
+        references: Vec::new(),
+    };
+    collector.visit_expression(expression);
+    binding
+        .bound_names
+        .iter()
+        .any(|name: &&str| collector.references.contains(name))
+}
+
+fn element_binding<'a>(
+    pattern: &'a oxc_ast::ast::BindingPattern<'a>,
+    source: &str,
+) -> Option<ElementBinding<'a>> {
+    let mut collector: BindingNameCollector<'a> = BindingNameCollector {
+        names: Vec::new(),
+        references: Vec::new(),
+    };
+    collector.visit_binding_pattern(pattern);
+    if collector.names.is_empty() {
+        return None;
+    }
+    Some(ElementBinding {
+        text: pattern.span().source_text(source).to_owned(),
+        temp_ref: None,
+        bound_names: collector.names,
+        referenced_names: collector.references,
+    })
 }
 
 fn element_from_step_value<'a>(
@@ -1071,6 +1145,7 @@ fn element_from_step_value<'a>(
             text: name.to_owned(),
             temp_ref: None,
             bound_names: vec![name],
+            referenced_names: Vec::new(),
         },
         1,
     ))
@@ -1142,6 +1217,7 @@ fn element_from_sliced_destructure<'a>(
             text: format!("[{}]", names.join(", ")),
             temp_ref: Some(ref_name),
             bound_names: names,
+            referenced_names: Vec::new(),
         },
         consumed,
     ))
@@ -1223,7 +1299,8 @@ fn element_from_index_access<'a>(
     stmt: &'a Statement<'a>,
     array_name: &str,
     index_name: &str,
-) -> Option<(VariableDeclarationKind, &'a str)> {
+    source: &str,
+) -> Option<(VariableDeclarationKind, ElementBinding<'a>)> {
     let Statement::VariableDeclaration(decl) = stmt else {
         return None;
     };
@@ -1231,9 +1308,6 @@ fn element_from_index_access<'a>(
         return None;
     }
     let declarator = &decl.declarations[0];
-    let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind else {
-        return None;
-    };
     let init: &Expression<'_> = declarator.init.as_ref()?;
     let Expression::ComputedMemberExpression(member) = init else {
         return None;
@@ -1244,7 +1318,7 @@ fn element_from_index_access<'a>(
     if !matches!(&member.expression, Expression::Identifier(id) if id.name == index_name) {
         return None;
     }
-    Some((decl.kind, binding.name.as_str()))
+    Some((decl.kind, element_binding(&declarator.id, source)?))
 }
 
 fn body_uses(statements: &[Statement<'_>], name: &str) -> bool {
@@ -1293,25 +1367,68 @@ struct AssignProbe<'a> {
 
 impl<'a> Visit<'a> for AssignProbe<'_> {
     fn visit_assignment_expression(&mut self, assign: &oxc_ast::ast::AssignmentExpression<'a>) {
-        if assign
-            .left
-            .get_identifier()
-            .is_some_and(|n: &str| n == self.name)
-        {
+        if assignment_target_rebinds(&assign.left, self.name) {
             self.found = true;
         }
         oxc_ast::visit::walk::walk_assignment_expression(self, assign);
     }
 
     fn visit_update_expression(&mut self, update: &oxc_ast::ast::UpdateExpression<'a>) {
-        if update
-            .argument
-            .get_identifier()
-            .is_some_and(|n: &str| n == self.name)
-        {
+        if matches!(
+            &update.argument,
+            oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(identifier)
+                if identifier.name == self.name
+        ) {
             self.found = true;
         }
         oxc_ast::visit::walk::walk_update_expression(self, update);
+    }
+}
+
+fn assignment_target_rebinds(target: &oxc_ast::ast::AssignmentTarget<'_>, name: &str) -> bool {
+    match target {
+        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(identifier) => {
+            identifier.name == name
+        }
+        oxc_ast::ast::AssignmentTarget::ArrayAssignmentTarget(array) => {
+            array
+                .elements
+                .iter()
+                .flatten()
+                .any(|element| assignment_target_maybe_default_rebinds(element, name))
+                || array
+                    .rest
+                    .as_ref()
+                    .is_some_and(|rest| assignment_target_rebinds(&rest.target, name))
+        }
+        oxc_ast::ast::AssignmentTarget::ObjectAssignmentTarget(object) => {
+            object.properties.iter().any(|property| match property {
+                oxc_ast::ast::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(
+                    property,
+                ) => property.binding.name == name,
+                oxc_ast::ast::AssignmentTargetProperty::AssignmentTargetPropertyProperty(
+                    property,
+                ) => assignment_target_maybe_default_rebinds(&property.binding, name),
+            }) || object
+                .rest
+                .as_ref()
+                .is_some_and(|rest| assignment_target_rebinds(&rest.target, name))
+        }
+        _ => false,
+    }
+}
+
+fn assignment_target_maybe_default_rebinds(
+    target: &oxc_ast::ast::AssignmentTargetMaybeDefault<'_>,
+    name: &str,
+) -> bool {
+    match target {
+        oxc_ast::ast::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(default) => {
+            assignment_target_rebinds(&default.binding, name)
+        }
+        target => target
+            .as_assignment_target()
+            .is_some_and(|target| assignment_target_rebinds(target, name)),
     }
 }
 
