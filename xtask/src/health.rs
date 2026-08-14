@@ -106,6 +106,7 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
     check_unused_workspace_deps(root, &root_doc, &member_manifests, &mut report);
     check_unwired_members(root, &member_manifests, &mut report);
     check_generator_disjointness(root, &mut report);
+    check_feature_hidden_tests(root, &mut report);
 
     report.fact("workspace_members", json!(members.len()));
     report.fact("crate_directories", json!(crate_dirs.len()));
@@ -141,6 +142,36 @@ pub(crate) fn run(root: &Path, as_json: bool) -> Result<()> {
         "xtask health: {} coherence failure(s):\n  {rendered}",
         report.findings.len()
     )
+}
+
+fn check_feature_hidden_tests(root: &Path, report: &mut Report) {
+    const CHECK: &str = "feature-hidden-test-surface";
+    let audit: crate::feature_gated_tests::Audit = match crate::feature_gated_tests::audit(root) {
+        Ok(found) => found,
+        Err(error) => {
+            report.fail(
+                CHECK,
+                format!("could not audit the feature-gated test surface: {error}"),
+            );
+            return;
+        }
+    };
+    for finding in &audit.findings {
+        report.fail(finding.check, finding.detail.clone());
+    }
+    report.fact(
+        "feature_hidden_test_surface_crates",
+        json!(audit.hidden_crates),
+    );
+    report.fact("chain_detectors", json!(audit.chain_detectors));
+    report.fact(
+        "chain_tests_hidden_by_default",
+        json!(audit.chain_tests_hidden_by_default),
+    );
+    report.fact(
+        "verification_commands_scanned",
+        json!(audit.commands_scanned),
+    );
 }
 
 fn check_generator_disjointness(root: &Path, report: &mut Report) {

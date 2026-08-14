@@ -94,7 +94,7 @@ jobs:
         run: echo "PYO3_PYTHON=${{ steps.setup-python.outputs.python-path }}" >> "$GITHUB_ENV"
       - name: every generated artifact is byte-fresh (schemas, bindings, error docs, graphs, demo, card, plugins, evidence, metric markers, README stat cross-check)
         run: cargo run -p xtask -- regen --check
-      - name: workspace is internally coherent (membership, internal versions, unused dependency declarations, unwired crates, embedded build paths)
+      - name: workspace is internally coherent (membership, internal versions, unused dependency declarations, unwired crates, embedded build paths, tests hidden behind a non-default feature)
         run: cargo run -p xtask -- health
 
   test:

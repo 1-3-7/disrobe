@@ -20,6 +20,7 @@ mod errdocs;
 mod evidence;
 mod evidence_tiers;
 mod facts;
+mod feature_gated_tests;
 mod fileio;
 mod floors;
 mod fuzz_scope;

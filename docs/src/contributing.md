@@ -8,10 +8,29 @@ Contributions are welcome; see the [contributing guide](https://github.com/1-3-7
 
 ```sh
 cargo build --release
-cargo test -p <crate>          # test a single crate
+cargo test -p <crate> --features <the crate's test features>   # test a single crate
 ```
 
 > The JVM decompiler can be memory-intensive on adversarial input. Prefer per-crate test runs over a bare workspace-wide `cargo test --workspace` when iterating locally.
+
+### Name the features a crate hides its tests behind
+
+Some crates keep whole modules behind a feature that is off by default. Every pass crate keeps its
+chain detector behind a non-default `chain` feature so the slim build can leave the chain runtime
+out. The file starts with `#![cfg(feature = "chain")]`, so a per-crate run that names no feature
+builds none of the chain detector's tests and still prints a passing result for the tests it did
+build. Name the feature to run them:
+
+```sh
+cargo test -p disrobe-pass-lua --features chain
+```
+
+`cargo run -p xtask -- health` enforces this. It reads every crate's default feature set, finds
+every test-bearing file the default set removes, and fails when a crate hides tests that no entry in
+`HIDDEN_TEST_SURFACE` in `xtask/src/feature_gated_tests.rs` declares. It also reads every per-crate
+test command written in the README, in `docs/src`, and in the workflows, and fails when one of them
+names a test target the command's own feature set compiles away, or names no feature for a crate
+that hides tests. The failure names the crate and prints the command to use instead.
 
 ## The quality bar
 
