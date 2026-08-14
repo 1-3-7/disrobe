@@ -661,11 +661,32 @@ mod tests {
         );
     }
 
+    fn zip_naming(entry: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = b"PK\x03\x04".to_vec();
+        out.extend_from_slice(&[0x14, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        out.extend_from_slice(&(entry.len() as u16).to_le_bytes());
+        out.extend_from_slice(&[0x00, 0x00]);
+        out.extend_from_slice(entry);
+        out
+    }
+
+    #[test]
+    fn a_torch_zip_stays_a_torch_zip_after_the_npz_probe_runs_first() {
+        let bytes: Vec<u8> = zip_naming(b"archive/data.pkl");
+        assert_eq!(detect(&bytes), ModelFormat::PyTorchZip);
+        let torchscript: Vec<u8> = zip_naming(b"model/constants.pkl");
+        assert_eq!(detect(&torchscript), ModelFormat::PyTorchZip);
+    }
+
     #[test]
     fn an_npz_archive_is_not_reported_as_a_torch_zip() {
-        let mut bytes: Vec<u8> = b"PK\x03\x04".to_vec();
-        bytes.extend_from_slice(&[0x14, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        bytes.extend_from_slice(b"arr_0.npy");
+        let bytes: Vec<u8> = zip_naming(b"arr_0.npy");
         assert_eq!(detect(&bytes), ModelFormat::NumpyNpz);
     }
 
