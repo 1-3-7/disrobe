@@ -47,6 +47,8 @@ parm = "parm"
 parms = "parms"
 Parms = "Parms"
 vas = "vas"
+chcks = "chcks"
+sxl = "sxl"
 
 SEH = "SEH"
 Seh = "Seh"
