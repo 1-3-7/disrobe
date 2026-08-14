@@ -1367,6 +1367,7 @@ pub(crate) fn unpack(
     };
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-NATIVE-0030: cannot read input: {e}"))?;
+    let chain: Option<disrobe_pass_native::ChainDetection> = announce_packer_chain(&bytes);
     let spinner: StageSpinner = StageSpinner::start("native unpack", "detecting packer");
     let artifact: RecoveredArtifact = recover_packed_image(&input, &bytes)?;
     spinner.finish(&format!("unpacked {}", artifact.packer.label()));
@@ -1394,7 +1395,51 @@ pub(crate) fn unpack(
         println!("  recovered oep:{oep:#x}");
     }
     println!("  wrote:        {}", out_path.display());
+    report_remaining_layers(chain.as_ref(), artifact.packer);
     Ok(())
+}
+
+fn chain_layer_labels(chain: &disrobe_pass_native::ChainDetection) -> Vec<&'static str> {
+    chain
+        .layers
+        .iter()
+        .map(|packer: &disrobe_pass_native::Packer| packer.label())
+        .collect()
+}
+
+fn announce_packer_chain(bytes: &[u8]) -> Option<disrobe_pass_native::ChainDetection> {
+    let chain: disrobe_pass_native::ChainDetection =
+        disrobe_pass_native::detect_packer_chain(bytes)
+            .into_iter()
+            .next()?;
+    println!(
+        "native unpack: layered image, {} [{:?}]",
+        chain_layer_labels(&chain).join(" then "),
+        chain.confidence
+    );
+    println!("  note:         {}", chain.note);
+    Some(chain)
+}
+
+fn report_remaining_layers(
+    chain: Option<&disrobe_pass_native::ChainDetection>,
+    unpacked: disrobe_pass_native::Packer,
+) {
+    let Some(chain): Option<&disrobe_pass_native::ChainDetection> = chain else {
+        return;
+    };
+    let remaining: Vec<&'static str> = chain_layer_labels(chain)
+        .into_iter()
+        .filter(|label: &&'static str| *label != unpacked.label())
+        .collect();
+    if remaining.is_empty() {
+        return;
+    }
+    println!(
+        "  remaining:    {}; this pass removed {} only, so run native unpack again on the recovered image",
+        remaining.join(", "),
+        unpacked.label()
+    );
 }
 
 fn entry_va_of_pe(bytes: &[u8]) -> Option<u64> {
