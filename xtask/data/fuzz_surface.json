@@ -9,9 +9,9 @@
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 623,
-    "named_by_a_suite_recording_seed_reach": 126,
-    "named_by_neither": 733
+    "named_by_a_resilience_suite": 624,
+    "named_by_a_suite_recording_seed_reach": 127,
+    "named_by_neither": 732
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -574,8 +574,8 @@
       "parse_shaped": 73,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 18,
-      "named_by_a_suite_recording_seed_reach": 9,
+      "named_by_a_resilience_suite": 19,
+      "named_by_a_suite_recording_seed_reach": 10,
       "named_by_neither": [
         "disrobe-pass-native/src/api_hash.rs::harvested_hash_constants",
         "disrobe-pass-native/src/api_hash.rs::hash",
@@ -624,7 +624,6 @@
         "disrobe-pass-native/src/deobf/substitution.rs::simplify_sequence",
         "disrobe-pass-native/src/deobf/summary.rs::summarize",
         "disrobe-pass-native/src/desync.rs::cleaned_listing",
-        "disrobe-pass-native/src/desync.rs::resolve",
         "disrobe-pass-native/src/desync.rs::resolve_with_noreturn",
         "disrobe-pass-native/src/desync.rs::resolve_with_noreturn_status",
         "disrobe-pass-native/src/desync.rs::scan_vmware_backdoor",
