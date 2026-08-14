@@ -18,6 +18,9 @@ const MAX_FUNCTIONS: usize = 1 << 10;
 const MAX_REACHABILITY_STEPS: usize = 1 << 18;
 const MAX_RECOVERY_DEPTH: usize = 6;
 const MAX_CONSTANT_POOL_RESOLVERS: usize = 8;
+const MAX_LOOP_NESTING: usize = 32;
+const MAX_REGION_TREE_STEPS: usize = 1 << 16;
+const CAPTURED_VARIABLE_PREFIX: &str = "__vu";
 
 fn refuse(reason: &str) -> Error {
     Error::PrometheusVmifyRefused(reason.to_owned())
@@ -418,24 +421,29 @@ fn collect_rendered_locals(
             collect_stat_locals(stat, subst, out);
             continue;
         };
-        for (target, value) in targets.iter().zip(values.iter()) {
+        let aligned: bool = targets.len() == values.len();
+        for (index, target) in targets.iter().enumerate() {
             let target_local: Option<LocalId> = match target {
                 AssignTarget::Var(Var::Local(id), _) => Some(*id),
                 _ => None,
             };
-            let strips_pos: bool = (stat.span == plan.pos_terminal_span
-                || Some(stat.span) == plan.pos_chain_span)
+            let strips_pos: bool = aligned
+                && (stat.span == plan.pos_terminal_span || Some(stat.span) == plan.pos_chain_span)
                 && target_local == Some(pos_local);
-            let strips_return: bool =
-                Some(stat.span) == plan.return_span && target_local == Some(return_local);
+            let strips_return: bool = aligned
+                && Some(stat.span) == plan.return_span
+                && target_local == Some(return_local);
             if strips_pos {
                 continue;
             }
-            if strips_return {
-                collect_expr_locals(value, subst, out);
-                continue;
+            if !strips_return {
+                collect_target_locals(target, subst, out);
             }
-            collect_target_locals(target, subst, out);
+            if let Some(value) = values.get(index) {
+                collect_expr_locals(value, subst, out);
+            }
+        }
+        for value in values.iter().skip(targets.len()) {
             collect_expr_locals(value, subst, out);
         }
     }
@@ -530,6 +538,7 @@ fn collect_declared_locals(block: &Block, out: &mut BTreeSet<LocalId>) {
 struct BoxModel {
     heap: LocalId,
     alloc: LocalId,
+    release: Option<LocalId>,
 }
 
 fn is_unit_increment(expr: &Expr, id: LocalId) -> bool {
@@ -712,29 +721,40 @@ fn as_box_releaser(func_expr: &Expr) -> Option<(LocalId, LocalId)> {
 
 fn derive_box_model(chunk: &Block, function_exprs: &[&Expr]) -> Option<BoxModel> {
     let mut allocators: Vec<(LocalId, Span)> = Vec::new();
-    let mut releasers: Vec<(LocalId, LocalId)> = Vec::new();
+    let mut releasers: Vec<(LocalId, LocalId, Span)> = Vec::new();
     for candidate in function_exprs {
         if let Some((_, refcount)) = as_box_allocator(candidate) {
             allocators.push((refcount, candidate.span));
         }
         if let Some((refcount, heap)) = as_box_releaser(candidate) {
-            releasers.push((refcount, heap));
+            releasers.push((refcount, heap, candidate.span));
         }
     }
     let [(refcount, alloc_span)]: &[(LocalId, Span)] = allocators.as_slice() else {
         return None;
     };
-    let heaps: BTreeSet<LocalId> = releasers
+    let matching: Vec<&(LocalId, LocalId, Span)> = releasers
         .iter()
-        .filter(|(candidate, _): &&(LocalId, LocalId)| candidate == refcount)
-        .map(|(_, heap): &(LocalId, LocalId)| *heap)
+        .filter(|(candidate, _, _): &&(LocalId, LocalId, Span)| candidate == refcount)
+        .collect();
+    let heaps: BTreeSet<LocalId> = matching
+        .iter()
+        .map(|(_, heap, _): &&(LocalId, LocalId, Span)| *heap)
         .collect();
     let unique_heaps: Vec<LocalId> = heaps.into_iter().collect();
     let [heap]: &[LocalId] = unique_heaps.as_slice() else {
         return None;
     };
     let alloc: LocalId = find_local_binding(chunk, *alloc_span)?;
-    Some(BoxModel { heap: *heap, alloc })
+    let release: Option<LocalId> = match matching.as_slice() {
+        [(_, _, span)] => find_local_binding(chunk, *span),
+        _ => None,
+    };
+    Some(BoxModel {
+        heap: *heap,
+        alloc,
+        release,
+    })
 }
 
 fn walk_assign_targets<'a>(block: &'a Block, out: &mut Vec<&'a AssignTarget>) {
@@ -1136,6 +1156,7 @@ enum Transfer<'a> {
     },
 }
 
+#[derive(Clone)]
 struct LeafPlan {
     pos_terminal_span: Span,
     pos_chain_span: Option<Span>,
@@ -1422,6 +1443,39 @@ struct Ctx<'a> {
 struct FunctionBoxes {
     names: BTreeMap<LocalId, String>,
     declarations: Vec<String>,
+    inline_declarations: BTreeMap<u64, String>,
+}
+
+fn is_box_release_statement(
+    stat: &Stat,
+    release: LocalId,
+    names: &BTreeMap<LocalId, String>,
+) -> bool {
+    let call: &Expr = match &stat.kind {
+        StatKind::ExprStat(expr) => expr,
+        StatKind::Assign { targets, values } => {
+            let ([AssignTarget::Var(Var::Local(target), _)], [value]): (&[AssignTarget], &[Expr]) =
+                (targets.as_slice(), values.as_slice())
+            else {
+                return false;
+            };
+            if !names.contains_key(target) {
+                return false;
+            }
+            value
+        }
+        _ => return false,
+    };
+    let ExprKind::Call { base, args } = &unwrap_paren(call).kind else {
+        return false;
+    };
+    if !is_bare_local(base, release) {
+        return false;
+    }
+    let [arg]: &[Expr] = args.as_slice() else {
+        return false;
+    };
+    matches!(&unwrap_paren(arg).kind, ExprKind::Var(Var::Local(id)) if names.contains_key(id))
 }
 
 fn is_alloc_call(expr: &Expr, alloc: LocalId) -> bool {
@@ -1480,6 +1534,173 @@ fn node_lies_on_a_cycle(terms: &[Terminator], start: u32, budget: &mut usize) ->
         frontier.extend(next.iter().copied());
     }
     Ok(false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopSink {
+    Continue,
+    Break,
+}
+
+fn predecessors_of(terms: &[Terminator]) -> BTreeMap<u32, Vec<u32>> {
+    let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut succ: Vec<u32> = Vec::new();
+    for (index, term) in terms.iter().enumerate() {
+        succ.clear();
+        successors_of(term, &mut succ);
+        for target in &succ {
+            out.entry(*target).or_default().push(index as u32);
+        }
+    }
+    out
+}
+
+fn loop_member_set(terms: &[Terminator], header: u32, budget: &mut usize) -> Option<BTreeSet<u32>> {
+    let mut forward: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<u32> = vec![header];
+    let mut succ: Vec<u32> = Vec::new();
+    while let Some(node) = stack.pop() {
+        *budget = budget.checked_sub(1)?;
+        if !forward.insert(node) {
+            continue;
+        }
+        let term: &Terminator = terms.get(node as usize)?;
+        succ.clear();
+        successors_of(term, &mut succ);
+        stack.extend(succ.iter().copied());
+    }
+    let preds: BTreeMap<u32, Vec<u32>> = predecessors_of(terms);
+    let mut backward: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<u32> = vec![header];
+    while let Some(node) = stack.pop() {
+        *budget = budget.checked_sub(1)?;
+        if !backward.insert(node) {
+            continue;
+        }
+        if let Some(incoming) = preds.get(&node) {
+            stack.extend(incoming.iter().copied());
+        }
+    }
+    Some(forward.intersection(&backward).copied().collect())
+}
+
+fn region_contains_node(
+    result: &disrobe_cfg::StructureResult,
+    id: RegionId,
+    node: u32,
+    budget: &mut usize,
+) -> Option<bool> {
+    *budget = budget.checked_sub(1)?;
+    let region: &Region = result.regions.get(id as usize)?;
+    if region.children.is_empty() {
+        return Some(matches!(region.kind, RegionKind::Block) && region.entry == node);
+    }
+    if let Some(head) = region.head
+        && region_contains_node(result, head, node, budget)?
+    {
+        return Some(true);
+    }
+    for child in &region.children {
+        if region_contains_node(result, *child, node, budget)? {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+fn is_sink_leaf(result: &disrobe_cfg::StructureResult, id: RegionId, node: u32) -> bool {
+    result.regions.get(id as usize).is_some_and(|r: &Region| {
+        r.children.is_empty() && matches!(r.kind, RegionKind::Block) && r.entry == node
+    })
+}
+
+fn sink_reached_only_at_tail(
+    result: &disrobe_cfg::StructureResult,
+    id: RegionId,
+    node: u32,
+    budget: &mut usize,
+) -> Option<bool> {
+    *budget = budget.checked_sub(1)?;
+    let region: &Region = result.regions.get(id as usize)?;
+    match region.kind {
+        RegionKind::Block if region.children.is_empty() => Some(true),
+        RegionKind::Block => {
+            let (last, rest): (&RegionId, &[RegionId]) = region.children.split_last()?;
+            for child in rest {
+                if region_contains_node(result, *child, node, budget)? {
+                    return Some(false);
+                }
+            }
+            sink_reached_only_at_tail(result, *last, node, budget)
+        }
+        RegionKind::IfThen | RegionKind::IfThenElse => {
+            if let Some(head) = region.head
+                && region_contains_node(result, head, node, budget)?
+            {
+                return Some(false);
+            }
+            for child in &region.children {
+                if !sink_reached_only_at_tail(result, *child, node, budget)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        _ => Some(!region_contains_node(result, id, node, budget)?),
+    }
+}
+
+fn sink_closes_every_block_it_enters(
+    result: &disrobe_cfg::StructureResult,
+    id: RegionId,
+    node: u32,
+    budget: &mut usize,
+) -> Option<bool> {
+    *budget = budget.checked_sub(1)?;
+    let region: &Region = result.regions.get(id as usize)?;
+    match region.kind {
+        RegionKind::Block if region.children.is_empty() => Some(true),
+        RegionKind::Block => {
+            let (last, rest): (&RegionId, &[RegionId]) = region.children.split_last()?;
+            for child in rest {
+                if is_sink_leaf(result, *child, node) {
+                    return Some(false);
+                }
+                if !sink_closes_every_block_it_enters(result, *child, node, budget)? {
+                    return Some(false);
+                }
+            }
+            sink_closes_every_block_it_enters(result, *last, node, budget)
+        }
+        RegionKind::IfThen | RegionKind::IfThenElse => {
+            if let Some(head) = region.head
+                && region_contains_node(result, head, node, budget)?
+            {
+                return Some(false);
+            }
+            for child in &region.children {
+                if !sink_closes_every_block_it_enters(result, *child, node, budget)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        _ => Some(!region_contains_node(result, id, node, budget)?),
+    }
+}
+
+fn negated_cond(
+    cond_of_atom: &[String],
+    conds: &disrobe_cfg::CondPool,
+    id: disrobe_cfg::CondId,
+) -> Option<String> {
+    match conds.nodes().get(id as usize)? {
+        disrobe_cfg::Cond::Leaf(atom) => cond_of_atom
+            .get(*atom as usize)
+            .map(|text: &String| format!("not ({text})")),
+        disrobe_cfg::Cond::NotLeaf(atom) => cond_of_atom.get(*atom as usize).cloned(),
+        _ => None,
+    }
 }
 
 fn insert_box_subst(subst: &mut BTreeMap<u64, String>, span: Span, text: String) -> Result<()> {
@@ -1571,6 +1792,7 @@ fn bind_function_boxes(
 
     let mut names: BTreeMap<LocalId, String> = BTreeMap::new();
     let mut declarations: Vec<String> = Vec::new();
+    let mut inline_declarations: BTreeMap<u64, String> = BTreeMap::new();
     let mut cycle_budget: usize = MAX_REACHABILITY_STEPS;
     for (id, stat_span, _, node) in &allocations {
         if names.contains_key(id) {
@@ -1579,23 +1801,32 @@ fn bind_function_boxes(
                 stat_span.start
             )));
         }
-        if node_lies_on_a_cycle(terms, *node, &mut cycle_budget)? {
-            return Err(refuse_owned(format!(
-                "the upvalue box allocated at byte {} sits inside a loop, so each iteration captures a fresh variable and a single function-scope declaration would alias them",
-                stat_span.start
-            )));
-        }
-        let name: String = format!("__vu{}", stats.next_box);
+        let name: String = format!("{CAPTURED_VARIABLE_PREFIX}{}", stats.next_box);
         stats.next_box = stats.next_box.checked_add(1).ok_or_else(|| {
             refuse("the program allocates more captured variables than this pass can name")
         })?;
-        declarations.push(name.clone());
+        if node_lies_on_a_cycle(terms, *node, &mut cycle_budget)? {
+            inline_declarations.insert(span_key(*stat_span), format!("local {name}"));
+        } else {
+            declarations.push(name.clone());
+        }
         names.insert(*id, name);
     }
     stats.boxes_bound = stats.boxes_bound.saturating_add(allocations.len());
 
     for (_, stat_span, _, _) in &allocations {
         insert_box_subst(subst, *stat_span, String::new())?;
+    }
+
+    if let Some(release) = model.release {
+        for &key in order {
+            let leaf: &Block = visited[&key];
+            for stat in &leaf.stats {
+                if is_box_release_statement(stat, release, &names) {
+                    insert_box_subst(subst, stat.span, String::new())?;
+                }
+            }
+        }
     }
 
     for &key in order {
@@ -1642,7 +1873,157 @@ fn bind_function_boxes(
     Ok(FunctionBoxes {
         names,
         declarations,
+        inline_declarations,
     })
+}
+
+fn collect_statement_reads(
+    stat: &Stat,
+    pos_local: LocalId,
+    plan: &LeafPlan,
+    captures: &BTreeMap<u64, String>,
+    subst: &BTreeMap<u64, String>,
+    out: &mut BTreeSet<LocalId>,
+) {
+    if is_dropped_statement(stat, subst) || plan.numeric_chain_spans.contains(&stat.span) {
+        return;
+    }
+    if captures.contains_key(&span_key(stat.span)) {
+        if let StatKind::Assign { values, .. } = &stat.kind {
+            for value in values {
+                collect_expr_locals(value, subst, out);
+            }
+        } else {
+            collect_stat_locals(stat, subst, out);
+        }
+        return;
+    }
+    let StatKind::Assign { targets, values } = &stat.kind else {
+        collect_stat_locals(stat, subst, out);
+        return;
+    };
+    let aligned: bool = targets.len() == values.len();
+    for (index, target) in targets.iter().enumerate() {
+        let target_local: Option<LocalId> = match target {
+            AssignTarget::Var(Var::Local(id), _) => Some(*id),
+            _ => None,
+        };
+        if aligned
+            && (stat.span == plan.pos_terminal_span || Some(stat.span) == plan.pos_chain_span)
+            && target_local == Some(pos_local)
+        {
+            continue;
+        }
+        if target_local.is_none() {
+            collect_target_locals(target, subst, out);
+        }
+        if let Some(value) = values.get(index) {
+            collect_expr_locals(value, subst, out);
+        }
+    }
+    for value in values.iter().skip(targets.len()) {
+        collect_expr_locals(value, subst, out);
+    }
+}
+
+fn collect_statement_defs(stat: &Stat, out: &mut BTreeSet<LocalId>) {
+    match &stat.kind {
+        StatKind::Assign { targets, .. } => {
+            for target in targets {
+                if let AssignTarget::Var(Var::Local(id), _) = target {
+                    out.insert(*id);
+                }
+            }
+        }
+        StatKind::Local { targets, .. } => out.extend(targets.iter().copied()),
+        _ => {}
+    }
+}
+
+fn defines_box_index(
+    stat: &Stat,
+    alloc: LocalId,
+    names: &BTreeMap<LocalId, String>,
+) -> Option<LocalId> {
+    let StatKind::Assign { targets, values } = &stat.kind else {
+        return None;
+    };
+    let ([AssignTarget::Var(Var::Local(id), _)], [value]): (&[AssignTarget], &[Expr]) =
+        (targets.as_slice(), values.as_slice())
+    else {
+        return None;
+    };
+    (is_alloc_call(value, alloc) && names.contains_key(id)).then_some(*id)
+}
+
+fn assert_box_indexes_never_escape(
+    ctx: &Ctx<'_>,
+    boxes: &FunctionBoxes,
+    leaf_of_node: &[&Block],
+    plan_of_node: &[LeafPlan],
+    terms: &[Terminator],
+    captures: &BTreeMap<u64, String>,
+    subst: &BTreeMap<u64, String>,
+) -> Result<()> {
+    let Some(model): Option<BoxModel> = ctx.box_model else {
+        return Ok(());
+    };
+    if boxes.names.is_empty() {
+        return Ok(());
+    }
+    let count: usize = leaf_of_node.len();
+    let mut entry_state: Vec<BTreeSet<LocalId>> = vec![BTreeSet::new(); count];
+    let mut pending: Vec<u32> = (0..count as u32).rev().collect();
+    let mut budget: usize = MAX_REACHABILITY_STEPS;
+    let mut succ: Vec<u32> = Vec::new();
+    while let Some(node) = pending.pop() {
+        budget = budget.checked_sub(1).ok_or_else(|| {
+            refuse("captured-variable escape analysis exceeds the reachability step budget")
+        })?;
+        let index: usize = node as usize;
+        let (Some(leaf), Some(plan)): (Option<&Block>, Option<&LeafPlan>) =
+            (leaf_of_node.get(index).copied(), plan_of_node.get(index))
+        else {
+            continue;
+        };
+        let mut live: BTreeSet<LocalId> = entry_state[index].clone();
+        for stat in &leaf.stats {
+            let mut reads: BTreeSet<LocalId> = BTreeSet::new();
+            collect_statement_reads(stat, ctx.pos_local, plan, captures, subst, &mut reads);
+            if let Some(escaped) = live.iter().find(|id: &&LocalId| reads.contains(id)) {
+                let name: &str =
+                    local_display_span(ctx.dispatch_root, *escaped, ctx.src).unwrap_or("<unnamed>");
+                return Err(refuse_owned(format!(
+                    "the statement at byte {} reads register '{name}' while it still holds a Vmify captured-variable handle, a use this pass cannot resolve to a real Lua variable",
+                    stat.span.start
+                )));
+            }
+            let mut defs: BTreeSet<LocalId> = BTreeSet::new();
+            collect_statement_defs(stat, &mut defs);
+            for id in &defs {
+                live.remove(id);
+            }
+            if let Some(id) = defines_box_index(stat, model.alloc, &boxes.names) {
+                live.insert(id);
+            }
+        }
+        succ.clear();
+        if let Some(term) = terms.get(index) {
+            successors_of(term, &mut succ);
+        }
+        for target in &succ {
+            let target_index: usize = *target as usize;
+            if target_index >= count {
+                continue;
+            }
+            let before: usize = entry_state[target_index].len();
+            entry_state[target_index].extend(live.iter().copied());
+            if entry_state[target_index].len() != before {
+                pending.push(*target);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn closure_upvalue_names(
@@ -1931,16 +2312,25 @@ fn recover_function(
             "captured-variable allocator",
             &mut leaked,
         );
+        if let Some(release) = model.release {
+            note_machinery_leak(
+                ctx,
+                &used_locals,
+                release,
+                "captured-variable release helper",
+                &mut leaked,
+            );
+        }
     }
-    for id in boxes.names.keys() {
-        note_machinery_leak(
-            ctx,
-            &used_locals,
-            *id,
-            "captured-variable slot register",
-            &mut leaked,
-        );
-    }
+    assert_box_indexes_never_escape(
+        ctx,
+        &boxes,
+        &leaf_of_node,
+        &plan_of_node,
+        &terms,
+        &captures,
+        subst,
+    )?;
     if !leaked.is_empty() {
         return Err(refuse_owned(format!(
             "the recovered body still names the Vmify captured-variable machinery ({}), so at least one captured-variable access was not resolved to a real Lua variable",
@@ -1985,6 +2375,7 @@ fn recover_function(
         prelude.push_str(";\n");
     }
 
+    let no_sinks: BTreeMap<u32, LoopSink> = BTreeMap::new();
     let (body_text, fully_structured, recovered_leaves): (String, bool, usize) = match outcome {
         Some(outcome) if outcome.result.is_complete() => {
             let mut renderer: RegionRenderer<'_, '_> = RegionRenderer {
@@ -1993,9 +2384,12 @@ fn recover_function(
                 terms: &terms,
                 plan_of_node: &plan_of_node,
                 captures: &captures,
+                inline_declarations: &boxes.inline_declarations,
                 cond_of_atom: &cond_of_atom,
                 result: &outcome.result,
                 subst,
+                sinks: &no_sinks,
+                loop_depth: 0,
                 ok: true,
             };
             let root: RegionId = outcome
@@ -2013,6 +2407,7 @@ fn recover_function(
                         &terms,
                         &plan_of_node,
                         &captures,
+                        &boxes.inline_declarations,
                         &cond_of_atom,
                         subst,
                     ),
@@ -2028,6 +2423,7 @@ fn recover_function(
                 &terms,
                 &plan_of_node,
                 &captures,
+                &boxes.inline_declarations,
                 &cond_of_atom,
                 subst,
             ),
@@ -2118,11 +2514,17 @@ fn render_leaf_body(
     return_local: LocalId,
     plan: &LeafPlan,
     captures: &BTreeMap<u64, String>,
+    inline_declarations: &BTreeMap<u64, String>,
     src: &str,
     subst: &BTreeMap<u64, String>,
 ) -> String {
     let mut out: String = String::new();
     for stat in &leaf.stats {
+        if let Some(declaration) = inline_declarations.get(&span_key(stat.span)) {
+            out.push_str(declaration);
+            out.push_str(";\n");
+            continue;
+        }
         if is_dropped_statement(stat, subst) {
             continue;
         }
@@ -2142,6 +2544,22 @@ fn render_leaf_body(
             strip_here.push(return_local);
         }
         if let StatKind::Assign { targets, values } = &stat.kind {
+            let aligned: bool = targets.len() == values.len();
+            let stripped: usize = if aligned {
+                targets
+                    .iter()
+                    .filter(|t: &&AssignTarget| {
+                        matches!(t, AssignTarget::Var(Var::Local(id), _) if strip_here.contains(id))
+                    })
+                    .count()
+            } else {
+                0
+            };
+            if stripped == 0 {
+                out.push_str(&render_expr_span_with_subst(stat.span, src, subst));
+                out.push_str(";\n");
+                continue;
+            }
             let keep: Vec<(&AssignTarget, &Expr)> = targets
                 .iter()
                 .zip(values.iter())
@@ -2150,11 +2568,6 @@ fn render_leaf_body(
                 })
                 .collect();
             if keep.is_empty() {
-                continue;
-            }
-            if keep.len() == targets.len() {
-                out.push_str(&render_expr_span_with_subst(stat.span, src, subst));
-                out.push_str(";\n");
                 continue;
             }
             let lhs: Vec<String> = keep
@@ -2240,20 +2653,31 @@ struct RegionRenderer<'a, 'b> {
     terms: &'b [Terminator],
     plan_of_node: &'b [LeafPlan],
     captures: &'b BTreeMap<u64, String>,
+    inline_declarations: &'b BTreeMap<u64, String>,
     cond_of_atom: &'b [String],
     result: &'b disrobe_cfg::StructureResult,
     subst: &'b BTreeMap<u64, String>,
+    sinks: &'b BTreeMap<u32, LoopSink>,
+    loop_depth: usize,
     ok: bool,
 }
 
-impl RegionRenderer<'_, '_> {
+impl<'a> RegionRenderer<'a, '_> {
     fn render(&mut self, id: RegionId) -> String {
         if !self.ok {
             return String::new();
         }
-        let region: Region = self.result.regions[id as usize].clone();
+        let Some(region): Option<Region> = self.result.regions.get(id as usize).cloned() else {
+            self.ok = false;
+            return String::new();
+        };
         match region.kind {
             RegionKind::Block if region.children.is_empty() => {
+                match self.sinks.get(&region.entry).copied() {
+                    Some(LoopSink::Continue) => return String::new(),
+                    Some(LoopSink::Break) => return "break;\n".to_owned(),
+                    None => {}
+                }
                 let node: usize = region.entry as usize;
                 let (Some(leaf), Some(plan)) = (
                     self.leaf_of_node.get(node).copied(),
@@ -2268,6 +2692,7 @@ impl RegionRenderer<'_, '_> {
                     self.ctx.return_local,
                     plan,
                     self.captures,
+                    self.inline_declarations,
                     self.ctx.src,
                     self.subst,
                 );
@@ -2352,14 +2777,257 @@ impl RegionRenderer<'_, '_> {
             RegionKind::While
             | RegionKind::DoWhile
             | RegionKind::NaturalLoop
-            | RegionKind::SelfLoop
-            | RegionKind::Switch
-            | RegionKind::Proper
-            | RegionKind::Irreducible => {
+            | RegionKind::SelfLoop => self.render_loop(region.entry),
+            RegionKind::Switch | RegionKind::Proper | RegionKind::Irreducible => {
                 self.ok = false;
                 String::new()
             }
         }
+    }
+
+    fn decline(&mut self) -> String {
+        self.ok = false;
+        String::new()
+    }
+
+    fn render_loop(&mut self, header: u32) -> String {
+        if self.loop_depth >= MAX_LOOP_NESTING {
+            return self.decline();
+        }
+        let mut walk_budget: usize = MAX_REACHABILITY_STEPS;
+        let Some(members): Option<BTreeSet<u32>> =
+            loop_member_set(self.terms, header, &mut walk_budget)
+        else {
+            return self.decline();
+        };
+        if !members.contains(&header) || members.len() > MAX_FUNCTION_BLOCKS {
+            return self.decline();
+        }
+        let mut exits: BTreeSet<u32> = BTreeSet::new();
+        let mut succ: Vec<u32> = Vec::new();
+        for node in &members {
+            let Some(term): Option<&Terminator> = self.terms.get(*node as usize) else {
+                return self.decline();
+            };
+            succ.clear();
+            successors_of(term, &mut succ);
+            for target in &succ {
+                if !members.contains(target) {
+                    exits.insert(*target);
+                }
+            }
+        }
+        if exits.len() > 1 {
+            return self.decline();
+        }
+        let follow: Option<u32> = exits.iter().copied().next();
+        let preds: BTreeMap<u32, Vec<u32>> = predecessors_of(self.terms);
+        for node in &members {
+            if *node == header {
+                continue;
+            }
+            if preds.get(node).is_some_and(|incoming: &Vec<u32>| {
+                incoming.iter().any(|from: &u32| !members.contains(from))
+            }) {
+                return self.decline();
+            }
+        }
+
+        let mut order: Vec<u32> = vec![header];
+        order.extend(members.iter().copied().filter(|node: &u32| *node != header));
+        let index_of: BTreeMap<u32, u32> = order
+            .iter()
+            .enumerate()
+            .map(|(position, node): (usize, &u32)| (*node, position as u32))
+            .collect();
+        let continue_index: u32 = order.len() as u32;
+        let break_index: u32 = continue_index + 1;
+        let remap = |target: u32| -> Option<u32> {
+            if target == header {
+                return Some(continue_index);
+            }
+            if let Some(position) = index_of.get(&target) {
+                return Some(*position);
+            }
+            if Some(target) == follow {
+                return Some(break_index);
+            }
+            None
+        };
+
+        let mut sub_nodes: Vec<CfgNode> = Vec::with_capacity(order.len() + 2);
+        let mut sub_terms: Vec<Terminator> = Vec::with_capacity(order.len() + 2);
+        let mut sub_leaves: Vec<&'a Block> = Vec::with_capacity(order.len() + 2);
+        let mut sub_plans: Vec<LeafPlan> = Vec::with_capacity(order.len() + 2);
+        for node in &order {
+            let (Some(term), Some(leaf), Some(plan)) = (
+                self.terms.get(*node as usize),
+                self.leaf_of_node.get(*node as usize).copied(),
+                self.plan_of_node.get(*node as usize),
+            ) else {
+                return self.decline();
+            };
+            let remapped: Terminator = match term {
+                Terminator::Return => Terminator::Return,
+                Terminator::Unreachable => Terminator::Unreachable,
+                Terminator::Goto(target) => match remap(*target) {
+                    Some(next) => Terminator::Goto(next),
+                    None => return self.decline(),
+                },
+                Terminator::Branch {
+                    atom,
+                    taken,
+                    not_taken,
+                } => match (remap(*taken), remap(*not_taken)) {
+                    (Some(taken), Some(not_taken)) => Terminator::Branch {
+                        atom: *atom,
+                        taken,
+                        not_taken,
+                    },
+                    _ => return self.decline(),
+                },
+                Terminator::Switch { .. } => return self.decline(),
+            };
+            sub_nodes.push(CfgNode {
+                term: remapped.clone(),
+                pure: true,
+            });
+            sub_terms.push(remapped);
+            sub_leaves.push(leaf);
+            sub_plans.push(plan.clone());
+        }
+        let Some(entry_leaf): Option<&'a Block> = self.leaf_of_node.first().copied() else {
+            return self.decline();
+        };
+        let mut sinks: BTreeMap<u32, LoopSink> = BTreeMap::new();
+        sinks.insert(continue_index, LoopSink::Continue);
+        sinks.insert(break_index, LoopSink::Break);
+        for _ in 0..2 {
+            sub_nodes.push(CfgNode {
+                term: Terminator::Return,
+                pure: true,
+            });
+            sub_terms.push(Terminator::Return);
+            sub_leaves.push(entry_leaf);
+            sub_plans.push(LeafPlan {
+                pos_terminal_span: Span { start: 0, end: 0 },
+                pos_chain_span: None,
+                return_span: None,
+                numeric_chain_spans: Vec::new(),
+            });
+        }
+
+        let Ok(sub_cfg): std::result::Result<Cfg, disrobe_cfg::CfgError> = Cfg::new(0, sub_nodes)
+        else {
+            return self.decline();
+        };
+        let budget: CnsBudget = CnsBudget::tight_for(&sub_cfg);
+        let Some(outcome): Option<CnsOutcome> = structure_with_cns(&sub_cfg, budget) else {
+            return self.decline();
+        };
+        if !outcome.result.is_complete() {
+            return self.decline();
+        }
+        let Some(root): Option<RegionId> = outcome.result.root else {
+            return self.decline();
+        };
+        let mut tree_budget: usize = MAX_REGION_TREE_STEPS;
+        let continue_ok: Option<bool> =
+            sink_reached_only_at_tail(&outcome.result, root, continue_index, &mut tree_budget);
+        if continue_ok != Some(true) {
+            return self.decline();
+        }
+        if follow.is_some() {
+            let break_ok: Option<bool> = sink_closes_every_block_it_enters(
+                &outcome.result,
+                root,
+                break_index,
+                &mut tree_budget,
+            );
+            if break_ok != Some(true) {
+                return self.decline();
+            }
+        } else if region_contains_node(&outcome.result, root, break_index, &mut tree_budget)
+            != Some(false)
+        {
+            return self.decline();
+        }
+
+        let mut sub: RegionRenderer<'a, '_> = RegionRenderer {
+            ctx: self.ctx,
+            leaf_of_node: &sub_leaves,
+            terms: &sub_terms,
+            plan_of_node: &sub_plans,
+            captures: self.captures,
+            inline_declarations: self.inline_declarations,
+            cond_of_atom: self.cond_of_atom,
+            result: &outcome.result,
+            subst: self.subst,
+            sinks: &sinks,
+            loop_depth: self.loop_depth + 1,
+            ok: true,
+        };
+        let rendered: Option<String> =
+            sub.render_head_tested_loop(root, continue_index, break_index);
+        let text: String = match rendered {
+            Some(text) => text,
+            None => {
+                let body: String = sub.render(root);
+                format!("while true do\n{body}\nend;\n")
+            }
+        };
+        if !sub.ok {
+            return self.decline();
+        }
+        text
+    }
+
+    fn render_head_tested_loop(
+        &mut self,
+        root: RegionId,
+        continue_index: u32,
+        break_index: u32,
+    ) -> Option<String> {
+        let region: Region = self.result.regions.get(root as usize).cloned()?;
+        if !matches!(region.kind, RegionKind::IfThenElse) {
+            return None;
+        }
+        let head: RegionId = region.head?;
+        let cond_id: disrobe_cfg::CondId = region.cond?;
+        let [taken, not_taken]: [RegionId; 2] = match region.children.as_slice() {
+            [taken, not_taken] => [*taken, *not_taken],
+            _ => return None,
+        };
+        let head_text: String = self.render(head);
+        if !self.ok || !head_text.trim().is_empty() {
+            return None;
+        }
+        let mut tree_budget: usize = MAX_REGION_TREE_STEPS;
+        let (guard, body_id): (String, RegionId) =
+            if is_sink_leaf(self.result, not_taken, break_index) {
+                (
+                    render_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
+                    taken,
+                )
+            } else if is_sink_leaf(self.result, taken, break_index) {
+                (
+                    negated_cond(self.cond_of_atom, &self.result.conds, cond_id)?,
+                    not_taken,
+                )
+            } else {
+                return None;
+            };
+        if region_contains_node(self.result, body_id, break_index, &mut tree_budget)? {
+            return None;
+        }
+        if !sink_reached_only_at_tail(self.result, body_id, continue_index, &mut tree_budget)? {
+            return None;
+        }
+        let body: String = self.render(body_id);
+        if !self.ok {
+            return None;
+        }
+        Some(format!("while {guard} do\n{body}\nend;\n"))
     }
 }
 
@@ -2369,6 +3037,7 @@ fn render_dispatch_fallback(
     terms: &[Terminator],
     plan_of_node: &[LeafPlan],
     captures: &BTreeMap<u64, String>,
+    inline_declarations: &BTreeMap<u64, String>,
     cond_of_atom: &[String],
     subst: &BTreeMap<u64, String>,
 ) -> String {
@@ -2384,6 +3053,7 @@ fn render_dispatch_fallback(
             ctx.return_local,
             plan,
             captures,
+            inline_declarations,
             ctx.src,
             subst,
         ));
@@ -2559,6 +3229,46 @@ fn constant_pool_substitutions(
     Ok(substitutions)
 }
 
+fn assert_captured_variables_stay_in_scope(recovered: &str) -> Result<()> {
+    let wrapped: String = format!("local __vmify_scope_probe = {recovered};");
+    if wrapped.len() > crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES {
+        return Err(refuse(
+            "the recovered source exceeds the captured-variable scope-check byte budget",
+        ));
+    }
+    let mut parser: Parser<'_> = Parser::new(&wrapped)?;
+    let chunk: Block = parser.parse_chunk()?;
+    let mut exprs: Vec<&Expr> = Vec::new();
+    walk_exprs(&chunk, &mut exprs);
+    let mut escaped: Option<&str> = None;
+    for expr in &exprs {
+        if let ExprKind::Var(Var::Global(span)) = &expr.kind
+            && span.text(&wrapped).starts_with(CAPTURED_VARIABLE_PREFIX)
+        {
+            escaped = Some(span.text(&wrapped));
+            break;
+        }
+    }
+    if escaped.is_none() {
+        let mut targets: Vec<&AssignTarget> = Vec::new();
+        walk_assign_targets(&chunk, &mut targets);
+        for target in targets {
+            if let AssignTarget::Var(Var::Global(span), _) = target
+                && span.text(&wrapped).starts_with(CAPTURED_VARIABLE_PREFIX)
+            {
+                escaped = Some(span.text(&wrapped));
+                break;
+            }
+        }
+    }
+    match escaped {
+        None => Ok(()),
+        Some(name) => Err(refuse_owned(format!(
+            "the recovered source names captured variable {name} outside the block that declares it, so it would read as a global instead of the captured local"
+        ))),
+    }
+}
+
 pub fn recover(text: &str) -> Result<Option<VmifyRecovery>> {
     recover_with_string_pool(text, &[], &[], None)
 }
@@ -2680,6 +3390,9 @@ pub fn recover_with_string_pool(
     let mut stats: GlobalStats = GlobalStats::default();
     let recovered: RecoveredFunction =
         recover_function(&ctx, top_entry, 0, &[], &mut subst, &mut stats)?;
+    if stats.boxes_bound > 0 {
+        assert_captured_variables_stay_in_scope(&recovered.text)?;
+    }
 
     let mut all_leaves: Vec<&Block> = Vec::new();
     collect_all_leaves(
@@ -2941,23 +3654,33 @@ mod tests {
     }
 
     #[test]
-    fn a_real_double_vmify_sample_refuses_rather_than_mis_lift() {
+    fn recovers_a_real_double_vmify_sample_through_both_layers() {
         let src: &str =
             include_str!("../../../../corpus/lua/prometheus/vmify_nested/obfuscated.lua");
-        let err: Error = recover(src).expect_err(
-            "the inner Vmify layer reuses one dispatch register both as a captured-variable slot \
-             and as a plain scratch register, so a single name per register cannot identify which \
-             captured variable a slot read means; it must name that reason rather than report full \
-             recovery",
+        let out: VmifyRecovery = recover(src)
+            .expect("a sample put through Vmify twice must recover")
+            .expect("must detect as Vmify");
+        assert_eq!(
+            (out.handlers_recovered, out.handlers_total),
+            (49, 49),
+            "every dispatch leaf reached across both layers must be structured: {}",
+            out.source
         );
-        let message: String = err.to_string();
+        assert_eq!(
+            (out.functions_recovered, out.functions_total),
+            (13, 13),
+            "both layers together define thirteen closures and each must reach clean structuring"
+        );
+        assert!(out.fully_recovered);
         assert!(
-            message.contains("still names the Vmify captured-variable machinery"),
-            "the refusal must name the real cause, got: {message}"
+            !out.source.contains("__pc"),
+            "neither layer may be left as an instruction-pointer state machine: {}",
+            out.source
         );
         assert!(
-            message.contains("captured-variable slot register"),
-            "the refusal must name which part of the capture machinery could not be resolved, got: {message}"
+            !out.source.contains("prometheus-vmify:"),
+            "a fully recovered program must carry none of this pass's own refusal stubs: {}",
+            out.source
         );
     }
 
@@ -3003,22 +3726,31 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_real_vmify_capture_allocated_inside_a_loop() {
+    fn declares_a_per_iteration_capture_inside_the_loop_that_allocates_it() {
         let src: &str =
             include_str!("../../../../corpus/lua/prometheus/vmify_loop_capture/obfuscated.lua");
-        let err: Error = recover(src).expect_err(
-            "each iteration of the source loop captures its own variable, so one function-scope \
-             declaration would make all three closures share a single variable and print the last \
-             value three times; that must be refused, not emitted",
+        let out: VmifyRecovery = recover(src)
+            .expect("a per-iteration capture must recover")
+            .expect("must detect as Vmify");
+        assert!(out.fully_recovered);
+        let declaration: usize = out.source.matches("local __vu0;").count();
+        assert_eq!(
+            declaration, 1,
+            "the captured variable must be declared exactly once: {}",
+            out.source
         );
-        let message: String = err.to_string();
+        let loop_start: usize = out
+            .source
+            .find("while ")
+            .expect("the guest loop must appear as a Lua loop");
+        let declared_at: usize = out
+            .source
+            .find("local __vu0;")
+            .expect("the captured variable must be declared");
         assert!(
-            message.contains("sits inside a loop"),
-            "the refusal must name per-iteration capture as the cause, got: {message}"
-        );
-        assert!(
-            message.contains("alias"),
-            "the refusal must say what would go wrong if it emitted anyway, got: {message}"
+            declared_at > loop_start,
+            "each iteration captures its own variable, so the declaration must sit inside the loop body; hoisting it to function scope would make all three closures share one variable: {}",
+            out.source
         );
     }
 
@@ -3041,18 +3773,91 @@ mod tests {
     }
 
     #[test]
-    fn recovers_real_loop_bearing_prometheus_vmify_sample_via_dispatch_fallback() {
+    fn recovers_a_real_loop_bearing_prometheus_vmify_sample_as_a_lua_loop() {
         let src: &str = include_str!("../../../../corpus/lua/prometheus/vmify/obfuscated.lua");
         let out: VmifyRecovery = recover(src)
             .expect("recover")
             .expect("must detect as Vmify");
+        assert_eq!(
+            (out.handlers_recovered, out.handlers_total),
+            (8, 8),
+            "every reached dispatch leaf must be structured: {}",
+            out.source
+        );
+        assert!(out.fully_recovered);
         assert!(
-            out.handlers_recovered > 0,
-            "at least the loop-free function must fully structure"
+            out.source.contains("while "),
+            "the guest loop must recover as a Lua loop: {}",
+            out.source
         );
         assert!(
-            out.source.contains("__pc"),
-            "the loop-bearing function must fall back to the dispatch-loop form, not drop the loop"
+            !out.source.contains("__pc"),
+            "a guest loop must not be left as an instruction-pointer state machine: {}",
+            out.source
+        );
+    }
+
+    #[test]
+    fn loop_membership_stops_at_its_step_budget() {
+        let terms: Vec<Terminator> = vec![Terminator::Goto(1), Terminator::Goto(0)];
+        let mut generous: usize = MAX_REACHABILITY_STEPS;
+        assert_eq!(
+            loop_member_set(&terms, 0, &mut generous),
+            Some(BTreeSet::from([0, 1])),
+            "a two-node cycle is one loop body"
+        );
+        let mut exhausted: usize = 1;
+        assert_eq!(
+            loop_member_set(&terms, 0, &mut exhausted),
+            None,
+            "an exhausted step budget must stop the walk rather than run to completion"
+        );
+    }
+
+    #[test]
+    fn region_tree_predicates_stop_at_their_step_budget() {
+        let cfg: Cfg = Cfg::new(
+            0,
+            vec![
+                CfgNode {
+                    term: Terminator::Branch {
+                        atom: 0,
+                        taken: 1,
+                        not_taken: 2,
+                    },
+                    pure: true,
+                },
+                CfgNode {
+                    term: Terminator::Goto(2),
+                    pure: true,
+                },
+                CfgNode {
+                    term: Terminator::Return,
+                    pure: true,
+                },
+            ],
+        )
+        .expect("a three-node if-then graph is well formed");
+        let outcome: CnsOutcome =
+            structure_with_cns(&cfg, CnsBudget::tight_for(&cfg)).expect("structuring must succeed");
+        let root: RegionId = outcome.result.root.expect("a complete result has a root");
+        let mut exhausted: usize = 0;
+        assert_eq!(
+            region_contains_node(&outcome.result, root, 2, &mut exhausted),
+            None,
+            "an exhausted budget must stop the containment walk"
+        );
+        let mut also_exhausted: usize = 0;
+        assert_eq!(
+            sink_reached_only_at_tail(&outcome.result, root, 2, &mut also_exhausted),
+            None,
+            "an exhausted budget must stop the tail-position walk"
+        );
+        let mut generous: usize = MAX_REGION_TREE_STEPS;
+        assert_eq!(
+            region_contains_node(&outcome.result, root, 2, &mut generous),
+            Some(true),
+            "the walk must find a node the region really contains when the budget allows it"
         );
     }
 }

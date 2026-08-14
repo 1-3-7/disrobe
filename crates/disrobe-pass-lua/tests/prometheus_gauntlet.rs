@@ -1,5 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
+#[path = "support/lua_toolchain.rs"]
+#[allow(clippy::redundant_pub_crate, dead_code)]
+mod lua_toolchain;
+
 use std::path::PathBuf;
+
+use lua_toolchain::{InterpreterRequirement, LuaInterpreter, require_interpreter_with, run_lua};
 
 use disrobe_pass_lua::obfuscator::{
     DeobfOptions, LuaObfuscatorKind, ObfuscatorDetection, PeelResult,
@@ -138,45 +145,79 @@ fn prometheus_gauntlet_weak_peel_undo_rotation() {
 }
 
 #[test]
-fn prometheus_gauntlet_weak_peel_is_honest_about_residual() {
+fn prometheus_gauntlet_weak_peel_reports_the_layers_it_actually_undid() {
     let bytes: Vec<u8> = load_fixture("gauntlet_weak_obfuscated.lua");
     let opts: DeobfOptions = DeobfOptions::default();
     let out: PeelResult =
         prometheus::peel(&bytes, &opts).expect("peel must succeed on gauntlet fixture");
 
     assert!(
-        !out.fully_recovered,
-        "Vmify opcode/CFG layer is not lifted; fully_recovered must be false"
-    );
-    assert!(
-        !out.residual_markers.is_empty(),
-        "residual_markers must document the Vmify layer that remains"
-    );
-    assert!(
-        out.residual_markers
+        out.passes_run
             .iter()
-            .any(|m: &String| m.contains("Vmify") || m.contains("vm")),
-        "at least one residual marker must mention the VM/Vmify layer; got={:?}",
+            .any(|p: &String| p == "prometheus-vmify-container-devirt"),
+        "the Vmify container-devirt pass must reach this multi-step fixture; passes={:?}, residual={:?}",
+        out.passes_run,
         out.residual_markers
     );
-}
-
-#[test]
-fn prometheus_gauntlet_weak_output_is_valid_utf8_lua() {
-    let bytes: Vec<u8> = load_fixture("gauntlet_weak_obfuscated.lua");
-    let opts: DeobfOptions = DeobfOptions::default();
-    let out: PeelResult =
-        prometheus::peel(&bytes, &opts).expect("peel must succeed on gauntlet fixture");
-
     let text: &str =
         std::str::from_utf8(&out.deobfuscated).expect("deobfuscated output must be valid UTF-8");
     assert!(
-        text.contains("PROMETHEUS_STRINGS"),
-        "output must contain the recovered string pool table; got prefix={:?}",
-        &text[..text.len().min(120)]
+        !text.contains("prometheus-vmify:"),
+        "a recovery that reports itself complete must carry none of the pass's own stubs; got={text}"
+    );
+    assert_eq!(
+        out.fully_recovered,
+        !text.contains("__pc"),
+        "full recovery and an instruction-pointer state machine are the two mutually exclusive \
+         outcomes here; reporting one while emitting the other is a false claim. residual={:?}",
+        out.residual_markers
+    );
+    if !out.fully_recovered {
+        assert!(
+            out.residual_markers
+                .iter()
+                .any(|m: &String| m.contains("Vmify") || m.contains("vm")),
+            "an incomplete recovery must name the layer that remains; got={:?}",
+            out.residual_markers
+        );
+    }
+}
+
+#[test]
+fn prometheus_gauntlet_weak_recovery_reexecutes_identically_to_the_original() {
+    let graded: &str = "Prometheus gauntlet Weak-preset recovery";
+    let Some(interpreter): Option<LuaInterpreter> =
+        require_interpreter_with(graded, InterpreterRequirement::Mandatory)
+    else {
+        unreachable!("a mandatory interpreter requirement panics rather than returning None")
+    };
+
+    let bytes: Vec<u8> = load_fixture("gauntlet_weak_obfuscated.lua");
+    let clean: Vec<u8> = load_fixture("gauntlet_clean.lua");
+    let clean_source: String =
+        String::from_utf8(clean).expect("the clean gauntlet fixture must be UTF-8");
+    let opts: DeobfOptions = DeobfOptions::default();
+    let out: PeelResult =
+        prometheus::peel(&bytes, &opts).expect("peel must succeed on gauntlet fixture");
+    let recovered: String =
+        String::from_utf8(out.deobfuscated).expect("deobfuscated output must be valid UTF-8");
+    assert!(
+        out.fully_recovered,
+        "this fixture recovers end to end, so a run that no longer does has regressed rather than \
+         become more careful; residual={:?}",
+        out.residual_markers
     );
     assert!(
-        text.contains("hello from gauntlet"),
-        "the greeting constant must appear in the recovered pool"
+        recovered.contains("hello from gauntlet"),
+        "the greeting constant must survive into the recovered source; got={recovered}"
+    );
+
+    let expected: String = run_lua(&interpreter, "gauntlet clean", &clean_source);
+    let actual: String = run_lua(&interpreter, "gauntlet recovered", &recovered);
+    assert_eq!(
+        expected, actual,
+        "recovered Weak-preset source must re-execute identically to the original under a real \
+         Lua interpreter ({})\n--- recovered ---\n{recovered}",
+        interpreter.banner
     );
 }

@@ -793,33 +793,39 @@ fn prometheus_vmify_nested_double_layer_fixtures_already_agree() {
 }
 
 #[test]
-fn prometheus_vmify_nested_double_layer_sample_never_claims_a_false_success() {
+fn prometheus_vmify_nested_double_layer_sample_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
+    let tc: Toolchain = require_toolchain("5.1");
     let opts: DeobfOptions = DeobfOptions::default();
     let peeled: PeelResult = prometheus::peel(PROMETHEUS_VMIFY_NESTED_OBFUSCATED.as_bytes(), &opts)
-        .expect("prometheus peel must run on a real Vmify-applied-twice sample without panicking");
-
-    assert!(
-        !peeled.fully_recovered,
-        "a Vmify-applied-twice sample shares one dispatch tree between both layers, a shape this \
-         pass refuses rather than mis-lifts; it must never report fully_recovered on this input. \
-         residual_markers={:?}",
-        peeled.residual_markers
-    );
-    assert!(
-        peeled.residual_markers.iter().any(|m: &String| m
-            .contains("refused rather than emitted partly wrong")
-            && m.contains("still names the Vmify captured-variable machinery")),
-        "the refusal reason must reach a consumer-visible surface, naming the real cause rather \
-         than silently discarding it; residual_markers={:?}",
-        peeled.residual_markers
-    );
+        .expect("prometheus peel must run on a real Vmify-applied-twice sample");
     let emitted: String =
         String::from_utf8(peeled.deobfuscated).expect("emitted artifact must be UTF-8");
     assert!(
         !emitted.contains("prometheus-vmify:"),
-        "a refused sample must not leave one of this pass's own stubs in the emitted artifact"
+        "the emitted artifact must not carry one of this pass's own not-recovered stubs\n--- emitted ---\n{emitted}"
+    );
+    assert!(
+        !emitted.contains("__pc"),
+        "both Vmify layers must recover to real Lua control flow\n--- emitted ---\n{emitted}"
+    );
+
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_nested_orig",
+        PROMETHEUS_VMIFY_NESTED_CLEAN,
+    )
+    .expect("the clean double-Vmify source must run under real Lua 5.1");
+    let actual: String = run_source(&tc.lua, &dir, "vmify_nested_recovered", &emitted)
+        .expect("the recovered double-Vmify source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "a sample put through Vmify twice must recover to source that re-executes identically to \
+         the real original\n--- recovered ---\n{emitted}"
     );
 }
 
@@ -948,32 +954,96 @@ fn prometheus_vmify_loop_capture_fixtures_already_agree() {
 }
 
 #[test]
-fn prometheus_vmify_loop_capture_refusal_reaches_a_consumer_surface() {
+fn prometheus_vmify_per_iteration_capture_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 
+    let tc: Toolchain = require_toolchain("5.1");
     let peeled: PeelResult = prometheus::peel(
         PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED.as_bytes(),
         &DeobfOptions::default(),
     )
-    .expect("prometheus peel must run on a real loop-capture sample without panicking");
+    .expect("prometheus peel must run on a real loop-capture sample");
     assert!(
-        !peeled.fully_recovered,
-        "a per-iteration capture this pass cannot name must never be reported as fully recovered; residual_markers={:?}",
+        peeled
+            .passes_run
+            .iter()
+            .any(|p: &String| p == "prometheus-vmify-container-devirt"),
+        "the Vmify container-devirt pass must run on the loop-capture sample; passes_run={:?}, residual={:?}",
+        peeled.passes_run,
         peeled.residual_markers
     );
-    assert!(
-        peeled.residual_markers.iter().any(|m: &String| m
-            .contains("refused rather than emitted partly wrong")
-            && m.contains("sits inside a loop")),
-        "the refusal reason must reach a consumer-visible surface; residual_markers={:?}",
-        peeled.residual_markers
+
+    let recovered_src: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_loop_capture_orig",
+        PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN,
+    )
+    .expect("the clean per-iteration-capture source must run under real Lua 5.1");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_loop_capture_recovered",
+        &recovered_src,
+    )
+    .expect("the recovered per-iteration-capture source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "each loop iteration captures a fresh variable, so a recovery that hoists one declaration \
+         out of the loop prints the last value three times\n--- recovered ---\n{recovered_src}"
     );
-    let emitted: String =
-        String::from_utf8(peeled.deobfuscated).expect("emitted artifact must be UTF-8");
-    assert!(
-        !emitted.contains("prometheus-vmify:"),
-        "a refused sample must not leave one of this pass's own stubs in the emitted artifact"
-    );
+}
+
+#[test]
+fn prometheus_vmify_loop_recovers_real_lua_control_flow_not_a_dispatch_state_machine() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    for (name, obfuscated, clean) in [
+        ("vmify", PROMETHEUS_VMIFY_OBFUSCATED, PROMETHEUS_VMIFY_CLEAN),
+        (
+            "vmify_loop_capture",
+            PROMETHEUS_VMIFY_LOOP_CAPTURE_OBFUSCATED,
+            PROMETHEUS_VMIFY_LOOP_CAPTURE_CLEAN,
+        ),
+    ] {
+        let peeled: PeelResult = prometheus::peel(obfuscated.as_bytes(), &DeobfOptions::default())
+            .unwrap_or_else(|e: disrobe_pass_lua::Error| panic!("{name}: peel must run: {e:?}"));
+        let recovered_src: String =
+            String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+        assert!(
+            !recovered_src.contains("__pc"),
+            "{name}: a guest loop must recover as real Lua control flow, not as an instruction-pointer state machine\n--- recovered ---\n{recovered_src}"
+        );
+        assert!(
+            recovered_src.contains("while "),
+            "{name}: the guest loop must appear as a Lua loop in the recovered source\n--- recovered ---\n{recovered_src}"
+        );
+        assert!(
+            peeled.fully_recovered,
+            "{name}: every dispatch leaf is structured, so recovery must report itself complete; residual_markers={:?}\n--- recovered ---\n{recovered_src}",
+            peeled.residual_markers
+        );
+
+        let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+        let dir: PathBuf = scratch.path().to_path_buf();
+        let expected: String = run_source(&tc.lua, &dir, &format!("{name}_orig"), clean)
+            .unwrap_or_else(|| panic!("{name}: the clean source must run under real Lua 5.1"));
+        let actual: String = run_source(&tc.lua, &dir, &format!("{name}_rec"), &recovered_src)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{name}: the recovered source must run under real Lua 5.1\n--- recovered ---\n{recovered_src}"
+                )
+            });
+        assert_eq!(
+            expected, actual,
+            "{name}: structured loop recovery must re-execute identically to the real original\n--- recovered ---\n{recovered_src}"
+        );
+    }
 }
 
 #[test]
