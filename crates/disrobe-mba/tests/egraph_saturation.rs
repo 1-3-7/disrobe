@@ -41,7 +41,7 @@ fn random_expr(rng: &mut Lcg, depth: u32, vars: u32) -> Expr {
             _ => Expr::var(rng.below(u64::from(vars)) as u32),
         };
     }
-    match rng.below(8) {
+    match rng.below(10) {
         0 => Expr::add(
             random_expr(rng, depth - 1, vars),
             random_expr(rng, depth - 1, vars),
@@ -64,6 +64,14 @@ fn random_expr(rng: &mut Lcg, depth: u32, vars: u32) -> Expr {
         ),
         5 => Expr::not(random_expr(rng, depth - 1, vars)),
         6 => Expr::neg(random_expr(rng, depth - 1, vars)),
+        7 => Expr::shr(
+            random_expr(rng, depth - 1, vars),
+            Expr::konst(rng.below(10)),
+        ),
+        8 => Expr::shr(
+            random_expr(rng, depth - 1, vars),
+            Expr::var(rng.below(u64::from(vars)) as u32),
+        ),
         _ => Expr::mul(Expr::konst(rng.next()), random_expr(rng, depth - 1, vars)),
     }
 }

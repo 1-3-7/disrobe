@@ -382,7 +382,7 @@ fn build_application(operator: &str, operands: Vec<Term>) -> Result<Term, TermEr
         }
         return Ok(Term::Binary(op, Box::new(left), Box::new(right)));
     }
-    if matches!(operator, "shl" | "shr" | "sar" | "udiv" | "urem") {
+    if matches!(operator, "shl" | "sar" | "udiv" | "urem") {
         return Err(TermError::UnsupportedOperator {
             operator: operator.to_owned(),
         });
@@ -644,18 +644,38 @@ mod tests {
     }
 
     #[test]
-    fn a_shift_operator_is_refused_because_the_enode_language_has_none() {
-        let text: String = rule_text("contract", "(shl ?x 1)", "(mul ?x 2)");
-        let error: EgraphRuleError = error_of(&text);
-        assert!(
-            matches!(
-                &error,
-                EgraphRuleError::Malformed {
-                    source: TermError::UnsupportedOperator { operator },
-                    ..
-                } if operator == "shl"
-            ),
-            "a shift rule must be refused by name, got {error}"
+    fn a_shift_operator_outside_the_enode_language_is_refused_by_name() {
+        for operator in ["shl", "sar"] {
+            let text: String = rule_text("contract", &format!("({operator} ?x 1)"), "(mul ?x 2)");
+            let error: EgraphRuleError = error_of(&text);
+            assert!(
+                matches!(
+                    &error,
+                    EgraphRuleError::Malformed {
+                        source: TermError::UnsupportedOperator { operator: named },
+                        ..
+                    } if named == operator
+                ),
+                "a {operator} rule must be refused by name, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_logical_right_shift_is_carried_by_the_enode_language() {
+        let text: String = rule_text("contract", "(shr ?x 0)", "?x");
+        let set: EgraphRuleSet = match load_egraph_rules(&text) {
+            Ok(set) => set,
+            Err(error) => panic!("a right shift rule must load, got {error}"),
+        };
+        assert_eq!(set.rules.len(), 1);
+        assert_eq!(
+            set.rules[0].pattern,
+            Term::Binary(
+                RingOp::Shr,
+                Box::new(Term::Capture("x".to_owned())),
+                Box::new(Term::Const(0))
+            )
         );
     }
 

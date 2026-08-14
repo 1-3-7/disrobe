@@ -1,4 +1,4 @@
-use crate::expr::{BinOp, Expr, MAX_MBA_DEPTH, UnOp, Width};
+use crate::expr::{BinOp, Expr, MAX_MBA_DEPTH, UnOp, Width, shift_right};
 use crate::rewrite::canonicalize;
 use crate::rules::egraph_rules::{EgraphRule, Term, egraph_rules};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +21,7 @@ pub(crate) enum RingOp {
     And,
     Or,
     Xor,
+    Shr,
 }
 
 impl RingOp {
@@ -32,6 +33,7 @@ impl RingOp {
             "and" => Some(Self::And),
             "or" => Some(Self::Or),
             "xor" => Some(Self::Xor),
+            "shr" => Some(Self::Shr),
             _ => None,
         }
     }
@@ -44,7 +46,8 @@ impl RingOp {
             BinOp::And => Some(Self::And),
             BinOp::Or => Some(Self::Or),
             BinOp::Xor => Some(Self::Xor),
-            BinOp::Shl | BinOp::Shr => None,
+            BinOp::Shr => Some(Self::Shr),
+            BinOp::Shl => None,
         }
     }
 
@@ -56,6 +59,7 @@ impl RingOp {
             Self::And => BinOp::And,
             Self::Or => BinOp::Or,
             Self::Xor => BinOp::Xor,
+            Self::Shr => BinOp::Shr,
         }
     }
 
@@ -67,6 +71,7 @@ impl RingOp {
             Self::And => ENode::And(left, right),
             Self::Or => ENode::Or(left, right),
             Self::Xor => ENode::Xor(left, right),
+            Self::Shr => ENode::Shr(left, right),
         }
     }
 
@@ -90,6 +95,7 @@ enum ENode {
     And(Id, Id),
     Or(Id, Id),
     Xor(Id, Id),
+    Shr(Id, Id),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,22 +210,36 @@ const fn enode_weight(node: &ENode) -> u64 {
     match node {
         ENode::Const(_) | ENode::Leaf(_) => 1,
         ENode::Add(_, _) | ENode::Sub(_, _) | ENode::Neg(_) | ENode::Not(_) => 2,
-        ENode::And(_, _) | ENode::Or(_, _) | ENode::Xor(_, _) => 3,
+        ENode::And(_, _) | ENode::Or(_, _) | ENode::Xor(_, _) | ENode::Shr(_, _) => 3,
         ENode::Mul(_, _) => 5,
     }
 }
 
 const fn enode_family(node: &ENode) -> Shape {
     match node {
-        ENode::Const(_) | ENode::Leaf(_) => Shape::Neutral,
+        ENode::Const(_) | ENode::Leaf(_) | ENode::Shr(_, _) => Shape::Neutral,
         ENode::Add(_, _) | ENode::Sub(_, _) | ENode::Mul(_, _) | ENode::Neg(_) => Shape::Arithmetic,
         ENode::And(_, _) | ENode::Or(_, _) | ENode::Xor(_, _) | ENode::Not(_) => Shape::Bitwise,
     }
 }
 
+const fn join_shape(left: Shape, right: Shape) -> Shape {
+    match (left, right) {
+        (Shape::Neutral, other) | (other, Shape::Neutral) => other,
+        (Shape::Arithmetic, Shape::Arithmetic) => Shape::Arithmetic,
+        (Shape::Bitwise, Shape::Bitwise) => Shape::Bitwise,
+        _ => Shape::Mixed,
+    }
+}
+
 fn combine_shape(family: Shape, children: &[Shape]) -> Shape {
     match family {
-        Shape::Neutral => Shape::Neutral,
+        Shape::Neutral => children
+            .iter()
+            .copied()
+            .fold(Shape::Neutral, |carried: Shape, child: Shape| {
+                join_shape(carried, child)
+            }),
         Shape::Mixed => Shape::Mixed,
         Shape::Arithmetic => {
             if children
@@ -253,7 +273,8 @@ fn enode_children(node: &ENode) -> Vec<Id> {
         | ENode::Mul(a, b)
         | ENode::And(a, b)
         | ENode::Or(a, b)
-        | ENode::Xor(a, b) => vec![*a, *b],
+        | ENode::Xor(a, b)
+        | ENode::Shr(a, b) => vec![*a, *b],
     }
 }
 
@@ -264,7 +285,8 @@ const fn bin_children(op: RingOp, node: &ENode) -> Option<(Id, Id)> {
         | (RingOp::Mul, ENode::Mul(a, b))
         | (RingOp::And, ENode::And(a, b))
         | (RingOp::Or, ENode::Or(a, b))
-        | (RingOp::Xor, ENode::Xor(a, b)) => Some((*a, *b)),
+        | (RingOp::Xor, ENode::Xor(a, b))
+        | (RingOp::Shr, ENode::Shr(a, b)) => Some((*a, *b)),
         _ => None,
     }
 }
@@ -334,6 +356,7 @@ impl EGraph {
                 let (x, y): (Id, Id) = sorted(self.root(a), self.root(b));
                 ENode::Xor(x, y)
             }
+            ENode::Shr(a, b) => ENode::Shr(self.root(a), self.root(b)),
         }
     }
 
@@ -353,6 +376,7 @@ impl EGraph {
             ENode::And(a, b) => self.fold_binary(node, a, b, |x, y| x & y),
             ENode::Or(a, b) => self.fold_binary(node, a, b, |x, y| x | y),
             ENode::Xor(a, b) => self.fold_binary(node, a, b, |x, y| x ^ y),
+            ENode::Shr(a, b) => self.fold_shift_right(node, a, b),
             ENode::Leaf(_) => *node,
         }
     }
@@ -362,6 +386,21 @@ impl EGraph {
             (Some(left), Some(right)) => ENode::Const(combine(left, right) & self.mask),
             _ => *node,
         }
+    }
+
+    fn fold_shift_right(&self, node: &ENode, value: Id, amount: Id) -> ENode {
+        if self.const_of(value) == Some(0) {
+            return ENode::Const(0);
+        }
+        let Some(shift): Option<u64> = self.const_of(amount) else {
+            return *node;
+        };
+        if shift >= u64::from(self.width.bits()) {
+            return ENode::Const(0);
+        }
+        self.const_of(value).map_or(*node, |base: u64| {
+            ENode::Const(shift_right(base, shift, self.width) & self.mask)
+        })
     }
 
     fn add(&mut self, raw: ENode) -> Option<Id> {
@@ -764,6 +803,7 @@ impl EGraph {
             ENode::And(a, b) => self.build_binary(RingOp::And, a, b, best, cache, depth)?,
             ENode::Or(a, b) => self.build_binary(RingOp::Or, a, b, best, cache, depth)?,
             ENode::Xor(a, b) => self.build_binary(RingOp::Xor, a, b, best, cache, depth)?,
+            ENode::Shr(a, b) => self.build_binary(RingOp::Shr, a, b, best, cache, depth)?,
         };
         cache.insert(id, built.clone());
         Some(built)
@@ -951,7 +991,7 @@ mod tests {
                 _ => Expr::var(rng.below(u64::from(vars)) as u32),
             };
         }
-        match rng.below(9) {
+        match rng.below(11) {
             0 => Expr::add(
                 random_expr(rng, depth - 1, vars),
                 random_expr(rng, depth - 1, vars),
@@ -977,6 +1017,14 @@ mod tests {
             7 => Expr::mul(
                 random_expr(rng, depth - 1, vars),
                 random_expr(rng, depth - 1, vars),
+            ),
+            8 => Expr::shr(
+                random_expr(rng, depth - 1, vars),
+                Expr::konst(rng.below(10)),
+            ),
+            9 => Expr::shr(
+                random_expr(rng, depth - 1, vars),
+                Expr::var(rng.below(u64::from(vars)) as u32),
             ),
             _ => Expr::mul(Expr::konst(rng.next()), random_expr(rng, depth - 1, vars)),
         }
@@ -1492,6 +1540,24 @@ mod tests {
                 Shape::Mixed,
             ),
             ("leaf", Expr::var(0), Shape::Neutral),
+            (
+                "shift_of_arithmetic",
+                Expr::shr(Expr::add(Expr::var(0), Expr::var(1)), Expr::konst(1)),
+                Shape::Arithmetic,
+            ),
+            (
+                "shift_of_bitwise",
+                Expr::shr(Expr::and(Expr::var(0), Expr::var(1)), Expr::konst(1)),
+                Shape::Bitwise,
+            ),
+            (
+                "arithmetic_over_shifted_bitwise",
+                Expr::add(
+                    Expr::var(2),
+                    Expr::shr(Expr::and(Expr::var(0), Expr::var(1)), Expr::konst(1)),
+                ),
+                Shape::Mixed,
+            ),
         ];
         for (name, expr, expected) in cases {
             let mut graph: EGraph = EGraph::new(width);

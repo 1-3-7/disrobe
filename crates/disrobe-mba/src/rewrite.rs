@@ -1,4 +1,4 @@
-use crate::expr::{BinOp, Expr, UnOp, Width};
+use crate::expr::{BinOp, Expr, UnOp, Width, shift_left, shift_right};
 use crate::rules::apply_migrated;
 
 const MAX_REWRITE_PASSES: u32 = 64;
@@ -533,24 +533,6 @@ fn complement_of(expr: &Expr, width: Width) -> Option<Expr> {
             _ => None,
         },
         _ => None,
-    }
-}
-
-fn shift_left(value: u64, amount: u64, width: Width) -> u64 {
-    let bits: u64 = u64::from(width.bits());
-    if amount >= bits {
-        0
-    } else {
-        value.wrapping_shl(amount as u32)
-    }
-}
-
-fn shift_right(value: u64, amount: u64, width: Width) -> u64 {
-    let bits: u64 = u64::from(width.bits());
-    if amount >= bits {
-        0
-    } else {
-        value.wrapping_shr(amount as u32)
     }
 }
 

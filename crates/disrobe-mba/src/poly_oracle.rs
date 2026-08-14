@@ -8,17 +8,31 @@ const MAX_CERTIFICATE_ATOMS: usize = 8;
 type Monomial = BTreeMap<u32, u32>;
 type Poly = BTreeMap<Monomial, u64>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Atom {
+    Opaque(Expr),
+    ShiftRight(Poly, Poly),
+}
+
 #[derive(Debug, Default)]
 struct AtomTable {
-    registry: Vec<Expr>,
+    registry: Vec<Atom>,
 }
 
 impl AtomTable {
     fn intern(&mut self, expr: &Expr) -> Option<u32> {
-        if let Some(position) = self.registry.iter().position(|entry: &Expr| entry == expr) {
+        self.intern_atom(Atom::Opaque(expr.clone()))
+    }
+
+    fn intern_shift_right(&mut self, value: Poly, amount: Poly) -> Option<u32> {
+        self.intern_atom(Atom::ShiftRight(value, amount))
+    }
+
+    fn intern_atom(&mut self, atom: Atom) -> Option<u32> {
+        if let Some(position) = self.registry.iter().position(|entry: &Atom| *entry == atom) {
             return u32::try_from(position).ok();
         }
-        self.registry.push(expr.clone());
+        self.registry.push(atom);
         u32::try_from(self.registry.len() - 1).ok()
     }
 }
@@ -144,6 +158,13 @@ fn normalize(expr: &Expr, width: Width, atoms: &mut AtomTable) -> Option<Poly> {
                 (1u64 << amount) & mask
             };
             Some(scale(&left_poly, factor, mask))
+        }
+        Expr::Binary(BinOp::Shr, value, amount) => {
+            let value_poly: Poly = normalize(value, width, atoms)?;
+            let amount_poly: Poly = normalize(amount, width, atoms)?;
+            Some(poly_atom(
+                atoms.intern_shift_right(value_poly, amount_poly)?,
+            ))
         }
         Expr::Binary(BinOp::Xor, left, right) if left == right => Some(poly_constant(0)),
         Expr::Binary(BinOp::And | BinOp::Or, left, right) if left == right => {

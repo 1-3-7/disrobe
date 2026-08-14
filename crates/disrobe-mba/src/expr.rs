@@ -413,7 +413,7 @@ const fn low_mask(bits: u32) -> u64 {
     }
 }
 
-fn shift_left(value: u64, amount: u64, width: Width) -> u64 {
+pub(crate) fn shift_left(value: u64, amount: u64, width: Width) -> u64 {
     let bits: u64 = u64::from(width.bits());
     if amount >= bits {
         0
@@ -422,7 +422,7 @@ fn shift_left(value: u64, amount: u64, width: Width) -> u64 {
     }
 }
 
-fn shift_right(value: u64, amount: u64, width: Width) -> u64 {
+pub(crate) fn shift_right(value: u64, amount: u64, width: Width) -> u64 {
     let bits: u64 = u64::from(width.bits());
     let masked: u64 = value & width.mask();
     if amount >= bits {
