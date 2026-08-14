@@ -510,6 +510,7 @@ impl DecompileArch {
         }
     }
 
+    #[cfg(feature = "nir-lift")]
     pub(crate) const fn has_whole_program_engine(self) -> bool {
         matches!(self, Self::AArch64)
     }
