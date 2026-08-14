@@ -24,6 +24,7 @@ mod aarch64_callsite;
 pub mod fp_semantics;
 mod idiom;
 mod return_channel;
+mod spill;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Reg {
@@ -2857,15 +2858,21 @@ fn recover_leaf_function_calls_impl(
         typed_frame_slots(machine_code, base, frame_plan.as_ref());
     aggregate_plan.frame_base = frame_base;
     aggregate_plan.frame_slots = frame_slots;
-    let source: String = emit_c(
+    let emitted: Block = spilled_body(
         &structured.body,
+        frame_plan.as_ref(),
+        sret_plan.as_ref(),
+        &aggregate_plan,
+    );
+    let source: String = emit_c(
+        &emitted,
         &signature,
         frame_plan.as_ref(),
         sret_plan.as_ref(),
         &aggregate_plan,
     )?;
     let rust_source: Option<String> = emit_rust(
-        &structured.body,
+        &emitted,
         &signature,
         frame_plan.as_ref(),
         sret_plan.as_ref(),
@@ -3525,15 +3532,16 @@ fn build_switch_recovery(
     };
     let frame_plan: Option<FramePlan> = plan_frame(&body, frame_shape)?;
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, frame_plan.as_ref());
+    let emitted: Block = spilled_body(&body, frame_plan.as_ref(), None, &aggregate_plan);
     let source: String = emit_c(
-        &body,
+        &emitted,
         &signature,
         frame_plan.as_ref(),
         None,
         &aggregate_plan,
     )?;
     let rust_source: Option<String> = emit_rust(
-        &body,
+        &emitted,
         &signature,
         frame_plan.as_ref(),
         None,
@@ -3750,8 +3758,9 @@ fn build_value_switch_recovery(
         abi,
     };
     let aggregate_plan: AggregatePlan = infer_aggregate_plan(&body, &params, None);
-    let source: String = emit_c(&body, &signature, None, None, &aggregate_plan)?;
-    let rust_source: Option<String> = emit_rust(&body, &signature, None, None, &aggregate_plan);
+    let emitted: Block = spilled_body(&body, None, None, &aggregate_plan);
+    let source: String = emit_c(&emitted, &signature, None, None, &aggregate_plan)?;
+    let rust_source: Option<String> = emit_rust(&emitted, &signature, None, None, &aggregate_plan);
     Ok(LeafRecovery {
         source,
         rust_source,
@@ -17592,6 +17601,49 @@ fn block_has_unresolved_resume(body: &Block) -> bool {
         | Node::Label(_)
         | Node::Goto(_) => false,
     })
+}
+
+fn spilled_body(
+    body: &Block,
+    frame: Option<&FramePlan>,
+    sret: Option<&SretPlan>,
+    aggregates: &AggregatePlan,
+) -> Block {
+    let mut live_out: Vec<Reg> = Vec::new();
+    if let Some(plan) = frame {
+        live_out.push(plan.base);
+    }
+    if let Some(plan) = sret {
+        live_out.push(plan.ptr);
+    }
+    if let Some(base) = aggregates.frame_base {
+        live_out.push(base);
+    }
+    for root in &aggregates.roots {
+        live_out.push(root.reg);
+        live_out.extend(root.aliases.iter().copied());
+    }
+    let mut spilled: Block = body.clone();
+    let outcome: spill::SpillOutcome =
+        spill::inline_single_use_definitions(&mut spilled, &live_out);
+    crate::debug::dbg_kv("pseudo-c inlined definitions", || {
+        outcome.inlined.to_string()
+    });
+    for decision in &outcome.decisions {
+        crate::debug::dbg_line(|| {
+            let facts: spill::SpillFacts = decision.facts;
+            let verdict: String = if facts.inlinable() {
+                "inlined".to_owned()
+            } else {
+                format!("{:?}", facts.reason)
+            };
+            format!(
+                "spill {:?}: uses={} weighted={} {verdict}",
+                decision.dest, facts.uses.textual, facts.uses.loop_weighted
+            )
+        });
+    }
+    spilled
 }
 
 fn emit_c(

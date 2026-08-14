@@ -2729,15 +2729,21 @@ fn finish(
     let frame = plan_frame(&structured.body, frame_shape)?;
     let aggregate_plan: AggregatePlan =
         infer_aggregate_plan(&structured.body, &params, frame.as_ref());
-    let source: String = emit_c(
+    let emitted: Block = super::spilled_body(
         &structured.body,
+        frame.as_ref(),
+        sret_plan.as_ref(),
+        &aggregate_plan,
+    );
+    let source: String = emit_c(
+        &emitted,
         &signature,
         frame.as_ref(),
         sret_plan.as_ref(),
         &aggregate_plan,
     )?;
     let rust_source: Option<String> = emit_rust(
-        &structured.body,
+        &emitted,
         &signature,
         frame.as_ref(),
         sret_plan.as_ref(),

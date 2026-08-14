@@ -420,8 +420,13 @@ fn clang_o2_direct_call_tracks_aapcs64_and_callee_saved_register() {
         vec![PseudoReg::Rax, PseudoReg::A64X1]
     );
     assert_eq!(recovered.call_targets, vec![0x10]);
-    assert!(recovered.source.contains("helper(r_rax)"));
-    assert!(recovered.source.contains("r_a64_x19"));
+    let expected: &str = "#include <stdint.h>\nextern uint64_t helper(uint64_t);\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rax = a0;\n    uint64_t r_a64_x1 = a1;\n    uint64_t r_a64_tmp = 0;\n    r_a64_tmp = r_a64_x1;\n    r_a64_tmp = r_a64_tmp + (r_rax);\n    r_rax = helper(r_rax);\n    r_a64_tmp = r_a64_tmp + (r_rax);\n    r_rax = r_a64_tmp;\n    return r_rax;\n}\n";
+    assert_eq!(recovered.source, expected);
+    assert!(
+        !recovered.source.contains("stack_frame"),
+        "the callee-saved spill slot must stay frame management: {}",
+        recovered.source
+    );
 }
 
 #[test]
@@ -436,7 +441,13 @@ fn callee_saved_pair_writeback_lifts() {
         recovered.signature.observed_integer_registers(),
         vec![PseudoReg::Rax]
     );
-    assert!(recovered.source.contains("r_a64_x19 = r_rax"));
+    let expected: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0) {\n    uint64_t r_rax = a0;\n    return r_rax;\n}\n";
+    assert_eq!(recovered.source, expected);
+    assert!(
+        !recovered.source.contains("stack_frame"),
+        "the callee-saved pair writeback must stay frame management: {}",
+        recovered.source
+    );
 }
 
 #[test]
