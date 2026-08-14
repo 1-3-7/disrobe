@@ -144,6 +144,16 @@ pub fn recover_bodies(
     lang: NativeLang,
     functions: &[RecoveredFunction],
 ) -> BodyRecovery {
+    recover_bodies_within(image, lang, functions, MAX_RETAINED_SOURCE_BYTES)
+}
+
+#[must_use]
+pub(crate) fn recover_bodies_within(
+    image: &NativeImage<'_>,
+    lang: NativeLang,
+    functions: &[RecoveredFunction],
+    source_budget: u64,
+) -> BodyRecovery {
     debug::dbg_section("bodies");
     let count: u32 = u32::try_from(functions.len()).unwrap_or(u32::MAX);
     let Some(abi): Option<BodyAbi> = body_abi(image) else {
@@ -271,7 +281,7 @@ pub fn recover_bodies(
     let mut retained_source_bytes: u64 = 0;
     for slot in pending {
         let status: BodyStatus = if let Some(found) = recovered_by_address.get(&slot.start) {
-            body_status(found, &mut retained_source_bytes)
+            body_status(found, &mut retained_source_bytes, source_budget)
         } else if let Some(missed) = rejected_by_address.get(&slot.start) {
             BodyStatus::Rejected {
                 reason: BodyRejection::Decompiler(missed.reason.clone()),
@@ -354,7 +364,7 @@ struct PendingBody {
     role: RuntimeRole,
 }
 
-fn body_status(found: &NativeRecoveredFunction, retained: &mut u64) -> BodyStatus {
+fn body_status(found: &NativeRecoveredFunction, retained: &mut u64, budget: u64) -> BodyStatus {
     if found.source.trim().is_empty() {
         return BodyStatus::Rejected {
             reason: BodyRejection::EmptySource,
@@ -379,7 +389,7 @@ fn body_status(found: &NativeRecoveredFunction, retained: &mut u64) -> BodyStatu
         RustBody::NotEmitted | RustBody::Rejected(_) => 0,
     };
     let total: u64 = c_bytes.saturating_add(rust_bytes);
-    if retained.saturating_add(total) > MAX_RETAINED_SOURCE_BYTES {
+    if retained.saturating_add(total) > budget {
         return BodyStatus::RecoveredElided {
             pseudo_c_bytes: c_bytes,
             pseudo_rust_bytes: rust_bytes,
@@ -1115,6 +1125,52 @@ mod tests {
         assert_eq!(
             recovery.retained_source_bytes,
             (pseudo_c.len() + rust.len()) as u64
+        );
+    }
+
+    #[test]
+    fn a_source_budget_elides_later_bodies_without_losing_their_outcome() {
+        let code: &'static [u8] = &[0x48, 0x89, 0xf8, 0xc3, 0x48, 0x89, 0xf0, 0xc3];
+        let image: NativeImage<'static> =
+            image_with_text(ImageKind::Elf, CodeArch::X86_64, 0x1000, code);
+        let functions: [RecoveredFunction; 2] = [
+            func("first", 0x1000, Some(0x1004)),
+            func("second", 0x1004, Some(0x1008)),
+        ];
+        let full: BodyRecovery =
+            recover_bodies_within(&image, NativeLang::Zig, &functions, 1 << 20);
+        assert_eq!(full.recovered, 2);
+        assert_eq!(full.recovered_elided, 0);
+        let first_bytes: u64 = match &full.bodies[0].status {
+            BodyStatus::Recovered {
+                pseudo_c,
+                pseudo_rust: RustBody::Emitted(rust),
+            } => (pseudo_c.len() + rust.len()) as u64,
+            other => panic!("expected a recovered first body, got {other:?}"),
+        };
+        let squeezed: BodyRecovery =
+            recover_bodies_within(&image, NativeLang::Zig, &functions, first_bytes);
+        assert_eq!(squeezed.recovered, 1);
+        assert_eq!(squeezed.recovered_elided, 1);
+        assert_eq!(squeezed.retained_source_bytes, first_bytes);
+        let BodyStatus::RecoveredElided {
+            pseudo_c_bytes,
+            pseudo_rust_bytes,
+        } = squeezed.bodies[1].status
+        else {
+            panic!(
+                "expected the second body to be elided, got {:?}",
+                squeezed.bodies[1]
+            );
+        };
+        assert!(pseudo_c_bytes > 0);
+        assert!(pseudo_rust_bytes > 0);
+        assert_eq!(
+            squeezed.recovered
+                + squeezed.recovered_elided
+                + squeezed.rejected
+                + squeezed.not_attempted,
+            squeezed.function_count
         );
     }
 
