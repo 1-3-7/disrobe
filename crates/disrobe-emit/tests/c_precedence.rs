@@ -8,8 +8,8 @@
 )]
 
 use disrobe_emit::c::ast::{
-    AssignOp, BinaryOp, CBaseType, CExpr, CTypeSpec, DeclaratorChain, IntSuffix, PostfixOp, Radix,
-    TypeName, UnaryOp,
+    AssignOp, BinaryOp, CBaseType, CExpr, CInit, CInitItem, CTypeSpec, DeclaratorChain, Designator,
+    IntSuffix, PostfixOp, Radix, TypeName, UnaryOp,
 };
 use disrobe_emit::c::print::{ParenMode, render_expr_mode};
 use disrobe_emit::{Interner, Symbol};
@@ -26,7 +26,7 @@ enum Tok {
 const PUNCTS: &[&str] = &[
     "<<=", ">>=", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "+=", "-=",
     "*=", "/=", "%=", "&=", "|=", "^=", "+", "-", "*", "/", "%", "<", ">", "=", "!", "~", "&", "|",
-    "^", "?", ":", ",", "(", ")", "[", "]", ".", ";",
+    "^", "?", ":", ",", "(", ")", "[", "]", "{", "}", ".", ";",
 ];
 
 fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
@@ -67,7 +67,9 @@ fn tokenize(input: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
-const TYPE_KEYWORDS: &[&str] = &["void", "char", "short", "int", "long", "unsigned", "signed"];
+const TYPE_KEYWORDS: &[&str] = &[
+    "void", "char", "short", "int", "long", "unsigned", "signed", "struct",
+];
 
 struct Parser<'i> {
     toks: Vec<Tok>,
@@ -233,6 +235,11 @@ impl Parser<'_> {
         self.expect_punct("(")?;
         let ty: TypeName = self.parse_type_name()?;
         self.expect_punct(")")?;
+        if self.peek_punct("{") {
+            let items: Vec<CInitItem> = self.parse_init_list()?;
+            let literal: CExpr = CExpr::CompoundLiteral { ty, items };
+            return self.parse_postfix_from(literal);
+        }
         let operand: CExpr = self.parse_unary()?;
         Ok(CExpr::Cast {
             ty,
@@ -240,7 +247,73 @@ impl Parser<'_> {
         })
     }
 
+    fn parse_init_list(&mut self) -> Result<Vec<CInitItem>, String> {
+        self.expect_punct("{")?;
+        let mut items: Vec<CInitItem> = Vec::new();
+        if !self.peek_punct("}") {
+            loop {
+                items.push(self.parse_init_item()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+        }
+        self.expect_punct("}")?;
+        Ok(items)
+    }
+
+    fn parse_init_item(&mut self) -> Result<CInitItem, String> {
+        let mut designators: Vec<Designator> = Vec::new();
+        loop {
+            if self.eat_punct(".") {
+                let field: String = self.expect_ident()?;
+                designators.push(Designator::Field(self.sym(&field)?));
+            } else if self.eat_punct("[") {
+                let subscript: CExpr = self.parse_assign()?;
+                self.expect_punct("]")?;
+                designators.push(Designator::Index(subscript));
+            } else {
+                break;
+            }
+        }
+        if !designators.is_empty() {
+            self.expect_punct("=")?;
+        }
+        let value: CInit = if self.peek_punct("{") {
+            CInit::List(self.parse_init_list()?)
+        } else {
+            CInit::Expr(self.parse_assign()?)
+        };
+        Ok(CInitItem { designators, value })
+    }
+
     fn parse_type_name(&mut self) -> Result<TypeName, String> {
+        let spec: CTypeSpec = self.parse_type_spec()?;
+        let mut chain: DeclaratorChain = DeclaratorChain::Terminal;
+        while self.eat_punct("*") {
+            chain = chain.pointer_to();
+        }
+        let mut extents: Vec<CExpr> = Vec::new();
+        while self.eat_punct("[") {
+            let extent: CExpr = self.parse_assign()?;
+            self.expect_punct("]")?;
+            extents.push(extent);
+        }
+        for extent in extents.into_iter().rev() {
+            chain = chain.array_of(Some(extent));
+        }
+        Ok(TypeName {
+            base: CBaseType::plain(spec),
+            declarator: chain,
+        })
+    }
+
+    fn parse_type_spec(&mut self) -> Result<CTypeSpec, String> {
+        if matches!(self.peek(), Some(Tok::Ident(name)) if name == "struct") {
+            self.pos += 1;
+            let tag: String = self.expect_ident()?;
+            return Ok(CTypeSpec::Struct(Some(self.sym(&tag)?)));
+        }
         let mut keywords: Vec<String> = Vec::new();
         while let Some(Tok::Ident(name)) = self.peek() {
             if !TYPE_KEYWORDS.contains(&name.as_str()) {
@@ -249,26 +322,23 @@ impl Parser<'_> {
             keywords.push(name.clone());
             self.pos += 1;
         }
-        let spec: CTypeSpec = match keywords.join(" ").as_str() {
-            "int" => CTypeSpec::Int,
-            "unsigned int" => CTypeSpec::UnsignedInt,
-            "long" => CTypeSpec::Long,
-            "char" => CTypeSpec::Char,
-            "short" => CTypeSpec::Short,
-            other => return Err(format!("unsupported cast type {other:?}")),
-        };
-        let mut chain: DeclaratorChain = DeclaratorChain::Terminal;
-        while self.eat_punct("*") {
-            chain = chain.pointer_to();
+        match keywords.join(" ").as_str() {
+            "int" => Ok(CTypeSpec::Int),
+            "unsigned int" => Ok(CTypeSpec::UnsignedInt),
+            "long" => Ok(CTypeSpec::Long),
+            "char" => Ok(CTypeSpec::Char),
+            "short" => Ok(CTypeSpec::Short),
+            other => Err(format!("unsupported cast type {other:?}")),
         }
-        Ok(TypeName {
-            base: CBaseType::plain(spec),
-            declarator: chain,
-        })
     }
 
     fn parse_postfix(&mut self) -> Result<CExpr, String> {
-        let mut base: CExpr = self.parse_primary()?;
+        let base: CExpr = self.parse_primary()?;
+        self.parse_postfix_from(base)
+    }
+
+    fn parse_postfix_from(&mut self, start: CExpr) -> Result<CExpr, String> {
+        let mut base: CExpr = start;
         loop {
             if self.eat_punct("(") {
                 let mut args: Vec<CExpr> = Vec::new();
@@ -474,6 +544,62 @@ fn arb_cast_type() -> impl Strategy<Value = TypeName> {
         })
 }
 
+fn arb_literal_type(pool: Vec<Symbol>) -> impl Strategy<Value = TypeName> {
+    prop_oneof![
+        arb_cast_type(),
+        prop::sample::select(pool).prop_map(|tag: Symbol| TypeName {
+            base: CBaseType::plain(CTypeSpec::Struct(Some(tag))),
+            declarator: DeclaratorChain::Terminal,
+        }),
+        (
+            prop::sample::select(vec![CTypeSpec::Int, CTypeSpec::Char, CTypeSpec::Long]),
+            prop::collection::vec(1u64..5, 1..3),
+        )
+            .prop_map(|(spec, extents): (CTypeSpec, Vec<u64>)| {
+                let mut chain: DeclaratorChain = DeclaratorChain::Terminal;
+                for extent in extents.into_iter().rev() {
+                    chain = chain.array_of(Some(CExpr::int(extent)));
+                }
+                TypeName {
+                    base: CBaseType::plain(spec),
+                    declarator: chain,
+                }
+            }),
+    ]
+}
+
+fn arb_designator(
+    pool: Vec<Symbol>,
+    value: BoxedStrategy<CExpr>,
+) -> impl Strategy<Value = Designator> {
+    prop_oneof![
+        prop::sample::select(pool).prop_map(Designator::Field),
+        value.prop_map(Designator::Index),
+    ]
+}
+
+fn arb_init_items(
+    pool: Vec<Symbol>,
+    value: BoxedStrategy<CExpr>,
+) -> impl Strategy<Value = Vec<CInitItem>> {
+    let plain = value
+        .clone()
+        .prop_map(|expr: CExpr| CInitItem::expr(expr))
+        .boxed();
+    let nested = prop::collection::vec(plain.clone(), 1..3)
+        .prop_map(CInitItem::nested)
+        .boxed();
+    let designated = (
+        prop::collection::vec(arb_designator(pool, value.clone()), 1..3),
+        value,
+    )
+        .prop_map(|(designators, expr): (Vec<Designator>, CExpr)| {
+            CInitItem::at(designators, CInit::Expr(expr))
+        })
+        .boxed();
+    prop::collection::vec(prop_oneof![plain, nested, designated], 0..4)
+}
+
 fn arb_expr(pool: Vec<Symbol>) -> impl Strategy<Value = CExpr> {
     let pool_leaf: Vec<Symbol> = pool.clone();
     let leaf = prop_oneof![
@@ -547,10 +673,19 @@ fn arb_expr(pool: Vec<Symbol>) -> impl Strategy<Value = CExpr> {
                     field,
                 }
             ),
-            (arb_cast_type(), inner).prop_map(|(ty, operand): (TypeName, CExpr)| CExpr::Cast {
-                ty,
-                operand: Box::new(operand),
+            (arb_cast_type(), inner.clone()).prop_map(|(ty, operand): (TypeName, CExpr)| {
+                CExpr::Cast {
+                    ty,
+                    operand: Box::new(operand),
+                }
             }),
+            (
+                arb_literal_type(pool.clone()),
+                arb_init_items(pool.clone(), inner)
+            )
+                .prop_map(|(ty, items): (TypeName, Vec<CInitItem>)| {
+                    CExpr::CompoundLiteral { ty, items }
+                }),
         ]
     })
 }

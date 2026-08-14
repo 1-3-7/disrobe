@@ -1,4 +1,4 @@
-use crate::c::ast::{CExpr, CTypeSpec};
+use crate::c::ast::{CExpr, CTypeSpec, Designator};
 use crate::intern::{Interner, Symbol};
 
 #[derive(Debug)]
@@ -41,6 +41,10 @@ impl<'i> Cx<'i> {
             callee: Box::new(callee),
             args,
         }
+    }
+
+    pub fn designator(&mut self, field: &str) -> Designator {
+        Designator::Field(self.interner.intern(field))
     }
 
     pub fn index(&mut self, name: &str, index: CExpr) -> CExpr {

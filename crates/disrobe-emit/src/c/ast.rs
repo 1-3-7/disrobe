@@ -55,6 +55,14 @@ pub enum CTypeSpec {
     Struct(Option<Symbol>),
     Union(Option<Symbol>),
     Enum(Option<Symbol>),
+    TypeofExpr(Box<CExpr>),
+}
+
+impl CTypeSpec {
+    #[must_use]
+    pub fn typeof_expr(subject: CExpr) -> Self {
+        Self::TypeofExpr(Box::new(subject))
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -73,7 +81,7 @@ impl CBaseType {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum DeclaratorChain {
     Terminal,
     Pointer {
@@ -118,14 +126,14 @@ impl DeclaratorChain {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CParam {
     pub base: CBaseType,
     pub name: Option<Symbol>,
     pub declarator: DeclaratorChain,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TypeName {
     pub base: CBaseType,
     pub declarator: DeclaratorChain,
@@ -226,7 +234,7 @@ pub enum AssignOp {
     Or,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CExpr {
     Int {
         value: u64,
@@ -283,6 +291,10 @@ pub enum CExpr {
     },
     SizeofExpr(Box<Self>),
     SizeofType(TypeName),
+    CompoundLiteral {
+        ty: TypeName,
+        items: Vec<CInitItem>,
+    },
 }
 
 impl CExpr {
@@ -299,12 +311,54 @@ impl CExpr {
             suffix: IntSuffix::none(),
         }
     }
+
+    #[must_use]
+    pub const fn compound(ty: TypeName, items: Vec<CInitItem>) -> Self {
+        Self::CompoundLiteral { ty, items }
+    }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Designator {
+    Field(Symbol),
+    Index(CExpr),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct CInitItem {
+    pub designators: Vec<Designator>,
+    pub value: CInit,
+}
+
+impl CInitItem {
+    #[must_use]
+    pub const fn plain(value: CInit) -> Self {
+        Self {
+            designators: Vec::new(),
+            value,
+        }
+    }
+
+    #[must_use]
+    pub const fn expr(value: CExpr) -> Self {
+        Self::plain(CInit::Expr(value))
+    }
+
+    #[must_use]
+    pub const fn nested(items: Vec<Self>) -> Self {
+        Self::plain(CInit::List(items))
+    }
+
+    #[must_use]
+    pub const fn at(designators: Vec<Designator>, value: CInit) -> Self {
+        Self { designators, value }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CInit {
     Expr(CExpr),
-    List(Vec<Self>),
+    List(Vec<CInitItem>),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

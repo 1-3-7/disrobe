@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use disrobe_core::scratch::splitmix64;
 use disrobe_emit::c::ast::{
-    AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CTypeSpec, DeclaratorChain, IntSuffix, LongSuffix,
-    PostfixOp, Radix, TypeName, UnaryOp,
+    AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CInit, CTypeSpec, DeclaratorChain, IntSuffix,
+    LongSuffix, PostfixOp, Radix, TypeName, UnaryOp,
 };
 use disrobe_emit::c::print::{render_declaration, render_expr};
 use disrobe_emit::{Interner, Symbol};
@@ -328,6 +328,22 @@ impl Census {
             CExpr::SizeofExpr(operand) => {
                 self.sizeof_expr += 1;
                 self.record(operand);
+            }
+            CExpr::CompoundLiteral { items, .. } => {
+                for item in items {
+                    self.record_init(&item.value);
+                }
+            }
+        }
+    }
+
+    fn record_init(&mut self, init: &CInit) {
+        match init {
+            CInit::Expr(expr) => self.record(expr),
+            CInit::List(items) => {
+                for item in items {
+                    self.record_init(&item.value);
+                }
             }
         }
     }

@@ -8,9 +8,9 @@
 )]
 
 use disrobe_emit::c::ast::{
-    AggregateKind, AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CItem,
-    CParam, CQuals, CStmt, CTypeSpec, DeclaratorChain, IntSuffix, LongSuffix, PostfixOp, Radix,
-    Storage, TypeName, UnaryOp,
+    AggregateKind, AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CInitItem,
+    CItem, CParam, CQuals, CStmt, CTypeSpec, DeclaratorChain, Designator, IntSuffix, LongSuffix,
+    PostfixOp, Radix, Storage, TypeName, UnaryOp,
 };
 use disrobe_emit::c::print::{ParenMode, render_expr_mode, render_item, render_stmt};
 use disrobe_emit::precedence::{Assoc, Precedence, Side, parenthesize_operand};
@@ -151,6 +151,49 @@ fn every_expr(interner: &mut Interner) -> Vec<CExpr> {
                 operand: a(),
             }),
         },
+        CExpr::compound(
+            TypeName::plain(CTypeSpec::Int),
+            vec![CInitItem::expr(CExpr::int(0))],
+        ),
+        CExpr::compound(TypeName::plain(CTypeSpec::Int), Vec::new()),
+        CExpr::compound(
+            TypeName {
+                base: CBaseType::plain(CTypeSpec::Int),
+                declarator: DeclaratorChain::Terminal.array_of(Some(CExpr::int(2))),
+            },
+            vec![
+                CInitItem::at(
+                    vec![Designator::Index(CExpr::int(1))],
+                    CInit::Expr(CExpr::Ident(sa)),
+                ),
+                CInitItem::nested(vec![CInitItem::expr(CExpr::int(3))]),
+            ],
+        ),
+        CExpr::compound(
+            TypeName {
+                base: CBaseType::plain(CTypeSpec::Struct(Some(sp))),
+                declarator: DeclaratorChain::Terminal,
+            },
+            vec![CInitItem::at(
+                vec![Designator::Field(sfield), Designator::Field(sa)],
+                CInit::Expr(CExpr::int(4)),
+            )],
+        ),
+        CExpr::compound(
+            TypeName {
+                base: CBaseType::plain(CTypeSpec::typeof_expr(CExpr::Ident(sx))),
+                declarator: DeclaratorChain::Terminal,
+            },
+            vec![CInitItem::expr(CExpr::int(0))],
+        ),
+        CExpr::SizeofType(TypeName {
+            base: CBaseType::plain(CTypeSpec::typeof_expr(CExpr::Binary {
+                op: BinaryOp::Add,
+                lhs: a(),
+                rhs: b(),
+            })),
+            declarator: DeclaratorChain::Terminal.pointer_to(),
+        }),
     ];
     for op in unary_ops {
         exprs.push(CExpr::Unary { op, operand: a() });
@@ -221,10 +264,24 @@ fn every_stmt(interner: &mut Interner) -> Vec<CStmt> {
         declarator: DeclaratorChain::Terminal,
         init: Some(CInit::Expr(CExpr::int(0))),
     };
+    let table: CDecl = CDecl {
+        storage: None,
+        base: CBaseType::plain(CTypeSpec::Int),
+        name: Some(interner.intern("table")),
+        declarator: DeclaratorChain::Terminal.array_of(Some(CExpr::int(4))),
+        init: Some(CInit::List(vec![
+            CInitItem::expr(CExpr::int(1)),
+            CInitItem::at(
+                vec![Designator::Index(CExpr::int(3))],
+                CInit::Expr(CExpr::int(9)),
+            ),
+        ])),
+    };
     vec![
         CStmt::Empty,
         CStmt::Expr(CExpr::Ident(sx)),
         CStmt::Decl(decl.clone()),
+        CStmt::Decl(table),
         CStmt::Block(vec![CStmt::Break, CStmt::Continue]),
         CStmt::If {
             cond: CExpr::Ident(sc),

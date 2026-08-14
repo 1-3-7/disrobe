@@ -3,9 +3,9 @@ use std::borrow::Cow;
 use pretty::{Arena, DocAllocator, DocBuilder};
 
 use crate::c::ast::{
-    AggregateKind, AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CItem,
-    CParam, CQuals, CStmt, CTypeSpec, DeclaratorChain, IntSuffix, LongSuffix, PostfixOp, Radix,
-    Storage, TypeName, UnaryOp,
+    AggregateKind, AssignOp, BinaryOp, CBaseType, CDecl, CExpr, CField, CFile, CInit, CInitItem,
+    CItem, CParam, CQuals, CStmt, CTypeSpec, DeclaratorChain, Designator, IntSuffix, LongSuffix,
+    PostfixOp, Radix, Storage, TypeName, UnaryOp,
 };
 use crate::intern::{Interner, Symbol};
 use crate::precedence::{Assoc, Precedence, Side, parenthesize_operand};
@@ -160,9 +160,11 @@ const fn expr_precedence(expr: &CExpr) -> Precedence {
         CExpr::Unary { .. } | CExpr::Cast { .. } | CExpr::SizeofExpr(_) | CExpr::SizeofType(_) => {
             P_UNARY
         }
-        CExpr::Postfix { .. } | CExpr::Call { .. } | CExpr::Index { .. } | CExpr::Member { .. } => {
-            P_POSTFIX
-        }
+        CExpr::Postfix { .. }
+        | CExpr::Call { .. }
+        | CExpr::Index { .. }
+        | CExpr::Member { .. }
+        | CExpr::CompoundLiteral { .. } => P_POSTFIX,
         CExpr::Binary { op, .. } => binary_precedence(*op).0,
         CExpr::Assign { .. } => P_ASSIGN,
         CExpr::Ternary { .. } => P_TERNARY,
@@ -302,6 +304,9 @@ fn expr_doc<'a>(ctx: &Ctx<'a>, expr: &'a CExpr) -> Doc<'a> {
             arena.text("sizeof").append(arena.space()).append(inner)
         }
         CExpr::SizeofType(ty) => arena.text("sizeof").append(type_name_doc(ctx, ty).parens()),
+        CExpr::CompoundLiteral { ty, items } => type_name_doc(ctx, ty)
+            .parens()
+            .append(init_list_doc(ctx, items)),
     }
 }
 
@@ -353,7 +358,7 @@ fn leading_char(interner: &Interner, expr: &CExpr) -> char {
             leading_char(interner, lhs)
         }
         CExpr::Ternary { cond, .. } => leading_char(interner, cond),
-        CExpr::Cast { .. } => '(',
+        CExpr::Cast { .. } | CExpr::CompoundLiteral { .. } => '(',
         CExpr::SizeofExpr(_) | CExpr::SizeofType(_) => 's',
     }
 }
@@ -519,6 +524,9 @@ fn spec_doc<'a>(ctx: &Ctx<'a>, spec: &'a CTypeSpec) -> Doc<'a> {
         CTypeSpec::Struct(tag) => tagged_doc(ctx, "struct", *tag),
         CTypeSpec::Union(tag) => tagged_doc(ctx, "union", *tag),
         CTypeSpec::Enum(tag) => tagged_doc(ctx, "enum", *tag),
+        CTypeSpec::TypeofExpr(subject) => arena
+            .text("__typeof__")
+            .append(operand_min_doc(ctx, subject, P_COMMA).parens()),
     }
 }
 
@@ -536,15 +544,45 @@ fn tagged_doc<'a>(ctx: &Ctx<'a>, keyword: &'static str, tag: Option<Symbol>) -> 
 }
 
 fn init_doc<'a>(ctx: &Ctx<'a>, init: &'a CInit) -> Doc<'a> {
-    let arena: &'a Arena<'a> = ctx.arena;
     match init {
         CInit::Expr(expr) => operand_min_doc(ctx, expr, P_ASSIGN),
-        CInit::List(items) => {
-            let docs = items.iter().map(|item: &'a CInit| init_doc(ctx, item));
-            arena
-                .intersperse(docs, arena.text(", "))
-                .enclose(arena.text("{ "), arena.text(" }"))
-        }
+        CInit::List(items) => init_list_doc(ctx, items),
+    }
+}
+
+fn init_list_doc<'a>(ctx: &Ctx<'a>, items: &'a [CInitItem]) -> Doc<'a> {
+    let arena: &'a Arena<'a> = ctx.arena;
+    if items.is_empty() {
+        return arena.text("{}");
+    }
+    let docs = items
+        .iter()
+        .map(|item: &'a CInitItem| init_item_doc(ctx, item));
+    arena
+        .intersperse(docs, arena.text(", "))
+        .enclose(arena.text("{ "), arena.text(" }"))
+}
+
+fn init_item_doc<'a>(ctx: &Ctx<'a>, item: &'a CInitItem) -> Doc<'a> {
+    let arena: &'a Arena<'a> = ctx.arena;
+    let value: Doc<'a> = init_doc(ctx, &item.value);
+    if item.designators.is_empty() {
+        return value;
+    }
+    let heads = item
+        .designators
+        .iter()
+        .map(|designator: &'a Designator| designator_doc(ctx, designator));
+    arena.concat(heads).append(arena.text(" = ")).append(value)
+}
+
+fn designator_doc<'a>(ctx: &Ctx<'a>, designator: &'a Designator) -> Doc<'a> {
+    let arena: &'a Arena<'a> = ctx.arena;
+    match designator {
+        Designator::Field(symbol) => arena
+            .text(".")
+            .append(arena.text(ident_text(ctx.interner, *symbol))),
+        Designator::Index(expr) => operand_min_doc(ctx, expr, P_ASSIGN).brackets(),
     }
 }
 
