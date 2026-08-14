@@ -11,6 +11,7 @@
 mod ruby_toolchain;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -44,7 +45,13 @@ const DUMPER_ALIASES: &[(&str, &str, &str)] = &[(
      column; the two are separated by encoded length, three bytes against four",
 )];
 
-const MEASURED_OPCODE_FLOOR: usize = 96;
+const WIDTH_PREFIXES: &[&str] = &["EXT1", "EXT2", "EXT3"];
+
+const WIDE_LOCALS: u32 = 240;
+
+const WIDE_SYMBOLS: u32 = 300;
+
+const MEASURED_OPCODE_FLOOR: usize = 98;
 
 const SNIPPETS: &[(&str, &str)] = &[
     (
@@ -198,7 +205,7 @@ struct MrubyReference {
 
 #[derive(Debug, Clone)]
 struct Measurement {
-    name: &'static str,
+    name: String,
     compiler_present: BTreeSet<String>,
     disrobe_present: BTreeSet<String>,
     unmodeled: BTreeSet<String>,
@@ -439,17 +446,88 @@ fn compiler_instructions(
         .into_iter()
         .map(|irep: Vec<(u32, String)>| {
             let pcs: Vec<u32> = irep.iter().map(|(pc, _): &(u32, String)| *pc).collect();
-            irep.into_iter()
-                .enumerate()
-                .map(|(index, (pc, printed)): (usize, (u32, String))| {
+            let mut folded: Vec<(u32, String)> = Vec::with_capacity(irep.len());
+            let mut prefix_pc: Option<u32> = None;
+            for (index, (pc, printed)) in irep.into_iter().enumerate() {
+                if WIDTH_PREFIXES.contains(&printed.as_str()) {
+                    prefix_pc = prefix_pc.or(Some(pc));
+                    continue;
+                }
+                let widened: Option<u32> = prefix_pc.take();
+                let resolved: String = if widened.is_some() {
+                    expected_disrobe_mnemonic(&printed).to_owned()
+                } else {
                     let observed: Option<u32> = pcs
                         .get(index + 1)
                         .and_then(|next: &u32| next.checked_sub(pc));
-                    (pc, resolve_printed(&printed, observed, lengths))
-                })
-                .collect::<Vec<(u32, String)>>()
+                    resolve_printed(&printed, observed, lengths)
+                };
+                folded.push((widened.unwrap_or(pc), resolved));
+            }
+            folded
         })
         .collect()
+}
+
+fn compiler_prefixes(listing: &str) -> BTreeSet<String> {
+    compiler_printed(listing)
+        .into_iter()
+        .flatten()
+        .map(|(_, printed): (u32, String)| printed)
+        .filter(|printed: &String| WIDTH_PREFIXES.contains(&printed.as_str()))
+        .collect()
+}
+
+fn wide_local_program() -> String {
+    let mut source: String = String::new();
+    for index in 0..WIDE_LOCALS {
+        writeln!(source, "v{index} = {index}").expect("format into a string");
+    }
+    source.push_str("puts [");
+    for index in 0..WIDE_LOCALS {
+        if index > 0 {
+            source.push_str(", ");
+        }
+        write!(source, "v{index}").expect("format into a string");
+    }
+    source.push_str("].size\n");
+    source
+}
+
+fn wide_symbol_program() -> String {
+    let mut source: String = String::from("h = {}\n");
+    for index in 0..WIDE_SYMBOLS {
+        writeln!(source, "h[:s{index}] = {index}").expect("format into a string");
+    }
+    source.push_str("puts h.size\n");
+    source
+}
+
+fn wide_both_program() -> String {
+    let mut source: String = String::new();
+    for index in 0..WIDE_LOCALS {
+        writeln!(source, "v{index} = :a{index}").expect("format into a string");
+    }
+    source.push_str("h = {}\n");
+    for index in 0..WIDE_SYMBOLS {
+        writeln!(source, "h[:b{index}] = {index}").expect("format into a string");
+    }
+    let last_local: u32 = WIDE_LOCALS - 1;
+    let last_symbol: u32 = WIDE_SYMBOLS - 1;
+    writeln!(source, "v{last_local} = :b{last_symbol}").expect("format into a string");
+    writeln!(source, "puts h.size, v{last_local}").expect("format into a string");
+    source
+}
+
+fn all_snippets() -> Vec<(String, String)> {
+    let mut all: Vec<(String, String)> = SNIPPETS
+        .iter()
+        .map(|(name, source): &(&str, &str)| ((*name).to_owned(), (*source).to_owned()))
+        .collect();
+    all.push(("wide_registers".to_owned(), wide_local_program()));
+    all.push(("wide_symbols".to_owned(), wide_symbol_program()));
+    all.push(("wide_both".to_owned(), wide_both_program()));
+    all
 }
 
 fn compiler_printed(listing: &str) -> Vec<Vec<(u32, String)>> {
@@ -509,7 +587,7 @@ fn disrobe_ireps(bytes: &[u8], name: &str) -> Vec<Vec<(u32, String)>> {
         .collect()
 }
 
-fn measure(name: &'static str, source: &str, lengths: &BTreeMap<String, usize>) -> Measurement {
+fn measure(name: &str, source: &str, lengths: &BTreeMap<String, usize>) -> Measurement {
     let (_rb_scratch, _mrb_scratch, mrb_path, listing): (
         ScratchFile,
         ScratchFile,
@@ -522,11 +600,12 @@ fn measure(name: &'static str, source: &str, lengths: &BTreeMap<String, usize>) 
         Some(&b"RITE"[..]),
         "{name}: mrbc did not produce a RITE container"
     );
-    let compiler_present: BTreeSet<String> = compiler_instructions(&listing, lengths)
+    let mut compiler_present: BTreeSet<String> = compiler_instructions(&listing, lengths)
         .into_iter()
         .flatten()
         .map(|(_, mnemonic): (u32, String)| mnemonic)
         .collect();
+    compiler_present.extend(compiler_prefixes(&listing));
     let disrobe_present: BTreeSet<String> = disrobe_ireps(&bytes, name)
         .into_iter()
         .flatten()
@@ -542,7 +621,7 @@ fn measure(name: &'static str, source: &str, lengths: &BTreeMap<String, usize>) 
         .into_iter()
         .collect();
     Measurement {
-        name,
+        name: name.to_owned(),
         compiler_present,
         disrobe_present,
         unmodeled,
@@ -550,9 +629,9 @@ fn measure(name: &'static str, source: &str, lengths: &BTreeMap<String, usize>) 
 }
 
 fn measure_all(lengths: &BTreeMap<String, usize>) -> Vec<Measurement> {
-    SNIPPETS
+    all_snippets()
         .iter()
-        .map(|(name, source): &(&'static str, &str)| measure(name, source, lengths))
+        .map(|(name, source): &(String, String)| measure(name, source, lengths))
         .collect()
 }
 
@@ -651,6 +730,7 @@ fn every_isa_opcode_is_lowered_or_reported_dropped_under_its_real_mnemonic() {
 
     let mut lowered_measured: Vec<String> = Vec::new();
     let mut dropped_measured: Vec<String> = Vec::new();
+    let mut decoder_measured: Vec<String> = Vec::new();
     let mut declared_only: Vec<String> = Vec::new();
 
     for entry in &reference.isa {
@@ -661,22 +741,23 @@ fn every_isa_opcode_is_lowered_or_reported_dropped_under_its_real_mnemonic() {
         let reported: bool = dropped_anywhere.contains(spec.mnemonic);
 
         if !status.reaches_the_lifter() {
-            assert!(
-                !exercised,
-                "{} is declared a decoder prefix that never reaches the lifter, but mrbc printed \
-                 it as an instruction; the classification is wrong",
-                entry.mnemonic
-            );
             for measurement in &measurements {
                 assert!(
                     !measurement.disrobe_present.contains(spec.mnemonic),
                     "{}: disrobe's decoder emitted {} as an instruction, but it is declared a \
-                     width prefix that the decoder consumes",
+                     width prefix the decoder consumes into the instruction it widens",
                     measurement.name,
                     spec.mnemonic
                 );
             }
-            declared_only.push(format!("{} (decoder prefix)", entry.mnemonic));
+            if exercised {
+                decoder_measured.push(entry.mnemonic.clone());
+            } else {
+                declared_only.push(format!(
+                    "{} (decoder prefix, not reached by any snippet)",
+                    entry.mnemonic
+                ));
+            }
             continue;
         }
 
@@ -730,7 +811,7 @@ fn every_isa_opcode_is_lowered_or_reported_dropped_under_its_real_mnemonic() {
     }
 
     let total: usize = reference.isa.len();
-    let measured: usize = lowered_measured.len() + dropped_measured.len();
+    let measured: usize = lowered_measured.len() + dropped_measured.len() + decoder_measured.len();
     println!(
         "mruby {} instruction set, {} opcodes, compiler {}",
         reference.version, total, banner.banner
@@ -745,6 +826,11 @@ fn every_isa_opcode_is_lowered_or_reported_dropped_under_its_real_mnemonic() {
         "    reported dropped under their own mnemonic: {}/{total} {:?}",
         dropped_measured.len(),
         dropped_measured
+    );
+    println!(
+        "    consumed by the decoder into the instruction they widen: {}/{total} {:?}",
+        decoder_measured.len(),
+        decoder_measured
     );
     println!(
         "  declared only, no reachable mrbc input: {}/{total} {:?}",
@@ -787,7 +873,8 @@ fn disrobe_disassembly_agrees_with_the_mrbc_listing_instruction_for_instruction(
     let lengths: BTreeMap<String, usize> = encoded_lengths(&reference.isa);
     let mut compared: usize = 0;
 
-    for (name, source) in SNIPPETS {
+    let programs: Vec<(String, String)> = all_snippets();
+    for (name, source) in &programs {
         let (_rb_scratch, _mrb_scratch, mrb_path, listing): (
             ScratchFile,
             ScratchFile,
@@ -820,7 +907,7 @@ fn disrobe_disassembly_agrees_with_the_mrbc_listing_instruction_for_instruction(
     println!(
         "compared {compared} instructions against the {} listing across {} programs",
         banner.banner,
-        SNIPPETS.len()
+        programs.len()
     );
     assert!(
         compared > 500,
