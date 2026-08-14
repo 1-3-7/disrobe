@@ -5,7 +5,8 @@ use disrobe_core::Rung;
 use disrobe_core::chain::detection::{ChildArtifact, ChildHandle, TERMINAL_HINT};
 use disrobe_core::chain::{
     CatalogEntry, DetectContext, DetectVerdict, Detector, DetectorOutput,
-    FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SupportQuality,
+    FAMILY_OBFUSCATOR_WRAPPER, ObfuscatorCatalog, OutputKind, Pass, SelectionPolicy,
+    SupportQuality,
 };
 use disrobe_core::error::{CoreError, Result as CoreResult};
 use disrobe_core::pass::{PassContext, PassId};
@@ -782,14 +783,19 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
 
 const RECOVERED_CHILD_PATH: &str = "js-deob.recovered.js";
 
-fn recovered_child(bytes: Vec<u8>) -> ChildArtifact {
+fn another_layer_is_claimable(bytes: &[u8]) -> bool {
     let ctx: DetectContext<'_> = DetectContext {
-        bytes: bytes.as_slice(),
+        bytes,
         path_hint: Some(RECOVERED_CHILD_PATH),
         parent_hint: None,
         depth: 0,
     };
-    if Detector::detect(&JsObfDetector, &ctx).is_some() {
+    Detector::detect(&JsObfDetector, &ctx)
+        .is_some_and(|v: DetectVerdict| v.confidence >= SelectionPolicy::DEFAULT_MIN_CONFIDENCE)
+}
+
+fn recovered_child(bytes: Vec<u8>) -> ChildArtifact {
+    if another_layer_is_claimable(bytes.as_slice()) {
         chain_sample_child(RECOVERED_CHILD_PATH.to_string(), bytes)
     } else {
         terminal_child(RECOVERED_CHILD_PATH.to_string(), bytes)
@@ -872,6 +878,45 @@ mod tests {
     #[test]
     fn detector_id_is_stable() {
         assert_eq!(JsObfDetector.id(), PASS_ID);
+    }
+
+    #[test]
+    fn a_recovery_claimed_below_the_pick_threshold_is_the_answer_not_a_new_sample() {
+        let weak: &[u8] = b"function main(){ return eval(name); }\n";
+        let verdict: DetectVerdict = Detector::detect(
+            &JsObfDetector,
+            &DetectContext {
+                bytes: weak,
+                path_hint: None,
+                parent_hint: None,
+                depth: 1,
+            },
+        )
+        .expect("an eval indirection is still classified");
+        assert!(
+            verdict.confidence < SelectionPolicy::DEFAULT_MIN_CONFIDENCE,
+            "this probe must sit below the pick threshold; got {}",
+            verdict.confidence
+        );
+        assert!(
+            !another_layer_is_claimable(weak),
+            "a claim the chain would reject must not send the payload back for detection"
+        );
+        let child: ChildArtifact = recovered_child(weak.to_vec());
+        assert_eq!(child.handle.hint.as_deref(), Some(TERMINAL_HINT));
+    }
+
+    #[test]
+    fn a_recovery_that_still_reads_as_obfuscated_is_offered_to_the_chain() {
+        let layered: &[u8] =
+            include_bytes!("../../../corpus/js/packer/real/single-layer.packed.js");
+        assert!(
+            another_layer_is_claimable(layered),
+            "a real packed body must remain a chain sample"
+        );
+        let child: ChildArtifact = recovered_child(layered.to_vec());
+        assert_eq!(child.handle.hint, None);
+        assert_eq!(child.handle.relative_path, RECOVERED_CHILD_PATH);
     }
 
     fn detect_bytes(src: &[u8]) -> Option<DetectVerdict> {
