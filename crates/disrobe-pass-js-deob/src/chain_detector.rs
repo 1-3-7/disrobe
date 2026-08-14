@@ -178,7 +178,7 @@ impl Pass for JsObfPass {
             && !recovered.envelope.is_empty()
         {
             let bytes: Vec<u8> = recovered_child_bytes(detection.family, recovered.envelope);
-            children.push(child("js-deob.recovered.js".to_string(), bytes));
+            children.push(recovered_child(bytes));
         }
         children.extend(emit_dedicated_sidecars(input.envelope.as_slice()));
         Ok(children)
@@ -780,7 +780,34 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     ))
 }
 
-fn child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
+const RECOVERED_CHILD_PATH: &str = "js-deob.recovered.js";
+
+fn recovered_child(bytes: Vec<u8>) -> ChildArtifact {
+    let ctx: DetectContext<'_> = DetectContext {
+        bytes: bytes.as_slice(),
+        path_hint: Some(RECOVERED_CHILD_PATH),
+        parent_hint: None,
+        depth: 0,
+    };
+    if Detector::detect(&JsObfDetector, &ctx).is_some() {
+        chain_sample_child(RECOVERED_CHILD_PATH.to_string(), bytes)
+    } else {
+        terminal_child(RECOVERED_CHILD_PATH.to_string(), bytes)
+    }
+}
+
+const fn chain_sample_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
+    ChildArtifact {
+        handle: ChildHandle {
+            artifact_index: u32::MAX,
+            relative_path,
+            hint: None,
+        },
+        bytes,
+    }
+}
+
+fn terminal_child(relative_path: String, bytes: Vec<u8>) -> ChildArtifact {
     ChildArtifact {
         handle: ChildHandle {
             artifact_index: u32::MAX,
@@ -813,25 +840,25 @@ fn emit_dedicated_sidecars(bytes: &[u8]) -> Vec<ChildArtifact> {
     let mut children: Vec<ChildArtifact> = Vec::new();
     let detection: Detection = detect_obfuscator(bytes);
     if let Ok(json) = serde_json::to_vec_pretty(&detection) {
-        children.push(child("js-deob.detection.json".to_string(), json));
+        children.push(terminal_child("js-deob.detection.json".to_string(), json));
     }
     if let Ok(Some(recovery)) = recover_string_array(text) {
         let recovery: StringArrayRecovery = recovery;
         if let Ok(json) = serde_json::to_vec_pretty(&recovery) {
-            children.push(child("js-deob.recovery.json".to_string(), json));
+            children.push(terminal_child("js-deob.recovery.json".to_string(), json));
         }
     }
     if matches!(detection.family, JsObfuscator::ObfuscatorIo)
         && let Ok(pipeline) = obfuscator_io_deob(text, ObfPreset::High)
         && let Ok(json) = serde_json::to_vec_pretty(&pipeline)
     {
-        children.push(child("js-deob.pipeline.json".to_string(), json));
+        children.push(terminal_child("js-deob.pipeline.json".to_string(), json));
     }
     if matches!(detection.family, JsObfuscator::JsConfuser) {
         let opts: DeobOptions = DeobOptions::all();
         let out: DeobOutput = deobfuscate_all(text, &opts);
         if let Ok(json) = serde_json::to_vec_pretty(&out) {
-            children.push(child("js-deob.jsconfuser.json".to_string(), json));
+            children.push(terminal_child("js-deob.jsconfuser.json".to_string(), json));
         }
     }
     children
