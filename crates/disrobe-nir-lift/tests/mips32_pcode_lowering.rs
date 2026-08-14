@@ -343,6 +343,188 @@ fn lifted_order(function: &NirFunction) -> Vec<(u64, String)> {
         .collect()
 }
 
+fn lifted_detail(function: &NirFunction) -> Vec<(u64, String, Vec<String>)> {
+    function
+        .instructions
+        .iter()
+        .map(|instruction: &NirInstr| {
+            (
+                instruction.address,
+                format!("{:?}", instruction.op),
+                instruction.operands.clone(),
+            )
+        })
+        .collect()
+}
+
+fn indirect_transfer(function: &NirFunction) -> (usize, String) {
+    let position: usize = function
+        .instructions
+        .iter()
+        .position(|instruction: &NirInstr| {
+            matches!(
+                instruction.op,
+                NirOp::IndirectCall | NirOp::Branch { target: None }
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the indirect transfer must survive lowering: {:?}",
+                lifted_detail(function)
+            )
+        });
+    let transferred: String = function
+        .instructions
+        .get(position)
+        .and_then(|instruction: &NirInstr| instruction.operands.first().cloned())
+        .unwrap_or_else(|| {
+            panic!(
+                "an indirect transfer must name the value it transfers to: {:?}",
+                lifted_detail(function)
+            )
+        });
+    (position, transferred)
+}
+
+fn last_definition_before(function: &NirFunction, value: &str, limit: usize) -> Option<usize> {
+    function
+        .instructions
+        .iter()
+        .take(limit)
+        .rposition(|instruction: &NirInstr| {
+            instruction
+                .operands
+                .first()
+                .is_some_and(|out: &String| out == value)
+        })
+}
+
+#[test]
+fn a_delay_slot_cannot_redirect_the_indirect_transfer_it_precedes() {
+    for (label, transfer_word, address) in [
+        ("jalr", 0x0320_f809_u32, 0xc000_u64),
+        ("jr", 0x0320_0008, 0xd000),
+    ] {
+        let lowered: NirFunction = lower(
+            &[transfer_word, 0x0080_c821, 0x0320_1021, 0x0000_0000],
+            Endian::Little,
+            address,
+        );
+        let (transfer_position, transferred): (usize, String) = indirect_transfer(&lowered);
+        let slot_position: usize = position_of_slot_add(&lowered, "t9");
+        assert!(
+            slot_position < transfer_position,
+            "{label}: the delay slot must execute before the transfer it precedes: {:?}",
+            lifted_detail(&lowered)
+        );
+        let established: usize = last_definition_before(&lowered, &transferred, transfer_position)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label}: the value the transfer reads must be established in the function: \
+                     {:?}",
+                    lifted_detail(&lowered)
+                )
+            });
+        assert!(
+            established < slot_position,
+            "{label}: the transfer reads its target register at the transfer instruction, before \
+             the delay slot runs, so the value it transfers to must be established earlier than \
+             the slot's write to t9; it transfers to {transferred}: {:?}",
+            lifted_detail(&lowered)
+        );
+        assert_eq!(
+            lowered
+                .instructions
+                .get(established)
+                .map(|kept: &NirInstr| (kept.op.clone(), kept.operands.get(1).cloned())),
+            Some((
+                NirOp::Copy {
+                    src: "t9".to_owned(),
+                    size: 4,
+                },
+                Some("t9".to_owned())
+            )),
+            "{label}: the preserved value must be the target register itself, read before the \
+             slot rewrote it: {:?}",
+            lifted_detail(&lowered)
+        );
+    }
+}
+
+#[test]
+fn a_delay_slot_that_leaves_the_transfer_target_alone_reads_the_register_directly() {
+    let lowered: NirFunction = lower(
+        &[0x0320_f809, 0x2484_0001, 0x0000_0000],
+        Endian::Little,
+        0xc100,
+    );
+    let (transfer_position, transferred): (usize, String) = indirect_transfer(&lowered);
+    let slot_position: usize = position_of_slot_add(&lowered, "a0");
+    assert!(slot_position < transfer_position);
+    assert_eq!(
+        transferred,
+        "t9",
+        "a slot that never writes the target register must not make the call transfer through a \
+         copy of it: {:?}",
+        lifted_detail(&lowered)
+    );
+}
+
+#[test]
+fn a_linking_transfer_returns_past_its_own_delay_slot() {
+    for (label, word, address) in [
+        ("jal", 0x0c00_001a_u32, 0xc200_u64),
+        ("jalr", 0x0320_f809, 0xc300),
+    ] {
+        let lowered: NirFunction =
+            lower(&[word, 0x2484_0001, 0x0000_0000], Endian::Little, address);
+        let link: &NirInstr = lowered
+            .instructions
+            .iter()
+            .find(|instruction: &&NirInstr| {
+                instruction
+                    .operands
+                    .first()
+                    .is_some_and(|out: &String| out == "ra")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label} must write the link register: {:?}",
+                    lifted_detail(&lowered)
+                )
+            });
+        let expected: String = format!("{:#x}", address.wrapping_add(8));
+        assert_eq!(
+            link.op,
+            NirOp::Copy {
+                src: expected.clone(),
+                size: 4,
+            },
+            "{label} links to the instruction after its delay slot, which is {expected}: {:?}",
+            lifted_detail(&lowered)
+        );
+    }
+}
+
+#[test]
+fn an_instruction_with_no_modelled_semantics_reports_a_gap_under_its_own_mnemonic() {
+    let bytes: [u8; 4] = 0x9082_0000_u32.to_be_bytes();
+    let lifted: ArchLift =
+        lower_arch(PcodeArch::Mips32Be, &bytes, 0xe000, "probe").expect("the byte load lifts");
+    assert_eq!(
+        lifted.gaps.mnemonics(),
+        vec!["lbu"],
+        "an instruction the decoder recognises but cannot model must be reported under the \
+         mnemonic the disassembly gives it, not as an unrecognised word"
+    );
+    assert_eq!(lifted.decoded, 1);
+    assert_eq!(
+        lifted.modelled(),
+        0,
+        "an instruction reported as a gap must not also be counted as modelled"
+    );
+}
+
 #[test]
 fn a_transfer_without_a_delay_slot_surfaces_as_a_reported_gap() {
     let lowered: NirFunction = lower(&[0x1043_0001], Endian::Little, 0x5000);

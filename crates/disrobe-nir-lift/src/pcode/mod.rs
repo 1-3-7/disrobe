@@ -49,6 +49,8 @@ const MIPS32_DISCARDED_CELLS: &[&str] = &["zero"];
 
 const MIPS32_CONSTANT_ZERO_CELLS: &[&str] = &["zero"];
 
+const SNAPSHOT_STRIDE: u64 = 8;
+
 const MAX_PCODE_INSTRUCTIONS: usize = 65_536;
 const MAX_PCODE_OPERATIONS: usize = 1_048_576;
 const MAX_IDENTIFIER_BYTES: usize = 4096;
@@ -394,7 +396,8 @@ pub fn lower_pcode_block(
     });
     let scheduled: Option<ScheduledBlock> = config
         .branch_delay_slots
-        .then(|| schedule_delay_slots(&block.instructions));
+        .then(|| schedule_delay_slots(&block.instructions))
+        .transpose()?;
     let scheduled_instructions: &[PcodeInstr] = scheduled
         .as_ref()
         .map_or(block.instructions.as_slice(), |value: &ScheduledBlock| {
@@ -641,9 +644,10 @@ struct ScheduledBlock {
     consumed_slots: BTreeSet<usize>,
 }
 
-fn schedule_delay_slots(instructions: &[PcodeInstr]) -> ScheduledBlock {
+fn schedule_delay_slots(instructions: &[PcodeInstr]) -> Result<ScheduledBlock> {
     let mut scheduled: Vec<PcodeInstr> = instructions.to_vec();
     let mut consumed_slots: BTreeSet<usize> = BTreeSet::new();
+    let mut snapshots: SnapshotSpace = SnapshotSpace::above(instructions);
     let pairs: Vec<(usize, usize)> = scheduled
         .iter()
         .enumerate()
@@ -666,15 +670,161 @@ fn schedule_delay_slots(instructions: &[PcodeInstr]) -> ScheduledBlock {
         let Some(transfer): Option<&mut PcodeInstr> = scheduled.get_mut(index) else {
             continue;
         };
+        let address: u64 = transfer.address;
         let splice_at: usize = transfer_op.min(transfer.ops.len());
-        let tail: Vec<PcodeOp> = transfer.ops.split_off(splice_at);
+        let mut tail: Vec<PcodeOp> = transfer.ops.split_off(splice_at);
+        let preserved: Option<PcodeOp> =
+            preserve_transfer_target(&mut tail, &slot_ops, &mut snapshots, address)?;
+        if let Some(snapshot) = preserved {
+            transfer.ops.insert(0, snapshot);
+        }
         transfer.ops.extend(slot_ops);
         transfer.ops.extend(tail);
         consumed_slots.insert(slot_index);
     }
-    ScheduledBlock {
+    Ok(ScheduledBlock {
         instructions: scheduled,
         consumed_slots,
+    })
+}
+
+fn preserve_transfer_target(
+    tail: &mut [PcodeOp],
+    slot_ops: &[PcodeOp],
+    snapshots: &mut SnapshotSpace,
+    address: u64,
+) -> Result<Option<PcodeOp>> {
+    let Some(target): Option<&mut Varnode> = tail.first_mut().and_then(indirect_transfer_target)
+    else {
+        return Ok(None);
+    };
+    if target.space != Space::Register || !writes_over(slot_ops, *target) {
+        return Ok(None);
+    }
+    let snapshot: Varnode =
+        snapshots
+            .allocate(target.size_bytes)
+            .ok_or_else(|| LiftError::InvalidPcode {
+                address,
+                operation: "BRANCHIND".to_owned(),
+                reason: "no scratch space remains to hold the transfer target the delay slot \
+                         overwrites"
+                    .to_owned(),
+            })?;
+    let preserved: PcodeOp = PcodeOp::Copy {
+        output: snapshot,
+        input: *target,
+    };
+    *target = snapshot;
+    Ok(Some(preserved))
+}
+
+const fn indirect_transfer_target(operation: &mut PcodeOp) -> Option<&mut Varnode> {
+    match operation {
+        PcodeOp::BranchIndirect { target } | PcodeOp::CallIndirect { target } => Some(target),
+        _ => None,
+    }
+}
+
+fn writes_over(operations: &[PcodeOp], target: Varnode) -> bool {
+    let start: u64 = target.offset;
+    let end: u64 = start.saturating_add(u64::from(target.size_bytes));
+    operations
+        .iter()
+        .filter_map(output_varnode)
+        .any(|written: Varnode| {
+            written.space == target.space
+                && written.offset < end
+                && start < written.offset.saturating_add(u64::from(written.size_bytes))
+        })
+}
+
+#[derive(Debug)]
+struct SnapshotSpace {
+    next: u64,
+}
+
+impl SnapshotSpace {
+    fn above(instructions: &[PcodeInstr]) -> Self {
+        let next: u64 = instructions
+            .iter()
+            .flat_map(|instruction: &PcodeInstr| instruction.ops.iter())
+            .filter_map(output_varnode)
+            .filter(|written: &Varnode| written.space == Space::Unique)
+            .filter_map(|written: Varnode| {
+                written.offset.checked_add(u64::from(written.size_bytes))
+            })
+            .max()
+            .unwrap_or(0);
+        Self { next }
+    }
+
+    fn allocate(&mut self, size_bytes: u32) -> Option<Varnode> {
+        let offset: u64 = self.next;
+        let stride: u64 = u64::from(size_bytes).max(SNAPSHOT_STRIDE);
+        self.next = offset.checked_add(stride)?;
+        Some(Varnode {
+            offset,
+            size_bytes,
+            space: Space::Unique,
+        })
+    }
+}
+
+const fn output_varnode(operation: &PcodeOp) -> Option<Varnode> {
+    match operation {
+        PcodeOp::BoolAnd { output, .. }
+        | PcodeOp::BoolNegate { output, .. }
+        | PcodeOp::BoolOr { output, .. }
+        | PcodeOp::BoolXor { output, .. }
+        | PcodeOp::Copy { output, .. }
+        | PcodeOp::FloatAdd { output, .. }
+        | PcodeOp::FloatDiv { output, .. }
+        | PcodeOp::FloatEqual { output, .. }
+        | PcodeOp::FloatLess { output, .. }
+        | PcodeOp::FloatLessEqual { output, .. }
+        | PcodeOp::FloatMult { output, .. }
+        | PcodeOp::FloatSqrt { output, .. }
+        | PcodeOp::FloatSub { output, .. }
+        | PcodeOp::FloatToFloat { output, .. }
+        | PcodeOp::FloatTrunc { output, .. }
+        | PcodeOp::IntToFloat { output, .. }
+        | PcodeOp::IntAdd { output, .. }
+        | PcodeOp::IntAnd { output, .. }
+        | PcodeOp::IntCarry { output, .. }
+        | PcodeOp::IntDiv { output, .. }
+        | PcodeOp::IntEqual { output, .. }
+        | PcodeOp::IntLeft { output, .. }
+        | PcodeOp::IntLess { output, .. }
+        | PcodeOp::IntLessEqual { output, .. }
+        | PcodeOp::IntMult { output, .. }
+        | PcodeOp::IntNegate { output, .. }
+        | PcodeOp::IntNotEqual { output, .. }
+        | PcodeOp::IntOr { output, .. }
+        | PcodeOp::IntRem { output, .. }
+        | PcodeOp::IntRight { output, .. }
+        | PcodeOp::IntSignedBorrow { output, .. }
+        | PcodeOp::IntSignedCarry { output, .. }
+        | PcodeOp::IntSignedDiv { output, .. }
+        | PcodeOp::IntSignedLess { output, .. }
+        | PcodeOp::IntSignedLessEqual { output, .. }
+        | PcodeOp::IntSignedRem { output, .. }
+        | PcodeOp::IntSignedRight { output, .. }
+        | PcodeOp::IntSub { output, .. }
+        | PcodeOp::IntXor { output, .. }
+        | PcodeOp::IntSext { output, .. }
+        | PcodeOp::IntZext { output, .. }
+        | PcodeOp::Load { output, .. }
+        | PcodeOp::Piece { output, .. }
+        | PcodeOp::Subpiece { output, .. } => Some(*output),
+        PcodeOp::CallOther { output, .. } => *output,
+        PcodeOp::Branch { .. }
+        | PcodeOp::BranchIndirect { .. }
+        | PcodeOp::CBranch { .. }
+        | PcodeOp::Call { .. }
+        | PcodeOp::CallIndirect { .. }
+        | PcodeOp::Return { .. }
+        | PcodeOp::Store { .. } => None,
     }
 }
 

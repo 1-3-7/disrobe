@@ -37,6 +37,9 @@ const MIX_INSTRUCTIONS: usize = 7;
 const MIX_BYTES: usize = MIX_INSTRUCTIONS * 4;
 const MIX_TRANSFER: u64 = IMAGE_BASE + 0x14;
 const MIX_DELAY_SLOT: u64 = IMAGE_BASE + 0x18;
+const FORMS_CALL_INDEX: usize = 19;
+const FORMS_CALL: u64 = IMAGE_BASE + 0x4c;
+const FORMS_CALL_RETURN: u64 = IMAGE_BASE + 0x54;
 
 struct CompiledImage {
     label: &'static str,
@@ -350,6 +353,70 @@ fn a_delay_slot_of_a_compiled_transfer_executes_before_the_transfer() {
             NirOp::Nop,
             "{} must not execute the slot a second time at its own address",
             image.label
+        );
+    }
+}
+
+#[test]
+fn a_compiled_call_links_past_the_delay_slot_rather_than_into_it() {
+    for image in COMPILED_IMAGES
+        .iter()
+        .filter(|image: &&CompiledImage| image.label.ends_with("-forms"))
+    {
+        let listing: Vec<&str> = listed_mnemonics(image.listing);
+        assert_eq!(
+            (
+                listing.get(FORMS_CALL_INDEX).copied(),
+                listing.get(FORMS_CALL_INDEX.saturating_add(1)).copied()
+            ),
+            (Some("jal"), Some("nop")),
+            "{} must still hold its compiled call where this test reads it",
+            image.label
+        );
+        let lifted: ArchLift = lift(image.label, image.endian, image.text);
+        let link_position: usize = lifted
+            .function
+            .instructions
+            .iter()
+            .position(|instruction: &NirInstr| {
+                instruction.address == FORMS_CALL
+                    && instruction
+                        .operands
+                        .first()
+                        .is_some_and(|out: &String| out == "ra")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} must write the link register at its compiled call: {:?}",
+                    image.label,
+                    lifted_order(&lifted.function)
+                )
+            });
+        let link: &NirInstr = lifted
+            .function
+            .instructions
+            .get(link_position)
+            .unwrap_or_else(|| panic!("{} must keep the link write it just found", image.label));
+        assert_eq!(
+            link.op,
+            NirOp::Copy {
+                src: format!("{FORMS_CALL_RETURN:#x}"),
+                size: 4,
+            },
+            "{} must link to the instruction after the delay slot, never to the slot itself",
+            image.label
+        );
+        let call_position: usize = lifted
+            .function
+            .instructions
+            .iter()
+            .position(|instruction: &NirInstr| matches!(instruction.op, NirOp::Call { .. }))
+            .unwrap_or_else(|| panic!("{} must lower jal to a call", image.label));
+        assert!(
+            link_position < call_position,
+            "{} must establish the return address before it transfers: {:?}",
+            image.label,
+            lifted_order(&lifted.function)
         );
     }
 }
