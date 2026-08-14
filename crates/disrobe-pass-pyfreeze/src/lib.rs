@@ -57,6 +57,15 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn read_file_prefix(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let file: fs::File = fs::File::open(path)?;
+    let mut reader: std::io::Take<fs::File> = file.take(max_bytes);
+    let capacity: usize = usize::try_from(max_bytes).unwrap_or(0);
+    let mut bytes: Vec<u8> = Vec::with_capacity(capacity);
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub mod bbfreeze;
 pub mod briefcase;
 #[cfg(feature = "chain")]

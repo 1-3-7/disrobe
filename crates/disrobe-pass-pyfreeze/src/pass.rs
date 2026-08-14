@@ -122,7 +122,19 @@ pub fn extract(input: &Path, out_dir: &Path) -> Result<PyfreezeOutput> {
                 )
             });
             dbg_kv("cxfreeze-entries", || res.extracted.len().to_string());
+            dbg_kv("cxfreeze-filesystem-entries", || {
+                res.filesystem_entries.len().to_string()
+            });
+            dbg_kv("cxfreeze-filesystem-symlinks-skipped", || {
+                res.filesystem_symlinks_skipped.to_string()
+            });
             let recovered: cxfreeze::CxFreezeRecovery = res.recover();
+            dbg_kv("cxfreeze-filesystem-bytecode", || {
+                format!(
+                    "{} attempted, {} past the cap",
+                    recovered.filesystem_bytecode_attempted, recovered.filesystem_bytecode_capped
+                )
+            });
             if dbg_enabled() {
                 for (module, reason) in &recovered.bytecode_failures {
                     dbg_kv("cxfreeze-bytecode-failed", || format!("{module}: {reason}"));
