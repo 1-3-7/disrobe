@@ -9,7 +9,7 @@ Python is `disrobe`'s most contested and most developed ecosystem. It ships an *
 | Layer | Coverage |
 |---|---|
 | Bytecode disassembly | CPython 1.0-3.15, PyPy, MicroPython `.mpy` v0-v6, Jython, IronPython, Brython |
-| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object recompile-equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->, above the 96.60% floor a committed CI gate enforces), and the legacy 1.0-3.7 band asserts a CI floor of <!-- m:py_legacy_count -->150 of 191<!-- /m --> proven-correct (<!-- m:py_legacy_local_count -->166 of 191<!-- /m --> measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
+| Decompilation | In-house engine across CPython 1.0-3.15 with per-version opcode dispatch; <!-- m:py_stdlib_full_pct -->95.09%<!-- /m --> per-code-object recompile-equivalence on the full CPython 3.14 stdlib (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m -->), <!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m --> on the pinned 200-module corpus (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->, above the 96.60% floor a committed CI gate enforces on tag and scheduled runs), and the legacy 1.0-3.7 band asserts a floor, enforced on the same runs, of <!-- m:py_legacy_count -->150 of 191<!-- /m --> proven-correct (<!-- m:py_legacy_local_count -->166 of 191<!-- /m --> measured locally with the period interpreter zoo: 67 by recompile-equivalence, 99 by structural token-match) |
 | Modern constructs | `match`, walrus, f-strings and PEP 750 t-strings, exception groups, PEP 695/696/709 |
 | Control flow | try/except/else and try/finally structured from the exception-table forest, with-statement folding, multi-exit `while True` and `while COND` loops, conditional (ternary) expressions, and chained comparisons in conditions, each recompile-checked |
 | Freezers | PyInstaller 2.x-6.20+, Nuitka, cx_Freeze, py2exe, shiv, pex, PyOxidizer (experimental, unvalidated), Briefcase, SourceDefender |
@@ -79,7 +79,27 @@ disrobe auto suspect.exe --out recovered/    # PyInstaller -> PyArmor -> .pyc de
 
 ### Measured equivalence
 
-The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->** (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> code objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules), and the gate that walks that whole population, `full_stdlib_recompile_gate.rs`, is marked `#[ignore]`: no workflow runs it, so this figure comes from a local run and CI re-derives only a 115-module slice of it, which carries its own floors. On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m -->** (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->), above a 96.60% floor a committed CI gate enforces (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
+The per-code-object figure is measured against an independent oracle, not the tool's own output: each recovered module is recompiled on CPython 3.14.5 and its code objects are diffed against the originals. The full stdlib measurement is **<!-- m:py_stdlib_full_pct -->95.09%<!-- /m -->** (<!-- m:py_stdlib_full_count -->17378 of 18276<!-- /m --> code objects across <!-- m:py_stdlib_full_modules -->574<!-- /m --> modules), and the gate that walks that whole population, `full_stdlib_recompile_gate.rs`, is marked `#[ignore]`: no workflow runs it, so this figure comes from a local run and CI re-derives only a 115-module slice of it, which carries its own floors. On the pinned 200-module corpus (6286 code objects) the rate is **<!-- m:py_stdlib_pinned_pct -->96.6%<!-- /m -->** (<!-- m:py_stdlib_pinned_count -->6072 of 6286<!-- /m -->), above a 96.60% floor a committed CI gate enforces on tag and scheduled runs (`arbitrary_recompile_gate.rs`). uncompyle6 stops near 3.8 and decompyle3 near 3.9; the ML-based decompilers self-flag benchmark contamination, and there is no model here to contaminate.
+
+### Per-interpreter bands
+
+Each band compiles the same pinned module list on its own interpreter, then recompiles the recovered source on that same interpreter. A pinned module an interpreter does not ship is not measured, so the denominators differ and the rates do not rank the bands against each other. Every rate below is cut from the fraction beside it.
+
+| Band | Interpreter | Recovered | Rate | Modules | Enforced on |
+|---|---|---|---|---|---|
+| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5170 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->94.72%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
+| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5403 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->95.83%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
+| 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5400 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.42%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | tag, schedule |
+| 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5709 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->95.69%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | tag, schedule |
+| 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6072 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.60%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
+| 3.15 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_frac -->6219 / 6480<!-- /m --> code objects | <!-- m:py_band_315_rate -->95.97%<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | tag, schedule |
+| 1.0 to 3.7 | period interpreter zoo | <!-- m:py_legacy_frac -->150 / 191<!-- /m --> fixtures | floor, not a measured rate | not applicable | tag, schedule |
+
+Every figure in the table renders from `xtask/data/recovery.json`, so moving a bar without regenerating the page fails `cargo run -p xtask -- regen --check`.
+
+The last column names the CI triggers that run each row. A push to `main` runs the 3.10 band, the smallest population, which keeps the push route inside its time budget. A tag build and the weekly scheduled build run every row that has a band gate. The 3.10 and 3.15 jobs mark their interpreter mandatory, so a runner that cannot provide it fails the job instead of reporting a pass over nothing.
+
+Two rows read differently from the rest. No workflow measures a 3.14 band, and `xtask/src/facts.rs` records that bar as unpinned. The row re-plots the 200-module pinned corpus measurement, `regen --check` holds the two bars equal on every run, and `arbitrary_recompile_gate.rs` measures the bar it mirrors on tag and scheduled runs. The legacy row counts fixtures rather than code objects, and its fraction is the floor `legacy_recompile.rs` asserts rather than a measured rate, so it carries no rate.
 
 ### Cython compiled extensions
 
@@ -90,5 +110,5 @@ Recovery is graded against real compiled Cython fixtures (unstripped, stripped, 
 ## Limits
 
 - A Cython module's Python source is gone once compiled. Only the import surface described above is recoverable, not the `.pyx` bodies.
-- The legacy 1.0-3.7 band asserts a lower floor in CI than the count measured locally, because the period interpreter zoo the local run uses is not present in CI. Of that local count, 67 are proven by recompile-equivalence and 99 by structural token-match.
+- The legacy 1.0-3.7 band asserts a lower floor on tag and scheduled runs than the count measured locally, because the period interpreter zoo the local run uses is not present in CI. Of that local count, 67 are proven by recompile-equivalence and 99 by structural token-match.
 - PyArmor v6/v7 may need the opt-in dynamic-hook fallback, which executes the sample. The manifest-named v8/v9 default-trial result is a pure-static structural decoding check only; it does not establish recovery for other variants.

@@ -17,6 +17,8 @@ const PYARMOR_STRUCTURAL_GROUP: &str = "PyArmor structural marshal coverage";
 const PYARMOR_STRUCTURAL_BAR: &str = "v8/v9 default-trial wrappers";
 const NATIVE_CFF_GROUP: &str = "OLLVM control-flow-flattening dispatcher cover";
 const NATIVE_CFF_BAR: &str = "OLLVM -fla dispatcher states";
+const PY_BAND_GROUP: &str = "Python bytecode by interpreter band";
+const INTERPRETER_PREAMBLE: &str = "on CPython ";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mode {
@@ -60,6 +62,8 @@ struct Bar {
     link_skipped_num: Option<u64>,
     #[serde(default)]
     link_skipped_den: Option<u64>,
+    #[serde(default)]
+    detail: Option<String>,
 }
 
 impl Recovery {
@@ -74,6 +78,37 @@ impl Recovery {
             }
         }
         bail!("recovery.json has no bar `{label}` under a heading containing `{heading_substr}`")
+    }
+
+    fn band_bar(&self, label_prefix: &str) -> Result<&Bar> {
+        let mut found: Option<&Bar> = None;
+        for group in &self.groups {
+            if !group.heading.contains(PY_BAND_GROUP) {
+                continue;
+            }
+            for bar in &group.bars {
+                if !bar.label.starts_with(label_prefix) {
+                    continue;
+                }
+                if let Some(earlier) = found {
+                    bail!(
+                        "recovery.json publishes two bars under `{PY_BAND_GROUP}` whose labels \
+                         start with `{label_prefix}`, `{}` and `{}`, so a marker keyed to that \
+                         prefix cannot say which band it renders",
+                        earlier.label,
+                        bar.label
+                    );
+                }
+                found = Some(bar);
+            }
+        }
+        found.ok_or_else(|| {
+            eyre!(
+                "recovery.json publishes no bar under `{PY_BAND_GROUP}` whose label starts with \
+                 `{label_prefix}`, so the documentation row keyed to that band would render \
+                 nothing; publish the bar or remove the row"
+            )
+        })
     }
 }
 
@@ -120,6 +155,72 @@ impl Bar {
         Ok(MetricValue::Int(modules))
     }
 
+    fn label_module_count(&self) -> Result<MetricValue> {
+        let inside: &str = self
+            .label
+            .split_once('(')
+            .and_then(|(_, rest): (&str, &str)| rest.split_once(')'))
+            .map(|(inside, _): (&str, &str)| inside)
+            .ok_or_else(|| {
+                eyre!(
+                    "band bar `{}` carries no parenthesized module count, and an interpreter band \
+                     has no `modules` field, so its label is the only place that count is \
+                     published",
+                    self.label
+                )
+            })?;
+        let digits: &str = inside
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|run: &&str| !run.is_empty())
+            .ok_or_else(|| {
+                eyre!(
+                    "band bar `{}` states no module count between its parentheses",
+                    self.label
+                )
+            })?;
+        let modules: u64 = digits.parse::<u64>().wrap_err_with(|| {
+            format!(
+                "module count `{digits}` in band label `{}` does not parse",
+                self.label
+            )
+        })?;
+        Ok(MetricValue::Int(modules))
+    }
+
+    fn interpreter_release(&self) -> Result<MetricValue> {
+        let detail: &str = self.detail.as_deref().ok_or_else(|| {
+            eyre!(
+                "band bar `{}` carries no `detail`, the only place it records the interpreter \
+                 release its counts were measured on",
+                self.label
+            )
+        })?;
+        let after: &str = detail
+            .split_once(INTERPRETER_PREAMBLE)
+            .map(|(_, rest): (&str, &str)| rest)
+            .ok_or_else(|| {
+                eyre!(
+                    "the `{}` detail never says `{INTERPRETER_PREAMBLE}<release>`, so the \
+                     interpreter its counts were measured on cannot be rendered: {detail}",
+                    self.label
+                )
+            })?;
+        let release: &str = after
+            .split_once(". ")
+            .map_or(after, |(head, _): (&str, &str)| head)
+            .trim_end_matches('.');
+        if !release.starts_with(|c: char| c.is_ascii_digit())
+            || release.contains(char::is_whitespace)
+        {
+            bail!(
+                "the `{}` detail names `{release}` after `{INTERPRETER_PREAMBLE}`, which is not an \
+                 interpreter release",
+                self.label
+            );
+        }
+        Ok(MetricValue::Text(release.to_owned()))
+    }
+
     fn delivered(&self) -> Result<u64> {
         self.delivered
             .ok_or_else(|| eyre!("bar `{}` has no delivered count", self.label))
@@ -161,11 +262,12 @@ impl Bar {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum MetricValue {
     Int(u64),
     Ratio { num: u64, den: u64 },
     Percent(f64),
+    Text(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,9 +275,11 @@ enum Formatter {
     Int,
     Thousands,
     Pct,
+    DerivedPct,
     Frac,
     OfPlain,
     OfGrouped,
+    Text,
 }
 
 impl Formatter {
@@ -184,6 +288,7 @@ impl Formatter {
             (Self::Int, MetricValue::Int(n)) => Ok(n.to_string()),
             (Self::Thousands, MetricValue::Int(n)) => Ok(group_thousands(n)),
             (Self::Pct, MetricValue::Percent(p)) => Ok(format_percent(p)),
+            (Self::DerivedPct, MetricValue::Ratio { num, den }) => derive_percent(num, den),
             (Self::Frac, MetricValue::Ratio { num, den }) => Ok(format!("{num} / {den}")),
             (Self::OfPlain, MetricValue::Ratio { num, den }) => Ok(format!("{num} of {den}")),
             (Self::OfGrouped, MetricValue::Ratio { num, den }) => Ok(format!(
@@ -191,11 +296,19 @@ impl Formatter {
                 group_thousands(num),
                 group_thousands(den)
             )),
+            (Self::Text, MetricValue::Text(text)) => Ok(text),
             (formatter, other) => {
                 bail!("formatter {formatter:?} cannot render metric value {other:?}")
             }
         }
     }
+}
+
+fn derive_percent(num: u64, den: u64) -> Result<String> {
+    if den == 0 {
+        bail!("a rate derived from {num} over a zero denominator has no value");
+    }
+    Ok(format!("{:.2}%", (num as f64) * 100.0 / (den as f64)))
 }
 
 #[derive(Debug)]
@@ -217,10 +330,92 @@ struct CatalogKeySpec {
     extract: fn(&CatalogTables) -> Result<MetricValue>,
 }
 
+#[derive(Debug)]
+struct BandKeySpec {
+    stem: &'static str,
+    label_prefix: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BandFacet {
+    Frac,
+    Rate,
+    Modules,
+    Interpreter,
+}
+
+impl BandFacet {
+    const SUFFIXES: [(&'static str, Self); 4] = [
+        ("_frac", Self::Frac),
+        ("_rate", Self::Rate),
+        ("_modules", Self::Modules),
+        ("_interpreter", Self::Interpreter),
+    ];
+
+    fn from_suffix(suffix: &str) -> Option<Self> {
+        Self::SUFFIXES
+            .iter()
+            .copied()
+            .find_map(|(text, facet): (&'static str, Self)| (text == suffix).then_some(facet))
+    }
+
+    const fn formatter(self) -> Formatter {
+        match self {
+            Self::Frac => Formatter::Frac,
+            Self::Rate => Formatter::DerivedPct,
+            Self::Modules => Formatter::Int,
+            Self::Interpreter => Formatter::Text,
+        }
+    }
+
+    const fn nouns(self) -> &'static [&'static str] {
+        match self {
+            Self::Modules => &["modules"],
+            Self::Frac | Self::Rate | Self::Interpreter => &[],
+        }
+    }
+
+    fn extract(self, bar: &Bar) -> Result<MetricValue> {
+        match self {
+            Self::Frac | Self::Rate => bar.count_ratio(),
+            Self::Modules => bar.label_module_count(),
+            Self::Interpreter => bar.interpreter_release(),
+        }
+    }
+}
+
+const PY_BANDS: &[BandKeySpec] = &[
+    BandKeySpec {
+        stem: "py_band_310",
+        label_prefix: "CPython 3.10",
+    },
+    BandKeySpec {
+        stem: "py_band_311",
+        label_prefix: "CPython 3.11",
+    },
+    BandKeySpec {
+        stem: "py_band_312",
+        label_prefix: "CPython 3.12",
+    },
+    BandKeySpec {
+        stem: "py_band_313",
+        label_prefix: "CPython 3.13",
+    },
+    BandKeySpec {
+        stem: "py_band_314",
+        label_prefix: "CPython 3.14",
+    },
+    BandKeySpec {
+        stem: "py_band_315",
+        label_prefix: "CPython 3.15",
+    },
+];
+
 #[derive(Clone, Copy)]
 enum Spec {
     Measured(&'static KeySpec),
     Catalog(&'static CatalogKeySpec),
+    Band(BandFacet, &'static BandKeySpec),
 }
 
 impl Spec {
@@ -228,6 +423,7 @@ impl Spec {
         match self {
             Self::Measured(spec) => spec.formatter,
             Self::Catalog(spec) => spec.formatter,
+            Self::Band(facet, _) => facet.formatter(),
         }
     }
 
@@ -235,6 +431,7 @@ impl Spec {
         match self {
             Self::Measured(spec) => (spec.extract)(&sources.recovery),
             Self::Catalog(spec) => (spec.extract)(&sources.catalog),
+            Self::Band(facet, spec) => facet.extract(sources.recovery.band_bar(spec.label_prefix)?),
         }
     }
 
@@ -328,6 +525,12 @@ const KEYS: &[KeySpec] = &[
     KeySpec {
         name: "py_legacy_count",
         formatter: Formatter::OfPlain,
+        nouns: &[],
+        extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.count_ratio(),
+    },
+    KeySpec {
+        name: "py_legacy_frac",
+        formatter: Formatter::Frac,
         nouns: &[],
         extract: |r: &Recovery| r.bar("CPython legacy", "proven-correct")?.count_ratio(),
     },
@@ -776,6 +979,14 @@ const CATALOG_KEYS: &[CatalogKeySpec] = &[
     },
 ];
 
+fn band_spec_for(name: &str) -> Option<Spec> {
+    PY_BANDS.iter().find_map(|spec: &'static BandKeySpec| {
+        name.strip_prefix(spec.stem)
+            .and_then(BandFacet::from_suffix)
+            .map(|facet: BandFacet| Spec::Band(facet, spec))
+    })
+}
+
 fn spec_for(name: &str) -> Option<Spec> {
     KEYS.iter()
         .find(|spec: &&KeySpec| spec.name == name)
@@ -786,15 +997,22 @@ fn spec_for(name: &str) -> Option<Spec> {
                 .find(|spec: &&CatalogKeySpec| spec.name == name)
                 .map(Spec::Catalog)
         })
+        .or_else(|| band_spec_for(name))
 }
 
 fn collect_nouns() -> Vec<&'static str> {
     let mut nouns: Vec<&'static str> = Vec::new();
-    for spec in KEYS {
-        for noun in spec.nouns {
-            if !nouns.contains(noun) {
-                nouns.push(noun);
-            }
+    let declared = KEYS
+        .iter()
+        .flat_map(|spec: &KeySpec| spec.nouns.iter().copied())
+        .chain(
+            BandFacet::SUFFIXES
+                .iter()
+                .flat_map(|(_, facet): &(&'static str, BandFacet)| facet.nouns().iter().copied()),
+        );
+    for noun in declared {
+        if !nouns.contains(&noun) {
+            nouns.push(noun);
         }
     }
     nouns.sort_unstable_by(|a: &&str, b: &&str| b.len().cmp(&a.len()).then(a.cmp(b)));
@@ -1207,6 +1425,16 @@ fn display_label(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn band_key_names() -> Vec<String> {
+        let mut names: Vec<String> = Vec::with_capacity(PY_BANDS.len() * BandFacet::SUFFIXES.len());
+        for spec in PY_BANDS {
+            for (suffix, _) in BandFacet::SUFFIXES {
+                names.push(format!("{}{suffix}", spec.stem));
+            }
+        }
+        names
+    }
+
     fn test_recovery() -> Result<Recovery> {
         let raw: &str = r#"{
             "groups": [
@@ -1243,6 +1471,25 @@ mod tests {
                     "bars": [
                         {"label": "full 574-module stdlib (representative)", "value": 92.43, "num": 16880, "den": 18262},
                         {"label": "200-module pinned corpus", "value": 94.18, "num": 6051, "den": 6286}
+                    ]
+                },
+                {
+                    "heading": "Python bytecode by interpreter band (same pinned module list)",
+                    "bars": [
+                        {
+                            "label": "CPython 3.12 (177 of the pinned modules)",
+                            "value": 95.42,
+                            "num": 5400,
+                            "den": 5659,
+                            "detail": "5400 / 5659 code objects over 177 modules on CPython 3.12.13. 23 of the 200 pinned modules do not exist in this interpreter's Lib."
+                        },
+                        {
+                            "label": "CPython 3.14 (all 200 pinned modules)",
+                            "value": 96.6,
+                            "num": 6072,
+                            "den": 6286,
+                            "detail": "6072 / 6286 code objects over 200 modules on CPython 3.14.5. 0 of the 200 pinned modules do not exist in this interpreter's Lib."
+                        }
                     ]
                 },
                 {
@@ -1291,12 +1538,12 @@ mod tests {
         let plain: MetricValue = recovery
             .bar("Python bytecode", "200-module pinned corpus")?
             .count_ratio()?;
-        assert_eq!(Formatter::OfPlain.render(plain)?, "6051 of 6286");
+        assert_eq!(Formatter::OfPlain.render(plain.clone())?, "6051 of 6286");
         assert_eq!(Formatter::OfGrouped.render(plain)?, "6,051 of 6,286");
         let full: MetricValue = recovery
             .bar("Python bytecode", "full 574-module stdlib (representative)")?
             .count_ratio()?;
-        assert_eq!(Formatter::OfPlain.render(full)?, "16880 of 18262");
+        assert_eq!(Formatter::OfPlain.render(full.clone())?, "16880 of 18262");
         assert_eq!(Formatter::OfGrouped.render(full)?, "16,880 of 18,262");
         Ok(())
     }
@@ -1420,15 +1667,119 @@ mod tests {
 
     #[test]
     fn a_key_name_is_claimed_by_exactly_one_registry() {
-        let mut names: Vec<&'static str> = KEYS
+        let mut names: Vec<String> = KEYS
             .iter()
-            .map(|spec: &KeySpec| spec.name)
-            .chain(CATALOG_KEYS.iter().map(|spec: &CatalogKeySpec| spec.name))
+            .map(|spec: &KeySpec| spec.name.to_owned())
+            .chain(
+                CATALOG_KEYS
+                    .iter()
+                    .map(|spec: &CatalogKeySpec| spec.name.to_owned()),
+            )
+            .chain(band_key_names())
             .collect();
         let total: usize = names.len();
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), total, "duplicate metric key name");
+    }
+
+    #[test]
+    fn every_band_key_resolves_to_its_own_band() -> Result<()> {
+        for name in band_key_names() {
+            let resolved: Spec =
+                spec_for(&name).ok_or_else(|| eyre!("band key `{name}` resolves to no spec"))?;
+            let Spec::Band(_, spec) = resolved else {
+                bail!("band key `{name}` resolved outside the band registry");
+            };
+            assert!(
+                name.starts_with(spec.stem),
+                "band key `{name}` resolved to the `{}` band",
+                spec.label_prefix
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_band_marker_renders_the_fraction_and_derives_the_rate() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "3.12 recompiles <!-- m:py_band_312_frac -->0 / 0<!-- /m --> \
+             (<!-- m:py_band_312_rate -->0%<!-- /m -->) over \
+             <!-- m:py_band_312_modules -->0<!-- /m --> modules on CPython \
+             <!-- m:py_band_312_interpreter -->0.0.0<!-- /m -->.\n";
+        let once: String = rewrite_text(source, &sources)?;
+        let twice: String = rewrite_text(&once, &sources)?;
+        assert!(once.contains("-->5400 / 5659<!-- /m -->"));
+        assert!(once.contains("-->95.42%<!-- /m -->"));
+        assert!(once.contains("-->177<!-- /m --> modules"));
+        assert!(once.contains("-->3.12.13<!-- /m -->"));
+        assert_eq!(once, twice);
+        let mut issues: Vec<String> = Vec::new();
+        check_text(&once, &sources, "fixture.md", &mut issues)?;
+        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_derived_band_rate_never_reads_the_stored_percentage() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "3.14 <!-- m:py_band_314_rate -->0%<!-- /m -->\n";
+        let rendered: String = rewrite_text(source, &sources)?;
+        assert!(
+            rendered.contains("-->96.60%<!-- /m -->"),
+            "the 3.14 band stores 96.6 and measures 6072 of 6286, so the marker must render the \
+             rate cut from the fraction: {rendered}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_band_with_no_bar_fails_regeneration() -> Result<()> {
+        let sources: MetricSources = test_sources()?;
+        let source: &str = "3.15 recompiles <!-- m:py_band_315_frac -->0 / 0<!-- /m -->.\n";
+        let failure: eyre::Report = rewrite_text(source, &sources)
+            .err()
+            .ok_or_else(|| eyre!("a band with no bar rendered an empty span instead of failing"))?;
+        let text: String = format!("{failure:#}");
+        assert!(
+            text.contains("CPython 3.15"),
+            "the failure must name the band that has no bar: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_band_bar_with_no_module_count_in_its_label_fails() -> Result<()> {
+        let bar: Bar = serde_json::from_str(
+            r#"{"label": "CPython 3.12", "num": 1, "den": 2, "detail": "on CPython 3.12.13. x"}"#,
+        )
+        .map_err(|err: serde_json::Error| eyre!("{err}"))?;
+        assert!(bar.label_module_count().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_band_detail_that_names_no_interpreter_fails() -> Result<()> {
+        let bar: Bar = serde_json::from_str(
+            r#"{"label": "CPython 3.12 (177 of the pinned modules)", "num": 1, "den": 2, "detail": "measured somewhere"}"#,
+        )
+        .map_err(|err: serde_json::Error| eyre!("{err}"))?;
+        assert!(bar.interpreter_release().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_rate_derived_from_a_zero_denominator_fails() {
+        assert!(derive_percent(0, 0).is_err());
+        assert!(derive_percent(1, 0).is_err());
+    }
+
+    #[test]
+    fn a_derived_rate_rounds_to_two_places() -> Result<()> {
+        assert_eq!(derive_percent(5_170, 5_458)?, "94.72%");
+        assert_eq!(derive_percent(6_072, 6_286)?, "96.60%");
+        assert_eq!(derive_percent(6_219, 6_480)?, "95.97%");
+        Ok(())
     }
 
     #[test]
