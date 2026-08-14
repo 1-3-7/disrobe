@@ -1298,6 +1298,9 @@ const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
 const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
 const SWITCH_DIRECTION_REFUSAL_MARKER: &str = "switch dispatch is backward or mixed";
 const SWITCH_ANALYSIS_BUDGET_MARKER: &str = "switch analysis budget exhausted";
+const SWITCH_INVALID_TARGET_REFUSAL_MARKER: &str = "switch dispatch has an invalid target";
+const SWITCH_MID_ENTRY_REFUSAL_MARKER: &str = "switch dispatch has a mid-region entry";
+const SWITCH_IRREDUCIBLE_REFUSAL_MARKER: &str = "switch dispatch region is irreducible";
 const MAX_SWITCH_ANALYSIS_FUEL: usize = 65_536;
 
 fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> {
@@ -3487,6 +3490,8 @@ fn structure_switches(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
         return stmts;
     }
     let mut out: Vec<Stmt> = Vec::with_capacity(stmts.len());
+    let cfg: StatementCfg = StatementCfg::new(&stmts);
+    let mut fuel: SwitchAnalysisFuel = SwitchAnalysisFuel::new();
     let mut i: usize = 0;
     while i < stmts.len() {
         if let Stmt::With { object, body } = &stmts[i] {
@@ -3497,10 +3502,21 @@ fn structure_switches(stmts: Vec<Stmt>, depth: usize) -> Vec<Stmt> {
             i += 1;
             continue;
         }
-        if let Some((consumed, stmt)) = try_match_switch(&stmts, i, depth) {
-            out.push(stmt);
-            i += consumed;
-            continue;
+        match try_match_switch(&stmts, &cfg, i, depth, &mut fuel) {
+            Ok(Some((consumed, stmt))) => {
+                out.push(stmt);
+                i += consumed;
+                continue;
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                let already_recorded: bool = out
+                    .last()
+                    .is_some_and(|statement: &Stmt| matches!(statement, Stmt::Comment(existing) if existing == reason));
+                if !already_recorded {
+                    out.push(Stmt::Comment(reason.to_owned()));
+                }
+            }
         }
         out.push(stmts[i].clone());
         i += 1;
@@ -3514,12 +3530,80 @@ struct SwitchPlan {
     label_pos: BTreeMap<usize, usize>,
 }
 
+struct StatementCfg {
+    label_positions: BTreeMap<usize, usize>,
+    successors: Vec<BTreeSet<usize>>,
+    predecessors: Vec<BTreeSet<usize>>,
+}
+
+impl StatementCfg {
+    fn new(stmts: &[Stmt]) -> Self {
+        let label_positions: BTreeMap<usize, usize> = stmts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, statement): (usize, &Stmt)| match statement {
+                Stmt::Label(label) => Some((*label, index)),
+                _ => None,
+            })
+            .collect();
+        let mut successors: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); stmts.len()];
+        for (index, statement) in stmts.iter().enumerate() {
+            let next: Option<usize> = index
+                .checked_add(1)
+                .filter(|next: &usize| *next < stmts.len());
+            match statement {
+                Stmt::Jump { target_label } => {
+                    if let Some(target) = label_positions.get(target_label) {
+                        successors[index].insert(*target);
+                    }
+                }
+                Stmt::If { target_label, .. } => {
+                    if let Some(target) = label_positions.get(target_label) {
+                        successors[index].insert(*target);
+                    }
+                    successors[index].extend(next);
+                }
+                Stmt::Switch {
+                    case_labels,
+                    default_label,
+                    ..
+                } => {
+                    successors[index].extend(
+                        case_labels
+                            .iter()
+                            .chain(std::iter::once(default_label))
+                            .filter_map(|label: &usize| label_positions.get(label))
+                            .copied(),
+                    );
+                }
+                Stmt::Return(_) | Stmt::Throw(_) => {}
+                _ => successors[index].extend(next),
+            }
+        }
+        let mut predecessors: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); stmts.len()];
+        for (source, targets) in successors.iter().enumerate() {
+            for target in targets {
+                predecessors[*target].insert(source);
+            }
+        }
+        Self {
+            label_positions,
+            successors,
+            predecessors,
+        }
+    }
+}
+
 fn plan_switch(
-    stmts: &[Stmt],
+    cfg: &StatementCfg,
     sw: usize,
     case_labels: &[usize],
     default_label: usize,
-) -> Option<SwitchPlan> {
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<SwitchPlan, &'static str> {
+    if !fuel.charge(case_labels.len().saturating_add(1)) {
+        return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+    }
     let mut target_keys: BTreeMap<usize, Vec<CaseLabel>> = BTreeMap::new();
     for (value, target) in case_labels.iter().enumerate() {
         target_keys
@@ -3533,36 +3617,46 @@ fn plan_switch(
         .push(CaseLabel::Default);
     let mut label_pos: BTreeMap<usize, usize> = BTreeMap::new();
     for target in target_keys.keys() {
-        let pos: usize = stmts[sw + 1..]
-            .iter()
-            .position(|s: &Stmt| matches!(s, Stmt::Label(l) if l == target))
-            .map(|p: usize| sw + 1 + p)?;
+        let Some(pos): Option<usize> = cfg.label_positions.get(target).copied() else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if pos <= sw {
+            return Err(SWITCH_DIRECTION_REFUSAL_MARKER);
+        }
         label_pos.insert(*target, pos);
     }
     let mut ordered_targets: Vec<usize> = target_keys.keys().copied().collect();
     ordered_targets.sort_by_key(|t: &usize| label_pos[t]);
-    Some(SwitchPlan {
+    Ok(SwitchPlan {
         target_keys,
         ordered_targets,
         label_pos,
     })
 }
 
-fn switch_merge_pos(stmts: &[Stmt], plan: &SwitchPlan, last_start: usize) -> usize {
+fn switch_merge_pos(
+    stmts: &[Stmt],
+    plan: &SwitchPlan,
+    last_start: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> Option<usize> {
     let case_label_positions: BTreeSet<usize> = plan
         .label_pos
         .values()
         .copied()
         .collect::<BTreeSet<usize>>();
     for (idx, stmt) in stmts.iter().enumerate().skip(last_start + 1) {
+        if !fuel.charge(1) {
+            return None;
+        }
         if let Stmt::Label(l) = stmt
             && !case_label_positions.contains(&idx)
             && label_ref_count(stmts, *l) >= 1
         {
-            return idx;
+            return Some(idx);
         }
     }
-    stmts.len()
+    Some(stmts.len())
 }
 
 fn default_target_is_the_join(
@@ -3589,6 +3683,129 @@ fn default_target_is_the_join(
     };
     label_ref_count(region, default_label) > 0
         && label_ref_count(stmts, default_label) == label_ref_count(region, default_label)
+}
+
+fn statement_has_invalid_target(statement: &Stmt, labels: &BTreeMap<usize, usize>) -> bool {
+    match statement {
+        Stmt::Jump { target_label } | Stmt::If { target_label, .. } => {
+            !labels.contains_key(target_label)
+        }
+        Stmt::Switch {
+            case_labels,
+            default_label,
+            ..
+        } => {
+            !labels.contains_key(default_label)
+                || case_labels
+                    .iter()
+                    .any(|label: &usize| !labels.contains_key(label))
+        }
+        _ => false,
+    }
+}
+
+fn switch_case_index(case_positions: &[usize], statement: usize) -> Option<usize> {
+    case_positions
+        .partition_point(|position: &usize| *position <= statement)
+        .checked_sub(1)
+}
+
+fn validate_switch_region(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    sw: usize,
+    plan: &SwitchPlan,
+    merge_pos: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<(), &'static str> {
+    let first_start: usize = *plan
+        .label_pos
+        .get(
+            plan.ordered_targets
+                .first()
+                .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?,
+        )
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    if first_start != sw.saturating_add(1) {
+        return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
+    }
+    if merge_pos < first_start || merge_pos > stmts.len() {
+        return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+    }
+    let dispatch_targets: BTreeSet<usize> = plan.label_pos.values().copied().collect();
+    let Some(actual_dispatch_targets): Option<&BTreeSet<usize>> = cfg.successors.get(sw) else {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    };
+    if actual_dispatch_targets != &dispatch_targets {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    }
+    if stmts[first_start..merge_pos]
+        .iter()
+        .any(|statement: &Stmt| statement_has_invalid_target(statement, &cfg.label_positions))
+    {
+        return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+    }
+    let case_positions: Vec<usize> = dispatch_targets
+        .iter()
+        .copied()
+        .filter(|position: &usize| *position < merge_pos)
+        .collect();
+    let case_position_set: BTreeSet<usize> = case_positions.iter().copied().collect();
+    for target in first_start..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let Some(predecessors): Option<&BTreeSet<usize>> = cfg.predecessors.get(target) else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if !fuel.charge(predecessors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        for source in predecessors {
+            if *source == sw && case_position_set.contains(&target) {
+                continue;
+            }
+            if *source < first_start || *source >= merge_pos {
+                return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
+            }
+        }
+    }
+    for source in first_start..merge_pos {
+        if !fuel.charge(1) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        let Some(source_case): Option<usize> = switch_case_index(&case_positions, source) else {
+            return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+        };
+        let Some(successors): Option<&BTreeSet<usize>> = cfg.successors.get(source) else {
+            return Err(SWITCH_INVALID_TARGET_REFUSAL_MARKER);
+        };
+        if !fuel.charge(successors.len()) {
+            return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+        }
+        for target in successors {
+            if *target == merge_pos {
+                continue;
+            }
+            if *target < first_start || *target > merge_pos {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            }
+            let Some(target_case): Option<usize> = switch_case_index(&case_positions, *target)
+            else {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            };
+            if source_case == target_case {
+                continue;
+            }
+            let is_ordered_fallthrough: bool = target_case == source_case.saturating_add(1)
+                && source.saturating_add(1) == *target
+                && case_position_set.contains(target);
+            if !is_ordered_fallthrough {
+                return Err(SWITCH_IRREDUCIBLE_REFUSAL_MARKER);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_switch_case(
@@ -3627,9 +3844,15 @@ fn build_switch_case(
     })
 }
 
-fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, Stmt)> {
+fn try_match_switch(
+    stmts: &[Stmt],
+    cfg: &StatementCfg,
+    sw: usize,
+    depth: usize,
+    fuel: &mut SwitchAnalysisFuel,
+) -> core::result::Result<Option<(usize, Stmt)>, &'static str> {
     if depth == 0 {
-        return None;
+        return Ok(None);
     }
     let Stmt::Switch {
         selector,
@@ -3637,7 +3860,7 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
         default_label,
     }: &Stmt = &stmts[sw]
     else {
-        return None;
+        return Ok(None);
     };
     if sw
         .checked_sub(1)
@@ -3651,15 +3874,33 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
             )
         })
     {
-        return None;
+        return Ok(None);
     }
-    let plan: SwitchPlan = plan_switch(stmts, sw, case_labels, *default_label)?;
-    let first_start: usize = *plan.label_pos.get(plan.ordered_targets.first()?)?;
+    let plan: SwitchPlan = plan_switch(cfg, sw, case_labels, *default_label, fuel)?;
+    let first_target: &usize = plan
+        .ordered_targets
+        .first()
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    let first_start: usize = *plan
+        .label_pos
+        .get(first_target)
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
     if first_start != sw + 1 {
-        return None;
+        return Err(SWITCH_MID_ENTRY_REFUSAL_MARKER);
     }
-    let last_start: usize = *plan.label_pos.get(plan.ordered_targets.last()?)?;
-    let scanned_merge: usize = switch_merge_pos(stmts, &plan, last_start);
+    let last_target: &usize = plan
+        .ordered_targets
+        .last()
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    let last_start: usize = *plan
+        .label_pos
+        .get(last_target)
+        .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
+    let scanned_merge: usize =
+        switch_merge_pos(stmts, &plan, last_start, fuel).ok_or(SWITCH_ANALYSIS_BUDGET_MARKER)?;
+    if !fuel.charge(stmts.len().saturating_add(scanned_merge.saturating_sub(sw))) {
+        return Err(SWITCH_ANALYSIS_BUDGET_MARKER);
+    }
     let trailing_default_join: bool =
         default_target_is_the_join(stmts, &plan, sw, scanned_merge, *default_label);
     let merge_pos: usize = if trailing_default_join {
@@ -3677,32 +3918,50 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
                     || reason == SWITCH_ANALYSIS_BUDGET_MARKER
         )
     }) {
-        return None;
+        return Ok(None);
     }
+    validate_switch_region(stmts, cfg, sw, &plan, merge_pos, fuel)?;
     let merge_label: Option<usize> = match stmts.get(merge_pos) {
         Some(Stmt::Label(l)) => Some(*l),
         _ => None,
     };
     let body_targets: &[usize] = if trailing_default_join {
-        plan.ordered_targets.get(..plan.ordered_targets.len() - 1)?
+        plan.ordered_targets
+            .get(..plan.ordered_targets.len() - 1)
+            .ok_or(SWITCH_IRREDUCIBLE_REFUSAL_MARKER)?
     } else {
         plan.ordered_targets.as_slice()
     };
     let mut cases: Vec<SwitchCase> = Vec::with_capacity(plan.ordered_targets.len());
     for (n, target) in body_targets.iter().enumerate() {
-        let seg_start: usize = *plan.label_pos.get(target)?;
+        let seg_start: usize = *plan
+            .label_pos
+            .get(target)
+            .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?;
         let seg_end: usize = match body_targets.get(n + 1) {
-            Some(next) => *plan.label_pos.get(next)?,
+            Some(next) => *plan
+                .label_pos
+                .get(next)
+                .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?,
             None => merge_pos,
         };
-        let keys: Vec<CaseLabel> = plan.target_keys.get(target)?.clone();
+        let keys: Vec<CaseLabel> = plan
+            .target_keys
+            .get(target)
+            .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?
+            .clone();
         let case: SwitchCase =
-            build_switch_case(stmts, seg_start, seg_end, merge_label, keys, depth)?;
+            build_switch_case(stmts, seg_start, seg_end, merge_label, keys, depth)
+                .ok_or(SWITCH_IRREDUCIBLE_REFUSAL_MARKER)?;
         cases.push(case);
     }
     if trailing_default_join {
         cases.push(SwitchCase {
-            labels: plan.target_keys.get(default_label)?.clone(),
+            labels: plan
+                .target_keys
+                .get(default_label)
+                .ok_or(SWITCH_INVALID_TARGET_REFUSAL_MARKER)?
+                .clone(),
             body: Vec::new(),
             breaks: true,
         });
@@ -3711,7 +3970,7 @@ fn try_match_switch(stmts: &[Stmt], sw: usize, depth: usize) -> Option<(usize, S
         selector: selector.clone(),
         cases,
     };
-    Some((merge_pos - sw, stmt))
+    Ok(Some((merge_pos - sw, stmt)))
 }
 
 fn structure_with(stmts: Vec<Stmt>, regions: &[WithRegion], depth: usize) -> Vec<Stmt> {
@@ -5503,6 +5762,109 @@ mod tests {
         assert_eq!(
             forward_dispatch_follow(&nonterminal_fallthrough, &two_cases),
             None
+        );
+    }
+
+    #[test]
+    fn switch_with_an_external_case_entry_is_refused_by_named_reason() {
+        let statements: Vec<Stmt> = vec![
+            Stmt::If {
+                cond: Expr::Local(1),
+                target_label: 10,
+            },
+            Stmt::Switch {
+                selector: Expr::Local(2),
+                case_labels: vec![10, 20],
+                default_label: 30,
+            },
+            Stmt::Label(10),
+            Stmt::Expression(Expr::IntLit(10)),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(20),
+            Stmt::Expression(Expr::IntLit(20)),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(30),
+            Stmt::Expression(Expr::IntLit(30)),
+            Stmt::Label(40),
+            Stmt::Return(None),
+        ];
+        let structured: Vec<Stmt> = structure_switches(statements, MAX_STRUCTURE_DEPTH);
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::Switch { .. })),
+            "a case with a predecessor outside its dispatch must keep the raw switch: {structured:?}"
+        );
+        assert!(
+            structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_MID_ENTRY_REFUSAL_MARKER
+            )),
+            "the refusal must expose the violated CFG invariant: {structured:?}"
+        );
+    }
+
+    #[test]
+    fn switch_with_a_missing_case_target_is_refused_by_named_reason() {
+        let statements: Vec<Stmt> = vec![
+            Stmt::Switch {
+                selector: Expr::Local(1),
+                case_labels: vec![10, 99],
+                default_label: 20,
+            },
+            Stmt::Label(10),
+            Stmt::Return(Some(Expr::IntLit(10))),
+            Stmt::Label(20),
+            Stmt::Return(Some(Expr::IntLit(20))),
+        ];
+        let structured: Vec<Stmt> = structure_switches(statements, MAX_STRUCTURE_DEPTH);
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::Switch { .. })),
+            "a dispatch target without an instruction-boundary label must keep the raw switch: {structured:?}"
+        );
+        assert!(
+            structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_INVALID_TARGET_REFUSAL_MARKER
+            )),
+            "the invalid target must have a stable refusal reason: {structured:?}"
+        );
+    }
+
+    #[test]
+    fn switch_with_a_cross_case_back_edge_is_refused_by_named_reason() {
+        let statements: Vec<Stmt> = vec![
+            Stmt::Switch {
+                selector: Expr::Local(1),
+                case_labels: vec![10, 20],
+                default_label: 30,
+            },
+            Stmt::Label(10),
+            Stmt::Expression(Expr::IntLit(10)),
+            Stmt::Jump { target_label: 40 },
+            Stmt::Label(20),
+            Stmt::Expression(Expr::IntLit(20)),
+            Stmt::Jump { target_label: 10 },
+            Stmt::Label(30),
+            Stmt::Expression(Expr::IntLit(30)),
+            Stmt::Label(40),
+            Stmt::Return(None),
+        ];
+        let structured: Vec<Stmt> = structure_switches(statements, MAX_STRUCTURE_DEPTH);
+        assert!(
+            structured
+                .iter()
+                .any(|statement: &Stmt| matches!(statement, Stmt::Switch { .. })),
+            "a cross-case back edge must keep the raw switch: {structured:?}"
+        );
+        assert!(
+            structured.iter().any(|statement: &Stmt| matches!(
+                statement,
+                Stmt::Comment(reason) if reason == SWITCH_IRREDUCIBLE_REFUSAL_MARKER
+            )),
+            "the irreducible case graph must have a stable refusal reason: {structured:?}"
         );
     }
 

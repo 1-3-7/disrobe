@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
-use disrobe_pass_as3::abc::{self, MethodInfo};
+use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
 use disrobe_pass_as3::lifter::{LiftedBody, Stmt, lift_body, lift_body_raw};
 use disrobe_pass_as3::swf::{self, Swf};
 
@@ -641,4 +641,164 @@ fn oracle_passes_a_hand_built_while_with_break() {
         Stmt::Return(None),
     ];
     assert_eq!(classify(&raw, &structured), Equivalence::Equivalent);
+}
+
+fn bare_abc() -> AbcFile {
+    AbcFile {
+        minor: abc::ABC_MINOR,
+        major: abc::ABC_MAJOR,
+        cpool: ConstantPool::default(),
+        methods: Vec::new(),
+        metadata_count: 0,
+        instances: Vec::new(),
+        classes: Vec::new(),
+        scripts: Vec::new(),
+        method_bodies: Vec::new(),
+    }
+}
+
+fn switch_body(code: Vec<u8>, local_count: u32) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 1,
+        local_count,
+        init_scope_depth: 0,
+        max_scope_depth: 0,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
+fn push_s24(out: &mut Vec<u8>, value: i32) {
+    let raw: u32 = value as u32;
+    out.push((raw & 0xFF) as u8);
+    out.push(((raw >> 8) & 0xFF) as u8);
+    out.push(((raw >> 16) & 0xFF) as u8);
+}
+
+fn patch_switch_target(code: &mut [u8], operand: usize, switch: usize, target: usize) {
+    let relative: i32 = target as i32 - switch as i32;
+    let raw: u32 = relative as u32;
+    code[operand] = (raw & 0xFF) as u8;
+    code[operand + 1] = ((raw >> 8) & 0xFF) as u8;
+    code[operand + 2] = ((raw >> 16) & 0xFF) as u8;
+}
+
+fn patch_branch_target(code: &mut [u8], operand: usize, target: usize) {
+    let after: usize = operand + 3;
+    let relative: i32 = target as i32 - after as i32;
+    let raw: u32 = relative as u32;
+    code[operand] = (raw & 0xFF) as u8;
+    code[operand + 1] = ((raw >> 8) & 0xFF) as u8;
+    code[operand + 2] = ((raw >> 16) & 0xFF) as u8;
+}
+
+#[test]
+fn forward_switch_preserves_the_prior_sixteen_edge_regression() {
+    const TARGETS: usize = 16;
+    let mut code: Vec<u8> = vec![0x24, 0x00];
+    let switch: usize = code.len();
+    code.push(0x1B);
+    let default_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.push((TARGETS - 1) as u8);
+    let mut case_operands: Vec<usize> = Vec::with_capacity(TARGETS);
+    for _ in 0..TARGETS {
+        case_operands.push(code.len());
+        push_s24(&mut code, 0);
+    }
+    let mut targets: Vec<usize> = Vec::with_capacity(TARGETS);
+    for value in 0..TARGETS {
+        targets.push(code.len());
+        code.extend_from_slice(&[0x24, (value + 1) as u8, 0x48]);
+    }
+    for (operand, target) in case_operands.into_iter().zip(targets.iter().copied()) {
+        patch_switch_target(&mut code, operand, switch, target);
+    }
+    patch_switch_target(&mut code, default_operand, switch, targets[TARGETS - 1]);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 1);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw switch lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("structured switch lift");
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let raw_switch: usize = raw_flat
+        .nodes
+        .iter()
+        .position(|node: &FlatNode| matches!(node, FlatNode::Switch { .. }))
+        .expect("raw dispatch node");
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    let structured_switch: usize = structured_flat
+        .nodes
+        .iter()
+        .position(|node: &FlatNode| matches!(node, FlatNode::Switch { .. }))
+        .expect("structured dispatch node");
+    assert_eq!(next_leaf_set(&raw_flat, raw_switch).len(), TARGETS);
+    assert_eq!(
+        next_leaf_set(&structured_flat, structured_switch).len(),
+        TARGETS
+    );
+}
+
+#[test]
+fn adjacent_case_fallthrough_preserves_successor_edges() {
+    let mut code: Vec<u8> = vec![0x24, 0x00];
+    let switch: usize = code.len();
+    code.push(0x1B);
+    let default_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.push(1);
+    let case_zero_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let case_one_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let case_zero: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6]);
+    let case_one: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_switch_target(&mut code, default_operand, switch, merge);
+    patch_switch_target(&mut code, case_zero_operand, switch, case_zero);
+    patch_switch_target(&mut code, case_one_operand, switch, case_one);
+    patch_branch_target(&mut code, break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw fallthrough lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("structured fallthrough lift");
+    let structured: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        .expect("fallthrough dispatch must structure");
+    let Stmt::StructuredSwitch { cases, .. } = structured else {
+        unreachable!()
+    };
+    assert_eq!(cases.len(), 3);
+    assert!(!cases[0].breaks);
+    assert!(!cases[0].body.is_empty());
+    assert!(!cases[1].body.is_empty());
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
 }

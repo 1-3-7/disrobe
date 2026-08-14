@@ -18,7 +18,12 @@ const OPTIONAL_MAGIC_PE32_PLUS: u16 = 0x020B;
 const DIRECTORY_RECORD_SIZE: u64 = 8;
 const DIRECTORY_LIMIT: u32 = 16;
 const CERTIFICATE_DIRECTORY: u64 = 4;
-const CERTIFICATE_RECORD_OFFSET: usize = 32;
+const DEBUG_DIRECTORY: u64 = 6;
+const DEBUG_DIRECTORY_ENTRY_SIZE: u64 = 28;
+const DEBUG_DATA_SIZE_OFFSET: usize = 16;
+const DEBUG_DATA_POINTER_OFFSET: usize = 24;
+const MAX_DEBUG_DIRECTORY_ENTRIES: u64 = 4_096;
+const CERTIFICATE_ALIGNMENT: u64 = 8;
 const SIZE_OF_HEADERS_OFFSET: usize = 0x3C;
 const PE32_DIRECTORY_COUNT_OFFSET: usize = 0x5C;
 const PE32_PLUS_DIRECTORY_COUNT_OFFSET: usize = 0x6C;
@@ -28,9 +33,25 @@ const PE32_PLUS_DIRECTORY_OFFSET: u64 = 0x70;
 #[derive(Debug, Clone, Copy)]
 struct SectionRecord {
     virtual_size: u32,
+    virtual_address: u32,
     raw_offset: u32,
     raw_size: u32,
     characteristics: u32,
+}
+
+#[derive(Debug, Clone)]
+struct PeSection {
+    name: String,
+    virtual_address: u64,
+    virtual_size: u64,
+    raw_offset: u64,
+    raw_size: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DataDirectory {
+    address: u64,
+    size: u64,
 }
 
 pub(super) fn map_pe32(bytes: &[u8]) -> Result<ByteCoverage> {
@@ -157,11 +178,12 @@ fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
     )?);
     let declared_directories: u32 =
         read_u32_at(bytes, optional_index, count_offset, "NumberOfRvaAndSizes")?;
-    let directory_count: u64 = u64::from(declared_directories.min(DIRECTORY_LIMIT));
-    let directory_bytes: u64 = directory_count
+    let declared_directory_count: u64 = u64::from(declared_directories.min(DIRECTORY_LIMIT));
+    let directory_bytes: u64 = declared_directory_count
         .checked_mul(DIRECTORY_RECORD_SIZE)
         .ok_or_else(|| coverage_error("the data directory range overflows"))?;
     let directory_bytes: u64 = directory_bytes.min(optional_size.saturating_sub(directory_offset));
+    let directory_count: u64 = directory_bytes / DIRECTORY_RECORD_SIZE;
 
     claims.claim(
         optional_start,
@@ -230,6 +252,7 @@ fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
     reader
         .seek(table_index)
         .map_err(|error: ByteReadError| read_error("the section table", error))?;
+    let mut sections: Vec<PeSection> = Vec::with_capacity(admitted_sections);
     for index in 0..usize::from(section_count) {
         let record: SectionRecord = read_section_record(&mut reader)?;
         let name: String = section_name(bytes, table_index, index)?;
@@ -237,6 +260,14 @@ fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
         let class: RegionClass = section_class(&name, record.characteristics);
         let raw_offset: u64 = u64::from(record.raw_offset);
         let raw_size: u64 = u64::from(record.raw_size);
+
+        sections.push(PeSection {
+            name: name.clone(),
+            virtual_address: u64::from(record.virtual_address),
+            virtual_size: u64::from(record.virtual_size),
+            raw_offset,
+            raw_size,
+        });
 
         if raw_size == 0 {
             if record.virtual_size > 0 {
@@ -259,32 +290,123 @@ fn map(bytes: &[u8], format: NativeFormat) -> Result<ByteCoverage> {
         claim_symbol_tables(&mut claims, bytes, symbol_table_offset, symbol_count)?;
     }
 
-    if directory_count > CERTIFICATE_DIRECTORY {
-        let record: usize = CERTIFICATE_RECORD_OFFSET;
-        let directory_index: usize =
-            usize::try_from(directory_start).map_err(|_error: std::num::TryFromIntError| {
-                coverage_error("the data directory offset overflows")
+    let certificate: Option<DataDirectory> = read_directory(
+        bytes,
+        directory_start,
+        directory_count,
+        CERTIFICATE_DIRECTORY,
+        "the certificate table",
+    )?;
+    if let Some(directory) = certificate.filter(|entry: &DataDirectory| entry.size > 0) {
+        if directory.address == 0 {
+            return Err(coverage_error(
+                "the certificate table has a nonzero size at file offset zero",
+            ));
+        }
+        claims.claim_payload(
+            directory.address,
+            directory.size,
+            RegionClass::Signature,
+            "certificate-table",
+        )?;
+    }
+
+    let debug: Option<DataDirectory> = read_directory(
+        bytes,
+        directory_start,
+        directory_count,
+        DEBUG_DIRECTORY,
+        "the debug directory",
+    )?;
+    if let Some(directory) = debug.filter(|entry: &DataDirectory| entry.size > 0) {
+        if directory.address == 0 {
+            return Err(coverage_error(
+                "the debug directory has a nonzero size at RVA zero",
+            ));
+        }
+        if !directory.size.is_multiple_of(DEBUG_DIRECTORY_ENTRY_SIZE) {
+            return Err(coverage_error(format!(
+                "debug directory size {} is not a multiple of {DEBUG_DIRECTORY_ENTRY_SIZE}",
+                directory.size
+            )));
+        }
+        let entry_count: u64 = directory.size / DEBUG_DIRECTORY_ENTRY_SIZE;
+        if entry_count > MAX_DEBUG_DIRECTORY_ENTRIES {
+            return Err(coverage_error(format!(
+                "debug directory entry count {entry_count} exceeds the supported bound \
+                 {MAX_DEBUG_DIRECTORY_ENTRIES}"
+            )));
+        }
+        let table_start: u64 = rva_range_to_file(
+            directory.address,
+            directory.size,
+            size_of_headers,
+            &sections,
+            file_len,
+            "the debug directory",
+        )?;
+        claims.refine(
+            table_start,
+            directory.size,
+            RegionClass::Debug,
+            "debug-directory",
+        )?;
+
+        let table_index: usize =
+            usize::try_from(table_start).map_err(|_error: std::num::TryFromIntError| {
+                coverage_error("the debug directory offset overflows")
             })?;
-        let certificate_offset: u64 = u64::from(read_u32_at(
-            bytes,
-            directory_index,
-            record,
-            "the certificate table offset",
-        )?);
-        let certificate_size: u64 = u64::from(read_u32_at(
-            bytes,
-            directory_index,
-            record.saturating_add(4),
-            "the certificate table size",
-        )?);
-        if certificate_offset != 0 && certificate_size != 0 {
-            claims.claim_payload(
-                certificate_offset,
-                certificate_size,
-                RegionClass::Signature,
-                "certificate-table",
+        for index in 0_u64..entry_count {
+            let entry_delta: u64 = index
+                .checked_mul(DEBUG_DIRECTORY_ENTRY_SIZE)
+                .ok_or_else(|| coverage_error("a debug directory entry offset overflows"))?;
+            let entry_offset: usize =
+                usize::try_from(entry_delta).map_err(|_error: std::num::TryFromIntError| {
+                    coverage_error("a debug directory entry offset overflows usize")
+                })?;
+            let data_size_offset: usize = entry_offset
+                .checked_add(DEBUG_DATA_SIZE_OFFSET)
+                .ok_or_else(|| coverage_error("the debug data size offset overflows"))?;
+            let data_pointer_offset: usize = entry_offset
+                .checked_add(DEBUG_DATA_POINTER_OFFSET)
+                .ok_or_else(|| coverage_error("the debug data pointer offset overflows"))?;
+            let data_size: u64 = u64::from(read_u32_at(
+                bytes,
+                table_index,
+                data_size_offset,
+                "the debug data size",
+            )?);
+            let data_offset: u64 = u64::from(read_u32_at(
+                bytes,
+                table_index,
+                data_pointer_offset,
+                "the debug data pointer",
+            )?);
+            if data_size == 0 {
+                continue;
+            }
+            if data_offset == 0 {
+                return Err(coverage_error(format!(
+                    "debug data entry {index} has a nonzero size at file offset zero"
+                )));
+            }
+            claims.refine(
+                data_offset,
+                data_size,
+                RegionClass::Debug,
+                format!("debug-data:{index}"),
             )?;
         }
+    }
+
+    if let Some(directory) =
+        certificate.filter(|entry: &DataDirectory| entry.size > 0 && entry.address < file_len)
+    {
+        claims.claim_zero_alignment_before(
+            directory.address,
+            CERTIFICATE_ALIGNMENT,
+            "certificate-alignment-padding",
+        )?;
     }
 
     claims.finish(format)
@@ -339,7 +461,7 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
     let virtual_size: u32 = reader
         .read_u32_le()
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
-    let _virtual_address: u32 = reader
+    let virtual_address: u32 = reader
         .read_u32_le()
         .map_err(|error: ByteReadError| read_error("a section record", error))?;
     let raw_size: u32 = reader
@@ -357,10 +479,118 @@ fn read_section_record(reader: &mut ByteReader<'_>) -> Result<SectionRecord> {
 
     Ok(SectionRecord {
         virtual_size,
+        virtual_address,
         raw_offset,
         raw_size,
         characteristics,
     })
+}
+
+fn read_directory(
+    bytes: &[u8],
+    directory_start: u64,
+    directory_count: u64,
+    index: u64,
+    subject: &str,
+) -> Result<Option<DataDirectory>> {
+    if index >= directory_count {
+        return Ok(None);
+    }
+    let directory_index: usize =
+        usize::try_from(directory_start).map_err(|_error: std::num::TryFromIntError| {
+            coverage_error("the data directory offset overflows")
+        })?;
+    let record_offset: u64 = index
+        .checked_mul(DIRECTORY_RECORD_SIZE)
+        .ok_or_else(|| coverage_error(format!("{subject} record offset overflows")))?;
+    let record_index: usize =
+        usize::try_from(record_offset).map_err(|_error: std::num::TryFromIntError| {
+            coverage_error(format!("{subject} record offset overflows usize"))
+        })?;
+    let address: u64 = u64::from(read_u32_at(
+        bytes,
+        directory_index,
+        record_index,
+        &format!("{subject} address"),
+    )?);
+    let size_offset: usize = record_index
+        .checked_add(4)
+        .ok_or_else(|| coverage_error(format!("{subject} size offset overflows")))?;
+    let size: u64 = u64::from(read_u32_at(
+        bytes,
+        directory_index,
+        size_offset,
+        &format!("{subject} size"),
+    )?);
+    Ok(Some(DataDirectory { address, size }))
+}
+
+fn rva_range_to_file(
+    rva: u64,
+    size: u64,
+    size_of_headers: u64,
+    sections: &[PeSection],
+    file_len: u64,
+    subject: &str,
+) -> Result<u64> {
+    let rva_end: u64 = rva
+        .checked_add(size)
+        .ok_or_else(|| coverage_error(format!("{subject} RVA range overflows")))?;
+    if rva_end <= size_of_headers {
+        if rva_end > file_len {
+            return Err(coverage_error(format!(
+                "{subject} spans {rva}..{rva_end}, past the {file_len} byte input"
+            )));
+        }
+        return Ok(rva);
+    }
+
+    for section in sections {
+        if section.raw_offset == 0 || section.raw_size == 0 {
+            continue;
+        }
+        let mapped_size: u64 = if section.virtual_size == 0 {
+            section.raw_size
+        } else {
+            section.virtual_size.min(section.raw_size)
+        };
+        let section_end: u64 = section
+            .virtual_address
+            .checked_add(mapped_size)
+            .ok_or_else(|| coverage_error("a PE section RVA range overflows"))?;
+        if rva < section.virtual_address || rva_end > section_end {
+            continue;
+        }
+        let delta: u64 = rva
+            .checked_sub(section.virtual_address)
+            .ok_or_else(|| coverage_error("a directory RVA precedes its section"))?;
+        let raw_end: u64 = delta
+            .checked_add(size)
+            .ok_or_else(|| coverage_error(format!("{subject} raw range overflows")))?;
+        if raw_end > section.raw_size {
+            return Err(coverage_error(format!(
+                "{subject} exceeds raw bytes for section {:?}",
+                section.name
+            )));
+        }
+        let file_offset: u64 = section
+            .raw_offset
+            .checked_add(delta)
+            .ok_or_else(|| coverage_error(format!("{subject} file offset overflows")))?;
+        let file_end: u64 = file_offset
+            .checked_add(size)
+            .ok_or_else(|| coverage_error(format!("{subject} file range overflows")))?;
+        if file_end > file_len {
+            return Err(coverage_error(format!(
+                "{subject} spans {file_offset}..{file_end}, past the {file_len} byte input"
+            )));
+        }
+        return Ok(file_offset);
+    }
+
+    Err(coverage_error(format!(
+        "{subject} RVA 0x{rva:x} is not file-backed by a section"
+    )))
 }
 
 fn section_name(bytes: &[u8], table_index: usize, index: usize) -> Result<String> {

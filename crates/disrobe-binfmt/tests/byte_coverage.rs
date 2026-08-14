@@ -78,12 +78,12 @@ fn assert_partition(coverage: &ByteCoverage, file_len: u64, subject: &str) {
             "{subject}: a zero-width region is never recorded"
         );
         cursor = region.end;
-        if region.class == RegionClass::Unclaimed || region.class == RegionClass::Alignment {
+        if region.class == RegionClass::Unclaimed {
             assert!(
                 region.claimant.is_none(),
-                "{subject}: an unclaimed or slack region names no claimant"
+                "{subject}: an unclaimed region names no claimant"
             );
-        } else {
+        } else if region.class != RegionClass::Alignment {
             assert!(
                 region.claimant.is_some(),
                 "{subject}: a claimed region always names its claimant"
@@ -353,7 +353,9 @@ fn every_section_an_independent_parser_reports_is_claimed_under_its_own_name() {
             );
             for claimant in &claimants {
                 assert!(
-                    claimant.starts_with("section:") && claimant.ends_with(&section_name),
+                    (claimant.starts_with("section:") && claimant.ends_with(&section_name))
+                        || claimant == "debug-directory"
+                        || claimant.starts_with("debug-data:"),
                     "{name}: the reference parser places {section_name} at {offset}..{end}, and \
                      the map attributes part of it to {claimant}"
                 );
@@ -569,6 +571,166 @@ fn pe_section_field(bytes: &[u8], index: usize, field: usize) -> usize {
 
 const RAW_SIZE_FIELD: usize = 16;
 const RAW_OFFSET_FIELD: usize = 20;
+const VIRTUAL_SIZE_FIELD: usize = 8;
+const VIRTUAL_ADDRESS_FIELD: usize = 12;
+
+fn pe_debug_directory_field(bytes: &[u8]) -> usize {
+    let optional_start: usize = pe_lfanew(bytes) + 24;
+    let magic: u16 = read_u16_le(bytes, optional_start);
+    let directory_offset: usize = match magic {
+        0x010B => 0x60,
+        0x020B => 0x70,
+        other => panic!("unexpected PE optional-header magic {other:#06x}"),
+    };
+    optional_start + directory_offset + object::pe::IMAGE_DIRECTORY_ENTRY_DEBUG * 8
+}
+
+fn place_debug_directory_at_section_boundary(
+    bytes: &mut [u8],
+    section_index: usize,
+    starts_in_raw_padding: bool,
+) {
+    let raw_size: u32 = read_u32_le(
+        bytes,
+        pe_section_field(bytes, section_index, RAW_SIZE_FIELD),
+    );
+    assert!(
+        raw_size > 56,
+        "the boundary case needs a nontrivial section"
+    );
+    let raw_offset: u32 = read_u32_le(
+        bytes,
+        pe_section_field(bytes, section_index, RAW_OFFSET_FIELD),
+    );
+    let virtual_address: u32 = read_u32_le(
+        bytes,
+        pe_section_field(bytes, section_index, VIRTUAL_ADDRESS_FIELD),
+    );
+    let virtual_size: u32 = raw_size - 28;
+    let virtual_size_field: usize = pe_section_field(bytes, section_index, VIRTUAL_SIZE_FIELD);
+    write_u32_le(bytes, virtual_size_field, virtual_size);
+
+    let delta: u32 = if starts_in_raw_padding {
+        virtual_size
+    } else {
+        virtual_size - 28
+    };
+    let directory_rva: u32 = virtual_address + delta;
+    let directory_offset: usize = (raw_offset + delta) as usize;
+    bytes
+        .get_mut(directory_offset..directory_offset + 28)
+        .expect("the debug directory fits within the section raw bytes")
+        .fill(0);
+    let directory_field: usize = pe_debug_directory_field(bytes);
+    write_u32_le(bytes, directory_field, directory_rva);
+    write_u32_le(bytes, directory_field + 4, 28);
+}
+
+fn pe_boundary_fixtures() -> [(&'static str, Vec<u8>); 2] {
+    [
+        ("PE32", required_corpus("native/packers/kkrunchy/hello.exe")),
+        ("PE32+", fixture("hello.pe64.exe")),
+    ]
+}
+
+fn assert_debug_payload_claims_match_entries(
+    coverage: &ByteCoverage,
+    bytes: &[u8],
+    directory_offset: u32,
+    directory_size: u32,
+    subject: &str,
+) {
+    assert_eq!(
+        directory_size % 28,
+        0,
+        "{subject}: IMAGE_DEBUG_DIRECTORY records must be complete"
+    );
+    let entry_count: usize = usize::try_from(directory_size / 28)
+        .expect("the independently parsed entry count fits usize");
+    let table_start: usize =
+        usize::try_from(directory_offset).expect("the independently parsed offset fits usize");
+    let mut expected_claims: usize = 0;
+    for index in 0..entry_count {
+        let entry_offset: usize = table_start
+            .checked_add(index.checked_mul(28).expect("the entry delta fits usize"))
+            .expect("the entry offset fits usize");
+        let data_size: u32 = read_u32_le(bytes, entry_offset + 16);
+        let data_pointer: u32 = read_u32_le(bytes, entry_offset + 24);
+        if data_size == 0 {
+            continue;
+        }
+        let expected_end: u64 = u64::from(data_pointer)
+            .checked_add(u64::from(data_size))
+            .expect("the independently parsed debug-data range fits u64");
+        let claimant: String = format!("debug-data:{index}");
+        let region: &CoverageRegion = region_named(coverage, &claimant).unwrap_or_else(|| {
+            panic!("{subject}: IMAGE_DEBUG_DIRECTORY entry {index} has no coverage claim")
+        });
+        assert_eq!(
+            (region.start, region.end),
+            (u64::from(data_pointer), expected_end),
+            "{subject}: {claimant} must equal PointerToRawData..PointerToRawData+SizeOfData"
+        );
+        assert_eq!(region.class, RegionClass::Debug);
+        expected_claims += 1;
+    }
+    let actual_claims: usize = coverage
+        .regions
+        .iter()
+        .filter(|region: &&CoverageRegion| {
+            region
+                .claimant
+                .as_deref()
+                .is_some_and(|claimant: &str| claimant.starts_with("debug-data:"))
+        })
+        .count();
+    assert_eq!(
+        actual_claims, expected_claims,
+        "{subject}: every debug-data claim must originate in one IMAGE_DEBUG_DIRECTORY entry"
+    );
+}
+
+#[test]
+fn pe_debug_directory_may_end_on_the_last_virtual_byte() {
+    for (format, mut bytes) in pe_boundary_fixtures() {
+        place_debug_directory_at_section_boundary(&mut bytes, 0, false);
+        let coverage: ByteCoverage =
+            file_byte_coverage(&bytes).unwrap_or_else(|error: Error| panic!("{format}: {error}"));
+        assert!(
+            region_named(&coverage, "debug-directory").is_some(),
+            "{format}: a directory ending at the virtual extent must be file-backed"
+        );
+    }
+}
+
+#[test]
+fn pe_debug_directory_may_not_begin_at_the_first_raw_padding_byte() {
+    for (format, mut bytes) in pe_boundary_fixtures() {
+        place_debug_directory_at_section_boundary(&mut bytes, 0, true);
+        let error: Error = file_byte_coverage(&bytes)
+            .expect_err("raw alignment padding is outside the mapped virtual extent");
+        assert!(matches!(error, Error::Coverage(_)));
+        assert!(
+            error.to_string().contains("not file-backed"),
+            "{format}: unexpected refusal: {error}"
+        );
+    }
+}
+
+#[test]
+fn pe_section_with_zero_virtual_size_uses_its_raw_extent() {
+    for (format, mut bytes) in pe_boundary_fixtures() {
+        place_debug_directory_at_section_boundary(&mut bytes, 0, false);
+        let virtual_size_field: usize = pe_section_field(&bytes, 0, VIRTUAL_SIZE_FIELD);
+        write_u32_le(&mut bytes, virtual_size_field, 0);
+        let coverage: ByteCoverage =
+            file_byte_coverage(&bytes).unwrap_or_else(|error: Error| panic!("{format}: {error}"));
+        assert!(
+            region_named(&coverage, "debug-directory").is_some(),
+            "{format}: a zero VirtualSize must use the section raw extent"
+        );
+    }
+}
 
 #[test]
 fn an_appended_blob_shows_as_one_unclaimed_range() {
@@ -950,7 +1112,7 @@ fn a_universal_binary_accounts_for_every_slice_and_its_padding() {
 }
 
 #[test]
-fn a_nested_directory_is_described_once_inside_its_section() {
+fn a_pe64_debug_directory_has_specific_file_provenance() {
     let mut examined: usize = 0;
 
     for name in ["hello.pe64.exe", "hello.auditable.exe", "hello.efi"] {
@@ -975,19 +1137,20 @@ fn a_nested_directory_is_described_once_inside_its_section() {
             continue;
         }
         let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a PE image");
-        let claimants: Vec<String> =
-            claimants_over(&coverage, u64::from(offset), u64::from(offset + size));
-        assert!(
-            !claimants.is_empty(),
-            "{name}: the debug directory at {offset} is described by no region"
+        let region: &CoverageRegion = region_named(&coverage, "debug-directory")
+            .unwrap_or_else(|| panic!("{name}: the debug directory has no specific provenance"));
+        assert_eq!(
+            (region.start, region.end),
+            (u64::from(offset), u64::from(offset + size)),
+            "{name}: debug-directory provenance must match the independent parser"
         );
-        for claimant in &claimants {
-            assert!(
-                claimant.starts_with("section:"),
-                "{name}: the debug directory lives inside a section, so the map must describe it \
-                 at section granularity and not claim it twice, and it names {claimant}"
-            );
-        }
+        assert_eq!(region.class, RegionClass::Debug);
+        assert_eq!(
+            claimants_over(&coverage, u64::from(offset), u64::from(offset + size)),
+            vec!["debug-directory".to_owned()],
+            "{name}: the debug directory must be described once at debug granularity"
+        );
+        assert_debug_payload_claims_match_entries(&coverage, &bytes, offset, size, name);
         examined += 1;
     }
 
@@ -1050,9 +1213,18 @@ fn every_section_an_independent_parser_reports_in_a_pe32_is_claimed_under_its_ow
                 })
                 .to_owned();
             let end: u64 = offset + size;
-            for claimant in claimants_over(&coverage, offset, end) {
+            let claimants: Vec<String> = claimants_over(&coverage, offset, end);
+            let section_claimant: String = format!("section:{section_name}");
+            assert!(
+                !claimants.is_empty(),
+                "{relative}: the reference parser places {section_name} at {offset}..{end} and \
+                 the map records no region there"
+            );
+            for claimant in claimants {
                 assert!(
-                    claimant.starts_with("section:") && claimant.ends_with(&section_name),
+                    claimant == section_claimant
+                        || claimant == "debug-directory"
+                        || claimant.starts_with("debug-data:"),
                     "{relative}: the reference parser places {section_name} at {offset}..{end}, \
                      and the map attributes part of it to {claimant}"
                 );
@@ -1104,6 +1276,115 @@ fn an_authenticode_signature_is_claimed_rather_than_left_unaccounted() {
         coverage.unclaimed_bytes, 0,
         "a signature that follows the last section is a claim, not an unaccounted overlay"
     );
+}
+
+#[test]
+fn certificate_alignment_padding_has_named_provenance() {
+    let relative: &str = "native/packers/aspack/AccessEnum.original.exe";
+    let bytes: Vec<u8> = required_corpus(relative);
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a signed PE32");
+    assert_partition(&coverage, bytes.len() as u64, relative);
+
+    let padding: &CoverageRegion = region_named(&coverage, "certificate-alignment-padding")
+        .expect("certificate alignment padding has named provenance");
+    assert_eq!((padding.start, padding.end), (167_993, 168_000));
+    assert_eq!(padding.class, RegionClass::Alignment);
+    assert_eq!(coverage.slack_bytes, 7);
+    assert_eq!(coverage.unclaimed_bytes, 0);
+    assert!(coverage.complete);
+}
+
+#[test]
+fn debug_directory_entry_count_is_bounded_before_iteration() {
+    let mut bytes: Vec<u8> = fixture("hello.auditable.exe");
+    let optional_start: usize = pe_lfanew(&bytes) + 24;
+    let debug_size: usize = optional_start + 0x70 + object::pe::IMAGE_DIRECTORY_ENTRY_DEBUG * 8 + 4;
+    write_u32_le(&mut bytes, debug_size, 28 * 4_097);
+
+    let error: Error = file_byte_coverage(&bytes)
+        .expect_err("an excessive debug directory entry count must be refused");
+    assert!(matches!(error, Error::Coverage(_)));
+    assert!(
+        error.to_string().contains("entry count 4097"),
+        "unexpected refusal: {error}"
+    );
+}
+
+#[test]
+fn a_header_backed_debug_directory_has_specific_file_provenance() {
+    let mut bytes: Vec<u8> = required_corpus("native/packers/kkrunchy/hello.exe");
+    write_u32_le(&mut bytes, 232, 400);
+    write_u32_le(&mut bytes, 236, 28);
+    write_u32_le(&mut bytes, 412, 2);
+    write_u32_le(&mut bytes, 416, 8);
+    write_u32_le(&mut bytes, 420, 448);
+    write_u32_le(&mut bytes, 424, 448);
+    bytes
+        .get_mut(448..456)
+        .expect("the fixture has room for bounded debug data")
+        .copy_from_slice(b"RSDSDATA");
+
+    let coverage: ByteCoverage =
+        file_byte_coverage(&bytes).expect("map a header-backed debug directory");
+    assert_partition(
+        &coverage,
+        bytes.len() as u64,
+        "header-backed debug directory",
+    );
+
+    let directory: &CoverageRegion =
+        region_named(&coverage, "debug-directory").expect("the debug directory is named");
+    assert_eq!((directory.start, directory.end), (400, 428));
+    assert_eq!(directory.class, RegionClass::Debug);
+    let data: &CoverageRegion =
+        region_named(&coverage, "debug-data:0").expect("the debug payload is named");
+    assert_eq!((data.start, data.end), (448, 456));
+    assert_eq!(data.class, RegionClass::Debug);
+}
+
+fn header_backed_debug_payloads(entries: &[(u32, u32)]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = required_corpus("native/packers/kkrunchy/hello.exe");
+    let directory_size: u32 = u32::try_from(entries.len())
+        .expect("the test entry count fits u32")
+        .checked_mul(28)
+        .expect("the test directory size fits u32");
+    write_u32_le(&mut bytes, 232, 400);
+    write_u32_le(&mut bytes, 236, directory_size);
+    for (index, &(pointer, size)) in entries.iter().enumerate() {
+        let entry: usize = 400 + index * 28;
+        write_u32_le(&mut bytes, entry + 12, 2);
+        write_u32_le(&mut bytes, entry + 16, size);
+        write_u32_le(&mut bytes, entry + 20, pointer);
+        write_u32_le(&mut bytes, entry + 24, pointer);
+    }
+    bytes
+}
+
+fn assert_competing_debug_payloads_are_rejected(entries: &[(u32, u32)]) {
+    let bytes: Vec<u8> = header_backed_debug_payloads(entries);
+    let error: Error = file_byte_coverage(&bytes)
+        .expect_err("competing debug payload provenance must not erase an earlier claim");
+    assert!(matches!(error, Error::Coverage(_)));
+    let message: String = error.to_string();
+    assert!(
+        message.contains("debug-data:0") && message.contains("debug-data:1"),
+        "the refusal must name both competing claims: {message}"
+    );
+}
+
+#[test]
+fn duplicate_debug_payloads_are_rejected_without_replacing_provenance() {
+    assert_competing_debug_payloads_are_rejected(&[(464, 16), (464, 16)]);
+}
+
+#[test]
+fn nested_debug_payloads_are_rejected_without_replacing_provenance() {
+    assert_competing_debug_payloads_are_rejected(&[(464, 16), (468, 8)]);
+}
+
+#[test]
+fn partially_overlapping_debug_payloads_are_rejected_with_both_claimants() {
+    assert_competing_debug_payloads_are_rejected(&[(464, 8), (468, 8)]);
 }
 
 #[test]
@@ -1226,7 +1507,7 @@ fn an_elf_without_a_section_table_falls_back_to_its_load_segments() {
 }
 
 #[test]
-fn a_nested_directory_in_a_pe32_is_described_once_inside_its_section() {
+fn a_pe32_debug_directory_has_specific_file_provenance() {
     let mut examined: usize = 0;
 
     for relative in LINKED_PE32_FIXTURES {
@@ -1251,19 +1532,22 @@ fn a_nested_directory_in_a_pe32_is_described_once_inside_its_section() {
             continue;
         }
         let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map a PE32 image");
-        let claimants: Vec<String> =
-            claimants_over(&coverage, u64::from(offset), u64::from(offset + size));
-        assert!(
-            !claimants.is_empty(),
-            "{relative}: the debug directory at {offset} is described by no region"
+        let region: &CoverageRegion =
+            region_named(&coverage, "debug-directory").unwrap_or_else(|| {
+                panic!("{relative}: the debug directory has no specific provenance")
+            });
+        assert_eq!(
+            (region.start, region.end),
+            (u64::from(offset), u64::from(offset + size)),
+            "{relative}: debug-directory provenance must match the independent parser"
         );
-        for claimant in &claimants {
-            assert!(
-                claimant.starts_with("section:"),
-                "{relative}: the debug directory lives inside a section, so the map describes it \
-                 at section granularity and never claims it twice, and it names {claimant}"
-            );
-        }
+        assert_eq!(region.class, RegionClass::Debug);
+        assert_eq!(
+            claimants_over(&coverage, u64::from(offset), u64::from(offset + size)),
+            vec!["debug-directory".to_owned()],
+            "{relative}: the debug directory must be described once at debug granularity"
+        );
+        assert_debug_payload_claims_match_entries(&coverage, &bytes, offset, size, relative);
         examined += 1;
     }
 

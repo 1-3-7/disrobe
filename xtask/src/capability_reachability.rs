@@ -45,10 +45,12 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-as3",
-        2,
+        3,
         "detect_source_or_binary is a narrower sibling of the detector the chain and CLI call, and \
          render_as3_with_header is one of this workspace's per-language provenance-header \
-         renderers, proven by a real test but never spliced into the `--emit` output path",
+         renderers, proven by a real test but never spliced into the `--emit` output path; \
+         lift_body_raw exposes the unstructured statement stream only to the CFG equivalence \
+         grader and is not a product recovery surface",
     ),
     (
         "disrobe-pass-beam",

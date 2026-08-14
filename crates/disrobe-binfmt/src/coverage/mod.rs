@@ -136,6 +136,7 @@ struct Claim {
     end: u64,
     class: RegionClass,
     claimant: String,
+    can_refine: bool,
 }
 
 #[derive(Debug)]
@@ -191,6 +192,7 @@ impl<'data> ClaimSet<'data> {
             end,
             class,
             claimant,
+            can_refine: true,
         })
     }
 
@@ -230,6 +232,7 @@ impl<'data> ClaimSet<'data> {
             end: present_end,
             class,
             claimant,
+            can_refine: true,
         })
     }
 
@@ -244,6 +247,140 @@ impl<'data> ClaimSet<'data> {
             declared_size,
             reason,
         });
+    }
+
+    pub(crate) fn refine(
+        &mut self,
+        start: u64,
+        size: u64,
+        class: RegionClass,
+        claimant: impl Into<String>,
+    ) -> Result<()> {
+        if size == 0 {
+            return Ok(());
+        }
+        let claimant: String = claimant.into();
+        let end: u64 = start.checked_add(size).ok_or_else(|| {
+            coverage_error(format!(
+                "refined claim `{claimant}` at {start} overflows the offset space"
+            ))
+        })?;
+        if end > self.file_len {
+            return Err(coverage_error(format!(
+                "refined claim `{claimant}` spans {start}..{end}, past the {} byte input",
+                self.file_len
+            )));
+        }
+
+        let competing: Option<&Claim> = self
+            .claims
+            .iter()
+            .find(|entry: &&Claim| !entry.can_refine && entry.start < end && start < entry.end);
+        if let Some(competing) = competing {
+            return Err(coverage_error(format!(
+                "specific coverage claims `{}` and `{claimant}` overlap",
+                competing.claimant
+            )));
+        }
+
+        let containing_index: Option<usize> = self
+            .claims
+            .iter()
+            .position(|entry: &Claim| entry.can_refine && entry.start <= start && entry.end >= end);
+        let Some(index): Option<usize> = containing_index else {
+            if self
+                .claims
+                .iter()
+                .any(|entry: &Claim| entry.start < end && start < entry.end)
+            {
+                return Err(coverage_error(format!(
+                    "refined claim `{claimant}` crosses an existing coverage claim"
+                )));
+            }
+            return self.record(Claim {
+                start,
+                end,
+                class,
+                claimant,
+                can_refine: false,
+            });
+        };
+
+        let added_claims: usize = usize::from(self.claims[index].start < start)
+            .saturating_add(usize::from(end < self.claims[index].end));
+        if self.claims.len().saturating_add(added_claims) > MAX_COVERAGE_REGIONS {
+            return Err(coverage_error(format!(
+                "input produces more than {MAX_COVERAGE_REGIONS} claimed ranges"
+            )));
+        }
+
+        let owner: Claim = self.claims.remove(index);
+        if owner.start < start {
+            self.claims.push(Claim {
+                start: owner.start,
+                end: start,
+                class: owner.class,
+                claimant: owner.claimant.clone(),
+                can_refine: owner.can_refine,
+            });
+        }
+        self.claims.push(Claim {
+            start,
+            end,
+            class,
+            claimant,
+            can_refine: false,
+        });
+        if end < owner.end {
+            self.claims.push(Claim {
+                start: end,
+                end: owner.end,
+                class: owner.class,
+                claimant: owner.claimant,
+                can_refine: owner.can_refine,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn claim_zero_alignment_before(
+        &mut self,
+        end: u64,
+        alignment: u64,
+        claimant: impl Into<String>,
+    ) -> Result<()> {
+        if alignment == 0 {
+            return Err(coverage_error("alignment must be nonzero"));
+        }
+        if end > self.file_len || !end.is_multiple_of(alignment) {
+            return Ok(());
+        }
+        let Some(start): Option<u64> = self
+            .claims
+            .iter()
+            .filter(|entry: &&Claim| entry.end <= end)
+            .map(|entry: &Claim| entry.end)
+            .max()
+        else {
+            return Ok(());
+        };
+        let size: u64 = end
+            .checked_sub(start)
+            .ok_or_else(|| coverage_error("alignment range starts after it ends"))?;
+        if size == 0 || size >= alignment {
+            return Ok(());
+        }
+        if self
+            .claims
+            .iter()
+            .any(|entry: &Claim| entry.start < end && start < entry.end)
+        {
+            return Ok(());
+        }
+        if !range_is_zero(self.bytes, start, end)? {
+            return Ok(());
+        }
+        self.claim(start, size, RegionClass::Alignment, claimant)
     }
 
     fn record(&mut self, claim: Claim) -> Result<()> {
