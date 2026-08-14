@@ -9,6 +9,7 @@ pub(crate) mod debug;
 mod decorator;
 mod envelope;
 mod error;
+mod gcm_tag;
 mod inlined;
 mod kdf;
 mod layered;

@@ -42,6 +42,15 @@ pub enum Error {
 
     #[error("DR-SDEF-0012: nesting limit exceeded for {surface}: limit {limit}")]
     NestingLimit { surface: &'static str, limit: usize },
+
+    #[error(
+        "DR-SDEF-0013: aes-256-gcm authentication failed for {surface}: the supplied key computes tag {computed} but the body carries tag {stored}, so the key is wrong and the plaintext would be garbage"
+    )]
+    GcmAuthentication {
+        surface: &'static str,
+        computed: String,
+        stored: String,
+    },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

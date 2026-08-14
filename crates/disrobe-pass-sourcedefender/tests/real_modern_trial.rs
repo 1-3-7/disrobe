@@ -113,6 +113,46 @@ fn modern_body_with_wrong_key_does_not_falsely_recover() {
         rec.recovered_source.is_none(),
         "a wrong key must not yield a parseable msgpack source envelope"
     );
+    assert!(
+        rec.recovered_marshal.is_none(),
+        "a wrong key must not hand back keystream garbage as a marshalled code object"
+    );
+    assert!(
+        !rec.is_fully_recovered(),
+        "a wrong key must never report full recovery"
+    );
+    let Some(wall) = rec.wall.as_ref() else {
+        unreachable!("a key the stored aes-gcm tag rejects must produce a wall")
+    };
+    assert_eq!(wall.reason, LayeredWallReason::SuppliedKeyRejected);
+    assert!(!wall.reason.is_info_theoretic());
+}
+
+#[test]
+fn a_rejected_key_is_reported_differently_from_the_licensed_body() {
+    let Ok(rejected): Result<LayeredRecovery, _> =
+        recover_layered_with_modern_key(CRAFTED_MODERN_KNOWN_KEY, "crafted.pye", &[0xFFu8; 32])
+    else {
+        unreachable!("peels")
+    };
+    let Ok(licensed): Result<LayeredRecovery, _> = recover_layered(MODERN_TRIAL, "known.pye")
+    else {
+        unreachable!("peels")
+    };
+    let Some(rejected_wall) = rejected.wall.as_ref() else {
+        unreachable!("rejected key walls")
+    };
+    let Some(licensed_wall) = licensed.wall.as_ref() else {
+        unreachable!("licensed body walls")
+    };
+    assert_ne!(
+        rejected_wall.reason, licensed_wall.reason,
+        "a wrong key and an absent runtime key are different outcomes and must not share a tag"
+    );
+    assert_eq!(rejected_wall.reason.tag(), "supplied-key-rejected");
+    assert_eq!(licensed_wall.reason.tag(), "runtime-license-key");
+    assert!(licensed_wall.reason.is_info_theoretic());
+    assert!(!rejected_wall.reason.is_info_theoretic());
 }
 
 #[test]

@@ -40,6 +40,7 @@ impl ContainerVariant {
 pub enum WallReason {
     RuntimeLicenseKey,
     CustomPasswordRequired,
+    SuppliedKeyRejected,
 }
 
 impl WallReason {
@@ -48,6 +49,7 @@ impl WallReason {
         match self {
             Self::RuntimeLicenseKey => "runtime-license-key",
             Self::CustomPasswordRequired => "custom-password-required",
+            Self::SuppliedKeyRejected => "supplied-key-rejected",
         }
     }
 
@@ -55,14 +57,14 @@ impl WallReason {
     pub const fn is_info_theoretic(self) -> bool {
         match self {
             Self::RuntimeLicenseKey => true,
-            Self::CustomPasswordRequired => false,
+            Self::CustomPasswordRequired | Self::SuppliedKeyRejected => false,
         }
     }
 
     #[must_use]
     pub const fn is_recoverable_with_password(self) -> bool {
         match self {
-            Self::RuntimeLicenseKey => false,
+            Self::RuntimeLicenseKey | Self::SuppliedKeyRejected => false,
             Self::CustomPasswordRequired => true,
         }
     }
@@ -302,14 +304,29 @@ fn recover_modern(input: &[u8], modern_aes_key: Option<&[u8; 32]>) -> Result<Lay
                 });
                 layers.push(PeeledLayer {
                     kind: LayerKind::GcmCtrDecrypt,
-                    detail: "aes-256-gcm gctr keystream applied with the supplied key".to_owned(),
+                    detail: "aes-256-gcm tag authenticated, then the gctr keystream applied with \
+                             the supplied key"
+                        .to_owned(),
                     output_len: plaintext.len(),
                 });
                 return Ok(finalize_modern_plaintext(layers, plaintext));
             }
-            Err(e) => {
-                dbg_line(|| format!("modern gcm decrypt with supplied key failed: {e}"));
+            Err(rejection @ Error::GcmAuthentication { .. }) => {
+                dbg_line(|| format!("modern gcm tag rejected the supplied key: {rejection}"));
+                return Ok(LayeredRecovery {
+                    variant: ContainerVariant::ModernHex,
+                    layers,
+                    recovered_source: None,
+                    recovered_marshal: None,
+                    wall: Some(BodyWall {
+                        reason: WallReason::SuppliedKeyRejected,
+                        detail: format!("{rejection}"),
+                        ciphertext_len: body.len(),
+                        gcm_framing: Some(framing),
+                    }),
+                });
             }
+            Err(other) => return Err(other),
         }
     }
 
@@ -484,6 +501,17 @@ mod tests {
     const LEGACY_HELLO: &[u8] = include_bytes!("../../../corpus/python/sourcedefender/hello.pye");
     const MODERN_TRIAL: &[u8] =
         include_bytes!("../../../corpus/python/sourcedefender/known_v16_trial.pye");
+    const CRAFTED_MODERN_KNOWN_KEY: &[u8] =
+        include_bytes!("../../../corpus/python/sourcedefender/crafted_modern_aesgcm_known_key.pye");
+    const CRAFTED_SEALED_TAG: &str = "50b1fd94ab6faa9594d624f91e1c70e3";
+
+    fn crafted_key() -> [u8; 32] {
+        let mut key: [u8; 32] = [0u8; 32];
+        for (index, slot) in key.iter_mut().enumerate() {
+            *slot = u8::try_from(index).unwrap_or(0);
+        }
+        key
+    }
 
     #[test]
     fn classifies_both_container_variants() {
@@ -578,6 +606,118 @@ mod tests {
     fn rejects_non_pye_input() {
         let err: Error = recover_layered(b"hello world", "x.pye").expect_err("must reject");
         assert!(matches!(err, Error::NotPye));
+    }
+
+    #[test]
+    fn the_crafted_body_carries_the_tag_the_cryptography_library_sealed_it_with() {
+        let body: Vec<u8> = parse_modern_hex_body(CRAFTED_MODERN_KNOWN_KEY).expect("hex body");
+        let framing: ModernGcmFraming = frame_modern_gcm_body(&body);
+        let stored: &[u8] = framing
+            .tag
+            .as_deref()
+            .expect("well-formed body carries a tag");
+        assert_eq!(
+            crate::codec::hex_encode(stored),
+            CRAFTED_SEALED_TAG,
+            "the committed fixture's trailing 16 bytes are the authentication tag produced by \
+             the real AESGCM.encrypt that sealed it, not a value disrobe computed"
+        );
+    }
+
+    #[test]
+    fn the_correct_key_authenticates_the_crafted_body_and_recovers_its_source() {
+        let rec: LayeredRecovery = recover_layered_with_modern_key(
+            CRAFTED_MODERN_KNOWN_KEY,
+            "crafted.pye",
+            &crafted_key(),
+        )
+        .expect("keyed recovery");
+        assert!(rec.wall.is_none());
+        assert!(rec.is_fully_recovered());
+        let source: &str = rec.recovered_source.as_deref().expect("source");
+        assert_eq!(
+            source.trim_end(),
+            "def greet(name):\n    return \"hi \" + name\n\n\nprint(greet(\"world\"))"
+        );
+        let decrypt_layer: &PeeledLayer = rec
+            .layers
+            .iter()
+            .find(|l| l.kind == LayerKind::GcmCtrDecrypt)
+            .expect("the authenticated decrypt must be recorded as a peeled layer");
+        assert!(
+            decrypt_layer.detail.contains("tag authenticated"),
+            "the layer must record that the tag was checked, got: {}",
+            decrypt_layer.detail
+        );
+    }
+
+    #[test]
+    fn a_wrong_key_walls_on_the_stored_tag_instead_of_reporting_recovery() {
+        let rec: LayeredRecovery =
+            recover_layered_with_modern_key(CRAFTED_MODERN_KNOWN_KEY, "crafted.pye", &[0xFFu8; 32])
+                .expect("a rejected key still peels the container layers");
+        assert!(
+            !rec.is_fully_recovered(),
+            "a key that does not authenticate must never report full recovery"
+        );
+        assert!(rec.recovered_source.is_none());
+        assert!(
+            rec.recovered_marshal.is_none(),
+            "keystream garbage must not be handed back as a marshalled code object"
+        );
+        let wall: &BodyWall = rec
+            .wall
+            .as_ref()
+            .expect("a rejected key must produce a wall");
+        assert_eq!(wall.reason, WallReason::SuppliedKeyRejected);
+        assert_eq!(wall.reason.tag(), "supplied-key-rejected");
+        assert!(
+            !wall.reason.is_info_theoretic(),
+            "a wrong key is not an information-theoretic limit; the right key exists"
+        );
+        assert!(!wall.reason.is_recoverable_with_password());
+        assert!(
+            wall.detail.contains(CRAFTED_SEALED_TAG),
+            "the refusal must quote the tag the body actually carries, got: {}",
+            wall.detail
+        );
+        assert!(rec.layers.iter().any(|l| l.kind == LayerKind::GcmFraming));
+        assert!(
+            !rec.layers
+                .iter()
+                .any(|l| l.kind == LayerKind::GcmCtrDecrypt),
+            "a rejected key must not record a decrypt layer"
+        );
+    }
+
+    #[test]
+    fn every_wrong_key_in_a_sweep_is_rejected_by_the_stored_tag() {
+        let mut rejected: usize = 0;
+        let mut attempted: usize = 0;
+        for byte in 0u8..=31u8 {
+            let mut key: [u8; 32] = crafted_key();
+            let Some(slot): Option<&mut u8> = key.get_mut(usize::from(byte)) else {
+                panic!("index {byte} is inside a 32-byte key")
+            };
+            *slot ^= 0x01;
+            attempted += 1;
+            let rec: LayeredRecovery =
+                recover_layered_with_modern_key(CRAFTED_MODERN_KNOWN_KEY, "crafted.pye", &key)
+                    .expect("peels");
+            if !rec.is_fully_recovered()
+                && rec
+                    .wall
+                    .as_ref()
+                    .is_some_and(|w: &BodyWall| w.reason == WallReason::SuppliedKeyRejected)
+            {
+                rejected += 1;
+            }
+        }
+        assert_eq!(attempted, 32);
+        assert_eq!(
+            rejected, 32,
+            "all 32 single-bit key mutations must be rejected by the stored tag"
+        );
     }
 
     #[test]

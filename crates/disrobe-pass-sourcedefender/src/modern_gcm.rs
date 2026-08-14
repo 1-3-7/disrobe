@@ -1,7 +1,8 @@
 use serde::Serialize;
 
-use crate::codec::MAX_HEX_INPUT_BYTES;
+use crate::codec::{MAX_HEX_INPUT_BYTES, hex_encode};
 use crate::error::{Error, Result};
+use crate::gcm_tag::{GCM_BLOCK_LEN, gcm_tag, tags_match};
 
 pub const GCM_TAG_LEN: usize = 16;
 pub const GCM_NONCE_LEN: usize = 12;
@@ -99,15 +100,73 @@ pub fn frame_modern_gcm_body(body: &[u8]) -> ModernGcmFraming {
     }
 }
 
+fn split_authenticated_body<'body>(
+    framing: &ModernGcmFraming,
+    body: &'body [u8],
+) -> Result<([u8; GCM_NONCE_LEN], &'body [u8], [u8; GCM_TAG_LEN])> {
+    let Some(nonce_bytes): Option<&Vec<u8>> = framing.nonce.as_ref() else {
+        return Err(Error::Msgpack(
+            "modern body too short to carry a gcm nonce".to_owned(),
+        ));
+    };
+    let Some(tag_bytes): Option<&Vec<u8>> = framing.tag.as_ref() else {
+        return Err(Error::Msgpack(
+            "modern body too short to carry a gcm tag".to_owned(),
+        ));
+    };
+    let nonce: [u8; GCM_NONCE_LEN] = <[u8; GCM_NONCE_LEN]>::try_from(nonce_bytes.as_slice())
+        .map_err(|_| {
+            Error::Msgpack("modern gcm nonce/tag lengths are not the documented 12/16".to_owned())
+        })?;
+    let tag: [u8; GCM_TAG_LEN] =
+        <[u8; GCM_TAG_LEN]>::try_from(tag_bytes.as_slice()).map_err(|_| {
+            Error::Msgpack("modern gcm nonce/tag lengths are not the documented 12/16".to_owned())
+        })?;
+    let ct_start: usize = match framing.shape {
+        GcmFramingShape::SaltNonceCiphertextTag => KDF_SALT_LEN + GCM_NONCE_LEN,
+        GcmFramingShape::NonceCiphertextTag => GCM_NONCE_LEN,
+        GcmFramingShape::Undersized => {
+            return Err(Error::Msgpack("modern body is undersized".to_owned()));
+        }
+    };
+    let tag_start: usize = body.len().saturating_sub(GCM_TAG_LEN);
+    if tag_start < ct_start {
+        return Err(Error::Msgpack(
+            "modern gcm ciphertext slice underflows".to_owned(),
+        ));
+    }
+    let ciphertext: &[u8] = body
+        .get(ct_start..tag_start)
+        .ok_or_else(|| Error::Msgpack("modern gcm ciphertext slice is invalid".to_owned()))?;
+    Ok((nonce, ciphertext, tag))
+}
+
+pub(crate) fn apply_gctr_keystream(
+    aes_key: &[u8; 32],
+    nonce: &[u8; GCM_NONCE_LEN],
+    ciphertext: &[u8],
+) -> Vec<u8> {
+    use aes::Aes256;
+    use ctr::Ctr32BE;
+    use ctr::cipher::{KeyIvInit, StreamCipher};
+
+    let mut counter_zero: [u8; GCM_BLOCK_LEN] = [0u8; GCM_BLOCK_LEN];
+    for (slot, byte) in counter_zero.iter_mut().zip(nonce.iter()) {
+        *slot = *byte;
+    }
+    let counter_block: [u8; GCM_BLOCK_LEN] = (u128::from_be_bytes(counter_zero) | 2).to_be_bytes();
+    let mut plaintext: Vec<u8> = ciphertext.to_vec();
+    let mut cipher: Ctr32BE<Aes256> =
+        Ctr32BE::<Aes256>::new(aes_key.into(), (&counter_block).into());
+    cipher.apply_keystream(&mut plaintext);
+    plaintext
+}
+
 pub fn decrypt_modern_gcm_with_key(
     framing: &ModernGcmFraming,
     body: &[u8],
     aes_key: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    use aes::Aes256;
-    use ctr::Ctr32BE;
-    use ctr::cipher::{KeyIvInit, StreamCipher};
-
     if body.len() > MAX_MODERN_GCM_BODY_BYTES {
         return Err(Error::InputLimit {
             surface: "modern gcm body",
@@ -121,57 +180,17 @@ pub fn decrypt_modern_gcm_with_key(
             "modern gcm framing does not match body".to_owned(),
         ));
     }
-    let Some(nonce) = canonical.nonce.as_ref() else {
-        return Err(Error::Msgpack(
-            "modern body too short to carry a gcm nonce".to_owned(),
-        ));
-    };
-    let Some(tag) = canonical.tag.as_ref() else {
-        return Err(Error::Msgpack(
-            "modern body too short to carry a gcm tag".to_owned(),
-        ));
-    };
-    if nonce.len() != GCM_NONCE_LEN || tag.len() != GCM_TAG_LEN {
-        return Err(Error::Msgpack(
-            "modern gcm nonce/tag lengths are not the documented 12/16".to_owned(),
-        ));
+    let (nonce, ciphertext, stored): ([u8; GCM_NONCE_LEN], &[u8], [u8; GCM_TAG_LEN]) =
+        split_authenticated_body(&canonical, body)?;
+    let computed: [u8; GCM_TAG_LEN] = gcm_tag(aes_key, &nonce, &[], ciphertext)?;
+    if !tags_match(&computed, &stored) {
+        return Err(Error::GcmAuthentication {
+            surface: "modern .pye body",
+            computed: hex_encode(&computed),
+            stored: hex_encode(&stored),
+        });
     }
-    let ct_start: usize = match canonical.shape {
-        GcmFramingShape::SaltNonceCiphertextTag => KDF_SALT_LEN + GCM_NONCE_LEN,
-        GcmFramingShape::NonceCiphertextTag => GCM_NONCE_LEN,
-        GcmFramingShape::Undersized => {
-            return Err(Error::Msgpack("modern body is undersized".to_owned()));
-        }
-    };
-    let tag_start: usize = body.len().saturating_sub(GCM_TAG_LEN);
-    if tag_start < ct_start {
-        return Err(Error::Msgpack(
-            "modern gcm ciphertext slice underflows".to_owned(),
-        ));
-    }
-
-    let mut counter_block: [u8; 16] = [0u8; 16];
-    let Some(nonce_slot): Option<&mut [u8]> = counter_block.get_mut(..GCM_NONCE_LEN) else {
-        return Err(Error::Msgpack(
-            "modern gcm nonce slot is unavailable".to_owned(),
-        ));
-    };
-    nonce_slot.copy_from_slice(nonce);
-    let Some(counter_last): Option<&mut u8> = counter_block.get_mut(15) else {
-        return Err(Error::Msgpack(
-            "modern gcm counter slot is unavailable".to_owned(),
-        ));
-    };
-    *counter_last = 2;
-
-    let ciphertext: &[u8] = body
-        .get(ct_start..tag_start)
-        .ok_or_else(|| Error::Msgpack("modern gcm ciphertext slice is invalid".to_owned()))?;
-    let mut plaintext: Vec<u8> = ciphertext.to_vec();
-    let mut cipher: Ctr32BE<Aes256> =
-        Ctr32BE::<Aes256>::new(aes_key.into(), (&counter_block).into());
-    cipher.apply_keystream(&mut plaintext);
-    Ok(plaintext)
+    Ok(apply_gctr_keystream(aes_key, &nonce, ciphertext))
 }
 
 #[cfg(test)]
@@ -252,16 +271,88 @@ mod tests {
     #[test]
     fn ctr_keystream_matches_aes_gcm_gctr_against_a_known_vector() {
         let key: [u8; 32] = [0u8; 32];
-        let body: Vec<u8> = vec![0u8; KDF_SALT_LEN + GCM_NONCE_LEN + 16 + GCM_TAG_LEN];
-        let framing: ModernGcmFraming = frame_modern_gcm_body(&body);
-        assert_eq!(framing.shape, GcmFramingShape::SaltNonceCiphertextTag);
-        assert_eq!(framing.ciphertext_len, 16);
-        let out: Vec<u8> = decrypt_modern_gcm_with_key(&framing, &body, &key).expect("ctr");
+        let nonce: [u8; GCM_NONCE_LEN] = [0u8; GCM_NONCE_LEN];
+        let out: Vec<u8> = apply_gctr_keystream(&key, &nonce, &[0u8; 16]);
         assert_eq!(
             crate::codec::hex_encode(&out),
             "cea7403d4d606b6e074ec5d3baf39d18",
             "decrypting an all-zero ciphertext block under key/nonce=0 must equal the real \
              cryptography AESGCM keystream block (verified against the python library)",
+        );
+    }
+
+    fn salted_body(ciphertext: &[u8], tag: &[u8]) -> Vec<u8> {
+        let mut body: Vec<u8> =
+            Vec::with_capacity(KDF_SALT_LEN + GCM_NONCE_LEN + ciphertext.len() + GCM_TAG_LEN);
+        body.extend_from_slice(&[0u8; KDF_SALT_LEN]);
+        body.extend_from_slice(&[0u8; GCM_NONCE_LEN]);
+        body.extend_from_slice(ciphertext);
+        body.extend_from_slice(tag);
+        body
+    }
+
+    #[test]
+    fn an_all_zero_tag_is_refused_instead_of_returning_keystream_garbage() {
+        let key: [u8; 32] = [0u8; 32];
+        let body: Vec<u8> = vec![0u8; KDF_SALT_LEN + GCM_NONCE_LEN + 16 + GCM_TAG_LEN];
+        let framing: ModernGcmFraming = frame_modern_gcm_body(&body);
+        assert_eq!(framing.shape, GcmFramingShape::SaltNonceCiphertextTag);
+        assert_eq!(framing.ciphertext_len, 16);
+        let err: Error = decrypt_modern_gcm_with_key(&framing, &body, &key)
+            .expect_err("an all-zero tag is not the real gcm tag for this key and ciphertext");
+        let Error::GcmAuthentication {
+            computed, stored, ..
+        } = err
+        else {
+            panic!("a tag mismatch must be reported as an authentication failure")
+        };
+        assert_eq!(stored, "00000000000000000000000000000000");
+        assert_eq!(
+            computed, "a87450d1732b0aba4d296b2786fbd719",
+            "the real aes-256-gcm tag over an all-zero ciphertext block under key/nonce=0",
+        );
+    }
+
+    #[test]
+    fn the_published_test_case_14_tag_authenticates_and_then_decrypts() {
+        let key: [u8; 32] = [0u8; 32];
+        let nonce: [u8; GCM_NONCE_LEN] = [0u8; GCM_NONCE_LEN];
+        let ciphertext: Vec<u8> = crate::codec::hex_decode(b"cea7403d4d606b6e074ec5d3baf39d18")
+            .expect("gcm-spec test case 14 ciphertext");
+        let tag: Vec<u8> = crate::codec::hex_decode(b"d0d1c8a799996bf0265b98b5d48ab919")
+            .expect("gcm-spec test case 14 tag");
+        let body: Vec<u8> = salted_body(&ciphertext, &tag);
+
+        let framing: ModernGcmFraming = frame_modern_gcm_body(&body);
+        let plaintext: Vec<u8> = decrypt_modern_gcm_with_key(&framing, &body, &key)
+            .expect("the published gcm-spec test case 14 tag must authenticate");
+        assert_eq!(
+            plaintext,
+            vec![0u8; 16],
+            "gcm-spec test case 14 decrypts to a single all-zero plaintext block"
+        );
+        assert_eq!(plaintext, apply_gctr_keystream(&key, &nonce, &ciphertext));
+    }
+
+    #[test]
+    fn a_single_flipped_ciphertext_byte_turns_authentication_red() {
+        let key: [u8; 32] = [0u8; 32];
+        let mut ciphertext: Vec<u8> = crate::codec::hex_decode(b"cea7403d4d606b6e074ec5d3baf39d18")
+            .expect("gcm-spec test case 14 ciphertext");
+        let tag: Vec<u8> = crate::codec::hex_decode(b"d0d1c8a799996bf0265b98b5d48ab919")
+            .expect("gcm-spec test case 14 tag");
+        let Some(first): Option<&mut u8> = ciphertext.first_mut() else {
+            panic!("the vector ciphertext is not empty")
+        };
+        *first ^= 0x01;
+        let body: Vec<u8> = salted_body(&ciphertext, &tag);
+        let framing: ModernGcmFraming = frame_modern_gcm_body(&body);
+        assert!(
+            matches!(
+                decrypt_modern_gcm_with_key(&framing, &body, &key),
+                Err(Error::GcmAuthentication { .. })
+            ),
+            "one flipped ciphertext byte must invalidate the stored tag"
         );
     }
 }
