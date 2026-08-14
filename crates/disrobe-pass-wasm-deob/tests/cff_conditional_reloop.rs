@@ -519,6 +519,108 @@ fn runtime_differential_rejects_swapped_global_tee_successors() {
 }
 
 #[test]
+fn a_nested_suffix_read_of_the_tee_source_global_is_walled() {
+    let bytes: Vec<u8> = assemble_fixture("cff_global_tee_state_suffix_read.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover global tee module with nested suffix read");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "a nested suffix read must prevent state-global elision: {:?}",
+        recovered.report
+    );
+    assert_eq!(
+        recovered.report.flattened_dispatchers_walled, 1,
+        "a nested suffix read must wall the dispatcher: {:?}",
+        recovered.report
+    );
+    assert!(
+        contains_br_table(&recovered.bytes),
+        "a walled dispatcher must retain its br_table"
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_global");
+}
+
+#[test]
+fn an_effectful_global_tee_selector_prefix_is_not_relooped() {
+    let bytes: Vec<u8> = assemble_fixture("cff_global_tee_state_effectful_prefix.obf.wat");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover global tee module with effectful selector prefix");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "an effectful selector prefix must not be erased: {:?}",
+        recovered.report
+    );
+    assert!(
+        contains_br_table(&recovered.bytes),
+        "an effectful selector prefix must retain the dispatcher"
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(
+        call_i32(&mut candidate, "classify_global", 5),
+        call_i32(&mut original, "classify_global", 5),
+        "the walled dispatcher must preserve the classified result"
+    );
+    assert_eq!(
+        read_global_i32(&mut candidate, "effect_count"),
+        read_global_i32(&mut original, "effect_count"),
+        "the selector-prefix effect must be preserved"
+    );
+    assert_eq!(
+        read_global_i32(&mut original, "effect_count"),
+        Some(3),
+        "the dispatcher executes the selector prefix once per dispatched state"
+    );
+
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut original, &mut candidate, "classify_global");
+}
+
+#[test]
+fn a_trapping_global_tee_selector_prefix_is_not_relooped() {
+    let source: String =
+        std::fs::read_to_string(fixture_dir().join("cff_global_tee_state.obf.wat"))
+            .expect("read global tee fixture");
+    let marker: &str = "      global.get 0\n      local.tee 2\n      drop\n      block";
+    let replacement: &str = "      global.get 0\n      local.tee 2\n      drop\n      i32.const 1\n      i32.const 0\n      i32.div_s\n      drop\n      block";
+    let variant: String = source.replacen(marker, replacement, 1);
+    assert_ne!(variant, source, "trapping selector prefix must be inserted");
+    let bytes: Vec<u8> = wat::parse_str(&variant).expect("assemble trapping selector prefix");
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover global tee module with trapping selector prefix");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 0,
+        "a trapping selector prefix must not be erased: {:?}",
+        recovered.report
+    );
+    assert!(
+        contains_br_table(&recovered.bytes),
+        "a trapping selector prefix must retain the dispatcher"
+    );
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(
+        call_i32(&mut original, "classify_global", 5),
+        Outcome::Trap,
+        "the original selector prefix must exercise its trap"
+    );
+    assert_eq!(
+        call_i32(&mut candidate, "classify_global", 5),
+        Outcome::Trap,
+        "the recovered selector prefix must preserve its trap"
+    );
+}
+
+#[test]
 fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
     assert_fixture_reloops(
         "cff_memory_state.clean.wat",

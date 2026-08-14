@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_cfg::{Flow, FlowGraph, PostDominator};
-use walrus::ir::{Instr, InstrSeqId, InstrSeqType, LoadKind, StoreKind};
+use walrus::ir::{
+    BinaryOp, Instr, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, StoreKind, UnaryOp,
+};
 use walrus::{GlobalId, LocalFunction, LocalId, MemoryId};
 
 use super::opaque::eval_i32_expression_suffix;
@@ -47,7 +49,7 @@ pub(super) fn try_reloop(func: &mut LocalFunction, elidable: &ElidableCells) -> 
     let Some(disp): Option<Dispatcher> = detect(func) else {
         return ReloopOutcome::NotApplicable;
     };
-    if !cell_is_elidable(&disp, elidable) {
+    if !cell_is_elidable(func, &disp, elidable) {
         return wall(WallReason::ObservableStateCell);
     }
     let Some(graph): Option<Graph> = build_graph(func, &disp) else {
@@ -138,17 +140,78 @@ struct Dispatcher {
     state_to_body: BTreeMap<i32, Body>,
 }
 
-fn cell_is_elidable(disp: &Dispatcher, elidable: &ElidableCells) -> bool {
+fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &ElidableCells) -> bool {
     let owned_by_dispatcher: bool = match disp.cell {
         StateCell::Local(_) => true,
         StateCell::Global(global) => elidable.globals.contains(&global),
         StateCell::MemorySlot { memory, .. } => elidable.memories.contains(&memory),
     };
-    owned_by_dispatcher && !reads_cell(&disp.suffix, disp.cell)
+    owned_by_dispatcher && !reads_cell(func, &disp.suffix, disp.cell)
 }
 
-fn reads_cell(instrs: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> bool {
-    instrs.iter().any(|(instr, _)| cell.read_matches(instr))
+fn reads_cell(
+    func: &LocalFunction,
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+) -> bool {
+    let mut pending: Vec<InstrSeqId> = Vec::new();
+    let mut remaining: usize = RENDER_GUARD;
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    if body_reads_cell(instrs, cell, &mut pending, &mut remaining) {
+        return true;
+    }
+    while let Some(seq) = pending.pop() {
+        if !seen.insert(seq) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT {
+            return true;
+        }
+        if body_reads_cell(&func.block(seq).instrs, cell, &mut pending, &mut remaining) {
+            return true;
+        }
+    }
+    false
+}
+
+fn body_reads_cell(
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+    pending: &mut Vec<InstrSeqId>,
+    remaining: &mut usize,
+) -> bool {
+    for (instr, _) in instrs {
+        let Some(next_remaining): Option<usize> = remaining.checked_sub(1) else {
+            return true;
+        };
+        *remaining = next_remaining;
+        match instr {
+            Instr::Block(block) => pending.push(block.seq),
+            Instr::Loop(loop_) => pending.push(loop_.seq),
+            Instr::IfElse(if_else) => {
+                pending.push(if_else.consequent);
+                pending.push(if_else.alternative);
+            }
+            Instr::TryTable(try_table) => pending.push(try_table.seq),
+            Instr::Try(try_) => {
+                pending.push(try_.seq);
+                pending.extend(
+                    try_.catches
+                        .iter()
+                        .filter_map(|catch: &LegacyCatch| match catch {
+                            LegacyCatch::Catch { handler, .. }
+                            | LegacyCatch::CatchAll { handler } => Some(*handler),
+                            LegacyCatch::Delegate { .. } => None,
+                        }),
+                );
+            }
+            _ => {}
+        }
+        if cell.read_matches(instr) {
+            return true;
+        }
+    }
+    false
 }
 
 fn detect(func: &LocalFunction) -> Option<Dispatcher> {
@@ -190,7 +253,7 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     let mut preamble: Body = entry_instrs[..loop_index].to_vec();
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
     let (entry_state, entry_write): (i32, Option<std::ops::Range<usize>>) =
-        initial_state(&preamble, cell)?;
+        initial_state(func, &preamble, cell)?;
     if let Some(span) = entry_write {
         drop(preamble.drain(span));
     }
@@ -233,18 +296,33 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
         matches!(instr, Instr::LocalSet(set) if set.local == temp)
             || matches!(instr, Instr::LocalTee(tee) if tee.local == temp)
     })?;
-    let stack_neutral: bool = match &loop_body.get(definition_index)?.0 {
-        Instr::LocalSet(_) => true,
-        Instr::LocalTee(_) => matches!(
-            loop_body.get(definition_index.checked_add(1)?)?.0,
-            Instr::Drop(_)
-        ),
-        _ => false,
+    let selector_end: usize = match &loop_body.get(definition_index)?.0 {
+        Instr::LocalSet(_) => definition_index.checked_add(1)?,
+        Instr::LocalTee(_) => {
+            let drop_index: usize = definition_index.checked_add(1)?;
+            if !matches!(loop_body.get(drop_index)?.0, Instr::Drop(_)) {
+                return None;
+            }
+            drop_index.checked_add(1)?
+        }
+        _ => return None,
     };
-    if !stack_neutral {
+    let source_index: usize = definition_index.checked_sub(1)?;
+    let source_start: usize = match &loop_body.get(source_index)?.0 {
+        Instr::Load(_) => source_index.checked_sub(1)?,
+        _ => source_index,
+    };
+    if !selector_noise_is_inert(loop_body.get(..source_start)?) {
         return None;
     }
-    let source_index: usize = definition_index.checked_sub(1)?;
+    let wrapper_relative: usize = loop_body
+        .get(selector_end..)?
+        .iter()
+        .position(|(instr, _)| matches!(instr, Instr::Block(_)))?;
+    let wrapper_index: usize = selector_end.checked_add(wrapper_relative)?;
+    if !selector_noise_is_inert(loop_body.get(selector_end..wrapper_index)?) {
+        return None;
+    }
     match &loop_body.get(source_index)?.0 {
         Instr::LocalGet(get) => Some(StateCell::Local(get.local)),
         Instr::GlobalGet(get) => Some(StateCell::Global(get.global)),
@@ -264,6 +342,56 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
         }
         _ => None,
     }
+}
+
+fn selector_noise_is_inert(instrs: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
+    let mut height: usize = 0;
+    for (instr, _) in instrs {
+        let (pops, pushes): (usize, usize) = match instr {
+            Instr::Const(_) | Instr::LocalGet(_) | Instr::GlobalGet(_) => (0, 1),
+            Instr::Unop(unary) if selector_unary_op_is_inert(unary.op) => (1, 1),
+            Instr::Binop(binary) if selector_binary_op_is_inert(binary.op) => (2, 1),
+            Instr::Select(_) => (3, 1),
+            Instr::Drop(_) => (1, 0),
+            _ => return false,
+        };
+        let Some(reduced): Option<usize> = height.checked_sub(pops) else {
+            return false;
+        };
+        let Some(next): Option<usize> = reduced.checked_add(pushes) else {
+            return false;
+        };
+        height = next;
+    }
+    height == 0
+}
+
+const fn selector_binary_op_is_inert(op: BinaryOp) -> bool {
+    !matches!(
+        op,
+        BinaryOp::I32DivS
+            | BinaryOp::I32DivU
+            | BinaryOp::I32RemS
+            | BinaryOp::I32RemU
+            | BinaryOp::I64DivS
+            | BinaryOp::I64DivU
+            | BinaryOp::I64RemS
+            | BinaryOp::I64RemU
+    )
+}
+
+const fn selector_unary_op_is_inert(op: UnaryOp) -> bool {
+    !matches!(
+        op,
+        UnaryOp::I32TruncSF32
+            | UnaryOp::I32TruncUF32
+            | UnaryOp::I32TruncSF64
+            | UnaryOp::I32TruncUF64
+            | UnaryOp::I64TruncSF32
+            | UnaryOp::I64TruncUF32
+            | UnaryOp::I64TruncSF64
+            | UnaryOp::I64TruncUF64
+    )
 }
 
 fn ends_with_branch_to(body: &Body, target: InstrSeqId) -> bool {
@@ -351,6 +479,7 @@ fn case_body(
 }
 
 fn initial_state(
+    func: &LocalFunction,
     preamble: &Body,
     cell: StateCell,
 ) -> Option<(i32, Option<std::ops::Range<usize>>)> {
@@ -362,7 +491,7 @@ fn initial_state(
     }
     let (value, write_start, write_end): (i32, usize, usize) = found?;
     let entry_write: Option<std::ops::Range<usize>> =
-        (!reads_cell(preamble.get(write_end..)?, cell)).then_some(write_start..write_end);
+        (!reads_cell(func, preamble.get(write_end..)?, cell)).then_some(write_start..write_end);
     Some((value, entry_write))
 }
 
@@ -476,7 +605,7 @@ const fn canonicalize_transition(trans: &mut Trans, disp: &Dispatcher) {
 
 fn classify_case(func: &LocalFunction, body: &Body, cell: StateCell) -> Option<Node> {
     let node: Node = classify_case_shape(func, body, cell)?;
-    if reads_cell(&node.work, cell) || reads_cell(&node.cond, cell) {
+    if reads_cell(func, &node.work, cell) || reads_cell(func, &node.cond, cell) {
         return None;
     }
     Some(node)
