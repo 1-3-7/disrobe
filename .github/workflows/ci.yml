@@ -757,6 +757,11 @@ jobs:
           install -m 0755 "$source_dir/build/host/bin/mrbc" "$prefix/bin/mrbc"
           install -m 0755 "$source_dir/build/host/bin/mruby" "$prefix/bin/mruby"
 
+          install -d "$prefix/include/mruby"
+          install -m 0644 "$source_dir/include/mruby/ops.h" "$prefix/include/mruby/ops.h"
+          install -m 0644 "$source_dir/include/mruby/version.h" "$prefix/include/mruby/version.h"
+          printf 'DISROBE_MRUBY_INCLUDE=%s\n' "$prefix/include/mruby" >> "$GITHUB_ENV"
+
           mrbc_banner="$("$prefix/bin/mrbc" --version)"
           mruby_banner="$("$prefix/bin/mruby" --version)"
 
@@ -806,6 +811,8 @@ jobs:
         env:
           DISROBE_REQUIRE_MRUBY: "1"
         run: cargo test -p disrobe-pass-ruby --test mruby_recompile_oracle -- --nocapture
+      - name: mruby opcode table graded against the installed ops.h
+        run: cargo test -p disrobe-pass-ruby --test mruby_isa_coverage -- --nocapture
       - name: php op_array behavioral differential
         env:
           DISROBE_REQUIRE_PHP: "1"
