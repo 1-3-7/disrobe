@@ -630,6 +630,119 @@ fn state_held_in_a_memory_slot_reloops_under_wasmtime() {
 }
 
 #[test]
+fn state_held_at_a_fixed_memory_address_reloops_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
+    let obf_bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::None);
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_memory",
+        "fixed-address memory state",
+    );
+}
+
+#[test]
+fn runtime_differential_rejects_swapped_fixed_memory_successors() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
+    let mutant_bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::SwapSuccessors);
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "classify_memory");
+}
+
+#[test]
+fn fixed_memory_selector_with_mismatched_store_metadata_remains_walled() {
+    for mutation in [
+        FixedMemoryMutation::AddressMismatch,
+        FixedMemoryMutation::OffsetMismatch,
+    ] {
+        let bytes: Vec<u8> = fixed_memory_state_variant(mutation);
+        let recovered: RecoveredModule =
+            recover_module(&bytes).expect("recover mismatched fixed slot");
+        assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+        assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+        assert!(contains_br_table(&recovered.bytes));
+    }
+}
+
+#[test]
+fn fixed_memory_selector_without_private_in_bounds_storage_remains_walled() {
+    for mutation in [
+        FixedMemoryMutation::ZeroPageMemory,
+        FixedMemoryMutation::OutOfBoundsAddress,
+        FixedMemoryMutation::ExportedMemory,
+    ] {
+        let bytes: Vec<u8> = fixed_memory_state_variant(mutation);
+        let recovered: RecoveredModule =
+            recover_module(&bytes).expect("recover non-private fixed slot");
+        assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+        assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+        assert!(contains_br_table(&recovered.bytes));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FixedMemoryMutation {
+    None,
+    SwapSuccessors,
+    AddressMismatch,
+    OffsetMismatch,
+    ZeroPageMemory,
+    OutOfBoundsAddress,
+    ExportedMemory,
+}
+
+fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
+    let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
+    let mut variant: String = source.replace("local.get 2", "i32.const 32");
+    match mutation {
+        FixedMemoryMutation::None => {}
+        FixedMemoryMutation::SwapSuccessors => {
+            let with_nonzero: String = variant.replacen(
+                "i32.const 32\n                  i32.const 1\n                  i32.store offset=4",
+                "i32.const 32\n                  i32.const 2\n                  i32.store offset=4",
+                1,
+            );
+            variant = with_nonzero.replacen(
+                "i32.const 32\n                i32.const 2\n                i32.store offset=4",
+                "i32.const 32\n                i32.const 1\n                i32.store offset=4",
+                1,
+            );
+        }
+        FixedMemoryMutation::AddressMismatch => {
+            variant = variant.replacen(
+                "i32.const 32\n            i32.const 3\n            i32.store offset=4",
+                "i32.const 36\n            i32.const 3\n            i32.store offset=4",
+                1,
+            );
+        }
+        FixedMemoryMutation::OffsetMismatch => {
+            variant = variant.replacen(
+                "i32.const 32\n            i32.const 3\n            i32.store offset=4",
+                "i32.const 32\n            i32.const 3\n            i32.store offset=8",
+                1,
+            );
+        }
+        FixedMemoryMutation::ZeroPageMemory => {
+            variant = variant.replacen("(memory (;0;) 1)", "(memory (;0;) 0)", 1);
+        }
+        FixedMemoryMutation::OutOfBoundsAddress => {
+            variant = variant.replace("i32.const 32", "i32.const 65532");
+        }
+        FixedMemoryMutation::ExportedMemory => {
+            variant = variant.replacen(
+                "(memory (;0;) 1)",
+                "(memory (;0;) 1)\n  (export \"state_memory\" (memory 0))",
+                1,
+            );
+        }
+    }
+    wat::parse_str(&variant).expect("assemble fixed-address memory state")
+}
+
+#[test]
 fn runtime_differential_rejects_swapped_local_state_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_local_state.clean.wat");
     let mutant_bytes: Vec<u8> = assemble_fixture("cff_local_state.mutant.wat");

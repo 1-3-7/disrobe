@@ -50,13 +50,37 @@ enum CellOwner {
 fn elidable_state_cells(module: &Module) -> BTreeMap<FunctionId, ElidableCells> {
     let globals: BTreeMap<FunctionId, BTreeSet<GlobalId>> = elidable_state_globals(module);
     let memories: BTreeMap<FunctionId, BTreeSet<MemoryId>> = elidable_state_memories(module);
+    let exported_memories: BTreeSet<MemoryId> = module
+        .exports
+        .iter()
+        .filter_map(|export| match export.item {
+            ExportItem::Memory(id) => Some(id),
+            ExportItem::Function(_)
+            | ExportItem::Global(_)
+            | ExportItem::Table(_)
+            | ExportItem::Tag(_) => None,
+        })
+        .collect();
     module
         .funcs
         .iter_local()
         .map(|(fid, _)| {
+            let function_memories: BTreeSet<MemoryId> =
+                memories.get(&fid).cloned().unwrap_or_default();
+            let fixed_memories: BTreeSet<MemoryId> = function_memories
+                .difference(&exported_memories)
+                .copied()
+                .collect();
             let cells: ElidableCells = ElidableCells {
                 globals: globals.get(&fid).cloned().unwrap_or_default(),
-                memories: memories.get(&fid).cloned().unwrap_or_default(),
+                memories: function_memories,
+                memory_min_bytes: fixed_memories
+                    .iter()
+                    .filter_map(|memory: &MemoryId| {
+                        minimum_memory_bytes(module, *memory).map(|bytes: u64| (*memory, bytes))
+                    })
+                    .collect(),
+                fixed_memories,
             };
             (fid, cells)
         })
@@ -94,6 +118,13 @@ fn elidable_state_memories(module: &Module) -> BTreeMap<FunctionId, BTreeSet<Mem
             (fid, owned)
         })
         .collect()
+}
+
+fn minimum_memory_bytes(module: &Module, memory: MemoryId) -> Option<u64> {
+    let entry: &walrus::Memory = module.memories.get(memory);
+    entry
+        .initial
+        .checked_shl(entry.page_size_log2.unwrap_or(16))
 }
 
 fn claim<T: Ord>(owners: &mut BTreeMap<T, CellOwner>, cell: T, fid: FunctionId) {

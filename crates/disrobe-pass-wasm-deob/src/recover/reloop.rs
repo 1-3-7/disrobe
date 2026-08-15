@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_cfg::{Flow, FlowGraph, PostDominator};
 use walrus::ir::{
-    BinaryOp, Instr, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, StoreKind, UnaryOp,
+    BinaryOp, Instr, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, StoreKind, UnaryOp, Value,
 };
 use walrus::{GlobalId, LocalFunction, LocalId, MemoryId};
 
@@ -43,6 +43,8 @@ pub(super) enum ReloopOutcome {
 pub(super) struct ElidableCells {
     pub(super) globals: BTreeSet<GlobalId>,
     pub(super) memories: BTreeSet<MemoryId>,
+    pub(super) fixed_memories: BTreeSet<MemoryId>,
+    pub(super) memory_min_bytes: BTreeMap<MemoryId, u64>,
 }
 
 pub(super) fn try_reloop(func: &mut LocalFunction, elidable: &ElidableCells) -> ReloopOutcome {
@@ -72,10 +74,33 @@ enum StateCell {
     Local(LocalId),
     Global(GlobalId),
     MemorySlot {
-        base: LocalId,
+        address: MemoryAddress,
         memory: MemoryId,
         offset: u32,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryAddress {
+    Local(LocalId),
+    I32Const(i32),
+}
+
+impl MemoryAddress {
+    const fn from_instr(instr: &Instr) -> Option<Self> {
+        match instr {
+            Instr::LocalGet(get) => Some(Self::Local(get.local)),
+            Instr::Const(constant) => match constant.value {
+                Value::I32(value) => Some(Self::I32Const(value)),
+                Value::I64(_) | Value::F32(_) | Value::F64(_) | Value::V128(_) => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn matches(self, instr: &Instr) -> bool {
+        Self::from_instr(instr) == Some(self)
+    }
 }
 
 impl StateCell {
@@ -88,9 +113,9 @@ impl StateCell {
 
     fn address_prefix_matches(self, prefix: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
         match self {
-            Self::MemorySlot { base, .. } => {
-                matches!(prefix.first(), Some((Instr::LocalGet(get), _)) if get.local == base)
-            }
+            Self::MemorySlot { address, .. } => prefix
+                .first()
+                .is_some_and(|(instr, _location)| address.matches(instr)),
             Self::Local(_) | Self::Global(_) => prefix.is_empty(),
         }
     }
@@ -144,9 +169,39 @@ fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &Elidable
     let owned_by_dispatcher: bool = match disp.cell {
         StateCell::Local(_) => true,
         StateCell::Global(global) => elidable.globals.contains(&global),
-        StateCell::MemorySlot { memory, .. } => elidable.memories.contains(&memory),
+        StateCell::MemorySlot {
+            address,
+            memory,
+            offset,
+            ..
+        } => {
+            let eligible: bool = match address {
+                MemoryAddress::Local(_) => elidable.memories.contains(&memory),
+                MemoryAddress::I32Const(_) => elidable.fixed_memories.contains(&memory),
+            };
+            eligible
+                && memory_address_is_in_bounds(address, offset, &elidable.memory_min_bytes, memory)
+        }
     };
     owned_by_dispatcher && !reads_cell(func, &disp.suffix, disp.cell)
+}
+
+fn memory_address_is_in_bounds(
+    address: MemoryAddress,
+    offset: u32,
+    minimums: &BTreeMap<MemoryId, u64>,
+    memory: MemoryId,
+) -> bool {
+    match address {
+        MemoryAddress::Local(_) => true,
+        MemoryAddress::I32Const(value) => {
+            let dynamic: u64 = u64::from(u32::from_ne_bytes(value.to_ne_bytes()));
+            dynamic
+                .checked_add(u64::from(offset))
+                .and_then(|effective: u64| effective.checked_add(4))
+                .is_some_and(|end: u64| minimums.get(&memory).is_some_and(|limit| end <= *limit))
+        }
+    }
 }
 
 fn reads_cell(
@@ -330,12 +385,11 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
             if !matches!(load.kind, LoadKind::I32 { atomic: false }) {
                 return None;
             }
-            let base_index: usize = source_index.checked_sub(1)?;
-            let Instr::LocalGet(base) = &loop_body.get(base_index)?.0 else {
-                return None;
-            };
+            let address_index: usize = source_index.checked_sub(1)?;
+            let address: MemoryAddress =
+                MemoryAddress::from_instr(&loop_body.get(address_index)?.0)?;
             Some(StateCell::MemorySlot {
-                base: base.local,
+                address,
                 memory: load.memory,
                 offset: load.arg.offset,
             })
@@ -1274,6 +1328,67 @@ fn new_seq(func: &mut LocalFunction, body: Body) -> InstrSeqId {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_slot_identity_ignores_alignment_but_requires_semantic_metadata() {
+        let mut module: walrus::Module = walrus::Module::default();
+        let selected_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
+        let other_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
+        let cell: StateCell = StateCell::MemorySlot {
+            address: MemoryAddress::I32Const(32),
+            memory: selected_memory,
+            offset: 4,
+        };
+        let store = |memory: MemoryId, offset: u32, align: u32, kind: StoreKind| -> Instr {
+            Instr::Store(walrus::ir::Store {
+                memory,
+                kind,
+                arg: walrus::ir::MemArg { align, offset },
+            })
+        };
+
+        assert!(cell.commit_matches(&store(
+            selected_memory,
+            4,
+            1,
+            StoreKind::I32 { atomic: false },
+        )));
+        assert!(
+            !cell.commit_matches(&store(other_memory, 4, 4, StoreKind::I32 { atomic: false },))
+        );
+        assert!(!cell.commit_matches(&store(
+            selected_memory,
+            8,
+            4,
+            StoreKind::I32 { atomic: false },
+        )));
+        assert!(!cell.commit_matches(&store(
+            selected_memory,
+            4,
+            4,
+            StoreKind::I32 { atomic: true },
+        )));
+        assert!(!cell.commit_matches(&store(
+            selected_memory,
+            4,
+            4,
+            StoreKind::I64 { atomic: false },
+        )));
+        let matching_address: Body = vec![(
+            Instr::Const(walrus::ir::Const {
+                value: Value::I32(32),
+            }),
+            walrus::ir::InstrLocId::default(),
+        )];
+        let different_address: Body = vec![(
+            Instr::Const(walrus::ir::Const {
+                value: Value::I32(36),
+            }),
+            walrus::ir::InstrLocId::default(),
+        )];
+        assert!(cell.address_prefix_matches(&matching_address));
+        assert!(!cell.address_prefix_matches(&different_address));
+    }
 
     fn node(trans: Trans) -> Node {
         Node {
