@@ -805,14 +805,25 @@ fn real_extractor_dotnet_single_file_bundle_routes_its_assembly_to_the_cil_pass(
         .count();
     assert_eq!(child_count, 5, "every embedded entry becomes a child");
 
-    let dispatched: Vec<String> = doc
-        .nodes
-        .iter()
-        .filter_map(|n: &disrobe_core::chain::NodeDoc| n.pass.clone())
-        .collect();
+    let expected_managed: Vec<u8> =
+        std::fs::read(corpus("binfmt/dotnet-single-file/expected/probe.dll"))
+            .expect("tracked managed reference must be readable");
+    let expected_native: Vec<u8> =
+        std::fs::read(corpus("binfmt/dotnet-single-file/expected/libcustom.dll"))
+            .expect("tracked native reference must be readable");
+    let managed_hash: String = blake3::hash(&expected_managed).to_hex().to_string();
+    let native_hash: String = blake3::hash(&expected_native).to_hex().to_string();
     assert!(
-        dispatched.iter().any(|p: &String| p == "dotnet.classify"),
-        "the embedded managed assembly must reach the CIL pass through `auto` with no dedicated \
-         flag; passes dispatched were {dispatched:?}"
+        doc.nodes.iter().any(|node: &disrobe_core::chain::NodeDoc| {
+            node.input_blake3 == managed_hash && node.pass.as_deref() == Some("dotnet.classify")
+        }),
+        "the independently extracted managed assembly must reach the CIL pass through `auto`"
+    );
+    assert!(
+        doc.nodes.iter().any(|node: &disrobe_core::chain::NodeDoc| {
+            node.input_blake3 == native_hash
+                && node.pass.as_deref() == Some("native.image-classify")
+        }),
+        "the independently extracted native member must reach the native image pass through `auto`"
     );
 }

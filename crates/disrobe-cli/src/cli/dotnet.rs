@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
@@ -19,11 +20,95 @@ use disrobe_pass_dotnet::{
 use super::emit::EmitSpec;
 use super::globals;
 
+const MAX_BUNDLE_ASSEMBLIES: usize = 512;
+
+struct DecompileMode {
+    require_native_success: bool,
+    logical_input: Option<String>,
+    quiet: bool,
+}
+
+struct BundleStage {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl BundleStage {
+    fn create(output: &Path) -> miette::Result<Self> {
+        let parent: &Path = output
+            .parent()
+            .filter(|path: &&Path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error: std::io::Error| {
+            miette::miette!("DR-CLI-0464: cannot create output parent: {error}")
+        })?;
+        let token: disrobe_core::scratch::ScratchDir = disrobe_core::scratch::ScratchDir::create(
+            "disrobe-dotnet-bundle-stage",
+        )
+        .map_err(|error: std::io::Error| {
+            miette::miette!("DR-CLI-0465: cannot allocate bundle stage: {error}")
+        })?;
+        let token_name: &OsStr = token
+            .path()
+            .file_name()
+            .ok_or_else(|| miette::miette!("DR-CLI-0465: bundle stage has no file name"))?;
+        let output_name: &OsStr = output
+            .file_name()
+            .ok_or_else(|| miette::miette!("DR-CLI-0466: bundle output must name a directory"))?;
+        let path: PathBuf = parent.join(format!(
+            ".{}.{}",
+            output_name.to_string_lossy(),
+            token_name.to_string_lossy()
+        ));
+        std::fs::create_dir(&path).map_err(|error: std::io::Error| {
+            miette::miette!("DR-CLI-0465: cannot create bundle stage: {error}")
+        })?;
+        Ok(Self {
+            path,
+            committed: false,
+        })
+    }
+
+    fn commit(mut self, output: &Path) -> miette::Result<()> {
+        if output.exists() {
+            let mut entries: std::fs::ReadDir =
+                std::fs::read_dir(output).map_err(|error: std::io::Error| {
+                    miette::miette!("DR-CLI-0467: cannot inspect bundle output: {error}")
+                })?;
+            if entries.next().is_some() {
+                return Err(miette::miette!(
+                    "DR-CLI-0468: bundle output directory is not empty: {}",
+                    output.display()
+                ));
+            }
+            std::fs::remove_dir(output).map_err(|error: std::io::Error| {
+                miette::miette!("DR-CLI-0469: cannot replace empty bundle output: {error}")
+            })?;
+        }
+        std::fs::rename(&self.path, output).map_err(|error: std::io::Error| {
+            miette::miette!("DR-CLI-0470: cannot publish bundle output atomically: {error}")
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for BundleStage {
+    fn drop(&mut self) {
+        if !self.committed
+            && let Err(error) = std::fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %self.path.display(), %error, "failed to remove .NET bundle stage");
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum DotnetCmd {
-    #[command(about = "decompile a .NET PE (.dll / .exe) through ILSpy, dnSpy, dnSpyEx, or de4dot")]
+    #[command(about = "decompile a .NET assembly or single-file bundle")]
     Decompile {
-        #[arg(help = "input .NET PE file (.dll / .exe)")]
+        #[arg(help = "input .NET assembly or PE, ELF, or Mach-O single-file bundle")]
         input: Option<PathBuf>,
         #[arg(short, long, help = "output directory (default: ./out/<stem>-dotnet)")]
         out: Option<PathBuf>,
@@ -160,7 +245,20 @@ pub(crate) fn run(action: DotnetCmd) -> miette::Result<()> {
             if recover_iterators {
                 return recover_iterators_cmd(input, language, json);
             }
-            decompile(input, out, list, backend, timeout_secs, emit, language)
+            decompile(
+                input,
+                out,
+                list,
+                backend,
+                timeout_secs,
+                emit,
+                language,
+                DecompileMode {
+                    require_native_success: false,
+                    logical_input: None,
+                    quiet: false,
+                },
+            )
         }
         DotnetCmd::Deobfuscate {
             input,
@@ -180,6 +278,7 @@ fn decompile(
     timeout_secs: u64,
     emit_kinds: Vec<String>,
     language: DotnetLang,
+    mode: DecompileMode,
 ) -> miette::Result<()> {
     if list {
         super::emit::print_obfuscator_catalog(
@@ -195,6 +294,9 @@ fn decompile(
     };
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0430: cannot read input: {e}"))?;
+    let input_label: String = mode
+        .logical_input
+        .unwrap_or_else(|| input.as_os_str().to_string_lossy().into_owned());
     let stem: String = input
         .file_stem()
         .and_then(OsStr::to_str)
@@ -207,6 +309,17 @@ fn decompile(
         println!("  input:        {}", input.display());
         println!("  backend:      {backend_choice:?}");
         return Ok(());
+    }
+    if disrobe_binfmt::containers::dotnet_bundle::detect_dotnet_bundle(&bytes).is_some() {
+        return decompile_bundle(
+            &input,
+            &bytes,
+            &out_dir,
+            backend_choice,
+            timeout_secs,
+            &emit_kinds,
+            language,
+        );
     }
     let summary: PassSummary =
         analyze_dotnet(&bytes).map_err(|e| miette::miette!("DR-CLI-0431: dotnet analyze: {e}"))?;
@@ -225,7 +338,7 @@ fn decompile(
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.dotnet.decompile/v0",
-        "input": input.display().to_string(),
+        "input": &input_label,
         "pe_bitness": summary.pe_bitness,
         "machine": summary.machine,
         "clr_runtime_version": summary.clr_runtime_version,
@@ -247,57 +360,230 @@ fn decompile(
     let native: NativeDecompileOutcome =
         emit_native_decompilation(&bytes, &out_dir, &stem, language)?;
 
+    if mode.require_native_success {
+        ensure_native_decompile_complete(&native, &input_label)?;
+    }
+
     apply_emit_stubs(&emit_kinds, &out_dir, &stem, "dotnet-decompile")?;
 
-    println!("dotnet decompile: OK");
-    println!("  input:        {}", input.display());
-    println!("  bitness:      {}", summary.pe_bitness);
-    println!(
-        "  runtime:      {} ({})",
-        summary.clr_runtime_version,
-        format_runtime(&summary)
-    );
-    println!(
-        "  r2r/aot:      r2r={} aot={}",
-        summary.r2r_present, summary.native_aot
-    );
-    if let Some(p) = summary.primary_protector.as_ref() {
-        println!("  protector:    {p:?}");
+    if !mode.quiet {
+        println!("dotnet decompile: OK");
+        println!("  input:        {input_label}");
+        println!("  bitness:      {}", summary.pe_bitness);
+        println!(
+            "  runtime:      {} ({})",
+            summary.clr_runtime_version,
+            format_runtime(&summary)
+        );
+        println!(
+            "  r2r/aot:      r2r={} aot={}",
+            summary.r2r_present, summary.native_aot
+        );
+        if let Some(p) = summary.primary_protector.as_ref() {
+            println!("  protector:    {p:?}");
+        }
+        match (backend, &backend_error) {
+            (Some(b), None) => println!(
+                "  backend:      {b:?} (exit={})",
+                invocation.as_ref().map_or(-1, |i| i.status)
+            ),
+            (Some(b), Some(err)) => {
+                let first_line: &str = err.lines().next().unwrap_or(err.as_str());
+                println!(
+                    "  backend:      {b:?} FAILED: {first_line} (falling back to native CIL decompiler)"
+                );
+            }
+            (None, _) => {
+                println!("  backend:      (none available; using native CIL->C# decompiler)");
+            }
+        }
+        match &native {
+            NativeDecompileOutcome::Decompiled(asm) => println!(
+                "  native {}:    {} methods (bodyless={}, failed={}) -> {}.native.{}",
+                language.label(),
+                asm.methods_decompiled,
+                asm.methods_bodyless,
+                asm.methods_failed,
+                stem,
+                language.ext()
+            ),
+            NativeDecompileOutcome::Failed(reason) => println!(
+                "  native {}:    decompile failed: {reason} (manifest written; see {}.native.{})",
+                language.label(),
+                stem,
+                language.ext()
+            ),
+        }
+        println!("  out dir:      {}", out_dir.display());
+        println!("  manifest:     {}", manifest_path.display());
     }
-    match (backend, &backend_error) {
-        (Some(b), None) => println!(
-            "  backend:      {b:?} (exit={})",
-            invocation.as_ref().map_or(-1, |i| i.status)
-        ),
-        (Some(b), Some(err)) => {
-            let first_line: &str = err.lines().next().unwrap_or(err.as_str());
-            println!(
-                "  backend:      {b:?} FAILED: {first_line} (falling back to native CIL decompiler)"
+    Ok(())
+}
+
+fn decompile_bundle(
+    input: &Path,
+    bytes: &[u8],
+    out_dir: &Path,
+    backend_choice: DotnetBackendKind,
+    timeout_secs: u64,
+    emit_kinds: &[String],
+    language: DotnetLang,
+) -> miette::Result<()> {
+    let bundle: disrobe_binfmt::containers::dotnet_bundle::DotnetBundle =
+        disrobe_binfmt::containers::dotnet_bundle::parse_dotnet_bundle(bytes).map_err(
+            |error: disrobe_binfmt::Error| {
+                miette::miette!("DR-CLI-0471: parse .NET bundle: {error}")
+            },
+        )?;
+    let declared_assembly_count: usize = bundle
+        .files
+        .iter()
+        .filter(|file: &&disrobe_binfmt::containers::DotnetBundleFile| {
+            matches!(
+                file.file_type,
+                disrobe_binfmt::containers::BundleFileType::Assembly
+            )
+        })
+        .count();
+    enforce_bundle_assembly_limit(declared_assembly_count)?;
+    let stage: BundleStage = BundleStage::create(out_dir)?;
+    let members_dir: PathBuf = stage.path.join("members");
+    let extraction: disrobe_binfmt::ExtractionResult = disrobe_binfmt::extract_to_with_quota(
+        disrobe_binfmt::ContainerKind::DotnetSingleFile,
+        bytes,
+        &members_dir,
+        disrobe_binfmt::ExtractionQuota::default_safe(),
+    )
+    .map_err(|error: disrobe_binfmt::Error| {
+        miette::miette!("DR-CLI-0472: extract .NET bundle: {error}")
+    })?;
+    if !extraction.integrity_violations.is_empty() {
+        return Err(miette::miette!(
+            "DR-CLI-0473: .NET bundle extraction failed integrity checks: {}",
+            extraction.integrity_violations.join("; ")
+        ));
+    }
+    let mut file_types: BTreeMap<String, disrobe_binfmt::containers::BundleFileType> =
+        BTreeMap::new();
+    for file in &bundle.files {
+        let safe_name: String = disrobe_binfmt::sanitize_entry_path(&file.relative_path).map_err(
+            |error: disrobe_binfmt::Error| {
+                miette::miette!("DR-CLI-0480: invalid .NET bundle member path: {error}")
+            },
+        )?;
+        if file_types
+            .insert(safe_name.clone(), file.file_type)
+            .is_some()
+        {
+            return Err(miette::miette!(
+                "DR-CLI-0481: .NET bundle member paths collide after sanitization: `{safe_name}`"
+            ));
+        }
+    }
+    let mut assemblies: Vec<(String, PathBuf)> = Vec::new();
+    for entry in &extraction.entries {
+        let file_type: disrobe_binfmt::containers::BundleFileType =
+            *file_types.get(&entry.name).ok_or_else(|| {
+                miette::miette!(
+                    "DR-CLI-0482: extracted .NET bundle member is absent from the manifest: `{}`",
+                    entry.name
+                )
+            })?;
+        let declared_assembly: bool = matches!(
+            file_type,
+            disrobe_binfmt::containers::BundleFileType::Assembly
+        );
+        let content_detected: bool = bundle.major_version == 1
+            && matches!(
+                file_type,
+                disrobe_binfmt::containers::BundleFileType::Unknown
             );
+        if !declared_assembly && !content_detected {
+            continue;
         }
-        (None, _) => {
-            println!("  backend:      (none available; using native CIL->C# decompiler)");
+        let Some(member_path): Option<&PathBuf> = entry.disk_path.as_ref() else {
+            continue;
+        };
+        let member_bytes: Vec<u8> =
+            std::fs::read(member_path).map_err(|error: std::io::Error| {
+                miette::miette!(
+                    "DR-CLI-0474: cannot read extracted member `{}`: {error}",
+                    entry.name
+                )
+            })?;
+        if let Err(error) = analyze_dotnet(&member_bytes) {
+            if declared_assembly {
+                return Err(miette::miette!(
+                    "DR-CLI-0483: declared managed assembly `{}` is invalid or unsupported: {error}",
+                    entry.name
+                ));
+            }
+            continue;
         }
+        assemblies.push((entry.name.clone(), member_path.clone()));
+        enforce_bundle_assembly_limit(assemblies.len())?;
     }
-    match &native {
-        NativeDecompileOutcome::Decompiled(asm) => println!(
-            "  native {}:    {} methods (bodyless={}, failed={}) -> {}.native.{}",
-            language.label(),
-            asm.methods_decompiled,
-            asm.methods_bodyless,
-            asm.methods_failed,
-            stem,
-            language.ext()
-        ),
-        NativeDecompileOutcome::Failed(reason) => println!(
-            "  native {}:    decompile failed: {reason} (manifest written; see {}.native.{})",
-            language.label(),
-            stem,
-            language.ext()
-        ),
+    if assemblies.is_empty() {
+        return Err(miette::miette!(
+            "DR-CLI-0475: .NET bundle contains no managed assembly"
+        ));
     }
+    let assemblies_dir: PathBuf = stage.path.join("assemblies");
+    for (relative_path, member_path) in &assemblies {
+        let assembly_out: PathBuf = assemblies_dir.join(relative_path);
+        decompile(
+            Some(member_path.clone()),
+            Some(assembly_out),
+            false,
+            backend_choice,
+            timeout_secs,
+            emit_kinds.to_vec(),
+            language,
+            DecompileMode {
+                require_native_success: true,
+                logical_input: Some(format!("members/{relative_path}")),
+                quiet: true,
+            },
+        )?;
+    }
+    let manifest: serde_json::Value = serde_json::json!({
+        "schema": "disrobe.dotnet.bundle-decompile/v1",
+        "input": input.display().to_string(),
+        "bundle_version": format!("{}.{}", bundle.major_version, bundle.minor_version),
+        "bundle_id": bundle.bundle_id,
+        "member_count": extraction.entries.len(),
+        "managed_assembly_count": assemblies.len(),
+        "managed_assemblies": assemblies.iter().map(|(name, _): &(String, PathBuf)| name).collect::<Vec<_>>(),
+        "quota": extraction.quota,
+    });
+    let manifest_bytes: Vec<u8> =
+        serde_json::to_vec_pretty(&manifest).map_err(|error: serde_json::Error| {
+            miette::miette!("DR-CLI-0477: serialize bundle manifest: {error}")
+        })?;
+    std::fs::write(stage.path.join("bundle.manifest.json"), manifest_bytes).map_err(
+        |error: std::io::Error| miette::miette!("DR-CLI-0478: write bundle manifest: {error}"),
+    )?;
+    let member_count: usize = extraction.entries.len();
+    let assembly_count: usize = assemblies.len();
+    stage.commit(out_dir)?;
+    println!("dotnet bundle decompile: OK");
+    println!("  input:        {}", input.display());
+    println!(
+        "  version:      {}.{}",
+        bundle.major_version, bundle.minor_version
+    );
+    println!("  members:      {member_count}");
+    println!("  assemblies:   {assembly_count}");
     println!("  out dir:      {}", out_dir.display());
-    println!("  manifest:     {}", manifest_path.display());
+    Ok(())
+}
+
+fn enforce_bundle_assembly_limit(count: usize) -> miette::Result<()> {
+    if count > MAX_BUNDLE_ASSEMBLIES {
+        return Err(miette::miette!(
+            "DR-CLI-0476: .NET bundle contains {count} managed assemblies; limit is {MAX_BUNDLE_ASSEMBLIES}"
+        ));
+    }
     Ok(())
 }
 
@@ -593,6 +879,29 @@ enum NativeDecompileOutcome {
     Failed(String),
 }
 
+fn ensure_native_decompile_complete(
+    native: &NativeDecompileOutcome,
+    input_label: &str,
+) -> miette::Result<()> {
+    match native {
+        NativeDecompileOutcome::Decompiled(assembly) if assembly.methods_failed == 0 => Ok(()),
+        NativeDecompileOutcome::Decompiled(assembly) => {
+            let noun: &str = if assembly.methods_failed == 1 {
+                "method body"
+            } else {
+                "method bodies"
+            };
+            Err(miette::miette!(
+                "DR-CLI-0479: native CIL decompilation failed for `{input_label}`: {} {noun} failed",
+                assembly.methods_failed
+            ))
+        }
+        NativeDecompileOutcome::Failed(reason) => Err(miette::miette!(
+            "DR-CLI-0479: native CIL decompilation failed for `{input_label}`: {reason}"
+        )),
+    }
+}
+
 fn emit_native_decompilation(
     bytes: &[u8],
     out_dir: &std::path::Path,
@@ -736,4 +1045,48 @@ fn apply_emit_stubs(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DecompiledAssembly, MAX_BUNDLE_ASSEMBLIES, NativeDecompileOutcome,
+        enforce_bundle_assembly_limit, ensure_native_decompile_complete,
+    };
+
+    #[test]
+    fn bundle_assembly_limit_accepts_boundary() {
+        assert!(enforce_bundle_assembly_limit(MAX_BUNDLE_ASSEMBLIES).is_ok());
+    }
+
+    #[test]
+    fn bundle_assembly_limit_refuses_first_excess() {
+        let error: Option<miette::Report> =
+            enforce_bundle_assembly_limit(MAX_BUNDLE_ASSEMBLIES + 1).err();
+        assert!(error.is_some_and(|report: miette::Report| {
+            report.to_string().contains("513 managed assemblies")
+        }));
+    }
+
+    #[test]
+    fn bundle_native_decompile_refuses_partial_method_failure() {
+        let native: NativeDecompileOutcome =
+            NativeDecompileOutcome::Decompiled(DecompiledAssembly {
+                module_name: "probe".to_owned(),
+                methods: Vec::new(),
+                methods_decompiled: 1,
+                methods_bodyless: 0,
+                methods_failed: 1,
+            });
+        let error: Option<String> = ensure_native_decompile_complete(&native, "members/probe.dll")
+            .err()
+            .map(|report: miette::Report| report.to_string());
+
+        assert_eq!(
+            error.as_deref(),
+            Some(
+                "DR-CLI-0479: native CIL decompilation failed for `members/probe.dll`: 1 method body failed"
+            )
+        );
+    }
 }

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "members": [
     {
       "id": "asar-truncated-prefix",
@@ -13,7 +13,9 @@
         {
           "outcome": "refuse",
           "error": "asar_header",
-          "reason_contains": "truncated prefix"
+          "reason": {
+            "contains": "truncated prefix"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -30,7 +32,9 @@
         {
           "outcome": "refuse",
           "error": "asar_header",
-          "reason_contains": "header extends past file end"
+          "reason": {
+            "contains": "header extends past file end"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -47,7 +51,9 @@
         {
           "outcome": "refuse",
           "error": "native_parse",
-          "reason_contains": "sections \".text\" and \".data\" overlap"
+          "reason": {
+            "contains": "sections \".text\" and \".data\" overlap"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -93,12 +99,14 @@
       "shape": "zero_length_member",
       "target": "zip_extract",
       "builder": "empty_file",
-      "authored_reason": "An empty file handed to the zip extractor. There is no end-of-central-directory record to find, so the correct outcome is a refusal naming that absence.",
+      "authored_reason": "An empty file handed to the zip extractor. The refusal must identify the empty input instead of collapsing it into a missing-directory error.",
       "accepted": [
         {
           "outcome": "refuse",
           "error": "zip",
-          "reason_contains": "Could not find EOCD"
+          "reason": {
+            "equals": "DR-BINFMT-0003: zip parse failed: the input is empty, so it holds no archive"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -115,7 +123,9 @@
         {
           "outcome": "refuse",
           "error": "quota_exceeded",
-          "reason_contains": "per-entry expansion ratio 16384 exceeds cap 100"
+          "reason": {
+            "contains": "per-entry expansion ratio 16384 exceeds cap 100"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -132,7 +142,28 @@
         {
           "outcome": "refuse",
           "error": "uzip",
-          "reason_contains": "TOC of 4294967295 offsets runs past end of image"
+          "reason": {
+            "contains": "TOC of 4294967295 offsets runs past end of image"
+          }
+        }
+      ],
+      "multiple_outcome_reason": null
+    },
+    {
+      "id": "zip-declared-count-near-u16-max",
+      "file": "zip-declared-count-near-u16-max.bin",
+      "blake3": "8e7d9bbe81f223e9f077ed5caed383861f372213682cb86e7240f6a6b76ca782",
+      "shape": "declared_count_near_type_max",
+      "target": "zip_extract",
+      "builder": "zip_declared_count_near_max",
+      "authored_reason": "A zip end-of-central-directory record declaring 65534 entries with an empty central directory. The refusal must name the unsatisfied count and must not mistake 65534 for the reserved ZIP64 sentinel 65535.",
+      "accepted": [
+        {
+          "outcome": "refuse",
+          "error": "zip",
+          "reason": {
+            "equals": "DR-BINFMT-0003: zip parse failed: the end-of-central-directory record declares 65534 entries, but the central directory contains 0"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -144,13 +175,15 @@
       "shape": "magic_matches_body_is_another_format",
       "target": "zip_detect_then_extract",
       "builder": "zip_magic_body_is_elf",
-      "authored_reason": "Four bytes of zip magic in front of an ELF header. Classification by magic alone names it a zip, so the correct outcome is detection followed by a refusal to recover. The refusal message is the generic missing-directory one, which is why this member also pins the detected kind and the detect-then-refuse shape rather than the message alone.",
+      "authored_reason": "Four bytes of zip magic in front of an ELF header. Classification by magic alone names it a zip, so recovery must refuse with the exact missing-directory reason while preserving the detected kind.",
       "accepted": [
         {
           "outcome": "detect_only",
           "detected_as": "Zip",
           "error": "zip",
-          "reason_contains": "Could not find EOCD"
+          "reason": {
+            "equals": "DR-BINFMT-0003: zip parse failed: no end-of-central-directory record in the last 256 byte(s), so this is not a zip archive whatever its leading bytes say"
+          }
         }
       ],
       "multiple_outcome_reason": null
@@ -203,7 +236,9 @@
         {
           "outcome": "unsupported_version",
           "error": "decompression",
-          "reason_contains": "squashfs unsupported major version 7"
+          "reason": {
+            "contains": "squashfs unsupported major version 7"
+          }
         }
       ],
       "multiple_outcome_reason": null

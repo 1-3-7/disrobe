@@ -23,7 +23,7 @@ const MEMBER_WALL_CLOCK_CAP: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_MEMBERS: usize = 4;
 const ROMFS_WALK_CAP: u64 = 64 * 1024 * 1024;
 const UZIP_PARSE_CAP: u64 = 64 * 1024 * 1024;
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,15 +103,37 @@ const EVERY_OUTCOME_KIND: [OutcomeKind; 4] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReasonMatch {
+    Contains(String),
+    Equals(String),
+}
+
+impl ReasonMatch {
+    fn matches(&self, message: &str) -> bool {
+        match self {
+            Self::Contains(reason) => message.contains(reason.as_str()),
+            Self::Equals(reason) => message == reason,
+        }
+    }
+
+    fn value(&self) -> &str {
+        match self {
+            Self::Contains(reason) | Self::Equals(reason) => reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "outcome")]
 enum Outcome {
     Refuse {
         error: ErrorId,
-        reason_contains: String,
+        reason: ReasonMatch,
     },
     UnsupportedVersion {
         error: ErrorId,
-        reason_contains: String,
+        reason: ReasonMatch,
     },
     Partial {
         entries: usize,
@@ -120,7 +142,7 @@ enum Outcome {
     DetectOnly {
         detected_as: String,
         error: ErrorId,
-        reason_contains: String,
+        reason: ReasonMatch,
     },
 }
 
@@ -158,6 +180,7 @@ enum Builder {
     EmptyFile,
     ZipDeclaredRatioBomb,
     UzipBlockCountNearU32Max,
+    ZipDeclaredCountNearMax,
     ZipMagicBodyIsElf,
     ZipValidEmptyArchive,
     ZipEntryNameParentTraversal,
@@ -174,6 +197,7 @@ fn build(builder: Builder) -> Vec<u8> {
         Builder::EmptyFile => Vec::new(),
         Builder::ZipDeclaredRatioBomb => zip_declared_ratio_bomb(),
         Builder::UzipBlockCountNearU32Max => uzip_block_count_near_u32_max(),
+        Builder::ZipDeclaredCountNearMax => zip_declared_count_near_max(),
         Builder::ZipMagicBodyIsElf => zip_magic_body_is_elf(),
         Builder::ZipValidEmptyArchive => zip_valid_empty_archive(),
         Builder::ZipEntryNameParentTraversal => zip_entry_name_parent_traversal(),
@@ -230,19 +254,12 @@ enum Observed {
 fn satisfies(expected: &Outcome, observed: &Observed) -> bool {
     match (expected, observed) {
         (
-            Outcome::Refuse {
-                error,
-                reason_contains,
-            }
-            | Outcome::UnsupportedVersion {
-                error,
-                reason_contains,
-            },
+            Outcome::Refuse { error, reason } | Outcome::UnsupportedVersion { error, reason },
             Observed::Refused {
                 error: seen,
                 message,
             },
-        ) => *seen == Some(*error) && message.contains(reason_contains.as_str()),
+        ) => *seen == Some(*error) && reason.matches(message),
         (
             Outcome::Partial {
                 entries,
@@ -264,18 +281,14 @@ fn satisfies(expected: &Outcome, observed: &Observed) -> bool {
             Outcome::DetectOnly {
                 detected_as,
                 error,
-                reason_contains,
+                reason,
             },
             Observed::DetectedThenRefused {
                 detected_as: seen_kind,
                 error: seen,
                 message,
             },
-        ) => {
-            detected_as == seen_kind
-                && *seen == Some(*error)
-                && message.contains(reason_contains.as_str())
-        }
+        ) => detected_as == seen_kind && *seen == Some(*error) && reason.matches(message),
         _ => false,
     }
 }
@@ -668,17 +681,11 @@ fn every_label_is_well_formed_and_no_member_accepts_an_open_set_of_outcomes() {
         }
         for outcome in &member.accepted {
             match outcome {
-                Outcome::Refuse {
-                    reason_contains, ..
-                }
-                | Outcome::UnsupportedVersion {
-                    reason_contains, ..
-                }
-                | Outcome::DetectOnly {
-                    reason_contains, ..
-                } => assert!(
-                    !reason_contains.trim().is_empty(),
-                    "member `{}` must name the reason it is refused for, not merely that it errored",
+                Outcome::Refuse { reason, .. }
+                | Outcome::UnsupportedVersion { reason, .. }
+                | Outcome::DetectOnly { reason, .. } => assert!(
+                    !reason.value().trim().is_empty(),
+                    "member `{}` must declare one nonempty contains or equals reason",
                     member.id
                 ),
                 Outcome::Partial { violations, .. } => {
@@ -851,6 +858,10 @@ fn zip_declared_ratio_bomb() -> Vec<u8> {
         }],
         1,
     )
+}
+
+fn zip_declared_count_near_max() -> Vec<u8> {
+    zip_image(&[], u16::MAX - 1)
 }
 
 const UZIP_MAGIC_LEN: usize = 128;

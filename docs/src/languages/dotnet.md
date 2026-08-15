@@ -24,6 +24,7 @@ None of the walled bodies is fabricated. Other registered families have protecto
 ```sh
 disrobe dotnet decompile App.dll --backend ilspy --out src/
 disrobe dotnet decompile App.exe --backend dnspy-ex --out src/
+disrobe dotnet decompile App.single-file.exe --out recovered/
 disrobe dotnet decompile App.dll --backend de4dot --out src/
 disrobe dotnet analyze App.dll
 disrobe dotnet backends                  # report available .NET backends on PATH
@@ -46,7 +47,14 @@ parses `deps.json` into a typed manifest rather than only carving it, so the run
 and the library table are readable as data.
 
 `disrobe extract` writes the members to disk, and `disrobe auto` routes them onward with no
-dedicated flag: an embedded managed assembly reaches the CIL pass on its own.
+dedicated flag: an embedded managed assembly reaches the CIL pass on its own. `disrobe dotnet
+decompile` accepts the same bundle as a direct input. It stages all recovered output beside the
+destination and publishes the directory only after extraction and every managed assembly
+decompilation succeed. `members/` holds every embedded file. `assemblies/<relative-path>/` holds
+the normal manifest and pseudo-source for each managed assembly. `bundle.manifest.json` records the
+bundle version, bundle ID, quota accounting, and managed assembly list. The command refuses a
+non-empty destination and refuses more than 512 managed assemblies before invoking any rendering
+backend.
 
 The format defines exactly three manifest major versions, and the reader accepts those three and
 refuses any other by number. Major 1 is what .NET Core 3.x wrote, major 2 is .NET 5, and major 6 is

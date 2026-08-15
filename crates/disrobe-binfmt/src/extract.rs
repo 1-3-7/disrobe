@@ -2686,59 +2686,652 @@ enum PayloadWrap {
 }
 
 const EOCD_SIGNATURE: [u8; 4] = [b'P', b'K', 0x05, 0x06];
+const CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [b'P', b'K', 0x01, 0x02];
+const LOCAL_FILE_SIGNATURE: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 const EOCD_MIN_LEN: usize = 22;
 const EOCD_MAX_COMMENT: usize = 0xFFFF;
-const ZIP64_ENTRY_SENTINEL: u16 = 0xFFFF;
+const CENTRAL_DIRECTORY_FIXED_LEN: usize = 46;
+const ZIP64_U16_SENTINEL: u16 = 0xFFFF;
+const ZIP64_U32_SENTINEL: u32 = 0xFFFF_FFFF;
+const ZIP64_LOCATOR_SIGNATURE: [u8; 4] = [b'P', b'K', 0x06, 0x07];
+const ZIP64_EOCD_SIGNATURE: [u8; 4] = [b'P', b'K', 0x06, 0x06];
+const ZIP64_LOCATOR_LEN: usize = 20;
+const ZIP64_EOCD_FIXED_LEN: usize = 56;
 
-fn find_eocd(bytes: &[u8]) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ZipDirectoryMetadata {
+    name: &'static str,
+    entries: u64,
+    size: u64,
+    offset: u64,
+    archive_prefix: usize,
+    directory_limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClassicEocd {
+    disk_number: u16,
+    directory_disk: u16,
+    disk_entries: u16,
+    entries: u16,
+    directory_size: u32,
+    directory_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EocdLocation {
+    Complete(usize),
+    Truncated(usize),
+    Absent,
+}
+
+enum Zip64CandidateFailure {
+    NotFound,
+    Invalid(String),
+}
+
+fn find_eocd(bytes: &[u8]) -> EocdLocation {
     let window: usize = EOCD_MIN_LEN
         .saturating_add(EOCD_MAX_COMMENT)
         .min(bytes.len());
     let start: usize = bytes.len().saturating_sub(window);
-    bytes
-        .get(start..)?
-        .windows(EOCD_SIGNATURE.len())
-        .rposition(|w: &[u8]| w == EOCD_SIGNATURE)
-        .map(|offset: usize| start + offset)
+    let Some(search): Option<&[u8]> = bytes.get(start..) else {
+        return EocdLocation::Absent;
+    };
+    let mut truncated: Option<usize> = None;
+    for relative in 0..search.len().saturating_sub(EOCD_SIGNATURE.len() - 1) {
+        let Some(absolute): Option<usize> = start.checked_add(relative) else {
+            continue;
+        };
+        let Some(signature_end): Option<usize> = absolute.checked_add(EOCD_SIGNATURE.len()) else {
+            continue;
+        };
+        if bytes.get(absolute..signature_end) != Some(&EOCD_SIGNATURE) {
+            continue;
+        }
+        let Some(record_end): Option<usize> = absolute.checked_add(EOCD_MIN_LEN) else {
+            truncated.get_or_insert(absolute);
+            continue;
+        };
+        let Some(record): Option<&[u8]> = bytes.get(absolute..record_end) else {
+            truncated.get_or_insert(absolute);
+            continue;
+        };
+        let comment_len: usize = usize::from(u16::from_le_bytes([record[20], record[21]]));
+        let Some(end): Option<usize> = absolute
+            .checked_add(EOCD_MIN_LEN)
+            .and_then(|value: usize| value.checked_add(comment_len))
+        else {
+            truncated.get_or_insert(absolute);
+            continue;
+        };
+        if end == bytes.len() {
+            return EocdLocation::Complete(absolute);
+        }
+        if end > bytes.len() {
+            truncated.get_or_insert(absolute);
+        }
+    }
+    truncated.map_or(EocdLocation::Absent, EocdLocation::Truncated)
+}
+
+fn zip_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let raw: &[u8] = bytes.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn zip_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw: &[u8] = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+fn zip_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let raw: &[u8] = bytes.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+fn parse_classic_eocd(record: &[u8]) -> Option<ClassicEocd> {
+    Some(ClassicEocd {
+        disk_number: zip_u16(record, 4)?,
+        directory_disk: zip_u16(record, 6)?,
+        disk_entries: zip_u16(record, 8)?,
+        entries: zip_u16(record, 10)?,
+        directory_size: zip_u32(record, 12)?,
+        directory_offset: zip_u32(record, 16)?,
+    })
+}
+
+fn validate_zip64_extensible_sector(sector: &[u8]) -> core::result::Result<(), String> {
+    let mut cursor: usize = 0;
+    while cursor < sector.len() {
+        let header_end: usize = cursor
+            .checked_add(6)
+            .ok_or_else(|| "the ZIP64 extensible-sector header offset overflows".to_owned())?;
+        let header: &[u8] = sector.get(cursor..header_end).ok_or_else(|| {
+            "the ZIP64 extensible sector ends with a truncated block header".to_owned()
+        })?;
+        let payload_len: usize = usize::try_from(u32::from_le_bytes([
+            header[2], header[3], header[4], header[5],
+        ]))
+        .map_err(|_| "a ZIP64 extensible-sector block exceeds the host address space".to_owned())?;
+        let payload_end: usize = header_end
+            .checked_add(payload_len)
+            .ok_or_else(|| "a ZIP64 extensible-sector block extent overflows".to_owned())?;
+        sector.get(header_end..payload_end).ok_or_else(|| {
+            "a ZIP64 extensible-sector block extends past the ZIP64 end record".to_owned()
+        })?;
+        cursor = payload_end;
+    }
+    Ok(())
+}
+
+fn parse_zip64_candidate(
+    bytes: &[u8],
+    physical_eocd: usize,
+    record_size: u64,
+    logical_eocd: usize,
+    locator_disk: u32,
+    classic: ClassicEocd,
+) -> core::result::Result<ZipDirectoryMetadata, String> {
+    if record_size < 44 {
+        return Err(format!(
+            "the ZIP64 end record declares {record_size} byte(s) after its size field, below the 44-byte fixed minimum"
+        ));
+    }
+    let archive_prefix: usize = physical_eocd.checked_sub(logical_eocd).ok_or_else(|| {
+        "the ZIP64 locator end-record offset is past the physical ZIP64 record".to_owned()
+    })?;
+    let fixed_end: usize = physical_eocd
+        .checked_add(ZIP64_EOCD_FIXED_LEN)
+        .ok_or_else(|| "the ZIP64 end-record fixed extent overflows".to_owned())?;
+    let fixed: &[u8] = bytes
+        .get(physical_eocd..fixed_end)
+        .ok_or_else(|| "the ZIP64 end record is truncated".to_owned())?;
+    let total_size: usize = usize::try_from(
+        record_size
+            .checked_add(12)
+            .ok_or_else(|| "the ZIP64 end-record extent overflows".to_owned())?,
+    )
+    .map_err(|_| "the ZIP64 end-record extent exceeds the host address space".to_owned())?;
+    let record_end: usize = physical_eocd
+        .checked_add(total_size)
+        .ok_or_else(|| "the ZIP64 end-record physical extent overflows".to_owned())?;
+    let record: &[u8] = bytes
+        .get(physical_eocd..record_end)
+        .ok_or_else(|| "the ZIP64 end record is truncated".to_owned())?;
+    validate_zip64_extensible_sector(&record[ZIP64_EOCD_FIXED_LEN..])?;
+    let disk_number: u32 = zip_u32(fixed, 16)
+        .ok_or_else(|| "the ZIP64 end record is truncated before its disk number".to_owned())?;
+    let directory_disk: u32 = zip_u32(fixed, 20).ok_or_else(|| {
+        "the ZIP64 end record is truncated before its central-directory disk".to_owned()
+    })?;
+    let disk_entries: u64 = zip_u64(fixed, 24).ok_or_else(|| {
+        "the ZIP64 end record is truncated before its per-disk entry count".to_owned()
+    })?;
+    let entries: u64 = zip_u64(fixed, 32)
+        .ok_or_else(|| "the ZIP64 end record is truncated before its entry count".to_owned())?;
+    let size: u64 = zip_u64(fixed, 40).ok_or_else(|| {
+        "the ZIP64 end record is truncated before its central-directory size".to_owned()
+    })?;
+    let offset: u64 = zip_u64(fixed, 48).ok_or_else(|| {
+        "the ZIP64 end record is truncated before its central-directory offset".to_owned()
+    })?;
+    if disk_number != 0
+        || directory_disk != 0
+        || directory_disk != locator_disk
+        || disk_entries != entries
+    {
+        return Err(format!(
+            "the ZIP64 end record describes inconsistent multi-disk metadata: disk={disk_number}, directory_disk={directory_disk}, disk_entries={disk_entries}, total_entries={entries}"
+        ));
+    }
+    let fields_agree: bool = (classic.disk_number == ZIP64_U16_SENTINEL
+        || u32::from(classic.disk_number) == disk_number)
+        && (classic.directory_disk == ZIP64_U16_SENTINEL
+            || u32::from(classic.directory_disk) == directory_disk)
+        && (classic.disk_entries == ZIP64_U16_SENTINEL
+            || u64::from(classic.disk_entries) == disk_entries)
+        && (classic.entries == ZIP64_U16_SENTINEL || u64::from(classic.entries) == entries)
+        && (classic.directory_size == ZIP64_U32_SENTINEL
+            || u64::from(classic.directory_size) == size)
+        && (classic.directory_offset == ZIP64_U32_SENTINEL
+            || u64::from(classic.directory_offset) == offset);
+    if !fields_agree {
+        return Err("the classic and ZIP64 end-of-central-directory records disagree".to_owned());
+    }
+    let physical_directory: usize = archive_prefix
+        .checked_add(usize::try_from(offset).map_err(|_| {
+            "the ZIP64 central-directory offset exceeds the host address space".to_owned()
+        })?)
+        .ok_or_else(|| "the ZIP64 central-directory physical offset overflows".to_owned())?;
+    let physical_directory_end: usize = physical_directory
+        .checked_add(usize::try_from(size).map_err(|_| {
+            "the ZIP64 central-directory size exceeds the host address space".to_owned()
+        })?)
+        .ok_or_else(|| "the ZIP64 central-directory physical extent overflows".to_owned())?;
+    if physical_directory_end > physical_eocd {
+        return Err(format!(
+            "the ZIP64 central directory ends at physical offset {physical_directory_end}, past its end record at {physical_eocd}"
+        ));
+    }
+    Ok(ZipDirectoryMetadata {
+        name: "ZIP64 end-of-central-directory record",
+        entries,
+        size,
+        offset,
+        archive_prefix,
+        directory_limit: physical_eocd,
+    })
+}
+
+fn parse_zip64_metadata(
+    bytes: &[u8],
+    eocd: usize,
+    classic: ClassicEocd,
+) -> core::result::Result<ZipDirectoryMetadata, String> {
+    let Some(locator): Option<usize> = eocd.checked_sub(ZIP64_LOCATOR_LEN) else {
+        return Err("the end-of-central-directory record uses a reserved ZIP64 sentinel, but the 20-byte ZIP64 locator immediately before it is absent".to_owned());
+    };
+    let locator_end: usize = locator
+        .checked_add(ZIP64_LOCATOR_LEN)
+        .ok_or_else(|| "the ZIP64 locator extent overflows the host address space".to_owned())?;
+    let locator_record: &[u8] = bytes.get(locator..locator_end).ok_or_else(|| {
+        "the end-of-central-directory record uses a reserved ZIP64 sentinel, but the 20-byte ZIP64 locator immediately before it is absent".to_owned()
+    })?;
+    if locator_record.get(..ZIP64_LOCATOR_SIGNATURE.len()) != Some(&ZIP64_LOCATOR_SIGNATURE) {
+        return Err("the end-of-central-directory record uses a reserved ZIP64 sentinel, but the 20-byte ZIP64 locator immediately before it is absent".to_owned());
+    }
+    let locator_disk: u32 = zip_u32(locator_record, 4)
+        .ok_or_else(|| "the ZIP64 locator is truncated before its disk number".to_owned())?;
+    let logical_eocd: u64 = zip_u64(locator_record, 8)
+        .ok_or_else(|| "the ZIP64 locator is truncated before its record offset".to_owned())?;
+    let disk_count: u32 = zip_u32(locator_record, 16)
+        .ok_or_else(|| "the ZIP64 locator is truncated before its disk count".to_owned())?;
+    if locator_disk != 0 || disk_count != 1 {
+        return Err(format!(
+            "the ZIP64 multi-disk layout is unsupported for one input file: end_record_disk={locator_disk}, total_disks={disk_count}"
+        ));
+    }
+    let logical_eocd: usize = usize::try_from(logical_eocd)
+        .map_err(|_| "the ZIP64 end-record offset exceeds the host address space".to_owned())?;
+    if logical_eocd >= locator {
+        return Err(format!(
+            "the ZIP64 locator points to end record offset {logical_eocd}, which is not before the locator at {locator}"
+        ));
+    }
+    let search: &[u8] = bytes
+        .get(logical_eocd..locator)
+        .ok_or_else(|| "the ZIP64 end-record search range is outside the input".to_owned())?;
+    let mut candidate_failure: Zip64CandidateFailure = Zip64CandidateFailure::NotFound;
+    for relative in 0..search.len().saturating_sub(ZIP64_EOCD_SIGNATURE.len() - 1) {
+        let Some(physical_eocd): Option<usize> = logical_eocd.checked_add(relative) else {
+            continue;
+        };
+        let Some(signature_end): Option<usize> =
+            physical_eocd.checked_add(ZIP64_EOCD_SIGNATURE.len())
+        else {
+            continue;
+        };
+        if bytes.get(physical_eocd..signature_end) != Some(&ZIP64_EOCD_SIGNATURE) {
+            continue;
+        }
+        let Some(size_offset): Option<usize> = physical_eocd.checked_add(4) else {
+            continue;
+        };
+        let Some(record_size): Option<u64> = zip_u64(bytes, size_offset) else {
+            continue;
+        };
+        let Some(total_size): Option<usize> = record_size
+            .checked_add(12)
+            .and_then(|value: u64| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        if physical_eocd.checked_add(total_size) != Some(locator) {
+            continue;
+        }
+        match parse_zip64_candidate(
+            bytes,
+            physical_eocd,
+            record_size,
+            logical_eocd,
+            locator_disk,
+            classic,
+        ) {
+            Ok(metadata) => return Ok(metadata),
+            Err(reason) => {
+                if matches!(candidate_failure, Zip64CandidateFailure::NotFound) {
+                    candidate_failure = Zip64CandidateFailure::Invalid(reason);
+                }
+            }
+        }
+    }
+    match candidate_failure {
+        Zip64CandidateFailure::NotFound => Err(format!(
+            "the ZIP64 locator points to end record offset {logical_eocd}, but no bounded ZIP64 end record terminates at the locator"
+        )),
+        Zip64CandidateFailure::Invalid(reason) => Err(reason),
+    }
+}
+
+fn zip64_local_offset(
+    entry: &[u8],
+    name_len: usize,
+    extra_len: usize,
+    entry_index: usize,
+    local_offset: u32,
+    disk_start: u16,
+) -> core::result::Result<u64, String> {
+    let Some(extra_start): Option<usize> = CENTRAL_DIRECTORY_FIXED_LEN.checked_add(name_len) else {
+        return Err(format!(
+            "central-directory entry {entry_index} name length overflows"
+        ));
+    };
+    let Some(extra_end): Option<usize> = extra_start.checked_add(extra_len) else {
+        return Err(format!(
+            "central-directory entry {entry_index} extra-field length overflows"
+        ));
+    };
+    let extra: &[u8] = entry.get(extra_start..extra_end).ok_or_else(|| {
+        format!("central-directory entry {entry_index} has a truncated extra-field area")
+    })?;
+    let mut cursor: usize = 0;
+    while cursor < extra.len() {
+        let header_end: usize = cursor.checked_add(4).ok_or_else(|| {
+            format!("central-directory entry {entry_index} extra-field offset overflows")
+        })?;
+        let header: &[u8] = extra.get(cursor..header_end).ok_or_else(|| {
+            format!("central-directory entry {entry_index} has a truncated extra-field header")
+        })?;
+        let tag: u16 = u16::from_le_bytes([header[0], header[1]]);
+        let field_len: usize = usize::from(u16::from_le_bytes([header[2], header[3]]));
+        let data_start: usize = header_end;
+        let data_end: usize = data_start.checked_add(field_len).ok_or_else(|| {
+            format!("central-directory entry {entry_index} extra-field length overflows")
+        })?;
+        let data: &[u8] = extra.get(data_start..data_end).ok_or_else(|| {
+            format!("central-directory entry {entry_index} has a truncated extra field")
+        })?;
+        if tag == 0x0001 {
+            let mut value_offset: usize = 0;
+            if zip_u32(entry, 24) == Some(ZIP64_U32_SENTINEL) {
+                value_offset = value_offset.checked_add(8).ok_or_else(|| {
+                    format!("central-directory entry {entry_index} ZIP64 field offset overflows")
+                })?;
+            }
+            if zip_u32(entry, 20) == Some(ZIP64_U32_SENTINEL) {
+                value_offset = value_offset.checked_add(8).ok_or_else(|| {
+                    format!("central-directory entry {entry_index} ZIP64 field offset overflows")
+                })?;
+            }
+            let resolved_offset: u64 = if local_offset == ZIP64_U32_SENTINEL {
+                let value: u64 = zip_u64(data, value_offset).ok_or_else(|| {
+                    format!(
+                        "central-directory entry {entry_index} omits its ZIP64 local-header offset"
+                    )
+                })?;
+                value_offset = value_offset.checked_add(8).ok_or_else(|| {
+                    format!("central-directory entry {entry_index} ZIP64 field offset overflows")
+                })?;
+                value
+            } else {
+                u64::from(local_offset)
+            };
+            if disk_start == ZIP64_U16_SENTINEL {
+                let resolved_disk: u32 = zip_u32(data, value_offset).ok_or_else(|| {
+                    format!("central-directory entry {entry_index} omits its ZIP64 starting disk")
+                })?;
+                if resolved_disk != 0 {
+                    return Err(format!(
+                        "central-directory entry {entry_index} starts on ZIP64 disk {resolved_disk}, but only one input file was provided"
+                    ));
+                }
+            }
+            return Ok(resolved_offset);
+        }
+        cursor = data_end;
+    }
+    Err(format!(
+        "central-directory entry {entry_index} omits the ZIP64 extra field for its selected fields"
+    ))
+}
+
+fn count_central_directory_entries(
+    bytes: &[u8],
+    directory: &[u8],
+    archive_prefix: usize,
+) -> core::result::Result<usize, String> {
+    let mut cursor: usize = 0;
+    let mut entries: usize = 0;
+    while cursor < directory.len() {
+        let remaining: usize = directory.len() - cursor;
+        let Some(signature_end): Option<usize> = cursor.checked_add(4) else {
+            return Err(format!(
+                "central-directory entry {entries} signature extent overflows"
+            ));
+        };
+        let Some(signature): Option<&[u8]> = directory.get(cursor..signature_end) else {
+            return Err(format!(
+                "central-directory entry {entries} is truncated before its signature; {remaining} byte(s) remain"
+            ));
+        };
+        if signature != CENTRAL_DIRECTORY_SIGNATURE {
+            return Err(format!(
+                "central-directory entry {entries} at relative offset {cursor} does not begin with the central-directory signature"
+            ));
+        }
+        let Some(fixed_end): Option<usize> = cursor.checked_add(CENTRAL_DIRECTORY_FIXED_LEN) else {
+            return Err(format!(
+                "central-directory entry {entries} fixed-header extent overflows"
+            ));
+        };
+        let Some(record): Option<&[u8]> = directory.get(cursor..fixed_end) else {
+            return Err(format!(
+                "central-directory entry {entries} is truncated; {remaining} byte(s) remain of the {CENTRAL_DIRECTORY_FIXED_LEN} byte fixed header"
+            ));
+        };
+        let name_len: usize = usize::from(u16::from_le_bytes([record[28], record[29]]));
+        let extra_len: usize = usize::from(u16::from_le_bytes([record[30], record[31]]));
+        let comment_len: usize = usize::from(u16::from_le_bytes([record[32], record[33]]));
+        let Some(entry_len): Option<usize> = CENTRAL_DIRECTORY_FIXED_LEN
+            .checked_add(name_len)
+            .and_then(|value: usize| value.checked_add(extra_len))
+            .and_then(|value: usize| value.checked_add(comment_len))
+        else {
+            return Err(format!(
+                "central-directory entry {entries} has lengths that overflow the host address space"
+            ));
+        };
+        if entry_len > remaining {
+            return Err(format!(
+                "central-directory entry {entries} declares {entry_len} byte(s), but only {remaining} remain"
+            ));
+        }
+        let local_offset: u32 =
+            u32::from_le_bytes([record[42], record[43], record[44], record[45]]);
+        let disk_start: u16 = u16::from_le_bytes([record[34], record[35]]);
+        if disk_start != 0 && disk_start != ZIP64_U16_SENTINEL {
+            return Err(format!(
+                "central-directory entry {entries} starts on disk {disk_start}, but only one input file was provided"
+            ));
+        }
+        let entry_end: usize = cursor
+            .checked_add(entry_len)
+            .ok_or_else(|| format!("central-directory entry {entries} extent overflows"))?;
+        let entry: &[u8] = directory
+            .get(cursor..entry_end)
+            .ok_or_else(|| format!("central-directory entry {entries} extent is invalid"))?;
+        let local_offset: u64 =
+            if local_offset == ZIP64_U32_SENTINEL || disk_start == ZIP64_U16_SENTINEL {
+                zip64_local_offset(
+                    entry,
+                    name_len,
+                    extra_len,
+                    entries,
+                    local_offset,
+                    disk_start,
+                )?
+            } else {
+                u64::from(local_offset)
+            };
+        let local_offset: usize = usize::try_from(local_offset).map_err(|_| {
+            format!("central-directory entry {entries} has an unrepresentable local-header offset")
+        })?;
+        let physical_local: usize = archive_prefix.checked_add(local_offset).ok_or_else(|| {
+            format!("central-directory entry {entries} local-header offset overflows")
+        })?;
+        let physical_end: usize = physical_local
+            .checked_add(LOCAL_FILE_SIGNATURE.len())
+            .ok_or_else(|| {
+                format!("central-directory entry {entries} local-header extent overflows")
+            })?;
+        if bytes.get(physical_local..physical_end) != Some(&LOCAL_FILE_SIGNATURE) {
+            return Err(format!(
+                "central-directory entry {entries} points to local-header offset {local_offset}, which does not identify a local file record"
+            ));
+        }
+        cursor = entry_end;
+        entries = entries.checked_add(1).ok_or_else(|| {
+            "the central-directory entry count exceeds the host address space".to_owned()
+        })?;
+    }
+    Ok(entries)
 }
 
 fn diagnose_zip_failure(bytes: &[u8], upstream: &str) -> String {
     if bytes.is_empty() {
         return "the input is empty, so it holds no archive".to_owned();
     }
-    let Some(eocd): Option<usize> = find_eocd(bytes) else {
-        return format!(
-            "no end-of-central-directory record in the last {} byte(s), so this is not a zip archive whatever its leading bytes say ({upstream})",
-            EOCD_MIN_LEN
-                .saturating_add(EOCD_MAX_COMMENT)
-                .min(bytes.len())
-        );
+    let eocd: usize = match find_eocd(bytes) {
+        EocdLocation::Complete(offset) => offset,
+        EocdLocation::Truncated(offset) => {
+            return format!(
+                "the end-of-central-directory record at offset {offset} is truncated; {} byte(s) remain of the {EOCD_MIN_LEN} byte fixed record",
+                bytes.len().saturating_sub(offset)
+            );
+        }
+        EocdLocation::Absent => {
+            return format!(
+                "no end-of-central-directory record in the last {} byte(s), so this is not a zip archive whatever its leading bytes say",
+                EOCD_MIN_LEN
+                    .saturating_add(EOCD_MAX_COMMENT)
+                    .min(bytes.len())
+            );
+        }
     };
-    let Some(record): Option<&[u8]> = bytes.get(eocd..eocd + EOCD_MIN_LEN) else {
-        return format!(
-            "the end-of-central-directory record at offset {eocd} is truncated; {} byte(s) remain of the {EOCD_MIN_LEN} it needs ({upstream})",
-            bytes.len().saturating_sub(eocd)
-        );
+    let Some(record_end): Option<usize> = eocd.checked_add(EOCD_MIN_LEN) else {
+        return format!("zip parser rejected a malformed archive ({upstream})");
     };
-    let declared: u16 = u16::from_le_bytes([record[10], record[11]]);
-    let directory_size: u32 = u32::from_le_bytes([record[12], record[13], record[14], record[15]]);
-    let directory_offset: u32 =
-        u32::from_le_bytes([record[16], record[17], record[18], record[19]]);
-    if declared == ZIP64_ENTRY_SENTINEL {
+    let Some(record): Option<&[u8]> = bytes.get(eocd..record_end) else {
+        return format!("zip parser rejected a malformed archive ({upstream})");
+    };
+    let Some(classic): Option<ClassicEocd> = parse_classic_eocd(record) else {
+        return format!("zip parser rejected a malformed archive ({upstream})");
+    };
+    let ClassicEocd {
+        disk_number,
+        directory_disk,
+        disk_entries: disk_declared,
+        entries: declared,
+        directory_size,
+        directory_offset,
+    }: ClassicEocd = classic;
+    let uses_zip64: bool = disk_number == ZIP64_U16_SENTINEL
+        || directory_disk == ZIP64_U16_SENTINEL
+        || disk_declared == ZIP64_U16_SENTINEL
+        || declared == ZIP64_U16_SENTINEL
+        || directory_size == ZIP64_U32_SENTINEL
+        || directory_offset == ZIP64_U32_SENTINEL;
+    let locator_present: bool = eocd
+        .checked_sub(ZIP64_LOCATOR_LEN)
+        .and_then(|offset: usize| {
+            let end: usize = offset.checked_add(ZIP64_LOCATOR_SIGNATURE.len())?;
+            bytes.get(offset..end)
+        })
+        == Some(&ZIP64_LOCATOR_SIGNATURE);
+    let metadata: ZipDirectoryMetadata = if uses_zip64 || locator_present {
+        match parse_zip64_metadata(bytes, eocd, classic) {
+            Ok(metadata) => metadata,
+            Err(reason) => return reason,
+        }
+    } else {
+        if disk_number != 0 || directory_disk != 0 || disk_declared != declared {
+            return format!(
+                "the end-of-central-directory record describes inconsistent multi-disk metadata: disk={disk_number}, directory_disk={directory_disk}, disk_entries={disk_declared}, total_entries={declared}"
+            );
+        }
+        let declared_end: u64 = u64::from(directory_offset) + u64::from(directory_size);
+        if declared_end > eocd as u64 {
+            return format!(
+                "the central directory is declared at offset {directory_offset} for {directory_size} byte(s), which ends past the end-of-central-directory record at offset {eocd}"
+            );
+        }
+        let declared_end: usize = match usize::try_from(declared_end) {
+            Ok(value) => value,
+            Err(_) => {
+                return "the central-directory extent exceeds the host address space".to_owned();
+            }
+        };
+        ZipDirectoryMetadata {
+            name: "end-of-central-directory record",
+            entries: u64::from(declared),
+            size: u64::from(directory_size),
+            offset: u64::from(directory_offset),
+            archive_prefix: eocd - declared_end,
+            directory_limit: eocd,
+        }
+    };
+    let directory_offset: usize = match usize::try_from(metadata.offset) {
+        Ok(value) => value,
+        Err(_) => return "the central-directory offset exceeds the host address space".to_owned(),
+    };
+    let directory_size: usize = match usize::try_from(metadata.size) {
+        Ok(value) => value,
+        Err(_) => return "the central-directory size exceeds the host address space".to_owned(),
+    };
+    let physical_offset: usize = match metadata.archive_prefix.checked_add(directory_offset) {
+        Some(offset) => offset,
+        None => {
+            return "the central-directory offset overflows the host address space".to_owned();
+        }
+    };
+    let Some(physical_end): Option<usize> = physical_offset.checked_add(directory_size) else {
+        return "the central-directory extent overflows the host address space".to_owned();
+    };
+    if physical_end > metadata.directory_limit {
         return format!(
-            "the end-of-central-directory record declares the zip64 entry-count sentinel, so the zip64 locator must be read and was not ({upstream})"
+            "the central directory ends at physical offset {physical_end}, past its metadata record at {}",
+            metadata.directory_limit
         );
     }
-    let end_of_directory: u64 = u64::from(directory_offset) + u64::from(directory_size);
-    if end_of_directory > bytes.len() as u64 {
+    let Some(directory): Option<&[u8]> = bytes.get(physical_offset..physical_end) else {
         return format!(
-            "the central directory is declared at offset {directory_offset} for {directory_size} byte(s), which ends past the {} byte file ({upstream})",
-            bytes.len()
+            "the central-directory offset {directory_offset} does not map inside the archive"
+        );
+    };
+    let actual: usize =
+        match count_central_directory_entries(bytes, directory, metadata.archive_prefix) {
+            Ok(count) => count,
+            Err(reason) => return reason,
+        };
+    let actual: u64 = match u64::try_from(actual) {
+        Ok(value) => value,
+        Err(_) => return "the central-directory entry count exceeds u64".to_owned(),
+    };
+    if actual != metadata.entries {
+        let noun: &str = if metadata.entries == 1 {
+            "entry"
+        } else {
+            "entries"
+        };
+        return format!(
+            "the {} declares {} {noun}, but the central directory contains {actual}",
+            metadata.name, metadata.entries
         );
     }
-    format!(
-        "the end-of-central-directory record declares {declared} entr(y/ies) the archive does not satisfy ({upstream})"
-    )
+    format!("zip parser rejected structurally consistent directory metadata ({upstream})")
 }
 
 fn extract_zip(
