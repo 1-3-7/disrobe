@@ -252,6 +252,15 @@ impl<'a> ImageView<'a> {
             .any(|range: &ExecutableRange| address >= range.start && address < range.end)
     }
 
+    fn has_linked_addresses(&self) -> bool {
+        self.file.as_ref().is_some_and(|file: &object::File<'_>| {
+            matches!(
+                file.kind(),
+                object::ObjectKind::Executable | object::ObjectKind::Dynamic
+            )
+        })
+    }
+
     fn starts_a_range(&self, address: u64) -> bool {
         self.executable
             .iter()
@@ -433,29 +442,89 @@ fn collect_dynamic(report: &ElfDynamicReport, view: &ImageView<'_>, seeds: &mut 
     }
 }
 
-fn collect_pointer_arrays(view: &ImageView<'_>, seeds: &mut SeedSet) {
+fn collect_initializer_tables(
+    view: &ImageView<'_>,
+    seeds: &mut SeedSet,
+    slot_limit: usize,
+    image_base: Option<u64>,
+) {
     let Some(parsed): Option<&object::File<'_>> = view.file.as_ref() else {
         return;
     };
+    let mut scanned: usize = 0;
     for section in parsed.sections() {
-        let Ok(name): core::result::Result<&str, object::Error> = section.name() else {
-            continue;
-        };
-        let origin: SeedOrigin = match name {
-            ".init_array" | ".preinit_array" => SeedOrigin::InitArray,
-            ".fini_array" => SeedOrigin::FiniArray,
-            _ => continue,
+        let (origin, slot_bytes, relative_base): (SeedOrigin, usize, Option<u64>) = match section
+            .flags()
+        {
+            object::SectionFlags::MachO { flags }
+                if flags & object::macho::SECTION_TYPE
+                    == object::macho::S_MOD_INIT_FUNC_POINTERS =>
+            {
+                (SeedOrigin::InitArray, POINTER_BYTES, None)
+            }
+            object::SectionFlags::MachO { flags }
+                if flags & object::macho::SECTION_TYPE
+                    == object::macho::S_MOD_TERM_FUNC_POINTERS =>
+            {
+                (SeedOrigin::FiniArray, POINTER_BYTES, None)
+            }
+            object::SectionFlags::MachO { flags }
+                if flags & object::macho::SECTION_TYPE == object::macho::S_INIT_FUNC_OFFSETS =>
+            {
+                let Some(base): Option<u64> = image_base else {
+                    continue;
+                };
+                (
+                    SeedOrigin::InitArray,
+                    core::mem::size_of::<u32>(),
+                    Some(base),
+                )
+            }
+            _ => {
+                let Ok(name): core::result::Result<&str, object::Error> = section.name() else {
+                    continue;
+                };
+                match name {
+                    ".init_array" | ".preinit_array" => {
+                        (SeedOrigin::InitArray, POINTER_BYTES, None)
+                    }
+                    ".fini_array" => (SeedOrigin::FiniArray, POINTER_BYTES, None),
+                    _ => continue,
+                }
+            }
         };
         let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
             continue;
         };
-        for slot in data.chunks_exact(POINTER_BYTES).take(MAX_POINTER_SLOTS) {
-            let Ok(raw): core::result::Result<[u8; POINTER_BYTES], core::array::TryFromSliceError> =
-                slot.try_into()
-            else {
-                continue;
+        if data.len() % slot_bytes != 0 {
+            continue;
+        }
+        for slot in data.chunks_exact(slot_bytes) {
+            if scanned >= slot_limit {
+                return;
+            }
+            scanned = scanned.saturating_add(1);
+            let address: u64 = if let Some(base) = relative_base {
+                let Ok(raw): core::result::Result<[u8; 4], core::array::TryFromSliceError> =
+                    slot.try_into()
+                else {
+                    continue;
+                };
+                let Some(address): Option<u64> =
+                    base.checked_add(u64::from(u32::from_le_bytes(raw)))
+                else {
+                    continue;
+                };
+                address
+            } else {
+                let Ok(raw): core::result::Result<
+                    [u8; POINTER_BYTES],
+                    core::array::TryFromSliceError,
+                > = slot.try_into() else {
+                    continue;
+                };
+                u64::from_le_bytes(raw)
             };
-            let address: u64 = u64::from_le_bytes(raw);
             if view.is_candidate(address) {
                 seeds.admit(address, origin);
             }
@@ -1142,7 +1211,11 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
         }
         collect_object_symbols(&view, &mut seeds);
         collect_exports(native, &view, &mut seeds);
-        if let Some(image_base) = macho_text_base(&view) {
+        let image_base: Option<u64> = macho_text_base(&view);
+        if view.has_linked_addresses() {
+            collect_initializer_tables(&view, &mut seeds, MAX_POINTER_SLOTS, image_base);
+        }
+        if let Some(image_base) = image_base {
             collect_macho_function_starts(bytes, image_base, &view, &mut seeds);
             collect_macho_compact_unwind(&view, image_base, &mut seeds);
         }
@@ -1162,7 +1235,9 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
     if let Some(parsed) = report.as_ref() {
         collect_dynamic(parsed, &view, &mut seeds);
     }
-    collect_pointer_arrays(&view, &mut seeds);
+    if view.has_linked_addresses() {
+        collect_initializer_tables(&view, &mut seeds, MAX_POINTER_SLOTS, None);
+    }
     collect_unwind_entries(&view, &mut seeds);
     collect_data_pointers(&view, &mut seeds);
     report_seeds(&seeds);
@@ -1183,15 +1258,19 @@ fn report_seeds(seeds: &SeedSet) {
 mod tests {
     use super::{
         CompactUnwindError, CompactUnwindOutcome, ExecutableRange, ImageView, MAX_SEEDS,
-        MAX_UNWIND_ENTRIES, SeedOrigin, SeedSet, collect, decode_macho_compact_unwind,
-        decode_macho_function_starts, is_boundary_word, is_prologue_word,
+        MAX_UNWIND_ENTRIES, POINTER_BYTES, SeedOrigin, SeedSet, collect,
+        collect_initializer_tables, decode_macho_compact_unwind, decode_macho_function_starts,
+        is_boundary_word, is_prologue_word,
     };
 
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     use disrobe_binfmt::native::{NativeFile, parse_native};
-    use object::{Object as _, ObjectSection as _, ObjectSymbol as _, SymbolKind as ObjSymbolKind};
+    use object::{
+        Architecture, BinaryFormat, Endianness, Object as _, ObjectSection as _, ObjectSymbol as _,
+        SectionFlags, SectionKind, SymbolKind as ObjSymbolKind, write::Object as WriteObject,
+    };
 
     #[derive(Debug, Clone, Copy)]
     struct Fixture {
@@ -1511,6 +1590,108 @@ mod tests {
         (seeds, outcome)
     }
 
+    fn clear_macho_symbols(bytes: &mut [u8]) {
+        let ncmds: usize =
+            u32::from_le_bytes(bytes[16..20].try_into().expect("Mach header ncmds")) as usize;
+        let mut cursor: usize = 32;
+        let mut cleared: bool = false;
+        for _ in 0..ncmds {
+            let header_end: usize = cursor.checked_add(8).expect("bounded load header");
+            let header: &[u8] = bytes
+                .get(cursor..header_end)
+                .expect("load command header must be in the fixture");
+            let cmd: u32 = u32::from_le_bytes(header[..4].try_into().expect("load command id"));
+            let cmdsize: usize =
+                u32::from_le_bytes(header[4..8].try_into().expect("load command size")) as usize;
+            assert!(cmdsize >= 8, "load command must include its header");
+            let command_end: usize = cursor
+                .checked_add(cmdsize)
+                .expect("bounded load command size");
+            assert!(
+                command_end <= bytes.len(),
+                "load command must stay in the fixture"
+            );
+            if cmd == object::macho::LC_SYMTAB {
+                assert!(cmdsize >= 16, "LC_SYMTAB must contain its symbol count");
+                bytes[cursor + 12..cursor + 16].copy_from_slice(&0_u32.to_le_bytes());
+                cleared = true;
+            } else if cmd == object::macho::LC_DYSYMTAB {
+                bytes[header_end..command_end].fill(0);
+            }
+            cursor = command_end;
+        }
+        assert!(cleared, "the real fixture must carry LC_SYMTAB");
+    }
+
+    fn assert_no_macho_start_metadata(bytes: &[u8], reference: &object::File<'_>) {
+        assert!(
+            reference.sections().all(
+                |section: object::Section<'_, '_>| section.name().ok() != Some("__unwind_info")
+            ),
+            "the initializer fixture must not carry compact-unwind function starts"
+        );
+        let macho: object::read::macho::MachOFile64<'_, object::Endianness, &[u8]> =
+            object::read::macho::MachOFile64::parse(bytes)
+                .expect("the linked Mach-O header must parse");
+        let mut commands: object::read::macho::LoadCommandIterator<'_, object::Endianness> = macho
+            .macho_load_commands()
+            .expect("the linked Mach-O load commands must parse");
+        while let Some(command) = commands
+            .next()
+            .expect("the linked Mach-O load command must parse")
+        {
+            assert_ne!(
+                command.cmd(),
+                object::macho::LC_FUNCTION_STARTS,
+                "the initializer fixture must not carry LC_FUNCTION_STARTS"
+            );
+        }
+    }
+
+    fn macho_pointer_sections(section_type: u32, sections: &[&[u8]]) -> Vec<u8> {
+        let mut object: WriteObject<'_> = WriteObject::new(
+            BinaryFormat::MachO,
+            Architecture::Aarch64,
+            Endianness::Little,
+        );
+        for (index, data) in sections.iter().enumerate() {
+            let section: object::write::SectionId = object.add_section(
+                b"custom".to_vec(),
+                format!("renamed{index}").into_bytes(),
+                SectionKind::Data,
+            );
+            object.section_mut(section).flags = SectionFlags::MachO {
+                flags: section_type,
+            };
+            let _: u64 = object.append_section_data(section, data, 8);
+        }
+        object.write().expect("the Mach-O table must serialize")
+    }
+
+    fn relocatable_macho_initializer() -> Vec<u8> {
+        let mut object: WriteObject<'_> = WriteObject::new(
+            BinaryFormat::MachO,
+            Architecture::Aarch64,
+            Endianness::Little,
+        );
+        let text: object::write::SectionId =
+            object.section_id(object::write::StandardSection::Text);
+        let _: u64 =
+            object.append_section_data(text, &[0x1f, 0x20, 0x03, 0xd5, 0xc0, 0x03, 0x5f, 0xd6], 4);
+        let initializer: object::write::SectionId = object.add_section(
+            b"__DATA".to_vec(),
+            b"__mod_init_func".to_vec(),
+            SectionKind::Data,
+        );
+        object.section_mut(initializer).flags = SectionFlags::MachO {
+            flags: object::macho::S_MOD_INIT_FUNC_POINTERS,
+        };
+        let _: u64 = object.append_section_data(initializer, &4_u64.to_le_bytes(), 8);
+        object
+            .write()
+            .expect("the relocatable Mach-O initializer must serialize")
+    }
+
     #[test]
     fn compact_unwind_regular_and_compressed_pages_recover_exact_starts() {
         for (kind, entries) in [(2, vec![0, 4]), (3, vec![0, 4])] {
@@ -1752,6 +1933,279 @@ mod tests {
     }
 
     #[test]
+    fn macho_module_initializer_arrays_match_the_llvm_linked_symbols() {
+        let bytes: &[u8] = include_bytes!("../../tests/fixtures/macho_aarch64_initializers.macho");
+        let native: NativeFile = parse_native(bytes).expect("the arm64 Mach-O fixture must parse");
+        let expected: [(u64, SeedOrigin); 2] = [
+            (0x1_0000_0410, SeedOrigin::InitArray),
+            (0x1_0000_0420, SeedOrigin::FiniArray),
+        ];
+        let reference: object::File<'_> =
+            object::File::parse(bytes).expect("the linked symbol reference must parse");
+        assert_no_macho_start_metadata(bytes, &reference);
+        let symbols: BTreeMap<String, u64> = reference
+            .symbols()
+            .filter_map(|symbol: object::Symbol<'_, '_>| {
+                let name: &str = symbol.name().ok()?;
+                matches!(name, "_initialize_probe" | "_terminate_probe")
+                    .then(|| (name.to_owned(), symbol.address()))
+            })
+            .collect();
+        assert_eq!(symbols.get("_initialize_probe"), Some(&expected[0].0));
+        assert_eq!(symbols.get("_terminate_probe"), Some(&expected[1].0));
+        let linked_slots: BTreeMap<SeedOrigin, u64> = reference
+            .sections()
+            .filter_map(|section: object::Section<'_, '_>| {
+                let object::SectionFlags::MachO { flags } = section.flags() else {
+                    return None;
+                };
+                let origin: SeedOrigin = match flags & object::macho::SECTION_TYPE {
+                    object::macho::S_MOD_INIT_FUNC_POINTERS => SeedOrigin::InitArray,
+                    object::macho::S_MOD_TERM_FUNC_POINTERS => SeedOrigin::FiniArray,
+                    _ => return None,
+                };
+                let data: &[u8] = section.data().ok()?;
+                let raw: [u8; POINTER_BYTES] = data.try_into().ok()?;
+                Some((origin, u64::from_le_bytes(raw)))
+            })
+            .collect();
+        assert_eq!(
+            linked_slots.get(&SeedOrigin::InitArray),
+            Some(&expected[0].0)
+        );
+        assert_eq!(
+            linked_slots.get(&SeedOrigin::FiniArray),
+            Some(&expected[1].0)
+        );
+
+        let seeds: SeedSet = collect(&native, bytes);
+        for (address, origin) in expected {
+            assert!(
+                seeds.origins_of(address).contains(&origin),
+                "{origin:?} must seed {address:#x}"
+            );
+        }
+        assert_eq!(seeds.counts().get(&SeedOrigin::InitArray), Some(&1));
+        assert_eq!(seeds.counts().get(&SeedOrigin::FiniArray), Some(&1));
+    }
+
+    #[test]
+    fn macho_initializer_offsets_match_llvm_and_reach_the_stripped_payload() {
+        let mut bytes: Vec<u8> =
+            include_bytes!("../../tests/fixtures/macho_aarch64_init_offsets.macho").to_vec();
+        let reference: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the linked offset fixture must parse");
+        assert_no_macho_start_metadata(bytes.as_slice(), &reference);
+        let symbols: BTreeMap<String, u64> = reference
+            .symbols()
+            .filter_map(|symbol: object::Symbol<'_, '_>| {
+                let name: &str = symbol.name().ok()?;
+                matches!(name, "_initialize_probe" | "_terminate_probe")
+                    .then(|| (name.to_owned(), symbol.address()))
+            })
+            .collect();
+        assert_eq!(symbols.get("_initialize_probe"), Some(&0x1_0000_0400));
+        assert_eq!(symbols.get("_terminate_probe"), Some(&0x1_0000_0410));
+        let view: ImageView<'_> = ImageView::new(bytes.as_slice(), None);
+        let image_base: u64 = super::macho_text_base(&view).expect("the fixture must carry __TEXT");
+        let offset: u32 = reference
+            .sections()
+            .find_map(|section: object::Section<'_, '_>| {
+                let object::SectionFlags::MachO { flags } = section.flags() else {
+                    return None;
+                };
+                if flags & object::macho::SECTION_TYPE != object::macho::S_INIT_FUNC_OFFSETS {
+                    return None;
+                }
+                let raw: [u8; 4] = section.data().ok()?.try_into().ok()?;
+                Some(u32::from_le_bytes(raw))
+            })
+            .expect("the fixture must carry one initializer offset");
+        assert_eq!(
+            image_base.checked_add(u64::from(offset)),
+            symbols.get("_initialize_probe").copied()
+        );
+
+        clear_macho_symbols(&mut bytes);
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(&bytes)
+                .expect("the stripped offset fixture must reach disassembly discovery");
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        assert!(recovered.contains(&0x1_0000_0400));
+        assert!(recovered.contains(&0x1_0000_0410));
+    }
+
+    #[test]
+    fn macho_initializer_arrays_reject_partial_sections_and_invalid_slots() {
+        let complete: Vec<u8> = [0_u64, 2, 0x1000, 0x2000]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_MOD_INIT_FUNC_POINTERS, &[&complete]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1000,
+            end: 0x1100,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, super::MAX_POINTER_SLOTS, None);
+        assert_eq!(seeds.addresses(), vec![0x1000]);
+        assert_eq!(
+            seeds.origins_of(0x1000),
+            BTreeSet::from([SeedOrigin::InitArray])
+        );
+
+        let mut partial: Vec<u8> = 0x1000_u64.to_le_bytes().to_vec();
+        partial.push(0xaa);
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_MOD_INIT_FUNC_POINTERS, &[&partial]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1000,
+            end: 0x1100,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, super::MAX_POINTER_SLOTS, None);
+        assert!(seeds.addresses().is_empty());
+    }
+
+    #[test]
+    fn relocatable_initializer_tables_abstain_before_reading_raw_slots() {
+        let bytes: Vec<u8> = relocatable_macho_initializer();
+        let parsed: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the relocatable Mach-O must parse");
+        assert_eq!(parsed.kind(), object::ObjectKind::Relocatable);
+        let native: NativeFile =
+            parse_native(bytes.as_slice()).expect("the relocatable Mach-O must reach discovery");
+        let seeds: SeedSet = collect(&native, bytes.as_slice());
+        assert!(
+            seeds.origins_of(4).is_empty(),
+            "an unresolved relocatable slot must not become a linked function address"
+        );
+    }
+
+    #[test]
+    fn macho_initializer_slot_limit_is_global_across_sections() {
+        let first: Vec<u8> = [0x1000_u64, 0x1004]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let second: Vec<u8> = [0x1008_u64, 0x100c]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_MOD_INIT_FUNC_POINTERS, &[&first, &second]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1000,
+            end: 0x1100,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, 3, None);
+        assert_eq!(seeds.addresses(), vec![0x1000, 0x1004, 0x1008]);
+    }
+
+    #[test]
+    fn macho_initializer_offsets_are_relative_to_the_text_base() {
+        let offsets: Vec<u8> = [0x100_u32, 0x104, 0x300]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_INIT_FUNC_OFFSETS, &[&offsets]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1100,
+            end: 0x1200,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, super::MAX_POINTER_SLOTS, Some(0x1000));
+        assert_eq!(seeds.addresses(), vec![0x1100, 0x1104]);
+        assert_eq!(
+            seeds.origins_of(0x1100),
+            BTreeSet::from([SeedOrigin::InitArray])
+        );
+
+        let partial: Vec<u8> = [0x100_u32.to_le_bytes().as_slice(), &[0xaa]].concat();
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_INIT_FUNC_OFFSETS, &[&partial]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1100,
+            end: 0x1200,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, super::MAX_POINTER_SLOTS, Some(0x1000));
+        assert!(seeds.addresses().is_empty());
+
+        let overflow: Vec<u8> = u32::MAX.to_le_bytes().to_vec();
+        let encoded: Vec<u8> =
+            macho_pointer_sections(object::macho::S_INIT_FUNC_OFFSETS, &[&overflow]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0,
+            end: u64::MAX,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(
+            &view,
+            &mut seeds,
+            super::MAX_POINTER_SLOTS,
+            Some(u64::MAX - 1),
+        );
+        assert!(seeds.addresses().is_empty());
+    }
+
+    #[test]
+    fn stripped_macho_initializer_arrays_reach_the_disassembly_payload() {
+        let mut bytes: Vec<u8> =
+            include_bytes!("../../tests/fixtures/macho_aarch64_initializers.macho").to_vec();
+        clear_macho_symbols(&mut bytes);
+        let stripped: object::File<'_> =
+            object::File::parse(bytes.as_slice()).expect("the stripped view must parse");
+        assert_eq!(
+            stripped
+                .symbols()
+                .filter(|symbol: &object::Symbol<'_, '_>| {
+                    matches!(symbol.kind(), ObjSymbolKind::Text)
+                })
+                .count(),
+            0,
+            "the caller case must not retain text symbols"
+        );
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(&bytes)
+                .expect("the stripped Mach-O must reach disassembly discovery");
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        assert!(recovered.contains(&0x1_0000_0410));
+        assert!(recovered.contains(&0x1_0000_0420));
+    }
+
+    #[test]
     fn stripped_macho_function_starts_reach_the_disassembly_payload() {
         let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -1772,36 +2226,7 @@ mod tests {
             })
             .map(|symbol: object::Symbol<'_, '_>| symbol.address())
             .collect();
-        let ncmds: usize =
-            u32::from_le_bytes(bytes[16..20].try_into().expect("Mach header ncmds")) as usize;
-        let mut cursor: usize = 32;
-        let mut cleared: bool = false;
-        for _ in 0..ncmds {
-            let header_end: usize = cursor.checked_add(8).expect("bounded load header");
-            let header: &[u8] = bytes
-                .get(cursor..header_end)
-                .expect("load command header must be in the fixture");
-            let cmd: u32 = u32::from_le_bytes(header[..4].try_into().expect("load command id"));
-            let cmdsize: usize =
-                u32::from_le_bytes(header[4..8].try_into().expect("load command size")) as usize;
-            assert!(cmdsize >= 8, "load command must include its header");
-            let command_end: usize = cursor
-                .checked_add(cmdsize)
-                .expect("bounded load command size");
-            assert!(
-                command_end <= bytes.len(),
-                "load command must stay in the fixture"
-            );
-            if cmd == object::macho::LC_SYMTAB {
-                assert!(cmdsize >= 16, "LC_SYMTAB must contain its symbol count");
-                bytes[cursor + 12..cursor + 16].copy_from_slice(&0_u32.to_le_bytes());
-                cleared = true;
-            } else if cmd == object::macho::LC_DYSYMTAB {
-                bytes[header_end..command_end].fill(0);
-            }
-            cursor = command_end;
-        }
-        assert!(cleared, "the real fixture must carry LC_SYMTAB");
+        clear_macho_symbols(&mut bytes);
         let stripped: object::File<'_> =
             object::File::parse(bytes.as_slice()).expect("the stripped view must parse");
         assert_eq!(
