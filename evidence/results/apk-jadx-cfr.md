@@ -3,7 +3,7 @@
 - id: `apk-jadx-cfr`
 - ecosystem: android
 - claim: On their respective committed EdgeCases inputs, real javac scores every emitted method by one source-only rule. The scorer compiles the complete recovered source set first. If a parse failure blocks attribution, it isolates the implicated balanced method, field-initializer, or type region under a 64-round ceiling and reruns javac. Methods in isolated method or type regions are unclean. Peer methods count only after javac reaches attribution. A leg publishes a lead only when both sides are certified.
-- measured: Android DEX: `disrobe` 52 / 165 (31.5%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)
+- measured: Android DEX: `disrobe` 56 / 163 (34.4%) vs JADX not certified (295 methods emitted; the producer exited nonzero); JVM classfile: `disrobe` 181 / 181 (100.0%) vs CFR 152 / 166 (91.6%)
 - oracle strength: recompile-only
 - CI-attested: yes [CI]
 - evidence basis: real javac (JDK), per-method recompile error-free against a STUBBED (empty) classpath so a wrong recovered signature cannot resolve against the original classes; one source-only scorer applies the same complete-compile, bounded region-isolation, and final diagnostic rule to every tool
@@ -13,7 +13,7 @@
 
 | tool | version | metric | result | status |
 |---|---|---|---|---|
-| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean emitted methods (clean / emitted) | 52 clean / 165 emitted (31.5%) | ok |
+| **disrobe (in-house Dalvik, DEX input)** | n/a (in-process) | recompile-clean emitted methods (clean / emitted) | 56 clean / 163 emitted (34.4%) | ok |
 | jadx (DEX input) | 1.5.5 | recompile-clean emitted methods (clean / emitted) | not certified: 295 methods emitted | uncertified |
 | **disrobe (in-house JVM, JAR input)** | n/a (in-process) | recompile-clean emitted methods (clean / emitted) | 181 clean / 181 emitted (100.0%) | ok |
 | cfr (JAR input) | CFR 0.152 | recompile-clean emitted methods (clean / emitted) | 152 clean / 166 emitted (91.6%) | ok |

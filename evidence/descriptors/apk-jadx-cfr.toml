@@ -22,7 +22,7 @@ disrobe = "disrobe (in-house Dalvik, DEX input)"
 competitor = "jadx (DEX input)"
 competitor_label = "JADX"
 disrobe_floor = 31.0
-floor_reason = "The 31.0 floor is pinned below disrobe's 52 clean of 165 emitted methods, or 31.5 per cent, under the complete-source-set rule. The previous 34.0 floor covered only 132 main-class methods and is not comparable to this larger denominator. This rule adds nested, sibling, anonymous-class, enum-constant, synthetic accessor, lambda, bridge, and declaration-only methods without changing recovered source. The DEX path still translates class files through the JVM renderer, which declares locals that the direct Dalvik renderer omitted. The remaining gap is per-method recovery quality."
+floor_reason = "The 31.0 floor is pinned below disrobe's 56 clean of 163 emitted methods, or 34.4 per cent, under the complete-source-set rule. The previous 34.0 floor covered only 132 main-class methods and is not comparable to this larger denominator. This rule adds nested, sibling, anonymous-class, enum-constant, synthetic accessor, lambda, bridge, and declaration-only methods without changing recovered source. The DEX path still translates class files through the JVM renderer, which declares locals that the direct Dalvik renderer omitted. The remaining gap is per-method recovery quality."
 
 [[measured.pairs]]
 id = "jar"
