@@ -935,6 +935,397 @@ fn variable_variable_assignment_recovers_dollar_dollar_form() {
     );
 }
 
+#[test]
+fn increment_and_decrement_results_preserve_prefix_and_postfix_behavior() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("pre_inc_source")
+        .var("pre_inc_result")
+        .var("post_inc_source")
+        .var("post_inc_result")
+        .var("pre_dec_source")
+        .var("pre_dec_result")
+        .var("post_dec_source")
+        .var("post_dec_result");
+    let ten: u32 = b.lit_long(10);
+    let separator: u32 = b.lit_str("|");
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, ten, 0, 0, 1);
+    b.op(op::PRE_INC, T_CV, T_UNUSED, T_TMP, 0, 0, 10, 0, 2);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 10, 0, 0, 2);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 2, ten, 0, 0, 3);
+    b.op(op::POST_INC, T_CV, T_UNUSED, T_TMP, 2, 0, 11, 0, 4);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 3, 11, 0, 0, 4);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 4, ten, 0, 0, 5);
+    b.op(op::PRE_DEC, T_CV, T_UNUSED, T_TMP, 4, 0, 12, 0, 6);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 5, 12, 0, 0, 6);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 6, ten, 0, 0, 7);
+    b.op(op::POST_DEC, T_CV, T_UNUSED, T_TMP, 6, 0, 13, 0, 8);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 7, 13, 0, 0, 8);
+    for (position, slot) in [1u32, 0, 3, 2, 5, 4, 7, 6].into_iter().enumerate() {
+        if position != 0 {
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, separator, 0, 0, 0, 9);
+        }
+        b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, slot, 0, 0, 0, 9);
+    }
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse increment op array");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
+    for expected in [
+        "$pre_inc_result = ++$pre_inc_source;",
+        "$post_inc_result = $post_inc_source++;",
+        "$pre_dec_result = --$pre_dec_source;",
+        "$post_dec_result = $post_dec_source--;",
+    ] {
+        assert!(
+            decomp.php_skeleton.contains(expected),
+            "missing {expected:?} in:\n{}",
+            decomp.php_skeleton
+        );
+    }
+
+    if let Some(php) = php_bin() {
+        let original: &str = "$pre_inc_source=10;$pre_inc_result=++$pre_inc_source;\
+$post_inc_source=10;$post_inc_result=$post_inc_source++;\
+$pre_dec_source=10;$pre_dec_result=--$pre_dec_source;\
+$post_dec_source=10;$post_dec_result=$post_dec_source--;\
+echo implode('|',[$pre_inc_result,$pre_inc_source,$post_inc_result,$post_inc_source,\
+$pre_dec_result,$pre_dec_source,$post_dec_result,$post_dec_source]);";
+        let expected: String = php_eval_source(&php, original);
+        let recovered: String = php_eval_source(
+            &php,
+            decomp
+                .php_skeleton
+                .strip_prefix("<?php")
+                .expect("decompilation has php open tag"),
+        );
+        assert_eq!(expected, "11|11|10|11|9|9|10|9");
+        assert_eq!(
+            recovered, expected,
+            "recovered php:\n{}",
+            decomp.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn delayed_and_reused_postfix_results_spill_at_the_mutation_site() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("source").var("first_result").var("second_result");
+    let ten: u32 = b.lit_long(10);
+    let separator: u32 = b.lit_str("|");
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, ten, 0, 0, 1);
+    b.op(op::POST_INC, T_CV, T_UNUSED, T_TMP, 0, 0, 20, 0, 2);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 3);
+    b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, separator, 0, 0, 0, 3);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 20, 0, 0, 4);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 2, 20, 0, 0, 5);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 6);
+    b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, separator, 0, 0, 0, 6);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 2, 0, 0, 0, 6);
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse delayed postfix");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
+    assert_eq!(decomp.php_skeleton.matches("$source++").count(), 1);
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("$_disrobe_incdec_1 = $source++;")
+    );
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("$first_result = $_disrobe_incdec_1;")
+    );
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("$second_result = $_disrobe_incdec_1;")
+    );
+
+    if let Some(php) = php_bin() {
+        let recovered: String = php_eval_source(
+            &php,
+            decomp
+                .php_skeleton
+                .strip_prefix("<?php")
+                .expect("decompilation has php open tag"),
+        );
+        assert_eq!(recovered, "11|10|10");
+    }
+}
+
+#[test]
+fn a_delayed_single_postfix_result_does_not_move_past_an_effect() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("source").var("previous");
+    let ten: u32 = b.lit_long(10);
+    let separator: u32 = b.lit_str("|");
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, ten, 0, 0, 1);
+    b.op(op::POST_INC, T_CV, T_UNUSED, T_TMP, 0, 0, 20, 0, 2);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 3);
+    b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, separator, 0, 0, 0, 3);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 1, 20, 0, 0, 4);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 5);
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse delayed postfix");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("$_disrobe_incdec_1 = $source++;")
+    );
+    if let Some(php) = php_bin() {
+        let original: String = php_eval_source(
+            &php,
+            "$source=10;$previous=$source++;echo $source . '|' . $previous;",
+        );
+        let recovered: String = php_eval_source(
+            &php,
+            decomp
+                .php_skeleton
+                .strip_prefix("<?php")
+                .expect("decompilation has php open tag"),
+        );
+        assert_eq!(original, "11|10");
+        assert_eq!(recovered, original, "{}", decomp.php_skeleton);
+    }
+}
+
+#[test]
+fn increment_through_a_resolved_variable_variable_preserves_its_result() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("name").var("counter").var("previous");
+    let counter_name: u32 = b.lit_str("counter");
+    let ten: u32 = b.lit_long(10);
+    let separator: u32 = b.lit_str("|");
+    b.op(
+        op::ASSIGN,
+        T_CV,
+        T_CONST,
+        T_UNUSED,
+        0,
+        counter_name,
+        0,
+        0,
+        1,
+    );
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, ten, 0, 0, 1);
+    b.op(op::FETCH_W, T_CV, T_UNUSED, T_VAR, 0, 0, 30, 0, 2);
+    b.op(op::POST_INC, T_VAR, T_UNUSED, T_TMP, 30, 0, 31, 0, 2);
+    b.op(op::ASSIGN, T_CV, T_TMP, T_UNUSED, 2, 31, 0, 0, 2);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 2, 0, 0, 0, 3);
+    b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, separator, 0, 0, 0, 3);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 3);
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse variable-variable");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{:?}", decomp.unrecovered);
+    assert!(
+        decomp.php_skeleton.contains("$previous = $$name++;"),
+        "{}",
+        decomp.php_skeleton
+    );
+    if let Some(php) = php_bin() {
+        let recovered: String = php_eval_source(
+            &php,
+            decomp
+                .php_skeleton
+                .strip_prefix("<?php")
+                .expect("decompilation has php open tag"),
+        );
+        assert_eq!(recovered, "10|11");
+    }
+}
+
+#[test]
+fn read_fetches_never_grant_increment_write_provenance() {
+    let mut read_builder: OpArrayBuilder = OpArrayBuilder::main();
+    read_builder.var("name");
+    let counter_name: u32 = read_builder.lit_str("counter");
+    read_builder.op(
+        op::ASSIGN,
+        T_CV,
+        T_CONST,
+        T_UNUSED,
+        0,
+        counter_name,
+        0,
+        0,
+        1,
+    );
+    for (position, opcode) in [op::PRE_INC, op::PRE_DEC, op::POST_INC, op::POST_DEC]
+        .into_iter()
+        .enumerate()
+    {
+        let slot: u32 = position as u32 + 30;
+        read_builder.op(op::FETCH_R, T_CV, T_UNUSED, T_VAR, 0, 0, slot, 0, 2);
+        read_builder.op(opcode, T_VAR, T_UNUSED, T_UNUSED, slot, 0, 0, 0, 2);
+    }
+    let read_parsed: OpArray =
+        parse_oparray(&read_builder.build_container()).expect("parse read fetches");
+    let read_decomp: Decompilation = decompile_oparray(&read_parsed);
+
+    assert_eq!(read_decomp.unrecovered_total, 4);
+    assert!(read_decomp.unrecovered.iter().all(|entry: &UnrecoveredOp| {
+        entry.reason
+            == "increment or decrement requires a writable variable and an optional temporary result"
+    }));
+    assert!(!read_decomp.php_skeleton.contains("$$name++"));
+    assert!(!read_decomp.php_skeleton.contains("++$$name"));
+    assert!(!read_decomp.php_skeleton.contains("$$name--"));
+    assert!(!read_decomp.php_skeleton.contains("--$$name"));
+
+    for fetch_opcode in [op::FETCH_W, op::FETCH_RW] {
+        let valid_decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+            b.var("name");
+            let counter: u32 = b.lit_str("counter");
+            b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, counter, 0, 0, 1);
+            b.op(fetch_opcode, T_CV, T_UNUSED, T_VAR, 0, 0, 40, 0, 2);
+            b.op(op::POST_INC, T_VAR, T_UNUSED, T_UNUSED, 40, 0, 0, 0, 2);
+        });
+        assert_eq!(valid_decomp.unrecovered_total, 0);
+        assert!(valid_decomp.php_skeleton.contains("$$name++;"));
+    }
+}
+
+#[test]
+fn used_increment_results_require_temporary_result_slots() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("used_source").var("standalone_source");
+    let ten: u32 = b.lit_long(10);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, ten, 0, 0, 1);
+    b.op(op::POST_INC, T_CV, T_UNUSED, T_VAR, 0, 0, 20, 0, 2);
+    b.op(op::ECHO, T_VAR, T_UNUSED, T_UNUSED, 20, 0, 0, 0, 2);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, ten, 0, 0, 3);
+    b.op(op::POST_INC, T_CV, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 4);
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse result slots");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 1);
+    assert_eq!(
+        decomp.unrecovered[0].reason,
+        "increment or decrement requires a writable variable and an optional temporary result"
+    );
+    assert!(!decomp.php_skeleton.contains("$used_source++"));
+    assert!(decomp.php_skeleton.contains("$standalone_source++;"));
+}
+
+#[test]
+fn delayed_symbolic_write_fetch_refuses_after_name_redefinition() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("name").var("counter").var("other");
+    let counter_name: u32 = b.lit_str("counter");
+    let other_name: u32 = b.lit_str("other");
+    let ten: u32 = b.lit_long(10);
+    let twenty: u32 = b.lit_long(20);
+    b.op(
+        op::ASSIGN,
+        T_CV,
+        T_CONST,
+        T_UNUSED,
+        0,
+        counter_name,
+        0,
+        0,
+        1,
+    );
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, ten, 0, 0, 1);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 2, twenty, 0, 0, 1);
+    b.op(op::FETCH_W, T_CV, T_UNUSED, T_VAR, 0, 0, 30, 0, 2);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, other_name, 0, 0, 3);
+    b.op(op::POST_INC, T_VAR, T_UNUSED, T_UNUSED, 30, 0, 0, 0, 4);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 1, 0, 0, 0, 5);
+    b.op(op::ECHO, T_CV, T_UNUSED, T_UNUSED, 2, 0, 0, 0, 5);
+    let parsed: OpArray = parse_oparray(&b.build_container()).expect("parse delayed write fetch");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 1);
+    assert_eq!(
+        decomp.unrecovered[0].reason,
+        "increment or decrement requires a writable variable and an optional temporary result"
+    );
+    assert!(!decomp.php_skeleton.contains("$$name++"));
+    assert!(!decomp.php_skeleton.contains("$$name--"));
+}
+
+#[test]
+fn short_circuit_join_does_not_leak_branch_local_writable_provenance() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("flag").var("name");
+        let counter: u32 = b.lit_str("counter");
+        let one: u32 = b.lit_long(1);
+        b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, counter, 0, 0, 1);
+        b.op(op::JMPZ_EX, T_CV, T_UNUSED, T_TMP, 0, 4, 20, 0, 2);
+        b.op(op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP, one, 0, 20, 0, 2);
+        b.op(op::FETCH_W, T_CV, T_UNUSED, T_VAR, 1, 0, 30, 0, 2);
+        b.op(op::POST_INC, T_VAR, T_UNUSED, T_UNUSED, 30, 0, 0, 0, 3);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 1, "{}", decomp.php_skeleton);
+    assert_eq!(
+        decomp.unrecovered[0].reason,
+        "increment or decrement requires a writable variable and an optional temporary result"
+    );
+    assert!(!decomp.php_skeleton.contains("$$name++"));
+}
+
+#[test]
+fn default_join_does_not_leak_branch_local_writable_provenance() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("value").var("name");
+        let counter: u32 = b.lit_str("counter");
+        let one: u32 = b.lit_long(1);
+        b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 1, counter, 0, 0, 1);
+        b.op(op::COALESCE, T_CV, T_UNUSED, T_TMP, 0, 4, 20, 0, 2);
+        b.op(op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP, one, 0, 20, 0, 2);
+        b.op(op::FETCH_RW, T_CV, T_UNUSED, T_VAR, 1, 0, 30, 0, 2);
+        b.op(op::POST_INC, T_VAR, T_UNUSED, T_UNUSED, 30, 0, 0, 0, 3);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 1, "{}", decomp.php_skeleton);
+    assert_eq!(
+        decomp.unrecovered[0].reason,
+        "increment or decrement requires a writable variable and an optional temporary result"
+    );
+    assert!(!decomp.php_skeleton.contains("$$name++"));
+}
+
+#[test]
+fn malformed_increment_operands_are_refused_instead_of_guessed() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        let ten: u32 = b.lit_long(10);
+        let make: u32 = b.lit_str("make_value");
+        b.op(op::PRE_INC, T_CONST, T_UNUSED, T_TMP, ten, 0, 1, 0, 1);
+        b.op(op::POST_DEC, T_CV, T_CONST, T_TMP, 0, ten, 2, 0, 2);
+        b.op(
+            op::INIT_FCALL,
+            T_UNUSED,
+            T_CONST,
+            T_UNUSED,
+            0,
+            make,
+            0,
+            0,
+            3,
+        );
+        b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_VAR, 0, 0, 3, 0, 3);
+        b.op(op::POST_INC, T_VAR, T_UNUSED, T_TMP, 3, 0, 4, 0, 3);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 3);
+    assert_eq!(decomp.unrecovered.len(), 3);
+    assert!(
+        decomp.unrecovered.iter().all(|entry: &UnrecoveredOp| {
+            entry.reason
+                == "increment or decrement requires a writable variable and an optional temporary result"
+        })
+    );
+    assert!(!decomp.php_skeleton.contains("++"));
+    assert!(!decomp.php_skeleton.contains("--"));
+}
+
 fn php_bin() -> Option<String> {
     let candidate: &str = "php";
     let ok: bool = std::process::Command::new(candidate)
@@ -943,6 +1334,20 @@ fn php_bin() -> Option<String> {
         .map(|o: std::process::Output| o.status.success())
         .unwrap_or(false);
     if ok { Some(candidate.to_owned()) } else { None }
+}
+
+fn php_eval_source(php: &str, source: &str) -> String {
+    let out: std::process::Output = std::process::Command::new(php)
+        .arg("-r")
+        .arg(source)
+        .output()
+        .expect("run php source");
+    assert!(
+        out.status.success(),
+        "php failed on source:\n{source}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf8")
 }
 
 fn php_eval_bool(php: &str, expr: &str) -> String {

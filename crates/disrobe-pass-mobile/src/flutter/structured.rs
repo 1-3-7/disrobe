@@ -10,7 +10,7 @@ use disrobe_nir::{
 use super::aot_lift::{
     DartCheckKind, bcond, classify_guard, is_arm64_trap, subs_imm, subs_shifted_reg, tbz_tbnz,
 };
-use super::call_args::{DartCallArguments, recover_call_arguments};
+use super::call_args::{DartCallArguments, recover_boolean_return, recover_call_arguments};
 use super::disasm::{Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::pool_table::DartPoolTable;
 
@@ -41,12 +41,23 @@ pub(crate) struct DartCallArgumentCounts {
     pub(crate) opaque_sites: usize,
 }
 
+pub(crate) struct DartStructuredBody {
+    pub(crate) text: String,
+    pub(crate) parameter_count: Option<u8>,
+}
+
 #[must_use]
 pub(crate) fn structure_dart_function(
     func: &Arm64Function,
     abi: &DartAbi<'_>,
     counts: &mut DartCallArgumentCounts,
-) -> Option<String> {
+) -> Option<DartStructuredBody> {
+    if let Some((expression, parameter_count)) = recover_boolean_return(func, abi.pool) {
+        return Some(DartStructuredBody {
+            text: emit_boolean_return(abi, &expression, parameter_count),
+            parameter_count: Some(parameter_count),
+        });
+    }
     let nir: NirFunction = build_nir(func, abi)?;
     let blocks: Vec<NirBlock> = basic_blocks(&nir);
     if blocks.len() < 2 {
@@ -67,7 +78,18 @@ pub(crate) fn structure_dart_function(
         .recovered_sites
         .saturating_add(arguments.recovered_sites);
     counts.opaque_sites = counts.opaque_sites.saturating_add(arguments.opaque_sites);
-    Some(emit_dart(&hir, abi, &reachable, &arguments))
+    Some(DartStructuredBody {
+        text: emit_dart(&hir, abi, &reachable, &arguments),
+        parameter_count: None,
+    })
+}
+
+fn emit_boolean_return(abi: &DartAbi<'_>, expression: &str, parameter_count: u8) -> String {
+    let params: String = (0..parameter_count)
+        .map(|index: u8| format!("arg{index}"))
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("{}({params}) {{\n  return {expression};\n}}", abi.label)
 }
 
 fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
@@ -748,6 +770,7 @@ mod tests {
     fn structure(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<String> {
         let mut counts: DartCallArgumentCounts = DartCallArgumentCounts::default();
         structure_dart_function(func, abi, &mut counts)
+            .map(|structured: DartStructuredBody| structured.text)
     }
 
     fn movz_imm(rd: u32, imm: u32) -> u32 {

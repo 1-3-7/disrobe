@@ -1,5 +1,21 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
+use std::process::{Command, Output};
+
+fn run_module(source: &str) -> Output {
+    Command::new("node")
+        .args(["--input-type=module", "-e", source])
+        .output()
+        .expect("Node must execute the module fixture")
+}
+
+fn run_exported_module(source: &str) -> Output {
+    const HARNESS: &str = "const encoded = Buffer.from(process.argv[1]).toString('base64'); const module = await import('data:text/javascript;base64,' + encoded); console.log(module.a);";
+    Command::new("node")
+        .args(["--input-type=module", "-e", HARNESS, source])
+        .output()
+        .expect("Node must import the generated module fixture")
+}
 
 const ORIG_ALIASED: &str = "import { computeTotal as a } from './math';\nconst result = a(10, 20);\nconsole.log(result, a);";
 
@@ -51,15 +67,16 @@ fn multiple_aliased_specifiers_each_recover() {
 const SAFETY_SHADOW: &str = "import { state as a } from './store';\nfunction render() { const state = { x: 1 }; return state.x + a; }\nconsole.log(render());";
 
 #[test]
-fn an_inner_binding_that_would_capture_the_rename_blocks_it() {
+fn an_inner_binding_that_would_capture_the_preferred_name_receives_a_safe_suffix() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_SHADOW);
     assert_eq!(
-        stats.aliased_imports_renamed, 0,
-        "renaming `a`->`state` would be shadowed by the inner `const state`; the alias must be left intact:\n{recovered}"
+        stats.aliased_imports_renamed, 1,
+        "the import must receive a name the inner `state` cannot capture:\n{recovered}"
     );
     assert!(
-        recovered.contains("import { state as a }"),
-        "the original aliased import must survive untouched:\n{recovered}"
+        recovered.contains("import { state as state_1 }")
+            && recovered.contains("state.x + state_1"),
+        "the safe suffix must update only the import binding and its references:\n{recovered}"
     );
 }
 
@@ -67,12 +84,14 @@ const SAFETY_FREE_GLOBAL: &str =
     "import { document as a } from 'm';\nconsole.log(a, typeof document);";
 
 #[test]
-fn a_free_global_of_the_target_name_blocks_the_rename() {
+fn a_free_global_of_the_target_name_receives_a_safe_suffix() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(SAFETY_FREE_GLOBAL);
     assert_eq!(
-        stats.aliased_imports_renamed, 0,
-        "renaming `a`->`document` would collide with the free global `document` reference:\n{recovered}"
+        stats.aliased_imports_renamed, 1,
+        "the imported binding must not collide with the free global:\n{recovered}"
     );
+    assert!(recovered.contains("import { document as document_1 }"));
+    assert!(recovered.contains("console.log(document_1, typeof document);"));
 }
 
 const SAFETY_MEMBER: &str =
@@ -152,14 +171,128 @@ const UNSAFE_PARAM_SHADOW: &str =
     "import { foo as a } from 'm';\nfunction g(foo) { return foo + a; }\nconsole.log(g(1));";
 
 #[test]
-fn a_param_shadow_capturing_the_reference_blocks_the_rename() {
+fn a_param_shadow_capturing_the_preferred_name_receives_a_safe_suffix() {
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(UNSAFE_PARAM_SHADOW);
     assert_eq!(
-        stats.aliased_imports_renamed, 0,
-        "renaming `a`->`foo` inside `g(foo)` would resolve to the parameter, changing behavior:\n{recovered}"
+        stats.aliased_imports_renamed, 1,
+        "the imported binding must remain distinct from the parameter:\n{recovered}"
     );
     assert!(
-        recovered.contains("import { foo as a }"),
-        "the aliased import must survive untouched:\n{recovered}"
+        recovered.contains("import { foo as foo_1 }") && recovered.contains("foo + foo_1"),
+        "the safe suffix must preserve the parameter lookup:\n{recovered}"
     );
+}
+
+#[test]
+fn colliding_imported_names_receive_distinct_scope_safe_bindings() {
+    let source: &str = "import { foo as a } from 'data:text/javascript,export%20const%20foo%3D%22A%22';\nimport { foo as b } from 'data:text/javascript,export%20const%20foo%3D%22B%22';\nconsole.log(a + b);";
+    let original: Output = run_module(source);
+    assert!(original.status.success(), "original module must execute");
+    assert_eq!(original.stdout, b"AB\n");
+
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(
+        stats.aliased_imports_renamed, 2,
+        "both imports must receive readable, distinct bindings:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("import { foo } from"),
+        "the first import must take the preferred binding:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("import { foo as foo_1 } from"),
+        "the collision must receive the first available suffix:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("console.log(foo + foo_1);"),
+        "each reference must follow its resolved import:\n{recovered}"
+    );
+    let rerun: Output = run_module(&recovered);
+    assert!(rerun.status.success(), "recovered module must execute");
+    assert_eq!(rerun.stdout, original.stdout);
+
+    let (repeated, repeated_stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(repeated, recovered);
+    assert_eq!(repeated_stats.aliased_imports_renamed, 2);
+}
+
+#[test]
+fn comment_inside_import_specifier_causes_byte_preserving_refusal() {
+    let source: &str = "import { foo /* retained */ as a } from 'm';\nconsole.log(a);";
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.aliased_imports_renamed, 0);
+    assert_eq!(recovered, source);
+}
+
+#[test]
+fn object_shorthand_keeps_its_runtime_property_name() {
+    let source: &str = "import { foo as a } from 'data:text/javascript,export%20const%20foo%3D%22A%22';\nconsole.log(JSON.stringify({ a }));";
+    let original: Output = run_module(source);
+    assert!(original.status.success());
+    assert_eq!(original.stdout, b"{\"a\":\"A\"}\n");
+
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.aliased_imports_renamed, 1);
+    assert!(
+        recovered.contains("{ a: foo }") || recovered.contains("{a: foo}"),
+        "the property key must stay `a` while its value follows the import rename:\n{recovered}"
+    );
+    let rerun: Output = run_module(&recovered);
+    assert!(rerun.status.success());
+    assert_eq!(rerun.stdout, original.stdout);
+}
+
+#[test]
+fn shorthand_export_keeps_its_public_name() {
+    let source: &str = "import { foo as a } from 'data:text/javascript,export%20const%20foo%3D%22A%22';\nexport { a };";
+    let original: Output = run_exported_module(source);
+    assert!(original.status.success());
+    assert_eq!(original.stdout, b"A\n");
+
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.aliased_imports_renamed, 1);
+    assert!(
+        recovered.contains("export { foo as a }"),
+        "the lexical rename must preserve the public export name:\n{recovered}"
+    );
+    let rerun: Output = run_exported_module(&recovered);
+    assert!(rerun.status.success());
+    assert_eq!(rerun.stdout, original.stdout);
+}
+
+#[test]
+fn explicit_same_name_export_alias_remains_parseable() {
+    let source: &str = "import { foo as a } from 'data:text/javascript,export%20const%20foo%3D%22A%22';\nexport { a as a };";
+    let original: Output = run_exported_module(source);
+    assert!(original.status.success());
+    assert_eq!(original.stdout, b"A\n");
+
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.aliased_imports_renamed, 1);
+    assert!(recovered.contains("export { foo as a }"));
+    assert!(!recovered.contains("as a as a"));
+    let rerun: Output = run_exported_module(&recovered);
+    assert!(
+        rerun.status.success(),
+        "recovered module must parse and execute"
+    );
+    assert_eq!(rerun.stdout, original.stdout);
+}
+
+#[test]
+fn suffix_search_covers_descendant_scope_bindings() {
+    let source: &str = "import { foo as a } from 'data:text/javascript,export%20const%20foo%3D%22A%22';\nfunction read(foo, foo_1, foo_2, foo_3) { return a; }\nconsole.log(read());";
+    let original: Output = run_module(source);
+    assert!(original.status.success());
+    assert_eq!(original.stdout, b"A\n");
+
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.aliased_imports_renamed, 1);
+    assert!(
+        recovered.contains("import { foo as foo_4 }") && recovered.contains("return foo_4;"),
+        "the first safe suffix beyond every capturing parameter must be selected:\n{recovered}"
+    );
+    let rerun: Output = run_module(&recovered);
+    assert!(rerun.status.success());
+    assert_eq!(rerun.stdout, original.stdout);
 }

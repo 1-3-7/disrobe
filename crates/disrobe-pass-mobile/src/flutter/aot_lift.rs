@@ -9,7 +9,7 @@ use super::dart_graph::DartGraphLimits;
 use super::disasm::{Arm64Disassembly, Arm64FlowKind, Arm64Function, Arm64Instruction};
 use super::object_pool::{DartPoolLiteral, resolve_pool_literals};
 use super::pool_table::{DartPoolTable, DartPoolTableStats, pool_slot_of_offset};
-use super::structured::DartCallArgumentCounts;
+use super::structured::{DartCallArgumentCounts, DartStructuredBody};
 use crate::debug::{dbg_kv, dbg_section};
 use crate::error::Result;
 
@@ -602,8 +602,8 @@ fn lift_one(
     let source_conditional_estimate: usize =
         conditional_branch_count.saturating_sub(count_conditional_guards(&elided_checks));
 
-    let arg_registers: u8 = infer_arg_registers(func);
-    let structured_body: Option<String> = if abi_resolved {
+    let mut arg_registers: u8 = infer_arg_registers(func);
+    let structured: Option<DartStructuredBody> = if abi_resolved {
         let label: String = func
             .name
             .clone()
@@ -621,6 +621,13 @@ fn lift_one(
     } else {
         None
     };
+    if let Some(parameter_count) = structured
+        .as_ref()
+        .and_then(|body: &DartStructuredBody| body.parameter_count)
+    {
+        arg_registers = parameter_count;
+    }
+    let structured_body: Option<String> = structured.map(|body: DartStructuredBody| body.text);
 
     DartLiftedFunction {
         offset: func.entry_offset,

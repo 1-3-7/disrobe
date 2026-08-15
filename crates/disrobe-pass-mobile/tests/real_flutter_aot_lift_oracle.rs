@@ -114,6 +114,58 @@ fn fibonacci_step_recovers_nested_pseudocode() {
 }
 
 #[test]
+fn conditional_select_recovers_the_real_backorder_predicate() {
+    let source: String = String::from_utf8(read_sample("disrobe_aot_sample.dart"))
+        .expect("committed Dart source is UTF-8");
+    assert!(
+        source.contains("quantityOnHand <= 0"),
+        "the source oracle must contain the predicate compiled into the committed AOT image"
+    );
+
+    let report: AotLiftReport = aot_report();
+    let predicate: &DartLiftedFunction = find_lifted(
+        &report,
+        "WarehouseLedger.countBackordered.<anonymous closure>",
+    )
+    .expect("the committed AOT symbol table names the backorder predicate closure");
+    let compiler_sequence: Vec<&str> = predicate
+        .unlifted_arm64
+        .iter()
+        .map(|instruction| instruction.text.as_str())
+        .collect::<Vec<&str>>();
+    assert!(
+        compiler_sequence.windows(4).any(|window: &[&str]| {
+            window
+                == [
+                    "cmp x2, #0x0",
+                    "add x16, x22, #0x20",
+                    "add x17, x22, #0x30",
+                    "csel x0, x16, x17, le",
+                ]
+        }),
+        "the committed Flutter compiler artifact must carry the exact comparison and conditional-select evidence"
+    );
+
+    let dart: String = predicate.best_pseudo_dart();
+    assert!(
+        predicate.is_structured(),
+        "the conditional-select predicate must lift instead of staying a flat ARM64 listing:\n{dart}"
+    );
+    assert!(
+        dart.starts_with("WarehouseLedger.countBackordered.<anonymous closure>(arg0) {"),
+        "the lifted signature must retain only the parameter consumed by the predicate:\n{dart}"
+    );
+    assert_eq!(
+        predicate.arg_registers, 1,
+        "the structured body and machine-readable argument count must agree"
+    );
+    assert!(
+        dart.contains("return arg0.field@0xb <= 0;"),
+        "the compiled field comparison must recover as a boolean return:\n{dart}"
+    );
+}
+
+#[test]
 fn structuring_reports_structured_and_fallback_counts() {
     let report: AotLiftReport = aot_report();
     eprintln!(

@@ -24,6 +24,7 @@ pub(super) enum SeedOrigin {
     DynamicSymbol,
     UnwindEntry,
     InitArray,
+    ThreadInit,
     FiniArray,
     DynamicInit,
     RelocationPointer,
@@ -41,6 +42,7 @@ impl SeedOrigin {
             Self::DynamicSymbol => "dynsym",
             Self::UnwindEntry => "eh-frame",
             Self::InitArray => "init-array",
+            Self::ThreadInit => "thread-init",
             Self::FiniArray => "fini-array",
             Self::DynamicInit => "dt-init",
             Self::RelocationPointer => "relocation",
@@ -467,6 +469,12 @@ fn collect_initializer_tables(
                     == object::macho::S_MOD_TERM_FUNC_POINTERS =>
             {
                 (SeedOrigin::FiniArray, POINTER_BYTES, None)
+            }
+            object::SectionFlags::MachO { flags }
+                if flags & object::macho::SECTION_TYPE
+                    == object::macho::S_THREAD_LOCAL_INIT_FUNCTION_POINTERS =>
+            {
+                (SeedOrigin::ThreadInit, POINTER_BYTES, None)
             }
             object::SectionFlags::MachO { flags }
                 if flags & object::macho::SECTION_TYPE == object::macho::S_INIT_FUNC_OFFSETS =>
@@ -1625,10 +1633,12 @@ mod tests {
 
     fn assert_no_macho_start_metadata(bytes: &[u8], reference: &object::File<'_>) {
         assert!(
-            reference.sections().all(
-                |section: object::Section<'_, '_>| section.name().ok() != Some("__unwind_info")
-            ),
-            "the initializer fixture must not carry compact-unwind function starts"
+            reference
+                .sections()
+                .all(|section: object::Section<'_, '_>| {
+                    !matches!(section.name().ok(), Some("__unwind_info" | "__eh_frame"))
+                }),
+            "the initializer fixture must not carry unwind function starts"
         );
         let macho: object::read::macho::MachOFile64<'_, object::Endianness, &[u8]> =
             object::read::macho::MachOFile64::parse(bytes)
@@ -2047,6 +2057,77 @@ mod tests {
     }
 
     #[test]
+    fn macho_thread_initializer_matches_llvm_and_reaches_the_stripped_payload() {
+        let mut bytes: Vec<u8> =
+            include_bytes!("../../tests/fixtures/macho_aarch64_thread_initializer.macho").to_vec();
+        let reference: object::File<'_> = object::File::parse(bytes.as_slice())
+            .expect("the linked thread-initializer fixture must parse");
+        assert_no_macho_start_metadata(bytes.as_slice(), &reference);
+        let initializer: u64 = reference
+            .symbols()
+            .find_map(|symbol: object::Symbol<'_, '_>| {
+                (symbol.name().ok()? == "_initialize_thread").then(|| symbol.address())
+            })
+            .expect("the LLVM symbol table must identify the thread initializer");
+        assert_eq!(initializer, 0x1_0000_0300);
+        assert!(
+            reference
+                .exports()
+                .expect("the LLVM export trie must parse")
+                .iter()
+                .all(|export: &object::Export<'_>| {
+                    export.name() != b"_initialize_thread" && export.address() != initializer
+                }),
+            "the thread initializer must not be reachable through the export trie"
+        );
+        let slot: u64 = reference
+            .sections()
+            .find_map(|section: object::Section<'_, '_>| {
+                let object::SectionFlags::MachO { flags } = section.flags() else {
+                    return None;
+                };
+                if flags & object::macho::SECTION_TYPE
+                    != object::macho::S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
+                {
+                    return None;
+                }
+                let raw: [u8; POINTER_BYTES] = section.data().ok()?.try_into().ok()?;
+                Some(u64::from_le_bytes(raw))
+            })
+            .expect("the fixture must carry one thread-initializer pointer");
+        assert_eq!(slot, initializer);
+
+        clear_macho_symbols(&mut bytes);
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(&bytes)
+                .expect("the stripped thread-initializer fixture must reach discovery");
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        assert!(
+            recovered.contains(&initializer),
+            "the typed thread-initializer table must seed the local function"
+        );
+        let native: NativeFile =
+            parse_native(bytes.as_slice()).expect("the stripped thread fixture must parse");
+        let seeds: SeedSet = collect(&native, bytes.as_slice());
+        assert_eq!(
+            seeds.origins_of(initializer),
+            BTreeSet::from([SeedOrigin::ThreadInit])
+        );
+        assert_eq!(seeds.counts().get(&SeedOrigin::ThreadInit), Some(&1));
+    }
+
+    #[test]
     fn macho_initializer_arrays_reject_partial_sections_and_invalid_slots() {
         let complete: Vec<u8> = [0_u64, 2, 0x1000, 0x2000]
             .into_iter()
@@ -2071,6 +2152,19 @@ mod tests {
         partial.push(0xaa);
         let encoded: Vec<u8> =
             macho_pointer_sections(object::macho::S_MOD_INIT_FUNC_POINTERS, &[&partial]);
+        let mut view: ImageView<'_> = ImageView::new(&encoded, None);
+        view.executable = vec![ExecutableRange {
+            start: 0x1000,
+            end: 0x1100,
+        }];
+        let mut seeds: SeedSet = SeedSet::default();
+        collect_initializer_tables(&view, &mut seeds, super::MAX_POINTER_SLOTS, None);
+        assert!(seeds.addresses().is_empty());
+
+        let encoded: Vec<u8> = macho_pointer_sections(
+            object::macho::S_THREAD_LOCAL_INIT_FUNCTION_POINTERS,
+            &[&partial],
+        );
         let mut view: ImageView<'_> = ImageView::new(&encoded, None);
         view.executable = vec![ExecutableRange {
             start: 0x1000,

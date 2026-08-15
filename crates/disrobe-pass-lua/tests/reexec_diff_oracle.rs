@@ -729,6 +729,67 @@ const PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/vmify_simple/obfuscated.lua");
 
 #[test]
+fn prometheus_vmify_computed_dispatch_threshold_recovers_and_reexecutes_identically() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let obfuscated: String =
+        PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED.replacen("z>6778318", "z>7815703-1037385", 1);
+    assert_ne!(
+        obfuscated, PROMETHEUS_VMIFY_SIMPLE_OBFUSCATED,
+        "the tracked real Vmify fixture must retain the selected dispatch threshold"
+    );
+    let folded: String =
+        disrobe_pass_lua::obfuscator::prometheus_vmlift::fold_numeric_expressions(&obfuscated);
+    assert!(
+        folded.contains("z>7815703-1037385"),
+        "the dispatcher AST must receive the computed threshold rather than a value already handled by the textual fold"
+    );
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_computed_threshold_clean",
+        PROMETHEUS_VMIFY_SIMPLE_CLEAN,
+    )
+    .expect("the clean source must run under real Lua 5.1");
+    let protected: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_computed_threshold_obfuscated",
+        &obfuscated,
+    )
+    .expect("the computed-threshold Vmify source must run under real Lua 5.1");
+    assert_eq!(
+        expected, protected,
+        "the computed dispatch threshold must preserve the real fixture's behavior"
+    );
+
+    let peeled: PeelResult = prometheus::peel(obfuscated.as_bytes(), &DeobfOptions::default())
+        .expect("prometheus peel must run on a computed dispatch threshold");
+    assert!(
+        peeled.fully_recovered,
+        "the computed dispatch threshold must recover executable source; residual={:?}",
+        peeled.residual_markers
+    );
+    let recovered: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    let actual: String = run_source(
+        &tc.lua,
+        &dir,
+        "vmify_computed_threshold_recovered",
+        &recovered,
+    )
+    .expect("the recovered computed-threshold source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "computed-threshold recovery must preserve runtime output under real Lua 5.1\n--- recovered ---\n{recovered}"
+    );
+}
+
+#[test]
 fn prometheus_vmify_loop_free_sample_recovers_fully_structured() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
 

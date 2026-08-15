@@ -1097,6 +1097,7 @@ struct Lifter<'a> {
     back_jump_targets: BTreeSet<u32>,
     result_use_counts: Vec<u32>,
     reserved_names: BTreeSet<String>,
+    writable_slots: BTreeMap<(OperandType, u32), u32>,
     refused: BTreeSet<u32>,
     unrecovered: Vec<(u32, u8, &'static str)>,
 }
@@ -1158,6 +1159,7 @@ impl<'a> Lifter<'a> {
             back_jump_targets,
             result_use_counts,
             reserved_names,
+            writable_slots: BTreeMap::new(),
             refused: BTreeSet::new(),
             unrecovered: Vec::new(),
         }
@@ -1287,6 +1289,8 @@ impl<'a> Lifter<'a> {
         }
         let result_key: (OperandType, u32) = (gate.result_type, gate.result);
         let lhs: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let connector: &str = if gate.opcode == op::JMPZ_EX {
             "&&"
         } else {
@@ -1308,6 +1312,9 @@ impl<'a> Lifter<'a> {
             connector,
             rhs.wrapped(PREC_CMP)
         );
+        self.slots = Self::common_slots(&incoming_slots, &self.slots);
+        self.writable_slots = Self::common_writable_slots(&incoming_writable, &self.writable_slots);
+        self.writable_slots.remove(&result_key);
         self.slots.insert(
             result_key,
             Expr {
@@ -1330,6 +1337,8 @@ impl<'a> Lifter<'a> {
         }
         let result_key: (OperandType, u32) = (gate.result_type, gate.result);
         let lhs: Expr = self.operand_expr(gate.op1_type, gate.op1)?;
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let refused_before: usize = self.refused.len();
         let mut k: u32 = i + 1;
         while k < join {
@@ -1337,6 +1346,8 @@ impl<'a> Lifter<'a> {
             k += 1;
         }
         if self.refused.len() != refused_before {
+            self.slots = incoming_slots;
+            self.writable_slots = incoming_writable;
             return None;
         }
         let rhs: Expr = self.slots.get(&result_key).cloned()?;
@@ -1351,6 +1362,9 @@ impl<'a> Lifter<'a> {
             connector,
             rhs.wrapped(right_prec)
         );
+        self.slots = Self::common_slots(&incoming_slots, &self.slots);
+        self.writable_slots = Self::common_writable_slots(&incoming_writable, &self.writable_slots);
+        self.writable_slots.remove(&result_key);
         self.slots.insert(result_key, Expr { text, prec });
         Some((Vec::new(), join))
     }
@@ -1384,8 +1398,10 @@ impl<'a> Lifter<'a> {
             then_val.wrapped(PREC_CMP),
             else_val.wrapped(PREC_CMP)
         );
+        let result_key: (OperandType, u32) = (then_op.result_type, then_op.result);
+        self.writable_slots.remove(&result_key);
         self.slots.insert(
-            (then_op.result_type, then_op.result),
+            result_key,
             Expr {
                 text,
                 prec: PREC_TERNARY,
@@ -1402,20 +1418,28 @@ impl<'a> Lifter<'a> {
         }
         let cond_expr: Expr = self.operand_expr(jmpz.op1_type, jmpz.op1)?;
         let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
         let then_last: u32 = target - 1;
         let then_terminator: &Op = self.ops.get(then_last as usize)?;
         if then_terminator.opcode == op::JMP {
             let join: u32 = then_terminator.op1;
             if join > target && join <= end {
                 self.slots = incoming_slots.clone();
+                self.writable_slots = incoming_writable.clone();
                 let then_body: Vec<Stmt> = self.lift_range(i + 1, then_last, depth + 1);
                 let then_slots: BTreeMap<(OperandType, u32), Expr> =
                     std::mem::take(&mut self.slots);
+                let then_writable: BTreeMap<(OperandType, u32), u32> =
+                    std::mem::take(&mut self.writable_slots);
                 self.slots = incoming_slots;
+                self.writable_slots = incoming_writable;
                 let else_body: Vec<Stmt> = self.lift_range(target, join, depth + 1);
                 let else_slots: BTreeMap<(OperandType, u32), Expr> =
                     std::mem::take(&mut self.slots);
+                let else_writable: BTreeMap<(OperandType, u32), u32> =
+                    std::mem::take(&mut self.writable_slots);
                 self.slots = Self::common_slots(&then_slots, &else_slots);
+                self.writable_slots = Self::common_writable_slots(&then_writable, &else_writable);
                 return Some((
                     vec![Stmt::If {
                         cond: cond_expr.text,
@@ -1427,9 +1451,13 @@ impl<'a> Lifter<'a> {
             }
         }
         self.slots = incoming_slots.clone();
+        self.writable_slots = incoming_writable.clone();
         let then_body: Vec<Stmt> = self.lift_range(i + 1, target, depth + 1);
         let then_slots: BTreeMap<(OperandType, u32), Expr> = std::mem::take(&mut self.slots);
+        let then_writable: BTreeMap<(OperandType, u32), u32> =
+            std::mem::take(&mut self.writable_slots);
         self.slots = Self::common_slots(&incoming_slots, &then_slots);
+        self.writable_slots = Self::common_writable_slots(&incoming_writable, &then_writable);
         Some((
             vec![Stmt::If {
                 cond: cond_expr.text,
@@ -1452,6 +1480,17 @@ impl<'a> Lifter<'a> {
                         left_expr.text == right_expr.text && left_expr.prec == right_expr.prec
                     })
                     .map(|_: &Expr| (*key, left_expr.clone()))
+            })
+            .collect()
+    }
+
+    fn common_writable_slots(
+        left: &BTreeMap<(OperandType, u32), u32>,
+        right: &BTreeMap<(OperandType, u32), u32>,
+    ) -> BTreeMap<(OperandType, u32), u32> {
+        left.iter()
+            .filter_map(|(key, left_idx): (&(OperandType, u32), &u32)| {
+                (right.get(key) == Some(left_idx)).then_some((*key, *left_idx))
             })
             .collect()
     }
@@ -1700,7 +1739,7 @@ impl<'a> Lifter<'a> {
                 None
             }
             o if o == op::FETCH_R || o == op::FETCH_W || o == op::FETCH_RW => {
-                self.fold_variable_variable(op);
+                self.fold_variable_variable(idx, op);
                 None
             }
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW || o == op::FE_FREE => None,
@@ -1860,14 +1899,7 @@ impl<'a> Lifter<'a> {
                     rhs.text
                 ))
             }
-            o if o == op::PRE_INC || o == op::POST_INC => {
-                let v: Expr = self.operand_expr(op.op1_type, op.op1)?;
-                Some(format!("{}++;", v.text))
-            }
-            o if o == op::PRE_DEC || o == op::POST_DEC => {
-                let v: Expr = self.operand_expr(op.op1_type, op.op1)?;
-                Some(format!("{}--;", v.text))
-            }
+            o if is_inc_dec(o) => self.fold_inc_dec(idx, op),
             o if o == op::YIELD => self.fold_yield(idx, op),
             o if o == op::YIELD_FROM => self.fold_yield_from(idx, op),
             o if o == op::GENERATOR_RETURN => {
@@ -1997,6 +2029,68 @@ impl<'a> Lifter<'a> {
         self.store_expression_or_statement(idx, op, text)
     }
 
+    fn fold_inc_dec(&mut self, idx: u32, op: &Op) -> Option<String> {
+        let use_count: u32 = self
+            .result_use_counts
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(0);
+        if !matches!(op.op1_type, OperandType::Cv | OperandType::Var)
+            || op.op2_type != OperandType::Unused
+            || !matches!(
+                op.result_type,
+                OperandType::Unused | OperandType::TmpVar | OperandType::Var
+            )
+            || (op.result_type == OperandType::Var && use_count != 0)
+        {
+            return Some(self.refuse(idx, op.opcode, REASON_INC_DEC_OPERAND));
+        }
+        if op.op1_type == OperandType::Var {
+            let key: (OperandType, u32) = (op.op1_type, op.op1);
+            let Some(fetch_idx): Option<u32> = self.writable_slots.get(&key).copied() else {
+                return Some(self.refuse(idx, op.opcode, REASON_INC_DEC_OPERAND));
+            };
+            if fetch_idx.checked_add(1) != Some(idx) {
+                return Some(self.refuse(idx, op.opcode, REASON_INC_DEC_OPERAND));
+            }
+        }
+        let Some(target): Option<Expr> = self.defined_operand_expr(op.op1_type, op.op1) else {
+            return Some(self.refuse(idx, op.opcode, REASON_INC_DEC_OPERAND));
+        };
+        let symbol: &str = if matches!(op.opcode, op::PRE_INC | op::POST_INC) {
+            "++"
+        } else {
+            "--"
+        };
+        let is_prefix: bool = matches!(op.opcode, op::PRE_INC | op::PRE_DEC);
+        let text: String = if is_prefix {
+            format!("{symbol}{}", target.wrapped(PREC_UNARY))
+        } else {
+            format!("{}{symbol}", target.wrapped(PREC_CALL))
+        };
+        if op.result_type == OperandType::Unused || use_count == 0 {
+            return Some(format!("{text};"));
+        }
+        let key: (OperandType, u32) = (op.result_type, op.result);
+        let next_consumes_once: bool = use_count == 1
+            && self.ops.get(idx as usize + 1).is_some_and(|next: &Op| {
+                (next.op1_type, next.op1) == key || (next.op2_type, next.op2) == key
+            });
+        if next_consumes_once {
+            self.store_result(
+                op,
+                Expr {
+                    text,
+                    prec: if is_prefix { PREC_UNARY } else { PREC_CALL },
+                },
+            );
+            return None;
+        }
+        let spill_name: String = self.reserve_spill("incdec", idx);
+        self.store_result(op, Expr::atom(format!("${spill_name}")));
+        Some(format!("${spill_name} = {text};"))
+    }
+
     fn fold_yield_from(&mut self, idx: u32, op: &Op) -> Option<String> {
         let source: Expr = self.operand_expr(op.op1_type, op.op1)?;
         self.store_expression_or_statement(idx, op, format!("yield from {}", source.text))
@@ -2071,7 +2165,7 @@ impl<'a> Lifter<'a> {
         }
     }
 
-    fn fold_variable_variable(&mut self, op: &Op) {
+    fn fold_variable_variable(&mut self, idx: u32, op: &Op) {
         let Some(name): Option<Expr> = self.operand_expr(op.op1_type, op.op1) else {
             return;
         };
@@ -2090,6 +2184,9 @@ impl<'a> Lifter<'a> {
                 prec: PREC_ATOM,
             },
         );
+        if op.result_type == OperandType::Var && matches!(op.opcode, op::FETCH_W | op::FETCH_RW) {
+            self.writable_slots.insert((op.result_type, op.result), idx);
+        }
     }
 
     fn fold_array_init(&mut self, op: &Op) {
@@ -2123,6 +2220,7 @@ impl<'a> Lifter<'a> {
             } else {
                 format!("{inner}, {}", e.text)
             };
+            self.writable_slots.remove(&key);
             self.slots.insert(
                 key,
                 Expr {
@@ -2159,6 +2257,7 @@ impl<'a> Lifter<'a> {
             .unwrap_or(0);
         match target {
             Some(key) if uses > 0 => {
+                self.writable_slots.remove(&key);
                 self.slots.insert(
                     key,
                     Expr {
@@ -2176,7 +2275,9 @@ impl<'a> Lifter<'a> {
         if op.result_type == OperandType::Unused {
             return;
         }
-        self.slots.insert((op.result_type, op.result), expr);
+        let key: (OperandType, u32) = (op.result_type, op.result);
+        self.writable_slots.remove(&key);
+        self.slots.insert(key, expr);
     }
 
     fn operand_expr(&self, ty: OperandType, value: u32) -> Option<Expr> {
@@ -2212,6 +2313,8 @@ impl<'a> Lifter<'a> {
 
 const REASON_CAST_KIND: &str = "the cast target type is not a php 8 cast";
 const REASON_ISSET_MODE: &str = "the isset or empty mode flag is not a php 8 mode";
+const REASON_INC_DEC_OPERAND: &str =
+    "increment or decrement requires a writable variable and an optional temporary result";
 const REASON_CONSTANT_NAME: &str = "the constant name is not a literal string in this op array";
 const REASON_EXPRESSION_OPERAND: &str =
     "an expression operand has no literal or reaching definition";
@@ -2275,6 +2378,14 @@ const fn is_isset_isempty(opcode: u8) -> bool {
             | op::ISSET_ISEMPTY_VAR
             | op::ISSET_ISEMPTY_DIM_OBJ
             | op::ISSET_ISEMPTY_PROP_OBJ
+    )
+}
+
+#[must_use]
+const fn is_inc_dec(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        op::PRE_INC | op::PRE_DEC | op::POST_INC | op::POST_DEC
     )
 }
 

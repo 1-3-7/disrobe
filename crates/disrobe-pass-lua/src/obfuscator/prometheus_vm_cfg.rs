@@ -20,6 +20,7 @@ const MAX_RECOVERY_DEPTH: usize = 6;
 const MAX_CONSTANT_POOL_RESOLVERS: usize = 8;
 const MAX_LOOP_NESTING: usize = 32;
 const MAX_REGION_TREE_STEPS: usize = 1 << 16;
+const MAX_STATIC_NUMBER_DEPTH: usize = 32;
 const CAPTURED_VARIABLE_PREFIX: &str = "__vu";
 
 fn refuse(reason: &str) -> Error {
@@ -41,10 +42,7 @@ fn is_bare_local(expr: &Expr, id: LocalId) -> bool {
 }
 
 fn number_of(expr: &Expr) -> Option<f64> {
-    match expr.kind {
-        ExprKind::Number(n) => Some(n),
-        _ => None,
-    }
+    static_number_value(expr)
 }
 
 fn as_pos_threshold(cond: &Expr, pos_local: LocalId) -> Option<(ThresholdOp, f64)> {
@@ -1127,12 +1125,54 @@ fn is_exit_shape(rhs: &Expr, substitutions: &BTreeMap<u64, String>) -> bool {
 }
 
 fn static_number_value(expr: &Expr) -> Option<f64> {
+    static_number_value_at_depth(expr, 0)
+}
+
+fn static_number_value_at_depth(expr: &Expr, depth: usize) -> Option<f64> {
+    if depth > MAX_STATIC_NUMBER_DEPTH {
+        return None;
+    }
+    let next_depth: usize = depth + 1;
     match &expr.kind {
-        ExprKind::Number(value) => Some(*value),
-        ExprKind::Unary(UnOp::Neg, inner) => static_number_value(inner).map(|value: f64| -value),
-        ExprKind::Paren(inner) => static_number_value(inner),
+        ExprKind::Number(value) => finite_number(*value),
+        ExprKind::Unary(UnOp::Neg, inner) => {
+            finite_number(-static_number_value_at_depth(inner, next_depth)?)
+        }
+        ExprKind::Paren(inner) => static_number_value_at_depth(inner, next_depth),
+        ExprKind::Binary(op, left, right)
+            if matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+            ) =>
+        {
+            let left: f64 = static_number_value_at_depth(left, next_depth)?;
+            let right: f64 = static_number_value_at_depth(right, next_depth)?;
+            let value: f64 = match op {
+                BinOp::Add => left + right,
+                BinOp::Sub => left - right,
+                BinOp::Mul => left * right,
+                BinOp::Div if right != 0.0 => left / right,
+                BinOp::Mod if right != 0.0 => (left / right).floor().mul_add(-right, left),
+                BinOp::Pow => left.powf(right),
+                BinOp::Div | BinOp::Mod => return None,
+                BinOp::Concat
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => return None,
+            };
+            finite_number(value)
+        }
         _ => None,
     }
+}
+
+fn finite_number(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
 }
 
 fn find_return_local(
@@ -3599,6 +3639,43 @@ pub fn recover_with_string_pool(
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn local_value(source: &str) -> Expr {
+        let mut parser: Parser<'_> = Parser::new(source).expect("parse source");
+        let chunk: Block = parser.parse_chunk().expect("parse chunk");
+        let [stat]: &[Stat] = chunk.stats.as_slice() else {
+            panic!("expected one statement");
+        };
+        let StatKind::Local { values, .. } = &stat.kind else {
+            panic!("expected a local declaration");
+        };
+        let [value]: &[Expr] = values.as_slice() else {
+            panic!("expected one local value");
+        };
+        value.clone()
+    }
+
+    #[test]
+    fn static_number_evaluation_refuses_unbounded_or_non_finite_work() {
+        let nested: String = format!(
+            "local value = {}1{}",
+            "(".repeat(MAX_STATIC_NUMBER_DEPTH + 1),
+            ")".repeat(MAX_STATIC_NUMBER_DEPTH + 1)
+        );
+        assert_eq!(static_number_value(&local_value(&nested)), None);
+        assert_eq!(
+            static_number_value(&local_value("local value = 1 / 0")),
+            None
+        );
+        assert_eq!(
+            static_number_value(&local_value("local value = 1e308 ^ 2")),
+            None
+        );
+        assert_eq!(
+            static_number_value(&local_value("local value = 1e999")),
+            None
+        );
+    }
 
     fn constant_pool_substitutions_for(
         source: &str,

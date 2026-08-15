@@ -38,6 +38,69 @@ const MAX_VALUE_DEPTH: usize = 6;
 
 const MAX_TRACKED_CALLS: usize = 1 << 14;
 
+const MAX_BOOLEAN_RETURN_INSTRUCTIONS: usize = 64;
+
+const ARM64_IMMEDIATE_SHIFT_BIT: u32 = 1 << 22;
+
+struct DartComparison {
+    left: DartValue,
+    right: DartValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionalSelectKind {
+    Select,
+    Increment,
+    Invert,
+    Negate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DartCondition {
+    Equal,
+    NotEqual,
+    GreaterOrEqual,
+    LessThan,
+    GreaterThan,
+    LessOrEqual,
+}
+
+impl DartCondition {
+    const fn from_arm64(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Equal),
+            1 => Some(Self::NotEqual),
+            10 => Some(Self::GreaterOrEqual),
+            11 => Some(Self::LessThan),
+            12 => Some(Self::GreaterThan),
+            13 => Some(Self::LessOrEqual),
+            _ => None,
+        }
+    }
+
+    const fn inverse(self) -> Self {
+        match self {
+            Self::Equal => Self::NotEqual,
+            Self::NotEqual => Self::Equal,
+            Self::GreaterOrEqual => Self::LessThan,
+            Self::LessThan => Self::GreaterOrEqual,
+            Self::GreaterThan => Self::LessOrEqual,
+            Self::LessOrEqual => Self::GreaterThan,
+        }
+    }
+
+    const fn operator(self) -> &'static str {
+        match self {
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+            Self::GreaterOrEqual => ">=",
+            Self::LessThan => "<",
+            Self::GreaterThan => ">",
+            Self::LessOrEqual => "<=",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DartValue {
     Null,
@@ -145,6 +208,137 @@ impl TrackState {
         self.floats
             .insert(DART_RESULT_REGISTER, DartValue::CallResult(address));
     }
+}
+
+pub(super) fn recover_boolean_return(
+    func: &Arm64Function,
+    pool: Option<&DartPoolTable>,
+) -> Option<(String, u8)> {
+    if func.instructions.is_empty() || func.instructions.len() > MAX_BOOLEAN_RETURN_INSTRUCTIONS {
+        return None;
+    }
+    let mut state: TrackState = TrackState::entry();
+    let mut comparison: Option<(usize, DartComparison)> = None;
+    let mut selected: Option<(DartComparison, DartCondition)> = None;
+    let mut producers: BTreeMap<u8, usize> = BTreeMap::new();
+    let mut consumed_effects: Vec<bool> = Vec::with_capacity(func.instructions.len());
+    for (index, instruction) in func.instructions.iter().enumerate() {
+        match instruction.flow {
+            Arm64FlowKind::Sequential => {
+                if !is_boolean_return_step(instruction.bytes) {
+                    return None;
+                }
+                consumed_effects.push(false);
+                if let Some((destination, base, _)) = ldr_imm_unsigned(instruction.bytes) {
+                    consume_register_effect(&producers, &mut consumed_effects, base);
+                    producers.insert(destination, index);
+                } else if let Some((destination, base, _)) = ldur_signed(instruction.bytes) {
+                    consume_register_effect(&producers, &mut consumed_effects, base);
+                    producers.insert(destination, index);
+                } else if let Some((destination, base, _)) = add_imm(instruction.bytes) {
+                    consume_register_effect(&producers, &mut consumed_effects, base);
+                    producers.insert(destination, index);
+                }
+                if let Some((31, register, immediate)) = subs_imm(instruction.bytes) {
+                    if instruction.bytes & ARM64_IMMEDIATE_SHIFT_BIT != 0 {
+                        return None;
+                    }
+                    consume_register_effect(&producers, &mut consumed_effects, register);
+                    comparison = state
+                        .integers
+                        .get(&register)
+                        .cloned()
+                        .map(|left: DartValue| DartComparison {
+                            left,
+                            right: DartValue::Int(immediate as i64),
+                        })
+                        .map(|comparison: DartComparison| (index, comparison));
+                }
+                if let Some((kind, 0, true_register, false_register, condition)) =
+                    conditional_select(instruction.bytes)
+                {
+                    if kind != ConditionalSelectKind::Select || index + 2 != func.instructions.len()
+                    {
+                        return None;
+                    }
+                    let condition: DartCondition = DartCondition::from_arm64(condition)?;
+                    let when_true: &DartValue = state.integers.get(&true_register)?;
+                    let when_false: &DartValue = state.integers.get(&false_register)?;
+                    let selected_condition: DartCondition = match (when_true, when_false) {
+                        (DartValue::Bool(true), DartValue::Bool(false)) => condition,
+                        (DartValue::Bool(false), DartValue::Bool(true)) => condition.inverse(),
+                        _ => return None,
+                    };
+                    let (comparison_index, comparison): (usize, DartComparison) =
+                        comparison.take()?;
+                    if index.saturating_sub(comparison_index) > 3 {
+                        return None;
+                    }
+                    consume_register_effect(&producers, &mut consumed_effects, true_register);
+                    consume_register_effect(&producers, &mut consumed_effects, false_register);
+                    let comparison_consumed: &mut bool =
+                        consumed_effects.get_mut(comparison_index)?;
+                    *comparison_consumed = true;
+                    let selection_consumed: &mut bool = consumed_effects.get_mut(index)?;
+                    *selection_consumed = true;
+                    selected = Some((comparison, selected_condition));
+                }
+                apply_sequential(&mut state, instruction, instruction.bytes);
+            }
+            Arm64FlowKind::Return if index + 1 == func.instructions.len() => {
+                if consumed_effects.iter().any(|consumed: &bool| !consumed) {
+                    return None;
+                }
+                let (comparison, condition): (DartComparison, DartCondition) = selected?;
+                let mut consumed: BTreeSet<u64> = BTreeSet::new();
+                let mut max_parameter: Option<usize> = None;
+                collect_dependencies(&comparison.left, &mut consumed, &mut max_parameter);
+                collect_dependencies(&comparison.right, &mut consumed, &mut max_parameter);
+                let parameter_count: u8 = max_parameter
+                    .and_then(|position: usize| position.checked_add(1))
+                    .and_then(|count: usize| u8::try_from(count).ok())
+                    .unwrap_or(0);
+                return Some((
+                    format!(
+                        "{} {} {}",
+                        render_value(&comparison.left, pool, &BTreeMap::new(), 0),
+                        condition.operator(),
+                        render_value(&comparison.right, pool, &BTreeMap::new(), 0)
+                    ),
+                    parameter_count,
+                ));
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn consume_register_effect(
+    producers: &BTreeMap<u8, usize>,
+    consumed_effects: &mut [bool],
+    register: u8,
+) {
+    if let Some(index) = producers.get(&register)
+        && let Some(consumed) = consumed_effects.get_mut(*index)
+    {
+        *consumed = true;
+    }
+}
+
+fn is_boolean_return_step(raw: u32) -> bool {
+    ldr_imm_unsigned(raw).is_some()
+        || ldur_signed(raw).is_some()
+        || matches!(subs_imm(raw), Some((31, _, _)))
+        || matches!(
+            add_imm(raw),
+            Some((
+                _,
+                DART_NULL_REGISTER,
+                DART_TRUE_OFFSET_FROM_NULL | DART_FALSE_OFFSET_FROM_NULL
+            ))
+        )
+        || conditional_select(raw).is_some()
 }
 
 pub(super) fn recover_call_arguments(
@@ -420,6 +614,9 @@ fn load_value(state: &TrackState, raw: u32, rn: u8) -> Option<DartValue> {
                 .ok()
                 .and_then(|offset: i64| state.frame.get(&offset).cloned());
         }
+        if base == DART_STACK_REGISTER && byte_offset == 0 {
+            return Some(DartValue::Param(0));
+        }
         return field_of(state, base, i64::try_from(byte_offset).ok());
     }
     if let Some((_, base, offset)) = ldur_signed(raw) {
@@ -660,6 +857,24 @@ fn render_value(
     }
 }
 
+fn conditional_select(raw: u32) -> Option<(ConditionalSelectKind, u8, u8, u8, u8)> {
+    if raw & 0x3FE0_0800 != 0x1A80_0000 {
+        return None;
+    }
+    let kind: ConditionalSelectKind = match ((raw >> 30) & 1, (raw >> 10) & 1) {
+        (0, 0) => ConditionalSelectKind::Select,
+        (0, 1) => ConditionalSelectKind::Increment,
+        (1, 0) => ConditionalSelectKind::Invert,
+        (1, 1) => ConditionalSelectKind::Negate,
+        _ => return None,
+    };
+    let rm: u8 = ((raw >> 16) & 0x1F) as u8;
+    let condition: u8 = ((raw >> 12) & 0xF) as u8;
+    let rn: u8 = ((raw >> 5) & 0x1F) as u8;
+    let rd: u8 = (raw & 0x1F) as u8;
+    Some((kind, rd, rn, rm, condition))
+}
+
 fn render_pool(pool: Option<&DartPoolTable>, byte_offset: u64, float: bool) -> String {
     let Some(table): Option<&DartPoolTable> = pool else {
         return UNRESOLVED_TOKEN.to_owned();
@@ -779,6 +994,8 @@ fn adrp(raw: u32, address: u64) -> Option<(u8, u64)> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use crate::flutter::disasm::disassemble_range;
+
     use super::*;
 
     #[test]
@@ -828,5 +1045,74 @@ mod tests {
             Some(DartValue::Bool(false))
         );
         assert_eq!(offset_of(&state, DART_NULL_REGISTER, 0x40), None);
+    }
+
+    #[test]
+    fn decodes_every_conditional_select_variant() {
+        assert_eq!(
+            conditional_select(0x9a82_0020),
+            Some((ConditionalSelectKind::Select, 0, 1, 2, 0))
+        );
+        assert_eq!(
+            conditional_select(0x9a82_0420),
+            Some((ConditionalSelectKind::Increment, 0, 1, 2, 0))
+        );
+        assert_eq!(
+            conditional_select(0xda82_0020),
+            Some((ConditionalSelectKind::Invert, 0, 1, 2, 0))
+        );
+        assert_eq!(
+            conditional_select(0xda82_0420),
+            Some((ConditionalSelectKind::Negate, 0, 1, 2, 0))
+        );
+        assert_eq!(conditional_select(0xd65f_03c0), None);
+    }
+
+    #[test]
+    fn shifted_compare_immediate_abstains_from_boolean_recovery() {
+        let words: [u32; 7] = [
+            0xf940_01e1,
+            0xf840_b022,
+            0xf140_045f,
+            0x9100_82d0,
+            0x9100_c2d1,
+            0x9a91_d200,
+            0xd65f_03c0,
+        ];
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let function: Arm64Function =
+            disassemble_range(&bytes, 0x1000, 0, bytes.len(), Some("shifted".to_owned()));
+
+        assert_eq!(recover_boolean_return(&function, None), None);
+    }
+
+    #[test]
+    fn unrelated_faulting_load_abstains_from_boolean_recovery() {
+        let words: [u32; 8] = [
+            0xf940_01e1,
+            0x9100_82d0,
+            0x9100_c2d1,
+            0xf840_b022,
+            0xf100_005f,
+            0xf940_0083,
+            0x9a91_d200,
+            0xd65f_03c0,
+        ];
+        let bytes: Vec<u8> = words
+            .iter()
+            .flat_map(|word: &u32| word.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let function: Arm64Function = disassemble_range(
+            &bytes,
+            0x1000,
+            0,
+            bytes.len(),
+            Some("faulting-load".to_owned()),
+        );
+
+        assert_eq!(recover_boolean_return(&function, None), None);
     }
 }
