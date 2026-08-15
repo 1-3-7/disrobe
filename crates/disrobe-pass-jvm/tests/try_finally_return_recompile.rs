@@ -9,7 +9,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use disrobe_pass_jvm::{ClassFile, DecompiledClass, decompile_class, parse_classfile};
+use disrobe_pass_jvm::{
+    Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, DecompiledClass, ExceptionEntry,
+    MethodInfo, decompile_class, parse_classfile, parse_code_attribute,
+};
 
 const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
     static int CTR = 0;\n\
@@ -521,6 +524,88 @@ const FINALLY_CONDITIONAL_CONTINUE_SRC: &str = "public class FinallyConditionalC
     }\n\
 }\n";
 
+const FINALLY_NESTED_TRY_SRC: &str = "public class FinallyNestedTry {\n\
+    static int CTR = 0;\n\
+    static int run(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException ex) {\n\
+                CTR = -1;\n\
+            }\n\
+        }\n\
+    }\n\
+}\n";
+
+const FINALLY_NESTED_MULTI_CATCH_SRC: &str = "public class FinallyNestedMultiCatch {\n\
+    static int CTR = 0;\n\
+    static Class<?> EXTRA = IllegalStateException.class;\n\
+    static int run(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException | NullPointerException ex) {\n\
+                CTR = -1;\n\
+            }\n\
+        }\n\
+    }\n\
+}\n";
+
+struct MethodTableSite {
+    entries_offset: usize,
+    entries: Vec<ExceptionEntry>,
+}
+
+fn method_exception_table(bytes: &[u8], class_file: &ClassFile, name: &str) -> MethodTableSite {
+    let method: &MethodInfo = class_file
+        .methods
+        .iter()
+        .find(|method: &&MethodInfo| class_file.utf8_at(method.name_index).ok() == Some(name))
+        .expect("fixture method");
+    let attribute: &Attribute = method
+        .attributes
+        .iter()
+        .find(|attribute: &&Attribute| {
+            class_file.utf8_at(attribute.name_index).ok() == Some("Code")
+        })
+        .expect("fixture Code attribute");
+    let code: CodeAttribute = parse_code_attribute(&attribute.info).expect("fixture Code payload");
+    let matches: Vec<usize> = bytes
+        .windows(attribute.info.len())
+        .enumerate()
+        .filter(|(_, window): &(usize, &[u8])| *window == attribute.info.as_slice())
+        .map(|(offset, _): (usize, &[u8])| offset)
+        .collect();
+    let [info_offset]: [usize; 1] = matches
+        .as_slice()
+        .try_into()
+        .expect("Code payload appears exactly once");
+    MethodTableSite {
+        entries_offset: info_offset + 2 + 2 + 4 + code.code.len() + 2,
+        entries: code.exception_table,
+    }
+}
+
+fn class_constant_index(class_file: &ClassFile, name: &str) -> u16 {
+    class_file
+        .constant_pool
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry): (usize, &ConstantPoolEntry)| match entry {
+            ConstantPoolEntry::Class { name_index }
+                if class_file.utf8_at(*name_index).ok() == Some(name) =>
+            {
+                u16::try_from(index).ok()
+            }
+            _ => None,
+        })
+        .expect("fixture class constant")
+}
+
 struct RecompiledClass {
     source: String,
     original: Vec<String>,
@@ -665,6 +750,94 @@ fn finally_continue_only_latch_is_not_hoisted_to_the_normal_loop_path() {
     );
 }
 
+#[test]
+fn finally_with_a_nested_try_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyNestedTry", FINALLY_NESTED_TRY_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("catch (ArithmeticException"),
+        "nested catch missing from the finally body:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled nested-try finally bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_with_a_nested_multi_catch_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyNestedMultiCatch", FINALLY_NESTED_MULTI_CATCH_SRC);
+    let body: String = assert_finally_recovered(&recompiled.source, " run(");
+    assert!(
+        body.contains("ArithmeticException | NullPointerException"),
+        "nested multi-catch missing from the finally body:\n{body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled nested multi-catch finally bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn a_mismatched_nested_multi_catch_copy_is_refused_by_name() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_multicatch_mismatch")
+            .expect("scratch");
+    let directory: PathBuf = scratch.path().join("orig");
+    std::fs::create_dir_all(&directory).expect("fixture directory");
+    let source_path: PathBuf = directory.join("FinallyNestedMultiCatch.java");
+    std::fs::write(&source_path, FINALLY_NESTED_MULTI_CATCH_SRC).expect("fixture source");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&directory)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let mut class_bytes: Vec<u8> =
+        std::fs::read(directory.join("FinallyNestedMultiCatch.class")).expect("fixture class");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    let replacement: u16 = class_constant_index(&class_file, "java/lang/IllegalStateException");
+    let arithmetic_entries: Vec<usize> = table
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry): &(usize, &ExceptionEntry)| {
+            class_file.class_name(entry.catch_type).ok() == Some("java/lang/ArithmeticException")
+        })
+        .map(|(index, _): (usize, &ExceptionEntry)| index)
+        .collect();
+    let [_, handler_copy]: [usize; 2] = arithmetic_entries
+        .as_slice()
+        .try_into()
+        .expect("one arithmetic row per finally copy");
+    let catch_type_offset: usize = table.entries_offset + handler_copy * 8 + 6;
+    class_bytes[catch_type_offset..catch_type_offset + 2]
+        .copy_from_slice(&replacement.to_be_bytes());
+    let mutated: ClassFile = parse_classfile(&class_bytes).expect("parse mutated fixture");
+    let decompiled: DecompiledClass = decompile_class(&mutated);
+    let body: String = method_body(&decompiled.source, " run(").expect("mutated run method");
+    assert!(
+        body.contains("not recovered:"),
+        "mismatched multi-catch handler sets were treated as one finally copy:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "mismatched multi-catch handler sets became a Throwable catch:\n{body}"
+    );
+}
+
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     static int CTR = 0;\n\
     static int finallyWithIf(int a) {\n\
@@ -708,6 +881,17 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
             }\n\
         }\n\
     }\n\
+    static int finallyNestedTryUsesCatch(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException ex) {\n\
+                CTR = ex.hashCode();\n\
+            }\n\
+        }\n\
+    }\n\
     static int finallyThrows(int a) {\n\
         try {\n\
             return a;\n\
@@ -731,7 +915,7 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
     }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[&str] = &["finallyNestedTry", "finallyThrowsAlways"];
+const UNMODELLED_FINALLY_METHODS: &[&str] = &["finallyNestedTryUsesCatch", "finallyThrowsAlways"];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {

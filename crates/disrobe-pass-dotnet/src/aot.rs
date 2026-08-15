@@ -16,10 +16,11 @@ use serde::{Deserialize, Serialize};
 
 mod invoke_map;
 mod metadata_records;
+mod method_boundaries;
 
 pub use metadata_records::{
-    AotMetadataAttribution, AotMetadataStatus, AotMethod, AotMethodSignature, AotType,
-    AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
+    AotCodeRange, AotMetadataAttribution, AotMetadataStatus, AotMethod, AotMethodSignature,
+    AotType, AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2155,6 +2155,8 @@ fn lift_structured(
     let finally_tail_trims: BTreeMap<BlockId, usize> = structurer.take_finally_tail_trims();
     let finally_return_stores: BTreeMap<BlockId, u16> = structurer.take_finally_return_stores();
     let finally_exception_slots: BTreeSet<u16> = structurer.take_finally_exception_slots();
+    let finally_catch_parameter_slots: BTreeSet<u16> =
+        structurer.take_finally_catch_parameter_slots();
     let block_entry_stacks: BTreeMap<BlockId, Vec<Expr>> =
         compute_block_entry_stacks(cf, &cfg, insns, params, bootstraps, has_this, bool_return);
     let reused_exc_slots: BTreeSet<u16> = reused_exception_slots(insns, &cfg.exception_regions);
@@ -2174,6 +2176,8 @@ fn lift_structured(
         has_this,
         bool_return,
         pending_handler_seed: None,
+        handler_entry_skips: BTreeSet::new(),
+        finally_catch_parameter_slots,
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots,
@@ -2194,6 +2198,7 @@ fn lift_structured(
     let mut hidden_slots: BTreeSet<u16> = ctx.pattern_binding_slots.clone();
     hidden_slots.extend(ctx.foreach_hidden_slots.iter().copied());
     hidden_slots.extend(finally_exception_slots.iter().copied());
+    hidden_slots.extend(ctx.finally_catch_parameter_slots.iter().copied());
     hidden_slots.extend(ctx.finally_return_stores.values().copied());
     let decls: String = render_slot_declarations(&ctx.slot_types, &hidden_slots);
     let body: String = hoist_loop_captured_locals(&format!("{decls}{out}"));
@@ -3857,6 +3862,8 @@ struct RenderCtx<'a> {
     has_this: bool,
     bool_return: bool,
     pending_handler_seed: Option<(BlockId, Vec<Expr>)>,
+    handler_entry_skips: BTreeSet<BlockId>,
+    finally_catch_parameter_slots: BTreeSet<u16>,
     pattern_binding_slots: BTreeSet<u16>,
     catch_var_counter: usize,
     reused_exc_slots: BTreeSet<u16>,
@@ -4138,8 +4145,18 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             render_region(ctx, try_body, out, level + 1);
             for (catch_types, handler_region) in handlers {
                 let ty: String = descriptor::catch_clause(catch_types);
-                let var: String = format!("ex{}", ctx.catch_var_counter);
-                ctx.catch_var_counter += 1;
+                let var: String = catch_parameter_slot(ctx, handler_region).map_or_else(
+                    || {
+                        let fallback: String = format!("ex{}", ctx.catch_var_counter);
+                        ctx.catch_var_counter += 1;
+                        fallback
+                    },
+                    |(handler, slot): (BlockId, u16)| {
+                        ctx.handler_entry_skips.insert(handler);
+                        ctx.pattern_binding_slots.insert(slot);
+                        local_name(slot, ctx.params)
+                    },
+                );
                 let _ = writeln!(out, "{pad}}} catch ({ty} {var}) {{");
                 render_handler_region(ctx, handler_region, &var, out, level + 1);
             }
@@ -4156,8 +4173,18 @@ fn render_region(ctx: &mut RenderCtx<'_>, region: &Region, out: &mut String, lev
             render_region(ctx, try_body, out, level + 1);
             for (catch_types, handler_region) in handlers {
                 let ty: String = descriptor::catch_clause(catch_types);
-                let var: String = format!("ex{}", ctx.catch_var_counter);
-                ctx.catch_var_counter += 1;
+                let var: String = catch_parameter_slot(ctx, handler_region).map_or_else(
+                    || {
+                        let fallback: String = format!("ex{}", ctx.catch_var_counter);
+                        ctx.catch_var_counter += 1;
+                        fallback
+                    },
+                    |(handler, slot): (BlockId, u16)| {
+                        ctx.handler_entry_skips.insert(handler);
+                        ctx.pattern_binding_slots.insert(slot);
+                        local_name(slot, ctx.params)
+                    },
+                );
                 let _ = writeln!(out, "{pad}}} catch ({ty} {var}) {{");
                 render_handler_region(ctx, handler_region, &var, out, level + 1);
             }
@@ -4272,6 +4299,7 @@ fn render_handler_region(
     let Some(first_bid): Option<BlockId> = first else {
         if let Some(target) = leftmost_block(region)
             && !ctx.rendered_blocks.contains(&target)
+            && !ctx.handler_entry_skips.contains(&target)
         {
             ctx.pending_handler_seed = Some((target, vec![Expr::Local(exc_name.to_string())]));
         }
@@ -4283,7 +4311,11 @@ fn render_handler_region(
         render_region(ctx, region, out, level);
         return;
     }
-    let seed: Vec<Expr> = vec![Expr::Local(exc_name.to_string())];
+    let seed: Vec<Expr> = if ctx.handler_entry_skips.contains(&first_bid) {
+        Vec::new()
+    } else {
+        vec![Expr::Local(exc_name.to_string())]
+    };
     render_block_seeded(ctx, first_bid, out, level, seed);
     match region {
         Region::Block(_) => {}
@@ -4294,6 +4326,26 @@ fn render_handler_region(
         }
         _ => {}
     }
+}
+
+fn catch_parameter_slot(ctx: &RenderCtx<'_>, region: &Region) -> Option<(BlockId, u16)> {
+    let handler: BlockId = leftmost_block(region)?;
+    let block: &BasicBlock = ctx.cfg.blocks.get(handler.0 as usize)?;
+    if !ctx
+        .cfg
+        .exception_regions
+        .iter()
+        .any(|entry: &ExceptionRegion| {
+            entry.handler_pc == block.start_pc && entry.catch_type.is_some()
+        })
+    {
+        return None;
+    }
+    let instruction: &Instruction = ctx.insns.get(block.insn_range.0)?;
+    let slot: u16 = astore_target_slot(instruction)?;
+    ctx.finally_catch_parameter_slots
+        .contains(&slot)
+        .then_some((handler, slot))
 }
 
 fn render_block(ctx: &mut RenderCtx<'_>, bid: BlockId, out: &mut String, level: usize) {
@@ -4711,8 +4763,10 @@ fn render_block_seeded(
     let end: usize = end
         .saturating_sub(ctx.finally_tail_trims.get(&bid).copied().unwrap_or(0))
         .max(start);
+    let handler_entry_skip: usize = usize::from(ctx.handler_entry_skips.remove(&bid));
     let start: usize = start
         .saturating_add(ctx.finally_inline_skips.get(&bid).copied().unwrap_or(0))
+        .saturating_add(handler_entry_skip)
         .min(end);
     let pad: String = indent_string(level);
     let mut stack: Vec<Expr> = if seed.is_empty() {
@@ -4967,6 +5021,8 @@ fn compute_block_entry_stacks(
         has_this,
         bool_return,
         pending_handler_seed: None,
+        handler_entry_skips: BTreeSet::new(),
+        finally_catch_parameter_slots: BTreeSet::new(),
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),
@@ -6983,6 +7039,8 @@ const fn pattern_render_ctx<'a>(
         has_this,
         bool_return,
         pending_handler_seed: None,
+        handler_entry_skips: BTreeSet::new(),
+        finally_catch_parameter_slots: BTreeSet::new(),
         pattern_binding_slots: BTreeSet::new(),
         catch_var_counter: 0,
         reused_exc_slots: BTreeSet::new(),

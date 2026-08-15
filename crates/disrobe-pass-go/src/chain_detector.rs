@@ -12,7 +12,7 @@ use disrobe_core::pass::PassId;
 
 use crate::GoAnalysis;
 use crate::binary::GoImage;
-use crate::defers::{DeferFunc, DeferSupport, RuntimeDeferHook};
+use crate::defers::{DeferCallSite, DeferFunc, DeferSupport, RuntimeDeferHook};
 use crate::embed_fs::EmbedFile;
 use crate::garble::GarbleQuality;
 use crate::pclntab::{PclntabVersion, locate_pclntab};
@@ -256,11 +256,12 @@ fn push_defer_section(out: &mut String, a: &GoAnalysis) {
     push_line(
         out,
         &format!(
-            "// defer functions={} open-coded={} call-based={} scanned={}",
+            "// defer functions={} open-coded={} call-based={} scanned={} call-sites={}",
             a.defers.functions.len(),
             a.defers.open_coded_functions,
             a.defers.call_based_functions,
             a.defers.scanned_functions,
+            a.defers.call_support.label(),
         ),
     );
     for hook in &a.defers.runtime_hooks {
@@ -281,6 +282,19 @@ fn push_defer_section(out: &mut String, a: &GoAnalysis) {
                 func.deferreturn_offset,
             ),
         );
+        for call in &func.call_sites {
+            let call: &DeferCallSite = call;
+            push_line(
+                out,
+                &format!(
+                    "defer call {} {} @ {:#x} // +{:#x}",
+                    call.kind.label(),
+                    func.name,
+                    call.va,
+                    call.offset,
+                ),
+            );
+        }
     }
     if a.defers.functions.len() > MAX_LISTED_FUNCS {
         push_line(
@@ -630,6 +644,14 @@ mod tests {
             report.contains("runtime hook runtime.deferreturn"),
             "the chain report must name the recovered runtime defer hooks",
         );
+        assert!(
+            report.contains("defer call deferproc main.LoopDefer @ 0x"),
+            "the chain report must expose the resolved runtime.deferproc call site",
+        );
+        assert!(
+            report.contains("call-sites=x86-64"),
+            "the chain report must state the call-site architecture support",
+        );
 
         let children: Vec<ChildArtifact> = GO_PASS
             .extract_children(&a)
@@ -656,6 +678,19 @@ mod tests {
         assert!(
             listed >= 10,
             "the sidecar defer listing carries only {listed} functions",
+        );
+        let call_sites: usize = defers
+            .get("functions")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|function: &serde_json::Value| function.get("call_sites"))
+            .filter_map(serde_json::Value::as_array)
+            .map(Vec::len)
+            .sum();
+        assert!(
+            call_sites >= 20,
+            "the sidecar carries only {call_sites} resolved runtime defer calls",
         );
     }
 

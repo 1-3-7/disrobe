@@ -5,7 +5,8 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_pass_go::{
-    DeferFunc, DeferLowering, DeferReport, DeferSupport, GoAnalysis, RuntimeDeferHook, analyze,
+    DeferCallKind, DeferCallSupport, DeferFunc, DeferLowering, DeferReport, DeferSupport,
+    GoAnalysis, RuntimeDeferHook, analyze,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +55,7 @@ struct ObjdumpFunc {
     deferreturn_pcs: Vec<u64>,
     defer_setup_lines: Vec<u32>,
     deferreturn_bytes: Vec<(u64, Vec<u8>)>,
+    runtime_calls: Vec<(DeferCallKind, u64)>,
 }
 
 impl ObjdumpFunc {
@@ -82,6 +84,7 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
                         deferreturn_pcs: Vec::new(),
                         defer_setup_lines: Vec::new(),
                         deferreturn_bytes: Vec::new(),
+                        runtime_calls: Vec::new(),
                     },
                 );
             }
@@ -96,8 +99,17 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
                     "runtime.deferreturn" => {
                         entry.deferreturn_pcs.push(pc);
                         entry.deferreturn_bytes.push((pc, decode_hex(bytes)));
+                        entry.runtime_calls.push((DeferCallKind::Return, pc));
                     }
-                    "runtime.deferproc" | "runtime.deferprocStack" | "runtime.deferprocat" => {
+                    "runtime.deferproc" => {
+                        entry.defer_setup_lines.push(src_line);
+                        entry.runtime_calls.push((DeferCallKind::Proc, pc));
+                    }
+                    "runtime.deferprocStack" => {
+                        entry.defer_setup_lines.push(src_line);
+                        entry.runtime_calls.push((DeferCallKind::ProcStack, pc));
+                    }
+                    "runtime.deferprocat" => {
                         entry.defer_setup_lines.push(src_line);
                     }
                     _ => {}
@@ -112,6 +124,81 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
         "objdump reference carries no function records"
     );
     out
+}
+
+#[test]
+fn x86_call_sites_match_the_real_toolchain_disassembly() {
+    let mut graded: usize = 0;
+    for fixture in FIXTURES
+        .into_iter()
+        .filter(|fixture: &Fixture| fixture.arch != "arm64")
+    {
+        let (analysis, objdump, _compiler): (
+            GoAnalysis,
+            BTreeMap<String, ObjdumpFunc>,
+            Vec<(u32, CompilerKind)>,
+        ) = load(fixture);
+        assert_eq!(
+            analysis.defers.call_support,
+            if fixture.arch == "386" {
+                DeferCallSupport::X86
+            } else {
+                DeferCallSupport::X86_64
+            },
+            "{} call-site architecture support differs",
+            fixture.binary
+        );
+        let recovered: BTreeMap<&str, &DeferFunc> = analysis
+            .defers
+            .functions
+            .iter()
+            .map(|function: &DeferFunc| (function.name.as_str(), function))
+            .collect();
+        for (name, reference) in &objdump {
+            if reference.runtime_calls.is_empty() {
+                continue;
+            }
+            let function: &&DeferFunc = recovered
+                .get(name.as_str())
+                .unwrap_or_else(|| panic!("{}: missing defer function {name}", fixture.binary));
+            let actual: Vec<(DeferCallKind, u64)> = function
+                .call_sites
+                .iter()
+                .map(|call| (call.kind, call.va))
+                .collect();
+            assert_eq!(
+                actual, reference.runtime_calls,
+                "{}: {name} runtime defer calls differ from go tool objdump",
+                fixture.binary
+            );
+            graded += actual.len();
+        }
+    }
+    assert!(
+        graded >= 100,
+        "graded only {graded} runtime defer call sites"
+    );
+}
+
+#[test]
+fn arm64_call_site_exclusion_is_explicit_and_emits_no_shape_matches() {
+    let (analysis, _objdump, _compiler): (
+        GoAnalysis,
+        BTreeMap<String, ObjdumpFunc>,
+        Vec<(u32, CompilerKind)>,
+    ) = load(FIXTURES[2]);
+    assert_eq!(
+        analysis.defers.call_support,
+        DeferCallSupport::UnsupportedImage
+    );
+    assert!(
+        analysis
+            .defers
+            .functions
+            .iter()
+            .all(|function: &DeferFunc| function.call_sites.is_empty()),
+        "unsupported ARM64 instructions must not be decoded as x86 call shapes"
+    );
 }
 
 fn decode_hex(text: &str) -> Vec<u8> {

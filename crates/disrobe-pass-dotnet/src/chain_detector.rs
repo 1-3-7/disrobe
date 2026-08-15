@@ -708,6 +708,8 @@ struct NativeAotOutputMethod<'a> {
     signature: Option<&'a crate::aot::AotMethodSignature>,
     #[serde(skip_serializing_if = "Option::is_none")]
     entrypoint_rva: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code_range: Option<&'a crate::aot::AotCodeRange>,
 }
 
 #[derive(Serialize)]
@@ -846,6 +848,7 @@ fn native_aot_symbols_document<'a>(
             name: &method.name,
             signature: method.signature.as_ref(),
             entrypoint_rva: method.entrypoint_rva,
+            code_range: method.code_range.as_ref(),
         });
     }
     Ok(NativeAotSymbolsDocument {

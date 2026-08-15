@@ -29,7 +29,8 @@ use crate::debug::{dbg_enabled, dbg_hex, dbg_kv, dbg_line, dbg_section};
 
 pub use binary::{Endian, GoImage, ImageKind, Section};
 pub use defers::{
-    DeferFunc, DeferLowering, DeferReport, DeferSupport, RuntimeDeferHook, recover_defers,
+    DeferCallKind, DeferCallSite, DeferCallSupport, DeferFunc, DeferLowering, DeferReport,
+    DeferSupport, RuntimeDeferHook, recover_defers,
 };
 pub use dwarf::{DwarfFunction, DwarfReport, recover_dwarf};
 pub use embed_fs::{EmbedFile, EmbedReport, extract_embed};
@@ -204,7 +205,8 @@ pub fn analyze(bytes: &[u8]) -> Result<GoAnalysis> {
                     typemeta.generics.len().saturating_sub(generics_pre)
                 )
             });
-            let defers: DeferReport = recover_defers(
+            let defers: DeferReport = defers::recover_defers_with_image(
+                &image,
                 &located,
                 &symbols,
                 effective_build_version(&moduledata).as_deref(),

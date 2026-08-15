@@ -1,3 +1,4 @@
+use object::Architecture;
 use object::Endianness as ObjEndianness;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -81,6 +82,16 @@ impl<'a> GoImage<'a> {
     #[must_use]
     pub const fn is_flat(&self) -> bool {
         self.flat
+    }
+
+    #[must_use]
+    pub(crate) fn x86_bitness(&self) -> Option<u32> {
+        let file: ObjFile<'_, &'_ [u8]> = ObjFile::parse(self.raw).ok()?;
+        match file.architecture() {
+            Architecture::I386 => Some(32),
+            Architecture::X86_64 => Some(64),
+            _ => None,
+        }
     }
 
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {

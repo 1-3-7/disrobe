@@ -136,6 +136,11 @@ pub enum Error {
         "DR-DOTNET-0037: invalid ahead-of-time invoke map at section offset 0x{offset:X}: {reason}"
     )]
     InvalidAotInvokeMap { offset: u32, reason: &'static str },
+
+    #[error(
+        "DR-DOTNET-0038: invalid ahead-of-time method boundary at exception-directory offset 0x{offset:X}: {reason}"
+    )]
+    InvalidAotMethodBoundary { offset: u32, reason: &'static str },
 }
 
 impl From<ByteReadError> for Error {
