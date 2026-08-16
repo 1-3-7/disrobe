@@ -1545,6 +1545,8 @@ enum NativeCmd {
         b: PathBuf,
         #[arg(long, help = "emit the full diff report as JSON")]
         json: bool,
+        #[arg(long, value_name = "N", help = native::DIFF_LIMIT_HELP)]
+        limit: Option<usize>,
     },
     #[command(
         about = "name the counterpart of every function across two stripped binaries: anchor on shared data references, then on a control-flow fingerprint, then propagate along the call graph; each pair carries the stage and the evidence that produced it, and a refusal is reported with its candidates"
@@ -1865,7 +1867,10 @@ fn main() -> miette::Result<()> {
             } => native::patch(input, at, bytes, nop_range, out),
             NativeCmd::Sigmaker { input, at, emit } => native::sigmaker(input, at, emit),
             NativeCmd::Delphi { input, out, json } => native::delphi(input, out, json),
-            NativeCmd::Diff { a, b, json } => native::diff(a, b, json),
+            NativeCmd::Diff { a, b, json, limit } => {
+                let diff_fmt: OutputFormat = if json { OutputFormat::Json } else { fmt };
+                native::diff(a, b, diff_fmt, limit)
+            }
             NativeCmd::Match {
                 a,
                 b,

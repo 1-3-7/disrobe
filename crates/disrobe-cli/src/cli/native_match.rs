@@ -1,6 +1,8 @@
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde::ser::{SerializeSeq, Serializer};
 
 use super::globals;
 use super::output::{self, OutputFormat};
@@ -195,6 +197,53 @@ struct MatchSummary {
 }
 
 #[derive(Debug)]
+struct VerdictStream<'a> {
+    entries: &'a [FunctionVerdict],
+    selector: Selector,
+    side: Side,
+}
+
+impl Serialize for VerdictStream<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence: S::SerializeSeq = serializer.serialize_seq(None)?;
+        for entry in self.entries {
+            let entry: &FunctionVerdict = entry;
+            if !self
+                .selector
+                .admits(&entry.verdict, entry.subject.0, self.side)
+            {
+                continue;
+            }
+            let row: VerdictRow = VerdictRow {
+                side: self.side,
+                subject: entry.subject.0,
+                listed: self.selector.lists(&entry.verdict, self.side),
+                verdict: body_of(&entry.verdict),
+            };
+            sequence.serialize_element(&row)?;
+            if matches!(self.selector, Selector::Function(_)) {
+                break;
+            }
+        }
+        sequence.end()
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StreamingMatchSummary<'a> {
+    schema: &'static str,
+    a: String,
+    b: String,
+    pairs: usize,
+    by_stage: StageCounts,
+    a_side: SideSummary,
+    b_side: SideSummary,
+    listing: ListingWindow,
+    a_verdicts: VerdictStream<'a>,
+    b_verdicts: VerdictStream<'a>,
+}
+
+#[derive(Debug)]
 enum Written {
     NotRequested,
     Skipped(PathBuf),
@@ -255,6 +304,30 @@ pub(crate) fn run(
     }
     let report: MatchReport = match_functions(&left, &right);
     let (selector, ceiling): (Selector, Option<usize>) = plan(options, fmt, out.as_deref());
+    if ceiling.is_none() && !matches!(selector, Selector::Function(_)) {
+        let summary: StreamingMatchSummary<'_> =
+            streaming_summary(&a, &b, &left, &right, &report, selector);
+        spinner.finish(&format!("{} pair(s)", summary.pairs));
+        let written: Written = write_report(&summary, out)?;
+        if matches!(fmt, OutputFormat::Text) {
+            let text_selector: Selector = match selector {
+                Selector::Stage(stage) => Selector::Stage(stage),
+                Selector::Function(address) => Selector::Function(address),
+                Selector::Listing | Selector::All => Selector::Listing,
+            };
+            let listing: Listing =
+                collect_listing(&report, text_selector, Some(DEFAULT_LISTING_LIMIT));
+            let text_summary: MatchSummary = summarize(&a, &b, &left, &right, &report, listing);
+            return output::emit(fmt, &summary, || {
+                render(
+                    &text_summary,
+                    &written,
+                    options.limit.unwrap_or(DEFAULT_LISTING_LIMIT),
+                );
+            });
+        }
+        return output::emit(fmt, &summary, || {});
+    }
     let listing: Listing = collect_listing(&report, selector, ceiling);
     let summary: MatchSummary = summarize(&a, &b, &left, &right, &report, listing);
     spinner.finish(&format!("{} pair(s)", summary.pairs));
@@ -292,7 +365,7 @@ const fn plan(
     }
 }
 
-fn write_report(summary: &MatchSummary, out: Option<PathBuf>) -> miette::Result<Written> {
+fn write_report<T: Serialize>(summary: &T, out: Option<PathBuf>) -> miette::Result<Written> {
     let Some(path): Option<PathBuf> = out else {
         return Ok(Written::NotRequested);
     };
@@ -303,11 +376,79 @@ fn write_report(summary: &MatchSummary, out: Option<PathBuf>) -> miette::Result<
         std::fs::create_dir_all(parent)
             .map_err(|e| miette::miette!("DR-NATIVE-0205: cannot create out dir: {e}"))?;
     }
-    let buf: Vec<u8> = serde_json::to_vec_pretty(summary)
-        .map_err(|e| miette::miette!("DR-NATIVE-0206: serialize: {e}"))?;
-    std::fs::write(&path, buf)
-        .map_err(|e| miette::miette!("DR-NATIVE-0207: cannot write match report: {e}"))?;
+    let file: std::fs::File = std::fs::File::create(&path).map_err(|error: std::io::Error| {
+        miette::miette!("DR-NATIVE-0207: cannot write match report: {error}")
+    })?;
+    let mut writer: std::io::BufWriter<std::fs::File> = std::io::BufWriter::new(file);
+    output::write_json(&mut writer, summary, true).map_err(|error: serde_json::Error| {
+        if error.is_io() {
+            miette::miette!("DR-NATIVE-0207: cannot write match report: {error}")
+        } else {
+            miette::miette!("DR-NATIVE-0206: serialize: {error}")
+        }
+    })?;
+    writer.flush().map_err(|error: std::io::Error| {
+        miette::miette!("DR-NATIVE-0207: cannot write match report: {error}")
+    })?;
     Ok(Written::Wrote(path))
+}
+
+fn streaming_summary<'a>(
+    a: &Path,
+    b: &Path,
+    left: &[FunctionFeatures],
+    right: &[FunctionFeatures],
+    report: &'a MatchReport,
+    selector: Selector,
+) -> StreamingMatchSummary<'a> {
+    let by_stage: StageCounts = stage_counts(&report.left);
+    let pairs: usize = by_stage.total();
+    let shown: usize = stream_count(&report.left, selector, Side::A)
+        + stream_count(&report.right, selector, Side::B);
+    StreamingMatchSummary {
+        schema: SCHEMA,
+        a: a.display().to_string(),
+        b: b.display().to_string(),
+        pairs,
+        by_stage,
+        a_side: side_summary(left, &report.left),
+        b_side: side_summary(right, &report.right),
+        listing: ListingWindow {
+            limit: None,
+            stage: match selector {
+                Selector::Stage(stage) => Some(stage_label(stage)),
+                Selector::Function(_) | Selector::Listing | Selector::All => None,
+            },
+            function: match selector {
+                Selector::Function(address) => Some(address),
+                Selector::Stage(_) | Selector::Listing | Selector::All => None,
+            },
+            shown,
+            withheld: 0,
+        },
+        a_verdicts: VerdictStream {
+            entries: &report.left,
+            selector,
+            side: Side::A,
+        },
+        b_verdicts: VerdictStream {
+            entries: &report.right,
+            selector,
+            side: Side::B,
+        },
+    }
+}
+
+fn stream_count(entries: &[FunctionVerdict], selector: Selector, side: Side) -> usize {
+    let count: usize = entries
+        .iter()
+        .filter(|entry: &&FunctionVerdict| selector.admits(&entry.verdict, entry.subject.0, side))
+        .count();
+    if matches!(selector, Selector::Function(_)) {
+        count.min(1)
+    } else {
+        count
+    }
 }
 
 fn summarize(
@@ -342,6 +483,42 @@ fn summarize(
 }
 
 fn collect_listing(report: &MatchReport, selector: Selector, limit: Option<usize>) -> Listing {
+    if let Selector::Function(address) = selector {
+        let a: Vec<VerdictRow> = report
+            .left
+            .iter()
+            .find(|entry: &&FunctionVerdict| entry.subject.0 == address)
+            .map(|entry: &FunctionVerdict| {
+                vec![VerdictRow {
+                    side: Side::A,
+                    subject: entry.subject.0,
+                    listed: true,
+                    verdict: body_of(&entry.verdict),
+                }]
+            })
+            .unwrap_or_default();
+        let b: Vec<VerdictRow> = report
+            .right
+            .iter()
+            .find(|entry: &&FunctionVerdict| entry.subject.0 == address)
+            .map(|entry: &FunctionVerdict| {
+                vec![VerdictRow {
+                    side: Side::B,
+                    subject: entry.subject.0,
+                    listed: true,
+                    verdict: body_of(&entry.verdict),
+                }]
+            })
+            .unwrap_or_default();
+        return Listing {
+            limit,
+            stage: None,
+            function: Some(address),
+            a,
+            b,
+            withheld: 0,
+        };
+    }
     let mut budget: Budget = Budget {
         ceiling: limit.unwrap_or(usize::MAX),
         taken: 0,
@@ -1080,6 +1257,34 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_machine_report_streams_from_a_fixed_size_row_view() {
+        const ENTRIES: usize = 200_000;
+        let anchored: Verdict = Verdict::Exact {
+            counterpart: FunctionId(0x9000),
+            shared_references: BTreeSet::from([DataReference::string_literal(
+                "a shared literal the stream must never clone in bulk",
+            )]),
+            strength: AnchorStrength::Distinctive,
+        };
+        let report: MatchReport = report_of(repeated(&anchored, ENTRIES), Vec::new());
+        let summary: StreamingMatchSummary<'_> = streaming_summary(
+            Path::new("a"),
+            Path::new("b"),
+            &[],
+            &[],
+            &report,
+            Selector::All,
+        );
+        assert_eq!(summary.listing.shown, ENTRIES);
+        assert_eq!(summary.listing.withheld, 0);
+        assert!(
+            std::mem::size_of_val(&summary.a_verdicts) <= std::mem::size_of::<[usize; 8]>(),
+            "the row view grew beyond eight machine words"
+        );
+        serde_json::to_writer(std::io::sink(), &summary).expect("stream complete report");
+    }
+
+    #[test]
     fn one_limit_is_shared_by_both_sides_and_counts_what_neither_side_collected() {
         const PER_SIDE: usize = 64;
         const LIMIT: usize = 5;
@@ -1180,6 +1385,32 @@ mod tests {
         let absent: Listing = collect_listing(&report, Selector::Function(u64::MAX), None);
         assert!(absent.a.is_empty() && absent.b.is_empty());
         assert_eq!(absent.withheld, 0);
+    }
+
+    #[test]
+    fn a_function_query_bounds_duplicate_function_ids_to_one_row_per_side() {
+        const DUPLICATES: usize = 10_000;
+        let verdicts: [Verdict; 5] = every_verdict();
+        let duplicate: FunctionId = FunctionId(0x1000);
+        let left: Vec<FunctionVerdict> = (0..DUPLICATES)
+            .map(|_: usize| FunctionVerdict {
+                subject: duplicate,
+                verdict: verdicts[0].clone(),
+            })
+            .collect();
+        let right: Vec<FunctionVerdict> = (0..DUPLICATES)
+            .map(|_: usize| FunctionVerdict {
+                subject: duplicate,
+                verdict: verdicts[3].clone(),
+            })
+            .collect();
+        let report: MatchReport = report_of(left, right);
+        let listing: Listing = collect_listing(&report, Selector::Function(duplicate.0), None);
+        assert_eq!(listing.a.len(), 1);
+        assert_eq!(listing.b.len(), 1);
+        assert!(listing.a.capacity() <= 1);
+        assert!(listing.b.capacity() <= 1);
+        assert_eq!(listing.withheld, 0);
     }
 
     const fn options(

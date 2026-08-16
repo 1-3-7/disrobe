@@ -141,6 +141,10 @@ enum LExpr {
         then: Box<Self>,
         other: Box<Self>,
     },
+    Assign {
+        target: Box<LValue>,
+        value: Box<Self>,
+    },
     Call {
         name: Vec<u8>,
         args: Vec<Self>,
@@ -767,9 +771,33 @@ impl<'a> LoopParser<'a> {
 
     fn parse_expr(&mut self) -> Option<LExpr> {
         self.enter()?;
-        let expr: Option<LExpr> = self.parse_ternary();
+        let expr: Option<LExpr> = self.parse_assignment();
         self.leave();
         expr
+    }
+
+    fn parse_assignment(&mut self) -> Option<LExpr> {
+        self.enter()?;
+        let expr: Option<LExpr> = self.parse_assignment_inner();
+        self.leave();
+        expr
+    }
+
+    fn parse_assignment_inner(&mut self) -> Option<LExpr> {
+        let save: usize = self.pos;
+        if let Some(target) = self.parse_lvalue() {
+            self.skip_trivia();
+            if self.peek() == Some(b'=') && !matches!(self.peek_at(1), Some(b'=' | b'>' | b'<')) {
+                self.pos += 1;
+                let value: LExpr = self.parse_assignment()?;
+                return Some(LExpr::Assign {
+                    target: Box::new(target),
+                    value: Box::new(value),
+                });
+            }
+        }
+        self.pos = save;
+        self.parse_ternary()
     }
 
     fn parse_ternary(&mut self) -> Option<LExpr> {
@@ -1623,6 +1651,11 @@ impl Interp {
                 } else {
                     self.eval(other, depth + 1)
                 }
+            }
+            LExpr::Assign { target, value } => {
+                let evaluated: Val = self.eval(value, depth + 1)?;
+                self.assign(target, AssignOp::Set, evaluated.clone())?;
+                Ok(evaluated)
             }
             LExpr::ArrayLit(items) => {
                 let mut map: BTreeMap<i64, Val> = BTreeMap::new();
@@ -3292,6 +3325,15 @@ mod tests {
         src.extend(std::iter::repeat_n(b')', NESTING));
         src.push(b';');
         let _: Option<Vec<(Vec<u8>, Vec<u8>)>> = Interp::new(Budget::default()).run_block(&src);
+    }
+
+    #[test]
+    fn deeply_chained_assignments_stop_at_the_loop_parser_depth_budget() {
+        let nesting: usize = usize::try_from(MAX_PARSE_DEPTH).unwrap_or(usize::MAX) + 1;
+        let mut src: Vec<u8> = b"$a = ".repeat(nesting);
+        src.extend_from_slice(b"0;");
+
+        assert!(LoopParser::new(&src).parse_program().is_none());
     }
 
     #[test]

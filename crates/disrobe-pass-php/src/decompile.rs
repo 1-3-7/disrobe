@@ -20,6 +20,9 @@ const MAX_PREALLOC: usize = 1 << 16;
 const SANE_LIFT_DEPTH: u32 = 256;
 const MAX_UNRECOVERED_RECORDS: usize = 4096;
 const SANE_ROPE_WORK_CAP: usize = 1 << 16;
+const SANE_SWITCH_ARM_CAP: usize = 1 << 16;
+const SANE_SWITCH_LABEL_WORK_CAP: usize = 1 << 20;
+const SANE_SWITCH_STATE_WORK_CAP: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -76,7 +79,21 @@ pub struct Op {
     pub lineno: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtendedValueProvenance {
+    Known(u32),
+    Unavailable,
+}
+
 impl Op {
+    const fn extended_value_provenance(&self) -> ExtendedValueProvenance {
+        if self.opcode == op::FREE && self.extended_value == 0 {
+            ExtendedValueProvenance::Unavailable
+        } else {
+            ExtendedValueProvenance::Known(self.extended_value)
+        }
+    }
+
     #[must_use]
     pub fn mnemonic(&self) -> &'static str {
         opcode_name(self.opcode)
@@ -1029,6 +1046,17 @@ enum Stmt {
         value: String,
         body: Vec<Self>,
     },
+    Switch {
+        subject: String,
+        arms: Vec<SwitchArm>,
+    },
+}
+
+#[derive(Debug)]
+struct SwitchArm {
+    labels: Vec<Option<String>>,
+    body: Vec<Stmt>,
+    breaks: bool,
 }
 
 impl Stmt {
@@ -1082,10 +1110,32 @@ impl Stmt {
                 }
                 emitter.line(indent, "}");
             }
+            Self::Switch { subject, arms } => {
+                emitter.line(indent, &format!("switch ({subject}) {{"));
+                for arm in arms {
+                    for label in &arm.labels {
+                        emitter.line(
+                            indent + 1,
+                            &label.as_ref().map_or_else(
+                                || "default:".to_owned(),
+                                |value: &String| format!("case {value}:"),
+                            ),
+                        );
+                    }
+                    for stmt in &arm.body {
+                        stmt.render_into(emitter, indent + 2);
+                    }
+                    if arm.breaks {
+                        emitter.line(indent + 2, "break;");
+                    }
+                }
+                emitter.line(indent, "}");
+            }
         }
     }
 }
 
+#[derive(Clone)]
 struct PendingCall {
     callee: String,
     is_method: bool,
@@ -1093,6 +1143,23 @@ struct PendingCall {
     is_static: bool,
     args: Vec<String>,
     result: Option<(OperandType, u32, u32)>,
+}
+
+struct SwitchLiftSnapshot {
+    slots: BTreeMap<(OperandType, u32), Expr>,
+    call_stack: Vec<PendingCall>,
+    reserved_names: BTreeSet<String>,
+    writable_slots: BTreeMap<(OperandType, u32), u32>,
+    refused: BTreeSet<u32>,
+    unrecovered: Vec<(u32, u8, &'static str)>,
+}
+
+struct SwitchArmPlan {
+    target: u32,
+    body_end: u32,
+    labels: Vec<Option<String>>,
+    breaks: bool,
+    terminates: bool,
 }
 
 struct Lifter<'a> {
@@ -1213,6 +1280,7 @@ impl<'a> Lifter<'a> {
     fn try_structure(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let op: &Op = self.ops.get(i as usize)?;
         match op.opcode {
+            o if o == op::CASE || o == op::IS_EQUAL => self.structure_switch(i, end, depth),
             o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
@@ -1224,6 +1292,396 @@ impl<'a> Lifter<'a> {
                 .structure_ternary(i, end)
                 .or_else(|| self.structure_if(i, end, depth)),
             _ => self.structure_do_while(i, end, depth),
+        }
+    }
+
+    fn structure_switch(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
+        if !self.call_stack.is_empty() {
+            return None;
+        }
+        let first: &Op = self.ops.get(i as usize)?;
+        if !matches!(
+            first.op1_type,
+            OperandType::Const | OperandType::Cv | OperandType::TmpVar | OperandType::Var
+        ) {
+            return None;
+        }
+        let subject_key: (OperandType, u32) = (first.op1_type, first.op1);
+        let subject: String = self.defined_operand_expr(first.op1_type, first.op1)?.text;
+        let comparison_opcode: u8 =
+            if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
+                op::CASE
+            } else {
+                op::IS_EQUAL
+            };
+        if begins_inside_switch_dispatch(self.ops, i as usize, comparison_opcode, subject_key) {
+            return None;
+        }
+        let mut labels_by_target: BTreeMap<u32, Vec<Option<String>>> = BTreeMap::new();
+        let mut result_keys: BTreeSet<(OperandType, u32)> = BTreeSet::new();
+        let mut comparison_result: Option<(OperandType, u32)> = None;
+        let mut last_case_target: Option<u32> = None;
+        let mut label_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let mut label_work: usize = 0;
+        let mut cursor: u32 = i;
+        let mut case_count: usize = 0;
+        while cursor < end && case_count < SANE_SWITCH_ARM_CAP {
+            while !is_linear_switch_comparison(
+                self.ops,
+                cursor as usize,
+                comparison_opcode,
+                subject_key,
+            ) {
+                let producer: &Op = self.ops.get(cursor as usize)?;
+                if producer.opcode == op::JMP {
+                    break;
+                }
+                let (result_key, expression): ((OperandType, u32), Expr) =
+                    self.evaluate_switch_label_op(producer, &label_slots)?;
+                let expression_work: usize = expression.text.len().checked_add(1)?;
+                label_work = switch_label_work_after(label_work, expression_work)?;
+                label_slots.insert(result_key, expression);
+                cursor = cursor.checked_add(1)?;
+            }
+            let comparison: &Op = self.ops.get(cursor as usize)?;
+            if comparison.opcode != comparison_opcode {
+                break;
+            }
+            if (comparison.op1_type, comparison.op1) != subject_key
+                || comparison.result_type != OperandType::TmpVar
+            {
+                return None;
+            }
+            let result_key: (OperandType, u32) = (comparison.result_type, comparison.result);
+            if comparison_result.is_some_and(|expected: (OperandType, u32)| expected != result_key)
+            {
+                return None;
+            }
+            comparison_result = Some(result_key);
+            let jump_index: u32 = cursor.checked_add(1)?;
+            let jump: &Op = self.ops.get(jump_index as usize)?;
+            if jump.opcode != op::JMPNZ
+                || (jump.op1_type, jump.op1) != (comparison.result_type, comparison.result)
+                || jump.op2_type != OperandType::Unused
+                || jump.result_type != OperandType::Unused
+                || jump.op2 <= jump_index
+                || jump.op2 >= end
+                || last_case_target.is_some_and(|target: u32| jump.op2 < target)
+            {
+                return None;
+            }
+            let label: String = self
+                .switch_operand_expr(comparison.op2_type, comparison.op2, &label_slots)?
+                .text;
+            let retained_work: usize = label.len().checked_add(1)?;
+            label_work = switch_label_work_after(label_work, retained_work)?;
+            labels_by_target
+                .entry(jump.op2)
+                .or_default()
+                .push(Some(label));
+            result_keys.insert(result_key);
+            last_case_target = Some(jump.op2);
+            case_count = case_count.checked_add(1)?;
+            cursor = cursor.checked_add(2)?;
+        }
+        if case_count == 0 {
+            return None;
+        }
+        let default_jump: &Op = self.ops.get(cursor as usize)?;
+        if default_jump.opcode != op::JMP || default_jump.op1 <= cursor || default_jump.op1 >= end {
+            return None;
+        }
+        let default_target: u32 = default_jump.op1;
+        let case_targets: Vec<u32> = labels_by_target.keys().copied().collect();
+        let explicit_default_join: bool = case_targets.last().is_some_and(|last: &u32| {
+            default_target > *last
+                && case_targets.iter().copied().enumerate().any(
+                    |(target_index, target): (usize, u32)| {
+                        let boundary: u32 = case_targets
+                            .get(target_index + 1)
+                            .copied()
+                            .unwrap_or(default_target);
+                        boundary > target
+                            && self.ops.get((boundary - 1) as usize).is_some_and(
+                                |terminator: &Op| {
+                                    terminator.opcode == op::JMP && terminator.op1 == default_target
+                                },
+                            )
+                    },
+                )
+        });
+        let default_has_forward_break: bool = (default_target..end)
+            .find_map(|index: u32| {
+                self.ops.get(index as usize).and_then(|candidate: &Op| {
+                    (candidate.branch_target() != Branch::None).then_some((index, candidate))
+                })
+            })
+            .is_some_and(|(index, candidate): (u32, &Op)| {
+                candidate.opcode == op::JMP && candidate.op1 > index
+            });
+        let natural_default_join: bool = case_targets.last().is_some_and(|last: &u32| {
+            default_target > *last
+                && !default_has_forward_break
+                && (*last..default_target).all(|index: u32| {
+                    self.ops
+                        .get(index as usize)
+                        .is_some_and(|candidate: &Op| candidate.branch_target() == Branch::None)
+                })
+        });
+        let default_is_join: bool = explicit_default_join || natural_default_join;
+        if !default_is_join {
+            labels_by_target
+                .entry(default_target)
+                .or_default()
+                .push(None);
+        }
+        let dispatch_end: u32 = cursor.checked_add(1)?;
+        if labels_by_target
+            .keys()
+            .any(|target: &u32| *target < dispatch_end)
+        {
+            return None;
+        }
+        let targets: Vec<u32> = labels_by_target.keys().copied().collect();
+        let max_target: u32 = *targets.last()?;
+        let mut join: Option<u32> = default_is_join.then_some(default_target);
+        for target_index in 1..targets.len() {
+            let boundary: u32 = targets.get(target_index)?.checked_sub(1)?;
+            let terminator: &Op = self.ops.get(boundary as usize)?;
+            if terminator.opcode == op::JMP && terminator.op1 > max_target && terminator.op1 <= end
+            {
+                match join {
+                    Some(existing) if existing != terminator.op1 => return None,
+                    Some(_) => {}
+                    None => join = Some(terminator.op1),
+                }
+            }
+        }
+        if join.is_none() && !default_is_join {
+            let mut scan: u32 = max_target;
+            while scan < end {
+                let candidate: &Op = self.ops.get(scan as usize)?;
+                if candidate.opcode == op::JMP {
+                    if candidate.op1 <= scan || candidate.op1 > end {
+                        return None;
+                    }
+                    join = Some(candidate.op1);
+                    break;
+                }
+                if is_switch_terminal(candidate.opcode) {
+                    join = scan.checked_add(1);
+                    break;
+                }
+                if candidate.branch_target() != Branch::None {
+                    return None;
+                }
+                scan = scan.checked_add(1)?;
+            }
+        }
+        let join: u32 = join?;
+        let next: u32 = if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
+            let free: &Op = self.ops.get(join as usize)?;
+            if free.opcode != op::FREE
+                || (free.op1_type, free.op1) != subject_key
+                || !matches!(
+                    free.extended_value_provenance(),
+                    ExtendedValueProvenance::Known(2) | ExtendedValueProvenance::Unavailable
+                )
+            {
+                return None;
+            }
+            join.checked_add(1)?
+        } else {
+            join
+        };
+        let incoming_slots: BTreeMap<(OperandType, u32), Expr> = self.slots.clone();
+        let incoming_writable: BTreeMap<(OperandType, u32), u32> = self.writable_slots.clone();
+        if !switch_state_work_within_budget(
+            targets.len(),
+            incoming_slots.len(),
+            incoming_writable.len(),
+        ) {
+            return None;
+        }
+        let mut arm_plans: Vec<SwitchArmPlan> = Vec::with_capacity(targets.len());
+        for (target_index, target) in targets.iter().copied().enumerate() {
+            let boundary: u32 = targets.get(target_index + 1).copied().unwrap_or(join);
+            if boundary <= target || boundary > join {
+                return None;
+            }
+            let terminal_index: u32 = boundary.checked_sub(1)?;
+            let terminal: &Op = self.ops.get(terminal_index as usize)?;
+            let breaks: bool = terminal.opcode == op::JMP && terminal.op1 == join;
+            let terminates: bool = !breaks && is_switch_terminal(terminal.opcode);
+            let body_end: u32 = if breaks { terminal_index } else { boundary };
+            arm_plans.push(SwitchArmPlan {
+                target,
+                body_end,
+                labels: labels_by_target.remove(&target)?,
+                breaks,
+                terminates,
+            });
+        }
+        let snapshot: SwitchLiftSnapshot = self.switch_lift_snapshot();
+        let mut fallthrough_slots: Option<BTreeMap<(OperandType, u32), Expr>> = None;
+        let mut fallthrough_writable: Option<BTreeMap<(OperandType, u32), u32>> = None;
+        let mut exit_slots: Vec<BTreeMap<(OperandType, u32), Expr>> = if default_is_join {
+            vec![incoming_slots.clone()]
+        } else {
+            Vec::new()
+        };
+        let mut exit_writable: Vec<BTreeMap<(OperandType, u32), u32>> = if default_is_join {
+            vec![incoming_writable.clone()]
+        } else {
+            Vec::new()
+        };
+        let mut arms: Vec<SwitchArm> = Vec::with_capacity(targets.len());
+        for arm_plan in arm_plans {
+            self.slots = fallthrough_slots.as_ref().map_or_else(
+                || incoming_slots.clone(),
+                |prior: &BTreeMap<(OperandType, u32), Expr>| {
+                    Self::common_slots(&incoming_slots, prior)
+                },
+            );
+            self.writable_slots = fallthrough_writable.as_ref().map_or_else(
+                || incoming_writable.clone(),
+                |prior: &BTreeMap<(OperandType, u32), u32>| {
+                    Self::common_writable_slots(&incoming_writable, prior)
+                },
+            );
+            let body: Vec<Stmt> = self.lift_range(arm_plan.target, arm_plan.body_end, depth + 1);
+            if !self.call_stack.is_empty() {
+                self.restore_switch_lift_snapshot(snapshot);
+                return None;
+            }
+            if arm_plan.breaks {
+                exit_slots.push(self.slots.clone());
+                exit_writable.push(self.writable_slots.clone());
+                fallthrough_slots = None;
+                fallthrough_writable = None;
+            } else if arm_plan.terminates {
+                fallthrough_slots = None;
+                fallthrough_writable = None;
+            } else {
+                fallthrough_slots = Some(self.slots.clone());
+                fallthrough_writable = Some(self.writable_slots.clone());
+                if arm_plan.body_end == join {
+                    exit_slots.push(self.slots.clone());
+                    exit_writable.push(self.writable_slots.clone());
+                }
+            }
+            arms.push(SwitchArm {
+                labels: arm_plan.labels,
+                body,
+                breaks: arm_plan.breaks,
+            });
+        }
+        let mut merged_slots: BTreeMap<(OperandType, u32), Expr> =
+            exit_slots.first().cloned().unwrap_or_default();
+        for state in exit_slots.iter().skip(1) {
+            merged_slots = Self::common_slots(&merged_slots, state);
+        }
+        let mut merged_writable: BTreeMap<(OperandType, u32), u32> =
+            exit_writable.first().cloned().unwrap_or_default();
+        for state in exit_writable.iter().skip(1) {
+            merged_writable = Self::common_writable_slots(&merged_writable, state);
+        }
+        for result_key in result_keys {
+            merged_slots.remove(&result_key);
+            merged_writable.remove(&result_key);
+        }
+        if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
+            merged_slots.remove(&subject_key);
+            merged_writable.remove(&subject_key);
+        }
+        self.slots = merged_slots;
+        self.writable_slots = merged_writable;
+        Some((vec![Stmt::Switch { subject, arms }], next))
+    }
+
+    fn switch_lift_snapshot(&self) -> SwitchLiftSnapshot {
+        SwitchLiftSnapshot {
+            slots: self.slots.clone(),
+            call_stack: self.call_stack.clone(),
+            reserved_names: self.reserved_names.clone(),
+            writable_slots: self.writable_slots.clone(),
+            refused: self.refused.clone(),
+            unrecovered: self.unrecovered.clone(),
+        }
+    }
+
+    fn restore_switch_lift_snapshot(&mut self, snapshot: SwitchLiftSnapshot) {
+        self.slots = snapshot.slots;
+        self.call_stack = snapshot.call_stack;
+        self.reserved_names = snapshot.reserved_names;
+        self.writable_slots = snapshot.writable_slots;
+        self.refused = snapshot.refused;
+        self.unrecovered = snapshot.unrecovered;
+    }
+
+    fn evaluate_switch_label_op(
+        &self,
+        producer: &Op,
+        slots: &BTreeMap<(OperandType, u32), Expr>,
+    ) -> Option<((OperandType, u32), Expr)> {
+        if producer.result_type != OperandType::TmpVar {
+            return None;
+        }
+        let result_key: (OperandType, u32) = (producer.result_type, producer.result);
+        let expression: Expr = if is_binary(producer.opcode) {
+            let lhs: Expr = self.switch_operand_expr(producer.op1_type, producer.op1, slots)?;
+            let rhs: Expr = self.switch_operand_expr(producer.op2_type, producer.op2, slots)?;
+            let (symbol, precedence): (&str, u8) = binary_symbol(producer.opcode);
+            let (left_precedence, right_precedence): (u8, u8) =
+                if is_right_associative(producer.opcode) {
+                    (precedence + 1, precedence)
+                } else {
+                    (precedence, precedence + 1)
+                };
+            Expr {
+                text: format!(
+                    "{} {symbol} {}",
+                    lhs.wrapped(left_precedence),
+                    rhs.wrapped(right_precedence)
+                ),
+                prec: precedence,
+            }
+        } else if producer.opcode == op::BOOL_NOT {
+            let value: Expr = self.switch_operand_expr(producer.op1_type, producer.op1, slots)?;
+            Expr {
+                text: format!("!{}", value.wrapped(PREC_CALL)),
+                prec: PREC_CALL,
+            }
+        } else if producer.opcode == op::BOOL || producer.opcode == op::QM_ASSIGN {
+            self.switch_operand_expr(producer.op1_type, producer.op1, slots)?
+        } else if producer.opcode == op::CAST {
+            let symbol: &'static str = cast_symbol(producer.extended_value)?;
+            let value: Expr = self.switch_operand_expr(producer.op1_type, producer.op1, slots)?;
+            Expr {
+                text: format!("{symbol} {}", value.wrapped(PREC_UNARY)),
+                prec: PREC_UNARY,
+            }
+        } else {
+            return None;
+        };
+        Some((result_key, expression))
+    }
+
+    fn switch_operand_expr(
+        &self,
+        ty: OperandType,
+        value: u32,
+        slots: &BTreeMap<(OperandType, u32), Expr>,
+    ) -> Option<Expr> {
+        match ty {
+            OperandType::Unused => None,
+            OperandType::Const => self
+                .literals
+                .get(value as usize)
+                .map(Literal::render)
+                .map(Expr::atom),
+            OperandType::Cv => Some(Expr::atom(format!("${}", self.cv(value)))),
+            OperandType::TmpVar | OperandType::Var => slots.get(&(ty, value)).cloned(),
         }
     }
 
@@ -2093,6 +2551,13 @@ impl<'a> Lifter<'a> {
                 self.operand_expr(op.op1_type, op.op1)
                     .map(|value: Expr| format!("return {};", value.text))
             }
+            o if o == op::EXIT => {
+                if op.op1_type == OperandType::Unused {
+                    return Some("exit;".to_owned());
+                }
+                self.operand_expr(op.op1_type, op.op1)
+                    .map(|value: Expr| format!("exit({});", value.text))
+            }
             o if o == op::RETURN || o == op::RETURN_BY_REF => {
                 if op.op2_type != OperandType::Unused || op.result_type != OperandType::Unused {
                     return Some(self.refuse(idx, o, REASON_EXPRESSION_OPERAND));
@@ -2493,6 +2958,91 @@ impl<'a> Lifter<'a> {
             OperandType::TmpVar | OperandType::Var => self.slots.get(&(ty, value)).cloned(),
         }
     }
+}
+
+fn switch_state_work_within_budget(arms: usize, slots: usize, writable_slots: usize) -> bool {
+    let Some(state_width): Option<usize> = slots
+        .checked_add(writable_slots)
+        .and_then(|width: usize| width.checked_add(1))
+    else {
+        return false;
+    };
+    let Some(work): Option<usize> = arms
+        .checked_add(1)
+        .and_then(|states: usize| states.checked_mul(state_width))
+    else {
+        return false;
+    };
+    work <= SANE_SWITCH_STATE_WORK_CAP
+}
+
+fn switch_label_work_after(current: usize, additional: usize) -> Option<usize> {
+    current
+        .checked_add(additional)
+        .filter(|work: &usize| *work <= SANE_SWITCH_LABEL_WORK_CAP)
+}
+
+fn begins_inside_switch_dispatch(
+    ops: &[Op],
+    index: usize,
+    comparison_opcode: u8,
+    subject_key: (OperandType, u32),
+) -> bool {
+    let mut cursor: usize = index;
+    while let Some(previous_index) = cursor.checked_sub(1) {
+        let Some(previous): Option<&Op> = ops.get(previous_index) else {
+            return false;
+        };
+        if previous.opcode == op::JMPNZ {
+            let Some(comparison_index): Option<usize> = previous_index.checked_sub(1) else {
+                return false;
+            };
+            return is_linear_switch_comparison(
+                ops,
+                comparison_index,
+                comparison_opcode,
+                subject_key,
+            );
+        }
+        if previous.branch_target() != Branch::None
+            || previous.result_type != OperandType::TmpVar
+            || !(is_binary(previous.opcode)
+                || matches!(
+                    previous.opcode,
+                    op::BOOL_NOT | op::BOOL | op::QM_ASSIGN | op::CAST
+                ))
+        {
+            return false;
+        }
+        cursor = previous_index;
+    }
+    false
+}
+
+fn is_linear_switch_comparison(
+    ops: &[Op],
+    index: usize,
+    comparison_opcode: u8,
+    subject_key: (OperandType, u32),
+) -> bool {
+    let Some(candidate): Option<&Op> = ops.get(index) else {
+        return false;
+    };
+    let Some(jump): Option<&Op> = index.checked_add(1).and_then(|next: usize| ops.get(next)) else {
+        return false;
+    };
+    candidate.opcode == comparison_opcode
+        && (candidate.op1_type, candidate.op1) == subject_key
+        && candidate.result_type == OperandType::TmpVar
+        && jump.opcode == op::JMPNZ
+        && (jump.op1_type, jump.op1) == (candidate.result_type, candidate.result)
+}
+
+const fn is_switch_terminal(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        op::RETURN | op::RETURN_BY_REF | op::GENERATOR_RETURN | op::THROW | op::EXIT
+    )
 }
 
 const REASON_CAST_KIND: &str = "the cast target type is not a php 8 cast";
@@ -2908,5 +3458,30 @@ mod oparray_bounds_tests {
             matches!(stmts.first(), Some(Stmt::DoWhile { .. })),
             "back-jump target present in cache should still structure a do-while, got {stmts:?}"
         );
+    }
+
+    #[test]
+    fn switch_state_work_budget_accepts_the_boundary_and_rejects_one_more() {
+        assert!(switch_state_work_within_budget(1023, 1023, 0));
+        assert!(!switch_state_work_within_budget(1024, 1023, 0));
+        assert!(!switch_state_work_within_budget(
+            usize::MAX,
+            usize::MAX,
+            usize::MAX
+        ));
+    }
+
+    #[test]
+    fn switch_label_work_budget_accepts_the_boundary_and_rejects_one_more() {
+        assert_eq!(
+            switch_label_work_after(0, SANE_SWITCH_LABEL_WORK_CAP),
+            Some(SANE_SWITCH_LABEL_WORK_CAP)
+        );
+        assert_eq!(
+            switch_label_work_after(SANE_SWITCH_LABEL_WORK_CAP - 1, 1),
+            Some(SANE_SWITCH_LABEL_WORK_CAP)
+        );
+        assert_eq!(switch_label_work_after(SANE_SWITCH_LABEL_WORK_CAP, 1), None);
+        assert_eq!(switch_label_work_after(usize::MAX, 1), None);
     }
 }

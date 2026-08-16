@@ -10,9 +10,31 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use disrobe_pass_jvm::{
-    Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, DecompiledClass, ExceptionEntry,
-    MethodInfo, decompile_class, parse_classfile, parse_code_attribute,
+    Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, DecompiledClass, Dex2JarResult,
+    ExceptionEntry, MethodInfo, decompile_class, decompile_classfile_bytes, parse_classfile,
+    parse_code_attribute, translate_dex_bytes,
 };
+
+const D8_FINALLY_NESTED_DEX: &[u8] =
+    include_bytes!("fixtures/d8_finally_nested/D8FinallyNested.dex");
+const D8_FINALLY_NESTED_SOURCE: &str =
+    include_str!("fixtures/d8_finally_nested/D8FinallyNested.java");
+const D8_FINALLY_NESTED_SHA256: &str =
+    "ac26dac355869a4c524da3963c0d98b6bbe98cc70afb47510b844c169389b1b9";
+const D8_FINALLY_RUNNER_SOURCE: &str = "public final class Runner {\n\
+    public static void main(String[] args) {\n\
+        int left = Integer.parseInt(args[0]);\n\
+        int right = Integer.parseInt(args[1]);\n\
+        int seed = Integer.parseInt(args[2]);\n\
+        D8FinallyNested.counter = seed;\n\
+        try {\n\
+            int value = D8FinallyNested.run(left, right);\n\
+            System.out.print(\"value:\" + value + \":counter:\" + D8FinallyNested.counter);\n\
+        } catch (Throwable error) {\n\
+            System.out.print(\"throw:\" + error.getClass().getName() + \":counter:\" + D8FinallyNested.counter);\n\
+        }\n\
+    }\n\
+}\n";
 
 const TRY_FINALLY_RETURN_SRC: &str = "public class TryFinallyReturn {\n\
     static int CTR = 0;\n\
@@ -141,6 +163,49 @@ fn require_jdk_tools() -> (PathBuf, PathBuf) {
     let javap: PathBuf = find_on_path("javap")
         .unwrap_or_else(|| panic!("try-finally return gate requires javac and javap on PATH"));
     (javac, javap)
+}
+
+fn compile_d8_finally_runtime(javac: &PathBuf, directory: &PathBuf, sources: &[PathBuf]) {
+    let mut command: Command = Command::new(javac);
+    command
+        .arg("-proc:none")
+        .arg("-g:none")
+        .arg("-cp")
+        .arg(directory)
+        .arg("-d")
+        .arg(directory);
+    command.args(sources);
+    let output: std::process::Output = command.output().expect("run javac");
+    assert!(
+        output.status.success(),
+        "D8 finally runtime source failed to compile:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_d8_finally_runtime(
+    java: &PathBuf,
+    directory: &PathBuf,
+    left: i32,
+    right: i32,
+    seed: i32,
+) -> String {
+    let output: std::process::Output = Command::new(java)
+        .arg("-Xverify:all")
+        .arg("-cp")
+        .arg(directory)
+        .arg("Runner")
+        .arg(left.to_string())
+        .arg(right.to_string())
+        .arg(seed.to_string())
+        .output()
+        .expect("run D8 finally runtime");
+    assert!(
+        output.status.success(),
+        "D8 finally runtime failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("runtime output is UTF-8")
 }
 
 fn normalize_javap(raw: &str) -> Vec<String> {
@@ -836,6 +901,82 @@ fn a_mismatched_nested_multi_catch_copy_is_refused_by_name() {
         !body.contains("catch (Throwable"),
         "mismatched multi-catch handler sets became a Throwable catch:\n{body}"
     );
+}
+
+#[test]
+fn d8_nested_finally_with_discarded_catches_matches_the_compiled_runtime() {
+    let digest: sha2::digest::Output<sha2::Sha256> =
+        <sha2::Sha256 as sha2::Digest>::digest(D8_FINALLY_NESTED_DEX);
+    assert_eq!(
+        format!("{digest:x}"),
+        D8_FINALLY_NESTED_SHA256,
+        "the externally compiled D8 fixture changed"
+    );
+
+    let translated: Dex2JarResult =
+        translate_dex_bytes(D8_FINALLY_NESTED_DEX).expect("translate the D8 fixture");
+    let original: &Vec<u8> = translated
+        .jar_entries
+        .get("D8FinallyNested.class")
+        .expect("the translated D8 fixture carries its authored class");
+    let recovered: DecompiledClass =
+        decompile_classfile_bytes(original).expect("decompile the translated D8 class");
+    assert!(
+        recovered.source.contains("finally {")
+            && recovered.source.contains("catch (ArithmeticException"),
+        "D8's nested typed catch did not survive inside the finally body:\n{}",
+        recovered.source
+    );
+    assert!(
+        !recovered.source.contains("not recovered:")
+            && !recovered.source.contains("catch (Throwable"),
+        "D8's nested finally crossed the refusal floor:\n{}",
+        recovered.source
+    );
+
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let java: PathBuf = find_on_path("java")
+        .unwrap_or_else(|| panic!("D8 finally runtime gate requires java on PATH"));
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_d8_finally_nested")
+            .expect("create D8 finally scratch directory");
+    let original_dir: PathBuf = scratch.path().join("original");
+    let recovered_dir: PathBuf = scratch.path().join("recovered");
+    std::fs::create_dir_all(&original_dir).expect("create original runtime directory");
+    std::fs::create_dir_all(&recovered_dir).expect("create recovered runtime directory");
+    std::fs::write(original_dir.join("D8FinallyNested.class"), original)
+        .expect("write translated D8 class");
+    let original_runner: PathBuf = original_dir.join("Runner.java");
+    std::fs::write(&original_runner, D8_FINALLY_RUNNER_SOURCE).expect("write original runner");
+    compile_d8_finally_runtime(&javac, &original_dir, &[original_runner]);
+    let recovered_source: PathBuf = recovered_dir.join("D8FinallyNested.java");
+    let recovered_runner: PathBuf = recovered_dir.join("Runner.java");
+    std::fs::write(&recovered_source, &recovered.source).expect("write recovered D8 source");
+    std::fs::write(&recovered_runner, D8_FINALLY_RUNNER_SOURCE).expect("write recovered runner");
+    compile_d8_finally_runtime(
+        &javac,
+        &recovered_dir,
+        &[recovered_source, recovered_runner],
+    );
+
+    let cases: &[(i32, i32, i32, &str)] = &[
+        (6, 2, 10, "value:3:counter:13"),
+        (1, 0, 7, "throw:java.lang.ArithmeticException:counter:-1"),
+        (-9, 3, 2, "value:-3:counter:-1"),
+    ];
+    for &(left, right, seed, expected) in cases {
+        let authored: String = run_d8_finally_runtime(&java, &original_dir, left, right, seed);
+        let regenerated: String = run_d8_finally_runtime(&java, &recovered_dir, left, right, seed);
+        assert_eq!(
+            authored, expected,
+            "the pinned D8 artifact no longer matches its authored source for ({left}, {right}, {seed})\n{D8_FINALLY_NESTED_SOURCE}"
+        );
+        assert_eq!(
+            regenerated, authored,
+            "the recovered D8 finally changed runtime behavior for ({left}, {right}, {seed})\n{}",
+            recovered.source
+        );
+    }
 }
 
 const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\

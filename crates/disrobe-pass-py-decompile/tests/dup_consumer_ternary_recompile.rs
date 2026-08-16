@@ -17,13 +17,18 @@ use crate::common::band::{
 
 const TARGET_VERSIONS: &[&str] = &["3.12", "3.13", "3.14"];
 const PRERELEASE: &[&str] = &["3.15"];
+const PRE311_STABLE_VERSIONS: &[&str] = &["3.8", "3.9", "3.10"];
 
-fn assert_recompiles(label: &str, program: &str) {
-    let band: Vec<BandInterpreter> = resolve_band(TARGET_VERSIONS, PRERELEASE);
+fn assert_recompiles_on(
+    label: &str,
+    program: &str,
+    target_versions: &[&'static str],
+    prerelease: &[&'static str],
+) {
+    let band: Vec<BandInterpreter> = resolve_band(target_versions, prerelease);
     assert!(
         !band.is_empty(),
-        "{label}: no 3.12-3.15 interpreter installed; cannot prove recompile-equivalence. \
-         Install one (uv python install 3.14) - never silently pass."
+        "{label}: no requested CPython interpreter installed; cannot prove recompile-equivalence"
     );
     let scratch: PathBuf = band_scratch(label);
     let mut checked_stable: usize = 0;
@@ -80,6 +85,10 @@ fn assert_recompiles(label: &str, program: &str) {
     );
 }
 
+fn assert_recompiles(label: &str, program: &str) {
+    assert_recompiles_on(label, program, TARGET_VERSIONS, PRERELEASE);
+}
+
 #[test]
 fn setattr_trailing_ternary_argument() {
     assert_recompiles(
@@ -101,6 +110,16 @@ fn expr_call_trailing_ternary_argument() {
     assert_recompiles(
         "dup_ternary_expr_call",
         "def f(logger, cond, x, y):\n    logger.log(1, x if cond else y)\n",
+    );
+}
+
+#[test]
+fn sequential_ternary_call_arguments_with_starred_tail() {
+    assert_recompiles_on(
+        "sequential_ternary_call_args",
+        "def f(cafile, capath, parts):\n    return Result(cafile if is_file(cafile) else None, capath if is_dir(capath) else None, *parts)\n",
+        PRE311_STABLE_VERSIONS,
+        &[],
     );
 }
 

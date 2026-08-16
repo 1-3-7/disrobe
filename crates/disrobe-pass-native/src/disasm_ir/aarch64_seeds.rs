@@ -9,6 +9,8 @@ use gimli::{
 use object::{
     Object as _, ObjectSection as _, ObjectSegment as _, ObjectSymbol as _,
     SymbolKind as ObjSymbolKind,
+    endian::LittleEndian as ObjectLittleEndian,
+    read::pe::{ImageNtHeaders as _, ImageOptionalHeader as _},
 };
 
 use crate::debug::{dbg_kv, dbg_section};
@@ -31,6 +33,8 @@ pub(super) enum SeedOrigin {
     DataPointer,
     MachFunctionStarts,
     MachCompactUnwind,
+    PePdata,
+    PeTlsCallback,
 }
 
 impl SeedOrigin {
@@ -49,6 +53,8 @@ impl SeedOrigin {
             Self::DataPointer => "data-pointer",
             Self::MachFunctionStarts => "macho-function-starts",
             Self::MachCompactUnwind => "macho-compact-unwind",
+            Self::PePdata => "pe-pdata",
+            Self::PeTlsCallback => "pe-tls-callback",
         }
     }
 }
@@ -61,7 +67,15 @@ pub(super) const MAX_SEEDS: usize = 1 << 17;
 
 const MAX_UNWIND_ENTRIES: usize = 1 << 17;
 
+const PE_ARM64_PDATA_RECORD_BYTES: usize = 8;
+
 const MAX_POINTER_SLOTS: usize = 1 << 21;
+
+const MAX_PE_TLS_CALLBACKS: usize = 1 << 12;
+
+const PE64_TLS_DIRECTORY_BYTES: usize = 40;
+
+const PE64_POINTER_BYTES: u64 = 8;
 
 const MAX_EXECUTABLE_RANGES: usize = 1 << 12;
 
@@ -192,6 +206,13 @@ struct ImageView<'a> {
     bytes: &'a [u8],
     executable: Vec<ExecutableRange>,
     segments: Vec<SegmentMapping>,
+    file_section_reads: FileSectionReads,
+}
+
+#[derive(Clone, Copy)]
+enum FileSectionReads {
+    Allow,
+    Deny,
 }
 
 impl<'a> ImageView<'a> {
@@ -245,7 +266,56 @@ impl<'a> ImageView<'a> {
             bytes,
             executable,
             segments,
+            file_section_reads: FileSectionReads::Allow,
         }
+    }
+
+    fn new_pe64(bytes: &'a [u8]) -> Option<Self> {
+        let file: object::File<'a> = object::File::parse(bytes).ok()?;
+        let pe: object::read::pe::PeFile64<'a> = object::read::pe::PeFile64::parse(bytes).ok()?;
+        let section_table: object::read::coff::SectionTable<'a> = pe.section_table();
+        if section_table.len() > MAX_EXECUTABLE_RANGES {
+            return None;
+        }
+        let image_base: u64 = pe.nt_headers().optional_header().image_base();
+        let section_alignment: u64 =
+            u64::from(pe.nt_headers().optional_header().section_alignment());
+        let mut executable: Vec<ExecutableRange> = Vec::new();
+        let mut segments: Vec<SegmentMapping> = Vec::with_capacity(section_table.len());
+        for section in section_table.iter() {
+            let virtual_size: u64 = u64::from(section.virtual_size.get(ObjectLittleEndian));
+            let virtual_addr: u64 = image_base
+                .checked_add(u64::from(section.virtual_address.get(ObjectLittleEndian)))?;
+            let virtual_end: u64 = virtual_addr.checked_add(virtual_size)?;
+            let characteristics: u32 = section.characteristics.get(ObjectLittleEndian);
+            let is_executable: bool = characteristics & object::pe::IMAGE_SCN_MEM_EXECUTE != 0;
+            if is_executable && virtual_end > virtual_addr {
+                executable.push(ExecutableRange {
+                    start: virtual_addr,
+                    end: virtual_end,
+                });
+            }
+            let (file_offset, file_size): (u32, u32) = section.pe_file_range();
+            segments.push(SegmentMapping {
+                kind: "pe-section".to_owned(),
+                file_offset: u64::from(file_offset),
+                file_size: u64::from(file_size),
+                virtual_addr,
+                mem_size: virtual_size,
+                readable: characteristics & object::pe::IMAGE_SCN_MEM_READ != 0,
+                writable: characteristics & object::pe::IMAGE_SCN_MEM_WRITE != 0,
+                executable: is_executable,
+                align: section_alignment,
+            });
+        }
+        executable.sort_by_key(|range: &ExecutableRange| range.start);
+        Some(Self {
+            file: Some(file),
+            bytes,
+            executable,
+            segments,
+            file_section_reads: FileSectionReads::Deny,
+        })
     }
 
     fn is_executable(&self, address: u64) -> bool {
@@ -273,6 +343,17 @@ impl<'a> ImageView<'a> {
         address != 0 && address % AARCH64_INSTRUCTION_ALIGNMENT == 0 && self.is_executable(address)
     }
 
+    fn contains_executable_extent(&self, address: u64, byte_len: u64) -> bool {
+        let Some(end): Option<u64> = address.checked_add(byte_len) else {
+            return false;
+        };
+        byte_len != 0
+            && self
+                .executable
+                .iter()
+                .any(|range: &ExecutableRange| address >= range.start && end <= range.end)
+    }
+
     fn word_at(&self, address: u64) -> Option<u32> {
         for segment in &self.segments {
             let Some(offset): Option<u64> = address.checked_sub(segment.virtual_addr) else {
@@ -287,6 +368,9 @@ impl<'a> ImageView<'a> {
             if let Some(word) = read_word(self.bytes, file_offset) {
                 return Some(word);
             }
+        }
+        if matches!(self.file_section_reads, FileSectionReads::Deny) {
+            return None;
         }
         let parsed: &object::File<'a> = self.file.as_ref()?;
         for section in parsed.sections() {
@@ -305,6 +389,42 @@ impl<'a> ImageView<'a> {
         }
         None
     }
+
+    fn qword_at(&self, address: u64) -> Option<u64> {
+        for segment in &self.segments {
+            let Some(offset): Option<u64> = address.checked_sub(segment.virtual_addr) else {
+                continue;
+            };
+            if offset >= segment.file_size {
+                continue;
+            }
+            let Some(file_offset): Option<u64> = segment.file_offset.checked_add(offset) else {
+                continue;
+            };
+            if let Some(qword) = read_qword(self.bytes, file_offset) {
+                return Some(qword);
+            }
+        }
+        if matches!(self.file_section_reads, FileSectionReads::Deny) {
+            return None;
+        }
+        let parsed: &object::File<'a> = self.file.as_ref()?;
+        for section in parsed.sections() {
+            let Some(offset): Option<u64> = address.checked_sub(section.address()) else {
+                continue;
+            };
+            if offset >= section.size() {
+                continue;
+            }
+            let Ok(data): core::result::Result<&[u8], object::Error> = section.data() else {
+                continue;
+            };
+            if let Some(qword) = read_qword(data, offset) {
+                return Some(qword);
+            }
+        }
+        None
+    }
 }
 
 fn read_word(bytes: &[u8], offset: u64) -> Option<u32> {
@@ -312,6 +432,13 @@ fn read_word(bytes: &[u8], offset: u64) -> Option<u32> {
     let end: usize = start.checked_add(4)?;
     let raw: [u8; 4] = bytes.get(start..end)?.try_into().ok()?;
     Some(u32::from_le_bytes(raw))
+}
+
+fn read_qword(bytes: &[u8], offset: u64) -> Option<u64> {
+    let start: usize = usize::try_from(offset).ok()?;
+    let end: usize = start.checked_add(8)?;
+    let raw: [u8; 8] = bytes.get(start..end)?.try_into().ok()?;
+    Some(u64::from_le_bytes(raw))
 }
 
 const fn is_prologue_word(word: u32) -> bool {
@@ -1192,6 +1319,225 @@ fn collect_macho_function_starts(
     decode_macho_function_starts(data, image_base, view, seeds);
 }
 
+fn decode_pe_arm64_pdata(data: &[u8], image_base: u64, view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let entry_count: usize = (data.len() / PE_ARM64_PDATA_RECORD_BYTES).min(MAX_UNWIND_ENTRIES);
+    let Some(byte_len): Option<usize> = entry_count.checked_mul(PE_ARM64_PDATA_RECORD_BYTES) else {
+        return;
+    };
+    let Some(table): Option<&[u8]> = data.get(..byte_len) else {
+        return;
+    };
+    let mut reader: ByteReader<'_> = ByteReader::new(table);
+    let mut previous_begin_rva: Option<u32> = None;
+    for _ in 0..entry_count {
+        let Ok(begin_rva): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+            reader.read_u32_le()
+        else {
+            return;
+        };
+        let Ok(unwind_data): core::result::Result<u32, disrobe_bytes::ByteReadError> =
+            reader.read_u32_le()
+        else {
+            return;
+        };
+        if begin_rva == 0 || previous_begin_rva.is_some_and(|previous: u32| begin_rva <= previous) {
+            return;
+        }
+        previous_begin_rva = Some(begin_rva);
+        let Some(address): Option<u64> = image_base.checked_add(u64::from(begin_rva)) else {
+            return;
+        };
+        let Some(entry): Option<PeArm64RuntimeEntry> =
+            pe_arm64_runtime_entry(unwind_data, image_base, view)
+        else {
+            return;
+        };
+        let byte_len: u64 = match entry {
+            PeArm64RuntimeEntry::Function { byte_len }
+            | PeArm64RuntimeEntry::Fragment { byte_len } => byte_len,
+        };
+        if !view.is_candidate(address) || !view.contains_executable_extent(address, byte_len) {
+            return;
+        }
+        if matches!(entry, PeArm64RuntimeEntry::Function { .. }) {
+            seeds.admit(address, SeedOrigin::PePdata);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeArm64RuntimeEntry {
+    Function { byte_len: u64 },
+    Fragment { byte_len: u64 },
+}
+
+fn pe_arm64_runtime_entry(
+    unwind_data: u32,
+    image_base: u64,
+    view: &ImageView<'_>,
+) -> Option<PeArm64RuntimeEntry> {
+    match unwind_data & 0x3 {
+        0 => Some(PeArm64RuntimeEntry::Function {
+            byte_len: pe_arm64_xdata_function_len(unwind_data, image_base, view)?,
+        }),
+        1 => Some(PeArm64RuntimeEntry::Function {
+            byte_len: pe_arm64_packed_function_len(unwind_data)?,
+        }),
+        2 => Some(PeArm64RuntimeEntry::Fragment {
+            byte_len: pe_arm64_packed_function_len(unwind_data)?,
+        }),
+        3 => None,
+        _ => None,
+    }
+}
+
+fn pe_arm64_packed_function_len(unwind_data: u32) -> Option<u64> {
+    let byte_len: u64 = u64::from(unwind_data & 0x0000_1ffc);
+    (byte_len != 0).then_some(byte_len)
+}
+
+fn pe_arm64_xdata_function_len(
+    unwind_data: u32,
+    image_base: u64,
+    view: &ImageView<'_>,
+) -> Option<u64> {
+    let xdata_rva: u32 = unwind_data & !0x3;
+    if xdata_rva == 0 {
+        return None;
+    }
+    let xdata_address: u64 = image_base.checked_add(u64::from(xdata_rva))?;
+    let header: u32 = view.word_at(xdata_address)?;
+    let function_words: u32 = header & 0x0003_ffff;
+    let version: u32 = (header >> 18) & 0x3;
+    if function_words == 0 || version != 0 {
+        return None;
+    }
+    let has_exception_handler: bool = header & 0x0010_0000 != 0;
+    let epilogue_is_packed: bool = header & 0x0020_0000 != 0;
+    let compact_counts: bool = header & 0xffc0_0000 != 0;
+    let (header_words, epilogue_count, code_words): (usize, usize, usize) = if compact_counts {
+        (
+            1,
+            usize::try_from((header >> 22) & 0x1f).ok()?,
+            usize::try_from((header >> 27) & 0x1f).ok()?,
+        )
+    } else {
+        let extension_address: u64 = xdata_address.checked_add(4)?;
+        let extension: u32 = view.word_at(extension_address)?;
+        if extension & 0xff00_0000 != 0 {
+            return None;
+        }
+        (
+            2,
+            usize::try_from(extension & 0x0000_ffff).ok()?,
+            usize::try_from((extension >> 16) & 0xff).ok()?,
+        )
+    };
+    let scope_words: usize = if epilogue_is_packed {
+        0
+    } else {
+        epilogue_count
+    };
+    let total_words: usize = header_words
+        .checked_add(scope_words)?
+        .checked_add(code_words)?
+        .checked_add(usize::from(has_exception_handler))?;
+    let last_word_index: usize = total_words.checked_sub(1)?;
+    let last_word_offset: u64 = u64::try_from(last_word_index).ok()?.checked_mul(4)?;
+    let last_word_address: u64 = xdata_address.checked_add(last_word_offset)?;
+    view.word_at(last_word_address)?;
+    u64::from(function_words).checked_mul(AARCH64_INSTRUCTION_ALIGNMENT)
+}
+
+fn collect_pe_arm64_pdata(bytes: &[u8], view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Ok(file): core::result::Result<object::read::pe::PeFile64<'_>, object::Error> =
+        object::read::pe::PeFile64::parse(bytes)
+    else {
+        return;
+    };
+    let Some(directory): Option<&object::pe::ImageDataDirectory> =
+        file.data_directory(object::pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION)
+    else {
+        return;
+    };
+    let Ok(data): core::result::Result<&[u8], object::Error> =
+        directory.data(bytes, &file.section_table())
+    else {
+        return;
+    };
+    decode_pe_arm64_pdata(data, file.relative_address_base(), view, seeds);
+}
+
+fn decode_pe_arm64_tls_callbacks(data: &[u8], view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Some(directory): Option<&[u8]> = data.get(..PE64_TLS_DIRECTORY_BYTES) else {
+        return;
+    };
+    let mut reader: ByteReader<'_> = ByteReader::new(directory);
+    if reader.seek(24).is_err() {
+        return;
+    }
+    let Ok(callback_array): core::result::Result<u64, disrobe_bytes::ByteReadError> =
+        reader.read_u64_le()
+    else {
+        return;
+    };
+    if callback_array == 0 || callback_array % PE64_POINTER_BYTES != 0 {
+        return;
+    }
+    for index in 0..MAX_PE_TLS_CALLBACKS {
+        let Some(slot_offset): Option<u64> = u64::try_from(index)
+            .ok()
+            .and_then(|value: u64| value.checked_mul(PE64_POINTER_BYTES))
+        else {
+            return;
+        };
+        let Some(slot_address): Option<u64> = callback_array.checked_add(slot_offset) else {
+            return;
+        };
+        let Some(callback): Option<u64> = view.qword_at(slot_address) else {
+            return;
+        };
+        if callback == 0 {
+            return;
+        }
+        if !view.is_candidate(callback) {
+            return;
+        }
+        seeds.admit(callback, SeedOrigin::PeTlsCallback);
+    }
+}
+
+fn collect_pe_arm64_tls_callbacks(bytes: &[u8], view: &ImageView<'_>, seeds: &mut SeedSet) {
+    let Ok(file): core::result::Result<object::read::pe::PeFile64<'_>, object::Error> =
+        object::read::pe::PeFile64::parse(bytes)
+    else {
+        return;
+    };
+    let Some(directory): Option<&object::pe::ImageDataDirectory> =
+        file.data_directory(object::pe::IMAGE_DIRECTORY_ENTRY_TLS)
+    else {
+        return;
+    };
+    let Ok(data): core::result::Result<&[u8], object::Error> =
+        directory.data(bytes, &file.section_table())
+    else {
+        return;
+    };
+    decode_pe_arm64_tls_callbacks(data, view, seeds);
+}
+
+pub(super) fn is_supported_pe_arm64(bytes: &[u8]) -> bool {
+    let Ok(file): core::result::Result<object::read::pe::PeFile64<'_>, object::Error> =
+        object::read::pe::PeFile64::parse(bytes)
+    else {
+        return false;
+    };
+    matches!(file.architecture(), object::Architecture::Aarch64)
+        && file.sub_architecture().is_none()
+        && file.is_little_endian()
+        && ImageView::new_pe64(bytes).is_some()
+}
+
 fn admit_pointer_run(run: &mut Vec<u64>, view: &ImageView<'_>, seeds: &mut SeedSet) {
     let shaped_like_a_table: bool = run.len() >= MIN_POINTER_RUN;
     for address in &*run {
@@ -1230,6 +1576,23 @@ pub(super) fn collect(native: &NativeFile, bytes: &[u8]) -> SeedSet {
         report_seeds(&seeds);
         return seeds;
     }
+    if matches!(native.format, NativeFormat::Pe64) {
+        if !is_supported_pe_arm64(bytes) {
+            return seeds;
+        }
+        let Some(view): Option<ImageView<'_>> = ImageView::new_pe64(bytes) else {
+            return seeds;
+        };
+        if view.executable.is_empty() {
+            return seeds;
+        }
+        collect_object_symbols(&view, &mut seeds);
+        collect_exports(native, &view, &mut seeds);
+        collect_pe_arm64_pdata(bytes, &view, &mut seeds);
+        collect_pe_arm64_tls_callbacks(bytes, &view, &mut seeds);
+        report_seeds(&seeds);
+        return seeds;
+    }
     if !matches!(native.format, NativeFormat::Elf64) {
         return seeds;
     }
@@ -1265,10 +1628,11 @@ fn report_seeds(seeds: &SeedSet) {
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        CompactUnwindError, CompactUnwindOutcome, ExecutableRange, ImageView, MAX_SEEDS,
-        MAX_UNWIND_ENTRIES, POINTER_BYTES, SeedOrigin, SeedSet, collect,
+        CompactUnwindError, CompactUnwindOutcome, ExecutableRange, FileSectionReads, ImageView,
+        MAX_PE_TLS_CALLBACKS, MAX_SEEDS, MAX_UNWIND_ENTRIES, PE_ARM64_PDATA_RECORD_BYTES,
+        PE64_TLS_DIRECTORY_BYTES, POINTER_BYTES, SeedOrigin, SeedSet, collect,
         collect_initializer_tables, decode_macho_compact_unwind, decode_macho_function_starts,
-        is_boundary_word, is_prologue_word,
+        decode_pe_arm64_pdata, decode_pe_arm64_tls_callbacks, is_boundary_word, is_prologue_word,
     };
 
     use std::collections::{BTreeMap, BTreeSet};
@@ -1523,6 +1887,7 @@ mod tests {
                 end: 0x1100,
             }],
             segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
         };
         let mut seeds: SeedSet = SeedSet::default();
         decode_macho_function_starts(data, 0x1000, &view, &mut seeds);
@@ -1591,6 +1956,7 @@ mod tests {
                 end: 0x1100,
             }],
             segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
         };
         let mut seeds: SeedSet = SeedSet::default();
         let outcome: CompactUnwindOutcome =
@@ -1836,6 +2202,7 @@ mod tests {
                 end: u64::MAX,
             }],
             segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
         };
         let mut seeds: SeedSet = SeedSet::default();
         let outcome: CompactUnwindOutcome =
@@ -2394,6 +2761,630 @@ mod tests {
             seeds.counts().get(&SeedOrigin::MachFunctionStarts).copied(),
             Some(46)
         );
+    }
+
+    #[test]
+    fn stripped_pe_arm64_pdata_reaches_the_disassembly_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_pdata.exe").to_vec();
+        let section_name: usize = bytes
+            .windows(8)
+            .position(|window: &[u8]| window == b".pdata\0\0")
+            .ok_or_else(|| {
+                std::io::Error::other("the fixture must carry the exception section name")
+            })?;
+        bytes[section_name..section_name + 8].copy_from_slice(b".armunw\0");
+        let reference: object::File<'_> = object::File::parse(bytes.as_slice())?;
+        assert_eq!(reference.architecture(), Architecture::Aarch64);
+        assert_eq!(reference.relative_address_base(), 0x1_4000_0000);
+        assert_eq!(reference.entry(), 0x1_4000_1048);
+        assert_eq!(
+            reference.symbols().count(),
+            0,
+            "the PE fixture must be stripped"
+        );
+        let expected: BTreeSet<u64> =
+            BTreeSet::from([0x1_4000_1000, 0x1_4000_1018, 0x1_4000_1030, 0x1_4000_1048]);
+
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(bytes.as_slice())?;
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        assert_eq!(
+            expected.difference(&recovered).count(),
+            0,
+            "{recovered:#x?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_pdata_keeps_a_valid_prefix_and_rejects_invalid_starts() {
+        type InvalidCase<'data> = (Option<(u32, u32)>, &'data [u8]);
+
+        let image_base: u64 = 0x1_4000_0000;
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: image_base + 0x1000,
+                end: image_base + 0x2000,
+            }],
+            segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let invalid_cases: [InvalidCase<'_>; 4] = [
+            (Some((0x1002, 5)), &[]),
+            (Some((0x3000, 5)), &[]),
+            (Some((0x1ffc, 0x19)), &[]),
+            (None, &[0xaa, 0xbb, 0xcc]),
+        ];
+        for (invalid_record, tail) in invalid_cases {
+            let mut data: Vec<u8> = Vec::new();
+            data.extend_from_slice(&0x1000_u32.to_le_bytes());
+            data.extend_from_slice(&5_u32.to_le_bytes());
+            if let Some(record) = invalid_record {
+                let (invalid_begin_rva, invalid_unwind_data): (u32, u32) = record;
+                data.extend_from_slice(&invalid_begin_rva.to_le_bytes());
+                data.extend_from_slice(&invalid_unwind_data.to_le_bytes());
+            }
+            data.extend_from_slice(tail);
+            let mut seeds: SeedSet = SeedSet::default();
+
+            decode_pe_arm64_pdata(&data, image_base, &view, &mut seeds);
+
+            assert_eq!(seeds.addresses(), vec![image_base + 0x1000]);
+            assert_eq!(
+                seeds.origins_of(image_base + 0x1000),
+                BTreeSet::from([SeedOrigin::PePdata])
+            );
+        }
+    }
+
+    #[test]
+    fn pe_arm64_pdata_bounds_entries_and_checked_address_addition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &[],
+            executable: vec![ExecutableRange {
+                start: 0,
+                end: u64::MAX,
+            }],
+            segments: Vec::new(),
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut data: Vec<u8> = Vec::with_capacity((MAX_UNWIND_ENTRIES + 1) * 8);
+        for index in 0..=MAX_UNWIND_ENTRIES {
+            let begin_rva: u32 = u32::try_from(index.saturating_add(1) * 4)?;
+            data.extend_from_slice(&begin_rva.to_le_bytes());
+            data.extend_from_slice(&5_u32.to_le_bytes());
+        }
+        let mut bounded: SeedSet = SeedSet::default();
+        decode_pe_arm64_pdata(&data, 0, &view, &mut bounded);
+        let expected_last: u64 = u64::try_from(MAX_UNWIND_ENTRIES)?.saturating_mul(4);
+        assert_eq!(bounded.addresses().len(), MAX_UNWIND_ENTRIES);
+        assert_eq!(bounded.addresses().last().copied(), Some(expected_last));
+
+        let mut overflowed: SeedSet = SeedSet::default();
+        decode_pe_arm64_pdata(
+            &[0x00, 0x20, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00],
+            u64::MAX - 0x1000,
+            &view,
+            &mut overflowed,
+        );
+        assert!(overflowed.addresses().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_pdata_validates_unwind_forms_and_sorted_function_starts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image_base: u64 = 0x1_4000_0000;
+        let mut image: Vec<u8> = vec![0; 0x200c];
+        image[0x2000..0x2004].copy_from_slice(&0x1020_000b_u32.to_le_bytes());
+        image[0x2004..0x2008].copy_from_slice(&0x01d4_c1d2_u32.to_le_bytes());
+        image[0x2008..0x200c].copy_from_slice(&0xe3e3_e3e4_u32.to_le_bytes());
+        let image_len: u64 = u64::try_from(image.len())?;
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &image,
+            executable: vec![ExecutableRange {
+                start: image_base + 0x1000,
+                end: image_base + 0x1100,
+            }],
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: image_len,
+                virtual_addr: image_base,
+                mem_size: image_len,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 4,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut valid_data: Vec<u8> = Vec::new();
+        valid_data.extend_from_slice(&0x1000_u32.to_le_bytes());
+        valid_data.extend_from_slice(&0x2000_u32.to_le_bytes());
+        valid_data.extend_from_slice(&0x1030_u32.to_le_bytes());
+        valid_data.extend_from_slice(&0x19_u32.to_le_bytes());
+        let mut valid: SeedSet = SeedSet::default();
+        decode_pe_arm64_pdata(&valid_data, image_base, &view, &mut valid);
+        assert_eq!(
+            valid.addresses(),
+            vec![image_base + 0x1000, image_base + 0x1030]
+        );
+
+        for unwind_data in [1_u32, 0x1a, 0x1b] {
+            let mut record: Vec<u8> = Vec::new();
+            record.extend_from_slice(&0x1000_u32.to_le_bytes());
+            record.extend_from_slice(&unwind_data.to_le_bytes());
+            let mut rejected: SeedSet = SeedSet::default();
+            decode_pe_arm64_pdata(&record, image_base, &view, &mut rejected);
+            assert!(rejected.addresses().is_empty(), "{unwind_data:#x}");
+        }
+
+        let mut descending_data: Vec<u8> = Vec::new();
+        for begin_rva in [0x1010_u32, 0x1000] {
+            descending_data.extend_from_slice(&begin_rva.to_le_bytes());
+            descending_data.extend_from_slice(&5_u32.to_le_bytes());
+        }
+        let mut descending: SeedSet = SeedSet::default();
+        decode_pe_arm64_pdata(&descending_data, image_base, &view, &mut descending);
+        assert_eq!(descending.addresses(), vec![image_base + 0x1010]);
+
+        let mut invalid_image: Vec<u8> = image.clone();
+        invalid_image[0x2000..0x2004].copy_from_slice(&0x1024_000b_u32.to_le_bytes());
+        let invalid_version_view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &invalid_image,
+            executable: view.executable.clone(),
+            segments: view.segments.clone(),
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut invalid_version: SeedSet = SeedSet::default();
+        decode_pe_arm64_pdata(
+            &valid_data[..PE_ARM64_PDATA_RECORD_BYTES],
+            image_base,
+            &invalid_version_view,
+            &mut invalid_version,
+        );
+        assert!(invalid_version.addresses().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_pdata_rejects_a_directory_larger_than_its_section()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_pdata.exe").to_vec();
+        let pe_offset_bytes: [u8; 4] = bytes[0x3c..0x40].try_into()?;
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(pe_offset_bytes))?;
+        let optional_header: usize = pe_offset.checked_add(4 + 20).ok_or_else(|| {
+            std::io::Error::other("the optional header offset must remain bounded")
+        })?;
+        let exception_size: usize = optional_header
+            .checked_add(112 + object::pe::IMAGE_DIRECTORY_ENTRY_EXCEPTION * 8 + 4)
+            .ok_or_else(|| {
+                std::io::Error::other("the exception directory offset must remain bounded")
+            })?;
+        bytes[exception_size..exception_size + 4].copy_from_slice(&0x1000_u32.to_le_bytes());
+        let native: NativeFile = parse_native(&bytes)?;
+
+        let seeds: SeedSet = collect(&native, &bytes);
+
+        assert_eq!(seeds.counts().get(&SeedOrigin::PePdata), None);
+        assert_eq!(seeds.addresses(), vec![0x1_4000_1048]);
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_pdata_does_not_parse_the_arm64ec_runtime_function_layout()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_pdata.exe").to_vec();
+        let pe_offset_bytes: [u8; 4] = bytes[0x3c..0x40].try_into()?;
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(pe_offset_bytes))?;
+        let machine: usize = pe_offset
+            .checked_add(4)
+            .ok_or_else(|| std::io::Error::other("the machine offset must remain bounded"))?;
+        bytes[machine..machine + 2]
+            .copy_from_slice(&object::pe::IMAGE_FILE_MACHINE_ARM64EC.to_le_bytes());
+        let native: NativeFile = parse_native(&bytes)?;
+
+        let seeds: SeedSet = collect(&native, &bytes);
+
+        assert_eq!(seeds.counts().get(&SeedOrigin::PePdata), None);
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(bytes.as_slice())?;
+        assert_eq!(
+            payload
+                .symbol_table
+                .iter()
+                .filter(|symbol| {
+                    matches!(
+                        symbol.kind,
+                        disrobe_ir::payload::DisasmSymbolKind::Function
+                            | disrobe_ir::payload::DisasmSymbolKind::Export
+                    )
+                })
+                .count(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stripped_pe_arm64_tls_callback_reaches_the_disassembly_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_tls.exe").to_vec();
+        let section_name: usize = bytes
+            .windows(8)
+            .position(|window: &[u8]| window == b".rdata\0\0")
+            .ok_or_else(|| std::io::Error::other("the fixture must contain its TLS directory"))?;
+        bytes[section_name..section_name + 8].copy_from_slice(b".tlsdir\0");
+        let reference: object::File<'_> = object::File::parse(bytes.as_slice())?;
+        assert_eq!(reference.architecture(), Architecture::Aarch64);
+        assert_eq!(reference.entry(), 0x1_4000_1014);
+        assert_eq!(reference.symbols().count(), 0);
+        assert!(
+            reference
+                .sections()
+                .all(|section: object::Section<'_, '_>| {
+                    section.name().is_ok_and(|name: &str| name != ".pdata")
+                })
+        );
+
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(bytes.as_slice())?;
+        let recovered: BTreeSet<u64> = payload
+            .symbol_table
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                )
+            })
+            .map(|symbol| symbol.address)
+            .collect();
+        assert!(recovered.contains(&0x1_4000_1000), "{recovered:#x?}");
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_tls_callback_requires_an_executable_section_characteristic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_tls.exe").to_vec();
+        let pe_offset_bytes: [u8; 4] = bytes[0x3c..0x40].try_into()?;
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(pe_offset_bytes))?;
+        let optional_header_size_bytes: [u8; 2] =
+            bytes[pe_offset + 20..pe_offset + 22].try_into()?;
+        let optional_header_size: usize =
+            usize::from(u16::from_le_bytes(optional_header_size_bytes));
+        let text_characteristics: usize = pe_offset
+            .checked_add(4 + 20)
+            .and_then(|offset: usize| offset.checked_add(optional_header_size))
+            .and_then(|offset: usize| offset.checked_add(36))
+            .ok_or_else(|| {
+                std::io::Error::other("the text characteristics offset must be bounded")
+            })?;
+        let characteristics_bytes: [u8; 4] =
+            bytes[text_characteristics..text_characteristics + 4].try_into()?;
+        let characteristics: u32 =
+            u32::from_le_bytes(characteristics_bytes) & !object::pe::IMAGE_SCN_MEM_EXECUTE;
+        bytes[text_characteristics..text_characteristics + 4]
+            .copy_from_slice(&characteristics.to_le_bytes());
+        let native: NativeFile = parse_native(bytes.as_slice())?;
+
+        let seeds: SeedSet = collect(&native, bytes.as_slice());
+
+        assert!(
+            !seeds
+                .origins_of(0x1_4000_1000)
+                .contains(&SeedOrigin::PeTlsCallback)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_tls_callback_rejects_wrapped_image_addresses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut bytes: Vec<u8> = include_bytes!("../../tests/fixtures/pe_arm64_tls.exe").to_vec();
+        let pe_offset_bytes: [u8; 4] = bytes[0x3c..0x40].try_into()?;
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(pe_offset_bytes))?;
+        let optional_header: usize = pe_offset
+            .checked_add(4 + 20)
+            .ok_or_else(|| std::io::Error::other("the optional header offset must be bounded"))?;
+        let optional_header_size_bytes: [u8; 2] =
+            bytes[pe_offset + 20..pe_offset + 22].try_into()?;
+        let optional_header_size: usize =
+            usize::from(u16::from_le_bytes(optional_header_size_bytes));
+        let section_table: usize = optional_header
+            .checked_add(optional_header_size)
+            .ok_or_else(|| std::io::Error::other("the section table offset must be bounded"))?;
+        for section_index in 0..6_usize {
+            let virtual_address: usize = section_table
+                .checked_add(section_index.saturating_mul(40))
+                .and_then(|offset: usize| offset.checked_add(12))
+                .ok_or_else(|| {
+                    std::io::Error::other("the section address offset must be bounded")
+                })?;
+            let original_bytes: [u8; 4] = bytes[virtual_address..virtual_address + 4].try_into()?;
+            let shifted: u32 = u32::from_le_bytes(original_bytes)
+                .checked_add(0xf000)
+                .ok_or_else(|| std::io::Error::other("the section address must be bounded"))?;
+            bytes[virtual_address..virtual_address + 4].copy_from_slice(&shifted.to_le_bytes());
+        }
+        let image_base: usize = optional_header
+            .checked_add(24)
+            .ok_or_else(|| std::io::Error::other("the image base offset must be bounded"))?;
+        bytes[image_base..image_base + 8].copy_from_slice(&0xffff_ffff_ffff_0000_u64.to_le_bytes());
+        let entry_point: usize = optional_header
+            .checked_add(16)
+            .ok_or_else(|| std::io::Error::other("the entry point offset must be bounded"))?;
+        bytes[entry_point..entry_point + 4].copy_from_slice(&0x1_0014_u32.to_le_bytes());
+        let size_of_image: usize = optional_header
+            .checked_add(56)
+            .ok_or_else(|| std::io::Error::other("the image size offset must be bounded"))?;
+        bytes[size_of_image..size_of_image + 4].copy_from_slice(&0x1_6000_u32.to_le_bytes());
+        let tls_directory_rva: usize = optional_header
+            .checked_add(112 + object::pe::IMAGE_DIRECTORY_ENTRY_TLS * 8)
+            .ok_or_else(|| std::io::Error::other("the TLS directory offset must be bounded"))?;
+        bytes[tls_directory_rva..tls_directory_rva + 4]
+            .copy_from_slice(&0x1_1000_u32.to_le_bytes());
+        let tls_callbacks: usize = 0x600_usize
+            .checked_add(24)
+            .ok_or_else(|| std::io::Error::other("the TLS callback offset must be bounded"))?;
+        bytes[0x600..0x608].copy_from_slice(&0x4000_u64.to_le_bytes());
+        bytes[0x608..0x610].copy_from_slice(&0x4002_u64.to_le_bytes());
+        bytes[0x610..0x618].copy_from_slice(&0x2000_u64.to_le_bytes());
+        bytes[tls_callbacks..tls_callbacks + 8].copy_from_slice(&0x3000_u64.to_le_bytes());
+        bytes[0x800..0x808].copy_from_slice(&4_u64.to_le_bytes());
+        let native: NativeFile = parse_native(bytes.as_slice())?;
+
+        let seeds: SeedSet = collect(&native, bytes.as_slice());
+        let payload: disrobe_ir::payload::DisasmPayload =
+            super::super::build_disasm_payload(bytes.as_slice())?;
+
+        assert!(!seeds.origins_of(4).contains(&SeedOrigin::PeTlsCallback));
+        assert!(
+            payload.symbol_table.iter().all(|symbol| {
+                !matches!(
+                    symbol.kind,
+                    disrobe_ir::payload::DisasmSymbolKind::Function
+                        | disrobe_ir::payload::DisasmSymbolKind::Export
+                ) || symbol.address != 0x14
+            }),
+            "{:x?}",
+            payload.symbol_table
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_tls_callbacks_preserve_only_a_valid_bounded_prefix() {
+        let mut image: Vec<u8> = Vec::new();
+        for callback in [0x1000_u64, 0x1002, 0] {
+            image.extend_from_slice(&callback.to_le_bytes());
+        }
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &image,
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: 24,
+                virtual_addr: 0x2000,
+                mem_size: 24,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 8,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut directory: [u8; PE64_TLS_DIRECTORY_BYTES] = [0; PE64_TLS_DIRECTORY_BYTES];
+        directory[24..32].copy_from_slice(&0x2000_u64.to_le_bytes());
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_tls_callbacks(&directory, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1000]);
+        assert_eq!(
+            seeds.origins_of(0x1000),
+            BTreeSet::from([SeedOrigin::PeTlsCallback])
+        );
+
+        let partial_view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &image[..12],
+            executable: view.executable,
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: 12,
+                virtual_addr: 0x2000,
+                mem_size: 12,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 8,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut partial: SeedSet = SeedSet::default();
+        decode_pe_arm64_tls_callbacks(&directory, &partial_view, &mut partial);
+        assert_eq!(partial.addresses(), vec![0x1000]);
+    }
+
+    #[test]
+    fn pe_arm64_tls_callbacks_reject_invalid_directories_and_arrays() {
+        let image: [u8; 8] = 0x1000_u64.to_le_bytes();
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &image,
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: 8,
+                virtual_addr: 0x2000,
+                mem_size: 8,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 8,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut valid_directory: [u8; PE64_TLS_DIRECTORY_BYTES] = [0; PE64_TLS_DIRECTORY_BYTES];
+        valid_directory[24..32].copy_from_slice(&0x2000_u64.to_le_bytes());
+        let mut misaligned_directory: [u8; PE64_TLS_DIRECTORY_BYTES] = valid_directory;
+        misaligned_directory[24..32].copy_from_slice(&0x2001_u64.to_le_bytes());
+        let mut unmapped_directory: [u8; PE64_TLS_DIRECTORY_BYTES] = valid_directory;
+        unmapped_directory[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+        let zero_directory: [u8; PE64_TLS_DIRECTORY_BYTES] = [0; PE64_TLS_DIRECTORY_BYTES];
+        for directory in [
+            &valid_directory[..PE64_TLS_DIRECTORY_BYTES - 1],
+            misaligned_directory.as_slice(),
+            unmapped_directory.as_slice(),
+            zero_directory.as_slice(),
+        ] {
+            let mut seeds: SeedSet = SeedSet::default();
+            decode_pe_arm64_tls_callbacks(directory, &view, &mut seeds);
+            assert!(seeds.addresses().is_empty());
+        }
+
+        let mut outside_image: Vec<u8> = Vec::new();
+        outside_image.extend_from_slice(&0x3000_u64.to_le_bytes());
+        outside_image.extend_from_slice(&0_u64.to_le_bytes());
+        let outside_view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &outside_image,
+            executable: view.executable,
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: 16,
+                virtual_addr: 0x2000,
+                mem_size: 16,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 8,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut outside: SeedSet = SeedSet::default();
+        decode_pe_arm64_tls_callbacks(&valid_directory, &outside_view, &mut outside);
+        assert!(outside.addresses().is_empty());
+    }
+
+    #[test]
+    fn pe_arm64_tls_callback_walk_stops_at_the_hard_cap() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let slot_count: usize = MAX_PE_TLS_CALLBACKS.saturating_add(1);
+        let mut image: Vec<u8> = Vec::with_capacity(slot_count.saturating_mul(POINTER_BYTES));
+        for _ in 0..MAX_PE_TLS_CALLBACKS.saturating_sub(1) {
+            image.extend_from_slice(&0x1000_u64.to_le_bytes());
+        }
+        image.extend_from_slice(&0x1004_u64.to_le_bytes());
+        image.extend_from_slice(&0x1008_u64.to_le_bytes());
+        let image_size: u64 = u64::try_from(image.len())?;
+        let view: ImageView<'_> = ImageView {
+            file: None,
+            bytes: &image,
+            executable: vec![ExecutableRange {
+                start: 0x1000,
+                end: 0x1100,
+            }],
+            segments: vec![crate::elf::SegmentMapping {
+                kind: "test".to_owned(),
+                file_offset: 0,
+                file_size: image_size,
+                virtual_addr: 0x2000,
+                mem_size: image_size,
+                readable: true,
+                writable: false,
+                executable: false,
+                align: 8,
+            }],
+            file_section_reads: FileSectionReads::Allow,
+        };
+        let mut directory: [u8; PE64_TLS_DIRECTORY_BYTES] = [0; PE64_TLS_DIRECTORY_BYTES];
+        directory[24..32].copy_from_slice(&0x2000_u64.to_le_bytes());
+        let mut seeds: SeedSet = SeedSet::default();
+
+        decode_pe_arm64_tls_callbacks(&directory, &view, &mut seeds);
+
+        assert_eq!(seeds.addresses(), vec![0x1000, 0x1004]);
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_tls_directory_is_bounded_and_rejects_arm64ec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original: &[u8] = include_bytes!("../../tests/fixtures/pe_arm64_tls.exe");
+        let pe_offset_bytes: [u8; 4] = original[0x3c..0x40].try_into()?;
+        let pe_offset: usize = usize::try_from(u32::from_le_bytes(pe_offset_bytes))?;
+        let optional_header: usize = pe_offset
+            .checked_add(4 + 20)
+            .ok_or_else(|| std::io::Error::other("the optional header offset must be bounded"))?;
+        let tls_size: usize = optional_header
+            .checked_add(112 + object::pe::IMAGE_DIRECTORY_ENTRY_TLS * 8 + 4)
+            .ok_or_else(|| std::io::Error::other("the TLS directory offset must be bounded"))?;
+        let machine: usize = pe_offset
+            .checked_add(4)
+            .ok_or_else(|| std::io::Error::other("the machine offset must be bounded"))?;
+
+        let mut oversized: Vec<u8> = original.to_vec();
+        oversized[tls_size..tls_size + 4].copy_from_slice(&0x1000_u32.to_le_bytes());
+        let oversized_native: NativeFile = parse_native(&oversized)?;
+        let oversized_seeds: SeedSet = collect(&oversized_native, &oversized);
+        assert_eq!(
+            oversized_seeds.counts().get(&SeedOrigin::PeTlsCallback),
+            None
+        );
+
+        let mut arm64ec: Vec<u8> = original.to_vec();
+        arm64ec[machine..machine + 2]
+            .copy_from_slice(&object::pe::IMAGE_FILE_MACHINE_ARM64EC.to_le_bytes());
+        let arm64ec_native: NativeFile = parse_native(&arm64ec)?;
+        let arm64ec_seeds: SeedSet = collect(&arm64ec_native, &arm64ec);
+        assert_eq!(arm64ec_seeds.counts().get(&SeedOrigin::PeTlsCallback), None);
+        Ok(())
+    }
+
+    #[test]
+    fn pe_arm64_tls_callback_collection_is_deterministic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let bytes: &[u8] = include_bytes!("../../tests/fixtures/pe_arm64_tls.exe");
+        let native: NativeFile = parse_native(bytes)?;
+        let first: SeedSet = collect(&native, bytes);
+        let second: SeedSet = collect(&native, bytes);
+        assert_eq!(first.addresses(), second.addresses());
+        assert_eq!(first.counts(), second.counts());
+        Ok(())
     }
 
     #[test]

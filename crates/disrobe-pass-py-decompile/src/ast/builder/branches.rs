@@ -48,6 +48,62 @@ pub(super) fn try_structure_ternary_expr(
     jump_idx: usize,
     target: usize,
 ) -> Result<Option<Vec<Stmt>>> {
+    let Some(first): Option<FoldedTernary> =
+        fold_ternary_expr(code, stream, lo, hi, jump_idx, target, Vec::new())?
+    else {
+        return Ok(None);
+    };
+    let mut out: Vec<Stmt> = first.head_stmts;
+    let mut seed: Vec<Expr> = first.below_stack;
+    seed.push(first.value);
+    let mut join: usize = first.join;
+    if stream.is_pre_311() {
+        let consumer_end: usize = ternary_consumer_end(stream, join, hi).unwrap_or(hi);
+        while let Some((next_jump, next_target)) =
+            next_sequential_ternary(stream, join, consumer_end)
+        {
+            let Some(next): Option<FoldedTernary> =
+                fold_ternary_expr(code, stream, join, hi, next_jump, next_target, seed)?
+            else {
+                return Ok(None);
+            };
+            out.extend(next.head_stmts);
+            seed = next.below_stack;
+            seed.push(next.value);
+            join = next.join;
+        }
+    }
+    if let Some(consumer_end) = ternary_tail_split(stream, join, hi) {
+        let (consumer_stmts, _residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim_seed(code, &stream.ops[join..consumer_end], seed)?;
+        out.extend(consumer_stmts);
+        let rest: Vec<Stmt> = structure_stmts(code, stream, consumer_end, hi)?;
+        out.extend(rest);
+        return Ok(Some(out));
+    }
+    let (tail_stmts, _residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim_seed(code, &stream.ops[join..hi], seed)?;
+    out.extend(tail_stmts);
+    Ok(Some(out))
+}
+
+#[derive(Debug)]
+struct FoldedTernary {
+    head_stmts: Vec<Stmt>,
+    below_stack: Vec<Expr>,
+    value: Expr,
+    join: usize,
+}
+
+fn fold_ternary_expr(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    jump_idx: usize,
+    target: usize,
+    seed: Vec<Expr>,
+) -> Result<Option<FoldedTernary>> {
     if target <= jump_idx + 1 || target > hi {
         return Ok(None);
     }
@@ -69,7 +125,7 @@ pub(super) fn try_structure_ternary_expr(
         return Ok(None);
     }
     let Some((head_stmts, below_stack, test_raw)): Option<TernaryTest> =
-        build_ternary_test_expr(code, stream, lo, jump_idx, last_test_jump, target)?
+        build_ternary_test_expr(code, stream, lo, jump_idx, last_test_jump, target, seed)?
     else {
         return Ok(None);
     };
@@ -105,21 +161,27 @@ pub(super) fn try_structure_ternary_expr(
         body: Box::new(then_expr),
         orelse: Box::new(otherwise_expr),
     };
-    let mut out: Vec<Stmt> = head_stmts;
-    let mut seed: Vec<Expr> = below_stack;
-    seed.push(if_exp);
-    if let Some(consumer_end) = ternary_tail_split(stream, join, hi) {
-        let (consumer_stmts, _residual): (Vec<Stmt>, Vec<Expr>) =
-            build_linear_stmts_sim_seed(code, &stream.ops[join..consumer_end], seed)?;
-        out.extend(consumer_stmts);
-        let rest: Vec<Stmt> = structure_stmts(code, stream, consumer_end, hi)?;
-        out.extend(rest);
-        return Ok(Some(out));
-    }
-    let (tail_stmts, _residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim_seed(code, &stream.ops[join..hi], seed)?;
-    out.extend(tail_stmts);
-    Ok(Some(out))
+    Ok(Some(FoldedTernary {
+        head_stmts,
+        below_stack,
+        value: if_exp,
+        join,
+    }))
+}
+
+fn next_sequential_ternary(
+    stream: &DecodedStream,
+    join: usize,
+    consumer_end: usize,
+) -> Option<(usize, usize)> {
+    let jump: usize = (join..consumer_end).find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && !is_value_form_shortcircuit(&stream.ops, index)
+    })?;
+    let target: usize = resolve_jump_target(stream, jump, &stream.ops[jump])
+        .filter(|&candidate: &usize| candidate > jump && candidate <= consumer_end)?;
+    Some((jump, target))
 }
 
 fn ternary_tail_split(stream: &DecodedStream, join: usize, hi: usize) -> Option<usize> {
@@ -201,9 +263,10 @@ fn build_ternary_test_expr(
     first_jump: usize,
     last_test_jump: usize,
     target: usize,
+    seed: Vec<Expr>,
 ) -> Result<Option<TernaryTest>> {
     let (head_stmts, mut head_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..first_jump])?;
+        build_linear_stmts_sim_seed(code, &stream.ops[lo..first_jump], seed)?;
     let Some(first_operand): Option<Expr> = head_residual.pop() else {
         return Ok(None);
     };

@@ -722,7 +722,15 @@ fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
         String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
     assert!(!recovered.contains("__pc"));
     let actual: String = run_source(&tc.lua, &dir, "prometheus_medium_recovered", &recovered)
-        .expect("the recovered Medium-preset source must run under real Lua 5.1");
+        .unwrap_or_else(|| {
+            let stderr: String = std::fs::read_to_string(
+                dir.join("prometheus_medium_recovered.stderr.txt"),
+            )
+            .unwrap_or_default();
+            panic!(
+                "the recovered Medium-preset source must run under real Lua 5.1\n{stderr}\n--- recovered ---\n{recovered}"
+            )
+        });
     assert_eq!(
         expected, actual,
         "Medium-preset recovery must preserve runtime output under real Lua 5.1\n--- recovered ---\n{recovered}"

@@ -657,6 +657,681 @@ fn cfg_distinguishes_while_loop_via_back_edge() {
 }
 
 #[test]
+fn php_84_linear_case_chain_recovers_a_switch_with_a_default() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let first: u32 = b.lit_str("one");
+        let second: u32 = b.lit_str("two");
+        let other: u32 = b.lit_str("other");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 5, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, two, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 2);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 3);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 4);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 5);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 6);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 8);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains(
+            "switch ($kind) {\n    case 1:\n        echo 'one';\n        break;\n    case 2:\n        echo 'two';\n        break;\n    default:\n        echo 'other';\n}"
+        ),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_temporary_switch_subject_requires_the_free_switch_marker() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let three: u32 = b.lit_long(3);
+        let first: u32 = b.lit_str("first");
+        let second: u32 = b.lit_str("second");
+        let other: u32 = b.lit_str("other");
+        let done: u32 = b.lit_str("done");
+        b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 4, 0, 1);
+        b.op(op::CASE, T_TMP, T_CONST, T_TMP, 4, one, 5, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 6, 0, 0, 2);
+        b.op(op::CASE, T_TMP, T_CONST, T_TMP, 4, three, 5, 0, 3);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 8, 0, 0, 3);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 5);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 6);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 6);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 7);
+        b.op(op::FREE, T_TMP, T_UNUSED, T_UNUSED, 4, 0, 0, 2, 8);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 9);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 10);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains("switch (1 + 2) {"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_temporary_switch_rejects_wrong_or_missing_free_switch_marker() {
+    fn candidate(free_operand: u32, extended_value: u32, include_free: bool) -> Decompilation {
+        decompiled(|b: &mut OpArrayBuilder| {
+            let one: u32 = b.lit_long(1);
+            let two: u32 = b.lit_long(2);
+            let body: u32 = b.lit_str("body");
+            b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 4, 0, 1);
+            b.op(op::CASE, T_TMP, T_CONST, T_TMP, 4, one, 5, 0, 2);
+            b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 4, 0, 0, 2);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 5, 0, 0, 0, 3);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, body, 0, 0, 0, 4);
+            if include_free {
+                b.op(
+                    op::FREE,
+                    T_TMP,
+                    T_UNUSED,
+                    T_UNUSED,
+                    free_operand,
+                    0,
+                    0,
+                    extended_value,
+                    5,
+                );
+            } else {
+                b.op(op::NOP, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 5);
+            }
+            b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, body, 0, 0, 0, 6);
+        })
+    }
+
+    for rejected in [
+        candidate(4, 1, true),
+        candidate(7, 2, true),
+        candidate(4, 2, false),
+    ] {
+        assert!(
+            !rejected.php_skeleton.contains("switch ("),
+            "{}",
+            rejected.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn php_84_switch_accepts_a_computed_equality_label() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        b.var("left");
+        b.var("right");
+        let one: u32 = b.lit_long(1);
+        let first: u32 = b.lit_str("first");
+        let second: u32 = b.lit_str("second");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CV, T_TMP, 0, 2, 2, 0, 2);
+        b.op(op::IS_EQUAL, T_CV, T_TMP, T_TMP, 0, 2, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 9, 0, 0, 2);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 3);
+        b.op(op::NOP, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 3);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 4);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 12, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 5);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 12, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 6);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains("case $kind == $right:"),
+        "{}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn php_84_tmp_and_var_switch_subjects_accept_same_subject_computed_labels() {
+    fn candidate(subject_type: u8) -> Decompilation {
+        decompiled(|b: &mut OpArrayBuilder| {
+            b.var("kind");
+            b.var("right");
+            let one: u32 = b.lit_long(1);
+            let first: u32 = b.lit_str("first");
+            let second: u32 = b.lit_str("second");
+            let done: u32 = b.lit_str("done");
+            b.op(op::QM_ASSIGN, T_CV, T_UNUSED, subject_type, 0, 0, 4, 0, 1);
+            b.op(op::CASE, subject_type, T_CONST, T_TMP, 4, one, 5, 0, 2);
+            b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 8, 0, 0, 2);
+            b.op(op::IS_EQUAL, subject_type, T_CV, T_TMP, 4, 1, 6, 0, 3);
+            b.op(op::CASE, subject_type, T_TMP, T_TMP, 4, 6, 5, 0, 3);
+            b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 10, 0, 0, 3);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 12, 0, 0, 0, 4);
+            b.op(op::NOP, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 4);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 5);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 13, 0, 0, 0, 5);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 6);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 13, 0, 0, 0, 6);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+            b.op(op::FREE, subject_type, T_UNUSED, T_UNUSED, 4, 0, 0, 2, 8);
+            b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 9);
+        })
+    }
+
+    for subject_type in [T_TMP, T_VAR] {
+        let decompilation: Decompilation = candidate(subject_type);
+        assert_eq!(
+            decompilation.unrecovered_total, 0,
+            "{}",
+            decompilation.php_skeleton
+        );
+        assert!(
+            decompilation.php_skeleton.contains("case $kind == $right:"),
+            "{}",
+            decompilation.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn php_84_switch_label_output_obeys_the_cumulative_work_limit() {
+    #[derive(Clone, Copy)]
+    enum LabelKind {
+        Const,
+        Cv,
+        Tmp,
+        Var,
+    }
+
+    fn candidate(label_kind: LabelKind, case_count: u32) -> Decompilation {
+        decompiled(|b: &mut OpArrayBuilder| {
+            b.var("kind");
+            let rendered_label: String = "x".repeat(1021);
+            let (label_type, label, prefix): (u8, u32, u32) = match label_kind {
+                LabelKind::Const => (T_CONST, b.lit_str(&rendered_label), 0),
+                LabelKind::Cv => {
+                    b.var(&"x".repeat(1022));
+                    (T_CV, 1, 0)
+                }
+                LabelKind::Tmp | LabelKind::Var => {
+                    let literal: u32 = b.lit_str(&rendered_label);
+                    let result_type: u8 = if matches!(label_kind, LabelKind::Tmp) {
+                        T_TMP
+                    } else {
+                        T_VAR
+                    };
+                    b.op(
+                        op::QM_ASSIGN,
+                        T_CONST,
+                        T_UNUSED,
+                        result_type,
+                        literal,
+                        0,
+                        7,
+                        0,
+                        1,
+                    );
+                    (result_type, 7, 1)
+                }
+            };
+            let done: u32 = b.lit_str("done");
+            let body_target: u32 = prefix
+                .saturating_add(case_count.saturating_mul(2))
+                .saturating_add(1);
+            let join_target: u32 = body_target.saturating_add(2);
+            for _ in 0..case_count {
+                b.op(op::IS_EQUAL, T_CV, label_type, T_TMP, 0, label, 1, 0, 1);
+                b.op(
+                    op::JMPNZ,
+                    T_TMP,
+                    T_UNUSED,
+                    T_UNUSED,
+                    1,
+                    body_target,
+                    0,
+                    0,
+                    1,
+                );
+            }
+            b.op(
+                op::JMP,
+                T_UNUSED,
+                T_UNUSED,
+                T_UNUSED,
+                body_target,
+                0,
+                0,
+                0,
+                2,
+            );
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 3);
+            b.op(
+                op::JMP,
+                T_UNUSED,
+                T_UNUSED,
+                T_UNUSED,
+                join_target,
+                0,
+                0,
+                0,
+                3,
+            );
+            b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 4);
+        })
+    }
+
+    for label_kind in [
+        LabelKind::Const,
+        LabelKind::Cv,
+        LabelKind::Tmp,
+        LabelKind::Var,
+    ] {
+        let boundary: Decompilation = candidate(label_kind, 1024);
+        let over: Decompilation = candidate(label_kind, 1025);
+        assert!(
+            boundary.php_skeleton.contains("switch ($kind)"),
+            "{}",
+            boundary.php_skeleton
+        );
+        assert_eq!(boundary.php_skeleton.matches("\n    case ").count(), 1024);
+        assert!(
+            !over.php_skeleton.contains("switch ($kind)"),
+            "over-budget switch was reconstructed"
+        );
+    }
+}
+
+#[test]
+fn php_84_linear_case_chain_without_default_keeps_the_continuation_outside() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let first: u32 = b.lit_str("one");
+        let second: u32 = b.lit_str("two");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 5, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, two, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 2);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 3);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 4);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 5);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 6);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains(
+            "switch ($kind) {\n    case 1:\n        echo 'one';\n        break;\n    case 2:\n        echo 'two';\n        break;\n}"
+        ),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert!(!decomp.php_skeleton.contains("default:"));
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_switch_preserves_grouped_labels_and_fallthrough_order() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let three: u32 = b.lit_long(3);
+        let low: u32 = b.lit_str("low");
+        let third: u32 = b.lit_str("third");
+        let other: u32 = b.lit_str("other");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, two, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 2);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, three, 1, 0, 3);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 8, 0, 0, 3);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, low, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, third, 0, 0, 0, 6);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 12, 0, 0, 0, 6);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 7);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 12, 0, 0, 0, 7);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 8);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 9);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains(
+            "case 1:\n    case 2:\n        echo 'low';\n    case 3:\n        echo 'third';\n        break;"
+        ),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_switch_finds_a_join_from_the_last_default_break() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let first: u32 = b.lit_str("one");
+        let other: u32 = b.lit_str("other");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 3, 0, 0, 1);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 4, 0, 0, 0, 2);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 3);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 4);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 6, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 5);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 6);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains(
+            "case 1:\n        echo 'one';\n    default:\n        echo 'other';\n        break;"
+        ),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_temporary_switch_accepts_terminal_arms_before_the_free_anchor() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let three: u32 = b.lit_long(3);
+        let first: u32 = b.lit_str("first");
+        let second: u32 = b.lit_str("second");
+        let other: u32 = b.lit_str("other");
+        b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 4, 0, 1);
+        b.op(op::CASE, T_TMP, T_CONST, T_TMP, 4, one, 5, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 6, 0, 0, 2);
+        b.op(op::CASE, T_TMP, T_CONST, T_TMP, 4, three, 5, 0, 3);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 5, 7, 0, 0, 3);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 8, 0, 0, 0, 4);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 5);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 6);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 7);
+        b.op(op::FREE, T_TMP, T_UNUSED, T_UNUSED, 4, 0, 0, 2, 8);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains("switch (1 + 2) {"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("return '").count(), 3);
+    assert!(!decomp.php_skeleton.contains("break;"));
+}
+
+#[test]
+fn php_84_switch_without_default_keeps_the_no_match_state_at_the_join() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 5, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, two, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 7, 0, 0, 2);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 3);
+        b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 9, 0, 4);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 4);
+        b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 9, 0, 5);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 5);
+        b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 6);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+    });
+
+    assert!(
+        decomp.php_skeleton.contains("switch ($kind) {"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert!(
+        !decomp.php_skeleton.contains("default:"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert!(
+        !decomp.php_skeleton.contains("echo 1 + 2;"),
+        "the unmatched dispatch path has no definition for the temporary: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn php_84_switch_without_default_allows_the_last_arm_to_fall_into_the_join() {
+    let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+        b.var("kind");
+        let one: u32 = b.lit_long(1);
+        let two: u32 = b.lit_long(2);
+        let first: u32 = b.lit_str("first");
+        let second: u32 = b.lit_str("second");
+        let done: u32 = b.lit_str("done");
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 5, 0, 0, 1);
+        b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, two, 1, 0, 2);
+        b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 6, 0, 0, 2);
+        b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 7, 0, 0, 0, 3);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 4);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 5);
+        b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 6);
+        b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, done, 0, 0, 0, 7);
+    });
+
+    assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+    assert!(
+        decomp.php_skeleton.contains("switch ($kind) {"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert!(
+        !decomp.php_skeleton.contains("default:"),
+        "{}",
+        decomp.php_skeleton
+    );
+    assert_eq!(decomp.php_skeleton.matches("echo 'done';").count(), 1);
+}
+
+#[test]
+fn php_84_switch_accepts_exit_and_generator_return_terminal_arms() {
+    for terminal in [op::EXIT, op::GENERATOR_RETURN] {
+        let decomp: Decompilation = decompiled(|b: &mut OpArrayBuilder| {
+            b.var("kind");
+            let one: u32 = b.lit_long(1);
+            let first: u32 = b.lit_str("first");
+            let other: u32 = b.lit_str("other");
+            b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+            b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 3, 0, 0, 1);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 4, 0, 0, 0, 2);
+            b.op(terminal, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 3);
+            b.op(terminal, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 4);
+        });
+        assert_eq!(decomp.unrecovered_total, 0, "{}", decomp.php_skeleton);
+        assert!(
+            decomp.php_skeleton.contains("switch ($kind) {"),
+            "{}",
+            decomp.php_skeleton
+        );
+        assert!(
+            !decomp.php_skeleton.contains("break;"),
+            "{}",
+            decomp.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn failed_switch_speculation_restores_every_lifter_state_component() {
+    fn candidate(default_target: u32) -> Decompilation {
+        decompiled(|b: &mut OpArrayBuilder| {
+            b.var("kind");
+            let one: u32 = b.lit_long(1);
+            let function: u32 = b.lit_str("strlen");
+            let body: u32 = b.lit_str("body");
+            let default: u32 = b.lit_str("default");
+            b.op(op::IS_EQUAL, T_CV, T_CONST, T_TMP, 0, one, 1, 0, 1);
+            b.op(op::JMPNZ, T_TMP, T_UNUSED, T_UNUSED, 1, 3, 0, 0, 1);
+            b.op(
+                op::JMP,
+                T_UNUSED,
+                T_UNUSED,
+                T_UNUSED,
+                default_target,
+                0,
+                0,
+                0,
+                2,
+            );
+            b.op(op::SWITCH_LONG, T_CV, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 3);
+            b.op(
+                op::INIT_FCALL,
+                T_UNUSED,
+                T_CONST,
+                T_UNUSED,
+                0,
+                function,
+                0,
+                0,
+                3,
+            );
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 8, 0, 0, 0, 3);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, default, 0, 0, 0, 4);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 8, 0, 0, 0, 4);
+            b.op(
+                op::INIT_FCALL,
+                T_UNUSED,
+                T_CONST,
+                T_UNUSED,
+                0,
+                function,
+                0,
+                0,
+                5,
+            );
+            b.op(op::DO_FCALL, T_UNUSED, T_UNUSED, T_UNUSED, 0, 0, 0, 0, 5);
+            b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, body, 0, 0, 0, 6);
+        })
+    }
+
+    let attempted: Decompilation = candidate(6);
+    let rejected_before_lift: Decompilation = candidate(2);
+    assert_eq!(attempted.php_skeleton, rejected_before_lift.php_skeleton);
+    assert_eq!(attempted.unrecovered, rejected_before_lift.unrecovered);
+}
+
+#[test]
+fn php_84_switch_refuses_impossible_comparison_wires() {
+    fn candidate(
+        comparison_opcode: u8,
+        first_result_type: u8,
+        second_result: u32,
+        first_target: u32,
+        second_target: u32,
+    ) -> Decompilation {
+        decompiled(|b: &mut OpArrayBuilder| {
+            b.var("kind");
+            let one: u32 = b.lit_long(1);
+            let two: u32 = b.lit_long(2);
+            let first: u32 = b.lit_str("one");
+            let second: u32 = b.lit_str("two");
+            let other: u32 = b.lit_str("other");
+            b.op(
+                comparison_opcode,
+                T_CV,
+                T_CONST,
+                first_result_type,
+                0,
+                one,
+                1,
+                0,
+                1,
+            );
+            b.op(
+                op::JMPNZ,
+                first_result_type,
+                T_UNUSED,
+                T_UNUSED,
+                1,
+                first_target,
+                0,
+                0,
+                1,
+            );
+            b.op(
+                comparison_opcode,
+                T_CV,
+                T_CONST,
+                T_TMP,
+                0,
+                two,
+                second_result,
+                0,
+                2,
+            );
+            b.op(
+                op::JMPNZ,
+                T_TMP,
+                T_UNUSED,
+                T_UNUSED,
+                second_result,
+                second_target,
+                0,
+                0,
+                2,
+            );
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 9, 0, 0, 0, 3);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, first, 0, 0, 0, 4);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 4);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, second, 0, 0, 0, 5);
+            b.op(op::JMP, T_UNUSED, T_UNUSED, T_UNUSED, 10, 0, 0, 0, 5);
+            b.op(op::ECHO, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 6);
+            b.op(op::RETURN, T_CONST, T_UNUSED, T_UNUSED, other, 0, 0, 0, 7);
+        })
+    }
+
+    let candidates: [Decompilation; 4] = [
+        candidate(op::CASE, T_TMP, 1, 5, 7),
+        candidate(op::IS_EQUAL, T_VAR, 1, 5, 7),
+        candidate(op::IS_EQUAL, T_TMP, 2, 5, 7),
+        candidate(op::IS_EQUAL, T_TMP, 1, 7, 5),
+    ];
+    for decompilation in candidates {
+        assert!(
+            !(decompilation.php_skeleton.contains("case 1:")
+                && decompilation.php_skeleton.contains("case 2:")),
+            "{}",
+            decompilation.php_skeleton
+        );
+        assert!(decompilation.unrecovered_total > 0);
+    }
+}
+
+#[test]
 fn foreach_skeleton_from_fe_fetch() {
     let mut b: OpArrayBuilder = OpArrayBuilder::main();
     let arr: u32 = b.lit_str("items");

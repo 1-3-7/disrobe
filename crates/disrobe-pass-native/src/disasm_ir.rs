@@ -228,8 +228,12 @@ fn inject_discovered_functions(
 ) -> BTreeSet<u64> {
     let code: Vec<CodeWindow<'_>> = decoded_code.to_vec();
     let discovered: DiscoveredFunctions = if matches!(arch, DisasmArch::Aarch64) {
-        if !matches!(native.format, NativeFormat::Elf64 | NativeFormat::MachO64)
-            || !matches!(native.endian, Endian::Little)
+        if !matches!(
+            native.format,
+            NativeFormat::Elf64 | NativeFormat::MachO64 | NativeFormat::Pe64
+        ) || !matches!(native.endian, Endian::Little)
+            || matches!(native.format, NativeFormat::Pe64)
+                && !aarch64_seeds::is_supported_pe_arm64(bytes)
         {
             return BTreeSet::new();
         }

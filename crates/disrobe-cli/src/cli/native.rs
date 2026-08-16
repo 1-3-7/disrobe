@@ -3411,7 +3411,65 @@ const fn emit_label(emit: SigEmit) -> &'static str {
     }
 }
 
-pub(crate) fn diff(a: PathBuf, b: PathBuf, json: bool) -> miette::Result<()> {
+const DIFF_DEFAULT_LISTING_LIMIT: usize = 25;
+
+pub(crate) const DIFF_LIMIT_HELP: &str = "maximum added, removed, and changed rows to show, 25 by default; 0 shows counts only; an explicit limit also bounds machine output";
+
+#[derive(Debug, Serialize)]
+struct DiffListing {
+    limit: Option<usize>,
+    shown: usize,
+    withheld: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffReport<'a> {
+    schema: &'static str,
+    total_a: usize,
+    total_b: usize,
+    identical: usize,
+    added: &'a [disrobe_pass_native::FunctionPrint],
+    removed: &'a [disrobe_pass_native::FunctionPrint],
+    changed: &'a [disrobe_pass_native::ChangedFunction],
+    similarity: f64,
+    listing: DiffListing,
+}
+
+fn bounded_diff_report(
+    report: &disrobe_pass_native::BinDiffReport,
+    limit: Option<usize>,
+) -> DiffReport<'_> {
+    let total: usize = report.added.len() + report.removed.len() + report.changed.len();
+    let ceiling: usize = limit.unwrap_or(usize::MAX);
+    let added_count: usize = report.added.len().min(ceiling);
+    let after_added: usize = ceiling.saturating_sub(added_count);
+    let removed_count: usize = report.removed.len().min(after_added);
+    let after_removed: usize = after_added.saturating_sub(removed_count);
+    let changed_count: usize = report.changed.len().min(after_removed);
+    let shown: usize = added_count + removed_count + changed_count;
+    DiffReport {
+        schema: report.schema,
+        total_a: report.total_a,
+        total_b: report.total_b,
+        identical: report.identical,
+        added: &report.added[..added_count],
+        removed: &report.removed[..removed_count],
+        changed: &report.changed[..changed_count],
+        similarity: report.similarity,
+        listing: DiffListing {
+            limit,
+            shown,
+            withheld: total.saturating_sub(shown),
+        },
+    }
+}
+
+pub(crate) fn diff(
+    a: PathBuf,
+    b: PathBuf,
+    fmt: OutputFormat,
+    limit: Option<usize>,
+) -> miette::Result<()> {
     use disrobe_pass_native::{BinDiffReport, ChangedFunction, FunctionPrint, bindiff};
 
     let bytes_a: Vec<u8> = std::fs::read(&a)
@@ -3420,44 +3478,44 @@ pub(crate) fn diff(a: PathBuf, b: PathBuf, json: bool) -> miette::Result<()> {
         .map_err(|e| miette::miette!("DR-NATIVE-0181: cannot read {}: {e}", b.display()))?;
     let report: BinDiffReport = bindiff(&bytes_a, &bytes_b)
         .map_err(|e| miette::miette!("DR-NATIVE-0182: diff failed: {e}"))?;
-
-    if json {
-        let buf: String = serde_json::to_string_pretty(&report)
-            .map_err(|e| miette::miette!("DR-NATIVE-0183: serialize: {e}"))?;
-        println!("{buf}");
-        return Ok(());
-    }
-
-    println!("native diff: OK");
-    println!("  a:            {}", a.display());
-    println!("  b:            {}", b.display());
-    println!("  functions:    {} -> {}", report.total_a, report.total_b);
-    println!("  identical:    {}", report.identical);
-    println!("  added:        {}", report.added.len());
-    for f in &report.added {
-        println!(
-            "    + {} @ {:#x} ({} bytes)",
-            f.name, f.address, f.byte_length
-        );
-    }
-    println!("  removed:      {}", report.removed.len());
-    for f in &report.removed {
-        let f: &FunctionPrint = f;
-        println!(
-            "    - {} @ {:#x} ({} bytes)",
-            f.name, f.address, f.byte_length
-        );
-    }
-    println!("  changed:      {}", report.changed.len());
-    for c in &report.changed {
-        let c: &ChangedFunction = c;
-        println!(
-            "    ~ {} @ {:#x} -> {} @ {:#x} [{:?}]",
-            c.name_a, c.address_a, c.name_b, c.address_b, c.kind
-        );
-    }
-    println!("  similarity:   {:.1}%", report.similarity * 100.0);
-    Ok(())
+    let effective_limit: Option<usize> =
+        limit.or_else(|| (!fmt.is_machine()).then_some(DIFF_DEFAULT_LISTING_LIMIT));
+    let view: DiffReport<'_> = bounded_diff_report(&report, effective_limit);
+    output::emit(fmt, &view, || {
+        println!("native diff: OK");
+        println!("  a:            {}", a.display());
+        println!("  b:            {}", b.display());
+        println!("  functions:    {} -> {}", report.total_a, report.total_b);
+        println!("  identical:    {}", report.identical);
+        println!("  added:        {}", report.added.len());
+        for function in view.added {
+            let function: &FunctionPrint = function;
+            println!(
+                "    + {} @ {:#x} ({} bytes)",
+                function.name, function.address, function.byte_length
+            );
+        }
+        println!("  removed:      {}", report.removed.len());
+        for function in view.removed {
+            let function: &FunctionPrint = function;
+            println!(
+                "    - {} @ {:#x} ({} bytes)",
+                function.name, function.address, function.byte_length
+            );
+        }
+        println!("  changed:      {}", report.changed.len());
+        for change in view.changed {
+            let change: &ChangedFunction = change;
+            println!(
+                "    ~ {} @ {:#x} -> {} @ {:#x} [{:?}]",
+                change.name_a, change.address_a, change.name_b, change.address_b, change.kind
+            );
+        }
+        println!("  similarity:   {:.1}%", report.similarity * 100.0);
+        if view.listing.withheld > 0 {
+            println!("  withheld listing rows: {}", view.listing.withheld);
+        }
+    })
 }
 
 const DELPHI_LIST_LIMIT: usize = 20;

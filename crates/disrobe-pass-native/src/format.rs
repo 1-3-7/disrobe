@@ -21,6 +21,7 @@ pub enum NativeFormat {
     Ne,
     Le,
     Lx,
+    Wasm,
     Unknown,
 }
 
@@ -42,6 +43,7 @@ impl NativeFormat {
             Self::Ne => "ne",
             Self::Le => "le",
             Self::Lx => "lx",
+            Self::Wasm => "wasm",
             Self::Unknown => "unknown",
         }
     }
@@ -67,6 +69,7 @@ const PE_SIG: &[u8; 4] = b"PE\x00\x00";
 const NE_SIG: &[u8; 2] = b"NE";
 const LE_SIG: &[u8; 2] = b"LE";
 const LX_SIG: &[u8; 2] = b"LX";
+const WASM_MAGIC: &[u8; 4] = b"\0asm";
 const COFF_MACHINE_OFFSETS_MIN: usize = 20;
 
 #[allow(clippy::too_many_lines)]
@@ -75,6 +78,20 @@ pub fn detect(bytes: &[u8]) -> Result<DetectedFormat> {
         return Err(Error::Truncated {
             needed: 4,
             had: bytes.len(),
+        });
+    }
+    if bytes.starts_with(WASM_MAGIC) {
+        if bytes.len() < 8 {
+            return Err(Error::Truncated {
+                needed: 8,
+                had: bytes.len(),
+            });
+        }
+        return Ok(DetectedFormat {
+            kind: NativeFormat::Wasm,
+            bits: 0,
+            subsystem: None,
+            notes: Vec::new(),
         });
     }
     if bytes.starts_with(ELF_MAGIC) {
@@ -396,5 +413,29 @@ mod tests {
         let detected: DetectedFormat = detect(&bytes).expect("invalid NE classification");
         assert_eq!(detected.kind, NativeFormat::Mz);
         assert_eq!(detected.notes, ["invalid-ne"]);
+    }
+
+    #[test]
+    fn core_and_component_wasm_preambles_are_classified_consistently() {
+        for bytes in [
+            [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+            [0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00],
+        ] {
+            let detected: DetectedFormat = detect(&bytes).expect("detect WebAssembly preamble");
+            assert_eq!(detected.kind, NativeFormat::Wasm);
+            assert_eq!(detected.kind.label(), "wasm");
+            assert_eq!(detected.bits, 0);
+            assert_eq!(detected.subsystem, None);
+            assert!(detected.notes.is_empty());
+        }
+    }
+
+    #[test]
+    fn truncated_wasm_magic_is_not_reported_as_a_complete_format() {
+        for length in 4usize..8 {
+            let error: Error = detect(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00][..length])
+                .expect_err("a partial WebAssembly preamble must be rejected");
+            assert!(matches!(error, Error::Truncated { needed: 8, had } if had == length));
+        }
     }
 }

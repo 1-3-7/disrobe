@@ -696,6 +696,191 @@ fn patch_branch_target(code: &mut [u8], operand: usize, target: usize) {
     code[operand + 2] = ((raw >> 16) & 0xFF) as u8;
 }
 
+fn assert_loose_dispatch_tree(statement: &Stmt, expected_comparisons: &[(i64, bool)]) {
+    let mut current: &Stmt = statement;
+    for (expected_value, selector_on_left) in expected_comparisons {
+        let Stmt::IfElse {
+            cond: cond @ Expr::Binary { op: "==", lhs, rhs },
+            then_body,
+            else_body,
+        } = current
+        else {
+            panic!("loose dispatch must remain an ordered equality tree: {current:#?}");
+        };
+        let comparison_matches: bool = if *selector_on_left {
+            matches!(
+                (lhs.as_ref(), rhs.as_ref()),
+                (Expr::Local(1), Expr::IntLit(value)) if value == expected_value
+            )
+        } else {
+            matches!(
+                (lhs.as_ref(), rhs.as_ref()),
+                (Expr::IntLit(value), Expr::Local(1)) if value == expected_value
+            )
+        };
+        assert!(
+            comparison_matches,
+            "loose dispatch comparison changed: {cond:#?}"
+        );
+        assert!(
+            matches!(
+                then_body.as_slice(),
+                [Stmt::Assign {
+                    target: Expr::Local(2),
+                    value: Expr::IntLit(value),
+                }] if value == &(expected_value.saturating_add(10))
+            ),
+            "loose dispatch arm changed: {then_body:#?}"
+        );
+        current = match else_body.as_slice() {
+            [nested @ Stmt::IfElse { .. }] => nested,
+            [default]
+                if expected_comparisons
+                    .last()
+                    .is_some_and(|last: &(i64, bool)| {
+                        last == &(*expected_value, *selector_on_left)
+                    }) =>
+            {
+                assert!(matches!(
+                    default,
+                    Stmt::Assign {
+                        target: Expr::Local(2),
+                        value: Expr::IntLit(40),
+                    }
+                ));
+                return;
+            }
+            other => panic!("loose dispatch else path changed: {other:#?}"),
+        };
+    }
+    panic!("loose dispatch tree has more arms than expected: {current:#?}");
+}
+
+#[test]
+fn direct_loose_forward_dispatch_preserves_comparisons_and_edges() {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x13]);
+    let first_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x01, 0xD1, 0x13]);
+    let second_case_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    code.extend_from_slice(&[0x24, 0x28, 0xD6, 0x10]);
+    let default_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let first_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let second_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x0B, 0xD6]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, first_case_operand, first_case);
+    patch_branch_target(&mut code, second_case_operand, second_case);
+    patch_branch_target(&mut code, default_break_operand, merge);
+    patch_branch_target(&mut code, first_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw loose dispatch lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("loose dispatch lift");
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::Comment(_)))
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    let tree: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::IfElse { .. }))
+        .unwrap_or_else(|| panic!("loose equality dispatch must structure: {lifted:#?}"));
+    assert_loose_dispatch_tree(tree, &[(0, true), (1, false)]);
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
+fn inverted_loose_forward_dispatch_preserves_comparisons_and_edges() {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x14]);
+    let first_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_test: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x01, 0xD1, 0x14]);
+    let second_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0B, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let default_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x28, 0xD6]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, first_miss_operand, second_test);
+    patch_branch_target(&mut code, first_break_operand, merge);
+    patch_branch_target(&mut code, second_miss_operand, default_case);
+    patch_branch_target(&mut code, second_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw inverted loose lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("inverted loose lift");
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::Comment(_)))
+    );
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+    );
+    let tree: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::IfElse { .. }))
+        .unwrap_or_else(|| panic!("loose inequality dispatch must structure: {lifted:#?}"));
+    assert_loose_dispatch_tree(tree, &[(0, true), (1, false)]);
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
 #[test]
 fn dense_forward_if_dispatch_preserves_shared_and_fallthrough_edges() {
     let mut code: Vec<u8> = Vec::new();

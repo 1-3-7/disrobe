@@ -2591,11 +2591,17 @@ enum StaticOperandKind {
     String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AntiTamperValue {
     Environment,
     UnpackFunction,
     Candidate,
+    StringKey,
+    StringLibrary,
+    GmatchKey,
+    GmatchFunction,
+    TonumberKey,
+    TonumberFunction,
     PcallKey,
     TostringKey,
     LinePattern,
@@ -2613,6 +2619,18 @@ enum AntiTamperValue {
     LineMatchPacked,
     LineMatchUnpacked,
     ParsedLine,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AntiTamperState {
+    locals: BTreeMap<LocalId, AntiTamperValue>,
+    cells: BTreeMap<String, AntiTamperValue>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AntiTamperProof {
+    parsed_line: bool,
+    candidate_state: Option<AntiTamperState>,
 }
 
 fn is_exact_environment_alias(expression: &Expr, source: &str) -> bool {
@@ -2655,7 +2673,7 @@ fn is_exact_static_string(
 
 fn anti_tamper_value(
     expression: &Expr,
-    state: &BTreeMap<LocalId, AntiTamperValue>,
+    state: &AntiTamperState,
     candidate_span: Span,
     ctx: &Ctx<'_>,
     substitutions: &BTreeMap<u64, String>,
@@ -2670,8 +2688,23 @@ fn anti_tamper_value(
     if expression.span == candidate_span {
         return Some(AntiTamperValue::Candidate);
     }
+    if let Some(cell) = substitutions.get(&span_key(expression.span))
+        && cell.ends_with("[1]")
+        && let Some(value) = state.cells.get(cell)
+    {
+        return Some(*value);
+    }
     if is_exact_static_string(expression, ctx.src, substitutions, "pcall") {
         return Some(AntiTamperValue::PcallKey);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, "string") {
+        return Some(AntiTamperValue::StringKey);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, "gmatch") {
+        return Some(AntiTamperValue::GmatchKey);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, "tonumber") {
+        return Some(AntiTamperValue::TonumberKey);
     }
     if is_exact_static_string(expression, ctx.src, substitutions, "tostring") {
         return Some(AntiTamperValue::TostringKey);
@@ -2683,7 +2716,7 @@ fn anti_tamper_value(
         return Some(AntiTamperValue::TupleSecondKey);
     }
     match &expression.kind {
-        ExprKind::Var(Var::Local(id)) => state.get(id).copied(),
+        ExprKind::Var(Var::Local(id)) => state.locals.get(id).copied(),
         ExprKind::Index(base, key) => {
             let base_value: AntiTamperValue = anti_tamper_value(
                 base,
@@ -2704,6 +2737,15 @@ fn anti_tamper_value(
                 fuel,
             );
             match (base_value, key_value) {
+                (AntiTamperValue::Environment, Some(AntiTamperValue::StringKey)) => {
+                    Some(AntiTamperValue::StringLibrary)
+                }
+                (AntiTamperValue::StringLibrary, Some(AntiTamperValue::GmatchKey)) => {
+                    Some(AntiTamperValue::GmatchFunction)
+                }
+                (AntiTamperValue::Environment, Some(AntiTamperValue::TonumberKey)) => {
+                    Some(AntiTamperValue::TonumberFunction)
+                }
                 (AntiTamperValue::Environment, Some(AntiTamperValue::PcallKey)) => {
                     Some(AntiTamperValue::PcallFunction)
                 }
@@ -2750,17 +2792,19 @@ fn anti_tamper_value(
                 (Some(AntiTamperValue::TostringFunction), Some([AntiTamperValue::PcallError])) => {
                     Some(AntiTamperValue::ErrorString)
                 }
-                (_, Some([AntiTamperValue::ErrorString, AntiTamperValue::LinePattern])) => {
-                    Some(AntiTamperValue::LineIterator)
-                }
+                (
+                    Some(AntiTamperValue::GmatchFunction),
+                    Some([AntiTamperValue::ErrorString, AntiTamperValue::LinePattern]),
+                ) => Some(AntiTamperValue::LineIterator),
                 (Some(AntiTamperValue::LineIterator), Some([])) => Some(AntiTamperValue::LineMatch),
                 (
                     Some(AntiTamperValue::UnpackFunction),
                     Some([AntiTamperValue::LineMatchPacked]),
                 ) => Some(AntiTamperValue::LineMatchUnpacked),
-                (_, Some([AntiTamperValue::LineMatchUnpacked])) => {
-                    Some(AntiTamperValue::ParsedLine)
-                }
+                (
+                    Some(AntiTamperValue::TonumberFunction),
+                    Some([AntiTamperValue::LineMatchUnpacked]),
+                ) => Some(AntiTamperValue::ParsedLine),
                 _ => None,
             }
         }
@@ -2789,15 +2833,20 @@ fn anti_tamper_value(
 
 fn apply_anti_tamper_statement(
     stat: &Stat,
-    state: &mut BTreeMap<LocalId, AntiTamperValue>,
+    state: &mut AntiTamperState,
     candidate_span: Span,
     ctx: &Ctx<'_>,
     substitutions: &BTreeMap<u64, String>,
     fuel: &mut usize,
 ) -> bool {
-    let (targets, values): (Vec<Option<LocalId>>, &[Expr]) = match &stat.kind {
+    let (local_targets, cell_targets, values): (
+        Vec<Option<LocalId>>,
+        Vec<Option<String>>,
+        &[Expr],
+    ) = match &stat.kind {
         StatKind::Local { targets, values } => (
             targets.iter().copied().map(Some).collect(),
+            vec![None; targets.len()],
             values.as_slice(),
         ),
         StatKind::Assign { targets, values } => (
@@ -2806,6 +2855,16 @@ fn apply_anti_tamper_statement(
                 .map(|target: &AssignTarget| match target {
                     AssignTarget::Var(Var::Local(id), _) => Some(*id),
                     AssignTarget::Var(Var::Global(_), _) | AssignTarget::Index(_, _, _) => None,
+                })
+                .collect(),
+            targets
+                .iter()
+                .map(|target: &AssignTarget| match target {
+                    AssignTarget::Index(_, _, span) => substitutions
+                        .get(&span_key(*span))
+                        .filter(|cell: &&String| cell.ends_with("[1]"))
+                        .cloned(),
+                    AssignTarget::Var(_, _) => None,
                 })
                 .collect(),
             values.as_slice(),
@@ -2819,16 +2878,25 @@ fn apply_anti_tamper_statement(
         })
         .collect();
     let proved: bool = updates.contains(&Some(AntiTamperValue::ParsedLine));
-    for (target, update) in targets.into_iter().zip(updates) {
-        let Some(id) = target else {
-            continue;
-        };
-        match update {
-            Some(value) => {
-                state.insert(id, value);
+    for ((local, cell), update) in local_targets.into_iter().zip(cell_targets).zip(updates) {
+        if let Some(id) = local {
+            match update {
+                Some(value) => {
+                    state.locals.insert(id, value);
+                }
+                None => {
+                    state.locals.remove(&id);
+                }
             }
-            None => {
-                state.remove(&id);
+        }
+        if let Some(identity) = cell {
+            match update {
+                Some(value) => {
+                    state.cells.insert(identity, value);
+                }
+                None => {
+                    state.cells.remove(&identity);
+                }
             }
         }
     }
@@ -2836,15 +2904,25 @@ fn apply_anti_tamper_statement(
 }
 
 fn merge_anti_tamper_state(
-    existing: &BTreeMap<LocalId, AntiTamperValue>,
-    incoming: &BTreeMap<LocalId, AntiTamperValue>,
-) -> BTreeMap<LocalId, AntiTamperValue> {
-    existing
-        .iter()
-        .filter_map(|(id, value): (&LocalId, &AntiTamperValue)| {
-            (incoming.get(id) == Some(value)).then_some((*id, *value))
-        })
-        .collect()
+    existing: &AntiTamperState,
+    incoming: &AntiTamperState,
+) -> AntiTamperState {
+    AntiTamperState {
+        locals: existing
+            .locals
+            .iter()
+            .filter_map(|(id, value): (&LocalId, &AntiTamperValue)| {
+                (incoming.locals.get(id) == Some(value)).then_some((*id, *value))
+            })
+            .collect(),
+        cells: existing
+            .cells
+            .iter()
+            .filter_map(|(identity, value): (&String, &AntiTamperValue)| {
+                (incoming.cells.get(identity) == Some(value)).then_some((identity.clone(), *value))
+            })
+            .collect(),
+    }
 }
 
 fn proves_pinned_anti_tamper_call(
@@ -2853,33 +2931,52 @@ fn proves_pinned_anti_tamper_call(
     terms: &[Terminator],
     ctx: &Ctx<'_>,
     substitutions: &BTreeMap<u64, String>,
-) -> Result<bool> {
-    let mut initial: BTreeMap<LocalId, AntiTamperValue> = ctx
-        .environment_locals
-        .iter()
-        .map(|id: &LocalId| (*id, AntiTamperValue::Environment))
-        .collect();
+    inherited_cells: &BTreeMap<String, AntiTamperValue>,
+) -> Result<AntiTamperProof> {
+    let mut initial: AntiTamperState = AntiTamperState {
+        locals: ctx
+            .environment_locals
+            .iter()
+            .map(|id: &LocalId| (*id, AntiTamperValue::Environment))
+            .collect(),
+        cells: inherited_cells.clone(),
+    };
     if let Some(unpack_local) = ctx.unpack_local {
-        initial.insert(unpack_local, AntiTamperValue::UnpackFunction);
+        initial
+            .locals
+            .insert(unpack_local, AntiTamperValue::UnpackFunction);
     }
-    let mut entries: Vec<Option<BTreeMap<LocalId, AntiTamperValue>>> =
-        vec![None; leaf_of_node.len()];
+    let mut entries: Vec<Option<AntiTamperState>> = vec![None; leaf_of_node.len()];
     let Some(entry) = entries.first_mut() else {
-        return Ok(false);
+        return Ok(AntiTamperProof::default());
     };
     *entry = Some(initial);
     let mut pending: Vec<u32> = vec![0];
     let mut steps: usize = 0;
     let mut fuel: usize = MAX_ANTITAMPER_PROOF_STEPS;
+    let mut proof: AntiTamperProof = AntiTamperProof::default();
     while let Some(node) = pending.pop() {
         steps = steps.saturating_add(1);
         if steps > MAX_ANTITAMPER_PROOF_STEPS {
             return Err(refuse("the AntiTamper proof exceeds its CFG step budget"));
         }
-        let mut state: BTreeMap<LocalId, AntiTamperValue> = entries[node as usize]
+        let mut state: AntiTamperState = entries[node as usize]
             .clone()
             .ok_or_else(|| refuse("the AntiTamper proof worklist has no entry state"))?;
         for stat in &leaf_of_node[node as usize].stats {
+            let values: &[Expr] = match &stat.kind {
+                StatKind::Local { values, .. } | StatKind::Assign { values, .. } => values,
+                _ => &[],
+            };
+            if values
+                .iter()
+                .any(|value: &Expr| unwrap_paren(value).span == candidate_span)
+            {
+                proof.candidate_state = Some(match &proof.candidate_state {
+                    Some(existing) => merge_anti_tamper_state(existing, &state),
+                    None => state.clone(),
+                });
+            }
             if apply_anti_tamper_statement(
                 stat,
                 &mut state,
@@ -2888,9 +2985,17 @@ fn proves_pinned_anti_tamper_call(
                 substitutions,
                 &mut fuel,
             ) {
-                return Ok(true);
+                proof.parsed_line = true;
+                if proof.candidate_state.is_some() {
+                    return Ok(proof);
+                }
             }
-            if state.len() > MAX_ANTITAMPER_STATE_BINDINGS {
+            let binding_count: usize = state
+                .locals
+                .len()
+                .checked_add(state.cells.len())
+                .ok_or_else(|| refuse("the AntiTamper proof state size overflowed"))?;
+            if binding_count > MAX_ANTITAMPER_STATE_BINDINGS {
                 return Err(refuse(
                     "the AntiTamper proof exceeds its state-binding budget",
                 ));
@@ -2899,9 +3004,8 @@ fn proves_pinned_anti_tamper_call(
         let mut successors: Vec<u32> = Vec::new();
         successors_of(&terms[node as usize], &mut successors);
         for successor in successors {
-            let next: &mut Option<BTreeMap<LocalId, AntiTamperValue>> =
-                &mut entries[successor as usize];
-            let merged: BTreeMap<LocalId, AntiTamperValue> = match next {
+            let next: &mut Option<AntiTamperState> = &mut entries[successor as usize];
+            let merged: AntiTamperState = match next {
                 Some(existing) => merge_anti_tamper_state(existing, &state),
                 None => state.clone(),
             };
@@ -2911,7 +3015,7 @@ fn proves_pinned_anti_tamper_call(
             }
         }
     }
-    Ok(false)
+    Ok(proof)
 }
 
 fn static_operand_kind(
@@ -3003,6 +3107,7 @@ fn recover_function(
     entry: f64,
     depth: usize,
     upvalue_boxes: &[String],
+    anti_tamper_cells: &BTreeMap<String, AntiTamperValue>,
     subst: &mut BTreeMap<u64, String>,
     stats: &mut GlobalStats,
     allow_arithmetic_error: bool,
@@ -3209,16 +3314,40 @@ fn recover_function(
         };
         let nested_upvalues: Vec<String> =
             closure_upvalue_names(ctx, upvals_arg, &boxes, &capture_parameters, subst)?;
-        let allow_nested_arithmetic_error: bool =
-            proves_pinned_anti_tamper_call(call_expr.span, &leaf_of_node, &terms, ctx, subst)?;
+        let proof: AntiTamperProof = proves_pinned_anti_tamper_call(
+            call_expr.span,
+            &leaf_of_node,
+            &terms,
+            ctx,
+            subst,
+            anti_tamper_cells,
+        )?;
+        let nested_anti_tamper_cells: BTreeMap<String, AntiTamperValue> = proof
+            .candidate_state
+            .as_ref()
+            .into_iter()
+            .flat_map(|state: &AntiTamperState| {
+                nested_upvalues.iter().enumerate().filter_map(
+                    |(index, identity): (usize, &String)| {
+                        state
+                            .cells
+                            .get(&format!("{identity}[1]"))
+                            .map(|value: &AntiTamperValue| {
+                                (format!("__vuc{}_{index}[1]", depth + 1), *value)
+                            })
+                    },
+                )
+            })
+            .collect();
         let recovered: RecoveredFunction = recover_function(
             ctx,
             nested_entry,
             depth + 1,
             &nested_upvalues,
+            &nested_anti_tamper_cells,
             subst,
             stats,
-            allow_nested_arithmetic_error,
+            proof.parsed_line,
         )?;
         subst.insert(call_key, recovered.text);
     }
@@ -4452,8 +4581,16 @@ pub fn recover_with_string_pool(
 
     let top_entry: f64 = find_top_level_entry(&ctx)?;
     let mut stats: GlobalStats = GlobalStats::default();
-    let recovered: RecoveredFunction =
-        recover_function(&ctx, top_entry, 0, &[], &mut subst, &mut stats, false)?;
+    let recovered: RecoveredFunction = recover_function(
+        &ctx,
+        top_entry,
+        0,
+        &[],
+        &BTreeMap::new(),
+        &mut subst,
+        &mut stats,
+        false,
+    )?;
     if stats.boxes_bound > 0 {
         assert_captured_variables_stay_in_scope(&recovered.text)?;
     }
@@ -4830,19 +4967,23 @@ mod tests {
     #[test]
     fn anti_tamper_candidate_requires_the_full_line_iterator_and_parse_chain() {
         let source: &str = concat!(
-            "local candidate, error_text, matcher\n",
+            "local candidate, error_text, matcher, parser, unpacker\n",
             "local iterator = matcher(error_text, ':(%d*):')\n",
+            "local matched = iterator()\n",
+            "local unpacked = unpacker({matched})\n",
+            "local parsed = parser(unpacked)\n",
         );
         let mut parser: Parser<'_> = Parser::new(source).expect("parse AntiTamper fixture");
         let chunk: Block = parser.parse_chunk().expect("parse AntiTamper chunk");
-        let [locals, iterator]: &[Stat] = chunk.stats.as_slice() else {
-            panic!("expected locals and iterator assignment");
+        let [locals, chain @ ..]: &[Stat] = chunk.stats.as_slice() else {
+            panic!("expected locals and AntiTamper consumer chain");
         };
         let StatKind::Local { targets, .. } = &locals.kind else {
             panic!("expected local declarations");
         };
-        let [candidate, error_text, _matcher]: &[LocalId] = targets.as_slice() else {
-            panic!("expected candidate, error text and matcher locals");
+        let [candidate, error_text, _matcher, _parser, unpacker]: &[LocalId] = targets.as_slice()
+        else {
+            panic!("expected candidate, error text, matcher, parser and unpacker locals");
         };
         let context: Ctx<'_> = Ctx {
             src: source,
@@ -4863,19 +5004,27 @@ mod tests {
             box_model: None,
             numbers: StaticNumberEvaluator::new(),
         };
-        let mut state: BTreeMap<LocalId, AntiTamperValue> =
-            BTreeMap::from([(*error_text, AntiTamperValue::ErrorString)]);
+        let mut state: AntiTamperState = AntiTamperState {
+            locals: BTreeMap::from([
+                (*error_text, AntiTamperValue::ErrorString),
+                (*unpacker, AntiTamperValue::UnpackFunction),
+            ]),
+            cells: BTreeMap::new(),
+        };
         let candidate_span: Span = Span { start: 0, end: 0 };
         let mut fuel: usize = MAX_ANTITAMPER_PROOF_STEPS;
-        assert!(
-            !apply_anti_tamper_statement(
-                iterator,
+        let proved: bool = chain.iter().any(|statement: &Stat| {
+            apply_anti_tamper_statement(
+                statement,
                 &mut state,
                 candidate_span,
                 &context,
                 &BTreeMap::new(),
                 &mut fuel,
-            ),
+            )
+        });
+        assert!(
+            !proved,
             "an arbitrary function that accepts the error text and line pattern is not the pinned AntiTamper consumer",
         );
     }

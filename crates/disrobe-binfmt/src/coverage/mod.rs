@@ -9,6 +9,7 @@ mod coff;
 mod elf;
 mod macho;
 mod pe;
+mod wasm;
 
 pub const BYTE_COVERAGE_SCHEMA: &str = "disrobe.byte-coverage/v1";
 
@@ -608,6 +609,10 @@ pub fn file_byte_coverage(bytes: &[u8]) -> Result<ByteCoverage> {
         ));
     }
 
+    if bytes.starts_with(b"\0asm") {
+        return wasm::map_wasm(bytes);
+    }
+
     if crate::ne::is_ne(bytes) {
         return Err(Error::CoverageUnsupported {
             format: "ne",
@@ -632,9 +637,6 @@ pub fn file_byte_coverage(bytes: &[u8]) -> Result<ByteCoverage> {
             "the new-executable segment, resource, relocation and entry tables are not mapped to \
              file offsets by this walk",
         )),
-        NativeFormat::Wasm => Err(unsupported(
-            format,
-            "the WebAssembly section stream is not mapped to file offsets by this walk",
-        )),
+        NativeFormat::Wasm => wasm::map_wasm(bytes),
     }
 }

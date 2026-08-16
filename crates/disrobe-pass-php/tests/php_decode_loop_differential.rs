@@ -367,6 +367,20 @@ fn rc4_in_a_while_loop_matches_the_canonical_recognizer_shape() {
 }
 
 #[test]
+fn rc4_helper_with_chained_state_initialization_runtime_equivalent() {
+    let key: &[u8] = b"chained_rc4_state";
+    let cipher: Vec<u8> = disrobe_core::codec::cipher::rc4_apply(key, payload().as_bytes());
+    let encoded: String = b64(&cipher);
+    let key_text: String = String::from_utf8_lossy(key).into_owned();
+    let blob: Vec<u8> = format!(
+        "<?php function rc4($key, $data) {{ $state = range(0, 255); $j = 0; for ($i = 0; $i < 256; $i++) {{ $j = ($j + $state[$i] + ord($key[$i % strlen($key)])) % 256; $swap = $state[$i]; $state[$i] = $state[$j]; $state[$j] = $swap; }} $i = 37; $j = 73; $i = $j = 0; $out = ''; for ($n = 0; $n < strlen($data); $n++) {{ $i = ($i + 1) % 256; $j = ($j + $state[$i]) % 256; $swap = $state[$i]; $state[$i] = $state[$j]; $state[$j] = $swap; $out .= $data[$n] ^ chr($state[($state[$i] + $state[$j]) % 256]); }} return $out; }} ev\x61l(rc4('{key_text}', base64_decode('{encoded}')));"
+    )
+    .into_bytes();
+
+    recover_and_grade("rc4-helper-chained-state", &blob);
+}
+
+#[test]
 fn a_loop_that_clobbers_an_outer_variable_matches_php_scoping() {
     let cipher: Vec<u8> = payload().bytes().map(|b: u8| b.wrapping_add(5)).collect();
     let blob: Vec<u8> = format!(

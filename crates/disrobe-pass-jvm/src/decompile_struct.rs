@@ -1082,6 +1082,7 @@ impl<'a> Structurer<'a> {
                     catch_parameter_slots.insert(copy_slot);
                     continue;
                 }
+                FinallyCatchStoreMatch::MatchedDiscard => continue,
                 FinallyCatchStoreMatch::Invalid => return None,
             }
             if a.opcode != b.opcode {
@@ -1215,6 +1216,98 @@ impl<'a> Structurer<'a> {
             None => None,
         };
         Some((blocks, exit))
+    }
+
+    fn finally_nested_return_fold(
+        &mut self,
+        group: &GroupedTry,
+        chain: &FinallyChain,
+        start: BlockId,
+    ) -> Option<(Vec<BlockId>, BlockId, u16)> {
+        let body: Vec<Instruction> = self.finally_body_instructions(chain)?;
+        let body_end: u32 = self.pc_after_last(&body)?;
+        let exit_branches: Vec<&Instruction> = body
+            .iter()
+            .filter(|instruction: &&Instruction| {
+                matches!(instruction.opcode, 0xA7 | 0xC8)
+                    && branch_target(instruction) == Some(body_end)
+            })
+            .collect();
+        let [body_exit]: [&Instruction; 1] = exit_branches.as_slice().try_into().ok()?;
+        let success_return: BlockId = self.next_block_by_pc(start)?;
+        let catch_block: BlockId = self.next_block_by_pc(success_return)?;
+        let (slot, return_opcode): (u16, u8) =
+            typed_return_slot(self.block_instructions(success_return))?;
+        let catch_instructions: &[Instruction] = self.block_instructions(catch_block);
+        let catch_prefix_length: usize = catch_instructions.len().checked_sub(2)?;
+        let (catch_prefix, catch_return): (&[Instruction], &[Instruction]) =
+            catch_instructions.split_at(catch_prefix_length);
+        let (catch_slot, catch_return_opcode): (u16, u8) = typed_return_slot(catch_return)?;
+        if catch_prefix.first()?.opcode != 0x57
+            || catch_slot != slot
+            || catch_return_opcode != return_opcode
+            || self.slot_total_uses(slot) != 3
+        {
+            return None;
+        }
+        let start_block: &BasicBlock = &self.cfg.blocks[start.0 as usize];
+        let normal_successors: Vec<BlockId> = start_block
+            .successors
+            .iter()
+            .filter(|edge: &&Edge| !matches!(edge.kind, EdgeKind::Exception))
+            .map(|edge: &Edge| edge.target)
+            .collect();
+        if normal_successors.as_slice() != [success_return]
+            || self.cfg.blocks[success_return.0 as usize]
+                .successors
+                .iter()
+                .any(|edge: &Edge| !matches!(edge.kind, EdgeKind::Exception))
+            || self.cfg.blocks[catch_block.0 as usize]
+                .successors
+                .iter()
+                .any(|edge: &Edge| !matches!(edge.kind, EdgeKind::Exception))
+        {
+            return None;
+        }
+        let start_pc: u32 = start_block.start_pc;
+        let return_pc: u32 = self.cfg.blocks[success_return.0 as usize].start_pc;
+        let catch_pc: u32 = self.cfg.blocks[catch_block.0 as usize].start_pc;
+        if !self
+            .cfg
+            .exception_regions
+            .iter()
+            .any(|region: &ExceptionRegion| {
+                region.catch_type.is_some()
+                    && region.try_start_pc == start_pc
+                    && region.try_end_pc == return_pc
+                    && region.handler_pc == catch_pc
+            })
+        {
+            return None;
+        }
+        let predecessor: BlockId = self.single_try_predecessor(group, start)?;
+        if any_store_slot(self.block_instructions(predecessor).last()?) != Some(slot) {
+            return None;
+        }
+        let copy_end: u32 = catch_return.first()?.pc;
+        let synthetic_pc: u32 = self.block_instructions(success_return).first()?.pc;
+        let relative_exit: i32 =
+            i32::try_from(i64::from(copy_end) - i64::from(synthetic_pc)).ok()?;
+        let mut synthetic_exit: Instruction = (*body_exit).clone();
+        synthetic_exit.pc = synthetic_pc;
+        synthetic_exit.operands = Operands::Branch(relative_exit);
+        let mut copy: Vec<Instruction> = Vec::with_capacity(body.len());
+        copy.extend_from_slice(self.block_instructions(start));
+        copy.push(synthetic_exit);
+        copy.extend_from_slice(catch_prefix);
+        let FinallyCopyMatch {
+            exit_pc,
+            catch_parameter_slots,
+        }: FinallyCopyMatch = self.finally_copy_match(&body, &copy)?;
+        if exit_pc != Some(copy_end) || !catch_parameter_slots.is_empty() {
+            return None;
+        }
+        Some((vec![start, success_return, catch_block], predecessor, slot))
     }
 
     fn finally_value_return_after_blocks(
@@ -1890,38 +1983,52 @@ impl<'a> Structurer<'a> {
                             }
                         }
                         if has_internal_control_flow && let Some(copy_head) = after_try {
-                            match self.finally_inline_blocks(&chain, copy_head) {
-                                Some((blocks, exit)) if blocks.len() > 1 => {
-                                    let continuation: Option<BlockId> = exit.or_else(|| {
-                                        blocks
-                                            .last()
-                                            .and_then(|last: &BlockId| self.next_block_by_pc(*last))
-                                    });
-                                    for block in blocks {
-                                        self.finally_inline_skips
-                                            .insert(block, self.block_instructions(block).len());
-                                        self.visited.insert(block);
-                                    }
-                                    if let Some(continuation) = continuation
-                                        && let Some((predecessor, slot)) = self
-                                            .finally_value_return_after_blocks(
-                                                &try_group,
-                                                copy_head,
-                                                continuation,
-                                            )
-                                    {
-                                        self.finally_return_stores.insert(predecessor, slot);
-                                        self.visited.insert(continuation);
-                                        after_try = None;
-                                    } else {
-                                        after_try = continuation;
-                                    }
+                            if let Some((blocks, predecessor, slot)) =
+                                self.finally_nested_return_fold(&try_group, &chain, copy_head)
+                            {
+                                for block in blocks {
+                                    self.finally_inline_skips
+                                        .insert(block, self.block_instructions(block).len());
+                                    self.visited.insert(block);
                                 }
-                                _ => {
-                                    self.unmodelled_finally.get_or_insert(
+                                self.finally_return_stores.insert(predecessor, slot);
+                                after_try = None;
+                            } else {
+                                match self.finally_inline_blocks(&chain, copy_head) {
+                                    Some((blocks, exit)) if blocks.len() > 1 => {
+                                        let continuation: Option<BlockId> = exit.or_else(|| {
+                                            blocks.last().and_then(|last: &BlockId| {
+                                                self.next_block_by_pc(*last)
+                                            })
+                                        });
+                                        for block in blocks {
+                                            self.finally_inline_skips.insert(
+                                                block,
+                                                self.block_instructions(block).len(),
+                                            );
+                                            self.visited.insert(block);
+                                        }
+                                        if let Some(continuation) = continuation
+                                            && let Some((predecessor, slot)) = self
+                                                .finally_value_return_after_blocks(
+                                                    &try_group,
+                                                    copy_head,
+                                                    continuation,
+                                                )
+                                        {
+                                            self.finally_return_stores.insert(predecessor, slot);
+                                            self.visited.insert(continuation);
+                                            after_try = None;
+                                        } else {
+                                            after_try = continuation;
+                                        }
+                                    }
+                                    _ => {
+                                        self.unmodelled_finally.get_or_insert(
                                         "a finally body with internal control flow was not folded \
                                          out of every exit path",
                                     );
+                                    }
                                 }
                             }
                         }
@@ -2464,6 +2571,22 @@ const fn any_store_slot(ins: &Instruction) -> Option<u16> {
     }
 }
 
+fn typed_return_slot(instructions: &[Instruction]) -> Option<(u16, u8)> {
+    let [load, returned]: &[Instruction; 2] = instructions.try_into().ok()?;
+    let compatible: bool = matches!(
+        (load.opcode, returned.opcode),
+        (0x15 | 0x1A..=0x1D, 0xAC)
+            | (0x16 | 0x1E..=0x21, 0xAD)
+            | (0x17 | 0x22..=0x25, 0xAE)
+            | (0x18 | 0x26..=0x29, 0xAF)
+            | (0x19 | 0x2A..=0x2D, 0xB0)
+    );
+    if !compatible {
+        return None;
+    }
+    Some((any_load_slot(load)?, returned.opcode))
+}
+
 fn count_slot_uses(insns: &[Instruction]) -> BTreeMap<u16, usize> {
     let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
     for instruction in insns {
@@ -2669,6 +2792,7 @@ type FinallyHandlerShapes = BTreeMap<u32, Option<FinallyHandlerShape>>;
 enum FinallyCatchStoreMatch {
     Absent,
     Matched(u16, u16),
+    MatchedDiscard,
     Invalid,
 }
 
@@ -2784,6 +2908,9 @@ impl FinallyCopyIndex {
             (Some(Some(body_shape)), Some(Some(copy_shape)))
                 if !body_shape.is_empty() && body_shape == copy_shape =>
             {
+                if body.opcode == 0x57 && copy.opcode == 0x57 {
+                    return FinallyCatchStoreMatch::MatchedDiscard;
+                }
                 let (Some(body_slot), Some(copy_slot)): (Option<u16>, Option<u16>) =
                     (astore_slot(body), astore_slot(copy))
                 else {
@@ -2823,6 +2950,16 @@ mod finally_copy_index_tests {
             mnemonic: "astore",
             wide: false,
             operands: Operands::Local(slot),
+        }
+    }
+
+    fn pop(pc: u32) -> Instruction {
+        Instruction {
+            pc,
+            opcode: 0x57,
+            mnemonic: "pop",
+            wide: false,
+            operands: Operands::None,
         }
     }
 
@@ -2957,6 +3094,47 @@ mod finally_copy_index_tests {
         let reused: BTreeMap<u16, usize> = std::iter::once((1, 2)).collect();
         assert_eq!(
             index.catch_store_match(&body[1], &copy[1], &reused),
+            FinallyCatchStoreMatch::Invalid
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typed_catch_discards_match_only_when_both_copies_discard() -> Result<(), &'static str> {
+        let body: Vec<Instruction> = vec![instruction(10), pop(20)];
+        let copy: Vec<Instruction> = vec![instruction(110), pop(120)];
+        let regions: Vec<ExceptionRegion> = vec![
+            ExceptionRegion {
+                try_start_pc: 10,
+                try_end_pc: 20,
+                handler_pc: 20,
+                catch_type: Some("A".to_owned()),
+            },
+            ExceptionRegion {
+                try_start_pc: 110,
+                try_end_pc: 120,
+                handler_pc: 120,
+                catch_type: Some("A".to_owned()),
+            },
+        ];
+        let mut work: usize = 0;
+        let index: FinallyCopyIndex = FinallyCopyIndex::build(
+            &body,
+            &copy,
+            Some(30),
+            Some(130),
+            &regions,
+            &mut work,
+            MAX_STRUCTURE_WORK,
+        )
+        .ok_or("typed discard handlers must build")?;
+        let no_slots: BTreeMap<u16, usize> = BTreeMap::new();
+        assert_eq!(
+            index.catch_store_match(&body[1], &copy[1], &no_slots),
+            FinallyCatchStoreMatch::MatchedDiscard
+        );
+        assert_eq!(
+            index.catch_store_match(&body[1], &astore(120, 1), &no_slots),
             FinallyCatchStoreMatch::Invalid
         );
         Ok(())

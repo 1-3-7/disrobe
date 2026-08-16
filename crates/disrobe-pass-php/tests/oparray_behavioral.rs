@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 10] = [
+const PINNED_SAMPLES: [&str; 11] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -44,11 +44,12 @@ const PINNED_SAMPLES: [&str; 10] = [
     "generators",
     "keyed_foreach",
     "objects",
+    "switch_linear",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 8] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 9] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -56,10 +57,11 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 8] = [
     "generators",
     "keyed_foreach",
     "objects",
+    "switch_linear",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 10] = [
+const OPCODE_NAMING_SAMPLES: [&str; 11] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -68,6 +70,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 10] = [
     "generators",
     "keyed_foreach",
     "objects",
+    "switch_linear",
     "variable_variable",
     "versioned",
 ];
@@ -452,6 +455,11 @@ fn variable_variable_oparray_roundtrips_behaviorally() {
 #[test]
 fn objects_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("objects");
+}
+
+#[test]
+fn php_84_linear_switch_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("switch_linear");
 }
 
 const EMITTER_SEND_FAMILY_TARGET: &str = "ZEND_SEND_VAL";
