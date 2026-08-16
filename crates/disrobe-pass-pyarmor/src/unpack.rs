@@ -4,7 +4,7 @@ use std::time::Duration;
 use disrobe_core::codec::hex;
 use disrobe_py_marshal::{Object, PyVersion, PycFile, PycHeader, load, write_pyc};
 
-use crate::bcc_lift::{BccLiftOutput, lift_bcc_native};
+use crate::bcc_lift::{BccLiftOutput, BccLiftRefusal, BccLiftRefusalReason, lift_bcc_native};
 use crate::descriptor_cache::{DescriptorCache, DescriptorCacheConfig};
 use crate::detect::{Detection, ProtectionKind, PyarmorVersion, detect_from_wrapper};
 use crate::dynamic_hook::{
@@ -161,6 +161,7 @@ pub struct UnpackOutput {
     pub provenance: Option<PyarmorProvenance>,
     pub bcc_blobs: Vec<crate::v8v9::BccBlob>,
     pub bcc_lifts: Vec<BccLiftOutput>,
+    pub bcc_lift_refusals: Vec<BccLiftRefusal>,
     pub bcc_lift_skipped_reason: Option<String>,
 }
 
@@ -326,6 +327,7 @@ fn legacy_detection_only_output(
         provenance: None,
         bcc_blobs: Vec::new(),
         bcc_lifts: Vec::new(),
+        bcc_lift_refusals: Vec::new(),
         bcc_lift_skipped_reason: None,
     }
 }
@@ -539,6 +541,7 @@ fn attempt_dynamic_fallback(
         provenance: None,
         bcc_blobs: Vec::new(),
         bcc_lifts: Vec::new(),
+        bcc_lift_refusals: Vec::new(),
         bcc_lift_skipped_reason: None,
     })
 }
@@ -780,21 +783,29 @@ fn finalize_v8v9(
     );
     if !bcc_blobs.is_empty() && options.allow_bcc {
         let mut lifts: Vec<BccLiftOutput> = Vec::with_capacity(bcc_blobs.len());
-        let mut skip_msg: Option<String> = None;
-        for blob in &bcc_blobs {
+        let mut refusals: Vec<BccLiftRefusal> = Vec::new();
+        let mut skip_messages: Vec<String> = Vec::new();
+        for (blob_index, blob) in bcc_blobs.iter().enumerate() {
             match lift_bcc_native(&blob.bytes, blob.architecture) {
                 Ok(lifted) => lifts.push(lifted),
-                Err(e) => {
-                    skip_msg = Some(format!(
+                Err(error) => {
+                    let reason: BccLiftRefusalReason = BccLiftRefusalReason::from_error(&error);
+                    skip_messages.push(format!(
                         "in-crate pseudo-C lift failed for {}: {e}",
-                        blob.architecture.label()
+                        blob.architecture.label(),
+                        e = error
                     ));
-                    break;
+                    refusals.push(BccLiftRefusal {
+                        blob_index,
+                        architecture: blob.architecture,
+                        reason,
+                    });
                 }
             }
         }
         out.bcc_lifts = lifts;
-        out.bcc_lift_skipped_reason = skip_msg;
+        out.bcc_lift_refusals = refusals;
+        out.bcc_lift_skipped_reason = (!skip_messages.is_empty()).then(|| skip_messages.join("; "));
     } else if !bcc_blobs.is_empty() {
         out.bcc_lift_skipped_reason =
             Some("v9 BCC blobs present but --allow-bcc not set; lift skipped".to_owned());
@@ -1010,6 +1021,7 @@ fn finalize(
         provenance,
         bcc_blobs: Vec::new(),
         bcc_lifts: Vec::new(),
+        bcc_lift_refusals: Vec::new(),
         bcc_lift_skipped_reason: None,
     }
 }

@@ -252,6 +252,18 @@ fn unpack(
     bar.finish("done");
 
     let mut wrote: Vec<PathBuf> = Vec::new();
+    let bcc_publication: Option<disrobe_pass_pyarmor::BccPublication> =
+        if allow_bcc && !result.bcc_blobs.is_empty() {
+            let linked: disrobe_pass_pyarmor::BccLinkOutput =
+                disrobe_pass_pyarmor::link_bcc_from_unpack(&result, &text, &input)
+                    .map_err(|error: disrobe_pass_pyarmor::Error| miette::miette!("{error}"))?;
+            Some(
+                disrobe_pass_pyarmor::publish_bcc_recovery(&result, &linked)
+                    .map_err(|error: disrobe_pass_pyarmor::Error| miette::miette!("{error}"))?,
+            )
+        } else {
+            None
+        };
 
     let manifest_path: PathBuf = out_dir.join("manifest.json");
     let dynamic_summary_json: Option<serde_json::Value> = result.dynamic_hook.as_ref().map(|d| {
@@ -291,6 +303,9 @@ fn unpack(
         "pure-static"
     };
     let limitations: Vec<String> = compute_limitations(&result);
+    let bcc_publication_manifest: Option<serde_json::Value> = bcc_publication
+        .as_ref()
+        .map(disrobe_pass_pyarmor::BccPublication::manifest_value);
     let manifest: serde_json::Value = serde_json::json!({
         "schema": "disrobe.pyarmor.manifest/v0",
         "input": input.display().to_string(),
@@ -309,6 +324,7 @@ fn unpack(
         "target_pyver_applied": target_pyver.map(|t| format!("{}.{}", t.major, t.minor)),
         "mode_override": mode_override.label(),
         "allow_bcc": allow_bcc,
+        "bcc_publication": bcc_publication_manifest,
         "strict": strict,
         "no_cextract": no_cextract,
         "cextract_only": cextract_only,
@@ -342,6 +358,31 @@ fn unpack(
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e: std::io::Error| miette::miette!("DR-CLI-0003: cannot write manifest: {e}"))?;
     wrote.push(manifest_path);
+
+    if let Some(publication) = bcc_publication.as_ref() {
+        for artifact in publication.artifacts() {
+            let artifact_path: PathBuf = out_dir.join(artifact.relative_path);
+            let Some(parent): Option<&std::path::Path> = artifact_path.parent() else {
+                return Err(miette::miette!(
+                    "DR-CLI-0026: BCC artifact path has no parent: {}",
+                    artifact_path.display()
+                ));
+            };
+            std::fs::create_dir_all(parent).map_err(|error: std::io::Error| {
+                miette::miette!(
+                    "DR-CLI-0027: cannot create BCC publication directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+            std::fs::write(&artifact_path, artifact.bytes).map_err(|error: std::io::Error| {
+                miette::miette!(
+                    "DR-CLI-0028: cannot write BCC publication {}: {error}",
+                    artifact_path.display()
+                )
+            })?;
+            wrote.push(artifact_path);
+        }
+    }
 
     if !result.plaintext.is_empty()
         && (emit.is_empty() || emit.iter().any(|s| s == "ir" || s == "report"))
@@ -591,25 +632,25 @@ fn bcc_limitations(
     let mut limits: Vec<String> = Vec::new();
     if lifts.is_empty() {
         limits.push(
-            "BCC in-tree static analysis produced no lift result; the CLI does not emit BCC pseudo-C or source artifacts."
+            "BCC in-tree static analysis produced no lift result; the recovery bundle records the typed blob refusal."
                 .to_owned(),
         );
     } else if modeled_count == 0 && unmodeled_count == 0 {
         limits.push(
-            "BCC in-tree static analysis recovered no native functions; the CLI does not emit BCC pseudo-C or source artifacts."
+            "BCC in-tree static analysis recovered no native functions; the recovery bundle retains the empty blob outcome."
                 .to_owned(),
         );
     } else if modeled_count == 0 {
         limits.push(format!(
-            "BCC in-tree static analysis surfaced {unmodeled_count} function(s) as native disassembly only; no function was modeled as pseudo-C, and the CLI does not emit BCC pseudo-C or source artifacts."
+            "BCC in-tree static analysis published {unmodeled_count} function(s) as native disassembly only; no function was modeled as pseudo-C."
         ));
     } else if unmodeled_count == 0 {
         limits.push(format!(
-            "BCC in-tree static analysis modeled {modeled_count} function(s) as pseudo-C; the CLI does not emit BCC pseudo-C or source artifacts."
+            "BCC in-tree static analysis published {modeled_count} function(s) as pseudo-C."
         ));
     } else {
         limits.push(format!(
-            "BCC in-tree static analysis modeled {modeled_count} function(s) as pseudo-C and surfaced {unmodeled_count} function(s) as native disassembly only; the CLI does not emit BCC pseudo-C or source artifacts."
+            "BCC in-tree static analysis published {modeled_count} function(s) as pseudo-C and {unmodeled_count} function(s) as native disassembly only."
         ));
     }
     if let Some(reason) = skipped_reason {

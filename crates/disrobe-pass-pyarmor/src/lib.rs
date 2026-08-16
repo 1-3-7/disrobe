@@ -94,13 +94,16 @@ pub use bcc::recover::{
     recover_from_code, recover_from_nir,
 };
 pub use bcc::{
-    BccLinkMap, BccLinkOutput, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord,
+    BCC_PSEUDO_C_PATH, BCC_RECOVERED_PYTHON_PATH, BCC_RECOVERY_PATH, BCC_RECOVERY_SCHEMA,
+    BccLinkMap, BccLinkOutput, BccPublication, BccPublicationArtifact, BccPublicationLimits,
+    BccPublicationSummary, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord,
     LinkConfidence, LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature,
-    SourceIdentity, link_bcc_from_unpack, link_bcc_module,
+    SourceIdentity, link_bcc_from_unpack, link_bcc_module, publish_bcc_recovery,
+    publish_bcc_recovery_with_limits,
 };
 pub use bcc_lift::{
-    BccLiftOutput, FunctionId, FunctionNameSource, PseudoCFunction, lift_bcc_code_region,
-    lift_bcc_native,
+    BccLiftOutput, BccLiftRefusal, BccLiftRefusalReason, FunctionId, FunctionNameSource,
+    PseudoCFunction, lift_bcc_code_region, lift_bcc_native,
 };
 pub use descriptor_cache::{DescriptorCache, DescriptorCacheConfig, DescriptorCacheStats};
 pub use detect::{
@@ -111,7 +114,7 @@ pub use dynamic_hook::{
     DynamicHookOptions, DynamicHookResult, InterpreterSpec, run_dynamic_hook,
     run_dynamic_hook_with_target,
 };
-pub use error::{Error, Result};
+pub use error::{BccPublicationResource, Error, Result};
 pub use format_wire::format_python;
 pub use inner_cipher::{
     DecryptionStats, PyarmorCoDescriptor, PyarmorModuleState, PyarmorTrailer, decrypt_module,

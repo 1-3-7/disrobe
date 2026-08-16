@@ -4,6 +4,11 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+use disrobe_pass_pyarmor::{
+    BccPublication, UnpackOptions, link_bcc_from_unpack, publish_bcc_recovery,
+    unpack_wrapper_text_with_options,
+};
+
 mod common;
 
 use common::{Run, run_disrobe, temp_dir};
@@ -13,7 +18,6 @@ const BCC_WRAPPER_SHA256: &str = "b71480d70250997ea96bc3d3d5331d028e8ac657cca9a7
 const BCC_RUNTIME: &str =
     "corpus/python/pyarmor/v9-bcc/default/pyarmor_runtime_015009/pyarmor_runtime.pyd";
 const BCC_RUNTIME_SHA256: &str = "105c97b2dcbdd1a0fc025f7f1c9c8317c0af113531f9d311d7e17cc010ccad9a";
-const README_BCC_BOUNDARY: &str = "PyArmor BCC native blobs are carved and passed to an in-memory static lift attempt under `--allow-bcc`. The current CLI records the boundary and limitations in `manifest.json`; it does not serialize the lift or emit a function map, pseudo-C, or recovered Python.";
 const README_BCC_SAFETY: &str = "Only the PyArmor v6/v7 dynamic hook executes sample code, behind `--allow-dynamic` with a watchdog. `--allow-bcc` permits only in-tree static analysis and does not execute the sample or invoke external tools.";
 
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -70,6 +74,9 @@ fn expected_inventory(manifest: &serde_json::Value) -> Result<BTreeSet<String>, 
         "emit_source.json",
         "emit_strings.json",
         "emit_symbols.json",
+        "bcc/bcc-pseudo-c.c",
+        "bcc/bcc-recovered.py",
+        "bcc/bcc-recovery.json",
         "manifest.json",
     ]
     .into_iter()
@@ -105,22 +112,8 @@ fn grade_inventory(root: &Path, manifest: &serde_json::Value) -> Result<(), Stri
     Ok(())
 }
 
-fn reported_unmodeled_count(limitations: &[serde_json::Value]) -> Option<usize> {
-    const PREFIX: &str = "BCC in-tree static analysis surfaced ";
-    const ZERO_MODELED: &str = "no function was modeled as pseudo-C";
-    limitations.iter().find_map(|entry: &serde_json::Value| {
-        let text: &str = entry.as_str()?;
-        if !text.contains(ZERO_MODELED) {
-            return None;
-        }
-        let rest: &str = text.strip_prefix(PREFIX)?;
-        let count: &str = rest.split_once(' ')?.0;
-        count.parse::<usize>().ok()
-    })
-}
-
 #[test]
-fn pyarmor_bcc_cli_surface_matches_published_limit() -> Result<(), Box<dyn Error>> {
+fn pyarmor_bcc_cli_and_auto_publish_the_canonical_recovery_bundle() -> Result<(), Box<dyn Error>> {
     let root: PathBuf = workspace_root()?;
     let input: PathBuf = root.join(BCC_WRAPPER);
     let runtime: PathBuf = root.join(BCC_RUNTIME);
@@ -168,18 +161,31 @@ fn pyarmor_bcc_cli_surface_matches_published_limit() -> Result<(), Box<dyn Error
         std::fs::canonicalize(&runtime)?,
         "CLI must consume the tracked sibling BCC runtime"
     );
-    let limitations: &[serde_json::Value] = manifest["limitations"]
-        .as_array()
-        .ok_or("manifest limitations must be an array")?;
-    let unmodeled: usize = reported_unmodeled_count(limitations)
-        .ok_or("real BCC fixture must report both its surfaced count and zero modeled functions")?;
     assert_eq!(
-        unmodeled, 5,
-        "real BCC fixture must surface its five native functions before the output boundary is graded"
+        manifest["bcc_publication"]["schema"],
+        "disrobe.pyarmor.bcc.recovery/v1"
     );
-    assert!(manifest.get("bcc_lifts").is_none());
-    assert!(manifest.get("bcc_function_map").is_none());
-    assert!(manifest.get("reconstructed_sources").is_none());
+    assert_eq!(manifest["bcc_publication"]["function_count"], 4);
+    assert_eq!(manifest["bcc_publication"]["modeled_count"], 0);
+    assert_eq!(manifest["bcc_publication"]["unmodeled_count"], 4);
+    assert_eq!(manifest["bcc_publication"]["refused_blob_count"], 0);
+
+    let wrapper_text: String = std::fs::read_to_string(&input)?;
+    let options: UnpackOptions = UnpackOptions {
+        allow_bcc: true,
+        ..UnpackOptions::default()
+    };
+    let unpacked = unpack_wrapper_text_with_options(&wrapper_text, &input, &options)?;
+    let linked = link_bcc_from_unpack(&unpacked, &wrapper_text, &input)?;
+    let canonical: BccPublication = publish_bcc_recovery(&unpacked, &linked)?;
+    for expected in canonical.artifacts() {
+        let actual: Vec<u8> = std::fs::read(out_dir.join(expected.relative_path))?;
+        assert_eq!(
+            actual, expected.bytes,
+            "dedicated CLI drifted from pass-owned {}",
+            expected.relative_path
+        );
+    }
 
     let source_bytes: Vec<u8> = std::fs::read(out_dir.join("emit_source.json"))?;
     let source_emit: serde_json::Value = serde_json::from_slice(&source_bytes)?;
@@ -199,11 +205,25 @@ fn pyarmor_bcc_cli_surface_matches_published_limit() -> Result<(), Box<dyn Error
         "mutation failure must name the fabricated artifact: {mutation_failure}"
     );
 
-    let readme: String = std::fs::read_to_string(root.join("README.md"))?;
-    assert!(
-        readme.contains(README_BCC_BOUNDARY),
-        "README must state the CLI's measured BCC emission boundary"
+    let auto_out: PathBuf = scratch.path().join("auto-out");
+    let auto_text: String = auto_out.to_string_lossy().into_owned();
+    let auto_run: Run = run_disrobe(&["auto", &input_text, "--out", &auto_text]);
+    assert_eq!(
+        auto_run.code, 0,
+        "stdout={} stderr={}",
+        auto_run.stdout, auto_run.stderr
     );
+    for expected in canonical.artifacts() {
+        let actual: Vec<u8> =
+            std::fs::read(auto_out.join("extracted").join(expected.relative_path))?;
+        assert_eq!(
+            actual, expected.bytes,
+            "auto drifted from pass-owned {}",
+            expected.relative_path
+        );
+    }
+
+    let readme: String = std::fs::read_to_string(root.join("README.md"))?;
     assert!(
         readme.contains(README_BCC_SAFETY),
         "README must distinguish the static BCC opt-in from sample execution"

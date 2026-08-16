@@ -6,7 +6,12 @@ use disrobe_core::Artifact;
 use disrobe_core::Rung;
 use disrobe_core::chain::detection::ChildArtifact;
 use disrobe_core::chain::{OutputKind, Pass};
+use disrobe_core::pass::PassContext;
 use disrobe_pass_pyarmor::chain_detector::PYARMOR_PASS;
+use disrobe_pass_pyarmor::{
+    BccPublication, UnpackOptions, link_bcc_from_unpack, publish_bcc_recovery,
+    unpack_wrapper_text_with_options,
+};
 
 const GAUNTLET_WRAPPER: &str = "corpus/python/pyarmor/gauntlet/dist/inventory.py";
 const BCC_WRAPPER: &str = "corpus/python/pyarmor/v9-bcc/default/known_plaintext.py";
@@ -93,7 +98,7 @@ fn extract_children_surfaces_manifest_sidecar_for_real_v8_sample() {
 }
 
 #[test]
-fn extract_children_bcc_manifest_does_not_claim_an_unemitted_lift() {
+fn extract_children_without_a_path_keeps_the_bcc_runtime_limitation() {
     let bytes: Vec<u8> = bcc_wrapper_bytes();
     let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
     let children: Vec<ChildArtifact> = PYARMOR_PASS
@@ -109,14 +114,65 @@ fn extract_children_bcc_manifest_does_not_claim_an_unemitted_lift() {
     let limitations: &Vec<serde_json::Value> = parsed["limitations"]
         .as_array()
         .expect("BCC manifest must carry limitations");
-    let bcc_limitation: &str = limitations
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .find(|limitation: &&str| limitation.contains("BCC"))
-        .expect("BCC manifest must state the chain analysis boundary");
-    assert!(bcc_limitation.contains("does not perform or emit"));
-    assert!(bcc_limitation.contains("in-crate native-body analysis"));
-    assert!(!bcc_limitation.contains("recovered pseudo-C"));
+    assert!(
+        limitations
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(
+                |limitation: &str| limitation.contains("sibling pyarmor_runtime_")
+                    && limitation.contains("without that runtime binary")
+            )
+    );
+    for path in [
+        "bcc/bcc-recovery.json",
+        "bcc/bcc-pseudo-c.c",
+        "bcc/bcc-recovered.py",
+    ] {
+        assert!(
+            children
+                .iter()
+                .all(|child: &ChildArtifact| child.handle.relative_path != path),
+            "a missing path hint must not claim or emit {path}"
+        );
+    }
+}
+
+#[test]
+fn extract_children_with_a_path_emits_the_pass_owned_bcc_bytes() {
+    let wrapper_path: PathBuf = workspace_root().join(BCC_WRAPPER);
+    let wrapper_text: String =
+        std::fs::read_to_string(&wrapper_path).expect("tracked BCC wrapper must be UTF-8");
+    let options: UnpackOptions = UnpackOptions {
+        allow_bcc: true,
+        ..UnpackOptions::default()
+    };
+    let unpacked = unpack_wrapper_text_with_options(&wrapper_text, &wrapper_path, &options)
+        .expect("tracked BCC wrapper must unpack with its sibling runtime");
+    let linked = link_bcc_from_unpack(&unpacked, &wrapper_text, &wrapper_path)
+        .expect("tracked BCC wrapper must link its residual module");
+    let publication: BccPublication = publish_bcc_recovery(&unpacked, &linked)
+        .expect("tracked BCC wrapper must publish bounded recovery artifacts");
+
+    let artifact: Artifact = Artifact::new(Rung::Raw, wrapper_text.into_bytes(), [0u8; 32]);
+    let path_hint: String = wrapper_path.to_string_lossy().into_owned();
+    let children: Vec<ChildArtifact> = PYARMOR_PASS
+        .extract_children_with_context(
+            &artifact,
+            PassContext::with_path_hint(Some(path_hint.as_str())),
+        )
+        .expect("path-aware BCC extraction must succeed");
+
+    for expected in publication.artifacts() {
+        let child: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| child.handle.relative_path == expected.relative_path)
+            .unwrap_or_else(|| panic!("missing chain publication {}", expected.relative_path));
+        assert_eq!(
+            child.bytes, expected.bytes,
+            "{} must be byte-identical to the canonical publisher",
+            expected.relative_path
+        );
+    }
 }
 
 #[test]

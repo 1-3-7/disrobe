@@ -4,11 +4,11 @@ use std::num::TryFromIntError;
 
 #[cfg(not(target_arch = "wasm32"))]
 use disrobe_pass_native::{
-    Arch, DisasmInsn, LeafRecovery, PseudoAbi, ResolvedCall, disassemble,
-    recover_leaf_function_abi, recover_leaf_function_with_calls,
+    Arch, DisasmInsn, LeafRecovery, PseudoAbi, ResolvedCall, disassemble, recover_aarch64_function,
+    recover_aarch64_function_with_calls, recover_leaf_function_abi,
+    recover_leaf_function_with_calls,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::error::Error;
 use crate::error::Result;
 use crate::v8v9::BccArch;
@@ -64,36 +64,73 @@ pub struct BccLiftOutput {
     pub architecture: BccArch,
     pub text_base: u64,
     pub functions: BTreeMap<FunctionId, PseudoCFunction>,
+    pub function_records: Vec<PseudoCFunction>,
     pub modeled_count: usize,
     pub unmodeled_count: usize,
     pub strings: Vec<String>,
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BccLiftRefusal {
+    pub blob_index: usize,
+    pub architecture: BccArch,
+    pub reason: BccLiftRefusalReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BccLiftRefusalReason {
+    UnsupportedArchitecture { id: u32 },
+    NativeLiftUnavailable { target: String },
+    LiftFailed { message: String },
+}
+
+impl BccLiftRefusalReason {
+    pub(crate) fn from_error(error: &Error) -> Self {
+        match error {
+            Error::BccUnsupportedArchitecture { id } => Self::UnsupportedArchitecture { id: *id },
+            Error::BccLiftUnavailable { target } => Self::NativeLiftUnavailable {
+                target: target.clone(),
+            },
+            _ => Self::LiftFailed {
+                message: error.to_string(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedArchitecture { .. } => "unsupported_architecture",
+            Self::NativeLiftUnavailable { .. } => "native_lift_unavailable",
+            Self::LiftFailed { .. } => "lift_failed",
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeTarget {
+    arch: Arch,
+    abi: PseudoAbi,
+}
+
 #[cfg(target_arch = "wasm32")]
-#[allow(clippy::unnecessary_wraps)]
-pub fn lift_bcc_native(_blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
-    Ok(BccLiftOutput {
-        architecture: arch,
-        text_base: 0,
-        functions: BTreeMap::new(),
-        modeled_count: 0,
-        unmodeled_count: 0,
-        strings: Vec::new(),
-        notes: vec![
-            "native pseudo-C BCC lift is unavailable in the wasm build; run the native disrobe binary for x86-64 body recovery".to_owned(),
-        ],
+pub fn lift_bcc_native(_blob: &[u8], _arch: BccArch) -> Result<BccLiftOutput> {
+    Err(crate::error::Error::BccLiftUnavailable {
+        target: "wasm32".to_owned(),
     })
 }
 
 #[cfg(target_arch = "wasm32")]
-#[must_use]
-pub const fn lift_bcc_code_region(
+pub fn lift_bcc_code_region(
     _code: &[u8],
     _base: u64,
     _arch: BccArch,
-) -> Vec<PseudoCFunction> {
-    Vec::new()
+) -> Result<Vec<PseudoCFunction>> {
+    Err(Error::BccLiftUnavailable {
+        target: "wasm32".to_owned(),
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,41 +145,32 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
     if blob.is_empty() {
         return Err(Error::BccLiftEmptyBlob);
     }
-    let Some(abi): Option<PseudoAbi> = arch_to_abi(arch) else {
-        return Ok(BccLiftOutput {
-            architecture: arch,
-            text_base: 0,
-            functions: BTreeMap::new(),
-            modeled_count: 0,
-            unmodeled_count: 0,
-            strings: Vec::new(),
-            notes: vec![unsupported_architecture_note(arch)],
-        });
-    };
+    let target: NativeTarget = arch_to_target(arch)?;
 
     let image: ExecutableImage = extract_executable_image(blob)?;
     let roster: Vec<RosterEntry> = roster_from_dispatch(blob, arch, image.base, image.code.len());
     let functions: Vec<PseudoCFunction> =
-        lift_code_region_with_roster(&image.code, image.base, abi, &roster);
+        lift_code_region_with_roster(&image.code, image.base, target, &roster);
 
     let carved_count: usize = functions.len();
     let mut map: BTreeMap<FunctionId, PseudoCFunction> = BTreeMap::new();
-    for func in functions {
-        map.insert(func.id.clone(), func);
+    for func in &functions {
+        let identity: FunctionId = func.id.clone();
+        map.entry(identity).or_insert_with(|| func.clone());
     }
-    let modeled_count: usize = map
-        .values()
+    let modeled_count: usize = functions
+        .iter()
         .filter(|func: &&PseudoCFunction| func.modeled)
         .count();
-    let unmodeled_count: usize = map.len().saturating_sub(modeled_count);
+    let unmodeled_count: usize = carved_count.checked_sub(modeled_count).ok_or_else(|| {
+        Error::BccPublicationAccountingMismatch {
+            detail: format!(
+                "modeled count {modeled_count} exceeds carved function count {carved_count}"
+            ),
+        }
+    })?;
 
     let mut notes: Vec<String> = Vec::new();
-    let collapsed: usize = carved_count.saturating_sub(map.len());
-    if collapsed > 0 {
-        notes.push(format!(
-            "{collapsed} carved BCC function(s) shared an entry address with an earlier function and are not surfaced separately"
-        ));
-    }
     if modeled_count == 0 && unmodeled_count > 0 {
         notes.push(
             "every discovered BCC function delegates to the PyArmor/CPython runtime dispatch table via indirect calls; native disassembly is surfaced per function, but the object semantics are resolved at load time and are not statically standalone-recompilable"
@@ -154,6 +182,7 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
         architecture: arch,
         text_base: image.base,
         functions: map,
+        function_records: functions,
         modeled_count,
         unmodeled_count,
         strings: image.strings,
@@ -162,14 +191,15 @@ pub fn lift_bcc_native(blob: &[u8], arch: BccArch) -> Result<BccLiftOutput> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn lift_bcc_code_region(code: &[u8], base: u64, arch: BccArch) -> Vec<PseudoCFunction> {
-    arch_to_abi(arch).map_or_else(Vec::new, |abi: PseudoAbi| lift_code_region(code, base, abi))
+pub fn lift_bcc_code_region(code: &[u8], base: u64, arch: BccArch) -> Result<Vec<PseudoCFunction>> {
+    let target: NativeTarget = arch_to_target(arch)?;
+    Ok(lift_code_region_with_roster(code, base, target, &[]))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<PseudoCFunction> {
-    lift_code_region_with_roster(code, base, abi, &[])
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn lift_code_region(code: &[u8], base: u64, abi: PseudoAbi) -> Vec<PseudoCFunction> {
+    let target: NativeTarget = target_from_abi(abi);
+    lift_code_region_with_roster(code, base, target, &[])
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -191,13 +221,13 @@ struct FunctionSite {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn lift_code_region_with_roster(
+fn lift_code_region_with_roster(
     code: &[u8],
     base: u64,
-    abi: PseudoAbi,
+    target: NativeTarget,
     roster: &[RosterEntry],
 ) -> Vec<PseudoCFunction> {
-    let Ok(insns): std::result::Result<Vec<DisasmInsn>, _> = disassemble(Arch::X86_64, base, code)
+    let Ok(insns): std::result::Result<Vec<DisasmInsn>, _> = disassemble(target.arch, base, code)
     else {
         return Vec::new();
     };
@@ -219,7 +249,7 @@ pub(crate) fn lift_code_region_with_roster(
             continue;
         };
         let outcome: std::result::Result<LeafRecovery, String> =
-            recover_leaf_function_abi(slice, site.entry_va, abi).map_err(|e| format!("{e}"));
+            recover_native_function(slice, site.entry_va, target.abi, &[]);
         probes.insert(site.entry_va, outcome);
     }
 
@@ -272,7 +302,7 @@ pub(crate) fn lift_code_region_with_roster(
             .iter()
             .filter_map(|call: &ResolvedCall| call.name.clone())
             .collect();
-        match recover_leaf_function_with_calls(slice, site.entry_va, abi, &resolved) {
+        match recover_native_function(slice, site.entry_va, target.abi, &resolved) {
             Ok(linked) => out.push(render_modeled_function(site, &linked, size, &callees, None)),
             Err(e) => out.push(render_modeled_function(
                 site,
@@ -286,6 +316,27 @@ pub(crate) fn lift_code_region_with_roster(
         }
     }
     out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn recover_native_function(
+    code: &[u8],
+    base: u64,
+    abi: PseudoAbi,
+    calls: &[ResolvedCall],
+) -> std::result::Result<LeafRecovery, String> {
+    let recovered: std::result::Result<LeafRecovery, disrobe_pass_native::error::Error> = match abi
+    {
+        PseudoAbi::MsX64 | PseudoAbi::SysV if calls.is_empty() => {
+            recover_leaf_function_abi(code, base, abi)
+        }
+        PseudoAbi::MsX64 | PseudoAbi::SysV => {
+            recover_leaf_function_with_calls(code, base, abi, calls)
+        }
+        PseudoAbi::Aapcs64 if calls.is_empty() => recover_aarch64_function(code, base),
+        PseudoAbi::Aapcs64 => recover_aarch64_function_with_calls(code, base, calls),
+    };
+    recovered.map_err(|error: disrobe_pass_native::error::Error| error.to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -367,24 +418,19 @@ fn sites_from_roster(
     let mut ordered: Vec<&RosterEntry> = roster
         .iter()
         .filter(|entry: &&RosterEntry| {
-            entry.entry_va >= base && entry.entry_va < region_end && entry.end_va > entry.entry_va
+            entry.entry_va >= base && entry.entry_va < region_end && entry.end_va >= entry.entry_va
         })
         .collect();
     ordered.sort_by_key(|entry: &&RosterEntry| entry.entry_va);
-    ordered.dedup_by_key(|entry: &mut &RosterEntry| entry.entry_va);
-    ordered.truncate(MAX_FUNCTIONS);
 
     let mut sites: Vec<FunctionSite> = Vec::with_capacity(ordered.len());
     let mut cursor: u64 = base;
     for (index, entry) in ordered.iter().enumerate() {
-        if sites.len() >= MAX_FUNCTIONS {
-            break;
-        }
         let next_start: u64 = ordered
             .get(index + 1)
             .map_or(region_end, |next: &&RosterEntry| next.entry_va);
         let end_va: u64 = entry.end_va.min(next_start).min(region_end);
-        if end_va <= entry.entry_va {
+        if end_va < entry.entry_va {
             continue;
         }
         if entry.entry_va > cursor {
@@ -415,8 +461,6 @@ fn sites_from_roster(
         ));
     }
     sites.sort_by_key(|site: &FunctionSite| site.entry_va);
-    sites.dedup_by_key(|site: &mut FunctionSite| site.entry_va);
-    sites.truncate(MAX_FUNCTIONS);
     sites
 }
 
@@ -525,14 +569,9 @@ fn roster_from_dispatch(
         })
         .map(|entry: crate::bcc::dispatch::DispatchEntry| RosterEntry {
             entry_va: entry.code_offset,
-            end_va: entry
-                .code_offset
-                .saturating_add(entry.size)
-                .min(region_end)
-                .max(entry.code_offset.saturating_add(1)),
+            end_va: entry.code_offset.saturating_add(entry.size).min(region_end),
             name: entry.name,
         })
-        .take(MAX_FUNCTIONS)
         .collect()
 }
 
@@ -696,23 +735,31 @@ fn parse_hex_operand(operands: &str) -> Option<u64> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const fn arch_to_abi(arch: BccArch) -> Option<PseudoAbi> {
+const fn arch_to_target(arch: BccArch) -> Result<NativeTarget> {
     match arch {
-        BccArch::WinX64 => Some(PseudoAbi::MsX64),
-        BccArch::LinuxX64 => Some(PseudoAbi::SysV),
-        BccArch::DarwinArm64 | BccArch::Other(_) => None,
+        BccArch::WinX64 => Ok(NativeTarget {
+            arch: Arch::X86_64,
+            abi: PseudoAbi::MsX64,
+        }),
+        BccArch::LinuxX64 => Ok(NativeTarget {
+            arch: Arch::X86_64,
+            abi: PseudoAbi::SysV,
+        }),
+        BccArch::DarwinArm64 => Ok(NativeTarget {
+            arch: Arch::Aarch64,
+            abi: PseudoAbi::Aapcs64,
+        }),
+        BccArch::Other(id) => Err(Error::BccUnsupportedArchitecture { id }),
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn unsupported_architecture_note(arch: BccArch) -> String {
-    let target: String = match arch {
-        BccArch::WinX64 | BccArch::LinuxX64 | BccArch::DarwinArm64 => arch.label().to_owned(),
-        BccArch::Other(id) => format!("an unrecognized architecture id {id:#x}"),
+#[cfg(all(test, not(target_arch = "wasm32")))]
+const fn target_from_abi(abi: PseudoAbi) -> NativeTarget {
+    let arch: Arch = match abi {
+        PseudoAbi::MsX64 | PseudoAbi::SysV => Arch::X86_64,
+        PseudoAbi::Aapcs64 => Arch::Aarch64,
     };
-    format!(
-        "BCC body targets {target}; unsupported architecture for the in-crate pseudo-C lift, which models x86-64 only; image is surfaced but not lifted"
-    )
+    NativeTarget { arch, abi }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -895,30 +942,23 @@ mod tests {
     }
 
     #[test]
-    fn aarch64_image_is_surfaced_but_not_lifted() {
-        let blob: Vec<u8> = vec![0u8; 64];
-        let out: BccLiftOutput = lift_bcc_native(&blob, BccArch::DarwinArm64).unwrap();
-        assert_eq!(out.modeled_count, 0);
-        assert!(out.functions.is_empty());
-        assert!(out.notes.iter().any(|n: &String| n.contains("x86-64 only")));
+    fn aarch64_code_region_uses_the_native_aapcs64_recovery() {
+        let code: [u8; 8] = [0x00, 0x00, 0x01, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+        let out: Vec<PseudoCFunction> =
+            lift_bcc_code_region(&code, 0x1000, BccArch::DarwinArm64).expect("ARM64 lift");
+        assert_eq!(out.len(), 1);
+        assert!(out[0].modeled);
+        assert_eq!(out[0].parameter_count, 2);
     }
 
     #[test]
     fn unknown_architecture_is_not_lifted_as_microsoft_x64() {
         let blob: Vec<u8> = vec![0u8; 64];
-        let out: BccLiftOutput = lift_bcc_native(&blob, BccArch::Other(0xdead)).unwrap();
-        assert_eq!(out.modeled_count, 0);
-        assert!(out.functions.is_empty());
-        assert!(
-            out.notes
-                .iter()
-                .any(|n: &String| n.contains("unsupported architecture"))
-        );
-        assert!(
-            out.notes.iter().any(|n: &String| n.contains("0xdead")),
-            "the refusal must name the unrecognized architecture id: {:?}",
-            out.notes
-        );
+        let error: Error = lift_bcc_native(&blob, BccArch::Other(0xdead)).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::BccUnsupportedArchitecture { id: 0xdead }
+        ));
     }
 
     #[test]
@@ -931,15 +971,30 @@ mod tests {
     #[test]
     fn arch_maps_to_expected_abi() {
         assert!(matches!(
-            arch_to_abi(BccArch::WinX64),
-            Some(PseudoAbi::MsX64)
+            arch_to_target(BccArch::WinX64),
+            Ok(NativeTarget {
+                arch: Arch::X86_64,
+                abi: PseudoAbi::MsX64
+            })
         ));
         assert!(matches!(
-            arch_to_abi(BccArch::LinuxX64),
-            Some(PseudoAbi::SysV)
+            arch_to_target(BccArch::LinuxX64),
+            Ok(NativeTarget {
+                arch: Arch::X86_64,
+                abi: PseudoAbi::SysV
+            })
         ));
-        assert!(arch_to_abi(BccArch::DarwinArm64).is_none());
-        assert!(arch_to_abi(BccArch::Other(0xdead)).is_none());
+        assert!(matches!(
+            arch_to_target(BccArch::DarwinArm64),
+            Ok(NativeTarget {
+                arch: Arch::Aarch64,
+                abi: PseudoAbi::Aapcs64
+            })
+        ));
+        assert!(matches!(
+            arch_to_target(BccArch::Other(0xdead)),
+            Err(Error::BccUnsupportedArchitecture { id: 0xdead })
+        ));
     }
 
     #[test]

@@ -236,7 +236,7 @@ Recovery is bounded by what the compiler or protector left in the artifact. `dis
 
 **Vendor-firmware runtime key.** The Airoha OTP-AES key is not present in the carved firmware image, so the format is detected and its members carved, and nothing further.
 
-PyArmor BCC native blobs are carved and passed to an in-memory static lift attempt under `--allow-bcc`. The current CLI records the boundary and limitations in `manifest.json`; it does not serialize the lift or emit a function map, pseudo-C, or recovered Python. Nuitka, Nim, Zig, and Crystal native bodies are compiled machine code present in the artifact rather than absent; their dedicated recovery paths report what they can lift instead of inheriting a claim from the PyArmor path.
+PyArmor BCC native blobs are carved and passed to an in-tree static lift under `--allow-bcc`. The dedicated PyArmor command and the path-aware `disrobe auto` route emit `bcc/bcc-recovery.json`, `bcc/bcc-pseudo-c.c`, and `bcc/bcc-recovered.py`. The JSON uses `disrobe.pyarmor.bcc.recovery/v1` and embeds the existing `disrobe.pyarmor.bcc.function_map/1` map. It records modeled functions, unmodeled native disassembly, and typed blob refusals without executing the sample. The lift uses the Microsoft x64 ABI for Windows x86-64, the System V ABI for Linux x86-64, and AAPCS64 for Darwin ARM64. Nuitka, Nim, Zig, and Crystal native bodies are compiled machine code present in the artifact rather than absent; their dedicated recovery paths report what they can lift instead of inheriting a claim from the PyArmor path.
 
 Bytecode-to-source is structurally faithful but never byte-identical: `.class`, `.dex`, and CIL erase local names, generics, comments, and exact formatting.
 
@@ -250,7 +250,7 @@ Native decompilation runs on an in-tree backend, which is the default: x86-64 to
 disrobe auto sample.bin --out recovered/ --capture-stages   # detect and chain, keeping every stage
 disrobe catalog native                                      # supported families and recovery tier
 disrobe py decompile module.pyc --out src/                  # CPython 1.0-3.15
-disrobe pyarmor unpack protected.py --out out/              # static unpack
+disrobe pyarmor unpack protected.py --out out/ --allow-bcc  # static unpack and BCC publication
 disrobe js unbundle app.bundle.js --out src/                # un-webpack, source-map reconstruction
 disrobe wasm decompile module.wasm --target rust            # also ts, wat, c
 disrobe jvm decompile app.apk --out src/                    # in-house Dalvik decompiler is the default

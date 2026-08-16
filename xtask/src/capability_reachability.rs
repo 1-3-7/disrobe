@@ -156,10 +156,10 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-pyarmor",
-        7,
-        "bcc dispatch, lift, link and recovery helpers proven by their own oracle but not yet \
-         called from the crate's extraction entry point, plus one provenance-header renderer \
-         never spliced into the `--emit` output path",
+        5,
+        "remaining bcc analysis helpers are proven by their own tests but not called from the \
+         crate's extraction entry point, plus one provenance-header renderer never spliced into \
+         the `--emit` output path",
     ),
     (
         "disrobe-pass-pyfreeze",

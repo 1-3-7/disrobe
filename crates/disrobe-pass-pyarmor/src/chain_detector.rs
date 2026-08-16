@@ -11,7 +11,7 @@ use disrobe_core::chain::{
 };
 use disrobe_core::codec::hex;
 use disrobe_core::error::{CoreError, Result as CoreResult};
-use disrobe_core::pass::PassId;
+use disrobe_core::pass::{PassContext, PassId};
 
 use crate::detect::{
     Detection, DetectionConfidence, ProtectionKind, PyarmorVersion, detect_from_wrapper,
@@ -20,7 +20,11 @@ use crate::static_unpack::{
     DecryptStatus, HeaderMetadata, UnpackOutput as StaticUnpackOutput, WrapperMagic, parse_header,
     sniff, unpack_static,
 };
-use crate::unpack::{UnpackOutput as WrapperUnpackOutput, unpack_wrapper_text};
+use crate::unpack::{
+    UnpackOptions, UnpackOutput as WrapperUnpackOutput, unpack_wrapper_text,
+    unpack_wrapper_text_with_options,
+};
+use crate::{BccLinkOutput, BccPublication, link_bcc_from_unpack, publish_bcc_recovery};
 
 const MANIFEST_CHILD_PATH: &str = "pyarmor-manifest.json";
 const PYC_CHILD_PATH: &str = "recovered.pyc";
@@ -114,7 +118,7 @@ impl Pass for PyarmorPass {
         let out: StaticUnpackOutput = unpack_static(&payload)
             .map_err(|e| CoreError::PassFailure(format!("DR-PYARM-0902: {e}")))?;
         if out.plaintext.is_empty() {
-            let manifest: Vec<u8> = render_manifest(&out, &payload);
+            let manifest: Vec<u8> = render_manifest(&out, &payload)?;
             return Ok(Artifact::new(Rung::Disasm, manifest, artifact.root_hash));
         }
         Ok(Artifact::new(Rung::Raw, out.plaintext, artifact.root_hash))
@@ -133,26 +137,163 @@ impl Pass for PyarmorPass {
 
         let mut children: Vec<ChildArtifact> = Vec::with_capacity(2);
         if !out.plaintext.is_empty() {
-            children.push(ChildArtifact {
-                handle: ChildHandle {
-                    artifact_index: 0,
-                    relative_path: PYC_CHILD_PATH.to_string(),
-                    hint: Some(CHILD_HINT_PYC.to_string()),
-                },
-                bytes: out.plaintext.clone(),
-            });
+            push_child(
+                &mut children,
+                PYC_CHILD_PATH,
+                Some(CHILD_HINT_PYC),
+                out.plaintext.clone(),
+            )?;
         }
-        let manifest: Vec<u8> = render_manifest(&out, &payload);
-        children.push(ChildArtifact {
-            handle: ChildHandle {
-                artifact_index: u32::try_from(children.len()).unwrap_or(u32::MAX),
-                relative_path: MANIFEST_CHILD_PATH.to_string(),
-                hint: Some(TERMINAL_HINT.to_string()),
-            },
-            bytes: manifest,
-        });
+        let manifest: Vec<u8> = render_manifest(&out, &payload)?;
+        push_child(
+            &mut children,
+            MANIFEST_CHILD_PATH,
+            Some(TERMINAL_HINT),
+            manifest,
+        )?;
         Ok(children)
     }
+
+    fn extract_children_with_context(
+        &self,
+        input: &Artifact,
+        context: PassContext<'_>,
+    ) -> CoreResult<Vec<ChildArtifact>> {
+        let Some(path_hint): Option<&str> = context.path_hint else {
+            return self.extract_children(input);
+        };
+        let bytes: &[u8] = input.envelope.as_slice();
+        let Ok(wrapper_text): core::result::Result<&str, core::str::Utf8Error> =
+            core::str::from_utf8(bytes)
+        else {
+            return self.extract_children(input);
+        };
+        let Ok((detection, _)): core::result::Result<(Detection, Vec<u8>), crate::error::Error> =
+            detect_from_wrapper(wrapper_text)
+        else {
+            return self.extract_children(input);
+        };
+        if !matches!(detection.protection, ProtectionKind::Bcc) {
+            return self.extract_children(input);
+        }
+        let wrapper_path: &std::path::Path = std::path::Path::new(path_hint);
+        let options: UnpackOptions = UnpackOptions {
+            allow_bcc: true,
+            ..UnpackOptions::default()
+        };
+        let unpacked: WrapperUnpackOutput =
+            match unpack_wrapper_text_with_options(wrapper_text, wrapper_path, &options) {
+                Ok(unpacked) => unpacked,
+                Err(crate::error::Error::RuntimeNotFound { .. }) => {
+                    return self.extract_children(input);
+                }
+                Err(error) => {
+                    return Err(CoreError::PassFailure(format!(
+                        "DR-PYARM-0906: path-aware BCC unpack failed: {error}"
+                    )));
+                }
+            };
+        if unpacked.bcc_blobs.is_empty() {
+            return self.extract_children(input);
+        }
+        let linked: BccLinkOutput = link_bcc_from_unpack(&unpacked, wrapper_text, wrapper_path)
+            .map_err(|error: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-PYARM-0907: BCC link failed: {error}"))
+            })?;
+        let publication: BccPublication =
+            publish_bcc_recovery(&unpacked, &linked).map_err(|error: crate::error::Error| {
+                CoreError::PassFailure(format!("DR-PYARM-0908: BCC publication failed: {error}"))
+            })?;
+        render_context_children(input, &unpacked, &publication)
+    }
+}
+
+fn push_child(
+    children: &mut Vec<ChildArtifact>,
+    relative_path: &str,
+    hint: Option<&str>,
+    bytes: Vec<u8>,
+) -> CoreResult<()> {
+    let artifact_index: u32 = u32::try_from(children.len()).map_err(|_| {
+        CoreError::PassFailure("DR-PYARM-0909: PyArmor child artifact count exceeds u32".to_owned())
+    })?;
+    children.push(ChildArtifact {
+        handle: ChildHandle {
+            artifact_index,
+            relative_path: relative_path.to_owned(),
+            hint: hint.map(str::to_owned),
+        },
+        bytes,
+    });
+    Ok(())
+}
+
+fn render_context_children(
+    input: &Artifact,
+    unpacked: &WrapperUnpackOutput,
+    publication: &BccPublication,
+) -> CoreResult<Vec<ChildArtifact>> {
+    let payload: Vec<u8> = extract_payload(input.envelope.as_slice()).ok_or_else(|| {
+        CoreError::PassFailure(
+            "DR-PYARM-0910: path-aware BCC input does not match wrapper magic".to_owned(),
+        )
+    })?;
+    let static_output: StaticUnpackOutput = unpack_static(&payload)
+        .map_err(|error| CoreError::PassFailure(format!("DR-PYARM-0911: {error}")))?;
+    let mut manifest: serde_json::Value = manifest_value(&static_output, &payload);
+    if let Some(limitations) = manifest
+        .get_mut("limitations")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        limitations.retain(|limitation: &serde_json::Value| {
+            limitation.as_str().is_none_or(|text: &str| {
+                !text.contains("BCC native body lift requires")
+                    && !text.contains("v8/v9 AES key lives in the sibling")
+            })
+        });
+    }
+    let Some(manifest_object): Option<&mut serde_json::Map<String, serde_json::Value>> =
+        manifest.as_object_mut()
+    else {
+        return Err(CoreError::PassFailure(
+            "DR-PYARM-0912: PyArmor manifest root is not an object".to_owned(),
+        ));
+    };
+    manifest_object.insert("bcc_publication".to_owned(), publication.manifest_value());
+    manifest_object.insert(
+        "plaintext_size".to_owned(),
+        serde_json::Value::from(unpacked.plaintext.len()),
+    );
+    let manifest_bytes: Vec<u8> =
+        serde_json::to_vec_pretty(&manifest).map_err(|error: serde_json::Error| {
+            CoreError::PassFailure(format!(
+                "DR-PYARM-0913: manifest serialization failed: {error}"
+            ))
+        })?;
+    let mut children: Vec<ChildArtifact> = Vec::with_capacity(5);
+    if let Some(pyc) = unpacked.pyc.as_ref() {
+        push_child(
+            &mut children,
+            PYC_CHILD_PATH,
+            Some(CHILD_HINT_PYC),
+            pyc.clone(),
+        )?;
+    }
+    for artifact in publication.artifacts() {
+        push_child(
+            &mut children,
+            artifact.relative_path,
+            Some(TERMINAL_HINT),
+            artifact.bytes.to_vec(),
+        )?;
+    }
+    push_child(
+        &mut children,
+        MANIFEST_CHILD_PATH,
+        Some(TERMINAL_HINT),
+        manifest_bytes,
+    )?;
+    Ok(children)
 }
 
 fn extract_payload(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -238,7 +379,7 @@ fn compute_limitations(out: &StaticUnpackOutput) -> Vec<String> {
     limits
 }
 
-fn render_manifest(out: &StaticUnpackOutput, payload: &[u8]) -> Vec<u8> {
+fn manifest_value(out: &StaticUnpackOutput, payload: &[u8]) -> serde_json::Value {
     let iv_hex: Option<String> = out
         .header_metadata
         .nonce
@@ -251,7 +392,7 @@ fn render_manifest(out: &StaticUnpackOutput, payload: &[u8]) -> Vec<u8> {
     let python: Option<String> = out
         .python_version
         .map(|(maj, min): (u8, u8)| format!("{maj}.{min}"));
-    let manifest: serde_json::Value = serde_json::json!({
+    serde_json::json!({
         "schema": MANIFEST_SCHEMA,
         "version": version_label(out.pyarmor_version),
         "protection": protection_label(out.protection_kind),
@@ -274,8 +415,15 @@ fn render_manifest(out: &StaticUnpackOutput, payload: &[u8]) -> Vec<u8> {
         },
         "limitations": compute_limitations(out),
         "diagnostics": out.diagnostics,
-    });
-    serde_json::to_vec_pretty(&manifest).unwrap_or_else(|_| b"{}".to_vec())
+    })
+}
+
+fn render_manifest(out: &StaticUnpackOutput, payload: &[u8]) -> CoreResult<Vec<u8>> {
+    serde_json::to_vec_pretty(&manifest_value(out, payload)).map_err(|error: serde_json::Error| {
+        CoreError::PassFailure(format!(
+            "DR-PYARM-0914: manifest serialization failed: {error}"
+        ))
+    })
 }
 
 fn recover_pyc_via_runtime(bytes: &[u8], path_hint: &str) -> Option<Vec<u8>> {

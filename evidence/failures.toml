@@ -26,14 +26,6 @@ detail = "PyArmor v3-v5, ionCube, SourceGuardian, modern Zend Guard, ILProtector
 location = "crates/disrobe-core/src/codec/crypto_wall.rs, crates/disrobe-pass-php/src/encoder, crates/disrobe-pass-dotnet/src/peel/ilprotector.rs"
 
 [[wall]]
-id = "pyarmor-bcc-super-native"
-ecosystem = "python"
-kind = "information-theoretic"
-title = "PyArmor BCC and super mode native lowering"
-detail = "BCC and super mode lower the protected body into native code, so the body is a native wall (the surrounding metadata still recovers). This is a shared native wall for every static tool."
-location = "crates/disrobe-pass-pyarmor"
-
-[[wall]]
 id = "native-compiled-source-erasure"
 ecosystem = "python-nativelang"
 kind = "information-theoretic"

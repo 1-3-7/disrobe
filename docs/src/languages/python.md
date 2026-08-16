@@ -48,6 +48,7 @@ disrobe py sourcedefender app.pye --out app.msgpack      # SourceDefender .pye d
 
 ```sh
 disrobe pyarmor unpack protected.py --out out/
+disrobe pyarmor unpack protected.py --out out/ --allow-bcc
 disrobe pyarmor unpack protected.py --out out/ --allow-dynamic --dynamic-timeout 60
 ```
 
@@ -57,7 +58,9 @@ disrobe pyarmor unpack protected.py --out out/ --allow-dynamic --dynamic-timeout
 
 Other useful flags: `--mode auto|standard|super`, `--target 3.11` (rewrite emitted `.pyc` magic), `--allow-bcc`, `--strict`, and `--all-emits`.
 
-BCC input is refused with `DR-PYARM-0050` unless `--allow-bcc` is set. With that opt-in, the pass makes an in-tree static lift attempt over extracted native blobs; it does not execute them or invoke Ghidra. The lift models x86-64 only, using the Microsoft x64 or System V calling convention. Its in-memory result carries no lifted functions for Darwin ARM64, and x64 functions that depend on the PyArmor/CPython runtime dispatch remain unmodeled native disassembly. The current CLI does not serialize the BCC lift result or emit a recovered BCC pseudo-C or source artifact.
+BCC input is refused with `DR-PYARM-0050` unless `--allow-bcc` is set. With that opt-in, the pass lifts extracted native blobs statically in tree; it does not execute them or invoke Ghidra. Windows x86-64 uses the Microsoft x64 ABI, Linux x86-64 uses the System V ABI, and Darwin ARM64 uses AAPCS64. A function that depends on the PyArmor or CPython runtime dispatch remains an unmodeled record with native disassembly and a typed reason.
+
+The dedicated command writes `bcc/bcc-recovery.json`, `bcc/bcc-pseudo-c.c`, and `bcc/bcc-recovered.py` beneath `--out`. Path-aware PyArmor extraction through `disrobe auto` writes the same three byte-identical artifacts. The canonical JSON schema is `disrobe.pyarmor.bcc.recovery/v1`; it embeds `disrobe.pyarmor.bcc.function_map/1` and represents modeled, unmodeled, and refused blob outcomes. The recovered Python file is a deterministic source skeleton derived from the same publication, not a claim of source identity or execution equivalence.
 
 `--strict` returns `DR-PYARM-0052` when unpacking produces no `.pyc`, records a fallback reason, or records a marshal decode error. It does not add a separate failure condition for incomplete BCC lifting.
 

@@ -29,6 +29,36 @@ fn bcc_lift_arch_labels_round_trip() {
     assert_eq!(BccArch::DarwinArm64.label(), "darwin-arm64");
 }
 
+#[test]
+fn bcc_lift_refuses_an_unknown_architecture_with_its_numeric_identity() {
+    let error: disrobe_pass_pyarmor::Error =
+        lift_bcc_native(&[0u8; 64], BccArch::Other(0xdead)).unwrap_err();
+    assert!(matches!(
+        error,
+        disrobe_pass_pyarmor::Error::BccUnsupportedArchitecture { id: 0xdead }
+    ));
+}
+
+#[test]
+fn code_region_lift_refuses_an_unknown_architecture_with_its_numeric_identity() {
+    let error: disrobe_pass_pyarmor::Error =
+        lift_bcc_code_region(&[0xc3], 0x1000, BccArch::Other(0xdead)).unwrap_err();
+    assert!(matches!(
+        error,
+        disrobe_pass_pyarmor::Error::BccUnsupportedArchitecture { id: 0xdead }
+    ));
+}
+
+#[test]
+fn darwin_arm64_selects_the_aapcs64_recovery_path() {
+    let code: [u8; 8] = [0x00, 0x00, 0x01, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let functions: Vec<PseudoCFunction> =
+        lift_bcc_code_region(&code, 0x1000, BccArch::DarwinArm64).expect("ARM64 lift");
+    assert_eq!(functions.len(), 1);
+    assert!(functions[0].modeled, "{}", functions[0].pseudo_c);
+    assert_eq!(functions[0].parameter_count, 2);
+}
+
 fn corpus_default_dir() -> Option<PathBuf> {
     let here: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dir: PathBuf = here
@@ -231,7 +261,8 @@ struct Lifted {
 
 fn process_case(case: &Case, object_bytes: &[u8]) -> Option<Lifted> {
     let (code, base): (Vec<u8>, u64) = function_code(object_bytes, case.name)?;
-    let funcs: Vec<PseudoCFunction> = lift_bcc_code_region(&code, base, BccArch::WinX64);
+    let funcs: Vec<PseudoCFunction> =
+        lift_bcc_code_region(&code, base, BccArch::WinX64).expect("x64 lift");
     let recovered: &PseudoCFunction = funcs.iter().find(|f: &&PseudoCFunction| f.modeled)?;
     let sub_name: String = format!("sub_{:x}", recovered.id.entry_va);
     let rec_name: String = format!("rec_{}", case.name);
@@ -422,7 +453,8 @@ fn bcc_lift_route_discovers_multiple_function_boundaries() {
         .find(|s: &object::Section<'_, '_>| s.kind() == object::SectionKind::Text)
         .expect("a text section");
     let data: &[u8] = text.data().expect("text data");
-    let funcs: Vec<PseudoCFunction> = lift_bcc_code_region(data, text.address(), BccArch::WinX64);
+    let funcs: Vec<PseudoCFunction> =
+        lift_bcc_code_region(data, text.address(), BccArch::WinX64).expect("real x64 text lift");
     assert!(
         funcs.len() >= 3,
         "linear boundary discovery must split the concatenated .text into several functions; got {}",

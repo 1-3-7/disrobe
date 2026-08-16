@@ -3,6 +3,32 @@ use thiserror::Error;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BccPublicationResource {
+    Functions,
+    NativeBodyBytes,
+    Strings,
+    StringBytes,
+    JsonBytes,
+    PseudoCBytes,
+    RecoveredPythonBytes,
+}
+
+impl core::fmt::Display for BccPublicationResource {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let label: &'static str = match self {
+            Self::Functions => "functions",
+            Self::NativeBodyBytes => "native body bytes",
+            Self::Strings => "strings",
+            Self::StringBytes => "string bytes",
+            Self::JsonBytes => "JSON bytes",
+            Self::PseudoCBytes => "pseudo-C bytes",
+            Self::RecoveredPythonBytes => "recovered Python bytes",
+        };
+        formatter.write_str(label)
+    }
+}
+
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
     #[error("DR-PYARM-0001: input does not appear to be a PyArmor-protected wrapper")]
@@ -106,4 +132,36 @@ pub enum Error {
 
     #[error("DR-PYARM-0062: BCC function-to-source link found no residual module: {0}")]
     BccLinkNoResidual(String),
+
+    #[error("DR-PYARM-0063: BCC architecture id {id:#x} is not recognized")]
+    BccUnsupportedArchitecture { id: u32 },
+
+    #[error("DR-PYARM-0064: BCC native lifting is unavailable for target {target}")]
+    BccLiftUnavailable { target: String },
+
+    #[error(
+        "DR-PYARM-0066: BCC publication exceeds the {resource} quota: actual {actual}, limit {limit}"
+    )]
+    BccPublicationQuotaExceeded {
+        resource: BccPublicationResource,
+        actual: usize,
+        limit: usize,
+    },
+
+    #[error(
+        "DR-PYARM-0067: duplicate BCC native identity {container}@{offset:#x} in the function map"
+    )]
+    BccPublicationDuplicateNativeIdentity { container: String, offset: u64 },
+
+    #[error("DR-PYARM-0068: inconsistent BCC publication accounting: {detail}")]
+    BccPublicationAccountingMismatch { detail: String },
+
+    #[error("DR-PYARM-0069: BCC publication serialization failed: {0}")]
+    BccPublicationSerialization(String),
+
+    #[error("DR-PYARM-0070: BCC blob {blob_index} has no lift or typed refusal")]
+    BccPublicationMissingOutcome { blob_index: usize },
+
+    #[error("DR-PYARM-0071: BCC function {name}@{entry_va:#x} has a zero-length dispatch record")]
+    BccPublicationZeroLengthFunction { entry_va: u64, name: String },
 }

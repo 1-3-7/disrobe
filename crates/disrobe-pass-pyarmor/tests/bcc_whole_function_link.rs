@@ -173,7 +173,8 @@ fn a_sibling_call_recovers_the_callee_name_and_its_real_arity() {
     let callee_va: u64 = symbol_address(&object_bytes, "sib_callee");
     let caller_va: u64 = symbol_address(&object_bytes, "sib_caller");
 
-    let functions: Vec<PseudoCFunction> = lift_bcc_code_region(&code, base, host_arch());
+    let functions: Vec<PseudoCFunction> =
+        lift_bcc_code_region(&code, base, host_arch()).expect("host lift");
     let callee: &PseudoCFunction = find_function(&functions, callee_va);
     let caller: &PseudoCFunction = find_function(&functions, caller_va);
 
@@ -241,7 +242,8 @@ fn the_recovered_sibling_pair_recompiles_and_matches_the_reference_object() {
     let callee_va: u64 = symbol_address(&object_bytes, "sib_callee");
     let caller_va: u64 = symbol_address(&object_bytes, "sib_caller");
 
-    let functions: Vec<PseudoCFunction> = lift_bcc_code_region(&code, base, host_arch());
+    let functions: Vec<PseudoCFunction> =
+        lift_bcc_code_region(&code, base, host_arch()).expect("host lift");
     let callee: &PseudoCFunction = find_function(&functions, callee_va);
     let caller: &PseudoCFunction = find_function(&functions, caller_va);
     assert!(callee.modeled && caller.modeled, "both bodies must lift");

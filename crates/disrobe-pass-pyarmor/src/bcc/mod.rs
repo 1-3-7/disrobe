@@ -15,6 +15,7 @@ mod join;
 pub mod model;
 #[cfg(not(target_arch = "wasm32"))]
 mod normalize;
+mod publication;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod recover;
 mod residual;
@@ -30,6 +31,11 @@ pub use dispatch_recover::{binop_selector, recover_bcc_arith};
 pub use model::{
     BccLinkMap, BodyStatus, EvidenceSource, FunctionKind, FunctionRecord, LinkConfidence,
     LinkSummary, NameStatus, NativeRef, ParamKind, Parameter, Signature, SourceIdentity,
+};
+pub use publication::{
+    BCC_PSEUDO_C_PATH, BCC_RECOVERED_PYTHON_PATH, BCC_RECOVERY_PATH, BCC_RECOVERY_SCHEMA,
+    BccPublication, BccPublicationArtifact, BccPublicationLimits, BccPublicationSummary,
+    publish_bcc_recovery, publish_bcc_recovery_with_limits,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use recover::{
