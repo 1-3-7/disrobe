@@ -205,9 +205,226 @@ fn every_opcode_constant_is_named_with_its_zend_mnemonic_in_this_table() {
     assert_eq!(opcode_name(op::JMPZ), "ZEND_JMPZ");
     assert_eq!(opcode_name(op::RETURN), "ZEND_RETURN");
     assert_eq!(opcode_name(op::INIT_FCALL), "ZEND_INIT_FCALL");
+    assert_eq!(opcode_name(op::ROPE_INIT), "ZEND_ROPE_INIT");
+    assert_eq!(opcode_name(op::ROPE_ADD), "ZEND_ROPE_ADD");
+    assert_eq!(opcode_name(op::ROPE_END), "ZEND_ROPE_END");
     assert_eq!(opcode_name(op::FE_FETCH_R), "ZEND_FE_FETCH_R");
     assert_eq!(opcode_name(op::YIELD_FROM), "ZEND_YIELD_FROM");
     assert_eq!(opcode_name(op::GENERATOR_CREATE), "ZEND_GENERATOR_CREATE");
+}
+
+#[test]
+fn php_84_rope_sequence_recovers_interpolated_string_expression() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("name").var("score");
+    let greeting: u32 = b.lit_str("Hello ");
+    let separator: u32 = b.lit_str(", score=");
+    b.op(
+        op::ROPE_INIT,
+        T_UNUSED,
+        T_CONST,
+        T_TMP,
+        0,
+        greeting,
+        10,
+        4,
+        1,
+    );
+    b.op(op::ROPE_ADD, T_TMP, T_CV, T_TMP, 10, 0, 10, 1, 1);
+    b.op(op::ROPE_ADD, T_TMP, T_CONST, T_TMP, 10, separator, 10, 2, 1);
+    b.op(op::ROPE_END, T_TMP, T_CV, T_TMP, 10, 1, 11, 3, 1);
+    b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 1);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse php 8.4 rope op array");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{decomp:#?}");
+    assert!(
+        decomp.php_skeleton.contains(
+            "echo $_disrobe_rope_0_part_0 . $_disrobe_rope_0_part_1 . \
+             $_disrobe_rope_0_part_2 . $_disrobe_rope_0_part_3;"
+        ),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+    for expected in [
+        "$_disrobe_rope_0_part_0 = (string) ('Hello ');",
+        "$_disrobe_rope_0_part_1 = (string) ($name);",
+        "$_disrobe_rope_0_part_2 = (string) (', score=');",
+        "$_disrobe_rope_0_part_3 = (string) ($score);",
+    ] {
+        assert!(
+            decomp.php_skeleton.contains(expected),
+            "skeleton: {}",
+            decomp.php_skeleton
+        );
+    }
+}
+
+#[test]
+fn multiply_consumed_rope_result_is_materialized_once() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("value");
+    let open: u32 = b.lit_str("[");
+    let close: u32 = b.lit_str("]");
+    b.op(op::ROPE_INIT, T_UNUSED, T_CONST, T_TMP, 0, open, 10, 3, 1);
+    b.op(op::ROPE_ADD, T_TMP, T_CV, T_TMP, 10, 0, 10, 1, 1);
+    b.op(op::ROPE_END, T_TMP, T_CONST, T_TMP, 10, close, 11, 2, 1);
+    b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 1);
+    b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 1);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse shared rope result");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 0, "{decomp:#?}");
+    for expected in [
+        "$_disrobe_rope_0_part_0 = (string) ('[');",
+        "$_disrobe_rope_0_part_1 = (string) ($value);",
+        "$_disrobe_rope_0_part_2 = (string) (']');",
+    ] {
+        assert!(
+            decomp.php_skeleton.contains(expected),
+            "skeleton: {}",
+            decomp.php_skeleton
+        );
+    }
+    assert!(
+        decomp.php_skeleton.contains(
+            "$_disrobe_rope_2 = $_disrobe_rope_0_part_0 . $_disrobe_rope_0_part_1 . \
+             $_disrobe_rope_0_part_2;"
+        ),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+    assert_eq!(
+        decomp
+            .php_skeleton
+            .matches("echo $_disrobe_rope_2;")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn rope_accepts_interleaved_element_producers_and_preserves_later_mutation_order() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("value");
+    let prefix: u32 = b.lit_str("value=");
+    let one: u32 = b.lit_long(1);
+    let two: u32 = b.lit_long(2);
+    let changed: u32 = b.lit_long(9);
+    b.op(op::ROPE_INIT, T_UNUSED, T_CONST, T_TMP, 0, prefix, 10, 3, 1);
+    b.op(op::ADD, T_CONST, T_CONST, T_TMP, one, two, 20, 0, 1);
+    b.op(op::ROPE_ADD, T_TMP, T_TMP, T_TMP, 10, 20, 10, 1, 1);
+    b.op(op::ROPE_END, T_TMP, T_CV, T_TMP, 10, 0, 11, 2, 1);
+    b.op(op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, changed, 0, 0, 2);
+    b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 3);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse interleaved rope op array");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+    let rope_assignment: usize = decomp
+        .php_skeleton
+        .find(
+            "$_disrobe_rope_3 = $_disrobe_rope_0_part_0 . $_disrobe_rope_0_part_1 . \
+             $_disrobe_rope_0_part_2;",
+        )
+        .expect("rope is captured before the source variable changes");
+    let mutation: usize = decomp
+        .php_skeleton
+        .find("$value = 9;")
+        .expect("later mutation remains present");
+
+    assert_eq!(decomp.unrecovered_total, 0, "{decomp:#?}");
+    assert!(
+        decomp
+            .php_skeleton
+            .contains("$_disrobe_rope_0_part_2 = (string) ($value);"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+    assert!(
+        rope_assignment < mutation,
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+    assert!(
+        decomp.php_skeleton.contains("echo $_disrobe_rope_3;"),
+        "skeleton: {}",
+        decomp.php_skeleton
+    );
+}
+
+#[test]
+fn malformed_rope_indexes_and_lengths_are_refused_without_guessing() {
+    let mut b: OpArrayBuilder = OpArrayBuilder::main();
+    b.var("value");
+    let open: u32 = b.lit_str("[");
+    let close: u32 = b.lit_str("]");
+    b.op(op::ROPE_INIT, T_UNUSED, T_CONST, T_TMP, 0, open, 10, 4, 1);
+    b.op(op::ROPE_ADD, T_TMP, T_CV, T_TMP, 10, 0, 10, 2, 1);
+    b.op(op::ROPE_END, T_TMP, T_CONST, T_TMP, 10, close, 11, 3, 1);
+    b.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 1);
+    let bytes: Vec<u8> = b.build_container();
+
+    let parsed: OpArray = parse_oparray(&bytes).expect("parse malformed rope op array");
+    let decomp: Decompilation = decompile_oparray(&parsed);
+
+    assert_eq!(decomp.unrecovered_total, 3, "{decomp:#?}");
+    assert!(decomp.unrecovered.iter().all(|entry: &UnrecoveredOp| {
+        entry
+            .reason
+            .contains("operands, element indexes or declared length")
+    }));
+    assert!(!decomp.php_skeleton.contains("'[' . $value . ']'"));
+}
+
+#[test]
+fn rope_never_crosses_a_structured_region_or_allows_its_storage_slot_to_escape() {
+    let mut crossed: OpArrayBuilder = OpArrayBuilder::main();
+    crossed.var("condition").var("value");
+    let open: u32 = crossed.lit_str("[");
+    let close: u32 = crossed.lit_str("]");
+    crossed.op(op::JMPZ, T_CV, T_UNUSED, T_UNUSED, 0, 3, 0, 0, 1);
+    crossed.op(op::ROPE_INIT, T_UNUSED, T_CONST, T_TMP, 0, open, 10, 3, 1);
+    crossed.op(op::ROPE_ADD, T_TMP, T_CV, T_TMP, 10, 1, 10, 1, 1);
+    crossed.op(op::ROPE_END, T_TMP, T_CONST, T_TMP, 10, close, 11, 2, 1);
+    crossed.op(op::ECHO, T_TMP, T_UNUSED, T_UNUSED, 11, 0, 0, 0, 1);
+    let crossed_bytes: Vec<u8> = crossed.build_container();
+    let crossed_parsed: OpArray = parse_oparray(&crossed_bytes).expect("parse crossed rope");
+    let crossed_decomp: Decompilation = decompile_oparray(&crossed_parsed);
+
+    assert!(
+        crossed_decomp
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.opcode == op::ROPE_INIT),
+        "{crossed_decomp:#?}"
+    );
+    assert!(!crossed_decomp.php_skeleton.contains("_part_"));
+
+    let mut escaped: OpArrayBuilder = OpArrayBuilder::main();
+    escaped.var("value");
+    let prefix: u32 = escaped.lit_str("value=");
+    let suffix: u32 = escaped.lit_str("!");
+    escaped.op(op::ROPE_INIT, T_UNUSED, T_CONST, T_TMP, 0, prefix, 10, 3, 1);
+    escaped.op(op::BOOL, T_TMP, T_UNUSED, T_TMP, 10, 0, 20, 0, 1);
+    escaped.op(op::ROPE_ADD, T_TMP, T_CV, T_TMP, 10, 0, 10, 1, 1);
+    escaped.op(op::ROPE_END, T_TMP, T_CONST, T_TMP, 10, suffix, 11, 2, 1);
+    let escaped_bytes: Vec<u8> = escaped.build_container();
+    let escaped_parsed: OpArray = parse_oparray(&escaped_bytes).expect("parse escaped rope");
+    let escaped_decomp: Decompilation = decompile_oparray(&escaped_parsed);
+
+    assert!(
+        escaped_decomp
+            .unrecovered
+            .iter()
+            .any(|entry: &UnrecoveredOp| entry.opcode == op::ROPE_INIT),
+        "{escaped_decomp:#?}"
+    );
+    assert!(!escaped_decomp.php_skeleton.contains("_part_"));
 }
 
 #[test]

@@ -13,12 +13,23 @@
     clippy::cargo
 )]
 
+#[path = "support/php_toolchain.rs"]
+#[allow(
+    dead_code,
+    clippy::redundant_pub_crate,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
+mod php_toolchain;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use disrobe_pass_php::decompile::op;
 use disrobe_pass_php::{
     Decompilation, OPARRAY_MAGIC, OPARRAY_VERSION, RecoveryReport, RecoveryStage, recover_php,
 };
+use php_toolchain::{PhpRuntime, require_php};
 
 fn build_oparray_echo(literal: &str) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::new();
@@ -86,6 +97,81 @@ fn build_expression_oparray(missing_definition: bool) -> Vec<u8> {
         0,
         5,
     );
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn build_rope_oparray() -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&2u32.to_le_bytes());
+    body.push(1);
+    body.extend_from_slice(&4u32.to_le_bytes());
+    body.extend_from_slice(b"name");
+    body.push(1);
+    body.extend_from_slice(&5u32.to_le_bytes());
+    body.extend_from_slice(b"score");
+    body.extend_from_slice(&4u32.to_le_bytes());
+    body.push(4);
+    body.extend_from_slice(&3u32.to_le_bytes());
+    body.extend_from_slice(b"Ada");
+    body.push(2);
+    body.extend_from_slice(&42i64.to_le_bytes());
+    body.push(4);
+    body.extend_from_slice(&6u32.to_le_bytes());
+    body.extend_from_slice(b"Hello ");
+    body.push(4);
+    body.extend_from_slice(&8u32.to_le_bytes());
+    body.extend_from_slice(b", score=");
+    body.extend_from_slice(&7u32.to_le_bytes());
+    push_op(&mut body, op::ASSIGN, 8, 1, 0, 0, 0, 0, 0, 1);
+    push_op(&mut body, op::ASSIGN, 8, 1, 0, 1, 1, 0, 0, 1);
+    push_op(&mut body, op::ROPE_INIT, 0, 1, 2, 0, 2, 10, 4, 1);
+    push_op(&mut body, op::ROPE_ADD, 2, 8, 2, 10, 0, 10, 1, 1);
+    push_op(&mut body, op::ROPE_ADD, 2, 1, 2, 10, 3, 10, 2, 1);
+    push_op(&mut body, op::ROPE_END, 2, 8, 2, 10, 1, 11, 3, 1);
+    push_op(&mut body, op::ECHO, 2, 0, 0, 11, 0, 0, 0, 1);
+    body.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(OPARRAY_MAGIC);
+    out.push(OPARRAY_VERSION);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn build_mutating_property_rope_oparray() -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::new();
+    body.push(0);
+    body.push(0);
+    body.push(0);
+    body.extend_from_slice(&0u32.to_le_bytes());
+    body.extend_from_slice(&2u32.to_le_bytes());
+    for name in ["s", "m"] {
+        body.push(1);
+        body.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        body.extend_from_slice(name.as_bytes());
+    }
+    body.extend_from_slice(&2u32.to_le_bytes());
+    for literal in ["x", "Q"] {
+        body.push(4);
+        body.extend_from_slice(&(literal.len() as u32).to_le_bytes());
+        body.extend_from_slice(literal.as_bytes());
+    }
+    body.extend_from_slice(&5u32.to_le_bytes());
+    push_op(&mut body, op::ROPE_INIT, 0, 8, 2, 0, 0, 10, 3, 1);
+    push_op(&mut body, op::FETCH_OBJ_R, 8, 1, 2, 1, 0, 20, 0, 1);
+    push_op(&mut body, op::ROPE_ADD, 2, 2, 2, 10, 20, 10, 1, 1);
+    push_op(&mut body, op::ROPE_END, 2, 1, 2, 10, 1, 11, 2, 1);
+    push_op(&mut body, op::ECHO, 2, 0, 0, 11, 0, 0, 0, 1);
     body.extend_from_slice(&0u32.to_le_bytes());
 
     let mut out: Vec<u8> = Vec::new();
@@ -208,6 +294,58 @@ fn pipeline_reconstructs_assignment_arithmetic_concatenation_and_return() {
     assert!(report.output.contains("return $v1;"), "{}", report.output);
     let decomp: Decompilation = report.decompilation.expect("decompilation present");
     assert_eq!(decomp.unrecovered_total, 0);
+}
+
+#[test]
+fn pipeline_recovers_php_84_rope_interpolation() {
+    let bytes: Vec<u8> = build_rope_oparray();
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover php 8.4 rope");
+
+    assert_eq!(report.stage, RecoveryStage::OpArrayDecompiled);
+    assert!(
+        report.output.contains(
+            "echo $_disrobe_rope_2_part_0 . $_disrobe_rope_2_part_1 . \
+             $_disrobe_rope_2_part_2 . $_disrobe_rope_2_part_3;"
+        ),
+        "output: {}",
+        report.output
+    );
+    let decomp: Decompilation = report.decompilation.expect("decompilation present");
+    assert_eq!(decomp.unrecovered_total, 0, "{decomp:#?}");
+
+    let Some(php): Option<PhpRuntime> = require_php("php 8.4 rope runtime differential") else {
+        return;
+    };
+    let original: &[u8] = b"<?php $name = 'Ada'; $score = 42; echo \"Hello $name, score=$score\";";
+    assert_eq!(
+        php.stdout_of("php 8.4 original rope", original),
+        php.stdout_of("php 8.4 recovered rope", report.output.as_bytes()),
+        "recovered rope source differs from interpolation under {}",
+        php.banner
+    );
+}
+
+#[test]
+fn php_84_rope_converts_each_element_before_later_property_side_effects() {
+    let Some(php): Option<PhpRuntime> =
+        require_php("php 8.4 rope element conversion ordering differential")
+    else {
+        return;
+    };
+    let bytes: Vec<u8> = build_mutating_property_rope_oparray();
+    let report: RecoveryReport = recover_php(&bytes, None).expect("recover mutating property rope");
+    let setup: &str = "class M { public function __get($name) { $GLOBALS['s'] = 'b'; return 'x'; } }\n$s = 'a';\n$m = new M;\n";
+    let recovered: String = report
+        .output
+        .replacen("<?php\n", &format!("<?php\n{setup}"), 1);
+    let original: &[u8] = b"<?php class M { public function __get($name) { $GLOBALS['s'] = 'b'; return 'x'; } } $s = 'a'; $m = new M; echo \"$s{$m->x}Q\";";
+
+    assert_eq!(
+        php.stdout_of("php 8.4 original mutating rope", original),
+        php.stdout_of("php 8.4 recovered mutating rope", recovered.as_bytes()),
+        "rope element conversion moved past a later side effect under {}\n{recovered}",
+        php.banner
+    );
 }
 
 #[test]

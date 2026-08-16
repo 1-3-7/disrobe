@@ -19,6 +19,7 @@ const SANE_NEST_DEPTH: u32 = 64;
 const MAX_PREALLOC: usize = 1 << 16;
 const SANE_LIFT_DEPTH: u32 = 256;
 const MAX_UNRECOVERED_RECORDS: usize = 4096;
+const SANE_ROPE_WORK_CAP: usize = 1 << 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum OperandType {
@@ -271,6 +272,9 @@ pub mod op {
     pub const CASE: u8 = 48;
     pub const CAST: u8 = 51;
     pub const BOOL: u8 = 52;
+    pub const ROPE_INIT: u8 = 54;
+    pub const ROPE_ADD: u8 = 55;
+    pub const ROPE_END: u8 = 56;
     pub const INIT_FCALL_BY_NAME: u8 = 59;
     pub const DO_FCALL: u8 = 60;
     pub const INIT_FCALL: u8 = 61;
@@ -387,6 +391,9 @@ pub fn opcode_name(opcode: u8) -> &'static str {
         48 => "ZEND_CASE",
         51 => "ZEND_CAST",
         52 => "ZEND_BOOL",
+        54 => "ZEND_ROPE_INIT",
+        55 => "ZEND_ROPE_ADD",
+        56 => "ZEND_ROPE_END",
         59 => "ZEND_INIT_FCALL_BY_NAME",
         60 => "ZEND_DO_FCALL",
         61 => "ZEND_INIT_FCALL",
@@ -1206,6 +1213,7 @@ impl<'a> Lifter<'a> {
     fn try_structure(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let op: &Op = self.ops.get(i as usize)?;
         match op.opcode {
+            o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
             }
@@ -1367,6 +1375,182 @@ impl<'a> Lifter<'a> {
         self.writable_slots.remove(&result_key);
         self.slots.insert(result_key, Expr { text, prec });
         Some((Vec::new(), join))
+    }
+
+    fn fold_rope(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let init: Op = self.ops.get(i as usize)?.clone();
+        let total: u32 = init.extended_value;
+        let remaining: u32 = end.checked_sub(i)?;
+        if init.op1_type != OperandType::Unused
+            || init.op2_type == OperandType::Unused
+            || init.result_type != OperandType::TmpVar
+            || total < 3
+            || total > remaining
+        {
+            return None;
+        }
+        let total_usize: usize = usize::try_from(total).ok()?;
+        if total_usize > SANE_ROPE_WORK_CAP {
+            let refusal: String = self.refuse(i, init.opcode, REASON_ROPE_BUDGET);
+            return Some((vec![Stmt::Line(refusal)], i.saturating_add(1)));
+        }
+        let rope_key: (OperandType, u32) = (init.result_type, init.result);
+        let capacity: usize = total_usize.min(MAX_PREALLOC);
+        let mut elements: Vec<(u32, Op)> = Vec::with_capacity(capacity);
+        let mut intermediates: Vec<u32> = Vec::new();
+        elements.push((i, init.clone()));
+        let mut position: u32 = 1;
+        let mut cursor: u32 = i.checked_add(1)?;
+        while position < total {
+            if cursor >= end {
+                return None;
+            }
+            let visited: usize = usize::try_from(cursor.checked_sub(i)?).ok()?;
+            if visited >= SANE_ROPE_WORK_CAP {
+                let refusal: String = self.refuse(i, init.opcode, REASON_ROPE_BUDGET);
+                return Some((vec![Stmt::Line(refusal)], i.saturating_add(1)));
+            }
+            let current: Op = self.ops.get(cursor as usize)?.clone();
+            if !matches!(current.opcode, op::ROPE_ADD | op::ROPE_END) {
+                let touches_rope: bool = [
+                    (current.op1_type, current.op1),
+                    (current.op2_type, current.op2),
+                    (current.result_type, current.result),
+                ]
+                .contains(&rope_key);
+                if current.opcode == op::ROPE_INIT
+                    || touches_rope
+                    || !is_rope_intermediate(current.opcode)
+                {
+                    return None;
+                }
+                intermediates.push(cursor);
+                cursor = cursor.checked_add(1)?;
+                continue;
+            }
+            let last: bool = position.checked_add(1)? == total;
+            if current.op1_type != rope_key.0
+                || current.op1 != rope_key.1
+                || current.op2_type == OperandType::Unused
+                || current.extended_value != position
+                || (last && current.opcode != op::ROPE_END)
+                || (!last && current.opcode != op::ROPE_ADD)
+                || (!last && (current.result_type, current.result) != rope_key)
+                || (last
+                    && (current.result_type != OperandType::TmpVar
+                        || (current.result_type, current.result) == rope_key))
+            {
+                return None;
+            }
+            elements.push((cursor, current));
+            position = position.checked_add(1)?;
+            cursor = cursor.checked_add(1)?;
+        }
+        if !self.call_stack.is_empty() {
+            return None;
+        }
+        let mut touched_keys: BTreeSet<(OperandType, u32)> = BTreeSet::new();
+        for index in &intermediates {
+            let current: &Op = self.ops.get(*index as usize)?;
+            if matches!(current.result_type, OperandType::TmpVar | OperandType::Var) {
+                touched_keys.insert((current.result_type, current.result));
+            }
+        }
+        let saved_slots: Vec<((OperandType, u32), Option<Expr>)> = touched_keys
+            .iter()
+            .map(|key: &(OperandType, u32)| (*key, self.slots.get(key).cloned()))
+            .collect();
+        let saved_writable: Vec<((OperandType, u32), Option<u32>)> = touched_keys
+            .iter()
+            .map(|key: &(OperandType, u32)| (*key, self.writable_slots.get(key).copied()))
+            .collect();
+        let unrecovered_len: usize = self.unrecovered.len();
+        let parts: Option<Vec<Expr>> = (|| {
+            let mut captured: Vec<Expr> = Vec::with_capacity(capacity);
+            captured.push(self.defined_operand_expr(init.op2_type, init.op2)?);
+            let mut scan: u32 = i.checked_add(1)?;
+            for (element_index, element) in elements.iter().skip(1) {
+                while scan < *element_index {
+                    let refused_before: usize = self.refused.len();
+                    if self.eval_op(scan).is_some() || self.refused.len() != refused_before {
+                        return None;
+                    }
+                    scan = scan.checked_add(1)?;
+                }
+                if !self.call_stack.is_empty() {
+                    return None;
+                }
+                captured.push(self.defined_operand_expr(element.op2_type, element.op2)?);
+                scan = element_index.checked_add(1)?;
+            }
+            Some(captured)
+        })();
+        let Some(parts): Option<Vec<Expr>> = parts else {
+            for (key, previous) in saved_slots {
+                match previous {
+                    Some(expr) => {
+                        self.slots.insert(key, expr);
+                    }
+                    None => {
+                        self.slots.remove(&key);
+                    }
+                }
+            }
+            for (key, previous) in saved_writable {
+                match previous {
+                    Some(index) => {
+                        self.writable_slots.insert(key, index);
+                    }
+                    None => {
+                        self.writable_slots.remove(&key);
+                    }
+                }
+            }
+            self.call_stack.clear();
+            self.unrecovered.truncate(unrecovered_len);
+            for index in intermediates {
+                self.refused.remove(&index);
+            }
+            return None;
+        };
+        let finish_index: u32 = elements.last()?.0;
+        let finish: Op = elements.last()?.1.clone();
+        let part_family: String = format!("rope_{i}_part");
+        let mut statements: Vec<Stmt> = Vec::with_capacity(parts.len().saturating_add(1));
+        let mut part_refs: Vec<String> = Vec::with_capacity(parts.len());
+        for (part_index, part) in parts.into_iter().enumerate() {
+            let part_index: u32 = u32::try_from(part_index).ok()?;
+            let name: String = self.reserve_spill(&part_family, part_index);
+            statements.push(Stmt::Line(format!("${name} = (string) ({});", part.text)));
+            part_refs.push(format!("${name}"));
+        }
+        let text: String = part_refs.join(" . ");
+        let result_key: (OperandType, u32) = (finish.result_type, finish.result);
+        let uses: u32 = self
+            .result_use_counts
+            .get(finish_index as usize)
+            .copied()
+            .unwrap_or(0);
+        let next_consumes_once: bool = uses == 1
+            && self.ops.get(cursor as usize).is_some_and(|next: &Op| {
+                (next.op1_type, next.op1) == result_key || (next.op2_type, next.op2) == result_key
+            });
+        if uses == 0 {
+            statements.push(Stmt::Line(format!("{text};")));
+        } else if next_consumes_once {
+            self.store_result(
+                &finish,
+                Expr {
+                    text,
+                    prec: PREC_CONCAT,
+                },
+            );
+        } else {
+            let spill_name: String = self.reserve_spill("rope", finish_index);
+            self.store_result(&finish, Expr::atom(format!("${spill_name}")));
+            statements.push(Stmt::Line(format!("${spill_name} = {text};")));
+        }
+        Some((statements, cursor))
     }
 
     fn structure_ternary(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
@@ -2321,6 +2505,9 @@ const REASON_EXPRESSION_OPERAND: &str =
 const REASON_FINAL_RETURN_PROVENANCE: &str =
     "a constant null or 1 return lacks compiler-final provenance";
 const REASON_JUMP: &str = "this jump matched no structured control-flow shape";
+const REASON_ROPE: &str =
+    "the rope operands, element indexes or declared length do not form a php 8 rope";
+const REASON_ROPE_BUDGET: &str = "the rope exceeds the bounded php 8 rope folding budget";
 const REASON_DISPATCH: &str = "switch and match dispatch is not reconstructed";
 const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";
 const REASON_DECLARATION: &str = "the declared body is not carried in this op array";
@@ -2338,6 +2525,7 @@ const fn refusal_reason(opcode: u8) -> &'static str {
         | op::JMP_NULL
         | op::COALESCE => REASON_JUMP,
         op::SWITCH_LONG | op::SWITCH_STRING | op::MATCH | op::CASE => REASON_DISPATCH,
+        op::ROPE_INIT | op::ROPE_ADD | op::ROPE_END => REASON_ROPE,
         op::CATCH => REASON_EXCEPTION,
         op::DECLARE_FUNCTION
         | op::DECLARE_LAMBDA_FUNCTION
@@ -2439,6 +2627,45 @@ const fn is_binary(opcode: u8) -> bool {
             | op::IS_SMALLER
             | op::IS_SMALLER_OR_EQUAL
     )
+}
+
+#[must_use]
+const fn is_rope_intermediate(opcode: u8) -> bool {
+    is_binary(opcode)
+        || is_isset_isempty(opcode)
+        || is_send(opcode)
+        || matches!(
+            opcode,
+            op::NOP
+                | op::BOOL
+                | op::BOOL_NOT
+                | op::QM_ASSIGN
+                | op::CAST
+                | op::BW_NOT
+                | op::STRLEN
+                | op::COUNT
+                | op::FETCH_DIM_R
+                | op::FETCH_OBJ_R
+                | op::FETCH_CONSTANT
+                | op::INSTANCEOF
+                | op::CLONE
+                | op::FETCH_R
+                | op::FREE
+                | op::VERIFY_RETURN_TYPE
+                | op::HANDLE_EXCEPTION
+                | op::INIT_FCALL
+                | op::INIT_FCALL_BY_NAME
+                | op::INIT_NS_FCALL
+                | op::INIT_METHOD_CALL
+                | op::INIT_STATIC_METHOD_CALL
+                | op::DO_FCALL
+                | op::DO_ICALL
+                | op::DO_UCALL
+                | op::DO_FCALL_BY_NAME
+                | op::NEW
+                | op::INIT_ARRAY
+                | op::ADD_ARRAY_ELEMENT
+        )
 }
 
 #[must_use]
@@ -2596,6 +2823,65 @@ mod oparray_bounds_tests {
             ratio < 8.0,
             "lift cost grew {ratio:.1}x for a 4x input (linear is ~4x, quadratic ~16x); \
              find_back_jump regressed to O(n^2): t1={t1:.4}s t4={t4:.4}s"
+        );
+    }
+
+    #[test]
+    fn many_rope_folds_scale_sub_quadratically() {
+        use std::time::{Duration, Instant};
+        fn lift_secs(rope_count: usize) -> f64 {
+            let mut ops: Vec<Op> = Vec::with_capacity(rope_count.saturating_mul(3));
+            for rope in 0..rope_count {
+                let base: u32 = u32::try_from(rope.saturating_mul(2)).unwrap_or(u32::MAX);
+                ops.push(Op {
+                    opcode: op::ROPE_INIT,
+                    op1_type: OperandType::Unused,
+                    op2_type: OperandType::Const,
+                    result_type: OperandType::TmpVar,
+                    op1: 0,
+                    op2: 0,
+                    result: base,
+                    extended_value: 3,
+                    lineno: 0,
+                });
+                ops.push(Op {
+                    opcode: op::ROPE_ADD,
+                    op1_type: OperandType::TmpVar,
+                    op2_type: OperandType::Const,
+                    result_type: OperandType::TmpVar,
+                    op1: base,
+                    op2: 0,
+                    result: base,
+                    extended_value: 1,
+                    lineno: 0,
+                });
+                ops.push(Op {
+                    opcode: op::ROPE_END,
+                    op1_type: OperandType::TmpVar,
+                    op2_type: OperandType::Const,
+                    result_type: OperandType::TmpVar,
+                    op1: base,
+                    op2: 0,
+                    result: base.saturating_add(1),
+                    extended_value: 2,
+                    lineno: 0,
+                });
+            }
+            let literals: Vec<Literal> = vec![Literal::Str("x".to_owned())];
+            let var_names: Vec<Option<String>> = Vec::new();
+            let start: Instant = Instant::now();
+            let stmts: Vec<Stmt> = Lifter::new(&ops, &literals, &var_names).lift();
+            let elapsed: Duration = start.elapsed();
+            assert_eq!(stmts.len(), rope_count.saturating_mul(4));
+            elapsed.as_secs_f64()
+        }
+        const BASE: usize = 2_000;
+        let t1: f64 = lift_secs(BASE);
+        let t4: f64 = lift_secs(BASE * 4);
+        let ratio: f64 = t4 / t1.max(1e-6);
+        assert!(
+            ratio < 8.0,
+            "rope lift cost grew {ratio:.1}x for a 4x input: t1={t1:.4}s t4={t4:.4}s"
         );
     }
 
