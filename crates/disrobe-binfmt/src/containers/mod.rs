@@ -52,6 +52,7 @@ pub mod rar_ppmd;
 pub mod rar_unpack3;
 pub mod rar_unpack5;
 pub mod romfs;
+pub mod rpm;
 pub mod snap;
 pub mod sparse;
 pub mod squashfs;
@@ -71,6 +72,31 @@ pub mod wim_lzx;
 pub mod xalz;
 pub mod xar;
 pub mod yaffs;
+
+pub(super) const MAX_CONTAINER_METADATA_BYTES: usize = 64 * 1024 * 1024;
+
+pub(super) fn admit_metadata_bytes(
+    total: &mut usize,
+    additional: usize,
+    cap: usize,
+    subject: &str,
+) -> crate::error::Result<()> {
+    let next: usize =
+        total
+            .checked_add(additional)
+            .ok_or_else(|| crate::error::Error::QuotaExceeded {
+                entry: subject.to_owned(),
+                reason: "container metadata allocation overflow".to_owned(),
+            })?;
+    if next > cap {
+        return Err(crate::error::Error::QuotaExceeded {
+            entry: subject.to_owned(),
+            reason: format!("container metadata exceeds cap {cap}"),
+        });
+    }
+    *total = next;
+    Ok(())
+}
 
 pub use apfs::{
     ApfsContainer, ApfsExtractedFile, ApfsFsRecord, ApfsVolume, apfs_file_bytes, detect_apfs,
@@ -202,6 +228,7 @@ pub use rar::{
     file_data as rar_file_data, parse_rar, parse_rar4, parse_rar5,
 };
 pub use romfs::{RomfsFile, RomfsHeader, RomfsWalk, detect_romfs, walk_romfs};
+pub use rpm::{RecoveredRpm, RpmCompression, RpmEntry, RpmFormat, RpmSignatureBlob, recover_rpm};
 pub use snap::detect_snap;
 pub use sparse::{SparseHeader, detect_sparse, unsparse};
 pub use squashfs::{

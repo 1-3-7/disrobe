@@ -280,6 +280,7 @@ serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
 sevenz-rust2 = "0.13.2"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
+sha3 = "0.10"
 syn = { version = "2.0.117", features = ["full", "extra-traits", "fold", "parsing", "printing"] }
 scrypt = { version = "0.11.0", default-features = false }
 tar = "0.4.46"

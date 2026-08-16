@@ -83,7 +83,7 @@ pub fn parse_cpio(bytes: &[u8]) -> Result<CpioArchive> {
     let variant: CpioVariant = detect_cpio_variant(bytes)
         .ok_or_else(|| Error::Tar("cpio magic not recognized".to_owned()))?;
     let entries: Vec<CpioEntry> = match variant {
-        CpioVariant::Newc | CpioVariant::Crc => parse_newc(bytes)?,
+        CpioVariant::Newc | CpioVariant::Crc => parse_newc(bytes, variant)?,
         CpioVariant::Odc => parse_odc(bytes)?,
         CpioVariant::BinLittleEndian => parse_bin(bytes, false)?,
         CpioVariant::BinBigEndian => parse_bin(bytes, true)?,
@@ -91,52 +91,185 @@ pub fn parse_cpio(bytes: &[u8]) -> Result<CpioArchive> {
     Ok(CpioArchive { variant, entries })
 }
 
-#[inline]
-const fn align4(value: usize) -> usize {
-    (value + 3) & !3
-}
-
 fn hex_field(bytes: &[u8], offset: usize) -> Result<u64> {
+    let end: usize = offset
+        .checked_add(8)
+        .ok_or_else(|| Error::Tar("cpio newc field offset overflow".to_owned()))?;
     let slice: &[u8] = bytes
-        .get(offset..offset + 8)
+        .get(offset..end)
         .ok_or_else(|| Error::Tar("cpio newc header truncated".to_owned()))?;
     let text: &str = core::str::from_utf8(slice)
         .map_err(|_| Error::Tar("cpio newc field not ascii".to_owned()))?;
-    u64::from_str_radix(text.trim(), 16)
+    u64::from_str_radix(text, 16)
         .map_err(|_| Error::Tar(format!("cpio newc field not hex: {text:?}")))
 }
 
-fn parse_newc(bytes: &[u8]) -> Result<Vec<CpioEntry>> {
+fn hex_field_u32(bytes: &[u8], offset: usize, field: &str) -> Result<u32> {
+    let value: u64 = hex_field(bytes, offset)?;
+    u32::try_from(value).map_err(|_error: std::num::TryFromIntError| {
+        Error::Tar(format!("cpio {field} exceeds 32 bits"))
+    })
+}
+
+fn align4_checked(value: usize) -> Result<usize> {
+    value
+        .checked_add(3)
+        .map(|aligned: usize| aligned & !3)
+        .ok_or_else(|| Error::Tar("cpio alignment overflow".to_owned()))
+}
+
+fn require_zero_padding(bytes: &[u8], start: usize, end: usize, subject: &str) -> Result<()> {
+    let padding: &[u8] = bytes
+        .get(start..end)
+        .ok_or_else(|| Error::Tar(format!("cpio {subject} padding is truncated")))?;
+    if padding.iter().any(|byte: &u8| *byte != 0) {
+        return Err(Error::Tar(format!(
+            "cpio {subject} padding contains nonzero bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_newc(bytes: &[u8], variant: CpioVariant) -> Result<Vec<CpioEntry>> {
+    parse_newc_with_name_cap(bytes, variant, super::MAX_CONTAINER_METADATA_BYTES)
+}
+
+fn parse_newc_with_name_cap(
+    bytes: &[u8],
+    variant: CpioVariant,
+    name_metadata_cap: usize,
+) -> Result<Vec<CpioEntry>> {
     let mut entries: Vec<CpioEntry> = Vec::new();
     let mut pos: usize = 0;
+    let mut metadata_bytes: usize = 0;
     loop {
-        if pos + NEWC_HEADER_LEN > bytes.len() {
-            break;
+        let header_end: usize = pos
+            .checked_add(NEWC_HEADER_LEN)
+            .ok_or_else(|| Error::Tar("cpio newc header offset overflow".to_owned()))?;
+        let header: &[u8] = bytes
+            .get(pos..header_end)
+            .ok_or_else(|| Error::Tar("cpio newc trailer missing or truncated".to_owned()))?;
+        let expected_magic: &[u8; 6] = match variant {
+            CpioVariant::Newc => NEWC_MAGIC,
+            CpioVariant::Crc => CRC_MAGIC,
+            CpioVariant::Odc | CpioVariant::BinLittleEndian | CpioVariant::BinBigEndian => {
+                return Err(Error::Tar(
+                    "cpio newc parser received another variant".to_owned(),
+                ));
+            }
+        };
+        if header.get(..6) != Some(expected_magic.as_slice()) {
+            return Err(Error::Tar(format!(
+                "cpio newc member magic mismatch at offset {pos}"
+            )));
         }
-        let mode: u32 = hex_field(bytes, pos + 14)? as u32;
-        let uid: u32 = hex_field(bytes, pos + 22)? as u32;
-        let gid: u32 = hex_field(bytes, pos + 30)? as u32;
-        let nlink: u32 = hex_field(bytes, pos + 38)? as u32;
+        let _inode: u32 = hex_field_u32(bytes, pos + 6, "inode")?;
+        let mode: u32 = hex_field_u32(bytes, pos + 14, "mode")?;
+        let uid: u32 = hex_field_u32(bytes, pos + 22, "uid")?;
+        let gid: u32 = hex_field_u32(bytes, pos + 30, "gid")?;
+        let nlink: u32 = hex_field_u32(bytes, pos + 38, "link count")?;
         let mtime: u64 = hex_field(bytes, pos + 46)?;
         let file_size: u64 = hex_field(bytes, pos + 54)?;
+        let _device_major: u32 = hex_field_u32(bytes, pos + 62, "device major")?;
+        let _device_minor: u32 = hex_field_u32(bytes, pos + 70, "device minor")?;
+        let _special_device_major: u32 = hex_field_u32(bytes, pos + 78, "special device major")?;
+        let _special_device_minor: u32 = hex_field_u32(bytes, pos + 86, "special device minor")?;
+        let expected_checksum: u32 = hex_field_u32(bytes, pos + 102, "checksum")?;
         let name_size: usize = usize::try_from(hex_field(bytes, pos + 94)?).map_err(
             |_e: std::num::TryFromIntError| Error::Tar("cpio name size overflow".to_owned()),
         )?;
-        let name_start: usize = pos + NEWC_HEADER_LEN;
+        if name_size == 0 {
+            return Err(Error::Tar(
+                "cpio newc name is not nul terminated".to_owned(),
+            ));
+        }
+        let name_start: usize = header_end;
         let name_end: usize = name_start
             .checked_add(name_size)
             .ok_or_else(|| Error::Tar("cpio name length overflow".to_owned()))?;
         let name_bytes: &[u8] = bytes
             .get(name_start..name_end)
             .ok_or_else(|| Error::Tar("cpio name out of bounds".to_owned()))?;
-        let name: String = decode_name(name_bytes);
-        let data_start: usize = align4(name_end);
-        if name == TRAILER_NAME {
-            break;
+        if name_bytes.last() != Some(&0) {
+            return Err(Error::Tar(
+                "cpio newc name is not canonically terminated".to_owned(),
+            ));
         }
+        let name_content: &[u8] = &name_bytes[..name_bytes.len() - 1];
+        if name_content.contains(&0) {
+            return Err(Error::UnsafeEntryPath(
+                String::from_utf8_lossy(name_content).into_owned(),
+            ));
+        }
+        if name_size > crate::quota::MAX_ENTRY_PATH_BYTES + 1 {
+            return Err(Error::Tar(format!(
+                "cpio newc name length {name_size} exceeds path bound {}",
+                crate::quota::MAX_ENTRY_PATH_BYTES
+            )));
+        }
+        let decoded_name_bound: usize = name_size
+            .checked_mul(3)
+            .ok_or_else(|| Error::Tar("cpio name allocation bound overflow".to_owned()))?;
+        super::admit_metadata_bytes(
+            &mut metadata_bytes,
+            decoded_name_bound,
+            name_metadata_cap,
+            "<cpio-names>",
+        )?;
+        let name: String = decode_name(name_bytes);
+        let data_start: usize = align4_checked(name_end)?;
+        require_zero_padding(bytes, name_end, data_start, "name")?;
+        let file_size_usize: usize =
+            usize::try_from(file_size).map_err(|_error: std::num::TryFromIntError| {
+                Error::Tar("cpio data size overflow".to_owned())
+            })?;
         let data_end: usize = data_start
-            .checked_add(file_size as usize)
+            .checked_add(file_size_usize)
             .ok_or_else(|| Error::Tar("cpio data length overflow".to_owned()))?;
+        let data: &[u8] = bytes
+            .get(data_start..data_end)
+            .ok_or_else(|| Error::Tar("cpio data out of bounds".to_owned()))?;
+        let actual_checksum: u32 = data.iter().fold(0u32, |sum: u32, byte: &u8| {
+            sum.wrapping_add(u32::from(*byte))
+        });
+        match variant {
+            CpioVariant::Crc if actual_checksum != expected_checksum => {
+                return Err(Error::Tar(format!(
+                    "cpio checksum mismatch for `{name}`: expected {expected_checksum:08x}, computed {actual_checksum:08x}"
+                )));
+            }
+            CpioVariant::Newc if expected_checksum != 0 => {
+                return Err(Error::Tar(format!(
+                    "cpio newc checksum field for `{name}` must be zero"
+                )));
+            }
+            CpioVariant::Newc | CpioVariant::Crc => {}
+            CpioVariant::Odc | CpioVariant::BinLittleEndian | CpioVariant::BinBigEndian => {
+                return Err(Error::Tar(
+                    "cpio newc parser received another variant".to_owned(),
+                ));
+            }
+        }
+        if name == TRAILER_NAME {
+            if file_size != 0 {
+                return Err(Error::Tar("cpio trailer carries file data".to_owned()));
+            }
+            let archive_end: usize = align4_checked(data_end)?;
+            require_zero_padding(bytes, data_end, archive_end, "trailer")?;
+            let padding: &[u8] = bytes
+                .get(archive_end..)
+                .ok_or_else(|| Error::Tar("cpio trailer padding out of bounds".to_owned()))?;
+            if padding.iter().any(|byte: &u8| *byte != 0) {
+                return Err(Error::Tar("cpio trailer has nonzero padding".to_owned()));
+            }
+            return Ok(entries);
+        }
+        if entries.len() >= crate::quota::DEFAULT_MAX_ENTRIES {
+            return Err(Error::Tar(format!(
+                "cpio entry count exceeds cap {}",
+                crate::quota::DEFAULT_MAX_ENTRIES
+            )));
+        }
         entries.push(CpioEntry {
             name,
             mode,
@@ -147,9 +280,10 @@ fn parse_newc(bytes: &[u8]) -> Result<Vec<CpioEntry>> {
             file_size,
             data_offset: data_start,
         });
-        pos = align4(data_end);
+        let next: usize = align4_checked(data_end)?;
+        require_zero_padding(bytes, data_end, next, "member")?;
+        pos = next;
     }
-    Ok(entries)
 }
 
 fn oct_field(bytes: &[u8], offset: usize, width: usize) -> Result<u64> {
@@ -343,6 +477,93 @@ mod tests {
         let parsed: CpioArchive = parse_cpio(&archive).expect("parse crc");
         assert_eq!(parsed.variant, CpioVariant::Crc);
         assert!(parsed.entries.is_empty());
+    }
+
+    #[test]
+    fn crc_variant_rejects_a_wrong_member_checksum() {
+        let mut archive: Vec<u8> = newc_header("checked.bin", 0o100_644, 3);
+        archive[..CRC_MAGIC.len()].copy_from_slice(CRC_MAGIC);
+        push_data(&mut archive, b"abc");
+        let mut trailer: Vec<u8> = newc_header(TRAILER_NAME, 0, 0);
+        trailer[..CRC_MAGIC.len()].copy_from_slice(CRC_MAGIC);
+        archive.extend_from_slice(&trailer);
+
+        let error: Error = parse_cpio(&archive).expect_err("checksum mismatch must fail");
+        assert!(error.to_string().contains("checksum"), "{error}");
+    }
+
+    #[test]
+    fn newc_requires_one_complete_trailer() {
+        let mut archive: Vec<u8> = newc_header("file.bin", 0o100_644, 3);
+        push_data(&mut archive, b"abc");
+
+        let error: Error = parse_cpio(&archive).expect_err("missing trailer must fail");
+        assert!(error.to_string().contains("trailer"), "{error}");
+    }
+
+    #[test]
+    fn newc_rejects_nonzero_bytes_after_trailer_padding() {
+        let mut archive: Vec<u8> = newc_header(TRAILER_NAME, 0, 0);
+        archive.extend_from_slice(b"suffix");
+
+        let error: Error = parse_cpio(&archive).expect_err("suffix must fail");
+        assert!(error.to_string().contains("padding"), "{error}");
+    }
+
+    #[test]
+    fn newc_rejects_nonzero_name_padding() {
+        let mut archive: Vec<u8> = newc_header("ab", 0o100_644, 0);
+        let padding: usize = archive.len() - 1;
+        archive[padding] = 1;
+        archive.extend_from_slice(&newc_header(TRAILER_NAME, 0, 0));
+
+        let error: Error = parse_cpio(&archive).expect_err("name padding must fail");
+        assert!(error.to_string().contains("name padding"), "{error}");
+    }
+
+    #[test]
+    fn newc_rejects_nonzero_member_padding() {
+        let mut archive: Vec<u8> = newc_header("x", 0o100_644, 1);
+        push_data(&mut archive, b"a");
+        let padding: usize = archive.len() - 1;
+        archive[padding] = 1;
+        archive.extend_from_slice(&newc_header(TRAILER_NAME, 0, 0));
+
+        let error: Error = parse_cpio(&archive).expect_err("member padding must fail");
+        assert!(error.to_string().contains("member padding"), "{error}");
+    }
+
+    #[test]
+    fn newc_requires_exact_hex_fields() {
+        let mut archive: Vec<u8> = newc_header(TRAILER_NAME, 0, 0);
+        archive[6..14].copy_from_slice(b"       0");
+
+        let error: Error = parse_cpio(&archive).expect_err("spaced field must fail");
+        assert!(error.to_string().contains("not hex"), "{error}");
+    }
+
+    #[test]
+    fn newc_refuses_a_name_above_the_shared_path_bound() {
+        let name: String = "a".repeat(crate::quota::MAX_ENTRY_PATH_BYTES + 1);
+        let mut archive: Vec<u8> = newc_header(&name, 0o100_644, 0);
+        archive.extend_from_slice(&newc_header(TRAILER_NAME, 0, 0));
+
+        let error: Error = parse_cpio(&archive).expect_err("oversized name must fail");
+        assert!(error.to_string().contains("name length"), "{error}");
+    }
+
+    #[test]
+    fn newc_names_obey_the_exact_aggregate_metadata_boundary() {
+        let mut archive: Vec<u8> = newc_header("a", 0o100_644, 0);
+        archive.extend_from_slice(&newc_header("b", 0o100_644, 0));
+        archive.extend_from_slice(&newc_header(TRAILER_NAME, 0, 0));
+
+        let entries: Vec<CpioEntry> = parse_newc_with_name_cap(&archive, CpioVariant::Newc, 45)
+            .expect("exact CPIO name metadata boundary");
+        assert_eq!(entries.len(), 2);
+        let error: Error = parse_newc_with_name_cap(&archive, CpioVariant::Newc, 44)
+            .expect_err("aggregate CPIO name metadata must stay bounded");
+        assert!(error.to_string().contains("metadata"), "{error}");
     }
 
     #[test]

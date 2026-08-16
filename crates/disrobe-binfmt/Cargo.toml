@@ -15,9 +15,8 @@ categories = ["parser-implementations", "filesystem", "compression"]
 workspace = true
 
 [features]
-default = ["rpm"]
+default = []
 chain = ["disrobe-core/chain"]
-rpm = ["dep:rpm"]
 
 [dependencies]
 disrobe-bytes = { workspace = true }
@@ -40,16 +39,18 @@ lzfse_rust = "0.2.1"
 lzma-rs = "0.3.0"
 lzokay = { version = "2.0.1", default-features = false, features = ["decompress"] }
 memchr = { workspace = true }
+md5 = { workspace = true }
 miette = { workspace = true }
 msi = { workspace = true }
 ntfs = "0.4.0"
 object = { workspace = true, features = ["write"] }
 plist = { workspace = true }
-rpm = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sevenz-rust2 = { workspace = true }
+sha1 = { workspace = true }
 sha2 = { workspace = true }
+sha3 = { workspace = true }
 tar = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
@@ -66,3 +67,4 @@ path = "tests/fixtures/gen_container.rs"
 
 [dev-dependencies]
 disrobe-testkit = { workspace = true }
+rpm = { workspace = true }

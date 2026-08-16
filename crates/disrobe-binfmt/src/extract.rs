@@ -121,10 +121,7 @@ pub fn extract_to_with_quota(
         ContainerKind::SevenZ => extract_sevenz(bytes, out_dir, quota),
         ContainerKind::Asar => extract_asar(bytes, out_dir, quota),
         ContainerKind::Deb => extract_deb(bytes, out_dir, quota),
-        #[cfg(feature = "rpm")]
         ContainerKind::Rpm => extract_rpm(bytes, out_dir, quota),
-        #[cfg(not(feature = "rpm"))]
-        ContainerKind::Rpm => Err(Error::UnsupportedContainer("rpm")),
         ContainerKind::Cab => extract_cab(bytes, out_dir, quota),
         ContainerKind::Rar => extract_rar(bytes, out_dir, quota),
         ContainerKind::Pkg => extract_xar(bytes, out_dir, quota),
@@ -2393,103 +2390,148 @@ fn extract_deb(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     )
 }
 
-const CPIO_NEWC_HEADER_LEN: usize = 110;
-const CPIO_TRAILER_NAME: &str = "TRAILER!!!";
-
-#[cfg(feature = "rpm")]
-fn rpm_payload_wrap(compressor: rpm::CompressionType, payload: &[u8]) -> PayloadWrap {
-    match compressor {
-        rpm::CompressionType::None => sniff_payload_wrap(payload),
-        rpm::CompressionType::Gzip => PayloadWrap::Compressed(CompressionWrap::Gz),
-        rpm::CompressionType::Xz => PayloadWrap::Compressed(CompressionWrap::Xz),
-        rpm::CompressionType::Zstd => PayloadWrap::Compressed(CompressionWrap::Zst),
-        rpm::CompressionType::Bzip2 => PayloadWrap::Compressed(CompressionWrap::Bz2),
+const fn rpm_entry_compression(compression: crate::containers::RpmCompression) -> EntryCompression {
+    match compression {
+        crate::containers::RpmCompression::Stored => EntryCompression::Stored,
+        crate::containers::RpmCompression::Gzip => EntryCompression::Deflate,
+        crate::containers::RpmCompression::Xz => EntryCompression::Xz,
+        crate::containers::RpmCompression::Zstd => EntryCompression::Zstd,
+        crate::containers::RpmCompression::Bzip2 => EntryCompression::Bzip2,
+        crate::containers::RpmCompression::Lzma => EntryCompression::Lzma,
     }
 }
 
-#[cfg(feature = "rpm")]
-fn sniff_payload_wrap(payload: &[u8]) -> PayloadWrap {
-    match payload {
-        [0x1f, 0x8b, ..] => PayloadWrap::Compressed(CompressionWrap::Gz),
-        [0xfd, b'7', b'z', b'X', b'Z', 0x00, ..] => PayloadWrap::Compressed(CompressionWrap::Xz),
-        [0x28, 0xb5, 0x2f, 0xfd, ..] => PayloadWrap::Compressed(CompressionWrap::Zst),
-        [b'B', b'Z', b'h', ..] => PayloadWrap::Compressed(CompressionWrap::Bz2),
-        _ => PayloadWrap::Stored,
-    }
+const fn cpio_entry_kind(mode: u32) -> u32 {
+    mode & 0o170_000
 }
 
-#[cfg(feature = "rpm")]
-const fn rpm_entry_compression(wrap: PayloadWrap) -> EntryCompression {
-    match wrap {
-        PayloadWrap::Stored => EntryCompression::Stored,
-        PayloadWrap::Compressed(CompressionWrap::Gz) => EntryCompression::Deflate,
-        PayloadWrap::Compressed(CompressionWrap::Xz) => EntryCompression::Xz,
-        PayloadWrap::Compressed(CompressionWrap::Zst) => EntryCompression::Zstd,
-        PayloadWrap::Compressed(CompressionWrap::Bz2) => EntryCompression::Bzip2,
-        PayloadWrap::Compressed(CompressionWrap::Lzma) => EntryCompression::Lzma,
-    }
+#[cfg(not(windows))]
+const fn rpm_host_path_is_representable(_name: &str) -> bool {
+    true
 }
 
-#[cfg(feature = "rpm")]
+#[cfg(windows)]
+fn rpm_host_path_is_representable(name: &str) -> bool {
+    name.split('/').all(|component: &str| {
+        let invalid_byte: bool = component.bytes().any(|byte: u8| {
+            byte <= 31 || matches!(byte, b'<' | b'>' | b':' | b'"' | b'|' | b'?' | b'*')
+        });
+        let invalid_ending: bool = matches!(component.as_bytes().last(), Some(b' ' | b'.'));
+        let stem: &str = component
+            .split_once('.')
+            .map_or(component, |(stem, _suffix): (&str, &str)| stem);
+        let uppercase: String = stem.to_ascii_uppercase();
+        let reserved: bool = matches!(
+            uppercase.as_str(),
+            "CON"
+                | "PRN"
+                | "AUX"
+                | "NUL"
+                | "COM1"
+                | "COM2"
+                | "COM3"
+                | "COM4"
+                | "COM5"
+                | "COM6"
+                | "COM7"
+                | "COM8"
+                | "COM9"
+                | "LPT1"
+                | "LPT2"
+                | "LPT3"
+                | "LPT4"
+                | "LPT5"
+                | "LPT6"
+                | "LPT7"
+                | "LPT8"
+                | "LPT9"
+        );
+        !component.is_empty() && !invalid_byte && !invalid_ending && !reserved
+    })
+}
+
 fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
-    let mut reader: Cursor<&[u8]> = Cursor::new(bytes);
-    let package: rpm::Package =
-        rpm::Package::parse(&mut reader).map_err(|e| Error::Rpm(e.to_string()))?;
-    let compressor: rpm::CompressionType = package
-        .metadata
-        .get_payload_compressor()
-        .map_err(|e| Error::Rpm(e.to_string()))?;
-    let payload: &[u8] = package.payload.as_slice();
-    let compressed_size: u64 = payload.len() as u64;
-    let wrap: PayloadWrap = rpm_payload_wrap(compressor, payload);
-    let entry_compression: EntryCompression = rpm_entry_compression(wrap);
-    let cpio: Vec<u8> = match wrap {
-        PayloadWrap::Stored => payload.to_vec(),
-        PayloadWrap::Compressed(inner) => decompress_wrap_capped(
-            payload,
-            inner,
-            quota.max_total_uncompressed,
-            "<rpm-payload>",
-        )?,
-    };
+    let recovered: crate::containers::RecoveredRpm =
+        crate::containers::recover_rpm(bytes, quota.max_total_uncompressed)?;
+    let entry_compression: EntryCompression = rpm_entry_compression(recovered.compression);
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
-    let mut offset: usize = 0;
-    while offset < cpio.len() {
-        let Some(entry): Option<CpioEntry> = parse_cpio_entry(&cpio, &mut offset)? else {
-            break;
-        };
-        if entry.name == CPIO_TRAILER_NAME {
-            break;
+    let mut accepted: Vec<(usize, String)> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (index, entry) in recovered.entries.iter().enumerate() {
+        let safe_name: String = sanitize_entry_path(&entry.name)?;
+        if !seen.insert(safe_name.clone()) {
+            return Err(Error::Rpm(format!(
+                "duplicate normalized payload path `{safe_name}`"
+            )));
         }
-        if !is_cpio_regular_file(entry.mode) {
+        if cpio_entry_kind(entry.mode) == 0o100_000 && !entry.ghost {
+            guard.admit_entry(&safe_name, entry.file_size, entry.file_size)?;
+        }
+        accepted.push((index, safe_name));
+    }
+    for (index, safe_name) in accepted {
+        let entry: &crate::containers::RpmEntry = recovered
+            .entries
+            .get(index)
+            .ok_or_else(|| Error::Rpm("validated RPM entry disappeared".to_owned()))?;
+        let entry_kind: u32 = cpio_entry_kind(entry.mode);
+        let materializes: bool =
+            entry_kind == 0o040_000 || (entry_kind == 0o100_000 && !entry.ghost);
+        if materializes && !rpm_host_path_is_representable(&safe_name) {
+            violations.push(format!(
+                "rpm-host-path `{safe_name}` cannot be represented by the output filesystem"
+            ));
+            entries_out.push(ExtractedEntry {
+                name: safe_name,
+                disk_path: None,
+                uncompressed_size: entry.file_size,
+                compressed_size: entry.file_size,
+                compression: entry_compression,
+                is_executable: entry.mode & 0o111 != 0,
+            });
             continue;
         }
-        let safe_name: String = match sanitize_entry_path(&entry.name) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("rpm-slip: {e}"));
-                continue;
-            }
-        };
-        let uncompressed_size: u64 = entry.data.len() as u64;
-        guard.admit_entry(&safe_name, uncompressed_size, uncompressed_size)?;
+        if entry_kind == 0o040_000 {
+            let _: PathBuf = prepare_entry_dir(out_dir, &safe_name)?;
+            entries_out.push(ExtractedEntry {
+                name: safe_name,
+                disk_path: None,
+                uncompressed_size: 0,
+                compressed_size: 0,
+                compression: entry_compression,
+                is_executable: entry.mode & 0o111 != 0,
+            });
+            continue;
+        }
+        if entry_kind != 0o100_000 || entry.ghost {
+            entries_out.push(ExtractedEntry {
+                name: safe_name,
+                disk_path: None,
+                uncompressed_size: entry.file_size,
+                compressed_size: entry.file_size,
+                compression: entry_compression,
+                is_executable: entry.mode & 0o111 != 0,
+            });
+            continue;
+        }
+        let data: &[u8] = recovered.member_bytes(entry)?;
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-        std::fs::write(&disk_path, entry.data)?;
+        std::fs::write(&disk_path, data)?;
         encoding.insert(safe_name.clone(), entry_compression);
         entries_out.push(ExtractedEntry {
             name: safe_name,
             disk_path: Some(disk_path),
-            uncompressed_size,
-            compressed_size: uncompressed_size,
+            uncompressed_size: entry.file_size,
+            compressed_size: entry.file_size,
             compression: entry_compression,
             is_executable: entry.mode & 0o111 != 0,
         });
     }
     let mut summary: QuotaSummary = QuotaSummary::from(guard.report());
-    summary.total_compressed_bytes = compressed_size;
+    summary.total_compressed_bytes = recovered.compressed_size;
     Ok(ExtractionResult {
         kind: ContainerKind::Rpm,
         entries: entries_out,
@@ -2497,73 +2539,6 @@ fn extract_rpm(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
         integrity_violations: violations,
         quota: summary,
     })
-}
-
-#[cfg(feature = "rpm")]
-#[derive(Debug)]
-struct CpioEntry {
-    name: String,
-    mode: u32,
-    data: Vec<u8>,
-}
-
-#[cfg(feature = "rpm")]
-const fn is_cpio_regular_file(mode: u32) -> bool {
-    mode & 0o170_000 == 0o100_000
-}
-
-#[cfg(feature = "rpm")]
-fn parse_cpio_entry(cpio: &[u8], offset: &mut usize) -> Result<Option<CpioEntry>> {
-    let header_end: usize = offset.saturating_add(CPIO_NEWC_HEADER_LEN);
-    let Some(header): Option<&[u8]> = cpio.get(*offset..header_end) else {
-        return Ok(None);
-    };
-    let magic: &[u8] = &header[..6];
-    if magic != b"070701" && magic != b"070702" {
-        return Err(Error::Rpm(format!(
-            "cpio: bad magic {:02x?} at offset {}",
-            magic, *offset
-        )));
-    }
-    let mode: u32 = cpio_hex_field(header, 14)?;
-    let filesize: u32 = cpio_hex_field(header, 54)?;
-    let namesize: u32 = cpio_hex_field(header, 94)?;
-    let name_start: usize = header_end;
-    let name_end: usize = name_start
-        .checked_add(namesize as usize)
-        .ok_or_else(|| Error::Rpm("cpio: namesize overflow".to_owned()))?;
-    let name_bytes: &[u8] = cpio
-        .get(name_start..name_end)
-        .ok_or_else(|| Error::Rpm("cpio: truncated name field".to_owned()))?;
-    let name: String =
-        String::from_utf8_lossy(name_bytes.split_last().map_or(name_bytes, |(_, n)| n))
-            .into_owned();
-    let data_start: usize = cpio_align4(name_end);
-    let data_end: usize = data_start
-        .checked_add(filesize as usize)
-        .ok_or_else(|| Error::Rpm("cpio: filesize overflow".to_owned()))?;
-    let data: Vec<u8> = cpio
-        .get(data_start..data_end)
-        .ok_or_else(|| Error::Rpm("cpio: truncated data field".to_owned()))?
-        .to_vec();
-    *offset = cpio_align4(data_end);
-    Ok(Some(CpioEntry { name, mode, data }))
-}
-
-#[cfg(feature = "rpm")]
-fn cpio_hex_field(header: &[u8], start: usize) -> Result<u32> {
-    let field: &[u8] = header
-        .get(start..start + 8)
-        .ok_or_else(|| Error::Rpm("cpio: header field out of range".to_owned()))?;
-    let text: &str = std::str::from_utf8(field)
-        .map_err(|e| Error::Rpm(format!("cpio: non-ascii header field: {e}")))?;
-    u32::from_str_radix(text, 16)
-        .map_err(|e| Error::Rpm(format!("cpio: bad hex header field `{text}`: {e}")))
-}
-
-#[cfg(feature = "rpm")]
-const fn cpio_align4(value: usize) -> usize {
-    value.next_multiple_of(4)
 }
 
 fn extract_cab(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
@@ -2677,12 +2652,6 @@ enum CompressionWrap {
     Xz,
     Zst,
     Lzma,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum PayloadWrap {
-    Stored,
-    Compressed(CompressionWrap),
 }
 
 const EOCD_SIGNATURE: [u8; 4] = [b'P', b'K', 0x05, 0x06];
@@ -6470,7 +6439,6 @@ mod tests {
             minimum_refused_as_a_slip: 34,
             build: crate::containers::yaffs::hostile_named_image,
         },
-        #[cfg(feature = "rpm")]
         DrivenWritePath {
             function: "extract_rpm",
             kind: ContainerKind::Rpm,
@@ -6553,7 +6521,13 @@ mod tests {
 
     #[expect(clippy::unnecessary_wraps)]
     fn build_hostile_cpio(name: &str, body: &[u8]) -> Option<Vec<u8>> {
-        Some(newc_entry(name.as_bytes(), 0o100_644, body))
+        let mut bytes: Vec<u8> = newc_entry(name.as_bytes(), 0o100_644, body);
+        bytes.extend_from_slice(&newc_entry(
+            crate::containers::cpio::TRAILER_NAME.as_bytes(),
+            0,
+            &[],
+        ));
+        Some(bytes)
     }
 
     #[expect(clippy::unnecessary_wraps)]
@@ -6751,6 +6725,7 @@ mod tests {
         let path: &DrivenWritePath = driven_write_path(function);
         let mut exercised: usize = 0;
         let mut refused_through_the_tag: usize = 0;
+        let mut rpm_refused_before_write: usize = 0;
         let mut contained_writes: usize = 0;
         for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
             if name.is_empty() {
@@ -6772,6 +6747,23 @@ mod tests {
                         "{name:?} must stay extractable by {function}: {e}"
                     );
                     assert_no_escape_around(&out);
+                    if function == "extract_rpm" {
+                        match &e {
+                            Error::UnsafeEntryPath(rejected_name) => {
+                                assert_eq!(rejected_name, name, "RPM rejected the wrong path");
+                            }
+                            other => panic!(
+                                "{name:?} reached an unrelated RPM refusal before writing: {other:?}"
+                            ),
+                        }
+                        let mut output_entries: std::fs::ReadDir =
+                            std::fs::read_dir(&out).expect("read RPM output directory");
+                        assert!(
+                            output_entries.next().is_none(),
+                            "{name:?} wrote inside the RPM output directory before refusal"
+                        );
+                        rpm_refused_before_write += 1;
+                    }
                     continue;
                 }
             };
@@ -6792,6 +6784,9 @@ mod tests {
                         result.entries
                     );
                     refused_through_the_tag += usize::from(tagged);
+                    if function == "extract_rpm" {
+                        rpm_refused_before_write += usize::from(tagged);
+                    }
                 }
                 crate::quota::HostileNameVerdict::ContainedWrite => {
                     assert!(
@@ -6808,12 +6803,20 @@ mod tests {
             "{function} exercised only {exercised} hostile names, expected at least {}",
             path.minimum_exercised
         );
-        assert!(
-            refused_through_the_tag >= path.minimum_refused_as_a_slip,
-            "{function} refused only {refused_through_the_tag} hostile names as {}, expected at least {}",
-            path.slip_tag,
-            path.minimum_refused_as_a_slip
-        );
+        if function == "extract_rpm" {
+            assert!(
+                rpm_refused_before_write >= path.minimum_refused_as_a_slip,
+                "{function} refused only {rpm_refused_before_write} hostile names before writing, expected at least {}",
+                path.minimum_refused_as_a_slip
+            );
+        } else {
+            assert!(
+                refused_through_the_tag >= path.minimum_refused_as_a_slip,
+                "{function} refused only {refused_through_the_tag} hostile names as {}, expected at least {}",
+                path.slip_tag,
+                path.minimum_refused_as_a_slip
+            );
+        }
         assert!(
             contained_writes > 0,
             "{function} wrote nothing at all, so the container builder never produced a real archive"
@@ -7308,6 +7311,11 @@ mod tests {
         let out: PathBuf = scratch.path().to_path_buf();
         let mut bytes: Vec<u8> = newc_entry(b"link", 0o120_777, b"../..");
         bytes.extend_from_slice(&newc_entry(b"link/escape.txt", 0o100_644, b"payload"));
+        bytes.extend_from_slice(&newc_entry(
+            crate::containers::cpio::TRAILER_NAME.as_bytes(),
+            0,
+            &[],
+        ));
         let result: ExtractionResult =
             extract_to(ContainerKind::Cpio, &bytes, &out).expect("extract cpio");
         assert!(
@@ -7681,7 +7689,6 @@ mod tests {
         assert!(r.integrity_violations.is_empty());
     }
 
-    #[cfg(feature = "rpm")]
     fn newc_entry(name_bytes: &[u8], mode: u32, data: &[u8]) -> Vec<u8> {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(b"070701");
@@ -7716,32 +7723,69 @@ mod tests {
         out
     }
 
-    #[cfg(feature = "rpm")]
-    fn hostile_named_rpm(name: &str, body: &[u8]) -> Option<Vec<u8>> {
-        let mut builder: rpm::PackageBuilder = rpm::PackageBuilder::new(
-            "disrobe-hostile-fixture",
-            "1.0.0",
-            "MIT",
-            "x86_64",
-            "hostile entry-name fixture",
-        );
-        builder.using_config(rpm::BuildConfig::v4().compression(rpm::CompressionType::None));
-        builder
-            .with_file_contents(
-                b"placeholder".to_vec(),
-                rpm::FileOptions::new("/placeholder.txt"),
-            )
-            .ok()?;
-        let mut package: rpm::Package = builder.build().ok()?;
-        let mut cpio: Vec<u8> = newc_entry(name.as_bytes(), 0o100_644, body);
-        cpio.extend_from_slice(&newc_entry(CPIO_TRAILER_NAME.as_bytes(), 0, &[]));
-        package.payload = cpio;
-        let mut out: Vec<u8> = Vec::new();
-        package.write(&mut out).ok()?;
-        Some(out)
+    fn append_rpm_header(
+        output: &mut Vec<u8>,
+        entries: &[(u32, u32, i32, u32)],
+        store: &[u8],
+    ) -> Option<()> {
+        output.extend_from_slice(&[0x8e, 0xad, 0xe8, 0x01, 0, 0, 0, 0]);
+        output.extend_from_slice(&u32::try_from(entries.len()).ok()?.to_be_bytes());
+        output.extend_from_slice(&u32::try_from(store.len()).ok()?.to_be_bytes());
+        for (tag, kind, offset, count) in entries {
+            output.extend_from_slice(&tag.to_be_bytes());
+            output.extend_from_slice(&kind.to_be_bytes());
+            output.extend_from_slice(&offset.to_be_bytes());
+            output.extend_from_slice(&count.to_be_bytes());
+        }
+        output.extend_from_slice(store);
+        Some(())
     }
 
-    #[cfg(feature = "rpm")]
+    fn hostile_named_rpm(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        use sha2::Digest as _;
+
+        let mut cpio: Vec<u8> = newc_entry(name.as_bytes(), 0o100_644, body);
+        cpio.extend_from_slice(&newc_entry(
+            crate::containers::cpio::TRAILER_NAME.as_bytes(),
+            0,
+            &[],
+        ));
+        let digest: String = format!("{:x}", sha2::Sha256::digest(&cpio));
+        let mut signature_store: Vec<u8> = Vec::new();
+        signature_store.extend_from_slice(&62u32.to_be_bytes());
+        signature_store.extend_from_slice(&7u32.to_be_bytes());
+        signature_store.extend_from_slice(&(-16i32).to_be_bytes());
+        signature_store.extend_from_slice(&16u32.to_be_bytes());
+        let signature_entries: [(u32, u32, i32, u32); 1] = [(62, 7, 0, 16)];
+
+        let mut main_store: Vec<u8> = Vec::new();
+        main_store.extend_from_slice(&63u32.to_be_bytes());
+        main_store.extend_from_slice(&7u32.to_be_bytes());
+        main_store.extend_from_slice(&(-80i32).to_be_bytes());
+        main_store.extend_from_slice(&16u32.to_be_bytes());
+        main_store.extend_from_slice(b"cpio\0none\0");
+        main_store.extend_from_slice(digest.as_bytes());
+        main_store.push(0);
+        main_store.extend_from_slice(digest.as_bytes());
+        main_store.push(0);
+        let main_entries: [(u32, u32, i32, u32); 5] = [
+            (63, 7, 0, 16),
+            (1124, 6, 16, 1),
+            (1125, 6, 21, 1),
+            (5092, 6, 26, 1),
+            (5097, 6, 91, 1),
+        ];
+
+        let mut output: Vec<u8> = vec![0u8; 96];
+        output[..4].copy_from_slice(&[0xed, 0xab, 0xee, 0xdb]);
+        output[4] = 4;
+        output[78..80].copy_from_slice(&5u16.to_be_bytes());
+        append_rpm_header(&mut output, &signature_entries, &signature_store)?;
+        append_rpm_header(&mut output, &main_entries, &main_store)?;
+        output.extend_from_slice(&cpio);
+        Some(output)
+    }
+
     #[test]
     fn hostile_names_reach_the_rpm_write_path_guard() {
         drive_write_path("extract_rpm");
@@ -7857,24 +7901,27 @@ mod tests {
         drive_write_path("extract_uefi_firmware_volume");
     }
 
-    #[cfg(feature = "rpm")]
     #[test]
     fn non_utf8_cpio_name_does_not_drop_the_whole_payload() {
         let mut cpio: Vec<u8> = Vec::new();
         cpio.extend_from_slice(&newc_entry(&[b'a', 0xff, b'b'], 0o100_644, b"first"));
         cpio.extend_from_slice(&newc_entry(b"clean.txt", 0o100_644, b"second"));
+        cpio.extend_from_slice(&newc_entry(
+            crate::containers::cpio::TRAILER_NAME.as_bytes(),
+            0,
+            &[],
+        ));
 
-        let mut offset: usize = 0;
-        let first: CpioEntry = parse_cpio_entry(&cpio, &mut offset)
-            .expect("a bad name byte must not abort the walk")
-            .expect("first entry present");
+        let archive: crate::containers::CpioArchive =
+            crate::containers::parse_cpio(&cpio).expect("parse CPIO");
+        let first: &crate::containers::CpioEntry = &archive.entries[0];
         assert!(first.name.contains('\u{fffd}'));
-        assert_eq!(first.data, b"first");
+        let first_end: usize = first.data_offset + first.file_size as usize;
+        assert_eq!(&cpio[first.data_offset..first_end], b"first");
 
-        let second: CpioEntry = parse_cpio_entry(&cpio, &mut offset)
-            .expect("second entry parses")
-            .expect("second entry present");
+        let second: &crate::containers::CpioEntry = &archive.entries[1];
         assert_eq!(second.name, "clean.txt");
-        assert_eq!(second.data, b"second");
+        let second_end: usize = second.data_offset + second.file_size as usize;
+        assert_eq!(&cpio[second.data_offset..second_end], b"second");
     }
 }

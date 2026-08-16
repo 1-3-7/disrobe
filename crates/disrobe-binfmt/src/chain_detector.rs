@@ -119,6 +119,7 @@ const TAG_BZIP2: &str = "bzip2";
 const TAG_SEVENZIP: &str = "7z";
 const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
+const TAG_RPM: &str = "rpm";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
@@ -380,9 +381,61 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_XZ => extract_single_stream(bytes, "xz", decode_xz),
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
+        TAG_RPM => extract_rpm_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_rpm_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    extract_rpm_members_with_output_cap(bytes, MAX_MEMBER_BYTES)
+}
+
+fn extract_rpm_members_with_output_cap(
+    bytes: &[u8],
+    output_cap: u64,
+) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let recovered: crate::containers::RecoveredRpm =
+        crate::containers::recover_rpm(bytes, MAX_STREAM_BYTES)
+            .map_err(|error: crate::error::Error| fail(format!("rpm payload: {error}")))?;
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total_output: u64 = 0;
+    for entry in &recovered.entries {
+        if entry.mode & 0o170_000 != 0o100_000 || entry.ghost {
+            continue;
+        }
+        let name: String = crate::quota::sanitize_entry_path(&entry.name)
+            .map_err(|error: crate::error::Error| fail(format!("rpm member path: {error}")))?;
+        if !names.insert(name.clone()) {
+            return Err(fail(format!(
+                "rpm payload contains duplicate normalized path `{name}`"
+            )));
+        }
+        let data: &[u8] = recovered
+            .member_bytes(entry)
+            .map_err(|error: crate::error::Error| fail(format!("rpm member `{name}`: {error}")))?;
+        let member_size: u64 =
+            u64::try_from(data.len()).map_err(|_error: std::num::TryFromIntError| {
+                fail("rpm member size overflow".to_owned())
+            })?;
+        admit_rpm_member_output(&mut total_output, member_size, output_cap)?;
+        members.push((name, data.to_vec()));
+    }
+    Ok(members)
+}
+
+fn admit_rpm_member_output(total: &mut u64, additional: u64, cap: u64) -> CoreResult<()> {
+    let next: u64 = total
+        .checked_add(additional)
+        .ok_or_else(|| fail("rpm aggregate output size overflow".to_owned()))?;
+    if next > cap {
+        return Err(fail(format!(
+            "rpm aggregate output {next} exceeds cap {cap}"
+        )));
+    }
+    *total = next;
+    Ok(())
 }
 
 fn extract_dotnet_single_file_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -608,6 +661,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"Rar!\x1a\x07") {
         return Some(TAG_RAR);
     }
+    if bytes.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
+        return Some(TAG_RPM);
+    }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);
     }
@@ -814,6 +870,23 @@ mod tests {
         let mut cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(b"abc");
         let out: Vec<u8> = read_capped(&mut cursor, 3, 0, "cap test").expect("exact cap");
         assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn rpm_member_output_budget_counts_repeated_hardlink_bytes() {
+        let mut total: u64 = 0;
+        admit_rpm_member_output(&mut total, 21, 21).expect("first hardlink fits");
+        let error: CoreError = admit_rpm_member_output(&mut total, 21, 21)
+            .expect_err("second hardlink must exceed aggregate output");
+        assert!(error.to_string().contains("aggregate output"), "{error}");
+    }
+
+    #[test]
+    fn rpm_hardlink_children_reach_the_aggregate_output_budget() {
+        let bytes: &[u8] = include_bytes!("../tests/fixtures/rpm/rpm-v6-hardlinks.rpm").as_slice();
+        let error: CoreError = extract_rpm_members_with_output_cap(bytes, 21)
+            .expect_err("repeated hardlink bytes must reach the aggregate budget");
+        assert!(error.to_string().contains("aggregate output"), "{error}");
     }
 
     #[test]
