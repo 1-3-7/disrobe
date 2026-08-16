@@ -631,6 +631,11 @@ const PROMETHEUS_WEAK_CLEAN: &str = include_str!("../../../corpus/lua/prometheus
 const PROMETHEUS_WEAK_OBFUSCATED: &str =
     include_str!("../../../corpus/lua/prometheus/weak/obfuscated.lua");
 
+const PROMETHEUS_MEDIUM_CLEAN: &str =
+    include_str!("../../../corpus/lua/prometheus/medium/clean.lua");
+const PROMETHEUS_MEDIUM_OBFUSCATED: &str =
+    include_str!("../../../corpus/lua/prometheus/medium/obfuscated.lua");
+
 #[test]
 fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
     use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
@@ -667,6 +672,60 @@ fn prometheus_weak_preset_recovers_and_reexecutes_identically() {
     assert_eq!(
         expected, actual,
         "Weak-preset recovery must preserve runtime output under real Lua 5.1"
+    );
+}
+
+#[test]
+fn prometheus_medium_preset_recovers_and_reexecutes_identically() {
+    use disrobe_pass_lua::obfuscator::{DeobfOptions, PeelResult, prometheus};
+
+    let tc: Toolchain = require_toolchain("5.1");
+    let scratch: disrobe_core::scratch::ScratchDir = scratch_dir();
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let expected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_medium_clean",
+        PROMETHEUS_MEDIUM_CLEAN,
+    )
+    .expect("the tracked clean Medium-preset input must run under real Lua 5.1");
+    let protected: String = run_source(
+        &tc.lua,
+        &dir,
+        "prometheus_medium_obfuscated",
+        PROMETHEUS_MEDIUM_OBFUSCATED,
+    )
+    .expect("the tracked Medium-preset output must run under real Lua 5.1");
+    assert_eq!(
+        expected, protected,
+        "the pinned upstream transform must preserve the tracked program's output"
+    );
+    let peeled: PeelResult = prometheus::peel(
+        PROMETHEUS_MEDIUM_OBFUSCATED.as_bytes(),
+        &DeobfOptions::default(),
+    )
+    .expect("prometheus peel must run on the tracked Medium preset fixture");
+    assert!(
+        peeled.fully_recovered,
+        "the pinned Medium pipeline must recover without residual VM code; passes={:?}, residual={:?}",
+        peeled.passes_run, peeled.residual_markers
+    );
+    assert!(
+        peeled
+            .passes_run
+            .iter()
+            .any(|pass: &String| pass == "prometheus-vmify-container-devirt"),
+        "the Medium pipeline must reach Vmify recovery; passes={:?}",
+        peeled.passes_run
+    );
+    let recovered: String =
+        String::from_utf8(peeled.deobfuscated).expect("recovered source must be UTF-8");
+    assert!(!recovered.contains("__pc"));
+    let actual: String = run_source(&tc.lua, &dir, "prometheus_medium_recovered", &recovered)
+        .expect("the recovered Medium-preset source must run under real Lua 5.1");
+    assert_eq!(
+        expected, actual,
+        "Medium-preset recovery must preserve runtime output under real Lua 5.1\n--- recovered ---\n{recovered}"
     );
 }
 

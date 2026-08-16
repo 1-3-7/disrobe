@@ -83,15 +83,34 @@ fn real_prometheus_weak_megafile_detects() {
 }
 
 #[test]
-fn real_prometheus_hello_peel_reports_honestly() {
+fn real_prometheus_hello_peel_recovers_every_reachable_handler() {
     let bytes: Vec<u8> = load("obfuscators/hello.prometheus.lua");
     let opts: DeobfOptions = DeobfOptions::default();
     let out: PeelResult = prometheus::peel(&bytes, &opts).expect("peel prometheus hello");
     assert!(
-        !out.fully_recovered,
-        "prometheus opcode/CFG stays VM-virtualized; must not claim full recovery"
+        out.fully_recovered,
+        "every function and handler reachable from a discovered creation entry must recover: {:?}",
+        out.residual_markers
     );
-    assert!(!out.residual_markers.is_empty());
+    assert!(
+        out.passes_run
+            .iter()
+            .any(|pass: &String| pass == "prometheus-vmify-container-devirt")
+    );
+    assert!(out.residual_markers.iter().any(|marker: &String| {
+        marker.contains("handlers 98/98 (100%), functions 9/9")
+            && marker.contains("7 dispatch-tree leaf(ves)")
+            && marker.contains("never reached from a discovered function entry")
+    }));
+    assert!(
+        out.residual_markers
+            .iter()
+            .all(|marker: &String| !marker.contains("refused"))
+    );
+    let recovered: &str =
+        std::str::from_utf8(&out.deobfuscated).expect("Prometheus recovery must be UTF-8 Lua");
+    assert!(!recovered.contains("__pc"));
+    assert!(!recovered.contains("prometheus-vmify:"));
 }
 
 const PROMETHEUS_KNOWN_INTRINSICS: &[&str] = &[
@@ -161,6 +180,27 @@ fn real_prometheus_weak_megafile_peel_reports_honestly() {
     let out: PeelResult = prometheus::peel(&bytes, &opts).expect("peel prometheus weak megafile");
     assert!(!out.fully_recovered);
     assert!(!out.residual_markers.is_empty());
+}
+
+#[test]
+fn pinned_prometheus_medium_fixture_recovers_without_vm_residuals() {
+    let bytes: Vec<u8> = load("prometheus/medium/obfuscated.lua");
+    let opts: DeobfOptions = DeobfOptions::default();
+    let out: PeelResult = prometheus::peel(&bytes, &opts).expect("peel pinned Medium fixture");
+    assert!(
+        out.fully_recovered,
+        "the pinned Medium fixture must recover fully: {:?}",
+        out.residual_markers
+    );
+    assert!(
+        out.passes_run
+            .iter()
+            .any(|pass: &String| pass == "prometheus-vmify-container-devirt")
+    );
+    let recovered: &str =
+        std::str::from_utf8(&out.deobfuscated).expect("Medium recovery must be UTF-8 Lua");
+    assert!(!recovered.contains("__pc"));
+    assert!(!recovered.contains("prometheus-vmify:"));
 }
 
 const PROMETHEUS_BASE85_ONLY_INTRINSICS_HELLO: &[&str] = &[

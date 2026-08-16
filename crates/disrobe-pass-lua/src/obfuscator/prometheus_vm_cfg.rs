@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_cfg::{
@@ -11,6 +12,7 @@ use crate::obfuscator::prometheus_vm_ast::{
     AssignTarget, BinOp, Block, Expr, ExprKind, LocalId, Parser, Span, Stat, StatKind, TableField,
     UnOp, Var,
 };
+use crate::obfuscator::string_decode::{decode_base85_variant, discover_base85_alphabets};
 
 const MAX_DISPATCH_DEPTH: u32 = 96;
 const MAX_FUNCTION_BLOCKS: usize = 1 << 14;
@@ -21,6 +23,12 @@ const MAX_CONSTANT_POOL_RESOLVERS: usize = 8;
 const MAX_LOOP_NESTING: usize = 32;
 const MAX_REGION_TREE_STEPS: usize = 1 << 16;
 const MAX_STATIC_NUMBER_DEPTH: usize = 32;
+const MAX_STATIC_NUMBER_FUEL: usize = 1 << 12;
+const MAX_BOX_STATE_BINDINGS: usize = 1 << 18;
+const MAX_BOX_STATEMENT_USES: usize = 1 << 12;
+const MAX_ANTITAMPER_PROOF_STEPS: usize = 1 << 16;
+const MAX_ANTITAMPER_STATE_BINDINGS: usize = 1 << 12;
+const MAX_ANTITAMPER_EXPRESSION_DEPTH: usize = 32;
 const CAPTURED_VARIABLE_PREFIX: &str = "__vu";
 
 fn refuse(reason: &str) -> Error {
@@ -45,17 +53,21 @@ fn number_of(expr: &Expr) -> Option<f64> {
     static_number_value(expr)
 }
 
-fn as_pos_threshold(cond: &Expr, pos_local: LocalId) -> Option<(ThresholdOp, f64)> {
+fn as_pos_threshold(
+    cond: &Expr,
+    pos_local: LocalId,
+    numbers: &StaticNumberEvaluator,
+) -> Option<(ThresholdOp, f64)> {
     let ExprKind::Binary(op, lhs, rhs) = &cond.kind else {
         return None;
     };
     let lhs_is_pos: bool = is_bare_local(lhs, pos_local);
     let rhs_is_pos: bool = is_bare_local(rhs, pos_local);
     match (op, lhs_is_pos, rhs_is_pos) {
-        (BinOp::Lt, true, false) => number_of(rhs).map(|n: f64| (ThresholdOp::Lt, n)),
-        (BinOp::Gt, false, true) => number_of(lhs).map(|n: f64| (ThresholdOp::Lt, n)),
-        (BinOp::Gt, true, false) => number_of(rhs).map(|n: f64| (ThresholdOp::Gt, n)),
-        (BinOp::Lt, false, true) => number_of(lhs).map(|n: f64| (ThresholdOp::Gt, n)),
+        (BinOp::Lt, true, false) => numbers.evaluate(rhs).map(|n: f64| (ThresholdOp::Lt, n)),
+        (BinOp::Gt, false, true) => numbers.evaluate(lhs).map(|n: f64| (ThresholdOp::Lt, n)),
+        (BinOp::Gt, true, false) => numbers.evaluate(rhs).map(|n: f64| (ThresholdOp::Gt, n)),
+        (BinOp::Lt, false, true) => numbers.evaluate(lhs).map(|n: f64| (ThresholdOp::Gt, n)),
         _ => None,
     }
 }
@@ -67,34 +79,45 @@ fn eval_threshold(op: ThresholdOp, bound: f64, candidate: f64) -> bool {
     }
 }
 
-fn is_dispatch_if(arms: &[(Expr, Block)], else_body: Option<&Block>, pos_local: LocalId) -> bool {
+fn is_dispatch_if(
+    arms: &[(Expr, Block)],
+    else_body: Option<&Block>,
+    pos_local: LocalId,
+    numbers: &StaticNumberEvaluator,
+) -> bool {
     !arms.is_empty()
         && else_body.is_some()
         && arms
             .iter()
-            .all(|(cond, _): &(Expr, Block)| as_pos_threshold(cond, pos_local).is_some())
+            .all(|(cond, _): &(Expr, Block)| as_pos_threshold(cond, pos_local, numbers).is_some())
 }
 
 fn leaf_ident(b: &Block) -> u64 {
     std::ptr::from_ref::<Block>(b).addr() as u64
 }
 
-fn resolve_leaf(block: &Block, pos_local: LocalId, candidate: f64, depth: u32) -> Option<&Block> {
+fn resolve_leaf<'a>(
+    block: &'a Block,
+    pos_local: LocalId,
+    candidate: f64,
+    depth: u32,
+    numbers: &StaticNumberEvaluator,
+) -> Option<&'a Block> {
     if depth > MAX_DISPATCH_DEPTH {
         return None;
     }
     if let [stat] = block.stats.as_slice()
         && let StatKind::If { arms, else_body } = &stat.kind
-        && is_dispatch_if(arms, else_body.as_ref(), pos_local)
+        && is_dispatch_if(arms, else_body.as_ref(), pos_local, numbers)
     {
         for (cond, body) in arms {
-            let (op, bound): (ThresholdOp, f64) = as_pos_threshold(cond, pos_local)?;
+            let (op, bound): (ThresholdOp, f64) = as_pos_threshold(cond, pos_local, numbers)?;
             if eval_threshold(op, bound, candidate) {
-                return resolve_leaf(body, pos_local, candidate, depth + 1);
+                return resolve_leaf(body, pos_local, candidate, depth + 1, numbers);
             }
         }
         let else_body: &Block = else_body.as_ref()?;
-        return resolve_leaf(else_body, pos_local, candidate, depth + 1);
+        return resolve_leaf(else_body, pos_local, candidate, depth + 1, numbers);
     }
     Some(block)
 }
@@ -104,19 +127,20 @@ fn collect_all_leaves<'a>(
     pos_local: LocalId,
     out: &mut Vec<&'a Block>,
     depth: u32,
+    numbers: &StaticNumberEvaluator,
 ) -> Result<()> {
     if depth > MAX_DISPATCH_DEPTH {
         return Err(refuse("dispatch tree exceeds depth budget"));
     }
     if let [stat] = block.stats.as_slice()
         && let StatKind::If { arms, else_body } = &stat.kind
-        && is_dispatch_if(arms, else_body.as_ref(), pos_local)
+        && is_dispatch_if(arms, else_body.as_ref(), pos_local, numbers)
     {
         for (_, body) in arms {
-            collect_all_leaves(body, pos_local, out, depth + 1)?;
+            collect_all_leaves(body, pos_local, out, depth + 1, numbers)?;
         }
         if let Some(else_body) = else_body {
-            collect_all_leaves(else_body, pos_local, out, depth + 1)?;
+            collect_all_leaves(else_body, pos_local, out, depth + 1, numbers)?;
         }
         return Ok(());
     }
@@ -450,7 +474,7 @@ fn collect_rendered_locals(
     out: &mut BTreeSet<LocalId>,
 ) {
     for stat in &leaf.stats {
-        if is_dropped_statement(stat, subst) {
+        if subst.contains_key(&span_key(stat.span)) {
             continue;
         }
         if captures.contains_key(&span_key(stat.span)) {
@@ -1125,49 +1149,75 @@ fn is_exit_shape(rhs: &Expr, substitutions: &BTreeMap<u64, String>) -> bool {
 }
 
 fn static_number_value(expr: &Expr) -> Option<f64> {
-    static_number_value_at_depth(expr, 0)
+    StaticNumberEvaluator::new().evaluate(expr)
 }
 
-fn static_number_value_at_depth(expr: &Expr, depth: usize) -> Option<f64> {
-    if depth > MAX_STATIC_NUMBER_DEPTH {
-        return None;
+struct StaticNumberEvaluator {
+    cache: RefCell<BTreeMap<u64, Option<f64>>>,
+    fuel: Cell<usize>,
+}
+
+impl StaticNumberEvaluator {
+    fn new() -> Self {
+        Self {
+            cache: RefCell::new(BTreeMap::new()),
+            fuel: Cell::new(MAX_STATIC_NUMBER_FUEL),
+        }
     }
-    let next_depth: usize = depth + 1;
-    match &expr.kind {
-        ExprKind::Number(value) => finite_number(*value),
-        ExprKind::Unary(UnOp::Neg, inner) => {
-            finite_number(-static_number_value_at_depth(inner, next_depth)?)
+
+    fn evaluate(&self, expr: &Expr) -> Option<f64> {
+        self.evaluate_at_depth(expr, 0)
+    }
+
+    fn evaluate_at_depth(&self, expr: &Expr, depth: usize) -> Option<f64> {
+        if depth > MAX_STATIC_NUMBER_DEPTH {
+            return None;
         }
-        ExprKind::Paren(inner) => static_number_value_at_depth(inner, next_depth),
-        ExprKind::Binary(op, left, right)
-            if matches!(
-                op,
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
-            ) =>
-        {
-            let left: f64 = static_number_value_at_depth(left, next_depth)?;
-            let right: f64 = static_number_value_at_depth(right, next_depth)?;
-            let value: f64 = match op {
-                BinOp::Add => left + right,
-                BinOp::Sub => left - right,
-                BinOp::Mul => left * right,
-                BinOp::Div if right != 0.0 => left / right,
-                BinOp::Mod if right != 0.0 => (left / right).floor().mul_add(-right, left),
-                BinOp::Pow => left.powf(right),
-                BinOp::Div | BinOp::Mod => return None,
-                BinOp::Concat
-                | BinOp::Eq
-                | BinOp::Ne
-                | BinOp::Lt
-                | BinOp::Le
-                | BinOp::Gt
-                | BinOp::Ge
-                | BinOp::And
-                | BinOp::Or => return None,
-            };
-            finite_number(value)
+        let key: u64 = span_key(expr.span);
+        if let Some(cached) = self.cache.borrow().get(&key).copied() {
+            return cached;
         }
-        _ => None,
+        let remaining: usize = self.fuel.get().checked_sub(1)?;
+        self.fuel.set(remaining);
+        let next_depth: usize = depth + 1;
+        let value: Option<f64> = match &expr.kind {
+            ExprKind::Number(value) => finite_number(*value),
+            ExprKind::Unary(UnOp::Neg, inner) => {
+                finite_number(-self.evaluate_at_depth(inner, next_depth)?)
+            }
+            ExprKind::Paren(inner) => self.evaluate_at_depth(inner, next_depth),
+            ExprKind::Binary(op, left, right)
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+                ) =>
+            {
+                let left: f64 = self.evaluate_at_depth(left, next_depth)?;
+                let right: f64 = self.evaluate_at_depth(right, next_depth)?;
+                let value: f64 = match op {
+                    BinOp::Add => left + right,
+                    BinOp::Sub => left - right,
+                    BinOp::Mul => left * right,
+                    BinOp::Div if right != 0.0 => left / right,
+                    BinOp::Mod if right != 0.0 => (left / right).floor().mul_add(-right, left),
+                    BinOp::Pow => left.powf(right),
+                    BinOp::Div | BinOp::Mod => return None,
+                    BinOp::Concat
+                    | BinOp::Eq
+                    | BinOp::Ne
+                    | BinOp::Lt
+                    | BinOp::Le
+                    | BinOp::Gt
+                    | BinOp::Ge
+                    | BinOp::And
+                    | BinOp::Or => return None,
+                };
+                finite_number(value)
+            }
+            _ => None,
+        };
+        self.cache.borrow_mut().insert(key, value);
+        value
     }
 }
 
@@ -1175,13 +1225,99 @@ fn finite_number(value: f64) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+fn post_dispatch_return(container: &ContainerShape<'_>) -> Result<Option<(LocalId, LocalId)>> {
+    let Some(dispatch_index) = container.full_body.stats.iter().position(|stat: &Stat| {
+        matches!(&stat.kind, StatKind::While { body, .. } if std::ptr::eq(body, container.dispatch_root))
+    }) else {
+        return Err(refuse(
+            "the Vmify container's dispatch loop is not present in its own function body",
+        ));
+    };
+    let mut candidates: BTreeSet<(LocalId, LocalId)> = BTreeSet::new();
+    for stat in container.full_body.stats.iter().skip(dispatch_index + 1) {
+        let StatKind::Return(values) = &stat.kind else {
+            continue;
+        };
+        let [value]: &[Expr] = values.as_slice() else {
+            return Err(refuse(
+                "the Vmify container has a post-dispatch return with an unsupported value count",
+            ));
+        };
+        let ExprKind::Call { base, args } = &unwrap_paren(value).kind else {
+            return Err(refuse(
+                "the Vmify container's post-dispatch return is not a direct unpack call",
+            ));
+        };
+        let ExprKind::Var(Var::Local(unpack_local)) = &unwrap_paren(base).kind else {
+            return Err(refuse(
+                "the Vmify container's post-dispatch return does not call a local unpack alias",
+            ));
+        };
+        let [argument]: &[Expr] = args.as_slice() else {
+            return Err(refuse(
+                "the Vmify container's post-dispatch unpack call does not take exactly one return table",
+            ));
+        };
+        let ExprKind::Var(Var::Local(return_local)) = &unwrap_paren(argument).kind else {
+            return Err(refuse(
+                "the Vmify container's post-dispatch unpack call does not receive a local return table",
+            ));
+        };
+        candidates.insert((*unpack_local, *return_local));
+    }
+    match candidates
+        .into_iter()
+        .collect::<Vec<(LocalId, LocalId)>>()
+        .as_slice()
+    {
+        [] => Ok(None),
+        [single] => Ok(Some(*single)),
+        _ => Err(refuse(
+            "the Vmify container has conflicting post-dispatch unpack return candidates",
+        )),
+    }
+}
+
+fn is_global_named(expr: &Expr, source: &str, expected: &str) -> bool {
+    matches!(&unwrap_paren(expr).kind, ExprKind::Var(Var::Global(span)) if span.text(source) == expected)
+}
+
+fn is_unpack_key(expr: &Expr, source: &str, substitutions: &BTreeMap<u64, String>) -> bool {
+    if substitutions
+        .get(&span_key(expr.span))
+        .is_some_and(|value: &String| value == "\"unpack\"")
+    {
+        return true;
+    }
+    matches!(&unwrap_paren(expr).kind, ExprKind::Str)
+        && matches!(expr.span.text(source), "unpack" | "\"unpack\"" | "'unpack'")
+}
+
+fn is_exact_unpack_alias(
+    expression: &Expr,
+    source: &str,
+    substitutions: &BTreeMap<u64, String>,
+) -> bool {
+    let ExprKind::Binary(BinOp::Or, unpack, fallback) = &unwrap_paren(expression).kind else {
+        return false;
+    };
+    let ExprKind::Index(table, key) = &unwrap_paren(fallback).kind else {
+        return false;
+    };
+    is_global_named(unpack, source, "unpack")
+        && is_global_named(table, source, "table")
+        && is_unpack_key(key, source, substitutions)
+}
+
 fn find_return_local(
     dispatch_root: &Block,
     pos_local: LocalId,
     substitutions: &BTreeMap<u64, String>,
+    numbers: &StaticNumberEvaluator,
+    post_dispatch: Option<LocalId>,
 ) -> Result<LocalId> {
     let mut leaves: Vec<&Block> = Vec::new();
-    collect_all_leaves(dispatch_root, pos_local, &mut leaves, 0)?;
+    collect_all_leaves(dispatch_root, pos_local, &mut leaves, 0, numbers)?;
     let mut votes: BTreeMap<LocalId, usize> = BTreeMap::new();
     let mut exit_leaves_seen: usize = 0;
     for leaf in &leaves {
@@ -1219,9 +1355,11 @@ fn find_return_local(
     });
     let max: usize = votes.values().copied().max().unwrap_or(0);
     if max == 0 {
-        return Err(refuse(
-            "no exit block carries a recognizable return-value table assignment (a preceding string-pool step may have replaced the exit sentinel literal with a pool lookup)",
-        ));
+        return post_dispatch.ok_or_else(|| {
+            refuse(
+                "no exit block or exact post-dispatch unpack call identifies the return-value table",
+            )
+        });
     }
     let winners: Vec<LocalId> = votes
         .iter()
@@ -1229,7 +1367,10 @@ fn find_return_local(
         .map(|(id, _): (&LocalId, &usize)| *id)
         .collect();
     match winners.as_slice() {
-        [single] => Ok(*single),
+        [single] if post_dispatch.is_none_or(|post: LocalId| post == *single) => Ok(*single),
+        [single] => Err(refuse_owned(format!(
+            "the exit blocks identify return table {single}, but the post-dispatch unpack call identifies a different local"
+        ))),
         _ => Err(refuse(
             "the return-value register is ambiguous across the program's exit blocks",
         )),
@@ -1262,16 +1403,19 @@ fn resolve_number_via_last_write(
     expr: &Expr,
     depth: u32,
     chain: &mut Vec<Span>,
+    numbers: &StaticNumberEvaluator,
 ) -> Option<f64> {
     if depth > MAX_SCRATCH_CHAIN_DEPTH {
         return None;
     }
+    if let Some(value) = numbers.evaluate(expr) {
+        return Some(value);
+    }
     match &expr.kind {
-        ExprKind::Number(n) => Some(*n),
         ExprKind::Var(Var::Local(id)) => {
             let (span, prior): (Span, &Expr) = nth_last_target_stmt(&leaf.stats, *id, 0)?;
             chain.push(span);
-            resolve_number_via_last_write(leaf, prior, depth + 1, chain)
+            resolve_number_via_last_write(leaf, prior, depth + 1, chain, numbers)
         }
         _ => None,
     }
@@ -1405,6 +1549,7 @@ fn terminal_transfer<'a>(
     pos_local: LocalId,
     return_local: LocalId,
     substitutions: &BTreeMap<u64, String>,
+    numbers: &StaticNumberEvaluator,
 ) -> Result<(Transfer<'a>, LeafPlan)> {
     if contains_local_decl_in_current_function(leaf) {
         return Err(refuse(
@@ -1416,16 +1561,18 @@ fn terminal_transfer<'a>(
             "a reachable leaf block never assigns the instruction-pointer register",
         ));
     };
-    match &rhs.kind {
-        ExprKind::Number(n) => Ok((
-            Transfer::Goto(*n),
+    if let Some(target) = numbers.evaluate(rhs) {
+        return Ok((
+            Transfer::Goto(target),
             LeafPlan {
                 pos_terminal_span,
                 pos_chain_span: None,
                 return_span: None,
                 numeric_chain_spans: Vec::new(),
             },
-        )),
+        ));
+    }
+    match &rhs.kind {
         ExprKind::Binary(BinOp::Or, lhs, rhs2) => {
             let (start, pos_chain_span): (Option<&Expr>, Option<Span>) =
                 if is_bare_local(lhs, pos_local) {
@@ -1454,8 +1601,8 @@ fn terminal_transfer<'a>(
             };
             let mut numeric_chain_spans: Vec<Span> = Vec::new();
             let (Some(t), Some(nt)) = (
-                resolve_number_via_last_write(leaf, taken, 0, &mut numeric_chain_spans),
-                resolve_number_via_last_write(leaf, rhs2, 0, &mut numeric_chain_spans),
+                resolve_number_via_last_write(leaf, taken, 0, &mut numeric_chain_spans, numbers),
+                resolve_number_via_last_write(leaf, rhs2, 0, &mut numeric_chain_spans, numbers),
             ) else {
                 return Err(refuse_owned(format!(
                     "a leaf's ternary jump targets do not resolve to static numeric literals, at byte {}",
@@ -1554,47 +1701,18 @@ struct Ctx<'a> {
     container_span: Span,
     container_scope: BTreeSet<LocalId>,
     upvalue_bindings: BTreeMap<LocalId, Span>,
+    environment_locals: BTreeSet<LocalId>,
+    unpack_local: Option<LocalId>,
     all_creation_calls: Vec<(&'a Expr, LocalId, &'a Expr, &'a Expr)>,
     box_model: Option<BoxModel>,
+    numbers: StaticNumberEvaluator,
 }
 
 #[derive(Debug, Default)]
 struct FunctionBoxes {
     names: BTreeMap<LocalId, String>,
     declarations: Vec<String>,
-    inline_declarations: BTreeMap<u64, String>,
-}
-
-fn is_box_release_statement(
-    stat: &Stat,
-    release: LocalId,
-    names: &BTreeMap<LocalId, String>,
-) -> bool {
-    let call: &Expr = match &stat.kind {
-        StatKind::ExprStat(expr) => expr,
-        StatKind::Assign { targets, values } => {
-            let ([AssignTarget::Var(Var::Local(target), _)], [value]): (&[AssignTarget], &[Expr]) =
-                (targets.as_slice(), values.as_slice())
-            else {
-                return false;
-            };
-            if !names.contains_key(target) {
-                return false;
-            }
-            value
-        }
-        _ => return false,
-    };
-    let ExprKind::Call { base, args } = &unwrap_paren(call).kind else {
-        return false;
-    };
-    if !is_bare_local(base, release) {
-        return false;
-    }
-    let [arg]: &[Expr] = args.as_slice() else {
-        return false;
-    };
-    matches!(&unwrap_paren(arg).kind, ExprKind::Var(Var::Local(id)) if names.contains_key(id))
+    allocation_initializers: BTreeMap<u64, String>,
 }
 
 fn is_alloc_call(expr: &Expr, alloc: LocalId) -> bool {
@@ -1623,36 +1741,6 @@ fn successors_of(term: &Terminator, out: &mut Vec<u32>) {
             }
         }
     }
-}
-
-fn node_lies_on_a_cycle(terms: &[Terminator], start: u32, budget: &mut usize) -> Result<bool> {
-    let mut seen: BTreeSet<u32> = BTreeSet::new();
-    let mut frontier: Vec<u32> = Vec::new();
-    let mut next: Vec<u32> = Vec::new();
-    let Some(term) = terms.get(start as usize) else {
-        return Err(refuse(
-            "a Vmify upvalue-box allocation sits in a block outside the recovered control-flow graph",
-        ));
-    };
-    successors_of(term, &mut frontier);
-    while let Some(node) = frontier.pop() {
-        *budget = budget.checked_sub(1).ok_or_else(|| {
-            refuse("upvalue-box loop analysis exceeds the reachability step budget")
-        })?;
-        if node == start {
-            return Ok(true);
-        }
-        if !seen.insert(node) {
-            continue;
-        }
-        let Some(term) = terms.get(node as usize) else {
-            continue;
-        };
-        next.clear();
-        successors_of(term, &mut next);
-        frontier.extend(next.iter().copied());
-    }
-    Ok(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1769,45 +1857,6 @@ fn sink_reached_only_at_tail(
     }
 }
 
-fn sink_closes_every_block_it_enters(
-    result: &disrobe_cfg::StructureResult,
-    id: RegionId,
-    node: u32,
-    budget: &mut usize,
-) -> Option<bool> {
-    *budget = budget.checked_sub(1)?;
-    let region: &Region = result.regions.get(id as usize)?;
-    match region.kind {
-        RegionKind::Block if region.children.is_empty() => Some(true),
-        RegionKind::Block => {
-            let (last, rest): (&RegionId, &[RegionId]) = region.children.split_last()?;
-            for child in rest {
-                if is_sink_leaf(result, *child, node) {
-                    return Some(false);
-                }
-                if !sink_closes_every_block_it_enters(result, *child, node, budget)? {
-                    return Some(false);
-                }
-            }
-            sink_closes_every_block_it_enters(result, *last, node, budget)
-        }
-        RegionKind::IfThen | RegionKind::IfThenElse => {
-            if let Some(head) = region.head
-                && region_contains_node(result, head, node, budget)?
-            {
-                return Some(false);
-            }
-            for child in &region.children {
-                if !sink_closes_every_block_it_enters(result, *child, node, budget)? {
-                    return Some(false);
-                }
-            }
-            Some(true)
-        }
-        _ => Some(!region_contains_node(result, id, node, budget)?),
-    }
-}
-
 fn negated_cond(
     cond_of_atom: &[String],
     conds: &disrobe_cfg::CondPool,
@@ -1836,13 +1885,17 @@ fn insert_box_subst(subst: &mut BTreeMap<u64, String>, span: Span, text: String)
     }
 }
 
-fn box_slot_name(
+fn box_slot_cell(
     ctx: &Ctx<'_>,
     key: &Expr,
     names: &BTreeMap<LocalId, String>,
     upvalue_boxes: &[String],
+    substitutions: &BTreeMap<u64, String>,
 ) -> Result<String> {
     let key: &Expr = unwrap_paren(key);
+    if let Some(value) = substitutions.get(&span_key(key.span)) {
+        return Ok(value.clone());
+    }
     if let ExprKind::Var(Var::Local(id)) = &key.kind {
         return names.get(id).cloned().ok_or_else(|| {
             refuse_owned(format!(
@@ -1875,6 +1928,371 @@ fn box_slot_name(
     )))
 }
 
+fn box_allocation(stat: &Stat, allocator: LocalId) -> Option<(LocalId, Span)> {
+    let StatKind::Assign { targets, values } = &stat.kind else {
+        return None;
+    };
+    let ([AssignTarget::Var(Var::Local(id), _)], [value]): (&[AssignTarget], &[Expr]) =
+        (targets.as_slice(), values.as_slice())
+    else {
+        return None;
+    };
+    is_alloc_call(value, allocator).then_some((*id, value.span))
+}
+
+fn exact_box_release(stat: &Stat, release: LocalId) -> Option<(LocalId, bool)> {
+    let (call, assignment): (&Expr, Option<LocalId>) = match &stat.kind {
+        StatKind::ExprStat(expression) => (expression, None),
+        StatKind::Assign { targets, values } => {
+            let ([AssignTarget::Var(Var::Local(target), _)], [value]): (&[AssignTarget], &[Expr]) =
+                (targets.as_slice(), values.as_slice())
+            else {
+                return None;
+            };
+            (value, Some(*target))
+        }
+        _ => return None,
+    };
+    let ExprKind::Call { base, args } = &unwrap_paren(call).kind else {
+        return None;
+    };
+    if !is_bare_local(base, release) {
+        return None;
+    }
+    let [argument]: &[Expr] = args.as_slice() else {
+        return None;
+    };
+    let ExprKind::Var(Var::Local(id)) = &unwrap_paren(argument).kind else {
+        return None;
+    };
+    assignment
+        .is_none_or(|target: LocalId| target == *id)
+        .then_some((*id, assignment.is_some()))
+}
+
+fn captured_box_spans(ctx: &Ctx<'_>) -> BTreeSet<u64> {
+    let mut spans: BTreeSet<u64> = BTreeSet::new();
+    for (_, _, _, upvalues) in &ctx.all_creation_calls {
+        let ExprKind::Table(fields) = &unwrap_paren(upvalues).kind else {
+            continue;
+        };
+        for field in fields {
+            if let TableField::Positional(value) = field {
+                spans.insert(span_key(value.span));
+            }
+        }
+    }
+    spans
+}
+
+fn leading_box_state_kills(leaf: &Block, tracked: &BTreeSet<LocalId>) -> BTreeSet<LocalId> {
+    let mut undecided: BTreeSet<LocalId> = tracked.clone();
+    let mut kills: BTreeSet<LocalId> = BTreeSet::new();
+    let substitutions: BTreeMap<u64, String> = BTreeMap::new();
+    for stat in &leaf.stats {
+        let mut expressions: Vec<&Expr> = Vec::new();
+        walk_exprs_stat(stat, &mut expressions);
+        let mut reads: BTreeSet<LocalId> = BTreeSet::new();
+        for expression in expressions {
+            collect_expr_locals(expression, &substitutions, &mut reads);
+        }
+        for id in reads {
+            undecided.remove(&id);
+        }
+        let mut definitions: BTreeSet<LocalId> = BTreeSet::new();
+        collect_statement_defs(stat, &mut definitions);
+        for id in definitions {
+            if undecided.remove(&id) {
+                kills.insert(id);
+            }
+        }
+        if undecided.is_empty() {
+            break;
+        }
+    }
+    kills
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoxRegisterState {
+    Live(u64),
+    MaybeLive(u64),
+    ReleasedNil,
+    ReleasedOrOrdinary,
+}
+
+fn generation_name<'a>(
+    state: &BTreeMap<LocalId, BoxRegisterState>,
+    names: &'a BTreeMap<u64, String>,
+    id: LocalId,
+) -> Option<&'a String> {
+    match state.get(&id) {
+        Some(BoxRegisterState::Live(site) | BoxRegisterState::MaybeLive(site)) => names.get(site),
+        Some(BoxRegisterState::ReleasedNil | BoxRegisterState::ReleasedOrOrdinary) | None => None,
+    }
+}
+
+struct BoxRewriteContext<'a> {
+    ctx: &'a Ctx<'a>,
+    model: BoxModel,
+    tracked: &'a BTreeSet<LocalId>,
+    names: &'a BTreeMap<u64, String>,
+    unique_names: &'a BTreeMap<LocalId, String>,
+    capture_spans: &'a BTreeSet<u64>,
+    upvalue_boxes: &'a [String],
+}
+
+fn rewrite_box_uses(
+    rewrite: &BoxRewriteContext<'_>,
+    stat: &Stat,
+    state: &BTreeMap<LocalId, BoxRegisterState>,
+    substitutions: &mut BTreeMap<u64, String>,
+) -> Result<()> {
+    let mut expressions: Vec<&Expr> = Vec::new();
+    walk_exprs_stat(stat, &mut expressions);
+    if expressions.len() > MAX_BOX_STATEMENT_USES {
+        return Err(refuse(
+            "an upvalue-box statement exceeds the expression-use budget",
+        ));
+    }
+    let mut heap_key_spans: BTreeSet<u64> = BTreeSet::new();
+    for expression in &expressions {
+        let ExprKind::Index(base, key) = &expression.kind else {
+            continue;
+        };
+        if !is_bare_local(base, rewrite.model.heap) {
+            continue;
+        }
+        let replacement: String = match &unwrap_paren(key).kind {
+            ExprKind::Var(Var::Local(id)) if rewrite.tracked.contains(id) => {
+                heap_key_spans.insert(span_key(key.span));
+                match state.get(id) {
+                    Some(BoxRegisterState::Live(site)) => rewrite
+                        .names
+                        .get(site)
+                        .map(|name: &String| format!("{name}[1]"))
+                        .ok_or_else(|| refuse("a live upvalue-box generation has no name"))?,
+                    Some(BoxRegisterState::MaybeLive(site)) => {
+                        let name: &String = rewrite.names.get(site).ok_or_else(|| {
+                            refuse("an optional upvalue-box generation has no name")
+                        })?;
+                        format!("({name} and {name}[1])")
+                    }
+                    Some(BoxRegisterState::ReleasedNil) => "nil".to_owned(),
+                    Some(BoxRegisterState::ReleasedOrOrdinary) => {
+                        return Err(refuse_owned(format!(
+                            "the captured-variable store read at byte {} uses a released or ordinary register value",
+                            expression.span.start
+                        )));
+                    }
+                    None => {
+                        return Err(refuse_owned(format!(
+                            "the captured-variable store read at byte {} uses a register holding an ordinary value rather than a live or released box handle",
+                            expression.span.start
+                        )));
+                    }
+                }
+            }
+            _ => {
+                let cell: String = box_slot_cell(
+                    rewrite.ctx,
+                    key,
+                    rewrite.unique_names,
+                    rewrite.upvalue_boxes,
+                    substitutions,
+                )?;
+                if matches!(cell.as_str(), "nil" | "(nil)") {
+                    "nil".to_owned()
+                } else {
+                    format!("{cell}[1]")
+                }
+            }
+        };
+        insert_box_subst(substitutions, expression.span, replacement)?;
+    }
+    let mut targets: Vec<&AssignTarget> = Vec::new();
+    walk_assign_targets_stat(stat, &mut targets);
+    for target in targets {
+        let AssignTarget::Index(base, key, span) = target else {
+            continue;
+        };
+        if !is_bare_local(base, rewrite.model.heap) {
+            continue;
+        }
+        let replacement: String = match &unwrap_paren(key).kind {
+            ExprKind::Var(Var::Local(id)) if rewrite.tracked.contains(id) => {
+                let name: &String = match state.get(id) {
+                    Some(BoxRegisterState::Live(site) | BoxRegisterState::MaybeLive(site)) => {
+                        rewrite.names.get(site).ok_or_else(|| {
+                            refuse("a writable upvalue-box generation has no name")
+                        })?
+                    }
+                    Some(BoxRegisterState::ReleasedNil) => {
+                        return Err(refuse_owned(format!(
+                            "the captured-variable store at byte {} writes through a released box handle",
+                            span.start
+                        )));
+                    }
+                    Some(BoxRegisterState::ReleasedOrOrdinary) => {
+                        return Err(refuse_owned(format!(
+                            "the captured-variable store at byte {} writes through a released or ordinary register value",
+                            span.start
+                        )));
+                    }
+                    None => {
+                        return Err(refuse_owned(format!(
+                            "the captured-variable store at byte {} writes through a register holding an ordinary value",
+                            span.start
+                        )));
+                    }
+                };
+                heap_key_spans.insert(span_key(key.span));
+                format!("{name}[1]")
+            }
+            _ => {
+                let cell: String = box_slot_cell(
+                    rewrite.ctx,
+                    key,
+                    rewrite.unique_names,
+                    rewrite.upvalue_boxes,
+                    substitutions,
+                )?;
+                if matches!(cell.as_str(), "nil" | "(nil)") {
+                    return Err(refuse_owned(format!(
+                        "the captured-variable store at byte {} writes through a nil or released inherited box handle",
+                        span.start
+                    )));
+                }
+                format!("{cell}[1]")
+            }
+        };
+        insert_box_subst(substitutions, *span, replacement)?;
+    }
+    for expression in expressions {
+        let ExprKind::Var(Var::Local(id)) = &expression.kind else {
+            continue;
+        };
+        if !rewrite.tracked.contains(id) {
+            continue;
+        }
+        match state.get(id) {
+            Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_))
+                if rewrite.capture_spans.contains(&span_key(expression.span))
+                    || heap_key_spans.contains(&span_key(expression.span)) =>
+            {
+                let name: &String = generation_name(state, rewrite.names, *id)
+                    .ok_or_else(|| refuse("an upvalue-box generation has no name"))?;
+                insert_box_subst(substitutions, expression.span, name.clone())?;
+            }
+            Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_)) => {
+                return Err(refuse_owned(format!(
+                    "the statement at byte {} uses a live upvalue-box handle outside a heap access or closure capture",
+                    stat.span.start
+                )));
+            }
+            Some(BoxRegisterState::ReleasedNil) => {
+                insert_box_subst(substitutions, expression.span, "(nil)".to_owned())?;
+            }
+            Some(BoxRegisterState::ReleasedOrOrdinary)
+                if rewrite.capture_spans.contains(&span_key(expression.span))
+                    || heap_key_spans.contains(&span_key(expression.span)) =>
+            {
+                return Err(refuse_owned(format!(
+                    "the statement at byte {} captures or uses a released or ordinary register value",
+                    stat.span.start
+                )));
+            }
+            Some(BoxRegisterState::ReleasedOrOrdinary) => {}
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+fn merge_box_register_states(
+    id: LocalId,
+    node: u32,
+    left: Option<BoxRegisterState>,
+    right: Option<BoxRegisterState>,
+) -> Result<Option<BoxRegisterState>> {
+    match (left, right) {
+        (None, None) => Ok(None),
+        (Some(BoxRegisterState::ReleasedNil), Some(BoxRegisterState::ReleasedNil)) => {
+            Ok(Some(BoxRegisterState::ReleasedNil))
+        }
+        (Some(BoxRegisterState::ReleasedNil), None)
+        | (None, Some(BoxRegisterState::ReleasedNil)) => {
+            Ok(Some(BoxRegisterState::ReleasedOrOrdinary))
+        }
+        (
+            Some(BoxRegisterState::ReleasedOrOrdinary),
+            None | Some(BoxRegisterState::ReleasedNil | BoxRegisterState::ReleasedOrOrdinary),
+        )
+        | (
+            None | Some(BoxRegisterState::ReleasedNil),
+            Some(BoxRegisterState::ReleasedOrOrdinary),
+        ) => Ok(Some(BoxRegisterState::ReleasedOrOrdinary)),
+        (
+            Some(BoxRegisterState::Live(site) | BoxRegisterState::MaybeLive(site)),
+            Some(BoxRegisterState::ReleasedNil),
+        )
+        | (
+            Some(BoxRegisterState::ReleasedNil),
+            Some(BoxRegisterState::Live(site) | BoxRegisterState::MaybeLive(site)),
+        ) => Ok(Some(BoxRegisterState::MaybeLive(site))),
+        (
+            Some(BoxRegisterState::Live(left_site) | BoxRegisterState::MaybeLive(left_site)),
+            Some(BoxRegisterState::Live(right_site) | BoxRegisterState::MaybeLive(right_site)),
+        ) => {
+            if left_site != right_site {
+                return Err(refuse_owned(format!(
+                    "upvalue-box register {id} reaches CFG node {node} from allocation generations {left_site} and {right_site}"
+                )));
+            }
+            let merged: BoxRegisterState = if matches!(
+                (left, right),
+                (
+                    Some(BoxRegisterState::Live(_)),
+                    Some(BoxRegisterState::Live(_))
+                )
+            ) {
+                BoxRegisterState::Live(left_site)
+            } else {
+                BoxRegisterState::MaybeLive(left_site)
+            };
+            Ok(Some(merged))
+        }
+        (Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_)), None)
+        | (None, Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_))) => {
+            Err(refuse_owned(format!(
+                "upvalue-box register {id} reaches CFG node {node} as both an ordinary value and a live allocation generation"
+            )))
+        }
+        (
+            Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_)),
+            Some(BoxRegisterState::ReleasedOrOrdinary),
+        )
+        | (
+            Some(BoxRegisterState::ReleasedOrOrdinary),
+            Some(BoxRegisterState::Live(_) | BoxRegisterState::MaybeLive(_)),
+        ) => Err(refuse_owned(format!(
+            "upvalue-box register {id} reaches CFG node {node} as both a live allocation generation and a released-or-ordinary value"
+        ))),
+    }
+}
+
+fn apply_box_definitions(
+    state: &mut BTreeMap<LocalId, BoxRegisterState>,
+    tracked: &BTreeSet<LocalId>,
+    definitions: &BTreeSet<LocalId>,
+) {
+    for id in definitions {
+        if tracked.contains(id) && state.contains_key(id) {
+            state.insert(*id, BoxRegisterState::ReleasedOrOrdinary);
+        }
+    }
+}
+
 fn bind_function_boxes(
     ctx: &Ctx<'_>,
     order: &[u64],
@@ -1888,161 +2306,210 @@ fn bind_function_boxes(
     let Some(model): Option<BoxModel> = ctx.box_model else {
         return Ok(FunctionBoxes::default());
     };
-
-    let mut allocations: Vec<(LocalId, Span, Span, u32)> = Vec::new();
+    let mut allocations: Vec<(LocalId, Span, Span)> = Vec::new();
     for &key in order {
         let leaf: &Block = visited[&key];
-        let node: u32 = node_of[&key];
         for stat in &leaf.stats {
-            let StatKind::Assign { targets, values } = &stat.kind else {
-                continue;
-            };
-            let ([AssignTarget::Var(Var::Local(id), _)], [value]): (&[AssignTarget], &[Expr]) =
-                (targets.as_slice(), values.as_slice())
-            else {
-                continue;
-            };
-            if !is_alloc_call(value, model.alloc) {
-                continue;
+            if let Some((id, call_span)) = box_allocation(stat, model.alloc) {
+                allocations.push((id, stat.span, call_span));
             }
-            allocations.push((*id, stat.span, value.span, node));
         }
     }
-
-    let mut names: BTreeMap<LocalId, String> = BTreeMap::new();
+    if allocations.len() > MAX_FUNCTION_BLOCKS {
+        return Err(refuse(
+            "upvalue-box allocation sites exceed the function budget",
+        ));
+    }
+    let tracked: BTreeSet<LocalId> = allocations
+        .iter()
+        .map(|(id, _, _): &(LocalId, Span, Span)| *id)
+        .collect();
+    let mut counts: BTreeMap<LocalId, usize> = BTreeMap::new();
+    let mut names_by_site: BTreeMap<u64, String> = BTreeMap::new();
     let mut declarations: Vec<String> = Vec::new();
-    let mut inline_declarations: BTreeMap<u64, String> = BTreeMap::new();
-    let mut cycle_budget: usize = MAX_REACHABILITY_STEPS;
-    for (id, stat_span, _, node) in &allocations {
-        if names.contains_key(id) {
-            return Err(refuse_owned(format!(
-                "the register at byte {} receives a second upvalue box inside one recovered function, so a captured variable cannot be given one stable name",
-                stat_span.start
-            )));
-        }
+    let mut allocation_initializers: BTreeMap<u64, String> = BTreeMap::new();
+    for (id, stat_span, _) in &allocations {
         let name: String = format!("{CAPTURED_VARIABLE_PREFIX}{}", stats.next_box);
         stats.next_box = stats.next_box.checked_add(1).ok_or_else(|| {
             refuse("the program allocates more captured variables than this pass can name")
         })?;
-        if node_lies_on_a_cycle(terms, *node, &mut cycle_budget)? {
-            inline_declarations.insert(span_key(*stat_span), format!("local {name}"));
-        } else {
-            declarations.push(name.clone());
+        names_by_site.insert(span_key(*stat_span), name.clone());
+        let count: &mut usize = counts.entry(*id).or_insert(0);
+        *count = count.saturating_add(1);
+        allocation_initializers.insert(span_key(*stat_span), format!("{name} = {{}}"));
+        declarations.push(name);
+    }
+    let mut unique_names: BTreeMap<LocalId, String> = BTreeMap::new();
+    for (id, stat_span, _) in &allocations {
+        if counts.get(id) != Some(&1) {
+            continue;
         }
-        names.insert(*id, name);
+        let name: String = names_by_site
+            .get(&span_key(*stat_span))
+            .cloned()
+            .ok_or_else(|| refuse("an upvalue-box allocation has no generation name"))?;
+        unique_names.insert(*id, name);
     }
     stats.boxes_bound = stats.boxes_bound.saturating_add(allocations.len());
 
-    for (_, stat_span, _, _) in &allocations {
-        insert_box_subst(subst, *stat_span, String::new())?;
-    }
-
-    if let Some(release) = model.release {
-        for &key in order {
-            let leaf: &Block = visited[&key];
-            for stat in &leaf.stats {
-                if is_box_release_statement(stat, release, &names) {
-                    insert_box_subst(subst, stat.span, String::new())?;
-                }
-            }
-        }
-    }
-
+    let mut leaf_of_node: Vec<&Block> = vec![ctx.dispatch_root; order.len()];
     for &key in order {
-        let leaf: &Block = visited[&key];
-        let mut exprs: Vec<&Expr> = Vec::new();
-        walk_exprs(leaf, &mut exprs);
-        for expr in &exprs {
-            if let ExprKind::Var(Var::Local(id)) = &expr.kind
-                && *id == model.alloc
-                && !allocations
-                    .iter()
-                    .any(|(_, _, call_span, _): &(LocalId, Span, Span, u32)| {
-                        expr.span.start >= call_span.start && expr.span.end <= call_span.end
-                    })
-            {
-                return Err(refuse_owned(format!(
-                    "the upvalue-box allocator is referenced at byte {} outside a plain allocation assignment, a use this pass cannot account for",
-                    expr.span.start
-                )));
-            }
-            let ExprKind::Index(base, index_key) = &expr.kind else {
-                continue;
-            };
-            if !is_bare_local(base, model.heap) {
-                continue;
-            }
-            let name: String = box_slot_name(ctx, index_key, &names, upvalue_boxes)?;
-            insert_box_subst(subst, expr.span, name)?;
-        }
-        let mut targets: Vec<&AssignTarget> = Vec::new();
-        walk_assign_targets(leaf, &mut targets);
-        for target in targets {
-            let AssignTarget::Index(base, index_key, span) = target else {
-                continue;
-            };
-            if !is_bare_local(base, model.heap) {
-                continue;
-            }
-            let name: String = box_slot_name(ctx, index_key, &names, upvalue_boxes)?;
-            insert_box_subst(subst, *span, name)?;
-        }
+        let node: u32 = node_of[&key];
+        leaf_of_node[node as usize] = visited[&key];
     }
-
-    Ok(FunctionBoxes {
-        names,
-        declarations,
-        inline_declarations,
-    })
-}
-
-fn collect_statement_reads(
-    stat: &Stat,
-    pos_local: LocalId,
-    plan: &LeafPlan,
-    captures: &BTreeMap<u64, String>,
-    subst: &BTreeMap<u64, String>,
-    out: &mut BTreeSet<LocalId>,
-) {
-    if is_dropped_statement(stat, subst) || plan.numeric_chain_spans.contains(&stat.span) {
-        return;
-    }
-    if captures.contains_key(&span_key(stat.span)) {
-        if let StatKind::Assign { values, .. } = &stat.kind {
-            for value in values {
-                collect_expr_locals(value, subst, out);
-            }
-        } else {
-            collect_stat_locals(stat, subst, out);
-        }
-        return;
-    }
-    let StatKind::Assign { targets, values } = &stat.kind else {
-        collect_stat_locals(stat, subst, out);
-        return;
+    let leading_kills: Vec<BTreeSet<LocalId>> = leaf_of_node
+        .iter()
+        .map(|leaf: &&Block| leading_box_state_kills(leaf, &tracked))
+        .collect();
+    let capture_spans: BTreeSet<u64> = captured_box_spans(ctx);
+    let rewrite: BoxRewriteContext<'_> = BoxRewriteContext {
+        ctx,
+        model,
+        tracked: &tracked,
+        names: &names_by_site,
+        unique_names: &unique_names,
+        capture_spans: &capture_spans,
+        upvalue_boxes,
     };
-    let aligned: bool = targets.len() == values.len();
-    for (index, target) in targets.iter().enumerate() {
-        let target_local: Option<LocalId> = match target {
-            AssignTarget::Var(Var::Local(id), _) => Some(*id),
-            _ => None,
-        };
-        if aligned
-            && (stat.span == plan.pos_terminal_span || Some(stat.span) == plan.pos_chain_span)
-            && target_local == Some(pos_local)
-        {
+    let mut entry_states: Vec<Option<BTreeMap<LocalId, BoxRegisterState>>> =
+        vec![None; order.len()];
+    entry_states[0] = Some(BTreeMap::new());
+    let mut pending: Vec<u32> = vec![0];
+    let mut steps: usize = 0;
+    let mut stored_bindings: usize = 0;
+    let mut successors: Vec<u32> = Vec::new();
+    while let Some(node) = pending.pop() {
+        steps = steps
+            .checked_add(1)
+            .ok_or_else(|| refuse("upvalue-box generation analysis exceeds the step budget"))?;
+        if steps > MAX_REACHABILITY_STEPS {
+            return Err(refuse(
+                "upvalue-box generation analysis exceeds the step budget",
+            ));
+        }
+        let index: usize = node as usize;
+        let Some(mut state) = entry_states.get(index).and_then(Clone::clone) else {
             continue;
+        };
+        let Some(leaf) = leaf_of_node.get(index).copied() else {
+            continue;
+        };
+        for stat in &leaf.stats {
+            if let Some((id, _)) = box_allocation(stat, model.alloc) {
+                let site: u64 = span_key(stat.span);
+                if !names_by_site.contains_key(&site) {
+                    return Err(refuse("an upvalue-box allocation has no generation name"));
+                }
+                state.insert(id, BoxRegisterState::Live(site));
+                insert_box_subst(subst, stat.span, String::new())?;
+                continue;
+            }
+            if let Some(release) = model.release
+                && let Some((id, clears_register)) = exact_box_release(stat, release)
+            {
+                if !tracked.contains(&id) {
+                    return Err(refuse_owned(format!(
+                        "the upvalue-box release at byte {} targets register {id}, which this function never allocates a box into",
+                        stat.span.start
+                    )));
+                }
+                if !clears_register {
+                    return Err(refuse_owned(format!(
+                        "the upvalue-box release at byte {} does not assign the helper's nil result back to the handle register",
+                        stat.span.start
+                    )));
+                }
+                let site: u64 = match state.get(&id) {
+                    Some(BoxRegisterState::Live(site)) => *site,
+                    Some(BoxRegisterState::MaybeLive(_)) => {
+                        return Err(refuse_owned(format!(
+                            "the upvalue-box release at byte {} has an optional reaching allocation",
+                            stat.span.start
+                        )));
+                    }
+                    Some(BoxRegisterState::ReleasedNil | BoxRegisterState::ReleasedOrOrdinary)
+                    | None => {
+                        return Err(refuse_owned(format!(
+                            "the upvalue-box release at byte {} has no reaching allocation",
+                            stat.span.start
+                        )));
+                    }
+                };
+                let name: &String = names_by_site
+                    .get(&site)
+                    .ok_or_else(|| refuse("a released upvalue-box generation has no name"))?;
+                state.insert(id, BoxRegisterState::ReleasedNil);
+                insert_box_subst(subst, stat.span, format!("{name} = nil"))?;
+                continue;
+            }
+            rewrite_box_uses(&rewrite, stat, &state, subst)?;
+            let mut definitions: BTreeSet<LocalId> = BTreeSet::new();
+            collect_statement_defs(stat, &mut definitions);
+            apply_box_definitions(&mut state, &tracked, &definitions);
         }
-        if target_local.is_none() {
-            collect_target_locals(target, subst, out);
+        successors.clear();
+        if let Some(term) = terms.get(index) {
+            successors_of(term, &mut successors);
         }
-        if let Some(value) = values.get(index) {
-            collect_expr_locals(value, subst, out);
+        for target in &successors {
+            let target_index: usize = *target as usize;
+            let Some(kills) = leading_kills.get(target_index) else {
+                continue;
+            };
+            let mut incoming: BTreeMap<LocalId, BoxRegisterState> = state.clone();
+            apply_box_definitions(&mut incoming, &tracked, kills);
+            match entry_states.get_mut(target_index) {
+                Some(slot @ None) => {
+                    stored_bindings = stored_bindings.saturating_add(incoming.len());
+                    if stored_bindings > MAX_BOX_STATE_BINDINGS {
+                        return Err(refuse(
+                            "upvalue-box generation states exceed the binding budget",
+                        ));
+                    }
+                    *slot = Some(incoming);
+                    pending.push(*target);
+                }
+                Some(Some(existing)) => {
+                    let mut changed: bool = false;
+                    let ids: BTreeSet<LocalId> =
+                        existing.keys().chain(incoming.keys()).copied().collect();
+                    for id in ids {
+                        let left: Option<BoxRegisterState> = existing.get(&id).copied();
+                        let right: Option<BoxRegisterState> = incoming.get(&id).copied();
+                        let merged: Option<BoxRegisterState> =
+                            merge_box_register_states(id, *target, left, right)?;
+                        if merged == left {
+                            continue;
+                        }
+                        match merged {
+                            Some(value) => {
+                                existing.insert(id, value);
+                                stored_bindings = stored_bindings.saturating_add(1);
+                                if stored_bindings > MAX_BOX_STATE_BINDINGS {
+                                    return Err(refuse(
+                                        "upvalue-box generation states exceed the binding budget",
+                                    ));
+                                }
+                            }
+                            None => {
+                                existing.remove(&id);
+                            }
+                        }
+                        changed = true;
+                    }
+                    if changed {
+                        pending.push(*target);
+                    }
+                }
+                None => {}
+            }
         }
     }
-    for value in values.iter().skip(targets.len()) {
-        collect_expr_locals(value, subst, out);
-    }
+    Ok(FunctionBoxes {
+        names: unique_names,
+        declarations,
+        allocation_initializers,
+    })
 }
 
 fn collect_statement_defs(stat: &Stat, out: &mut BTreeSet<LocalId>) {
@@ -2059,97 +2526,12 @@ fn collect_statement_defs(stat: &Stat, out: &mut BTreeSet<LocalId>) {
     }
 }
 
-fn defines_box_index(
-    stat: &Stat,
-    alloc: LocalId,
-    names: &BTreeMap<LocalId, String>,
-) -> Option<LocalId> {
-    let StatKind::Assign { targets, values } = &stat.kind else {
-        return None;
-    };
-    let ([AssignTarget::Var(Var::Local(id), _)], [value]): (&[AssignTarget], &[Expr]) =
-        (targets.as_slice(), values.as_slice())
-    else {
-        return None;
-    };
-    (is_alloc_call(value, alloc) && names.contains_key(id)).then_some(*id)
-}
-
-fn assert_box_indexes_never_escape(
-    ctx: &Ctx<'_>,
-    boxes: &FunctionBoxes,
-    leaf_of_node: &[&Block],
-    plan_of_node: &[LeafPlan],
-    terms: &[Terminator],
-    captures: &BTreeMap<u64, String>,
-    subst: &BTreeMap<u64, String>,
-) -> Result<()> {
-    let Some(model): Option<BoxModel> = ctx.box_model else {
-        return Ok(());
-    };
-    if boxes.names.is_empty() {
-        return Ok(());
-    }
-    let count: usize = leaf_of_node.len();
-    let mut entry_state: Vec<BTreeSet<LocalId>> = vec![BTreeSet::new(); count];
-    let mut pending: Vec<u32> = (0..count as u32).rev().collect();
-    let mut budget: usize = MAX_REACHABILITY_STEPS;
-    let mut succ: Vec<u32> = Vec::new();
-    while let Some(node) = pending.pop() {
-        budget = budget.checked_sub(1).ok_or_else(|| {
-            refuse("captured-variable escape analysis exceeds the reachability step budget")
-        })?;
-        let index: usize = node as usize;
-        let (Some(leaf), Some(plan)): (Option<&Block>, Option<&LeafPlan>) =
-            (leaf_of_node.get(index).copied(), plan_of_node.get(index))
-        else {
-            continue;
-        };
-        let mut live: BTreeSet<LocalId> = entry_state[index].clone();
-        for stat in &leaf.stats {
-            let mut reads: BTreeSet<LocalId> = BTreeSet::new();
-            collect_statement_reads(stat, ctx.pos_local, plan, captures, subst, &mut reads);
-            if let Some(escaped) = live.iter().find(|id: &&LocalId| reads.contains(id)) {
-                let name: &str =
-                    local_display_span(ctx.dispatch_root, *escaped, ctx.src).unwrap_or("<unnamed>");
-                return Err(refuse_owned(format!(
-                    "the statement at byte {} reads register '{name}' while it still holds a Vmify captured-variable handle, a use this pass cannot resolve to a real Lua variable",
-                    stat.span.start
-                )));
-            }
-            let mut defs: BTreeSet<LocalId> = BTreeSet::new();
-            collect_statement_defs(stat, &mut defs);
-            for id in &defs {
-                live.remove(id);
-            }
-            if let Some(id) = defines_box_index(stat, model.alloc, &boxes.names) {
-                live.insert(id);
-            }
-        }
-        succ.clear();
-        if let Some(term) = terms.get(index) {
-            successors_of(term, &mut succ);
-        }
-        for target in &succ {
-            let target_index: usize = *target as usize;
-            if target_index >= count {
-                continue;
-            }
-            let before: usize = entry_state[target_index].len();
-            entry_state[target_index].extend(live.iter().copied());
-            if entry_state[target_index].len() != before {
-                pending.push(*target);
-            }
-        }
-    }
-    Ok(())
-}
-
 fn closure_upvalue_names(
     ctx: &Ctx<'_>,
     upvals_arg: &Expr,
     boxes: &FunctionBoxes,
     own_upvalues: &[String],
+    substitutions: &BTreeMap<u64, String>,
 ) -> Result<Vec<String>> {
     let ExprKind::Table(fields) = &unwrap_paren(upvals_arg).kind else {
         return Err(refuse_owned(format!(
@@ -2165,7 +2547,13 @@ fn closure_upvalue_names(
                 upvals_arg.span.start
             )));
         };
-        out.push(box_slot_name(ctx, value, &boxes.names, own_upvalues)?);
+        out.push(box_slot_cell(
+            ctx,
+            value,
+            &boxes.names,
+            own_upvalues,
+            substitutions,
+        )?);
     }
     Ok(out)
 }
@@ -2178,9 +2566,12 @@ fn find_top_level_entry(ctx: &Ctx<'_>) -> Result<f64> {
         if within {
             continue;
         }
-        let Some(entry) = number_of(entry_arg) else {
-            continue;
-        };
+        let entry: f64 = number_of(entry_arg).ok_or_else(|| {
+            refuse_owned(format!(
+                "the top-level closure-creation call at byte {} has a dynamic entry point",
+                call_expr.span.start
+            ))
+        })?;
         outside.push(entry);
     }
     match outside.as_slice() {
@@ -2194,6 +2585,419 @@ fn find_top_level_entry(ctx: &Ctx<'_>) -> Result<f64> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StaticOperandKind {
+    Number,
+    String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AntiTamperValue {
+    Environment,
+    UnpackFunction,
+    Candidate,
+    PcallKey,
+    TostringKey,
+    LinePattern,
+    TupleSecondKey,
+    PcallFunction,
+    TostringFunction,
+    PcallCall,
+    PcallPacked,
+    PcallUnpacked,
+    PcallTuple,
+    PcallError,
+    ErrorString,
+    LineIterator,
+    LineMatch,
+    LineMatchPacked,
+    LineMatchUnpacked,
+    ParsedLine,
+}
+
+fn is_exact_environment_alias(expression: &Expr, source: &str) -> bool {
+    let ExprKind::Binary(BinOp::Or, guarded_call, environment) = &unwrap_paren(expression).kind
+    else {
+        return false;
+    };
+    let ExprKind::Binary(BinOp::And, guard, call) = &unwrap_paren(guarded_call).kind else {
+        return false;
+    };
+    let ExprKind::Call { base, args } = &unwrap_paren(call).kind else {
+        return false;
+    };
+    is_global_named(guard, source, "getfenv")
+        && args.is_empty()
+        && is_global_named(base, source, "getfenv")
+        && is_global_named(environment, source, "_ENV")
+}
+
+fn is_exact_static_string(
+    expression: &Expr,
+    source: &str,
+    substitutions: &BTreeMap<u64, String>,
+    expected: &str,
+) -> bool {
+    let quoted_double: String = format!("\"{expected}\"");
+    let quoted_single: String = format!("'{expected}'");
+    if substitutions
+        .get(&span_key(expression.span))
+        .is_some_and(|value: &String| value == &quoted_double || value == &quoted_single)
+    {
+        return true;
+    }
+    matches!(unwrap_paren(expression).kind, ExprKind::Str)
+        && matches!(
+            expression.span.text(source),
+            value if value == expected || value == quoted_double || value == quoted_single
+        )
+}
+
+fn anti_tamper_value(
+    expression: &Expr,
+    state: &BTreeMap<LocalId, AntiTamperValue>,
+    candidate_span: Span,
+    ctx: &Ctx<'_>,
+    substitutions: &BTreeMap<u64, String>,
+    depth: usize,
+    fuel: &mut usize,
+) -> Option<AntiTamperValue> {
+    *fuel = fuel.checked_sub(1)?;
+    if depth > MAX_ANTITAMPER_EXPRESSION_DEPTH {
+        return None;
+    }
+    let expression: &Expr = unwrap_paren(expression);
+    if expression.span == candidate_span {
+        return Some(AntiTamperValue::Candidate);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, "pcall") {
+        return Some(AntiTamperValue::PcallKey);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, "tostring") {
+        return Some(AntiTamperValue::TostringKey);
+    }
+    if is_exact_static_string(expression, ctx.src, substitutions, ":(%d*):") {
+        return Some(AntiTamperValue::LinePattern);
+    }
+    if ctx.numbers.evaluate(expression) == Some(2.0) {
+        return Some(AntiTamperValue::TupleSecondKey);
+    }
+    match &expression.kind {
+        ExprKind::Var(Var::Local(id)) => state.get(id).copied(),
+        ExprKind::Index(base, key) => {
+            let base_value: AntiTamperValue = anti_tamper_value(
+                base,
+                state,
+                candidate_span,
+                ctx,
+                substitutions,
+                depth + 1,
+                fuel,
+            )?;
+            let key_value: Option<AntiTamperValue> = anti_tamper_value(
+                key,
+                state,
+                candidate_span,
+                ctx,
+                substitutions,
+                depth + 1,
+                fuel,
+            );
+            match (base_value, key_value) {
+                (AntiTamperValue::Environment, Some(AntiTamperValue::PcallKey)) => {
+                    Some(AntiTamperValue::PcallFunction)
+                }
+                (AntiTamperValue::Environment, Some(AntiTamperValue::TostringKey)) => {
+                    Some(AntiTamperValue::TostringFunction)
+                }
+                (AntiTamperValue::PcallTuple, Some(AntiTamperValue::TupleSecondKey)) => {
+                    Some(AntiTamperValue::PcallError)
+                }
+                _ => None,
+            }
+        }
+        ExprKind::Call { base, args } => {
+            let base_value: Option<AntiTamperValue> = anti_tamper_value(
+                base,
+                state,
+                candidate_span,
+                ctx,
+                substitutions,
+                depth + 1,
+                fuel,
+            );
+            let argument_values: Option<Vec<AntiTamperValue>> = args
+                .iter()
+                .map(|argument: &Expr| {
+                    anti_tamper_value(
+                        argument,
+                        state,
+                        candidate_span,
+                        ctx,
+                        substitutions,
+                        depth + 1,
+                        fuel,
+                    )
+                })
+                .collect();
+            match (base_value, argument_values.as_deref()) {
+                (Some(AntiTamperValue::PcallFunction), Some([AntiTamperValue::Candidate])) => {
+                    Some(AntiTamperValue::PcallCall)
+                }
+                (Some(AntiTamperValue::UnpackFunction), Some([AntiTamperValue::PcallPacked])) => {
+                    Some(AntiTamperValue::PcallUnpacked)
+                }
+                (Some(AntiTamperValue::TostringFunction), Some([AntiTamperValue::PcallError])) => {
+                    Some(AntiTamperValue::ErrorString)
+                }
+                (_, Some([AntiTamperValue::ErrorString, AntiTamperValue::LinePattern])) => {
+                    Some(AntiTamperValue::LineIterator)
+                }
+                (Some(AntiTamperValue::LineIterator), Some([])) => Some(AntiTamperValue::LineMatch),
+                (
+                    Some(AntiTamperValue::UnpackFunction),
+                    Some([AntiTamperValue::LineMatchPacked]),
+                ) => Some(AntiTamperValue::LineMatchUnpacked),
+                (_, Some([AntiTamperValue::LineMatchUnpacked])) => {
+                    Some(AntiTamperValue::ParsedLine)
+                }
+                _ => None,
+            }
+        }
+        ExprKind::Table(fields) => {
+            let [TableField::Positional(value)] = fields.as_slice() else {
+                return None;
+            };
+            match anti_tamper_value(
+                value,
+                state,
+                candidate_span,
+                ctx,
+                substitutions,
+                depth + 1,
+                fuel,
+            )? {
+                AntiTamperValue::PcallCall => Some(AntiTamperValue::PcallPacked),
+                AntiTamperValue::PcallUnpacked => Some(AntiTamperValue::PcallTuple),
+                AntiTamperValue::LineMatch => Some(AntiTamperValue::LineMatchPacked),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn apply_anti_tamper_statement(
+    stat: &Stat,
+    state: &mut BTreeMap<LocalId, AntiTamperValue>,
+    candidate_span: Span,
+    ctx: &Ctx<'_>,
+    substitutions: &BTreeMap<u64, String>,
+    fuel: &mut usize,
+) -> bool {
+    let (targets, values): (Vec<Option<LocalId>>, &[Expr]) = match &stat.kind {
+        StatKind::Local { targets, values } => (
+            targets.iter().copied().map(Some).collect(),
+            values.as_slice(),
+        ),
+        StatKind::Assign { targets, values } => (
+            targets
+                .iter()
+                .map(|target: &AssignTarget| match target {
+                    AssignTarget::Var(Var::Local(id), _) => Some(*id),
+                    AssignTarget::Var(Var::Global(_), _) | AssignTarget::Index(_, _, _) => None,
+                })
+                .collect(),
+            values.as_slice(),
+        ),
+        _ => return false,
+    };
+    let updates: Vec<Option<AntiTamperValue>> = values
+        .iter()
+        .map(|value: &Expr| {
+            anti_tamper_value(value, state, candidate_span, ctx, substitutions, 0, fuel)
+        })
+        .collect();
+    let proved: bool = updates.contains(&Some(AntiTamperValue::ParsedLine));
+    for (target, update) in targets.into_iter().zip(updates) {
+        let Some(id) = target else {
+            continue;
+        };
+        match update {
+            Some(value) => {
+                state.insert(id, value);
+            }
+            None => {
+                state.remove(&id);
+            }
+        }
+    }
+    proved
+}
+
+fn merge_anti_tamper_state(
+    existing: &BTreeMap<LocalId, AntiTamperValue>,
+    incoming: &BTreeMap<LocalId, AntiTamperValue>,
+) -> BTreeMap<LocalId, AntiTamperValue> {
+    existing
+        .iter()
+        .filter_map(|(id, value): (&LocalId, &AntiTamperValue)| {
+            (incoming.get(id) == Some(value)).then_some((*id, *value))
+        })
+        .collect()
+}
+
+fn proves_pinned_anti_tamper_call(
+    candidate_span: Span,
+    leaf_of_node: &[&Block],
+    terms: &[Terminator],
+    ctx: &Ctx<'_>,
+    substitutions: &BTreeMap<u64, String>,
+) -> Result<bool> {
+    let mut initial: BTreeMap<LocalId, AntiTamperValue> = ctx
+        .environment_locals
+        .iter()
+        .map(|id: &LocalId| (*id, AntiTamperValue::Environment))
+        .collect();
+    if let Some(unpack_local) = ctx.unpack_local {
+        initial.insert(unpack_local, AntiTamperValue::UnpackFunction);
+    }
+    let mut entries: Vec<Option<BTreeMap<LocalId, AntiTamperValue>>> =
+        vec![None; leaf_of_node.len()];
+    let Some(entry) = entries.first_mut() else {
+        return Ok(false);
+    };
+    *entry = Some(initial);
+    let mut pending: Vec<u32> = vec![0];
+    let mut steps: usize = 0;
+    let mut fuel: usize = MAX_ANTITAMPER_PROOF_STEPS;
+    while let Some(node) = pending.pop() {
+        steps = steps.saturating_add(1);
+        if steps > MAX_ANTITAMPER_PROOF_STEPS {
+            return Err(refuse("the AntiTamper proof exceeds its CFG step budget"));
+        }
+        let mut state: BTreeMap<LocalId, AntiTamperValue> = entries[node as usize]
+            .clone()
+            .ok_or_else(|| refuse("the AntiTamper proof worklist has no entry state"))?;
+        for stat in &leaf_of_node[node as usize].stats {
+            if apply_anti_tamper_statement(
+                stat,
+                &mut state,
+                candidate_span,
+                ctx,
+                substitutions,
+                &mut fuel,
+            ) {
+                return Ok(true);
+            }
+            if state.len() > MAX_ANTITAMPER_STATE_BINDINGS {
+                return Err(refuse(
+                    "the AntiTamper proof exceeds its state-binding budget",
+                ));
+            }
+        }
+        let mut successors: Vec<u32> = Vec::new();
+        successors_of(&terms[node as usize], &mut successors);
+        for successor in successors {
+            let next: &mut Option<BTreeMap<LocalId, AntiTamperValue>> =
+                &mut entries[successor as usize];
+            let merged: BTreeMap<LocalId, AntiTamperValue> = match next {
+                Some(existing) => merge_anti_tamper_state(existing, &state),
+                None => state.clone(),
+            };
+            if next.as_ref() != Some(&merged) {
+                *next = Some(merged);
+                pending.push(successor);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn static_operand_kind(
+    expression: &Expr,
+    values: &BTreeMap<LocalId, StaticOperandKind>,
+    substitutions: &BTreeMap<u64, String>,
+    numbers: &StaticNumberEvaluator,
+) -> Option<StaticOperandKind> {
+    let expression: &Expr = unwrap_paren(expression);
+    if numbers.evaluate(expression).is_some() {
+        return Some(StaticOperandKind::Number);
+    }
+    if matches!(expression.kind, ExprKind::Str)
+        || substitutions
+            .get(&span_key(expression.span))
+            .is_some_and(|value: &String| value.starts_with(['"', '\'']))
+    {
+        return Some(StaticOperandKind::String);
+    }
+    match &expression.kind {
+        ExprKind::Var(Var::Local(id)) => values.get(id).copied(),
+        _ => None,
+    }
+}
+
+fn deliberate_arithmetic_error_line(
+    leaf: &Block,
+    source: &str,
+    substitutions: &BTreeMap<u64, String>,
+    numbers: &StaticNumberEvaluator,
+) -> Option<usize> {
+    let mut values: BTreeMap<LocalId, StaticOperandKind> = BTreeMap::new();
+    for stat in &leaf.stats {
+        let StatKind::Assign {
+            targets,
+            values: rhs,
+        } = &stat.kind
+        else {
+            return None;
+        };
+        if targets.len() != rhs.len() {
+            return None;
+        }
+        let mut updates: Vec<(LocalId, Option<StaticOperandKind>)> = Vec::with_capacity(rhs.len());
+        for (target, expression) in targets.iter().zip(rhs) {
+            let AssignTarget::Var(Var::Local(id), _) = target else {
+                return None;
+            };
+            if let ExprKind::Binary(BinOp::Pow, left, right) = &unwrap_paren(expression).kind {
+                let left: Option<StaticOperandKind> =
+                    static_operand_kind(left, &values, substitutions, numbers);
+                let right: Option<StaticOperandKind> =
+                    static_operand_kind(right, &values, substitutions, numbers);
+                if matches!(
+                    (left, right),
+                    (
+                        Some(StaticOperandKind::String),
+                        Some(StaticOperandKind::Number)
+                    ) | (
+                        Some(StaticOperandKind::Number),
+                        Some(StaticOperandKind::String)
+                    )
+                ) {
+                    let prefix: &str = source.get(..expression.span.start as usize)?;
+                    return Some(prefix.bytes().filter(|byte: &u8| *byte == b'\n').count() + 1);
+                }
+            }
+            updates.push((
+                *id,
+                static_operand_kind(expression, &values, substitutions, numbers),
+            ));
+        }
+        for (id, value) in updates {
+            match value {
+                Some(kind) => {
+                    values.insert(id, kind);
+                }
+                None => {
+                    values.remove(&id);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn recover_function(
     ctx: &Ctx<'_>,
     entry: f64,
@@ -2201,6 +3005,7 @@ fn recover_function(
     upvalue_boxes: &[String],
     subst: &mut BTreeMap<u64, String>,
     stats: &mut GlobalStats,
+    allow_arithmetic_error: bool,
 ) -> Result<RecoveredFunction> {
     if depth > MAX_RECOVERY_DEPTH {
         return Err(refuse("closure nesting exceeds recovery depth budget"));
@@ -2211,6 +3016,11 @@ fn recover_function(
             "program defines more closures than the recovery budget allows",
         ));
     }
+    let capture_parameters: Vec<String> = upvalue_boxes
+        .iter()
+        .enumerate()
+        .map(|(index, _): (usize, &String)| format!("__vuc{depth}_{index}"))
+        .collect();
     let mut visited: BTreeMap<u64, &Block> = BTreeMap::new();
     let mut order: Vec<u64> = Vec::new();
     let mut pending: Vec<f64> = vec![entry];
@@ -2220,7 +3030,7 @@ fn recover_function(
         if steps > MAX_REACHABILITY_STEPS {
             return Err(refuse("function reachability walk exceeds step budget"));
         }
-        let Some(leaf) = resolve_leaf(ctx.dispatch_root, ctx.pos_local, v, 0) else {
+        let Some(leaf) = resolve_leaf(ctx.dispatch_root, ctx.pos_local, v, 0, &ctx.numbers) else {
             return Err(refuse_owned(format!(
                 "instruction pointer target {v} does not resolve to any dispatch leaf"
             )));
@@ -2235,7 +3045,7 @@ fn recover_function(
         visited.insert(key, leaf);
         order.push(key);
         let (transfer, _plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst)?;
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst, &ctx.numbers)?;
         match transfer {
             Transfer::Return => {}
             Transfer::Goto(n) => pending.push(n),
@@ -2248,7 +3058,21 @@ fn recover_function(
         }
     }
 
-    let entry_leaf: &Block = resolve_leaf(ctx.dispatch_root, ctx.pos_local, entry, 0)
+    if allow_arithmetic_error
+        && upvalue_boxes.is_empty()
+        && let [key] = order.as_slice()
+        && let Some(leaf) = visited.get(key).copied()
+        && let Some(line) = deliberate_arithmetic_error_line(leaf, ctx.src, subst, &ctx.numbers)
+    {
+        stats.leaves_recovered = stats.leaves_recovered.saturating_add(1);
+        stats.functions_fully_structured = stats.functions_fully_structured.saturating_add(1);
+        stats.reached.insert(*key);
+        return Ok(RecoveredFunction {
+            text: format!("function() error(\":{line}:\", 0) end"),
+        });
+    }
+
+    let entry_leaf: &Block = resolve_leaf(ctx.dispatch_root, ctx.pos_local, entry, 0, &ctx.numbers)
         .ok_or_else(|| refuse("function entry does not resolve to any dispatch leaf"))?;
     let entry_key: u64 = leaf_ident(entry_leaf);
     let mut node_of: BTreeMap<u64, u32> = BTreeMap::new();
@@ -2284,12 +3108,14 @@ fn recover_function(
         let node_id: u32 = node_of[&key];
         leaf_of_node[node_id as usize] = leaf;
         let (transfer, plan): (Transfer<'_>, LeafPlan) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst)?;
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, subst, &ctx.numbers)?;
         let term: Terminator = match transfer {
             Transfer::Return => Terminator::Return,
             Transfer::Goto(n) => {
-                let target_leaf: &Block = resolve_leaf(ctx.dispatch_root, ctx.pos_local, n, 0)
-                    .ok_or_else(|| refuse("goto target does not resolve to any dispatch leaf"))?;
+                let target_leaf: &Block =
+                    resolve_leaf(ctx.dispatch_root, ctx.pos_local, n, 0, &ctx.numbers).ok_or_else(
+                        || refuse("goto target does not resolve to any dispatch leaf"),
+                    )?;
                 let target_key: u64 = leaf_ident(target_leaf);
                 Terminator::Goto(*node_of.get(&target_key).ok_or_else(|| {
                     refuse("goto target leaf is unreachable from the function entry")
@@ -2301,14 +3127,16 @@ fn recover_function(
                 taken,
                 not_taken,
             } => {
-                let taken_leaf: &Block = resolve_leaf(ctx.dispatch_root, ctx.pos_local, taken, 0)
-                    .ok_or_else(|| {
-                    refuse("branch taken-target does not resolve to any dispatch leaf")
-                })?;
+                let taken_leaf: &Block =
+                    resolve_leaf(ctx.dispatch_root, ctx.pos_local, taken, 0, &ctx.numbers)
+                        .ok_or_else(|| {
+                            refuse("branch taken-target does not resolve to any dispatch leaf")
+                        })?;
                 let not_taken_leaf: &Block =
-                    resolve_leaf(ctx.dispatch_root, ctx.pos_local, not_taken, 0).ok_or_else(
-                        || refuse("branch not-taken-target does not resolve to any dispatch leaf"),
-                    )?;
+                    resolve_leaf(ctx.dispatch_root, ctx.pos_local, not_taken, 0, &ctx.numbers)
+                        .ok_or_else(|| {
+                            refuse("branch not-taken-target does not resolve to any dispatch leaf")
+                        })?;
                 let taken_node: u32 = *node_of.get(&leaf_ident(taken_leaf)).ok_or_else(|| {
                     refuse("branch taken-target leaf is unreachable from the function entry")
                 })?;
@@ -2353,7 +3181,7 @@ fn recover_function(
         &visited,
         &node_of,
         &terms,
-        upvalue_boxes,
+        &capture_parameters,
         subst,
         stats,
     )?;
@@ -2380,9 +3208,18 @@ fn recover_function(
             )));
         };
         let nested_upvalues: Vec<String> =
-            closure_upvalue_names(ctx, upvals_arg, &boxes, upvalue_boxes)?;
-        let recovered: RecoveredFunction =
-            recover_function(ctx, nested_entry, depth + 1, &nested_upvalues, subst, stats)?;
+            closure_upvalue_names(ctx, upvals_arg, &boxes, &capture_parameters, subst)?;
+        let allow_nested_arithmetic_error: bool =
+            proves_pinned_anti_tamper_call(call_expr.span, &leaf_of_node, &terms, ctx, subst)?;
+        let recovered: RecoveredFunction = recover_function(
+            ctx,
+            nested_entry,
+            depth + 1,
+            &nested_upvalues,
+            subst,
+            stats,
+            allow_nested_arithmetic_error,
+        )?;
         subst.insert(call_key, recovered.text);
     }
 
@@ -2441,15 +3278,6 @@ fn recover_function(
             );
         }
     }
-    assert_box_indexes_never_escape(
-        ctx,
-        &boxes,
-        &leaf_of_node,
-        &plan_of_node,
-        &terms,
-        &captures,
-        subst,
-    )?;
     if !leaked.is_empty() {
         return Err(refuse_owned(format!(
             "the recovered body still names the Vmify captured-variable machinery ({}), so at least one captured-variable access was not resolved to a real Lua variable",
@@ -2478,8 +3306,10 @@ fn recover_function(
                 render_expr_span_with_subst(*arg_span, ctx.src, subst)
             ));
         } else {
+            let name: &str =
+                local_display_span(ctx.dispatch_root, *id, ctx.src).unwrap_or("<unnamed>");
             return Err(refuse_owned(format!(
-                "local {id} is neither a container-scope register nor a recognized wrapper upvalue"
+                "local {id} ('{name}') is neither a container-scope register nor a recognized wrapper upvalue"
             )));
         }
     }
@@ -2503,7 +3333,7 @@ fn recover_function(
                 terms: &terms,
                 plan_of_node: &plan_of_node,
                 captures: &captures,
-                inline_declarations: &boxes.inline_declarations,
+                allocation_initializers: &boxes.allocation_initializers,
                 cond_of_atom: &cond_of_atom,
                 result: &outcome.result,
                 subst,
@@ -2526,7 +3356,7 @@ fn recover_function(
                         &terms,
                         &plan_of_node,
                         &captures,
-                        &boxes.inline_declarations,
+                        &boxes.allocation_initializers,
                         &cond_of_atom,
                         subst,
                     ),
@@ -2542,7 +3372,7 @@ fn recover_function(
                 &terms,
                 &plan_of_node,
                 &captures,
-                &boxes.inline_declarations,
+                &boxes.allocation_initializers,
                 &cond_of_atom,
                 subst,
             ),
@@ -2556,6 +3386,18 @@ fn recover_function(
     text.push_str(&prelude);
     text.push_str(&body_text);
     text.push_str("\nend");
+    if !upvalue_boxes.is_empty() {
+        text = format!(
+            "(function({})\nreturn {text}\nend)({})",
+            capture_parameters.join(", "),
+            upvalue_boxes.join(", ")
+        );
+    }
+    if text.len() > crate::obfuscator::prometheus_vm_ast::MAX_SOURCE_BYTES {
+        return Err(refuse(
+            "a recovered closure exceeds the Vmify output byte budget",
+        ));
+    }
 
     stats.leaves_recovered += recovered_leaves;
     stats.reached.extend(order.iter().copied());
@@ -2633,14 +3475,14 @@ fn render_leaf_body(
     return_local: LocalId,
     plan: &LeafPlan,
     captures: &BTreeMap<u64, String>,
-    inline_declarations: &BTreeMap<u64, String>,
+    allocation_initializers: &BTreeMap<u64, String>,
     src: &str,
     subst: &BTreeMap<u64, String>,
 ) -> String {
     let mut out: String = String::new();
     for stat in &leaf.stats {
-        if let Some(declaration) = inline_declarations.get(&span_key(stat.span)) {
-            out.push_str(declaration);
+        if let Some(initializer) = allocation_initializers.get(&span_key(stat.span)) {
+            out.push_str(initializer);
             out.push_str(";\n");
             continue;
         }
@@ -2772,7 +3614,7 @@ struct RegionRenderer<'a, 'b> {
     terms: &'b [Terminator],
     plan_of_node: &'b [LeafPlan],
     captures: &'b BTreeMap<u64, String>,
-    inline_declarations: &'b BTreeMap<u64, String>,
+    allocation_initializers: &'b BTreeMap<u64, String>,
     cond_of_atom: &'b [String],
     result: &'b disrobe_cfg::StructureResult,
     subst: &'b BTreeMap<u64, String>,
@@ -2794,7 +3636,7 @@ impl<'a> RegionRenderer<'a, '_> {
             RegionKind::Block if region.children.is_empty() => {
                 match self.sinks.get(&region.entry).copied() {
                     Some(LoopSink::Continue) => return String::new(),
-                    Some(LoopSink::Break) => return "break;\n".to_owned(),
+                    Some(LoopSink::Break) => return "do break end;\n".to_owned(),
                     None => {}
                 }
                 let node: usize = region.entry as usize;
@@ -2811,7 +3653,7 @@ impl<'a> RegionRenderer<'a, '_> {
                     self.ctx.return_local,
                     plan,
                     self.captures,
-                    self.inline_declarations,
+                    self.allocation_initializers,
                     self.ctx.src,
                     self.subst,
                 );
@@ -3057,13 +3899,9 @@ impl<'a> RegionRenderer<'a, '_> {
             return self.decline();
         }
         if follow.is_some() {
-            let break_ok: Option<bool> = sink_closes_every_block_it_enters(
-                &outcome.result,
-                root,
-                break_index,
-                &mut tree_budget,
-            );
-            if break_ok != Some(true) {
+            if region_contains_node(&outcome.result, root, break_index, &mut tree_budget)
+                != Some(true)
+            {
                 return self.decline();
             }
         } else if region_contains_node(&outcome.result, root, break_index, &mut tree_budget)
@@ -3078,7 +3916,7 @@ impl<'a> RegionRenderer<'a, '_> {
             terms: &sub_terms,
             plan_of_node: &sub_plans,
             captures: self.captures,
-            inline_declarations: self.inline_declarations,
+            allocation_initializers: self.allocation_initializers,
             cond_of_atom: self.cond_of_atom,
             result: &outcome.result,
             subst: self.subst,
@@ -3156,7 +3994,7 @@ fn render_dispatch_fallback(
     terms: &[Terminator],
     plan_of_node: &[LeafPlan],
     captures: &BTreeMap<u64, String>,
-    inline_declarations: &BTreeMap<u64, String>,
+    allocation_initializers: &BTreeMap<u64, String>,
     cond_of_atom: &[String],
     subst: &BTreeMap<u64, String>,
 ) -> String {
@@ -3172,7 +4010,7 @@ fn render_dispatch_fallback(
             ctx.return_local,
             plan,
             captures,
-            inline_declarations,
+            allocation_initializers,
             ctx.src,
             subst,
         ));
@@ -3306,6 +4144,12 @@ fn constant_pool_substitutions(
         };
         resolvers.insert(local, offset);
     }
+    let base85_alphabets: Vec<(char, BTreeMap<char, u8>)> = discover_base85_alphabets(text);
+    if base85_alphabets.len() > MAX_CONSTANT_POOL_RESOLVERS {
+        return Err(refuse(
+            "the ConstantArray Base85 alphabet count exceeds the recovery budget",
+        ));
+    }
     let mut replacement_bytes: usize = 0;
     for expr in all_exprs {
         let ExprKind::Call { base, args } = &expr.kind else {
@@ -3331,10 +4175,20 @@ fn constant_pool_substitutions(
         let value: &String = strings.get(index - 1).ok_or_else(|| {
             refuse("a static ConstantArray lookup exceeds the recovered string pool")
         })?;
-        if !resolved_entries[index - 1] {
+        let replacement: String = if resolved_entries[index - 1] {
+            crate::decompile::lift::quote_lua_string(value)
+        } else if base85_alphabets.is_empty() {
             continue;
-        }
-        let replacement: String = crate::decompile::lift::quote_lua_string(value);
+        } else {
+            let decoded: Vec<u8> = decode_unresolved_base85(value, &base85_alphabets)?
+                .ok_or_else(|| {
+                    refuse_owned(format!(
+                        "the unresolved ConstantArray entry {index} ('{value}') cannot be decoded by the script's {} exact Base85 alphabet(s)",
+                        base85_alphabets.len(),
+                    ))
+                })?;
+            quote_lua_bytes(&decoded)
+        };
         replacement_bytes = replacement_bytes
             .checked_add(replacement.len())
             .ok_or_else(|| refuse("ConstantArray substitutions exceed the output byte budget"))?;
@@ -3346,6 +4200,54 @@ fn constant_pool_substitutions(
         substitutions.insert(span_key(expr.span), replacement);
     }
     Ok(substitutions)
+}
+
+fn decode_unresolved_base85(
+    encoded: &str,
+    alphabets: &[(char, BTreeMap<char, u8>)],
+) -> Result<Option<Vec<u8>>> {
+    let mut chars: core::str::Chars<'_> = encoded.chars();
+    let _: char = match chars.next() {
+        Some(tag) => tag,
+        None => return Ok(None),
+    };
+    let body: &str = chars.as_str();
+    if body.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    if body.chars().count() % 5 == 1 {
+        return Err(refuse(
+            "an unresolved ConstantArray Base85 entry has an invalid one-symbol tail",
+        ));
+    }
+    let mut candidates: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for (_, alphabet) in alphabets {
+        if let Some(decoded) = decode_base85_variant(body, alphabet) {
+            candidates.insert(decoded);
+        }
+    }
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.into_iter().next()),
+        _ => Err(refuse(
+            "an unresolved ConstantArray entry decodes to different bytes under multiple script alphabets",
+        )),
+    }
+}
+
+fn quote_lua_bytes(bytes: &[u8]) -> String {
+    let mut output: String = String::with_capacity(bytes.len().saturating_mul(4).saturating_add(2));
+    output.push('"');
+    for byte in bytes {
+        match byte {
+            b'"' => output.push_str("\\\""),
+            b'\\' => output.push_str("\\\\"),
+            0x20..=0x7e => output.push(char::from(*byte)),
+            _ => output.push_str(&format!("\\{byte:03}")),
+        }
+    }
+    output.push('"');
+    output
 }
 
 fn assert_captured_variables_stay_in_scope(recovered: &str) -> Result<()> {
@@ -3461,8 +4363,54 @@ pub fn recover_with_string_pool(
     dbg_kv("prometheus_vmify.creation_calls", || {
         all_creation_calls.len().to_string()
     });
-    let return_local: LocalId =
-        find_return_local(container.dispatch_root, container.pos_local, &subst)?;
+    let wrapper_span: Span = find_enclosing_function_span(&chunk, container.whole_span)
+        .ok_or_else(|| {
+            refuse("could not locate the wrapper closure that binds the Vmify container")
+        })?;
+    let upvalue_bindings: BTreeMap<LocalId, Span> = wrapper_upvalue_bindings(&chunk, wrapper_span)
+        .ok_or_else(|| refuse("could not resolve the wrapper closure's own call-site arguments"))?;
+    let post_dispatch: Option<(LocalId, LocalId)> = post_dispatch_return(&container)?;
+    let post_dispatch_return_local: Option<LocalId> = match post_dispatch {
+        Some((unpack_local, return_local)) => {
+            let binding_span: Span = *upvalue_bindings.get(&unpack_local).ok_or_else(|| {
+                refuse("the post-dispatch unpack helper has no exact binding in the wrapper call")
+            })?;
+            let binding: &Expr = all_exprs
+                .iter()
+                .copied()
+                .find(|expression: &&Expr| expression.span == binding_span)
+                .ok_or_else(|| {
+                    refuse("the post-dispatch unpack helper binding cannot be located in the AST")
+                })?;
+            if !is_exact_unpack_alias(binding, text, &subst) {
+                return Err(refuse(
+                    "the post-dispatch return helper is not bound to the exact 'unpack or table.unpack' compatibility expression",
+                ));
+            }
+            Some(return_local)
+        }
+        None => None,
+    };
+    let unpack_local: Option<LocalId> = post_dispatch.map(|(unpack, _): (LocalId, LocalId)| unpack);
+    let environment_locals: BTreeSet<LocalId> = upvalue_bindings
+        .iter()
+        .filter_map(|(id, binding_span): (&LocalId, &Span)| {
+            all_exprs
+                .iter()
+                .copied()
+                .find(|expression: &&Expr| expression.span == *binding_span)
+                .filter(|expression: &&Expr| is_exact_environment_alias(expression, text))
+                .map(|_: &Expr| *id)
+        })
+        .collect();
+    let numbers: StaticNumberEvaluator = StaticNumberEvaluator::new();
+    let return_local: LocalId = find_return_local(
+        container.dispatch_root,
+        container.pos_local,
+        &subst,
+        &numbers,
+        post_dispatch_return_local,
+    )?;
     dbg_kv("prometheus_vmify.pos_local", || {
         container.pos_local.to_string()
     });
@@ -3471,12 +4419,6 @@ pub fn recover_with_string_pool(
     });
     dbg_kv("prometheus_vmify.return_local", || return_local.to_string());
     let container_scope: BTreeSet<LocalId> = container_scope_locals(&container);
-    let wrapper_span: Span = find_enclosing_function_span(&chunk, container.whole_span)
-        .ok_or_else(|| {
-            refuse("could not locate the wrapper closure that binds the Vmify container")
-        })?;
-    let upvalue_bindings: BTreeMap<LocalId, Span> = wrapper_upvalue_bindings(&chunk, wrapper_span)
-        .ok_or_else(|| refuse("could not resolve the wrapper closure's own call-site arguments"))?;
 
     let box_model: Option<BoxModel> = derive_box_model(&chunk, &function_exprs);
     let captures_upvalues: bool = all_creation_calls.iter().any(
@@ -3501,14 +4443,17 @@ pub fn recover_with_string_pool(
         container_span: container.whole_span,
         container_scope,
         upvalue_bindings,
+        environment_locals,
+        unpack_local,
         all_creation_calls,
         box_model,
+        numbers,
     };
 
     let top_entry: f64 = find_top_level_entry(&ctx)?;
     let mut stats: GlobalStats = GlobalStats::default();
     let recovered: RecoveredFunction =
-        recover_function(&ctx, top_entry, 0, &[], &mut subst, &mut stats)?;
+        recover_function(&ctx, top_entry, 0, &[], &mut subst, &mut stats, false)?;
     if stats.boxes_bound > 0 {
         assert_captured_variables_stay_in_scope(&recovered.text)?;
     }
@@ -3519,6 +4464,7 @@ pub fn recover_with_string_pool(
         container.pos_local,
         &mut all_leaves,
         0,
+        &ctx.numbers,
     )?;
     let real_leaf_count: usize = all_leaves
         .iter()
@@ -3538,13 +4484,16 @@ pub fn recover_with_string_pool(
     let mut unclassified_leaves: usize = 0;
     for leaf in &all_leaves {
         let Ok((transfer, _plan)) =
-            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, &subst)
+            terminal_transfer(leaf, ctx.pos_local, ctx.return_local, &subst, &ctx.numbers)
         else {
             if !leaf.stats.is_empty() {
                 unclassified_leaves += 1;
             }
             continue;
         };
+        if !stats.reached.contains(&leaf_ident(leaf)) {
+            continue;
+        }
         let targets: Vec<f64> = match transfer {
             Transfer::Return => Vec::new(),
             Transfer::Goto(n) => vec![n],
@@ -3553,9 +4502,13 @@ pub fn recover_with_string_pool(
             } => vec![taken, not_taken],
         };
         for target in targets {
-            if let Some(target_leaf) =
-                resolve_leaf(container.dispatch_root, container.pos_local, target, 0)
-            {
+            if let Some(target_leaf) = resolve_leaf(
+                container.dispatch_root,
+                container.pos_local,
+                target,
+                0,
+                &ctx.numbers,
+            ) {
                 targeted.insert(leaf_ident(target_leaf));
             }
         }
@@ -3569,21 +4522,21 @@ pub fn recover_with_string_pool(
             && !stats.reached.contains(&leaf_ident(leaf))
     }) {
         return Err(refuse_owned(format!(
-            "a dispatch-tree leaf at byte {} is a real jump target of another leaf in this container but was never reached from any discovered function entry; at least one entry point into this shared dispatch tree was not found, the common signature of a second Vmify layer sharing the outer VM's leaf pool",
+            "a reached dispatch-tree leaf targets the leaf at byte {}, but the recovery walk did not visit that target",
             missed.stats.first().map_or(0, |s: &Stat| s.span.start)
-        )));
-    }
-    if unclassified_leaves > 0 && unreached_structural_leaves > 0 {
-        return Err(refuse_owned(format!(
-            "{unclassified_leaves} dispatch-tree leaf(ves) could not be classified for their jump targets (they carry a local declaration in their own function scope) while {unreached_structural_leaves} leaf(ves) remain unreached; whether any unreached leaf is a real jump target of an unclassified leaf cannot be proven, so full recovery is refused rather than assumed"
         )));
     }
     for (_call_expr, _creator, entry_arg, _upvals_arg) in &ctx.all_creation_calls {
         let Some(entry) = number_of(entry_arg) else {
             continue;
         };
-        let Some(entry_leaf) = resolve_leaf(container.dispatch_root, container.pos_local, entry, 0)
-        else {
+        let Some(entry_leaf) = resolve_leaf(
+            container.dispatch_root,
+            container.pos_local,
+            entry,
+            0,
+            &ctx.numbers,
+        ) else {
             continue;
         };
         if !entry_leaf.stats.is_empty() && !stats.reached.contains(&leaf_ident(entry_leaf)) {
@@ -3638,6 +4591,8 @@ pub fn recover_with_string_pool(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 mod tests {
+    use std::fmt::Write;
+
     use super::*;
 
     fn local_value(source: &str) -> Expr {
@@ -3668,12 +4623,260 @@ mod tests {
             None
         );
         assert_eq!(
+            static_number_value(&local_value("local value = 1 % 0")),
+            None
+        );
+        assert_eq!(
             static_number_value(&local_value("local value = 1e308 ^ 2")),
             None
         );
         assert_eq!(
             static_number_value(&local_value("local value = 1e999")),
             None
+        );
+        assert_eq!(
+            static_number_value(&local_value("local value = math.huge")),
+            None
+        );
+        assert_eq!(
+            static_number_value(&local_value("local value = tonumber('1')")),
+            None
+        );
+
+        let mut source: String = String::new();
+        for index in 0..=MAX_STATIC_NUMBER_FUEL {
+            writeln!(&mut source, "local value{index} = {index}")
+                .expect("writing to a string must succeed");
+        }
+        let mut parser: Parser<'_> = Parser::new(&source).expect("parse fuel fixture");
+        let chunk: Block = parser.parse_chunk().expect("parse fuel fixture chunk");
+        let expressions: Vec<&Expr> = chunk
+            .stats
+            .iter()
+            .filter_map(|stat: &Stat| match &stat.kind {
+                StatKind::Local { values, .. } => values.first(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(expressions.len(), MAX_STATIC_NUMBER_FUEL + 1);
+        let evaluator: StaticNumberEvaluator = StaticNumberEvaluator::new();
+        assert!(
+            expressions[..MAX_STATIC_NUMBER_FUEL]
+                .iter()
+                .all(|expression: &&Expr| evaluator.evaluate(expression).is_some())
+        );
+        assert_eq!(
+            evaluator.evaluate(expressions[MAX_STATIC_NUMBER_FUEL]),
+            None
+        );
+    }
+
+    #[test]
+    fn static_number_evaluation_caches_completed_expression_trees() {
+        let expression: Expr = local_value("local value = (8 * 7) + (9 % 4)");
+        let evaluator: StaticNumberEvaluator = StaticNumberEvaluator::new();
+        assert_eq!(evaluator.evaluate(&expression), Some(57.0));
+        let remaining: usize = evaluator.fuel.get();
+        assert_eq!(evaluator.evaluate(&expression), Some(57.0));
+        assert_eq!(evaluator.fuel.get(), remaining);
+    }
+
+    #[test]
+    fn box_generation_joins_preserve_release_and_refuse_alias_conflicts() {
+        assert_eq!(
+            merge_box_register_states(
+                7,
+                3,
+                Some(BoxRegisterState::Live(11)),
+                Some(BoxRegisterState::ReleasedNil),
+            )
+            .expect("a release path may join its own live generation"),
+            Some(BoxRegisterState::MaybeLive(11))
+        );
+        assert_eq!(
+            merge_box_register_states(7, 3, Some(BoxRegisterState::ReleasedNil), None,)
+                .expect("a released nil may join an ordinary register value"),
+            Some(BoxRegisterState::ReleasedOrOrdinary)
+        );
+        let conflicting_generations: Error = merge_box_register_states(
+            7,
+            3,
+            Some(BoxRegisterState::Live(11)),
+            Some(BoxRegisterState::Live(12)),
+        )
+        .expect_err("two live allocation sites must not alias one recovered cell");
+        assert!(
+            conflicting_generations
+                .to_string()
+                .contains("allocation generations 11 and 12")
+        );
+        let ordinary_overlap: Error =
+            merge_box_register_states(7, 3, Some(BoxRegisterState::Live(11)), None).expect_err(
+                "an ordinary value and a live handle require different representations",
+            );
+        assert!(ordinary_overlap.to_string().contains("ordinary value"));
+    }
+
+    #[test]
+    fn refuses_a_capture_after_released_and_ordinary_paths_join() {
+        let source: &str = concat!(
+            "local heap, handle, creator\n",
+            "local closure = creator(1, {handle})\n",
+        );
+        let mut parser: Parser<'_> = Parser::new(source).expect("parse capture fixture");
+        let chunk: Block = parser.parse_chunk().expect("parse capture fixture chunk");
+        let [locals, capture]: &[Stat] = chunk.stats.as_slice() else {
+            panic!("expected local declarations and one capture statement");
+        };
+        let StatKind::Local { targets, .. } = &locals.kind else {
+            panic!("expected local declarations");
+        };
+        let [heap, handle, creator]: &[LocalId] = targets.as_slice() else {
+            panic!("expected heap, handle and creator locals");
+        };
+        let mut expressions: Vec<&Expr> = Vec::new();
+        walk_exprs_stat(capture, &mut expressions);
+        let handle_expression: &Expr = expressions
+            .iter()
+            .copied()
+            .find(|expression: &&Expr| is_bare_local(expression, *handle))
+            .expect("capture statement must reference the handle");
+        let tracked: BTreeSet<LocalId> = BTreeSet::from([*handle]);
+        let names: BTreeMap<u64, String> = BTreeMap::from([(11, "__vu0".to_owned())]);
+        let unique_names: BTreeMap<LocalId, String> =
+            BTreeMap::from([(*handle, "__vu0".to_owned())]);
+        let capture_spans: BTreeSet<u64> = BTreeSet::from([span_key(handle_expression.span)]);
+        let context: Ctx<'_> = Ctx {
+            src: source,
+            pos_local: *creator,
+            args_local: *creator,
+            upvals_local: *creator,
+            return_local: *creator,
+            dispatch_root: &chunk,
+            container_span: Span {
+                start: 0,
+                end: u32::try_from(source.len()).expect("fixture length fits u32"),
+            },
+            container_scope: BTreeSet::new(),
+            upvalue_bindings: BTreeMap::new(),
+            environment_locals: BTreeSet::new(),
+            unpack_local: None,
+            all_creation_calls: Vec::new(),
+            box_model: None,
+            numbers: StaticNumberEvaluator::new(),
+        };
+        let rewrite: BoxRewriteContext<'_> = BoxRewriteContext {
+            ctx: &context,
+            model: BoxModel {
+                heap: *heap,
+                alloc: *creator,
+                release: None,
+            },
+            tracked: &tracked,
+            names: &names,
+            unique_names: &unique_names,
+            capture_spans: &capture_spans,
+            upvalue_boxes: &[],
+        };
+        let joined: Option<BoxRegisterState> =
+            merge_box_register_states(*handle, 2, Some(BoxRegisterState::ReleasedNil), None)
+                .expect("merge released and ordinary paths");
+        let mut state: BTreeMap<LocalId, BoxRegisterState> = BTreeMap::new();
+        if let Some(joined) = joined {
+            state.insert(*handle, joined);
+        }
+        let mut substitutions: BTreeMap<u64, String> = BTreeMap::new();
+        let error: Error = rewrite_box_uses(&rewrite, capture, &state, &mut substitutions)
+            .expect_err("a capture after a released-or-ordinary join must refuse");
+        assert!(error.to_string().contains("released or ordinary"));
+    }
+
+    #[test]
+    fn ordinary_overwrite_keeps_a_released_box_register_poisoned_for_later_capture() {
+        let id: LocalId = 7;
+        let tracked: BTreeSet<LocalId> = BTreeSet::from([id]);
+        let definitions: BTreeSet<LocalId> = BTreeSet::from([id]);
+        let mut state: BTreeMap<LocalId, BoxRegisterState> =
+            BTreeMap::from([(id, BoxRegisterState::ReleasedOrOrdinary)]);
+        apply_box_definitions(&mut state, &tracked, &definitions);
+        assert_eq!(
+            state.get(&id),
+            Some(&BoxRegisterState::ReleasedOrOrdinary),
+            "an ordinary overwrite must not erase the poison that makes a later closure capture refuse",
+        );
+    }
+
+    #[test]
+    fn lua_byte_literals_preserve_binary_values_and_digit_boundaries() {
+        assert_eq!(
+            quote_lua_bytes(&[0, b'1', b'"', b'\\', 31, 32, 126, 127, 255]),
+            "\"\\0001\\\"\\\\\\031 ~\\127\\255\""
+        );
+    }
+
+    #[test]
+    fn base85_rejects_one_symbol_partial_groups() {
+        let alphabet: BTreeMap<char, u8> = (0_u8..85)
+            .map(|value: u8| (char::from(value + 33), value))
+            .collect();
+        let alphabets: Vec<(char, BTreeMap<char, u8>)> = vec![('=', alphabet)];
+        for malformed in ["=!", "=!!!!!!"] {
+            let error: Error = decode_unresolved_base85(malformed, &alphabets)
+                .expect_err("a Base85 body with a one-symbol tail must refuse");
+            assert!(error.to_string().contains("one-symbol tail"));
+        }
+    }
+
+    #[test]
+    fn anti_tamper_candidate_requires_the_full_line_iterator_and_parse_chain() {
+        let source: &str = concat!(
+            "local candidate, error_text, matcher\n",
+            "local iterator = matcher(error_text, ':(%d*):')\n",
+        );
+        let mut parser: Parser<'_> = Parser::new(source).expect("parse AntiTamper fixture");
+        let chunk: Block = parser.parse_chunk().expect("parse AntiTamper chunk");
+        let [locals, iterator]: &[Stat] = chunk.stats.as_slice() else {
+            panic!("expected locals and iterator assignment");
+        };
+        let StatKind::Local { targets, .. } = &locals.kind else {
+            panic!("expected local declarations");
+        };
+        let [candidate, error_text, _matcher]: &[LocalId] = targets.as_slice() else {
+            panic!("expected candidate, error text and matcher locals");
+        };
+        let context: Ctx<'_> = Ctx {
+            src: source,
+            pos_local: *candidate,
+            args_local: *candidate,
+            upvals_local: *candidate,
+            return_local: *candidate,
+            dispatch_root: &chunk,
+            container_span: Span {
+                start: 0,
+                end: u32::try_from(source.len()).expect("fixture length fits u32"),
+            },
+            container_scope: BTreeSet::new(),
+            upvalue_bindings: BTreeMap::new(),
+            environment_locals: BTreeSet::new(),
+            unpack_local: None,
+            all_creation_calls: Vec::new(),
+            box_model: None,
+            numbers: StaticNumberEvaluator::new(),
+        };
+        let mut state: BTreeMap<LocalId, AntiTamperValue> =
+            BTreeMap::from([(*error_text, AntiTamperValue::ErrorString)]);
+        let candidate_span: Span = Span { start: 0, end: 0 };
+        let mut fuel: usize = MAX_ANTITAMPER_PROOF_STEPS;
+        assert!(
+            !apply_anti_tamper_statement(
+                iterator,
+                &mut state,
+                candidate_span,
+                &context,
+                &BTreeMap::new(),
+                &mut fuel,
+            ),
+            "an arbitrary function that accepts the error text and line pattern is not the pinned AntiTamper consumer",
         );
     }
 
@@ -3810,6 +5013,38 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_post_dispatch_return_helper_that_is_not_the_unpack_alias() {
+        let src: &str =
+            include_str!("../../../../corpus/lua/prometheus/vmify_simple/obfuscated.lua");
+        let mutated: String = src.replacen("unpack or table.unpack", "select or table.unpack", 1);
+        assert_ne!(mutated, src);
+        let error: Error = recover(&mutated)
+            .expect_err("a post-dispatch return through an unrelated helper must refuse");
+        assert!(
+            error
+                .to_string()
+                .contains("post-dispatch return helper is not bound to the exact"),
+            "the refusal must name the incompatible return helper: {error}"
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_an_ordinary_one_leaf_function_that_raises_an_arithmetic_error() {
+        let source: &str =
+            include_str!("../../../../corpus/lua/prometheus/vmify_upvalue/obfuscated.lua");
+        let mutated: String = source.replacen("X,k=W[1],f", "X,k=\"ordinary\"^2,f", 1);
+        assert_ne!(mutated, source);
+        let recovered: VmifyRecovery = recover(&mutated)
+            .expect("recover ordinary arithmetic-error fixture")
+            .expect("detect ordinary arithmetic-error fixture");
+        assert!(recovered.fully_recovered);
+        assert_eq!(recovered.handlers_recovered, recovered.handlers_total);
+        assert_eq!(recovered.functions_recovered, recovered.functions_total);
+        assert!(recovered.source.contains("\"ordinary\"^2"));
+        assert!(!recovered.source.contains("function() error("));
+    }
+
+    #[test]
     fn recovers_a_real_double_vmify_sample_through_both_layers() {
         let src: &str =
             include_str!("../../../../corpus/lua/prometheus/vmify_nested/obfuscated.lua");
@@ -3867,18 +5102,15 @@ mod tests {
             "a fully recovered program must carry none of this pass's own refusal stubs: {}",
             out.source
         );
-        let captured: usize = out.source.matches("__vu0").count();
-        assert_eq!(
-            captured, 5,
-            "the captured variable must be declared once in the factory and read or written four times across the factory and the closure it returns: {}",
-            out.source
-        );
         let declaration: usize = out.source.matches("local __vu0;").count();
         assert_eq!(
             declaration, 1,
             "the captured variable must be declared exactly once, in the scope that allocates it, so the closure captures it by reference: {}",
             out.source
         );
+        assert!(out.source.contains("__vu0 = {};"), "{}", out.source);
+        assert!(out.source.contains("end)(__vu0)"), "{}", out.source);
+        assert!(out.source.contains("__vuc2_0[1]"), "{}", out.source);
     }
 
     #[test]
@@ -3899,15 +5131,16 @@ mod tests {
             .source
             .find("while ")
             .expect("the guest loop must appear as a Lua loop");
-        let declared_at: usize = out
+        let initialized_at: usize = out
             .source
-            .find("local __vu0;")
-            .expect("the captured variable must be declared");
+            .find("__vu0 = {};")
+            .expect("the captured cell must be initialized");
         assert!(
-            declared_at > loop_start,
-            "each iteration captures its own variable, so the declaration must sit inside the loop body; hoisting it to function scope would make all three closures share one variable: {}",
+            initialized_at > loop_start,
+            "each iteration must allocate a fresh cell inside the guest loop: {}",
             out.source
         );
+        assert!(out.source.contains("end)(__vu0)"), "{}", out.source);
     }
 
     #[test]
