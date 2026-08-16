@@ -13,7 +13,9 @@ use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
 use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
-use disrobe_pass_as3::lifter::{CaseLabel, LiftedBody, Stmt, lift_body, lift_body_raw};
+use disrobe_pass_as3::lifter::{
+    CaseLabel, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
+};
 use disrobe_pass_as3::swf::{self, Swf};
 
 const VIRTUAL_EXIT: usize = usize::MAX;
@@ -748,6 +750,144 @@ fn dense_forward_if_dispatch_preserves_shared_and_fallthrough_edges() {
     assert!(cases[1].breaks);
     assert_eq!(cases[2].labels, vec![CaseLabel::Default]);
     assert!(cases[2].breaks);
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
+fn inverted_strict_forward_dispatch_preserves_case_order_and_edges() {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x1A]);
+    let first_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_test: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x01, 0xD1, 0x1A]);
+    let second_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let default_case: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x28, 0xD6]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, first_miss_operand, second_test);
+    patch_branch_target(&mut code, first_break_operand, merge);
+    patch_branch_target(&mut code, second_miss_operand, default_case);
+    patch_branch_target(&mut code, second_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw inverted dispatch lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("inverted dispatch lift");
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+    let structured: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        .unwrap_or_else(|| {
+            panic!(
+                "inverted strict equality dispatch must structure: {:?}",
+                lifted.statements
+            )
+        });
+    let Stmt::StructuredSwitch { selector, cases } = structured else {
+        unreachable!()
+    };
+    assert_eq!(selector, &Expr::Local(1));
+    assert_eq!(cases.len(), 3);
+    assert_eq!(cases[0].labels, vec![CaseLabel::Value(0)]);
+    assert!(cases[0].breaks);
+    assert_eq!(cases[1].labels, vec![CaseLabel::Value(1)]);
+    assert!(cases[1].breaks);
+    assert_eq!(cases[2].labels, vec![CaseLabel::Default]);
+    assert!(!cases[2].breaks);
+    let assigned_values: Vec<i64> = cases
+        .iter()
+        .map(|case: &SwitchCase| match case.body.as_slice() {
+            [
+                Stmt::Assign {
+                    target: Expr::Local(2),
+                    value: Expr::IntLit(value),
+                },
+            ] => *value,
+            body => panic!("each dispatch arm must retain its assignment: {body:?}"),
+        })
+        .collect();
+    assert_eq!(assigned_values, vec![10, 20, 40]);
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(successor_map(&raw_flat), successor_map(&structured_flat));
+}
+
+#[test]
+fn inverted_strict_forward_dispatch_accepts_an_empty_default_at_the_merge() {
+    let mut code: Vec<u8> = Vec::new();
+
+    code.extend_from_slice(&[0xD1, 0x24, 0x00, 0x1A]);
+    let first_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let first_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let second_test: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x24, 0x01, 0x1A]);
+    let final_miss_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x14, 0xD6, 0x10]);
+    let second_break_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, first_miss_operand, second_test);
+    patch_branch_target(&mut code, first_break_operand, merge);
+    patch_branch_target(&mut code, final_miss_operand, merge);
+    patch_branch_target(&mut code, second_break_operand, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = switch_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw empty-default lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("empty-default lift");
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    let structured: &Stmt = lifted
+        .statements
+        .iter()
+        .find(|statement: &&Stmt| matches!(statement, Stmt::StructuredSwitch { .. }))
+        .unwrap_or_else(|| {
+            panic!("empty-default dispatch must structure: raw={raw:#?} lifted={lifted:#?}")
+        });
+    let Stmt::StructuredSwitch { selector, cases } = structured else {
+        unreachable!()
+    };
+    assert_eq!(selector, &Expr::Local(1));
+    assert_eq!(cases.len(), 3);
+    assert_eq!(cases[0].labels, vec![CaseLabel::Value(0)]);
+    assert_eq!(cases[1].labels, vec![CaseLabel::Value(1)]);
+    assert_eq!(cases[2].labels, vec![CaseLabel::Default]);
+    assert!(cases[2].body.is_empty());
+    assert!(!cases[2].breaks);
     assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
 
     let mut raw_flat: Flat = Flat::default();
