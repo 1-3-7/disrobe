@@ -189,6 +189,43 @@ fn recursive_call_carries_its_recovered_argument_expression() {
 }
 
 #[test]
+fn structured_signature_uses_pinned_snapshot_parameter_metadata() {
+    let report: AotLiftReport = primary_report();
+    let function: &DartLiftedFunction = report
+        .functions
+        .iter()
+        .find(|function: &&DartLiftedFunction| {
+            function.name.as_deref() == Some("fibonacciStep") && function.is_structured()
+        })
+        .expect("fibonacciStep must lift to structured pseudocode");
+    let dart: String = function.best_pseudo_dart();
+
+    assert!(
+        dill_source().contains("int fibonacciStep(int depth)"),
+        "the committed source must independently establish one declared parameter"
+    );
+    assert_eq!(
+        function.arg_registers, 1,
+        "the report must not turn scratch-register reads into source parameters"
+    );
+    assert!(
+        dart.starts_with("fibonacciStep(arg0) {"),
+        "the rendered signature must agree with the report and the committed source, got:\n{dart}"
+    );
+
+    let repeated: AotLiftReport = primary_report();
+    let repeated_function: &DartLiftedFunction = repeated
+        .functions
+        .iter()
+        .find(|candidate: &&DartLiftedFunction| {
+            candidate.name.as_deref() == Some("fibonacciStep") && candidate.is_structured()
+        })
+        .expect("fibonacciStep must lift identically on a repeated run");
+    assert_eq!(repeated_function.arg_registers, function.arg_registers);
+    assert_eq!(repeated_function.best_pseudo_dart(), dart);
+}
+
+#[test]
 fn pool_name_and_null_register_inline_at_a_real_call_site() {
     let report: AotLiftReport = primary_report();
     let dart: String = body(&report, "WarehouseLedger.countBackordered");

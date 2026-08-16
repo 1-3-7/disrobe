@@ -419,6 +419,7 @@ fn recover_pinned_data_blobs(
 pub(super) struct DartPinnedGraph {
     pub(super) graph: DartParsedGraph,
     pub(super) layout: DartPinnedLayout,
+    pub(super) inventory: DartPinnedInventory,
 }
 
 pub(super) fn parse_pinned_isolate_graph(
@@ -458,7 +459,13 @@ pub(super) fn parse_pinned_isolate_graph(
         layout,
         limits,
     )?;
-    Ok(Some(DartPinnedGraph { graph, layout }))
+    let declared: DartGraphDeclaredObjects = declared_objects(&vm_graph.summary, &graph.summary);
+    let inventory: DartPinnedInventory = build_pinned_inventory(&graph.nodes, layout, declared);
+    Ok(Some(DartPinnedGraph {
+        graph,
+        layout,
+        inventory,
+    }))
 }
 
 fn classify_names(

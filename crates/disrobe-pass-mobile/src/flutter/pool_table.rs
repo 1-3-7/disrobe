@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +7,7 @@ use super::cid_table::predefined_name;
 use super::dart_graph::{
     DartGraphLimits, DartGraphNode, DartGraphNodeKind, DartParsedGraph, DartPoolSlot,
 };
+use super::dart_graph_inventory::DartPinnedInventory;
 use super::dart_graph_layout::{DartClusterBodyKind, DartPinnedLayout};
 use super::dart_graph_recovery::{DartPinnedGraph, parse_pinned_isolate_graph};
 use crate::error::Result;
@@ -92,6 +93,7 @@ pub struct DartPoolTable {
     slots: Vec<DartPoolSlot>,
     objects: Vec<DartPoolObject>,
     declarations: DartPinnedLayout,
+    function_parameters: BTreeMap<String, Option<u8>>,
 }
 
 impl DartPoolTable {
@@ -105,11 +107,17 @@ impl DartPoolTable {
         else {
             return Ok(None);
         };
-        let DartPinnedGraph { graph, layout }: DartPinnedGraph = pinned;
+        let DartPinnedGraph {
+            graph,
+            layout,
+            inventory,
+        }: DartPinnedGraph = pinned;
         let DartParsedGraph { nodes, .. }: DartParsedGraph = graph;
         let Some(slots): Option<Vec<DartPoolSlot>> = widest_pool(&nodes) else {
             return Ok(None);
         };
+        let function_parameters: BTreeMap<String, Option<u8>> =
+            index_function_parameters(&inventory);
         let objects: Vec<DartPoolObject> = nodes
             .iter()
             .map(|node: &DartGraphNode| compact(node, layout))
@@ -118,7 +126,13 @@ impl DartPoolTable {
             slots,
             objects,
             declarations: layout,
+            function_parameters,
         }))
+    }
+
+    #[must_use]
+    pub(super) fn function_parameter_count(&self, name: &str) -> Option<u8> {
+        self.function_parameters.get(name).copied().flatten()
     }
 
     #[must_use]
@@ -305,6 +319,46 @@ impl DartPoolTable {
 
 pub const UNRESOLVED_TOKEN: &str = "?";
 
+fn index_function_parameters(inventory: &DartPinnedInventory) -> BTreeMap<String, Option<u8>> {
+    let mut index: BTreeMap<String, Option<u8>> = BTreeMap::new();
+    for library in &inventory.libraries {
+        for class in &library.classes {
+            for method in &class.methods {
+                let Some(name): Option<&str> = method.name.as_deref() else {
+                    continue;
+                };
+                record_parameter_count(&mut index, name, method.parameter_count);
+                if let Some(class_name) = class.name.as_deref() {
+                    record_parameter_count(
+                        &mut index,
+                        &format!("{class_name}.{name}"),
+                        method.parameter_count,
+                    );
+                }
+            }
+        }
+    }
+    index
+}
+
+fn record_parameter_count(
+    index: &mut BTreeMap<String, Option<u8>>,
+    name: &str,
+    count: Option<usize>,
+) {
+    let candidate: Option<u8> = count.and_then(|value: usize| u8::try_from(value).ok());
+    match index.entry(name.to_owned()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            if *entry.get() != candidate {
+                entry.insert(None);
+            }
+        }
+    }
+}
+
 fn widest_pool(nodes: &[DartGraphNode]) -> Option<Vec<DartPoolSlot>> {
     nodes
         .iter()
@@ -429,7 +483,24 @@ mod tests {
             slots,
             objects,
             declarations: super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
+            function_parameters: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn parameter_counts_require_bounded_unambiguous_metadata() {
+        let mut index: BTreeMap<String, Option<u8>> = BTreeMap::new();
+        record_parameter_count(&mut index, "f", Some(1));
+        record_parameter_count(&mut index, "f", Some(1));
+        assert_eq!(index.get("f").copied().flatten(), Some(1));
+
+        record_parameter_count(&mut index, "f", Some(2));
+        assert_eq!(index.get("f").copied().flatten(), None);
+
+        record_parameter_count(&mut index, "large", Some(usize::from(u8::MAX) + 1));
+        record_parameter_count(&mut index, "missing", None);
+        assert_eq!(index.get("large").copied().flatten(), None);
+        assert_eq!(index.get("missing").copied().flatten(), None);
     }
 
     #[test]

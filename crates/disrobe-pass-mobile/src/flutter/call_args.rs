@@ -147,9 +147,17 @@ struct TrackState {
 }
 
 impl TrackState {
-    fn entry() -> Self {
+    fn entry(parameter_count: Option<u8>) -> Self {
         let mut state: Self = Self::default();
-        for (position, register) in DART_ARGUMENT_REGISTERS.iter().enumerate() {
+        let register_count: usize = parameter_count
+            .map_or(DART_ARGUMENT_REGISTERS.len(), |count: u8| {
+                usize::from(count).min(DART_ARGUMENT_REGISTERS.len())
+            });
+        for (position, register) in DART_ARGUMENT_REGISTERS
+            .iter()
+            .take(register_count)
+            .enumerate()
+        {
             state.integers.insert(*register, DartValue::Param(position));
         }
         state
@@ -217,7 +225,7 @@ pub(super) fn recover_boolean_return(
     if func.instructions.is_empty() || func.instructions.len() > MAX_BOOLEAN_RETURN_INSTRUCTIONS {
         return None;
     }
-    let mut state: TrackState = TrackState::entry();
+    let mut state: TrackState = TrackState::entry(None);
     let mut comparison: Option<(usize, DartComparison)> = None;
     let mut selected: Option<(DartComparison, DartCondition)> = None;
     let mut producers: BTreeMap<u8, usize> = BTreeMap::new();
@@ -347,12 +355,14 @@ pub(super) fn recover_call_arguments(
     reachable: &BTreeSet<u64>,
     tail_calls: &BTreeSet<u64>,
     pool: Option<&DartPoolTable>,
+    parameter_count: Option<u8>,
 ) -> DartCallArguments {
     let live: Vec<&NirBlock> = blocks
         .iter()
         .filter(|block: &&NirBlock| reachable.contains(&block.start))
         .collect::<Vec<&NirBlock>>();
-    let sites: BTreeMap<u64, Vec<Option<DartValue>>> = track_call_sites(func, &live, tail_calls);
+    let sites: BTreeMap<u64, Vec<Option<DartValue>>> =
+        track_call_sites(func, &live, tail_calls, parameter_count);
     let mut consumed: BTreeSet<u64> = BTreeSet::new();
     let mut max_parameter: Option<usize> = None;
     for values in sites.values() {
@@ -422,6 +432,7 @@ fn track_call_sites(
     func: &Arm64Function,
     blocks: &[&NirBlock],
     tail_calls: &BTreeSet<u64>,
+    parameter_count: Option<u8>,
 ) -> BTreeMap<u64, Vec<Option<DartValue>>> {
     let insns: &[Arm64Instruction] = &func.instructions;
     let predecessors: BTreeMap<u64, usize> = predecessor_counts(blocks);
@@ -435,7 +446,7 @@ fn track_call_sites(
             break;
         }
         let mut state: TrackState = if Some(block.start) == entry {
-            TrackState::entry()
+            TrackState::entry(parameter_count)
         } else if predecessors.get(&block.start).copied().unwrap_or(0) == 1
             && let Some(source) = single.get(&block.start)
             && let Some(inherited) = exits.get(source)
@@ -1045,6 +1056,19 @@ mod tests {
             Some(DartValue::Bool(false))
         );
         assert_eq!(offset_of(&state, DART_NULL_REGISTER, 0x40), None);
+    }
+
+    #[test]
+    fn declared_parameter_count_bounds_entry_registers() {
+        let one: TrackState = TrackState::entry(Some(1));
+        assert_eq!(
+            one.integers.get(&DART_ARGUMENT_REGISTERS[0]),
+            Some(&DartValue::Param(0))
+        );
+        assert_eq!(one.integers.get(&DART_ARGUMENT_REGISTERS[1]), None);
+
+        let many: TrackState = TrackState::entry(Some(u8::MAX));
+        assert_eq!(many.integers.len(), DART_ARGUMENT_REGISTERS.len());
     }
 
     #[test]

@@ -72,15 +72,24 @@ pub(crate) fn structure_dart_function(
     }
     let reachable: BTreeSet<u64> = reachable_from(&blocks);
     let tail_calls: BTreeSet<u64> = tail_call_addresses(&nir);
-    let arguments: DartCallArguments =
-        recover_call_arguments(func, &blocks, &reachable, &tail_calls, abi.pool);
+    let parameter_count: Option<u8> = abi
+        .pool
+        .and_then(|pool: &DartPoolTable| pool.function_parameter_count(abi.label));
+    let arguments: DartCallArguments = recover_call_arguments(
+        func,
+        &blocks,
+        &reachable,
+        &tail_calls,
+        abi.pool,
+        parameter_count,
+    );
     counts.recovered_sites = counts
         .recovered_sites
         .saturating_add(arguments.recovered_sites);
     counts.opaque_sites = counts.opaque_sites.saturating_add(arguments.opaque_sites);
     Some(DartStructuredBody {
-        text: emit_dart(&hir, abi, &reachable, &arguments),
-        parameter_count: None,
+        text: emit_dart(&hir, abi, &reachable, &arguments, parameter_count),
+        parameter_count,
     })
 }
 
@@ -648,12 +657,14 @@ fn emit_dart(
     abi: &DartAbi<'_>,
     reachable: &BTreeSet<u64>,
     arguments: &DartCallArguments,
+    parameter_count: Option<u8>,
 ) -> String {
-    let declared: usize = usize::from(abi.arg_registers).max(
+    let inferred: usize = usize::from(abi.arg_registers).max(
         arguments
             .max_parameter
             .map_or(0, |highest: usize| highest.saturating_add(1)),
     );
+    let declared: usize = parameter_count.map_or(inferred, usize::from);
     let params: String = (0..declared)
         .map(|i: usize| format!("arg{i}"))
         .collect::<Vec<String>>()
