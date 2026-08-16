@@ -1,11 +1,16 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 use boa_engine::{Context, Source};
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_js_deob::{AstPipeline, AstRuleId, AstUnminifyStats, unminify_ast};
-use std::process::{Command, Output};
+use std::ffi::OsStr;
+use std::path::Path;
+use std::time::Duration;
 
 const LOOP_LIMIT: u64 = 2_000_000;
 const RECURSION_LIMIT: usize = 1_500;
 const STACK_LIMIT: usize = 50_000;
+const NODE_TIMEOUT: Duration = Duration::from_secs(30);
+const NODE_CAPTURE: usize = 1usize << 18;
 
 fn eval_capture(program: &str) -> Option<String> {
     let mut context: Context = Context::default();
@@ -28,11 +33,10 @@ fn eval_capture_node(program: &str) -> Option<String> {
     let harness: String = format!(
         "var __out = []; var print = function(v){{ __out.push(String(v)); }};\n{program}\nprocess.stdout.write(__out.join('\\u0001'));"
     );
-    let output: Output = Command::new("node").arg("-e").arg(harness).output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
+    let output: CapturedOutput =
+        run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE).ok()??;
+    (output.exit_code == Some(0)).then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn assert_node_equivalent(input: &str, recovered: &str) {
@@ -577,4 +581,290 @@ fn raw_scaffold_refuses_eval_and_arrow_capture_hazards() {
         );
         assert_eq!(recovered, source);
     }
+}
+
+const NESTED_OBJECT_LOWERED: &str = r#"
+var trace = [];
+var input = {
+  get user() {
+    trace.push("user");
+    return {
+      get name() { trace.push("name"); return "Ada"; },
+      get score() { trace.push("score"); return 41; }
+    };
+  }
+};
+function read(_ref) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name,
+    score = _ref$user.score;
+  return name + ":" + score;
+}
+print(read(input));
+print(trace.join(","));
+"#;
+
+const NESTED_OBJECT_DEVELOPER: &str = r#"
+var trace = [];
+var input = {
+  get user() {
+    trace.push("user");
+    return {
+      get name() { trace.push("name"); return "Ada"; },
+      get score() { trace.push("score"); return 41; }
+    };
+  }
+};
+function read({ user: { name, score } }) {
+  return name + ":" + score;
+}
+print(read(input));
+print(trace.join(","));
+"#;
+
+#[test]
+fn babel_nested_object_parameter_recovers_with_getter_order() {
+    assert_faithful_input(
+        "nested object",
+        NESTED_OBJECT_DEVELOPER,
+        NESTED_OBJECT_LOWERED,
+    );
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_object_param(NESTED_OBJECT_LOWERED);
+    assert_eq!(stats.object_params_restructured, 1, "source:\n{recovered}");
+    assert!(
+        recovered.contains("function read({ user: { name, score } })"),
+        "the nested synthetic temporary must become a nested binding pattern:\n{recovered}"
+    );
+    assert!(
+        !recovered.contains("_ref"),
+        "both synthetic bindings must be removed:\n{recovered}"
+    );
+    assert_recovered_equivalent("nested object", NESTED_OBJECT_DEVELOPER, &recovered);
+    assert_node_equivalent(NESTED_OBJECT_LOWERED, &recovered);
+
+    let (second, second_stats): (String, AstUnminifyStats) =
+        unminify_object_param(NESTED_OBJECT_LOWERED);
+    assert_eq!(second, recovered);
+    assert_eq!(second_stats.object_params_restructured, 1);
+}
+
+#[test]
+fn nested_temporary_used_after_extraction_is_left_intact() {
+    let source: &str = r#"
+function read(_ref) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return name + ":" + Object.keys(_ref$user).length;
+}
+print(read({ user: { name: "Ada", score: 41 } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn nested_field_captured_by_parameter_default_is_left_intact() {
+    let source: &str = r#"
+var name = { user: { name: "outer" } };
+function read(_ref = name) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return name;
+}
+print(read());
+print(read({ user: { name: "given" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn immutable_nested_extraction_is_left_intact() {
+    let source: &str = r#"
+function read(_ref) {
+  const _ref$user = _ref.user,
+    name = _ref$user.name;
+  try {
+    name = "changed";
+    return name;
+  } catch (error) {
+    return error.constructor.name + ":" + name;
+  }
+}
+print(read({ user: { name: "Ada" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "TypeError:Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(
+        recovered.contains("const _ref$user"),
+        "source:\n{recovered}"
+    );
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn earlier_parameter_default_that_reads_a_nested_field_name_is_left_intact() {
+    let source: &str = r#"
+var name = "outer";
+function read(prefix = name, _ref) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return prefix + ":" + name;
+}
+print(read(undefined, { user: { name: "Ada" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "outer:Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn nested_temporary_observed_by_direct_eval_is_left_intact() {
+    let source: &str = r#"
+function read(_ref) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return eval("_ref$user.name") + ":" + name;
+}
+print(read({ user: { name: "Ada" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "Ada:Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn generator_nested_extraction_is_left_intact() {
+    let source: &str = r#"
+var trace = [];
+var input = {
+  get user() {
+    trace.push("user");
+    return { get name() { trace.push("name"); return "Ada"; } };
+  }
+};
+function* read(_ref) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  yield name;
+}
+var iterator = read(input);
+print(trace.join(","));
+print(iterator.next().value);
+print(trace.join(","));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "\u{1}Ada\u{1}user,name");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn strict_directive_nested_extraction_is_left_intact() {
+    let source: &str = r#"
+function read(_ref) {
+  "use strict";
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return name;
+}
+print(read({ user: { name: "Ada" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn parameter_eval_nested_extraction_is_left_intact() {
+    let source: &str = r#"
+var name = { user: { name: "Ada" } };
+function read(_ref = eval("name")) {
+  let _ref$user = _ref.user,
+    name = _ref$user.name;
+  return name;
+}
+print(read());
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
+}
+
+#[test]
+fn hoisted_function_colliding_with_nested_var_field_is_left_intact() {
+    let source: &str = r#"
+function read(_ref) {
+  var _ref$user = _ref.user,
+    name = _ref$user.name;
+  function name() {}
+  return typeof name + ":" + name;
+}
+print(read({ user: { name: "Ada" } }));
+"#;
+    let expected: String = eval_capture(source).expect("lowered input must evaluate");
+    assert_eq!(expected, "string:Ada");
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(stats.object_params_restructured, 0, "source:\n{recovered}");
+    assert!(recovered.contains("_ref$user"), "source:\n{recovered}");
+    assert_eq!(
+        eval_capture(&recovered).expect("refused source must evaluate"),
+        expected
+    );
+    assert_node_equivalent(source, &recovered);
 }

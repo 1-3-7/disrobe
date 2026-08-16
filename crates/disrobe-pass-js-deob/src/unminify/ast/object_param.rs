@@ -79,8 +79,12 @@ struct ParamPlan {
 
 struct Field {
     key: String,
-    local: String,
-    local_symbol_id: SymbolId,
+    binding: FieldBinding,
+}
+
+enum FieldBinding {
+    Local { name: String, symbol_id: SymbolId },
+    Nested(Vec<Field>),
 }
 
 struct ParamCandidate<'a> {
@@ -312,7 +316,10 @@ impl<'a> Visit<'a> for DuplicateBindingProbe<'_> {
         }
     }
 
-    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    fn visit_function(&mut self, function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+        if let Some(binding) = &function.id {
+            self.visit_binding_identifier(binding);
+        }
     }
 }
 
@@ -524,23 +531,24 @@ fn plan_param<'a>(
     let declaration: &oxc_ast::ast::VariableDeclaration<'_> =
         declaration_at(body, declaration_span, declaration_index)?;
     let fields: Vec<Field> = collect_fields(declaration, symbol_id, symbols)?;
-    if fields.len() != declaration.declarations.len() {
-        return None;
-    }
 
     let mut seen: IndexSet<&str> = IndexSet::new();
-    for field in &fields {
-        if !is_valid_identifier(&field.key) {
-            return None;
-        }
-        if !is_valid_identifier(&field.local) || is_reserved_binding_name(&field.local) {
-            return None;
-        }
-        if !seen.insert(field.local.as_str()) {
-            return None;
-        }
+    if !valid_fields(&fields, &mut seen) {
+        return None;
+    }
+    let has_nested_fields: bool = fields_contain_nested(&fields);
+    if has_nested_fields
+        && (func.generator
+            || !body.directives.is_empty()
+            || body_has_dynamic_scope_hazard(body)
+            || parameters_have_dynamic_scope_hazard(func))
+    {
+        return None;
     }
     if fields_collide_with_parameters(&fields, func, param_span, symbols) {
+        return None;
+    }
+    if parameter_initializers_capture_fields(&fields, func, param_span, symbols) {
         return None;
     }
     if let Some(default_expression) = default_expression
@@ -556,10 +564,11 @@ fn plan_param<'a>(
         pattern_text.push_str(default_text);
     }
     let removal: Span = declaration_removal_span(declaration_span, source);
-    let field_symbol_ids: Vec<SymbolId> = fields
-        .iter()
-        .map(|field: &Field| field.local_symbol_id)
-        .collect();
+    let mut field_symbol_ids: Vec<SymbolId> = Vec::new();
+    collect_field_symbol_ids(&fields, &mut field_symbol_ids);
+    if has_nested_fields && duplicate_body_bindings(body, declaration.span, &field_symbol_ids) {
+        return None;
+    }
     Some(ParamPlan {
         param_span,
         pattern_text,
@@ -602,10 +611,97 @@ fn fields_collide_with_parameters(
     }
     collector.symbol_ids.iter().any(|&symbol_id: &SymbolId| {
         let parameter_name: &str = symbols.get_name(symbol_id);
-        fields
-            .iter()
-            .any(|field: &Field| field.local == parameter_name)
+        fields_contain_name(fields, parameter_name)
     })
+}
+
+fn parameter_initializers_capture_fields(
+    fields: &[Field],
+    func: &Function<'_>,
+    candidate_span: Span,
+    symbols: &SymbolTable,
+) -> bool {
+    let mut probe: DefaultCaptureProbe<'_> = DefaultCaptureProbe {
+        fields,
+        symbols,
+        captured: false,
+    };
+    for parameter in &func.params.items {
+        if parameter.span != candidate_span {
+            probe.visit_binding_pattern(&parameter.pattern);
+        }
+    }
+    probe.captured
+}
+
+fn valid_fields<'a>(fields: &'a [Field], seen: &mut IndexSet<&'a str>) -> bool {
+    fields.iter().all(|field: &'a Field| {
+        if !is_valid_identifier(&field.key) {
+            return false;
+        }
+        match &field.binding {
+            FieldBinding::Local { name, .. } => {
+                is_valid_identifier(name)
+                    && !is_reserved_binding_name(name)
+                    && seen.insert(name.as_str())
+            }
+            FieldBinding::Nested(nested) => valid_fields(nested, seen),
+        }
+    })
+}
+
+fn fields_contain_nested(fields: &[Field]) -> bool {
+    fields
+        .iter()
+        .any(|field: &Field| matches!(field.binding, FieldBinding::Nested(_)))
+}
+
+fn body_has_dynamic_scope_hazard(body: &oxc_ast::ast::FunctionBody<'_>) -> bool {
+    let mut probe: DynamicScopeProbe = DynamicScopeProbe { found: false };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    probe.found
+}
+
+fn parameters_have_dynamic_scope_hazard(func: &Function<'_>) -> bool {
+    let mut probe: DynamicScopeProbe = DynamicScopeProbe { found: false };
+    for parameter in &func.params.items {
+        probe.visit_binding_pattern(&parameter.pattern);
+    }
+    probe.found
+}
+
+struct DynamicScopeProbe {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for DynamicScopeProbe {
+    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
+        if identifier.name == "eval" {
+            self.found = true;
+        }
+    }
+
+    fn visit_with_statement(&mut self, _statement: &oxc_ast::ast::WithStatement<'a>) {
+        self.found = true;
+    }
+}
+
+fn fields_contain_name(fields: &[Field], expected: &str) -> bool {
+    fields.iter().any(|field: &Field| match &field.binding {
+        FieldBinding::Local { name, .. } => name == expected,
+        FieldBinding::Nested(nested) => fields_contain_name(nested, expected),
+    })
+}
+
+fn collect_field_symbol_ids(fields: &[Field], symbols: &mut Vec<SymbolId>) {
+    for field in fields {
+        match &field.binding {
+            FieldBinding::Local { symbol_id, .. } => symbols.push(*symbol_id),
+            FieldBinding::Nested(nested) => collect_field_symbol_ids(nested, symbols),
+        }
+    }
 }
 
 struct BindingSymbolCollector {
@@ -647,14 +743,29 @@ impl<'a> Visit<'a> for DefaultCaptureProbe<'_> {
         };
         let reference: &Reference = self.symbols.get_reference(reference_id);
         if reference.is_value()
-            && self.fields.iter().any(|field: &Field| {
-                field.local == identifier.name.as_str()
-                    && reference.symbol_id() != Some(field.local_symbol_id)
-            })
+            && field_name_resolves_elsewhere(
+                self.fields,
+                identifier.name.as_str(),
+                reference.symbol_id(),
+            )
         {
             self.captured = true;
         }
     }
+}
+
+fn field_name_resolves_elsewhere(
+    fields: &[Field],
+    name: &str,
+    symbol_id: Option<SymbolId>,
+) -> bool {
+    fields.iter().any(|field: &Field| match &field.binding {
+        FieldBinding::Local {
+            name: field_name,
+            symbol_id: field_symbol_id,
+        } => field_name == name && symbol_id != Some(*field_symbol_id),
+        FieldBinding::Nested(nested) => field_name_resolves_elsewhere(nested, name, symbol_id),
+    })
 }
 
 fn enclosing_declaration_span(node_id: NodeId, nodes: &AstNodes<'_>) -> Option<Span> {
@@ -692,10 +803,70 @@ fn collect_fields(
 ) -> Option<Vec<Field>> {
     let mut fields: Vec<Field> = Vec::with_capacity(declaration.declarations.len());
     for declarator in &declaration.declarations {
-        let field: Field = declarator_field(declarator, symbol_id, symbols)?;
+        let Some(field): Option<Field> = declarator_field(declarator, symbol_id, symbols) else {
+            return collect_nested_fields(declaration, symbol_id, symbols);
+        };
         fields.push(field);
     }
     Some(fields)
+}
+
+fn collect_nested_fields(
+    declaration: &oxc_ast::ast::VariableDeclaration<'_>,
+    root_symbol_id: SymbolId,
+    symbols: &SymbolTable,
+) -> Option<Vec<Field>> {
+    if !matches!(
+        declaration.kind,
+        VariableDeclarationKind::Var | VariableDeclarationKind::Let
+    ) {
+        return None;
+    }
+    let (key, nested_symbol_id): (String, SymbolId) =
+        nested_declarator(declaration.declarations.first()?, root_symbol_id, symbols)?;
+    let references: &Vec<oxc_semantic::ReferenceId> =
+        symbols.get_resolved_reference_ids(nested_symbol_id);
+    if references.len() != declaration.declarations.len().checked_sub(1)?
+        || references.iter().any(|&reference_id| {
+            let reference: &Reference = symbols.get_reference(reference_id);
+            !reference.is_read() || reference.is_write()
+        })
+    {
+        return None;
+    }
+    let nested: Vec<Field> = declaration
+        .declarations
+        .iter()
+        .skip(1)
+        .map(|declarator: &VariableDeclarator<'_>| {
+            declarator_field(declarator, nested_symbol_id, symbols)
+        })
+        .collect::<Option<Vec<Field>>>()?;
+    (!nested.is_empty()).then_some(vec![Field {
+        key,
+        binding: FieldBinding::Nested(nested),
+    }])
+}
+
+fn nested_declarator(
+    declarator: &VariableDeclarator<'_>,
+    root_symbol_id: SymbolId,
+    symbols: &SymbolTable,
+) -> Option<(String, SymbolId)> {
+    if declarator.id.type_annotation.is_some() {
+        return None;
+    }
+    let BindingPatternKind::BindingIdentifier(nested) = &declarator.id.kind else {
+        return None;
+    };
+    let nested_symbol_id: SymbolId = nested.symbol_id.get()?;
+    let root_name: &str = symbols.get_name(root_symbol_id);
+    let prefix: String = format!("{root_name}$");
+    if !nested.name.as_str().starts_with(&prefix) || nested.name.as_str().len() == prefix.len() {
+        return None;
+    }
+    let key: String = member_key(declarator.init.as_ref()?, root_symbol_id, symbols)?;
+    Some((key, nested_symbol_id))
 }
 
 fn declarator_field(
@@ -710,7 +881,17 @@ fn declarator_field(
         return None;
     };
     let local_symbol_id: SymbolId = local.symbol_id.get()?;
-    let init: &Expression<'_> = declarator.init.as_ref()?;
+    let key: String = member_key(declarator.init.as_ref()?, symbol_id, symbols)?;
+    Some(Field {
+        key,
+        binding: FieldBinding::Local {
+            name: local.name.as_str().to_owned(),
+            symbol_id: local_symbol_id,
+        },
+    })
+}
+
+fn member_key(init: &Expression<'_>, symbol_id: SymbolId, symbols: &SymbolTable) -> Option<String> {
     let (object, key): (&Expression<'_>, String) = match init {
         Expression::StaticMemberExpression(member) => {
             (&member.object, member.property.name.as_str().to_owned())
@@ -729,11 +910,7 @@ fn declarator_field(
     if !resolves_to(object_ident, symbol_id, symbols) {
         return None;
     }
-    Some(Field {
-        key,
-        local: local.name.as_str().to_owned(),
-        local_symbol_id,
-    })
+    Some(key)
 }
 
 fn resolves_to(
@@ -750,10 +927,16 @@ fn resolves_to(
 fn build_pattern(fields: &[Field]) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(fields.len());
     for field in fields {
-        if field.key == field.local {
-            parts.push(field.key.clone());
-        } else {
-            parts.push(format!("{}: {}", field.key, field.local));
+        match &field.binding {
+            FieldBinding::Local { name, .. } if field.key == *name => {
+                parts.push(field.key.clone());
+            }
+            FieldBinding::Local { name, .. } => {
+                parts.push(format!("{}: {name}", field.key));
+            }
+            FieldBinding::Nested(nested) => {
+                parts.push(format!("{}: {}", field.key, build_pattern(nested)));
+            }
         }
     }
     format!("{{ {} }}", parts.join(", "))
