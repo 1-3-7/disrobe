@@ -184,7 +184,7 @@ fn collect_candidates(semantic: &Semantic<'_>) -> Vec<ImportCandidate> {
     candidates
 }
 
-fn push_reference_edits(
+pub(super) fn push_reference_edits(
     symbols: &SymbolTable,
     nodes: &AstNodes<'_>,
     symbol_id: SymbolId,

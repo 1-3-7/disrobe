@@ -160,7 +160,7 @@ fn require_specifier<'a>(call: &'a CallExpression<'a>) -> Option<&'a str> {
     Some(spec.value.as_str())
 }
 
-fn is_minified_local(name: &str) -> bool {
+pub(super) fn is_minified_local(name: &str) -> bool {
     let char_count: usize = name.chars().count();
     if char_count == 0 || char_count > 3 {
         return false;
@@ -169,7 +169,7 @@ fn is_minified_local(name: &str) -> bool {
     stripped.chars().count() <= 2
 }
 
-fn derive_module_names(specifier: &str) -> Vec<String> {
+pub(super) fn derive_module_names(specifier: &str) -> Vec<String> {
     let trimmed: &str = specifier.trim();
     if trimmed.is_empty() {
         return Vec::new();

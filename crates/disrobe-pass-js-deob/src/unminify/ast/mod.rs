@@ -1,4 +1,5 @@
 mod alias_inline;
+mod amd_param;
 mod arg_rest;
 mod argument_spread;
 mod async_protection;
@@ -58,6 +59,7 @@ use oxc_span::SourceType;
 use serde::Serialize;
 
 use alias_inline::AliasInlineStats;
+use amd_param::AmdParamStats;
 use arg_rest::ArgRestStats;
 use argument_spread::ArgumentSpreadStats;
 use block_statement::BlockStatementStats;
@@ -226,6 +228,7 @@ enum RuleStage {
     RequireDestructure = 45,
     RequireMember = 46,
     BuiltinPrototype = 47,
+    AmdParam = 48,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +281,7 @@ pub enum AstRuleId {
     RequireDestructure,
     RequireMember,
     BuiltinPrototype,
+    AmdParam,
 }
 
 struct Edit {
@@ -462,6 +466,7 @@ pub struct AstUnminifyStats {
     pub require_members_unaliased: usize,
     pub require_member_aliases_renamed: usize,
     pub builtin_prototypes_expanded: usize,
+    pub amd_parameters_renamed: usize,
 }
 
 enum RuleStats {
@@ -512,6 +517,7 @@ enum RuleStats {
     RequireDestructure(RequireDestructureStats),
     RequireMember(RequireMemberStats),
     BuiltinPrototype(BuiltinPrototypeStats),
+    AmdParam(AmdParamStats),
 }
 
 struct Rule {
@@ -825,6 +831,12 @@ impl Default for AstPipeline {
                     requires: &[],
                     enabled: true,
                 },
+                Rule {
+                    id: AstRuleId::AmdParam,
+                    stage: RuleStage::AmdParam,
+                    requires: &[],
+                    enabled: true,
+                },
             ],
         }
     }
@@ -1092,6 +1104,10 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
                 builtin_prototype::recover(source);
             (outcome, RuleStats::BuiltinPrototype(builtin_stats))
         }
+        AstRuleId::AmdParam => {
+            let (outcome, amd_stats): (RuleOutcome, AmdParamStats) = amd_param::recover(source);
+            (outcome, RuleStats::AmdParam(amd_stats))
+        }
         AstRuleId::SplitVar => {
             let (outcome, split_stats): (RuleOutcome, SplitVarStats) = split_var::recover(source);
             (outcome, RuleStats::SplitVar(split_stats))
@@ -1272,6 +1288,9 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
         }
         RuleStats::BuiltinPrototype(builtin_stats) => {
             stats.builtin_prototypes_expanded += builtin_stats.prototypes_expanded;
+        }
+        RuleStats::AmdParam(amd_stats) => {
+            stats.amd_parameters_renamed += amd_stats.parameters_renamed;
         }
         RuleStats::SplitVar(split_stats) => {
             stats.var_declarations_split += split_stats.declarations_split;
