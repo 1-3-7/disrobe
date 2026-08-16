@@ -536,7 +536,7 @@ fn recover_with_calls_and_image<'image>(
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
     let frame: FrameAnalysis = aarch64_frame::analyze(&insns, &switches)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
-    let vector_context: bool = insns.iter().any(instruction_has_vector_syntax);
+    let d_transfer_classes: BTreeMap<usize, DTransferClass> = classify_d_transfers(&insns)?;
     for (index, insn) in insns.iter().enumerate() {
         let address: u64 = item_address(base, index, 0)?;
         if let Some(dispatch) = switches.get(&index) {
@@ -579,7 +579,7 @@ fn recover_with_calls_and_image<'image>(
         if let Some(stmts) = try_lower_scalar_fp(
             insn,
             frame.info_at(index),
-            vector_context,
+            d_transfer_classes.get(&index).copied(),
             &image_context,
             javascript_flags_dead,
         )? {
@@ -590,17 +590,25 @@ fn recover_with_calls_and_image<'image>(
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
-        if matches!(insn.mnemonic.as_str(), "ldr" | "str")
+        if matches!(insn.mnemonic.as_str(), "ldr" | "str" | "ldur" | "stur")
             && first_operand_is_scalar_dreg(&insn.operands)
-            && (vector_context || is_dreg_post_indexed(&insn.operands))
+            && d_transfer_classes.get(&index) == Some(&DTransferClass::Vector)
         {
             let operands: Vec<&str> = split_operands(&insn.operands);
             let stmts: Vec<Stmt> = vector_load_store(
                 insn,
                 &operands,
-                insn.mnemonic == "ldr",
+                matches!(insn.mnemonic.as_str(), "ldr" | "ldur"),
                 frame.info_at(index),
             )?;
+            push_stmts(&mut items, base, index, stmts)?;
+            continue;
+        }
+        if matches!(insn.mnemonic.as_str(), "ldp" | "stp")
+            && first_operand_is_scalar_dreg(&insn.operands)
+            && d_transfer_classes.get(&index) == Some(&DTransferClass::Vector)
+        {
+            let stmts: Vec<Stmt> = lower_vector(insn, frame.info_at(index))?;
             push_stmts(&mut items, base, index, stmts)?;
             continue;
         }
@@ -1680,17 +1688,6 @@ fn recover_with_calls_and_image<'image>(
     {
         return Err(reject(
             "result-free return is ambiguous across integer, floating-point, and void signatures",
-        ));
-    }
-    let has_scalar_fp: bool = items
-        .iter()
-        .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));
-    let has_vector: bool = items
-        .iter()
-        .any(|item: &Item| matches!(item.kind, ItemKind::Stmt(Stmt::Vector(_))));
-    if has_scalar_fp && has_vector {
-        return Err(reject(
-            "mixed scalar floating-point and vector register use is outside increment 1",
         ));
     }
     version_widened_registers(&mut items)?;
@@ -4600,7 +4597,7 @@ fn has_scalar_gpr_destination(operands: &[&str]) -> bool {
 fn try_lower_scalar_fp(
     insn: &DisasmInsn,
     frame: FrameInfo,
-    vector_context: bool,
+    d_transfer_class: Option<DTransferClass>,
     image: &ImageContext<'_, '_>,
     javascript_flags_dead: bool,
 ) -> Result<Option<Vec<Stmt>>> {
@@ -4689,8 +4686,8 @@ fn try_lower_scalar_fp(
         | "fcvtpu" | "fcvtas" | "fcvtau" | "fcvt" | "frintm" | "frintp" | "frintz" | "frintn"
         | "frinta" | "frintx" | "frinti" | "frint32z" | "frint32x" | "frint64z" | "frint64x"
         | "fjcvtzs" => Ok(None),
-        "movi" if !vector_context => lower_movi_scalar_zero(&operands),
-        "fmov" if vector_context => {
+        "movi" if !instruction_has_vector_syntax(insn) => lower_movi_scalar_zero(&operands),
+        "fmov" if instruction_has_vector_syntax(insn) => {
             if !operand_is_vector(insn) && instruction_has_vector_syntax(insn) {
                 return Err(reject_at(
                     insn,
@@ -4704,10 +4701,7 @@ fn try_lower_scalar_fp(
             let Some(token): Option<&&str> = operands.first() else {
                 return Ok(None);
             };
-            if matches!(insn.mnemonic.as_str(), "ldr" | "str")
-                && parse_dreg(token).is_some()
-                && (vector_context || is_dreg_post_indexed(&insn.operands))
-            {
+            if parse_dreg(token).is_some() && d_transfer_class == Some(DTransferClass::Vector) {
                 return Ok(None);
             }
             let Some((register, width)): Option<(Xmm, FpWidth)> = fp_memory_register(token)? else {
@@ -4726,6 +4720,12 @@ fn try_lower_scalar_fp(
             };
             let first: Option<(Xmm, FpWidth)> = fp_memory_register(first_token)?;
             let second: Option<(Xmm, FpWidth)> = fp_memory_register(second_token)?;
+            if first.is_some()
+                && second.is_some()
+                && d_transfer_class == Some(DTransferClass::Vector)
+            {
+                return Ok(None);
+            }
             match (first, second) {
                 (Some(first), Some(second)) => {
                     lower_fp_pair_memory(insn, &operands, first, second, frame).map(Some)
@@ -6093,8 +6093,8 @@ fn lower_vector(insn: &DisasmInsn, frame: FrameInfo) -> Result<Vec<Stmt>> {
         "fadd" | "fsub" | "fmul" | "fdiv" => vector_bin(insn, &operands, true),
         "cmeq" => vector_compare(insn, &operands),
         "movi" => vector_moveimm(insn, &operands),
-        "ldr" => vector_load_store(insn, &operands, true, frame),
-        "str" => vector_load_store(insn, &operands, false, frame),
+        "ldr" | "ldur" => vector_load_store(insn, &operands, true, frame),
+        "str" | "stur" => vector_load_store(insn, &operands, false, frame),
         "ldp" => vector_load_pair(insn, &operands),
         "stp" => vector_store_pair(insn, &operands),
         "sshll" | "sshll2" | "ushll" | "ushll2" => vector_widen_extend(insn, &operands),
@@ -6391,10 +6391,16 @@ fn vector_load_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     if !(3..=4).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed vector load pair"));
     }
-    let reg1: u8 = parse_qreg(operands[0])
-        .ok_or_else(|| reject_at(insn, "vector load pair requires q registers"))?;
-    let reg2: u8 = parse_qreg(operands[1])
-        .ok_or_else(|| reject_at(insn, "vector load pair requires q registers"))?;
+    let (reg1, arr1, stride): (u8, Option<VecArrangement>, i64) =
+        vector_pair_register(insn, operands[0])?;
+    let (reg2, arr2, second_stride): (u8, Option<VecArrangement>, i64) =
+        vector_pair_register(insn, operands[1])?;
+    if arr1 != arr2 || stride != second_stride {
+        return Err(reject_at(
+            insn,
+            "vector load pair has mixed register widths",
+        ));
+    }
     let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[2], Width::W64)?;
     let post_delta: Option<i64> = operands
         .get(3)
@@ -6414,17 +6420,17 @@ fn vector_load_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     }
     let first: MemRef = mem;
     let second: MemRef = MemRef {
-        disp: mem.disp + 16,
+        disp: mem.disp + stride,
         ..mem
     };
     stmts.push(Stmt::Vector(VecStmt::Load {
         dest: reg1,
-        arr: None,
+        arr: arr1,
         addr: first,
     }));
     stmts.push(Stmt::Vector(VecStmt::Load {
         dest: reg2,
-        arr: None,
+        arr: arr2,
         addr: second,
     }));
     if let Some(delta) = post_delta {
@@ -6443,10 +6449,16 @@ fn vector_store_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> 
     if !(3..=4).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed vector store pair"));
     }
-    let reg1: u8 = parse_qreg(operands[0])
-        .ok_or_else(|| reject_at(insn, "vector store pair requires q registers"))?;
-    let reg2: u8 = parse_qreg(operands[1])
-        .ok_or_else(|| reject_at(insn, "vector store pair requires q registers"))?;
+    let (reg1, arr1, stride): (u8, Option<VecArrangement>, i64) =
+        vector_pair_register(insn, operands[0])?;
+    let (reg2, arr2, second_stride): (u8, Option<VecArrangement>, i64) =
+        vector_pair_register(insn, operands[1])?;
+    if arr1 != arr2 || stride != second_stride {
+        return Err(reject_at(
+            insn,
+            "vector store pair has mixed register widths",
+        ));
+    }
     let (mut mem, pre_index): (MemRef, bool) = parse_memory(operands[2], Width::W64)?;
     let post_delta: Option<i64> = operands
         .get(3)
@@ -6466,17 +6478,17 @@ fn vector_store_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> 
     }
     let first: MemRef = mem;
     let second: MemRef = MemRef {
-        disp: mem.disp + 16,
+        disp: mem.disp + stride,
         ..mem
     };
     stmts.push(Stmt::Vector(VecStmt::Store {
         src: reg1,
-        arr: None,
+        arr: arr1,
         addr: first,
     }));
     stmts.push(Stmt::Vector(VecStmt::Store {
         src: reg2,
-        arr: None,
+        arr: arr2,
         addr: second,
     }));
     if let Some(delta) = post_delta {
@@ -6489,6 +6501,22 @@ fn vector_store_pair(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> 
         stmts.push(base_update(mem.base, delta)?);
     }
     Ok(stmts)
+}
+
+fn vector_pair_register(
+    insn: &DisasmInsn,
+    token: &str,
+) -> Result<(u8, Option<VecArrangement>, i64)> {
+    if let Some(register) = parse_qreg(token) {
+        return Ok((register, None, 16));
+    }
+    if let Some(register) = parse_dreg(token) {
+        return Ok((register, Some(VEC_DOUBLEWORD_BYTES), 8));
+    }
+    Err(reject_at(
+        insn,
+        "vector pair transfer requires matching q or d registers",
+    ))
 }
 
 fn vector_dup(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
@@ -6527,16 +6555,339 @@ fn first_operand_is_scalar_dreg(operands: &str) -> bool {
         .is_some()
 }
 
-fn is_dreg_post_indexed(operands: &str) -> bool {
-    let tokens: Vec<&str> = split_operands(operands);
-    tokens.len() == 3
-        && tokens
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DTransferClass {
+    Scalar,
+    Vector,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DRegisterState {
+    origin: Option<usize>,
+    class: Option<DTransferClass>,
+    transfer_dependent: bool,
+    crossed_block: bool,
+}
+
+fn d_transfer_registers(insn: &DisasmInsn) -> Option<(bool, Vec<u8>)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let (is_load, register_count, memory_index): (bool, usize, usize) = match insn.mnemonic.as_str()
+    {
+        "ldr" | "ldur" => (true, 1, 1),
+        "str" | "stur" => (false, 1, 1),
+        "ldp" => (true, 2, 2),
+        "stp" => (false, 2, 2),
+        _ => return None,
+    };
+    let memory: &&str = operands.get(memory_index)?;
+    if !memory.trim().starts_with('[') {
+        return None;
+    }
+    let registers: Vec<u8> = operands
+        .iter()
+        .take(register_count)
+        .map(|register: &&str| parse_dreg(register))
+        .collect::<Option<Vec<u8>>>()?;
+    Some((is_load, registers))
+}
+
+fn vector_memory_registers(insn: &DisasmInsn) -> Option<(bool, Vec<u8>)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let (is_load, register_count, memory_index): (bool, usize, usize) = match insn.mnemonic.as_str()
+    {
+        "ldr" | "ldur" => (true, 1, 1),
+        "str" | "stur" => (false, 1, 1),
+        "ldp" => (true, 2, 2),
+        "stp" => (false, 2, 2),
+        _ => return None,
+    };
+    if !operands.get(memory_index)?.trim().starts_with('[') {
+        return None;
+    }
+    let registers: Vec<u8> = operands
+        .iter()
+        .take(register_count)
+        .map(|register: &&str| explicit_vector_register(register))
+        .collect::<Option<Vec<u8>>>()?;
+    Some((is_load, registers))
+}
+
+fn explicit_vector_register(token: &str) -> Option<u8> {
+    let token: &str = token.trim().trim_start_matches('{').trim_end_matches('}');
+    if let Some(register) = parse_qreg(token) {
+        return Some(register);
+    }
+    let number: &str = token.strip_prefix('v')?.split_once('.')?.0;
+    number
+        .parse::<u8>()
+        .ok()
+        .filter(|register: &u8| *register < 32)
+}
+
+fn constrain_d_register(
+    states: &mut [DRegisterState; 32],
+    classes: &mut BTreeMap<usize, DTransferClass>,
+    register: u8,
+    class: DTransferClass,
+    insn: &DisasmInsn,
+) -> Result<()> {
+    let state: &mut DRegisterState = &mut states[usize::from(register)];
+    if state.crossed_block {
+        return Err(reject_at(
+            insn,
+            "a d-register transfer value crosses a basic-block boundary",
+        ));
+    }
+    if state
+        .class
+        .is_some_and(|current: DTransferClass| current != class)
+    {
+        return Err(reject_at(
+            insn,
+            "one d-register value is consumed as both scalar and vector data",
+        ));
+    }
+    state.class = Some(class);
+    if let Some(origin) = state.origin {
+        if classes
+            .get(&origin)
+            .is_some_and(|current: &DTransferClass| *current != class)
+        {
+            return Err(reject_at(
+                insn,
+                "one paired d-register transfer is consumed as both scalar and vector data",
+            ));
+        }
+        classes.insert(origin, class);
+    }
+    Ok(())
+}
+
+fn replace_d_register_value(
+    states: &mut [DRegisterState; 32],
+    classes: &mut BTreeMap<usize, DTransferClass>,
+    register: u8,
+    replacement: DRegisterState,
+) {
+    let previous: DRegisterState = states[usize::from(register)];
+    if let Some(origin) = previous.origin {
+        classes
+            .entry(origin)
+            .or_insert_with(|| previous.class.unwrap_or(DTransferClass::Scalar));
+    }
+    states[usize::from(register)] = replacement;
+}
+
+fn d_value_definition(insn: &DisasmInsn) -> Option<(u8, DTransferClass)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let destination: &&str = operands.first()?;
+    if let Some(register) = explicit_vector_register(destination) {
+        return Some((register, DTransferClass::Vector));
+    }
+    if matches!(
+        insn.mnemonic.as_str(),
+        "fcmp" | "fcmpe" | "fccmp" | "fccmpe"
+    ) {
+        return None;
+    }
+    parse_dreg(destination).map(|register: u8| (register, DTransferClass::Scalar))
+}
+
+fn constrain_d_value_uses(
+    states: &mut [DRegisterState; 32],
+    classes: &mut BTreeMap<usize, DTransferClass>,
+    insn: &DisasmInsn,
+    has_destination: bool,
+) -> Result<bool> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let mut transfer_dependent: bool = false;
+    if has_destination
+        && operands
             .first()
-            .and_then(|token: &&str| parse_dreg(token))
-            .is_some()
-        && tokens
-            .get(2)
-            .is_some_and(|token: &&str| token.trim().starts_with('#'))
+            .is_some_and(|destination: &&str| destination.contains('['))
+        && let Some(register) = operands
+            .first()
+            .and_then(|destination: &&str| explicit_vector_register(destination))
+    {
+        let state: DRegisterState = states[usize::from(register)];
+        transfer_dependent |= state.transfer_dependent || state.origin.is_some();
+        constrain_d_register(states, classes, register, DTransferClass::Vector, insn)?;
+    }
+    for operand in operands.iter().skip(usize::from(has_destination)) {
+        if let Some(register) = explicit_vector_register(operand) {
+            let state: DRegisterState = states[usize::from(register)];
+            transfer_dependent |= state.transfer_dependent || state.origin.is_some();
+            constrain_d_register(states, classes, register, DTransferClass::Vector, insn)?;
+        } else if let Some(register) = parse_dreg(operand) {
+            let state: DRegisterState = states[usize::from(register)];
+            transfer_dependent |= state.transfer_dependent || state.origin.is_some();
+            constrain_d_register(states, classes, register, DTransferClass::Scalar, insn)?;
+        }
+    }
+    Ok(transfer_dependent)
+}
+
+fn finalize_d_block(
+    states: &mut [DRegisterState; 32],
+    classes: &mut BTreeMap<usize, DTransferClass>,
+    allow_scalar_return: bool,
+    insn: &DisasmInsn,
+) -> Result<()> {
+    for (register, state) in states.iter_mut().enumerate() {
+        let origin: Option<usize> = state.origin;
+        let resolved_class: Option<DTransferClass> = if let Some(origin) = origin {
+            let class: DTransferClass = if let Some(class) = state.class {
+                class
+            } else if allow_scalar_return && register == 0 {
+                DTransferClass::Scalar
+            } else {
+                return Err(reject_at(
+                    insn,
+                    "an untyped d-register value crosses a basic-block boundary",
+                ));
+            };
+            classes.entry(origin).or_insert(class);
+            Some(class)
+        } else {
+            state.class
+        };
+        let transfer_dependent: bool = state.transfer_dependent || origin.is_some();
+        *state = if transfer_dependent {
+            DRegisterState {
+                origin: None,
+                class: resolved_class,
+                transfer_dependent: true,
+                crossed_block: true,
+            }
+        } else {
+            DRegisterState::default()
+        };
+    }
+    Ok(())
+}
+
+fn d_classification_target(insn: &DisasmInsn) -> Result<Option<u64>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let target: Option<&&str> = match insn.mnemonic.as_str() {
+        "b" | "bl" => operands.first(),
+        "cbz" | "cbnz" => operands.get(1),
+        "tbz" | "tbnz" => operands.get(2),
+        mnemonic if mnemonic.starts_with("b.") => operands.first(),
+        _ => None,
+    };
+    target.map_or(Ok(None), |token: &&str| {
+        relative_target(insn, token).map(Some)
+    })
+}
+
+fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransferClass>> {
+    let mut classes: BTreeMap<usize, DTransferClass> = BTreeMap::new();
+    let mut states: [DRegisterState; 32] = [DRegisterState::default(); 32];
+    let mut branch_targets: BTreeSet<u64> = BTreeSet::new();
+    for insn in insns {
+        if let Some(target) = d_classification_target(insn)? {
+            branch_targets.insert(target);
+        }
+    }
+    for (index, insn) in insns.iter().enumerate() {
+        if branch_targets.contains(&insn.address) {
+            finalize_d_block(&mut states, &mut classes, false, insn)?;
+        }
+        if let Some((is_load, registers)) = d_transfer_registers(insn) {
+            if is_load {
+                for register in registers {
+                    replace_d_register_value(
+                        &mut states,
+                        &mut classes,
+                        register,
+                        DRegisterState {
+                            origin: Some(index),
+                            class: None,
+                            transfer_dependent: true,
+                            crossed_block: false,
+                        },
+                    );
+                }
+            } else {
+                let mut transfer_class: Option<DTransferClass> = None;
+                for register in registers {
+                    let state: DRegisterState = states[usize::from(register)];
+                    let class: DTransferClass = match (state.origin, state.class) {
+                        (_, Some(class)) => class,
+                        (Some(_), None) => DTransferClass::Vector,
+                        (None, None) if register <= 7 => DTransferClass::Scalar,
+                        (None, None) => {
+                            return Err(reject_at(
+                                insn,
+                                "an untyped d-register store is outside the scalar argument registers",
+                            ));
+                        }
+                    };
+                    if transfer_class.is_some_and(|current: DTransferClass| current != class) {
+                        return Err(reject_at(
+                            insn,
+                            "paired d-register transfer values have different scalar and vector classes",
+                        ));
+                    }
+                    transfer_class = Some(class);
+                    constrain_d_register(&mut states, &mut classes, register, class, insn)?;
+                }
+                if let Some(class) = transfer_class {
+                    classes.insert(index, class);
+                }
+            }
+        } else if let Some((is_load, registers)) = vector_memory_registers(insn) {
+            if is_load {
+                for register in registers {
+                    replace_d_register_value(
+                        &mut states,
+                        &mut classes,
+                        register,
+                        DRegisterState {
+                            origin: None,
+                            class: Some(DTransferClass::Vector),
+                            transfer_dependent: false,
+                            crossed_block: false,
+                        },
+                    );
+                }
+            } else {
+                for register in registers {
+                    constrain_d_register(
+                        &mut states,
+                        &mut classes,
+                        register,
+                        DTransferClass::Vector,
+                        insn,
+                    )?;
+                }
+            }
+        } else {
+            let definition: Option<(u8, DTransferClass)> = d_value_definition(insn);
+            let transfer_dependent: bool =
+                constrain_d_value_uses(&mut states, &mut classes, insn, definition.is_some())?;
+            if let Some((register, class)) = definition {
+                replace_d_register_value(
+                    &mut states,
+                    &mut classes,
+                    register,
+                    DRegisterState {
+                        origin: None,
+                        class: Some(class),
+                        transfer_dependent,
+                        crossed_block: false,
+                    },
+                );
+            }
+        }
+        if is_control_flow(insn) {
+            finalize_d_block(&mut states, &mut classes, insn.mnemonic == "ret", insn)?;
+        }
+    }
+    if let Some(last) = insns.last() {
+        finalize_d_block(&mut states, &mut classes, true, last)?;
+    }
+    Ok(classes)
 }
 
 fn parse_vector_operand(token: &str, float: bool) -> Result<(u8, VecArrangement)> {

@@ -30,7 +30,8 @@ fn run_tool(program: &Path, args: Vec<OsString>) -> CapturedOutput {
     assert_eq!(
         output.exit_code,
         Some(0),
-        "{}",
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     output
@@ -650,6 +651,412 @@ fn clang_d_register_post_index_copy_loop_lifts() {
         outcome.exit_code,
         Some(0),
         "recovered d-register copy diverged from the reference buffer"
+    );
+}
+
+#[test]
+fn scalar_d_register_post_index_load_and_store_keep_fp_state() {
+    let take: [u8; 16] = [
+        0x08, 0x00, 0x40, 0xf9, 0x00, 0x85, 0x40, 0xfc, 0x08, 0x00, 0x00, 0xf9, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let put: [u8; 16] = [
+        0x08, 0x00, 0x40, 0xf9, 0x00, 0x85, 0x00, 0xfc, 0x08, 0x00, 0x00, 0xf9, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+
+    let recovered_take: LeafRecovery =
+        recover_aarch64_function(&take, 0).expect("scalar post-indexed double load");
+    assert!(
+        recovered_take
+            .source
+            .contains("x_xmm0 = fp_d_to_bits((double)((*(double*)"),
+        "{}",
+        recovered_take.source
+    );
+    assert!(!recovered_take.source.contains("recovered_i8x8"));
+    assert!(
+        recovered_take.source.contains("r_a64_x8 = r_a64_x8 +"),
+        "{}",
+        recovered_take.source
+    );
+
+    let recovered_put: LeafRecovery =
+        recover_aarch64_function(&put, 0).expect("scalar post-indexed double store");
+    assert!(
+        recovered_put
+            .source
+            .contains("(*(uint64_t*)(uintptr_t)(r_a64_x8)) = x_xmm0"),
+        "{}",
+        recovered_put.source
+    );
+    assert!(!recovered_put.source.contains("recovered_i8x8"));
+    assert!(
+        recovered_put.source.contains("r_a64_x8 = r_a64_x8 +"),
+        "{}",
+        recovered_put.source
+    );
+
+    let Some(compiler): Option<PathBuf> =
+        find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
+    else {
+        eprintln!("skipping scalar d-register behavioral check: no host C compiler");
+        return;
+    };
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create scalar d-register scratch directory");
+    let take_path: PathBuf = scratch.path().join("scalar_take.c");
+    let put_path: PathBuf = scratch.path().join("scalar_put.c");
+    let driver_path: PathBuf = scratch.path().join("scalar_driver.c");
+    let exe_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "scalar_driver.exe"
+    } else {
+        "scalar_driver"
+    });
+    let take_source: String =
+        recovered_take
+            .source
+            .replacen("double recovered(", "double scalar_take(", 1);
+    let put_source: String =
+        recovered_put
+            .source
+            .replacen("void recovered(", "void scalar_put(", 1);
+    std::fs::write(&take_path, take_source).expect("write scalar take source");
+    std::fs::write(&put_path, put_source).expect("write scalar put source");
+    std::fs::write(
+        &driver_path,
+        "#include <stdint.h>\n#include <string.h>\n\
+         extern double scalar_take(uint64_t cursor_address);\n\
+         extern void scalar_put(double value, uint64_t cursor_address);\n\
+         int main(void) {\n\
+         \x20   const uint64_t cases[] = {\n\
+         \x20       0x0000000000000000ULL, 0x8000000000000000ULL,\n\
+         \x20       0x0000000000000001ULL, 0x7ff0000000000000ULL,\n\
+         \x20       0xfff0000000000000ULL, 0x7ff8000000001234ULL,\n\
+         \x20       0x7ff0000000001234ULL\n\
+         \x20   };\n\
+         \x20   for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {\n\
+         \x20       uint64_t source = cases[i]; uint64_t *read_cursor = &source;\n\
+         \x20       double value = scalar_take((uint64_t)(uintptr_t)&read_cursor);\n\
+         \x20       uint64_t returned = 0; memcpy(&returned, &value, sizeof(returned));\n\
+         \x20       if (returned != cases[i] || read_cursor != &source + 1) return 1;\n\
+         \x20       uint64_t destination = 0; uint64_t *write_cursor = &destination;\n\
+         \x20       scalar_put(value, (uint64_t)(uintptr_t)&write_cursor);\n\
+         \x20       if (destination != cases[i] || write_cursor != &destination + 1) return 2;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .expect("write scalar d-register driver");
+    run_tool(
+        &compiler,
+        vec![
+            "-O1".into(),
+            "-fno-strict-aliasing".into(),
+            take_path.as_os_str().to_owned(),
+            put_path.as_os_str().to_owned(),
+            driver_path.as_os_str().to_owned(),
+            "-o".into(),
+            exe_path.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let outcome: CapturedOutput =
+        run_captured(&exe_path, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn scalar d-register driver")
+            .expect("scalar d-register driver timeout");
+    assert_eq!(outcome.exit_code, Some(0));
+
+    let Some(rustup): Option<PathBuf> = find_program("rustup") else {
+        eprintln!("skipping scalar d-register Rust check: no Rust compiler");
+        return;
+    };
+    let rustc_output: CapturedOutput = run_tool(&rustup, vec!["which".into(), "rustc".into()]);
+    let rustc: PathBuf = PathBuf::from(
+        String::from_utf8_lossy(&rustc_output.stdout)
+            .trim()
+            .to_owned(),
+    );
+    assert!(rustc.is_file(), "{}", rustc.display());
+    let rust_path: PathBuf = scratch.path().join("scalar_driver.rs");
+    let rust_exe_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "scalar_rust_driver.exe"
+    } else {
+        "scalar_rust_driver"
+    });
+    let rust_take: String = recovered_take
+        .rust_source
+        .as_deref()
+        .expect("scalar take must have Rust output")
+        .replacen("pub fn recovered(", "pub fn scalar_take(", 1);
+    let rust_put: String = recovered_put
+        .rust_source
+        .as_deref()
+        .expect("scalar put must have Rust output")
+        .replacen("pub fn recovered(", "pub fn scalar_put(", 1);
+    let rust_driver: String = format!(
+        "{rust_take}\n{rust_put}\n\
+         fn main() {{\n\
+         \x20   let cases: [u64; 7] = [\n\
+         \x20       0x0000000000000000, 0x8000000000000000, 0x0000000000000001,\n\
+         \x20       0x7ff0000000000000, 0xfff0000000000000, 0x7ff8000000001234,\n\
+         \x20       0x7ff0000000001234,\n\
+         \x20   ];\n\
+         \x20   for bits in cases {{\n\
+         \x20       let mut source: u64 = bits;\n\
+         \x20       let mut read_cursor: *mut u64 = &mut source;\n\
+         \x20       let value: f64 = scalar_take((&mut read_cursor as *mut *mut u64) as u64);\n\
+         \x20       assert_eq!(value.to_bits(), bits);\n\
+         \x20       assert_eq!(read_cursor as usize, (&source as *const u64 as usize) + 8);\n\
+         \x20       let mut destination: u64 = 0;\n\
+         \x20       let mut write_cursor: *mut u64 = &mut destination;\n\
+         \x20       scalar_put(value, (&mut write_cursor as *mut *mut u64) as u64);\n\
+         \x20       assert_eq!(destination, bits);\n\
+         \x20       assert_eq!(write_cursor as usize, (&destination as *const u64 as usize) + 8);\n\
+         \x20   }}\n\
+         }}\n"
+    );
+    std::fs::write(&rust_path, rust_driver).expect("write scalar d-register Rust driver");
+    run_tool(
+        &rustc,
+        vec![
+            "-O".into(),
+            rust_path.as_os_str().to_owned(),
+            "-o".into(),
+            rust_exe_path.as_os_str().to_owned(),
+        ],
+    );
+    let rust_outcome: CapturedOutput =
+        run_captured(&rust_exe_path, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn scalar d-register Rust driver")
+            .expect("scalar d-register Rust driver timeout");
+    assert_eq!(rust_outcome.exit_code, Some(0));
+}
+
+#[test]
+fn post_indexed_d_value_consumed_by_vector_stays_vector() {
+    let bytes: [u8; 24] = [
+        0x20, 0x84, 0x40, 0xfc, 0x00, 0x84, 0xe0, 0x4e, 0x00, 0x84, 0x00, 0xfc, 0x40, 0x00, 0x00,
+        0xf9, 0x41, 0x04, 0x00, 0xf9, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("post-indexed vector low lane flow");
+
+    assert!(
+        recovered.source.contains("recovered_i64x2"),
+        "{}",
+        recovered.source
+    );
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+
+    let Some(compiler): Option<PathBuf> =
+        find_program("cc").or_else(|| find_program("gcc").or_else(|| find_program("clang")))
+    else {
+        eprintln!("skipping vector d-register behavioral check: no host C compiler");
+        return;
+    };
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create vector d-register scratch directory");
+    let recovered_path: PathBuf = scratch.path().join("vector_transfer.c");
+    let driver_path: PathBuf = scratch.path().join("vector_driver.c");
+    let exe_path: PathBuf = scratch.path().join(if cfg!(windows) {
+        "vector_driver.exe"
+    } else {
+        "vector_driver"
+    });
+    std::fs::write(&recovered_path, &recovered.source).expect("write vector d-register source");
+    std::fs::write(
+        &driver_path,
+        "#include <stdint.h>\n\
+         extern uint64_t recovered(uint64_t destination, uint64_t source, uint64_t cursors);\n\
+         struct cursor_pair { uint64_t destination; uint64_t source; };\n\
+         int main(void) {\n\
+         \x20   const uint64_t cases[] = {\n\
+         \x20       0x0000000000000000ULL, 0x0000000000000001ULL,\n\
+         \x20       0x0123456789abcdefULL, 0x7ff0000000001234ULL,\n\
+         \x20       0xffffffffffffffffULL\n\
+         \x20   };\n\
+         \x20   for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {\n\
+         \x20       uint64_t source = cases[i]; uint64_t destination = 0;\n\
+         \x20       struct cursor_pair cursors = {0, 0};\n\
+         \x20       uint64_t result = recovered((uint64_t)(uintptr_t)&destination,\n\
+         \x20           (uint64_t)(uintptr_t)&source, (uint64_t)(uintptr_t)&cursors);\n\
+         \x20       if (destination != cases[i] * 2ULL) return 1;\n\
+         \x20       if (cursors.destination != (uint64_t)(uintptr_t)(&destination + 1)) return 2;\n\
+         \x20       if (cursors.source != (uint64_t)(uintptr_t)(&source + 1)) return 3;\n\
+         \x20       if (result != cursors.destination) return 4;\n\
+         \x20   }\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .expect("write vector d-register driver");
+    run_tool(
+        &compiler,
+        vec![
+            "-O1".into(),
+            "-fno-strict-aliasing".into(),
+            recovered_path.as_os_str().to_owned(),
+            driver_path.as_os_str().to_owned(),
+            "-o".into(),
+            exe_path.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let outcome: CapturedOutput =
+        run_captured(&exe_path, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn vector d-register driver")
+            .expect("vector d-register driver timeout");
+    assert_eq!(outcome.exit_code, Some(0));
+}
+
+#[test]
+fn non_post_indexed_d_value_consumed_by_vector_stays_vector() {
+    let bytes: [u8; 16] = [
+        0x20, 0x00, 0x40, 0xfd, 0x00, 0x84, 0xe0, 0x4e, 0x00, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("non-post-indexed vector low lane flow");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+}
+
+#[test]
+fn scalar_definition_replaces_an_earlier_d_register_memory_value() {
+    let bytes: [u8; 20] = [
+        0x00, 0x00, 0x40, 0xfd, 0x00, 0x84, 0xe0, 0x4e, 0x00, 0x10, 0x6e, 0x1e, 0x00, 0x28, 0x61,
+        0x1e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+        .expect("a later scalar definition starts an independent register value");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(recovered.source.contains("x_xmm0"), "{}", recovered.source);
+}
+
+#[test]
+fn unscaled_d_register_load_consumed_by_vector_stays_vector() {
+    let bytes: [u8; 16] = [
+        0x00, 0x00, 0x40, 0xfc, 0x00, 0x84, 0xe0, 0x4e, 0x00, 0x00, 0x00, 0xfc, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("unscaled vector low lane flow");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+}
+
+#[test]
+fn paired_d_register_loads_consumed_by_vectors_stay_vector() {
+    let bytes: [u8; 16] = [
+        0x20, 0x04, 0xc1, 0x6c, 0x00, 0x84, 0xe0, 0x4e, 0x21, 0x84, 0xe1, 0x4e, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("paired vector low lane flow");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(recovered.source.contains("v1"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm1"), "{}", recovered.source);
+}
+
+#[test]
+fn paired_d_register_vector_values_store_through_vector_state() {
+    let bytes: [u8; 16] = [
+        0x00, 0x84, 0xe0, 0x4e, 0x21, 0x84, 0xe1, 0x4e, 0x00, 0x04, 0x00, 0x6d, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("paired vector low lane store");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(recovered.source.contains("v1"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm1"), "{}", recovered.source);
+}
+
+#[test]
+fn d_register_load_consumed_by_q_store_uses_one_vector_state() {
+    let bytes: [u8; 12] = [
+        0x00, 0x00, 0x40, 0xfd, 0x20, 0x00, 0x80, 0x3d, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("d load feeding q store");
+
+    assert!(recovered.source.contains("v0"), "{}", recovered.source);
+    assert!(!recovered.source.contains("x_xmm0"), "{}", recovered.source);
+}
+
+#[test]
+fn disjoint_scalar_and_vector_register_values_recover_together() {
+    let bytes: [u8; 24] = [
+        0x08, 0x00, 0x40, 0xf9, 0x00, 0x85, 0x40, 0xfc, 0x08, 0x00, 0x00, 0xf9, 0x01, 0xe4, 0x00,
+        0x6f, 0x21, 0x84, 0xe1, 0x4e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovered: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("independent scalar and vector values");
+
+    assert!(recovered.source.contains("x_xmm0"), "{}", recovered.source);
+    assert!(recovered.source.contains("v1"), "{}", recovered.source);
+    assert!(
+        recovered.source.contains("recovered_i64x2"),
+        "{}",
+        recovered.source
+    );
+}
+
+#[test]
+fn one_d_value_used_as_scalar_and_vector_is_refused() {
+    let bytes: [u8; 16] = [
+        0x20, 0x84, 0x40, 0xfc, 0x00, 0x84, 0xe0, 0x4e, 0x01, 0x28, 0x60, 0x1e, 0xc0, 0x03, 0x5f,
+        0xd6,
+    ];
+    let error: Error = recover_aarch64_function(&bytes, 0)
+        .expect_err("one value cannot cross scalar and vector register states");
+
+    assert!(
+        error
+            .to_string()
+            .contains("one d-register value is consumed as both scalar and vector data"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn untyped_d_value_crossing_a_basic_block_is_refused() {
+    let bytes: [u8; 20] = [
+        0x20, 0x84, 0x40, 0xfc, 0x02, 0x00, 0x00, 0x14, 0x1f, 0x20, 0x03, 0xd5, 0x00, 0x84, 0xe0,
+        0x4e, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let error: Error = recover_aarch64_function(&bytes, 0)
+        .expect_err("cross-block d-register provenance must not be guessed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("an untyped d-register value crosses a basic-block boundary"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn classified_d_transfer_value_crossing_a_basic_block_is_refused() {
+    let bytes: [u8; 24] = [
+        0x00, 0x00, 0x40, 0xfd, 0x00, 0x84, 0xe0, 0x4e, 0x02, 0x00, 0x00, 0x14, 0x1f, 0x20, 0x03,
+        0xd5, 0x20, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let error: Error = recover_aarch64_function(&bytes, 0)
+        .expect_err("classified d-register transfer provenance must not cross blocks");
+
+    assert!(
+        error
+            .to_string()
+            .contains("a d-register transfer value crosses a basic-block boundary"),
+        "{error:?}"
     );
 }
 
