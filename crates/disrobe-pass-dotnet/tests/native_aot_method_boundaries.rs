@@ -164,6 +164,15 @@ fn auto_emits_the_compiler_method_boundary_with_name_and_signature() -> Result<(
         compiler_method_rva("feat_017_nativeaot_manifest_probe_ManifestProbe__Add")?;
     let expected_range: (u32, u32) = evidence_range()?;
     assert_eq!(expected_range, (expected_start, 0x0008_83b4));
+    let pe: PeImage = parse(IMAGE)
+        .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
+    let code_offset: usize = pe
+        .rva_to_offset(expected_start)
+        .ok_or("compiler method body is not file backed")?;
+    assert_eq!(
+        IMAGE.get(code_offset..code_offset + 4),
+        Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
+    );
 
     let input: Artifact = Artifact::new(Rung::Raw, IMAGE.to_vec(), [0u8; 32]);
     let output: Artifact = DOTNET_PASS
@@ -183,6 +192,55 @@ fn auto_emits_the_compiler_method_boundary_with_name_and_signature() -> Result<(
     assert_eq!(method["entrypoint_rva"], expected_start);
     assert_eq!(method["code_range"]["start_rva"], expected_range.0);
     assert_eq!(method["code_range"]["end_rva"], expected_range.1);
+    assert_eq!(method["body"]["status"], "recovered");
+    let pseudo_c: &str = method["body"]["pseudo_c"]
+        .as_str()
+        .ok_or("ManifestProbe.Add pseudo-C body is absent")?;
+    assert_eq!(
+        pseudo_c,
+        "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn unsupported_native_body_is_a_per_method_auto_refusal() -> Result<(), &'static str> {
+    let start_rva: u32 =
+        compiler_method_rva("feat_017_nativeaot_manifest_probe_ManifestProbe__Add")?;
+    let pe: PeImage = parse(IMAGE)
+        .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
+    let code_offset: usize = pe
+        .rva_to_offset(start_rva)
+        .ok_or("compiler method body is not file backed")?;
+    let mut unsupported: Vec<u8> = IMAGE.to_vec();
+    *unsupported
+        .get_mut(code_offset)
+        .ok_or("compiler method body is truncated")? = 0xcc;
+
+    let input: Artifact = Artifact::new(Rung::Raw, unsupported, [0u8; 32]);
+    let output: Artifact = DOTNET_PASS
+        .run(&input)
+        .map_err(|_: disrobe_core::error::CoreError| {
+            "NativeAOT auto route erased valid metadata for an unsupported body"
+        })?;
+    let document: serde_json::Value = serde_json::from_slice(&output.envelope)
+        .map_err(|_: serde_json::Error| "NativeAOT artifact is not JSON")?;
+    let method: &serde_json::Value = document["methods"]
+        .as_array()
+        .and_then(|methods: &Vec<serde_json::Value>| {
+            methods.iter().find(|method: &&serde_json::Value| {
+                method["declaring_type"] == "ManifestProbe" && method["name"] == "Add"
+            })
+        })
+        .ok_or("compiler-emitted ManifestProbe.Add metadata is absent")?;
+    assert_eq!(method["entrypoint_rva"], start_rva);
+    assert_eq!(method["code_range"]["start_rva"], start_rva);
+    assert_eq!(method["code_range"]["end_rva"], evidence_range()?.1);
+    assert_eq!(method["body"]["status"], "refused");
+    let reason: &str = method["body"]["reason"]
+        .as_str()
+        .ok_or("per-method body refusal reason is absent")?;
+    assert!(reason.contains("DR-DOTNET-0039"), "{reason}");
     Ok(())
 }
 

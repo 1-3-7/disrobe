@@ -141,6 +141,9 @@ pub enum Error {
         "DR-DOTNET-0038: invalid ahead-of-time method boundary at exception-directory offset 0x{offset:X}: {reason}"
     )]
     InvalidAotMethodBoundary { offset: u32, reason: &'static str },
+
+    #[error("DR-DOTNET-0039: invalid ahead-of-time method body at RVA 0x{offset:X}: {reason}")]
+    InvalidAotMethodBody { offset: u32, reason: &'static str },
 }
 
 impl From<ByteReadError> for Error {

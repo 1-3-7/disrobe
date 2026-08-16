@@ -6,6 +6,7 @@ use object::read::File as ObjFile;
 use serde::{Deserialize, Serialize};
 
 use super::invoke_map::attach_invoke_map_entrypoints;
+use super::method_bodies::attach_method_bodies;
 use super::method_boundaries::attach_method_boundaries;
 use super::{
     AotSection, ReadyToRunHeader, container_address_base, decode_metadata_unsigned,
@@ -55,7 +56,8 @@ impl AotMetadataAttribution {
         let section_offset: Option<u32> = match &error {
             crate::error::Error::InvalidAotMetadata { offset, .. }
             | crate::error::Error::InvalidAotInvokeMap { offset, .. }
-            | crate::error::Error::InvalidAotMethodBoundary { offset, .. } => Some(*offset),
+            | crate::error::Error::InvalidAotMethodBoundary { offset, .. }
+            | crate::error::Error::InvalidAotMethodBody { offset, .. } => Some(*offset),
             _ => None,
         };
         let reason: String = error.to_string();
@@ -113,12 +115,21 @@ pub struct AotMethod {
     pub entrypoint_rva: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_range: Option<AotCodeRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<AotMethodBody>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AotCodeRange {
     pub start_rva: u32,
     pub end_rva: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AotMethodBody {
+    Recovered { pseudo_c: String },
+    Refused { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1954,6 +1965,7 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
             signature: Some(public_method_signature(signature)?),
             entrypoint_rva: None,
             code_range: None,
+            body: None,
         });
     }
     Ok((attributed_types, attributed_methods))
@@ -2046,7 +2058,9 @@ pub fn recover_metadata_attribution(
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
     let (types, mut methods): (Vec<AotType>, Vec<AotMethod>) = parse_metadata_records(bytes)?;
     attach_invoke_map_entrypoints(image, header, &mut methods)?;
-    attach_method_boundaries(image, &mut methods)?;
+    if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
+        attach_method_bodies(image, &pe, &mut methods)?;
+    }
     Ok(AotMetadataAttribution {
         status: AotMetadataStatus::Recovered,
         types,

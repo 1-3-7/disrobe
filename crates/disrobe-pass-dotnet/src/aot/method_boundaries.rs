@@ -140,16 +140,16 @@ fn read_ranges(image: &[u8], pe: &PeImage) -> crate::error::Result<Option<Vec<Ao
 pub(super) fn attach_method_boundaries(
     image: &[u8],
     methods: &mut [AotMethod],
-) -> crate::error::Result<()> {
+) -> crate::error::Result<Option<PeImage>> {
     if !image.starts_with(b"MZ") {
-        return Ok(());
+        return Ok(None);
     }
     let pe: PeImage = crate::pe::parse(image)?;
     if pe.bitness != PeBitness::Pe32Plus || pe.machine != AMD64_MACHINE {
-        return Ok(());
+        return Ok(None);
     }
     let Some(ranges): Option<Vec<AotCodeRange>> = read_ranges(image, &pe)? else {
-        return Ok(());
+        return Ok(Some(pe));
     };
     let mut assignments: Vec<(usize, AotCodeRange)> = Vec::new();
     assignments
@@ -176,5 +176,5 @@ pub(super) fn attach_method_boundaries(
             .ok_or_else(|| invalid(0, "method-boundary method index is absent"))?
             .code_range = Some(range);
     }
-    Ok(())
+    Ok(Some(pe))
 }
