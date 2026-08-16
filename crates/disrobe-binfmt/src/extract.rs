@@ -4020,7 +4020,7 @@ fn extract_arc(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
 
 fn extract_lzh(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
     let archive: crate::containers::LzhArchive =
-        crate::containers::parse_lzh(bytes, quota.max_total_uncompressed)?;
+        crate::containers::lzh::parse_lzh_with_quota(bytes, quota)?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
@@ -4036,8 +4036,8 @@ fn extract_lzh(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 continue;
             }
         };
-        let size: u64 = file.data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, size) {
+        let size: u64 = u64::try_from(file.data.len()).map_or(u64::MAX, |value: u64| value);
+        if let Err(e) = guard.admit_entry(&safe_name, size, file.compressed_size) {
             violations.push(format!("lzh-quota `{safe_name}`: {e}"));
             continue;
         }
@@ -4048,9 +4048,11 @@ fn extract_lzh(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
             name: safe_name,
             disk_path: Some(disk_path),
             uncompressed_size: size,
-            compressed_size: size,
+            compressed_size: file.compressed_size,
             compression: EntryCompression::Other,
-            is_executable: false,
+            is_executable: file
+                .unix_permissions
+                .is_some_and(|permissions: u16| permissions & 0o111 != 0),
         });
     }
     Ok(ExtractionResult {

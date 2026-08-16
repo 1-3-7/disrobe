@@ -120,6 +120,7 @@ const TAG_SEVENZIP: &str = "7z";
 const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
 const TAG_RPM: &str = "rpm";
+const TAG_LZH: &str = "lzh";
 const TAG_INNOSETUP: &str = "inno-setup";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
@@ -383,10 +384,65 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
         TAG_RPM => extract_rpm_members(bytes),
+        TAG_LZH => extract_lzh_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_lzh_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let archive: crate::containers::LzhArchive = crate::containers::lzh::parse_lzh_with_quota(
+        bytes,
+        crate::quota::ExtractionQuota {
+            max_entries: MAX_MEMBER_COUNT,
+            max_total_uncompressed: MAX_MEMBER_BYTES,
+            max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+            max_per_entry_ratio: 1_000,
+            max_aggregate_ratio: 1_000,
+        },
+    )
+    .map_err(|error: crate::error::Error| fail(format!("lzh payload: {error}")))?;
+    if archive.files.len() > MAX_MEMBER_COUNT {
+        return Err(fail(format!(
+            "lzh member count {} exceeds cap {MAX_MEMBER_COUNT}",
+            archive.files.len()
+        )));
+    }
+    if !archive.notes.is_empty() {
+        return Err(fail(format!(
+            "lzh payload contains {} refusal(s): {}",
+            archive.notes.len(),
+            archive.notes.join("; ")
+        )));
+    }
+    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut total_output: u64 = 0;
+    for file in archive.files {
+        if file.is_directory {
+            continue;
+        }
+        if !file.decoder_supported {
+            return Err(fail(format!(
+                "lzh member `{}` uses unsupported method {}",
+                file.path, file.method
+            )));
+        }
+        let name: String = crate::quota::sanitize_entry_path(&file.path)
+            .map_err(|error: crate::error::Error| fail(format!("lzh member path: {error}")))?;
+        let member_size: u64 = u64::try_from(file.data.len())
+            .map_err(|_| fail("lzh member size exceeds u64".to_owned()))?;
+        total_output = total_output
+            .checked_add(member_size)
+            .ok_or_else(|| fail("lzh aggregate output size overflow".to_owned()))?;
+        if total_output > MAX_MEMBER_BYTES {
+            return Err(fail(format!(
+                "lzh aggregate output {total_output} exceeds cap {MAX_MEMBER_BYTES}"
+            )));
+        }
+        members.push((name, file.data));
+    }
+    Ok(members)
 }
 
 fn extract_innosetup_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -718,6 +774,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
         return Some(TAG_RPM);
     }
+    if crate::containers::detect_lzh(bytes) {
+        return Some(TAG_LZH);
+    }
     if crate::containers::detect_innosetup(bytes).is_some() {
         return Some(TAG_INNOSETUP);
     }
@@ -740,6 +799,7 @@ mod tests {
 
     const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
+    const REAL_LZH_LEVEL3: &[u8] = include_bytes!("../tests/fixtures/lzh/level3/h3_subdir.lzh");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
@@ -749,6 +809,16 @@ mod tests {
             parent_hint: None,
             depth: 0,
         }
+    }
+
+    #[test]
+    fn level3_lzh_reaches_the_container_chain() {
+        assert_eq!(sniff_container_tag(REAL_LZH_LEVEL3), Some(TAG_LZH));
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_LZH, REAL_LZH_LEVEL3).expect("extract level-3 LZH members");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, "subdir/subdir2/HELLO.TXT");
+        assert_eq!(members[0].1, b"hello world!\r\n");
     }
 
     #[test]

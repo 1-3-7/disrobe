@@ -1827,6 +1827,7 @@ dependencies = [
  "disrobe-bytes",
  "disrobe-core",
  "disrobe-testkit",
+ "encoding_rs",
  "flate2",
  "liblzma",
  "lz4_flex",

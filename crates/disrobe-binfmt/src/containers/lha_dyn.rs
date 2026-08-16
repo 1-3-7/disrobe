@@ -24,6 +24,7 @@ struct BitReader<'a> {
     bitbuf: u16,
     subbitbuf: u8,
     bitcount: u32,
+    consumed_bits: u128,
 }
 
 impl<'a> BitReader<'a> {
@@ -34,12 +35,18 @@ impl<'a> BitReader<'a> {
             bitbuf: 0,
             subbitbuf: 0,
             bitcount: 0,
+            consumed_bits: 0,
         };
-        reader.fill(16);
+        reader.shift(16);
         reader
     }
 
-    fn fill(&mut self, mut n: u32) {
+    fn fill(&mut self, n: u32) {
+        self.consumed_bits += u128::from(n);
+        self.shift(n);
+    }
+
+    fn shift(&mut self, mut n: u32) {
         while n > self.bitcount {
             n -= self.bitcount;
             self.bitbuf = (self.bitbuf << self.bitcount)
@@ -66,6 +73,26 @@ impl<'a> BitReader<'a> {
         let value: u16 = self.bitbuf >> (16 - n);
         self.fill(n);
         value
+    }
+
+    const fn overread(&self) -> bool {
+        self.consumed_bits > (self.src.len() as u128) * 8
+    }
+
+    fn finish(&self) -> Result<()> {
+        if self.overread() {
+            return Err(Error::Decompression(
+                "lha: compressed body ended before the decoded stream".to_owned(),
+            ));
+        }
+        let consumed_bytes: u128 = self.consumed_bits.div_ceil(8);
+        if consumed_bytes != self.src.len() as u128 {
+            return Err(Error::Decompression(format!(
+                "lha: compressed body contains {} trailing byte(s)",
+                (self.src.len() as u128).saturating_sub(consumed_bytes)
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -548,10 +575,19 @@ fn make_table(
 
 pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u8>> {
     let max_output: u64 = u64::try_from(crate::quota::MAX_ENTRY_PREALLOC).map_err(
-        |_e: std::num::TryFromIntError| {
+        |_error: std::num::TryFromIntError| {
             Error::Decompression("lha: output limit conversion failed".to_owned())
         },
     )?;
+    decode_bounded(method, src, original_size, max_output)
+}
+
+pub fn decode_bounded(
+    method: DynMethod,
+    src: &[u8],
+    original_size: u64,
+    max_output: u64,
+) -> Result<Vec<u8>> {
     if original_size > max_output {
         return Err(Error::Decompression(format!(
             "lha: declared output exceeds {max_output}-byte limit"
@@ -561,7 +597,7 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
         .map_err(|_e: std::num::TryFromIntError| Error::Decompression("lha: size".to_owned()))?;
     let mut reader: BitReader<'_> = BitReader::new(src);
     let mut text: Vec<u8> = vec![b' '; DICSIZ];
-    let mut out: Vec<u8> = Vec::with_capacity(origsize);
+    let mut out: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(original_size));
     let dicsiz1: usize = DICSIZ - 1;
     let adjust: usize = 256 - THRESHOLD;
     let mut loc: usize = 0;
@@ -574,6 +610,11 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
             tree.start_p();
             while (decode_count as usize) < origsize {
                 let code: usize = tree.decode_c(&mut reader);
+                if reader.overread() {
+                    return Err(Error::Decompression(
+                        "lha: compressed body ended before the decoded stream".to_owned(),
+                    ));
+                }
                 if code < 256 {
                     text[loc] = code as u8;
                     out.push(code as u8);
@@ -582,6 +623,11 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
                 } else {
                     let len: usize = code - adjust;
                     let off: usize = tree.decode_p_dyn(&mut reader, decode_count) + 1;
+                    if reader.overread() {
+                        return Err(Error::Decompression(
+                            "lha: compressed body ended before the decoded stream".to_owned(),
+                        ));
+                    }
                     let mut matchpos: usize = (loc.wrapping_sub(off)) & dicsiz1;
                     decode_count += len as u64;
                     for _ in 0..len {
@@ -601,6 +647,11 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
             let mut tree: Box<StaticTree> = Box::new(StaticTree::new());
             while (decode_count as usize) < origsize {
                 let code: usize = decode_c_st0(&mut tree, &mut reader)?;
+                if reader.overread() {
+                    return Err(Error::Decompression(
+                        "lha: compressed body ended before the decoded stream".to_owned(),
+                    ));
+                }
                 if code < 256 {
                     text[loc] = code as u8;
                     out.push(code as u8);
@@ -609,6 +660,11 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
                 } else {
                     let len: usize = code - adjust;
                     let off: usize = decode_p_st0(&tree, &mut reader) + 1;
+                    if reader.overread() {
+                        return Err(Error::Decompression(
+                            "lha: compressed body ended before the decoded stream".to_owned(),
+                        ));
+                    }
                     let mut matchpos: usize = (loc.wrapping_sub(off)) & dicsiz1;
                     decode_count += len as u64;
                     for _ in 0..len {
@@ -633,6 +689,7 @@ pub fn decode(method: DynMethod, src: &[u8], original_size: u64) -> Result<Vec<u
             out.len()
         )));
     }
+    reader.finish()?;
     Ok(out)
 }
 
@@ -765,10 +822,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_declared_output_above_preallocation_bound() {
+    fn rejects_declared_output_above_the_caller_limit() {
         let declared: u64 = u64::MAX;
         let outcome: std::thread::Result<Result<Vec<u8>>> =
-            std::panic::catch_unwind(|| decode(DynMethod::Lh3, &[0u8; 1], declared));
+            std::panic::catch_unwind(|| decode_bounded(DynMethod::Lh3, &[0u8; 1], declared, 1));
         let result: Result<Vec<u8>> = outcome.expect("oversized declaration must not panic");
         assert!(result.is_err());
     }
@@ -838,6 +895,35 @@ mod tests {
         let d2: Vec<u8> = decode(DynMethod::Lh2, b2, s2).expect("lh2");
         let d3: Vec<u8> = decode(DynMethod::Lh3, b3, s3).expect("lh3");
         assert_eq!(d2, d3, "lh2 and lh3 archive the same source file");
+    }
+
+    #[test]
+    fn dynamic_methods_reject_truncated_and_trailing_compressed_bodies() {
+        let fixtures: [(DynMethod, &[u8]); 2] = [
+            (
+                DynMethod::Lh2,
+                include_bytes!("../../tests/fixtures/lzh/lh2.lzh"),
+            ),
+            (
+                DynMethod::Lh3,
+                include_bytes!("../../tests/fixtures/lzh/lh3.lzh"),
+            ),
+        ];
+        for (method, archive) in fixtures {
+            let (body, original_size, _): (&[u8], u64, u16) = level2_body(archive);
+            let truncated: &[u8] = &body[..body.len() - 1];
+            assert!(
+                decode(method, truncated, original_size).is_err(),
+                "{method:?} accepted a truncated compressed body"
+            );
+
+            let mut trailing: Vec<u8> = body.to_vec();
+            trailing.push(0);
+            assert!(
+                decode(method, &trailing, original_size).is_err(),
+                "{method:?} accepted a trailing compressed byte"
+            );
+        }
     }
 
     #[test]
