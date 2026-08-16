@@ -4,6 +4,7 @@ use disrobe_cfg::{Flow, FlowGraph};
 use serde::Serialize;
 
 use crate::cfg::{BlockKind, NirBlock, basic_blocks};
+use crate::effects::{EffectContext, EffectRow, HardEffect, HardEffects, derive_effect_row};
 use crate::reducible::{
     HirDecline, SplitBudget, SplitRefusal, StructureFailure, split_irreducible,
 };
@@ -18,6 +19,13 @@ const MAX_SHORT_CIRCUIT_TESTS: usize = 64;
 const MAX_SHORT_CIRCUIT_WORK: usize = 65_536;
 
 const MAX_SHORT_CIRCUIT_CLONE_BYTES: usize = 1024 * 1024;
+
+const CONDITION_FOLDABLE_EFFECTS: HardEffects = HardEffects::empty()
+    .with(HardEffect::MemoryRead)
+    .with(HardEffect::StackRead)
+    .with(HardEffect::RegisterRead)
+    .with(HardEffect::RegisterWrite)
+    .with(HardEffect::FlagWrite);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -891,7 +899,7 @@ fn short_circuit_candidate(
         }
         let block: &NirBlock = index.block(start)?;
         if block.kind != BlockKind::Conditional
-            || !condition_block_is_foldable(block, lang, start != root.start)
+            || !condition_block_is_foldable(block, start != root.start)
         {
             return None;
         }
@@ -908,7 +916,7 @@ fn short_circuit_candidate(
             let successor_block: &NirBlock = index.block(resolved)?;
             outcomes.insert(resolved);
             if successor_block.kind == BlockKind::Conditional
-                && condition_block_is_foldable(successor_block, lang, true)
+                && condition_block_is_foldable(successor_block, true)
                 && resolved > root.start
                 && !index.is_loop_header(resolved)
             {
@@ -1035,7 +1043,7 @@ fn condition_region_is_private(
         .is_some_and(|follow: u64| tests.contains(&follow))
 }
 
-fn condition_block_is_foldable(block: &NirBlock, lang: SourceLang, guarded: bool) -> bool {
+fn condition_block_is_foldable(block: &NirBlock, guarded: bool) -> bool {
     let Some((last, preceding)): Option<(&NirInstr, &[NirInstr])> = block.instructions.split_last()
     else {
         return false;
@@ -1046,49 +1054,15 @@ fn condition_block_is_foldable(block: &NirBlock, lang: SourceLang, guarded: bool
     {
         return false;
     }
-    !guarded
-        || preceding
-            .iter()
-            .all(|instruction: &NirInstr| condition_instruction_is_foldable(instruction, lang))
+    !guarded || preceding.iter().all(condition_instruction_is_foldable)
 }
 
-fn condition_instruction_is_foldable(instruction: &NirInstr, lang: SourceLang) -> bool {
-    if let NirOp::CallOther { effect } = &instruction.op
-        && lang == SourceLang::NativeArm
-        && aarch64_unmatched_is_read_only(&effect.name)
-    {
-        return true;
-    }
-    if instruction.writes_memory {
-        return false;
-    }
-    match &instruction.op {
-        NirOp::CallOther { effect } => !effect.writes_memory && !effect.unknown_registers,
-        NirOp::Nop
-        | NirOp::Const
-        | NirOp::BinOp { .. }
-        | NirOp::Load
-        | NirOp::Phi
-        | NirOp::RawLoad { .. }
-        | NirOp::Subpiece { .. }
-        | NirOp::Deposit { .. }
-        | NirOp::Copy { .. }
-        | NirOp::Value { .. }
-        | NirOp::Piece { .. } => true,
-        _ => false,
-    }
-}
-
-fn aarch64_unmatched_is_read_only(name: &str) -> bool {
-    let Some(encoded): Option<&str> = name.strip_prefix("decode_unmatched_0x") else {
-        return false;
-    };
-    let Ok(raw): Result<u32, _> = u32::from_str_radix(encoded, 16) else {
-        return false;
-    };
-    let unsigned_immediate_load: bool = raw & 0x3B00_0000 == 0x3900_0000 && raw & 0x0040_0000 != 0;
-    let floating_compare: bool = raw & 0xFF20_FC1F == 0x1E20_2000;
-    unsigned_immediate_load || floating_compare
+fn condition_instruction_is_foldable(instruction: &NirInstr) -> bool {
+    let context: EffectContext = EffectContext::new();
+    let row: EffectRow = derive_effect_row(instruction, &context);
+    row.effects()
+        .difference(CONDITION_FOLDABLE_EFFECTS)
+        .is_empty()
 }
 
 fn condition_block_clone_bytes(block: &NirBlock) -> Option<usize> {
@@ -2126,7 +2100,6 @@ mod tests {
         operation.writes_memory = true;
         assert!(!condition_block_is_foldable(
             &guarded_condition_block(operation),
-            SourceLang::NativeX86,
             true,
         ));
     }
@@ -2148,40 +2121,18 @@ mod tests {
             let operation: NirInstr = instr(0, NirOp::CallOther { effect }, "callother", &[]);
             assert!(!condition_block_is_foldable(
                 &guarded_condition_block(operation),
-                SourceLang::NativeArm,
                 true,
             ));
         }
     }
 
     #[test]
-    fn guarded_aarch64_unmatched_loads_and_compares_are_read_only_but_stores_are_not() {
-        for name in ["decode_unmatched_0xbd401fe0", "decode_unmatched_0x1e212000"] {
-            let operation: NirInstr = instr(
-                0,
-                NirOp::CallOther {
-                    effect: CallOtherEffect {
-                        name: name.to_owned(),
-                        reads_memory: true,
-                        writes_memory: true,
-                        unknown_registers: true,
-                        ..CallOtherEffect::default()
-                    },
-                },
-                "callother",
-                &[],
-            );
-            assert!(condition_block_is_foldable(
-                &guarded_condition_block(operation),
-                SourceLang::NativeArm,
-                true,
-            ));
-        }
-        let store: NirInstr = instr(
+    fn guarded_aarch64_unmatched_name_does_not_override_unknown_effect_facts() {
+        let mut operation: NirInstr = instr(
             0,
             NirOp::CallOther {
                 effect: CallOtherEffect {
-                    name: "decode_unmatched_0xbd001fe0".to_owned(),
+                    name: "decode_unmatched_0xbd401fe0".to_owned(),
                     reads_memory: true,
                     writes_memory: true,
                     unknown_registers: true,
@@ -2191,11 +2142,83 @@ mod tests {
             "callother",
             &[],
         );
+        operation.source = SourceRef::new(SourceLang::NativeArm, 0);
+        let row: crate::EffectRow =
+            crate::derive_effect_row(&operation, &crate::EffectContext::new());
+        assert!(row.contains(crate::HardEffect::MemoryWrite));
+        assert!(row.contains(crate::HardEffect::Unmodelled));
         assert!(!condition_block_is_foldable(
-            &guarded_condition_block(store),
-            SourceLang::NativeArm,
+            &guarded_condition_block(operation),
             true,
         ));
+    }
+
+    #[test]
+    fn structurer_keeps_unknown_named_effect_out_of_a_compound_condition() {
+        let arm_source: SourceRef = SourceRef::new(SourceLang::NativeArm, 0);
+        let mut effect: NirInstr = instr(
+            2,
+            NirOp::CallOther {
+                effect: CallOtherEffect {
+                    name: "decode_unmatched_0xbd401fe0".to_owned(),
+                    reads_memory: true,
+                    writes_memory: true,
+                    unknown_registers: true,
+                    ..CallOtherEffect::default()
+                },
+            },
+            "callother",
+            &[],
+        );
+        effect.source = arm_source.clone();
+        let mut function: NirFunction = function(
+            vec![
+                instr(0, NirOp::CondBranch { target: Some(7) }, "b.ne", &["first"]),
+                effect,
+                instr(
+                    3,
+                    NirOp::CondBranch { target: Some(7) },
+                    "b.ne",
+                    &["second"],
+                ),
+                instr(5, NirOp::Branch { target: Some(9) }, "b", &["9"]),
+                instr(7, NirOp::Const, "mov", &["result", "1"]),
+                instr(9, NirOp::Return, "ret", &["result"]),
+            ],
+            10,
+        );
+        function.source = arm_source;
+        for instruction in &mut function.instructions {
+            instruction.source = SourceRef::new(SourceLang::NativeArm, instruction.address);
+        }
+        let hir: HirFunction = structurize_function(&function);
+        assert_eq!(if_depth(&hir.body), 2, "{hir:?}");
+        let callother_count: usize = hir
+            .to_nir_function()
+            .instructions
+            .iter()
+            .filter(|instruction: &&NirInstr| matches!(instruction.op, NirOp::CallOther { .. }))
+            .count();
+        assert_eq!(callother_count, 1, "{hir:?}");
+    }
+
+    fn if_depth(statement: &HirStmt) -> usize {
+        match statement {
+            HirStmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => 1_usize.saturating_add(if_depth(then_branch).max(if_depth(else_branch))),
+            HirStmt::Seq { body } => body.iter().map(if_depth).max().unwrap_or_default(),
+            HirStmt::Loop { body, .. } => if_depth(body),
+            HirStmt::Dispatch { .. }
+            | HirStmt::GotoGraph { .. }
+            | HirStmt::Break { .. }
+            | HirStmt::Continue { .. }
+            | HirStmt::Return { .. }
+            | HirStmt::Leaf { .. }
+            | HirStmt::Empty => 0,
+        }
     }
 
     #[test]

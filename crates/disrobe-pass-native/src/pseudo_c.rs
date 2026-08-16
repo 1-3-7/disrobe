@@ -1750,6 +1750,25 @@ pub fn recover_leaf_function_in_object(
     abi: Abi,
     calls: &[ResolvedCall],
 ) -> Result<LeafRecovery> {
+    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    recover_leaf_function_in_object_with_tail_proofs(
+        object,
+        machine_code,
+        base,
+        abi,
+        calls,
+        &proven_integer64_tail_targets,
+    )
+}
+
+fn recover_leaf_function_in_object_with_tail_proofs(
+    object: &[u8],
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    calls: &[ResolvedCall],
+    proven_integer64_tail_targets: &BTreeSet<u64>,
+) -> Result<LeafRecovery> {
     require_x86_abi(abi)?;
     if let Ok(recovery) = crate::simd_devirt::recover_vectorized_loop(machine_code, base, abi) {
         return Ok(recovery);
@@ -1767,13 +1786,14 @@ pub fn recover_leaf_function_in_object(
             }
             _ => RipRelativeLeaPolicy::Allow,
         };
-    let straight_err: Error = match recover_leaf_function_calls_impl(
+    let straight_err: Error = match recover_leaf_function_calls_with_tail_proofs(
         machine_code,
         base,
         abi,
         &[],
         &packed_consts,
         calls,
+        proven_integer64_tail_targets,
         rip_relative_lea_policy,
     ) {
         Ok(recovery) => return Ok(recovery),
@@ -2156,14 +2176,108 @@ pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -
     }
 }
 
+fn straight_line_integer64_return_is_proven(
+    object: &[u8],
+    function: &ProgramFunction,
+    abi: Abi,
+) -> bool {
+    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    let leaf_result: Result<LeafItems> = build_leaf_items(
+        &function.code,
+        function.address,
+        abi,
+        &[],
+        &[],
+        &proven_integer64_tail_targets,
+        RipRelativeLeaPolicy::Allow,
+    );
+    let Ok(leaf) = leaf_result else {
+        return false;
+    };
+    let mut return_count: usize = 0;
+    let mut explicit_return_width: Option<Width> = None;
+    for item in &leaf.items {
+        match &item.kind {
+            ItemKind::Stmt(stmt)
+                if stmt_writes_memory(stmt) || matches!(stmt, Stmt::Call { .. }) =>
+            {
+                return false;
+            }
+            ItemKind::Branch { .. } | ItemKind::Jmp { .. } | ItemKind::Switch { .. } => {
+                return false;
+            }
+            ItemKind::Stmt(stmt) => {
+                if let Some(width) = explicit_integer_return_width(stmt) {
+                    explicit_return_width = Some(width);
+                }
+            }
+            ItemKind::Ret => return_count += 1,
+        }
+    }
+    if return_count != 1 || explicit_return_width != Some(Width::W64) {
+        return false;
+    }
+    let recovery_result: Result<LeafRecovery> =
+        recover_leaf_function_in_object(object, &function.code, function.address, abi, &[]);
+    let Ok(recovery) = recovery_result else {
+        return false;
+    };
+    recovery.return_width_bits == 64 && recovery.returns_fp.is_none() && recovery.sret.is_none()
+}
+
+fn proven_program_integer64_tail_targets(
+    object: &[u8],
+    function: &ProgramFunction,
+    by_addr: &BTreeMap<u64, &ProgramFunction>,
+    abi: Abi,
+) -> BTreeSet<u64> {
+    let mut proven: BTreeSet<u64> = BTreeSet::new();
+    let disassembly: Result<Vec<DisasmInsn>> =
+        disassemble(Arch::X86_64, function.address, &function.code);
+    let Ok(insns) = disassembly else {
+        return proven;
+    };
+    for insn in &insns {
+        if insn.mnemonic != "jmp" {
+            continue;
+        }
+        let Some(target): Option<u64> = parse_branch_target(&insn.operands) else {
+            continue;
+        };
+        let sibling_address: u64 = if by_addr.contains_key(&target) {
+            target
+        } else if let Some(relocated) = resolve_relocated_call_target(object, function, target) {
+            relocated
+        } else {
+            target
+        };
+        let Some(callee): Option<&&ProgramFunction> = by_addr.get(&sibling_address) else {
+            continue;
+        };
+        if straight_line_integer64_return_is_proven(object, callee, abi) {
+            proven.insert(target);
+        }
+    }
+    proven
+}
+
 fn recover_program_function(
     object: &[u8],
     f: &ProgramFunction,
     by_addr: &BTreeMap<u64, &ProgramFunction>,
     abi: Abi,
 ) -> core::result::Result<RecoveredFunction, String> {
-    let probe: LeafRecovery = recover_leaf_function_in_object(object, &f.code, f.address, abi, &[])
-        .map_err(|e: Error| e.to_string())?;
+    let proven_integer64_tail_targets: BTreeSet<u64> =
+        proven_program_integer64_tail_targets(object, f, by_addr, abi);
+    let probe: LeafRecovery = recover_leaf_function_in_object_with_tail_proofs(
+        object,
+        &f.code,
+        f.address,
+        abi,
+        &[],
+        &proven_integer64_tail_targets,
+    )
+    .map_err(|e: Error| e.to_string())?;
     let mut resolved: Vec<ResolvedCall> = Vec::with_capacity(probe.call_targets.len());
     let mut seen: IndexSet<u64> = IndexSet::with_capacity(probe.call_targets.len());
     for target in probe.call_targets {
@@ -2195,9 +2309,15 @@ fn recover_program_function(
             signature,
         });
     }
-    let rec: LeafRecovery =
-        recover_leaf_function_in_object(object, &f.code, f.address, abi, &resolved)
-            .map_err(|e: Error| e.to_string())?;
+    let rec: LeafRecovery = recover_leaf_function_in_object_with_tail_proofs(
+        object,
+        &f.code,
+        f.address,
+        abi,
+        &resolved,
+        &proven_integer64_tail_targets,
+    )
+    .map_err(|e: Error| e.to_string())?;
     let resolved_names: Vec<String> = resolved
         .iter()
         .filter_map(|c: &ResolvedCall| c.name.clone())
@@ -2320,12 +2440,79 @@ enum RipRelativeLeaPolicy {
     Refuse,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectJumpExit {
+    Internal,
+    TailCall { synthetic_return: u64 },
+}
+
+fn classify_direct_jump_exit(
+    insns: &[DisasmInsn],
+    instruction_index: usize,
+    items: &[Item],
+    proven_integer64_tail_targets: &BTreeSet<u64>,
+    base: u64,
+    function_end: u64,
+    target: u64,
+) -> Result<DirectJumpExit> {
+    let insn: &DisasmInsn = insns.get(instruction_index).ok_or_else(|| {
+        Error::LlvmIr("direct jump index is outside the decoded instruction stream".to_owned())
+    })?;
+    let instruction_len: u64 =
+        u64::try_from(insn.bytes.len()).map_err(|_: std::num::TryFromIntError| {
+            Error::LlvmIr("instruction length exceeds the address space".to_owned())
+        })?;
+    let instruction_end: u64 = insn
+        .address
+        .checked_add(instruction_len)
+        .ok_or_else(|| Error::LlvmIr("instruction range overflows the address space".to_owned()))?;
+    let suffix_is_padding: bool =
+        insns
+            .get(instruction_index + 1..)
+            .is_some_and(|suffix: &[DisasmInsn]| {
+                suffix.iter().all(|candidate: &DisasmInsn| {
+                    candidate.mnemonic == "nop"
+                        || is_xchg_self(&candidate.mnemonic, &candidate.operands)
+                })
+            });
+    let entry_stack_state_is_preserved: bool =
+        insns
+            .get(..instruction_index)
+            .is_some_and(|prefix: &[DisasmInsn]| {
+                prefix.iter().all(|candidate: &DisasmInsn| {
+                    !is_frame_management(&candidate.mnemonic, &candidate.operands)
+                        && !tail_prefix_writes_stack_pointer(candidate)
+                        && (!stack_depth_changing_mnemonic(&candidate.mnemonic)
+                            || candidate.mnemonic == "call")
+                })
+            });
+    if !suffix_is_padding
+        || !entry_stack_state_is_preserved
+        || !proven_integer64_tail_targets.contains(&target)
+        || instruction_end > function_end
+    {
+        return Ok(DirectJumpExit::Internal);
+    }
+    let padding_has_entry: bool = item_branch_targets(items)
+        .range(instruction_end..function_end)
+        .next()
+        .is_some();
+    if padding_has_entry || (base..function_end).contains(&target) {
+        Ok(DirectJumpExit::Internal)
+    } else {
+        Ok(DirectJumpExit::TailCall {
+            synthetic_return: instruction_end,
+        })
+    }
+}
+
 fn build_leaf_items(
     machine_code: &[u8],
     base: u64,
     abi: Abi,
     consts: &[FpConstant],
     packed_consts: &[PackedConstant],
+    proven_integer64_tail_targets: &BTreeSet<u64>,
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafItems> {
     require_x86_abi(abi)?;
@@ -2346,7 +2533,14 @@ fn build_leaf_items(
     let mut saw_ret: bool = false;
     let mut max_branch_target: u64 = 0;
     let mut df_backward: bool = false;
-    for insn in &insns {
+    let machine_code_len: u64 =
+        u64::try_from(machine_code.len()).map_err(|_: std::num::TryFromIntError| {
+            Error::LlvmIr("machine code length exceeds the address space".to_owned())
+        })?;
+    let function_end: u64 = base.checked_add(machine_code_len).ok_or_else(|| {
+        Error::LlvmIr("machine code range overflows the address space".to_owned())
+    })?;
+    for (instruction_index, insn) in insns.iter().enumerate() {
         if insn.mnemonic == "nop"
             || insn.mnemonic == "endbr64"
             || is_xchg_self(&insn.mnemonic, &insn.operands)
@@ -2494,6 +2688,32 @@ fn build_leaf_items(
         {
             max_branch_target = max_branch_target.max(target);
             if cond_suffix == "mp" {
+                if let DirectJumpExit::TailCall { synthetic_return } = classify_direct_jump_exit(
+                    &insns,
+                    instruction_index,
+                    &items,
+                    proven_integer64_tail_targets,
+                    base,
+                    function_end,
+                    target,
+                )? {
+                    return_width = Width::W64;
+                    flags = None;
+                    items.push(Item {
+                        address: insn.address,
+                        kind: ItemKind::Stmt(Stmt::Call {
+                            target,
+                            args: abi.arg_order().to_vec(),
+                            name: None,
+                        }),
+                    });
+                    items.push(Item {
+                        address: synthetic_return,
+                        kind: ItemKind::Ret,
+                    });
+                    saw_ret = true;
+                    continue;
+                }
                 items.push(Item {
                     address: insn.address,
                     kind: ItemKind::Jmp { target },
@@ -2801,6 +3021,29 @@ fn recover_leaf_function_calls_impl(
     calls: &[ResolvedCall],
     rip_relative_lea_policy: RipRelativeLeaPolicy,
 ) -> Result<LeafRecovery> {
+    let proven_integer64_tail_targets: BTreeSet<u64> = BTreeSet::new();
+    recover_leaf_function_calls_with_tail_proofs(
+        machine_code,
+        base,
+        abi,
+        consts,
+        packed_consts,
+        calls,
+        &proven_integer64_tail_targets,
+        rip_relative_lea_policy,
+    )
+}
+
+fn recover_leaf_function_calls_with_tail_proofs(
+    machine_code: &[u8],
+    base: u64,
+    abi: Abi,
+    consts: &[FpConstant],
+    packed_consts: &[PackedConstant],
+    calls: &[ResolvedCall],
+    proven_integer64_tail_targets: &BTreeSet<u64>,
+    rip_relative_lea_policy: RipRelativeLeaPolicy,
+) -> Result<LeafRecovery> {
     let LeafItems {
         insns,
         mut items,
@@ -2811,6 +3054,7 @@ fn recover_leaf_function_calls_impl(
         abi,
         consts,
         packed_consts,
+        proven_integer64_tail_targets,
         rip_relative_lea_policy,
     )?;
     let frame_shape: FrameShape = classify_frame(&insns, abi);
@@ -5645,33 +5889,22 @@ fn infer_switch_return(
     unify_fp_return(&states, return_width)
 }
 
-fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
+fn explicit_integer_return_width(stmt: &Stmt) -> Option<Width> {
     match stmt {
         Stmt::Assign { dest, .. }
         | Stmt::BinAssign { dest, .. }
         | Stmt::UnAssign { dest, .. }
         | Stmt::MulImm { dest, .. }
         | Stmt::DoubleShift { dest, .. }
-        | Stmt::Extend { dest, .. } => {
-            if dest.reg == Reg::Rax {
-                *return_width = dest.width;
-            }
-        }
-        Stmt::WideMul { .. } | Stmt::Call { .. } => *return_width = Width::W64,
-        Stmt::Divide { divisor, .. } => *return_width = divisor.width,
+        | Stmt::Extend { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
+        Stmt::WideMul { .. } => Some(Width::W64),
+        Stmt::Divide { divisor, .. } => Some(divisor.width),
         Stmt::FpToInt { dest, .. }
         | Stmt::XmmToGpr { dest, .. }
-        | Stmt::PackedToGpr { dest, .. } => {
-            if dest.reg == Reg::Rax {
-                *return_width = dest.width;
-            }
-        }
-        Stmt::SetCc { dest, .. } => {
-            if dest.reg == Reg::Rax {
-                *return_width = dest.width;
-            }
-        }
+        | Stmt::PackedToGpr { dest, .. }
+        | Stmt::SetCc { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
         Stmt::Cond { .. }
+        | Stmt::Call { .. }
         | Stmt::Store { .. }
         | Stmt::MemRmw { .. }
         | Stmt::FpBin { .. }
@@ -5690,7 +5923,15 @@ fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
         | Stmt::BlockFill { .. }
         | Stmt::Packed { .. }
         | Stmt::Vector(_)
-        | Stmt::FlagSnapshot { .. } => {}
+        | Stmt::FlagSnapshot { .. } => None,
+    }
+}
+
+fn update_return_width(stmt: &Stmt, return_width: &mut Width) {
+    if let Some(width) = explicit_integer_return_width(stmt) {
+        *return_width = width;
+    } else if matches!(stmt, Stmt::Call { .. }) {
+        *return_width = Width::W64;
     }
 }
 
@@ -5923,6 +6164,16 @@ fn is_rbp_lea_frame(operands: &str) -> bool {
 
 fn writes_stack_pointer(insn: &DisasmInsn) -> bool {
     first_operand_is_rsp(&insn.operands)
+}
+
+fn tail_prefix_writes_stack_pointer(insn: &DisasmInsn) -> bool {
+    writes_stack_pointer(insn)
+        || (insn.mnemonic == "xchg"
+            && insn
+                .operands
+                .split(',')
+                .filter_map(|operand: &str| parse_reg(operand.trim()))
+                .any(|register: RegRef| register.reg == Reg::Rsp))
 }
 
 fn frame_pointer_anchor(real: &[&DisasmInsn]) -> Option<FramePointerAnchor> {
@@ -10290,17 +10541,20 @@ fn emit_stmts(blocks: &[CfgBlock], block: usize, out: &mut Block) {
 
 const PURE_TAIL_CLONE_BUDGET: usize = 8;
 
-const fn stmt_is_cloneable(stmt: &Stmt) -> bool {
-    !matches!(
+const fn stmt_writes_memory(stmt: &Stmt) -> bool {
+    matches!(
         stmt,
         Stmt::Store { .. }
             | Stmt::MemRmw { .. }
             | Stmt::FpStore { .. }
             | Stmt::BlockMove { .. }
             | Stmt::BlockFill { .. }
-            | Stmt::Call { .. }
             | Stmt::Vector(VecStmt::Store { .. })
     )
+}
+
+const fn stmt_is_cloneable(stmt: &Stmt) -> bool {
+    !stmt_writes_memory(stmt) && !matches!(stmt, Stmt::Call { .. })
 }
 
 fn emit_cloned_pure_tail(
@@ -24646,6 +24900,206 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_terminal_direct_jump_preserves_the_no_return_abstention() {
+        let code: [u8; 5] = [0xe9, 0xfb, 0x0f, 0x00, 0x00];
+        let result: Result<LeafRecovery> = recover_leaf_function_abi(&code, 0x1000, Abi::MsX64);
+        assert!(
+            matches!(
+                result,
+                Err(Error::LlvmIr(ref message)) if message == "no ret found; not a single-exit leaf"
+            ),
+            "an unresolved tail target has no return-channel proof and must abstain: {result:?}"
+        );
+    }
+
+    fn recover_sysv_tail_program(
+        caller_code: &[u8],
+        callee_code: Option<&[u8]>,
+    ) -> RecoveredProgram {
+        let mut functions: Vec<ProgramFunction> = vec![ProgramFunction {
+            name: "tail_entry".to_owned(),
+            address: 0x1000,
+            code: caller_code.to_vec(),
+        }];
+        if let Some(code) = callee_code {
+            functions.push(ProgramFunction {
+                name: "tail_helper".to_owned(),
+                address: 0x2000,
+                code: code.to_vec(),
+            });
+        }
+        recover_program(&[], &functions, Abi::SysV)
+    }
+
+    #[test]
+    fn sysv_program_recovers_a_proven_integer64_tail_call() {
+        let caller: [u8; 5] = [0xe9, 0xfb, 0x0f, 0x00, 0x00];
+        let callee: [u8; 7] = [0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3];
+        let program: RecoveredProgram = recover_sysv_tail_program(&caller, Some(&callee));
+        assert!(
+            program.unrecovered.is_empty(),
+            "the typed sibling tail call must recover as a complete program: {:?}",
+            program.unrecovered
+        );
+        let entry: &RecoveredFunction = program
+            .recovered
+            .iter()
+            .find(|function: &&RecoveredFunction| function.name == "tail_entry")
+            .expect("recover the tail-calling entry");
+        assert_eq!(entry.resolved_calls, vec![0x2000]);
+        assert!(
+            entry.source.contains("r_rax = tail_helper(r_rdi, r_rsi);")
+                && entry.source.contains("return r_rax;"),
+            "the SysV program caller must preserve the proven integer return: {}",
+            entry.source
+        );
+    }
+
+    #[test]
+    fn terminal_direct_jump_before_noop_padding_lifts_as_a_tail_call() {
+        let caller: [u8; 6] = [0xe9, 0xfb, 0x0f, 0x00, 0x00, 0x90];
+        let callee: [u8; 7] = [0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3];
+        let program: RecoveredProgram = recover_sysv_tail_program(&caller, Some(&callee));
+        let rec: &RecoveredFunction = program
+            .recovered
+            .iter()
+            .find(|function: &&RecoveredFunction| function.name == "tail_entry")
+            .expect("recover a proven tail call before alignment padding");
+        assert!(
+            rec.source.contains("r_rax = tail_helper(r_rdi, r_rsi);")
+                && rec.source.contains("return r_rax;"),
+            "alignment padding must not hide the returning tail call: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn sysv_program_refuses_an_unrestored_stack_before_a_proven_tail_call() {
+        let caller: [u8; 9] = [0x48, 0x83, 0xec, 0x28, 0xe9, 0xf7, 0x0f, 0x00, 0x00];
+        let callee: [u8; 7] = [0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3];
+        let program: RecoveredProgram = recover_sysv_tail_program(&caller, Some(&callee));
+        assert!(
+            program
+                .unrecovered
+                .iter()
+                .any(|function: &UnrecoveredFunction| {
+                    function.name == "tail_entry"
+                        && function
+                            .reason
+                            .contains("no ret found; not a single-exit leaf")
+                }),
+            "a tail jump with an unrestored stack must preserve abstention: {program:?}"
+        );
+    }
+
+    #[test]
+    fn symmetric_rsp_write_is_not_an_entry_stack_state() {
+        let insns: Vec<DisasmInsn> = vec![
+            DisasmInsn {
+                address: 0x1000,
+                bytes: vec![0x48, 0x87, 0xe0],
+                mnemonic: "xchg".to_owned(),
+                operands: "rax, rsp".to_owned(),
+            },
+            DisasmInsn {
+                address: 0x1003,
+                bytes: vec![0xe9, 0xf8, 0x0f, 0x00, 0x00],
+                mnemonic: "jmp".to_owned(),
+                operands: "0x2000".to_owned(),
+            },
+        ];
+        let proven: BTreeSet<u64> = BTreeSet::from([0x2000]);
+        let classification: DirectJumpExit =
+            classify_direct_jump_exit(&insns, 1, &[], &proven, 0x1000, 0x1008, 0x2000)
+                .expect("classify the direct jump after the symmetric stack write");
+        assert_eq!(classification, DirectJumpExit::Internal);
+    }
+
+    #[test]
+    fn tail_return_proof_classifies_fp_and_vector_stores_as_memory_writes() {
+        let address: MemRef = MemRef {
+            base: Some(Reg::Rdi),
+            index: None,
+            disp: 0,
+            width: Width::W64,
+        };
+        let fp_store: Stmt = Stmt::FpStore {
+            addr: address,
+            src: Xmm::Xmm0,
+            width: FpWidth::F64,
+        };
+        let vector_store: Stmt = Stmt::Vector(VecStmt::Store {
+            src: 0,
+            arr: None,
+            addr: address,
+        });
+        let register_only: Stmt = Stmt::UnAssign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            op: UnOp::Not,
+        };
+        assert!(stmt_writes_memory(&fp_store));
+        assert!(stmt_writes_memory(&vector_store));
+        assert!(!stmt_writes_memory(&register_only));
+    }
+
+    #[test]
+    fn sysv_program_refuses_unproven_tail_return_channels() {
+        let caller: [u8; 5] = [0xe9, 0xfb, 0x0f, 0x00, 0x00];
+        let cases: [(&str, Option<&[u8]>); 7] = [
+            ("unresolved", None),
+            ("floating point", Some(&[0xf2, 0x0f, 0x10, 0xc1, 0xc3])),
+            ("void", Some(&[0xc3])),
+            ("narrow integer", Some(&[0x89, 0xf8, 0xc3])),
+            (
+                "structure return",
+                Some(&[0x48, 0x89, 0x37, 0x48, 0x89, 0xf8, 0xc3]),
+            ),
+            (
+                "floating-point structure store",
+                Some(&[0x48, 0x89, 0xf8, 0xf2, 0x0f, 0x11, 0x07, 0xc3]),
+            ),
+            (
+                "vector structure store",
+                Some(&[0x48, 0x89, 0xf8, 0x0f, 0x11, 0x07, 0xc3]),
+            ),
+        ];
+        for (label, callee) in cases {
+            let program: RecoveredProgram = recover_sysv_tail_program(&caller, callee);
+            assert!(
+                program
+                    .unrecovered
+                    .iter()
+                    .any(|function: &UnrecoveredFunction| function.name == "tail_entry"),
+                "{label} tail target must not invent an integer64 return: {program:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_jump_padding_with_a_cfg_entry_is_not_a_tail_call() {
+        let caller: [u8; 11] = [
+            0x48, 0x85, 0xc9, 0x74, 0x05, 0xe9, 0xf6, 0x0f, 0x00, 0x00, 0x90,
+        ];
+        let callee: [u8; 7] = [0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3];
+        let program: RecoveredProgram = recover_sysv_tail_program(&caller, Some(&callee));
+        assert!(
+            program
+                .unrecovered
+                .iter()
+                .any(|function: &UnrecoveredFunction| {
+                    function.name == "tail_entry"
+                        && function
+                            .reason
+                            .contains("no ret found; not a single-exit leaf")
+                }),
+            "reachable padding must reject even when the target has an integer64 proof: {program:?}"
+        );
+    }
+
+    #[test]
     fn resolved_call_preserves_sparse_ms_x64_argument_slots() {
         let code: [u8; 18] = [
             0x48, 0x83, 0xec, 0x28, 0xe8, 0xef, 0xff, 0xff, 0xff, 0x48, 0x83, 0xc0, 0x01, 0x48,
@@ -29623,9 +30077,17 @@ mod structuring_corpus {
 
     pub(super) fn lift(object_bytes: &[u8], name: &str) -> Option<Vec<Item>> {
         let (code, base): (Vec<u8>, u64) = function_code(object_bytes, name)?;
-        build_leaf_items(&code, base, HOST_ABI, &[], &[], RipRelativeLeaPolicy::Allow)
-            .ok()
-            .map(|leaf: LeafItems| leaf.items)
+        build_leaf_items(
+            &code,
+            base,
+            HOST_ABI,
+            &[],
+            &[],
+            &BTreeSet::new(),
+            RipRelativeLeaPolicy::Allow,
+        )
+        .ok()
+        .map(|leaf: LeafItems| leaf.items)
     }
 
     pub(super) fn golden_set(object_bytes: &[u8]) -> BTreeSet<&'static str> {
@@ -29751,6 +30213,7 @@ mod structuring_corpus {
             HOST_ABI,
             &[],
             &packed_consts,
+            &BTreeSet::new(),
             RipRelativeLeaPolicy::Refuse,
         )
         .expect("lift nested loop function");

@@ -83,40 +83,49 @@ enum StateCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryAddress {
     Local(LocalId),
-    I32Const(i32),
+    Fixed(i32),
 }
 
 impl MemoryAddress {
-    const fn from_instr(instr: &Instr) -> Option<Self> {
-        match instr {
-            Instr::LocalGet(get) => Some(Self::Local(get.local)),
-            Instr::Const(constant) => match constant.value {
-                Value::I32(value) => Some(Self::I32Const(value)),
-                Value::I64(_) | Value::F32(_) | Value::F64(_) | Value::V128(_) => None,
-            },
-            _ => None,
+    fn expression_suffix(
+        body: &[(Instr, walrus::ir::InstrLocId)],
+        end: usize,
+    ) -> Option<(Self, usize)> {
+        let last_index: usize = end.checked_sub(1)?;
+        if let Instr::LocalGet(get) = &body.get(last_index)?.0 {
+            return Some((Self::Local(get.local), last_index));
         }
+        let expression_floor: usize = end.saturating_sub(STATE_EXPRESSION_LIMIT);
+        let expression: Vec<Instr> = body
+            .get(expression_floor..end)?
+            .iter()
+            .map(|(instr, _location): &(Instr, walrus::ir::InstrLocId)| instr.clone())
+            .collect();
+        let (value, relative_start): (i32, usize) =
+            eval_i32_expression_suffix(&expression, expression.len(), STATE_EXPRESSION_LIMIT)?;
+        let start: usize = expression_floor.checked_add(relative_start)?;
+        Some((Self::Fixed(value), start))
     }
 
-    fn matches(self, instr: &Instr) -> bool {
-        Self::from_instr(instr) == Some(self)
+    fn matching_expression_start(
+        self,
+        body: &[(Instr, walrus::ir::InstrLocId)],
+        end: usize,
+    ) -> Option<usize> {
+        let (candidate, start): (Self, usize) = Self::expression_suffix(body, end)?;
+        (candidate == self).then_some(start)
     }
 }
 
 impl StateCell {
-    const fn address_prefix_len(self) -> usize {
+    fn address_expression_start(
+        self,
+        body: &[(Instr, walrus::ir::InstrLocId)],
+        end: usize,
+    ) -> Option<usize> {
         match self {
-            Self::MemorySlot { .. } => 1,
-            Self::Local(_) | Self::Global(_) => 0,
-        }
-    }
-
-    fn address_prefix_matches(self, prefix: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
-        match self {
-            Self::MemorySlot { address, .. } => prefix
-                .first()
-                .is_some_and(|(instr, _location)| address.matches(instr)),
-            Self::Local(_) | Self::Global(_) => prefix.is_empty(),
+            Self::MemorySlot { address, .. } => address.matching_expression_start(body, end),
+            Self::Local(_) | Self::Global(_) => Some(end),
         }
     }
 
@@ -160,6 +169,7 @@ struct Dispatcher {
     suffix: Body,
     entry_state: i32,
     cell: StateCell,
+    local_address_in_bounds: bool,
     case_count: u32,
     default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
@@ -174,33 +184,238 @@ fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &Elidable
             memory,
             offset,
             ..
-        } => {
-            let eligible: bool = match address {
-                MemoryAddress::Local(_) => elidable.memories.contains(&memory),
-                MemoryAddress::I32Const(_) => elidable.fixed_memories.contains(&memory),
-            };
-            eligible
-                && memory_address_is_in_bounds(address, offset, &elidable.memory_min_bytes, memory)
-        }
+        } => match address {
+            MemoryAddress::Local(local) => {
+                elidable.memories.contains(&memory)
+                    && stable_local_address(func, &disp.preamble, local, &elidable.globals)
+                    && resolved_local_address(&disp.preamble, local).map_or_else(
+                        || disp.local_address_in_bounds,
+                        |value: i32| {
+                            memory_address_is_in_bounds(
+                                value,
+                                offset,
+                                &elidable.memory_min_bytes,
+                                memory,
+                            )
+                        },
+                    )
+            }
+            MemoryAddress::Fixed(value) => {
+                elidable.fixed_memories.contains(&memory)
+                    && memory_address_is_in_bounds(
+                        value,
+                        offset,
+                        &elidable.memory_min_bytes,
+                        memory,
+                    )
+            }
+        },
     };
     owned_by_dispatcher && !reads_cell(func, &disp.suffix, disp.cell)
 }
 
 fn memory_address_is_in_bounds(
-    address: MemoryAddress,
+    address: i32,
     offset: u32,
     minimums: &BTreeMap<MemoryId, u64>,
     memory: MemoryId,
 ) -> bool {
-    match address {
-        MemoryAddress::Local(_) => true,
-        MemoryAddress::I32Const(value) => {
-            let dynamic: u64 = u64::from(u32::from_ne_bytes(value.to_ne_bytes()));
-            dynamic
-                .checked_add(u64::from(offset))
-                .and_then(|effective: u64| effective.checked_add(4))
-                .is_some_and(|end: u64| minimums.get(&memory).is_some_and(|limit| end <= *limit))
+    let dynamic: u64 = u64::from(u32::from_ne_bytes(address.to_ne_bytes()));
+    dynamic
+        .checked_add(u64::from(offset))
+        .and_then(|effective: u64| effective.checked_add(4))
+        .is_some_and(|end: u64| minimums.get(&memory).is_some_and(|limit| end <= *limit))
+}
+
+fn stable_local_address(
+    func: &LocalFunction,
+    preamble: &[(Instr, walrus::ir::InstrLocId)],
+    local: LocalId,
+    allowed_globals: &BTreeSet<GlobalId>,
+) -> bool {
+    let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut definitions: usize = 0;
+    let mut remaining: usize = RENDER_GUARD;
+    while let Some(sequence) = pending.pop() {
+        if !seen.insert(sequence) {
+            continue;
         }
+        if seen.len() > NODE_LIMIT {
+            return false;
+        }
+        for (instr, _location) in &func.block(sequence).instrs {
+            let Some(next_remaining) = remaining.checked_sub(1) else {
+                return false;
+            };
+            remaining = next_remaining;
+            if matches!(instr, Instr::LocalSet(set) if set.local == local)
+                || matches!(instr, Instr::LocalTee(tee) if tee.local == local)
+            {
+                let Some(next_definitions) = definitions.checked_add(1) else {
+                    return false;
+                };
+                definitions = next_definitions;
+                if definitions > 1 {
+                    return false;
+                }
+            }
+            let node_capacity: usize = NODE_LIMIT.saturating_sub(seen.len());
+            if !push_nested_sequences(instr, &mut pending, node_capacity) {
+                return false;
+            }
+        }
+    }
+    if definitions != 1 {
+        return false;
+    }
+    preamble.iter().enumerate().any(
+        |(index, (instr, _location)): (usize, &(Instr, walrus::ir::InstrLocId))| {
+            matches!(instr, Instr::LocalSet(set) if set.local == local)
+                && stable_address_expression_start(preamble, index, allowed_globals).is_some()
+        },
+    )
+}
+
+fn stable_address_expression_start(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    end: usize,
+    allowed_globals: &BTreeSet<GlobalId>,
+) -> Option<usize> {
+    let mut cursor: usize = end;
+    let mut budget: usize = STATE_EXPRESSION_LIMIT;
+    stable_address_value(body, &mut cursor, &mut budget, allowed_globals)?;
+    Some(cursor)
+}
+
+fn stable_address_value(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    cursor: &mut usize,
+    budget: &mut usize,
+    allowed_globals: &BTreeSet<GlobalId>,
+) -> Option<()> {
+    if *cursor == 0 || *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    let index: usize = cursor.checked_sub(1)?;
+    match &body.get(index)?.0 {
+        Instr::Const(constant) if matches!(constant.value, Value::I32(_)) => {
+            *cursor = index;
+            Some(())
+        }
+        Instr::GlobalGet(get) if allowed_globals.contains(&get.global) => {
+            *cursor = index;
+            Some(())
+        }
+        Instr::Unop(unary) if selector_unary_op_is_inert(unary.op) => {
+            *cursor = index;
+            stable_address_value(body, cursor, budget, allowed_globals)
+        }
+        Instr::Binop(binary) if selector_binary_op_is_inert(binary.op) => {
+            *cursor = index;
+            stable_address_value(body, cursor, budget, allowed_globals)?;
+            stable_address_value(body, cursor, budget, allowed_globals)
+        }
+        _ => None,
+    }
+}
+
+fn resolved_local_address(body: &[(Instr, walrus::ir::InstrLocId)], local: LocalId) -> Option<i32> {
+    body.iter().enumerate().find_map(
+        |(index, (instr, _location)): (usize, &(Instr, walrus::ir::InstrLocId))| {
+            matches!(instr, Instr::LocalSet(set) if set.local == local)
+                .then(|| resolved_address_expression(body, index))
+                .flatten()
+        },
+    )
+}
+
+fn resolved_address_expression(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    end: usize,
+) -> Option<i32> {
+    let expression_floor: usize = end.saturating_sub(STATE_EXPRESSION_LIMIT);
+    let expression: Vec<Instr> = body
+        .get(expression_floor..end)?
+        .iter()
+        .map(|(instr, _location): &(Instr, walrus::ir::InstrLocId)| instr.clone())
+        .collect();
+    let (value, _relative_start): (i32, usize) =
+        eval_i32_expression_suffix(&expression, expression.len(), STATE_EXPRESSION_LIMIT)?;
+    Some(value)
+}
+
+fn preamble_proves_local_address_in_bounds(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    before: usize,
+    local: LocalId,
+    memory: MemoryId,
+    offset: u32,
+) -> bool {
+    let Some(required_end): Option<u32> = offset.checked_add(4) else {
+        return false;
+    };
+    body.get(..before)
+        .is_some_and(|prefix: &[(Instr, walrus::ir::InstrLocId)]| {
+            prefix.iter().enumerate().any(
+                |(index, (instr, _location)): (usize, &(Instr, walrus::ir::InstrLocId))| {
+                    let Instr::Store(store) = instr else {
+                        return false;
+                    };
+                    if store.memory != memory
+                        || !matches!(store.kind, StoreKind::I32 { atomic: false })
+                    {
+                        return false;
+                    }
+                    let Some(access_end): Option<u32> = store.arg.offset.checked_add(4) else {
+                        return false;
+                    };
+                    let Some(value_start): Option<usize> = stack_expression_start(prefix, index)
+                    else {
+                        return false;
+                    };
+                    access_end >= required_end
+                        && MemoryAddress::Local(local)
+                            .matching_expression_start(prefix, value_start)
+                            .is_some()
+                },
+            )
+        })
+}
+
+fn stack_expression_start(body: &[(Instr, walrus::ir::InstrLocId)], end: usize) -> Option<usize> {
+    let mut cursor: usize = end;
+    let mut budget: usize = STATE_EXPRESSION_LIMIT;
+    stack_expression_value(body, &mut cursor, &mut budget)?;
+    Some(cursor)
+}
+
+fn stack_expression_value(
+    body: &[(Instr, walrus::ir::InstrLocId)],
+    cursor: &mut usize,
+    budget: &mut usize,
+) -> Option<()> {
+    if *cursor == 0 || *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    let index: usize = cursor.checked_sub(1)?;
+    match &body.get(index)?.0 {
+        Instr::Const(_) | Instr::LocalGet(_) | Instr::GlobalGet(_) => {
+            *cursor = index;
+            Some(())
+        }
+        Instr::Unop(_) => {
+            *cursor = index;
+            stack_expression_value(body, cursor, budget)
+        }
+        Instr::Binop(_) => {
+            *cursor = index;
+            stack_expression_value(body, cursor, budget)?;
+            stack_expression_value(body, cursor, budget)
+        }
+        _ => None,
     }
 }
 
@@ -240,33 +455,56 @@ fn body_reads_cell(
             return true;
         };
         *remaining = next_remaining;
-        match instr {
-            Instr::Block(block) => pending.push(block.seq),
-            Instr::Loop(loop_) => pending.push(loop_.seq),
-            Instr::IfElse(if_else) => {
-                pending.push(if_else.consequent);
-                pending.push(if_else.alternative);
-            }
-            Instr::TryTable(try_table) => pending.push(try_table.seq),
-            Instr::Try(try_) => {
-                pending.push(try_.seq);
-                pending.extend(
-                    try_.catches
-                        .iter()
-                        .filter_map(|catch: &LegacyCatch| match catch {
-                            LegacyCatch::Catch { handler, .. }
-                            | LegacyCatch::CatchAll { handler } => Some(*handler),
-                            LegacyCatch::Delegate { .. } => None,
-                        }),
-                );
-            }
-            _ => {}
+        if !push_nested_sequences(instr, pending, NODE_LIMIT) {
+            return true;
         }
         if cell.read_matches(instr) {
             return true;
         }
     }
     false
+}
+
+fn push_nested_sequences(instr: &Instr, pending: &mut Vec<InstrSeqId>, capacity: usize) -> bool {
+    match instr {
+        Instr::Block(block) => push_nested_sequence(pending, capacity, block.seq),
+        Instr::Loop(loop_) => push_nested_sequence(pending, capacity, loop_.seq),
+        Instr::IfElse(if_else) => {
+            push_nested_sequence(pending, capacity, if_else.consequent)
+                && push_nested_sequence(pending, capacity, if_else.alternative)
+        }
+        Instr::TryTable(try_table) => push_nested_sequence(pending, capacity, try_table.seq),
+        Instr::Try(try_) => {
+            if !push_nested_sequence(pending, capacity, try_.seq) {
+                return false;
+            }
+            for catch in &try_.catches {
+                let handler: InstrSeqId = match catch {
+                    LegacyCatch::Catch { handler, .. } | LegacyCatch::CatchAll { handler } => {
+                        *handler
+                    }
+                    LegacyCatch::Delegate { .. } => continue,
+                };
+                if !push_nested_sequence(pending, capacity, handler) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+fn push_nested_sequence(
+    pending: &mut Vec<InstrSeqId>,
+    capacity: usize,
+    sequence: InstrSeqId,
+) -> bool {
+    if pending.len() >= capacity {
+        return false;
+    }
+    pending.push(sequence);
+    true
 }
 
 fn detect(func: &LocalFunction) -> Option<Dispatcher> {
@@ -309,6 +547,26 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     let suffix: Body = entry_instrs[loop_index + 1..].to_vec();
     let (entry_state, entry_write): (i32, Option<std::ops::Range<usize>>) =
         initial_state(func, &preamble, cell)?;
+    let local_address_in_bounds: bool = match (cell, entry_write.as_ref()) {
+        (
+            StateCell::MemorySlot {
+                address: MemoryAddress::Local(local),
+                memory,
+                offset,
+            },
+            Some(span),
+        ) => preamble_proves_local_address_in_bounds(&preamble, span.start, local, memory, offset),
+        (
+            StateCell::Local(_)
+            | StateCell::Global(_)
+            | StateCell::MemorySlot {
+                address: MemoryAddress::Fixed(_),
+                ..
+            },
+            _,
+        )
+        | (StateCell::MemorySlot { .. }, None) => false,
+    };
     if let Some(span) = entry_write {
         drop(preamble.drain(span));
     }
@@ -318,6 +576,7 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
         suffix,
         entry_state,
         cell,
+        local_address_in_bounds,
         case_count,
         default_state,
         state_to_body,
@@ -363,10 +622,14 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
         _ => return None,
     };
     let source_index: usize = definition_index.checked_sub(1)?;
-    let source_start: usize = match &loop_body.get(source_index)?.0 {
-        Instr::Load(_) => source_index.checked_sub(1)?,
-        _ => source_index,
+    let memory_address: Option<(MemoryAddress, usize)> = match &loop_body.get(source_index)?.0 {
+        Instr::Load(_) => Some(MemoryAddress::expression_suffix(loop_body, source_index)?),
+        _ => None,
     };
+    let source_start: usize = memory_address
+        .map_or(source_index, |(_address, start): (MemoryAddress, usize)| {
+            start
+        });
     if !selector_noise_is_inert(loop_body.get(..source_start)?) {
         return None;
     }
@@ -385,9 +648,7 @@ fn copied_state_cell(loop_body: &Body, temp: LocalId) -> Option<StateCell> {
             if !matches!(load.kind, LoadKind::I32 { atomic: false }) {
                 return None;
             }
-            let address_index: usize = source_index.checked_sub(1)?;
-            let address: MemoryAddress =
-                MemoryAddress::from_instr(&loop_body.get(address_index)?.0)?;
+            let (address, _address_start): (MemoryAddress, usize) = memory_address?;
             Some(StateCell::MemorySlot {
                 address,
                 memory: load.memory,
@@ -569,10 +830,12 @@ fn state_write_expression(
     let (value, relative_start): (i32, usize) =
         eval_i32_expression_suffix(&expression, expression.len(), STATE_EXPRESSION_LIMIT)?;
     let expression_start: usize = expression_floor.checked_add(relative_start)?;
-    let write_start: usize = expression_start.checked_sub(cell.address_prefix_len())?;
-    if !cell.address_prefix_matches(prefix.get(write_start..expression_start)?) {
-        return None;
-    }
+    let write_start: usize = match cell {
+        StateCell::MemorySlot { address, .. } => {
+            address.matching_expression_start(prefix, expression_start)?
+        }
+        StateCell::Local(_) | StateCell::Global(_) => expression_start,
+    };
     Some((value, write_start))
 }
 
@@ -789,17 +1052,15 @@ fn select_transition_candidate(
     if !cell.commit_matches(commit) {
         return None;
     }
-    let address_len: usize = cell.address_prefix_len();
     let instructions: Vec<Instr> = prefix
         .iter()
         .map(|(instr, _location): &(Instr, walrus::ir::InstrLocId)| instr.clone())
         .collect();
     let mut found: Option<SelectTransition> = None;
-    for anchor in 0..=prefix.len().checked_sub(address_len)? {
-        let values_start: usize = anchor.checked_add(address_len)?;
-        if !cell.address_prefix_matches(prefix.get(anchor..values_start)?) {
+    for values_start in 0..=prefix.len() {
+        let Some(anchor) = cell.address_expression_start(prefix, values_start) else {
             continue;
-        }
+        };
         for condition_start in values_start.checked_add(2)?..instructions.len() {
             let Some((else_state, else_start)): Option<(i32, usize)> =
                 eval_i32_expression_suffix(&instructions, condition_start, STATE_EXPRESSION_LIMIT)
@@ -1328,6 +1589,7 @@ fn new_seq(func: &mut LocalFunction, body: Body) -> InstrSeqId {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use walrus::ir::Value;
 
     #[test]
     fn memory_slot_identity_ignores_alignment_but_requires_semantic_metadata() {
@@ -1335,7 +1597,7 @@ mod tests {
         let selected_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
         let other_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
         let cell: StateCell = StateCell::MemorySlot {
-            address: MemoryAddress::I32Const(32),
+            address: MemoryAddress::Fixed(32),
             memory: selected_memory,
             offset: 4,
         };
@@ -1386,8 +1648,76 @@ mod tests {
             }),
             walrus::ir::InstrLocId::default(),
         )];
-        assert!(cell.address_prefix_matches(&matching_address));
-        assert!(!cell.address_prefix_matches(&different_address));
+        assert_eq!(
+            cell.address_expression_start(&matching_address, matching_address.len()),
+            Some(0)
+        );
+        assert_eq!(
+            cell.address_expression_start(&different_address, different_address.len()),
+            None
+        );
+    }
+
+    #[test]
+    fn unresolved_local_bounds_proof_rejects_another_memory() {
+        let mut module: walrus::Module = walrus::Module::default();
+        let selected_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
+        let other_memory: MemoryId = module.memories.add_local(false, false, 1, None, None);
+        let local: LocalId = module.locals.add(walrus::ValType::I32);
+        let body: Body = vec![
+            (
+                Instr::LocalGet(walrus::ir::LocalGet { local }),
+                walrus::ir::InstrLocId::default(),
+            ),
+            (
+                Instr::Const(walrus::ir::Const {
+                    value: Value::I32(91),
+                }),
+                walrus::ir::InstrLocId::default(),
+            ),
+            (
+                Instr::Store(walrus::ir::Store {
+                    memory: other_memory,
+                    kind: StoreKind::I32 { atomic: false },
+                    arg: walrus::ir::MemArg {
+                        align: 4,
+                        offset: 8,
+                    },
+                }),
+                walrus::ir::InstrLocId::default(),
+            ),
+        ];
+        assert!(!preamble_proves_local_address_in_bounds(
+            &body,
+            body.len(),
+            local,
+            selected_memory,
+            4,
+        ));
+    }
+
+    #[test]
+    fn nested_sequence_collection_does_not_exceed_the_node_limit() {
+        let mut module: walrus::Module = walrus::Module::default();
+        let mut builder: walrus::FunctionBuilder =
+            walrus::FunctionBuilder::new(&mut module.types, &[], &[]);
+        let try_body: InstrSeqId = builder.dangling_instr_seq(InstrSeqType::Simple(None)).id();
+        let catches: Vec<LegacyCatch> = (0..NODE_LIMIT)
+            .map(|_index: usize| LegacyCatch::CatchAll {
+                handler: builder.dangling_instr_seq(InstrSeqType::Simple(None)).id(),
+            })
+            .collect();
+        let instruction: Instr = Instr::Try(walrus::ir::Try {
+            seq: try_body,
+            catches,
+        });
+        let mut pending: Vec<InstrSeqId> = Vec::new();
+        assert!(!push_nested_sequences(
+            &instruction,
+            &mut pending,
+            NODE_LIMIT
+        ));
+        assert!(pending.len() <= NODE_LIMIT);
     }
 
     fn node(trans: Trans) -> Node {

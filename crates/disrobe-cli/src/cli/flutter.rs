@@ -4,10 +4,13 @@ use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
 
+use disrobe_pass_mobile::flutter::has_dart_aot_snapshot;
 use disrobe_pass_mobile::{
-    Arm64Disassembly, DartAotDecompile, DartGraphObfuscationHint, DartGraphRecoveryOptions,
-    DartGraphRecoveryReport, DartKernelDecompile, DartSnapshotHeader, FlutterObfuscationMap,
-    LibAppLayout, decompile_dart_aot, decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel,
+    AotLiftReport, Arm64Disassembly, DART_ISOLATE_DATA_SYMBOL, DART_ISOLATE_INSTR_SYMBOL,
+    DART_VM_DATA_SYMBOL, DART_VM_INSTR_SYMBOL, DartAotDecompile, DartGraphObfuscationHint,
+    DartGraphRecoveryOptions, DartGraphRecoveryReport, DartKernelDecompile, DartLiftedFunction,
+    DartSnapshotHeader, FlutterObfuscationMap, LibAppLayout, decompile_dart_aot,
+    decompile_dart_kernel, disassemble_libapp_so, is_dart_kernel, lift_libapp_aot,
     parse_dart_snapshot, parse_flutter_obfuscation_map, parse_libapp_so, recover_dart_pinned_elf,
     recover_dart_pinned_standalone,
 };
@@ -15,6 +18,8 @@ use disrobe_pass_native::{
     ExportFormat, RecoveredSymbol, SYMBOL_MAP_SCHEMA, SymbolClass, SymbolMap, SymbolOrigin,
     render_ghidra_postscript, render_idapython, render_symbol_map_json,
 };
+
+use super::emit::{EmitKind, EmitSpec};
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum FlutterCmd {
@@ -38,15 +43,15 @@ pub(crate) enum FlutterCmd {
         format: Option<FlutterExportTarget>,
     },
     #[command(
-        about = "best-effort decompile of a Dart AOT snapshot (header + class table estimate + readable strings)"
+        about = "recover pseudo-Dart from a Flutter libapp.so, or inspect metadata in a raw Dart AOT snapshot"
     )]
     Decompile {
-        #[arg(help = "input Dart AOT snapshot blob")]
+        #[arg(help = "input Flutter libapp.so or raw Dart AOT snapshot blob")]
         input: PathBuf,
         #[arg(
             short,
             long,
-            help = "output path for the decompile JSON (default: ./out/<stem>-dart-aot.json)"
+            help = "output path for the recovery report JSON (default: ./out/<stem>-dart-aot.json)"
         )]
         out: Option<PathBuf>,
         #[arg(
@@ -418,8 +423,14 @@ fn write_flutter_symbol_export(
 }
 
 fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::Result<()> {
+    let spec: EmitSpec = EmitSpec::parse(&emit)?;
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0760: cannot read input: {e}"))?;
+    let is_elf: bool = bytes.starts_with(b"\x7fELF");
+    validate_decompile_emit(&spec, is_elf)?;
+    if is_elf {
+        return decompile_libapp_aot(input, bytes, out, &spec);
+    }
     let header: DartSnapshotHeader = parse_dart_snapshot(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0761: dart snapshot parse: {e}"))?;
     let dec: DartAotDecompile = decompile_dart_aot(&bytes)
@@ -439,16 +450,6 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette:
         .map_err(|e| miette::miette!("DR-CLI-0764: serialize: {e}"))?;
     std::fs::write(&out_path, bytes_out)
         .map_err(|e| miette::miette!("DR-CLI-0765: cannot write output: {e}"))?;
-    let stub_dir: &std::path::Path = out_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    crate::cli::emit::apply_not_applicable_stubs(
-        &emit,
-        stub_dir,
-        &stem,
-        "flutter-decompile",
-        "not implemented for the flutter pass in this build",
-    )?;
     println!("flutter decompile: OK");
     println!("  input:        {}", input.display());
     println!("  magic:        0x{:08x}", header.magic);
@@ -502,6 +503,127 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette:
     }
     println!("  wrote:        {}", out_path.display());
     Ok(())
+}
+
+fn validate_decompile_emit(spec: &EmitSpec, is_elf: bool) -> miette::Result<()> {
+    let allowed: &[EmitKind] = if is_elf {
+        &[EmitKind::Source, EmitKind::Report]
+    } else {
+        &[EmitKind::Report]
+    };
+    let unsupported: Vec<&'static str> = spec
+        .iter()
+        .filter(|kind: &EmitKind| !allowed.contains(kind))
+        .map(EmitKind::label)
+        .collect();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+    let supported: Vec<&'static str> = allowed.iter().copied().map(EmitKind::label).collect();
+    Err(miette::miette!(
+        "DR-CLI-0766: unsupported Flutter decompile emit kind(s) {unsupported:?}; this input supports {supported:?}"
+    ))
+}
+
+fn decompile_libapp_aot(
+    input: PathBuf,
+    bytes: Vec<u8>,
+    out: Option<PathBuf>,
+    spec: &EmitSpec,
+) -> miette::Result<()> {
+    validate_libapp_aot(&bytes)?;
+    let report: AotLiftReport = lift_libapp_aot(&bytes)
+        .map_err(|error| miette::miette!("DR-CLI-0767: Flutter AOT lift: {error}"))?;
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("libapp")
+        .to_owned();
+    let out_path: PathBuf =
+        out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-dart-aot.json")));
+    let source_path: PathBuf = out_path.with_extension("recovered.dart");
+    let want_report: bool = spec.is_empty() || spec.contains(EmitKind::Report);
+    let want_source: bool = spec.is_empty() || spec.contains(EmitKind::Source);
+    let report_bytes: Option<Vec<u8>> = want_report
+        .then(|| serde_json::to_vec_pretty(&report))
+        .transpose()
+        .map_err(|error| miette::miette!("DR-CLI-0764: serialize: {error}"))?;
+    let source: Option<String> = want_source.then(|| render_aot_source(&report));
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| miette::miette!("DR-CLI-0763: cannot create dir: {error}"))?;
+    }
+    if let Some(report_bytes) = report_bytes {
+        std::fs::write(&out_path, report_bytes)
+            .map_err(|error| miette::miette!("DR-CLI-0765: cannot write output: {error}"))?;
+    }
+    if let Some(source) = source {
+        std::fs::write(&source_path, source.as_bytes())
+            .map_err(|error| miette::miette!("DR-CLI-0768: cannot write source: {error}"))?;
+    }
+    println!("flutter decompile: OK");
+    println!("  input:        {}", input.display());
+    println!("  functions:    {}", report.function_count);
+    println!("  named:        {}", report.named_function_count);
+    println!("  structured:   {}", report.structured_function_count);
+    println!("  fallback:     {}", report.flat_fallback_count);
+    println!(
+        "  call args:    {} resolved",
+        report.call_sites_with_arguments
+    );
+    if want_report {
+        println!("  report:       {}", out_path.display());
+    }
+    if want_source {
+        println!("  pseudo-Dart:  {}", source_path.display());
+    }
+    Ok(())
+}
+
+fn validate_libapp_aot(bytes: &[u8]) -> miette::Result<()> {
+    if !has_dart_aot_snapshot(bytes) {
+        return Err(miette::miette!(
+            "DR-CLI-0767: ELF does not contain a parseable Dart AOT snapshot"
+        ));
+    }
+    let layout: LibAppLayout = parse_libapp_so(bytes)
+        .map_err(|error| miette::miette!("DR-CLI-0767: Flutter AOT layout: {error}"))?;
+    let required: [(&'static str, bool); 4] = [
+        (DART_VM_DATA_SYMBOL, layout.vm_snapshot_data.is_some()),
+        (
+            DART_VM_INSTR_SYMBOL,
+            layout.vm_snapshot_instructions.is_some(),
+        ),
+        (
+            DART_ISOLATE_DATA_SYMBOL,
+            layout.isolate_snapshot_data.is_some(),
+        ),
+        (
+            DART_ISOLATE_INSTR_SYMBOL,
+            layout.isolate_snapshot_instructions.is_some(),
+        ),
+    ];
+    if let Some((symbol, _)) = required
+        .into_iter()
+        .find(|(_, present): &(&str, bool)| !present)
+    {
+        return Err(miette::miette!(
+            "DR-CLI-0767: Flutter AOT snapshot section {symbol} is missing"
+        ));
+    }
+    Ok(())
+}
+
+fn render_aot_source(report: &AotLiftReport) -> String {
+    let mut source: String = String::new();
+    for function in &report.functions {
+        let function: &DartLiftedFunction = function;
+        if !source.is_empty() {
+            source.push_str("\n\n");
+        }
+        source.push_str(&function.best_pseudo_dart());
+    }
+    source
 }
 
 fn map(input: PathBuf, out: Option<PathBuf>) -> miette::Result<()> {

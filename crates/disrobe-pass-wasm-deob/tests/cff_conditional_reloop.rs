@@ -642,6 +642,117 @@ fn state_held_at_a_fixed_memory_address_reloops_under_wasmtime() {
 }
 
 #[test]
+fn equivalent_constant_expression_memory_addresses_reloop_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
+    let obf_bytes: Vec<u8> =
+        fixed_memory_state_variant(FixedMemoryMutation::ConstantExpressionAddress);
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_memory",
+        "constant-expression memory state",
+    );
+}
+
+#[test]
+fn input_dependent_memory_address_remains_walled_and_preserves_traps() {
+    let bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::InputDependentAddress);
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover input-dependent memory state");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+    assert!(contains_br_table(&recovered.bytes));
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(
+        call_i32(&mut original, "classify_memory", -1),
+        Outcome::Trap
+    );
+    assert_eq!(
+        call_i32(&mut candidate, "classify_memory", -1),
+        Outcome::Trap
+    );
+    assert_equivalent(&mut original, &mut candidate, "classify_memory");
+}
+
+#[test]
+fn out_of_bounds_local_memory_address_remains_walled_and_preserves_traps() {
+    let bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::LocalOutOfBoundsAddress);
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover out-of-bounds local memory state");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+    assert!(contains_br_table(&recovered.bytes));
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(call_i32(&mut original, "classify_memory", 0), Outcome::Trap);
+    assert_eq!(
+        call_i32(&mut candidate, "classify_memory", 0),
+        Outcome::Trap
+    );
+}
+
+#[test]
+fn unresolved_local_address_reloops_with_a_preceding_in_bounds_access() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
+    let obf_bytes: Vec<u8> = unresolved_local_memory_state_variant(UnresolvedLocalProof::Preceding);
+    assert_reloops_to_clean_behavior(
+        &clean_bytes,
+        &obf_bytes,
+        "classify_memory",
+        "preceding unresolved-local bounds proof",
+    );
+}
+
+#[test]
+fn unresolved_local_address_rejects_a_later_access_before_observable_effects_move() {
+    let bytes: Vec<u8> = unresolved_local_memory_state_variant(UnresolvedLocalProof::Later);
+    let recovered: RecoveredModule =
+        recover_module(&bytes).expect("recover later unresolved-local bounds proof");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 0);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 1);
+    assert!(contains_br_table(&recovered.bytes));
+
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(call_i32(&mut original, "classify_memory", 0), Outcome::Trap);
+    assert_eq!(
+        call_i32(&mut candidate, "classify_memory", 0),
+        Outcome::Trap
+    );
+    assert_eq!(read_global_i32(&mut original, "marker"), Some(0));
+    assert_eq!(read_global_i32(&mut candidate, "marker"), Some(0));
+}
+
+#[test]
+fn unresolved_local_address_rejects_conditional_or_incompatible_bounds_evidence() {
+    for proof in [
+        UnresolvedLocalProof::Conditional,
+        UnresolvedLocalProof::AddressMismatch,
+        UnresolvedLocalProof::KindMismatch,
+        UnresolvedLocalProof::Weaker,
+    ] {
+        let bytes: Vec<u8> = unresolved_local_memory_state_variant(proof);
+        let recovered: RecoveredModule =
+            recover_module(&bytes).expect("recover incompatible unresolved-local bounds proof");
+        assert_eq!(
+            recovered.report.flattened_conditional_restructured, 0,
+            "incompatible proof {proof:?} must not reloop"
+        );
+        assert_eq!(
+            recovered.report.flattened_dispatchers_walled, 1,
+            "incompatible proof {proof:?} must wall"
+        );
+        assert!(contains_br_table(&recovered.bytes));
+    }
+}
+
+#[test]
 fn runtime_differential_rejects_swapped_fixed_memory_successors() {
     let clean_bytes: Vec<u8> = assemble_fixture("cff_memory_state.clean.wat");
     let mutant_bytes: Vec<u8> = fixed_memory_state_variant(FixedMemoryMutation::SwapSuccessors);
@@ -685,6 +796,9 @@ fn fixed_memory_selector_without_private_in_bounds_storage_remains_walled() {
 #[derive(Clone, Copy)]
 enum FixedMemoryMutation {
     None,
+    ConstantExpressionAddress,
+    InputDependentAddress,
+    LocalOutOfBoundsAddress,
     SwapSuccessors,
     AddressMismatch,
     OffsetMismatch,
@@ -699,6 +813,27 @@ fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
     let mut variant: String = source.replace("local.get 2", "i32.const 32");
     match mutation {
         FixedMemoryMutation::None => {}
+        FixedMemoryMutation::ConstantExpressionAddress => {
+            variant = variant.replace(
+                "i32.const 32",
+                "i32.const 48\n    i32.const 16\n    i32.sub",
+            );
+            variant = variant.replacen(
+                "i32.const 48\n    i32.const 16\n    i32.sub",
+                "i32.const 64\n    i32.const 32\n    i32.sub",
+                1,
+            );
+        }
+        FixedMemoryMutation::InputDependentAddress => {
+            variant = source.replace("local.get 2", "local.get 0");
+        }
+        FixedMemoryMutation::LocalOutOfBoundsAddress => {
+            variant = source.replacen(
+                "i32.const 32\n    local.set 2",
+                "i32.const 65532\n    local.set 2",
+                1,
+            );
+        }
         FixedMemoryMutation::SwapSuccessors => {
             let with_nonzero: String = variant.replacen(
                 "i32.const 32\n                  i32.const 1\n                  i32.store offset=4",
@@ -740,6 +875,69 @@ fn fixed_memory_state_variant(mutation: FixedMemoryMutation) -> Vec<u8> {
         }
     }
     wat::parse_str(&variant).expect("assemble fixed-address memory state")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UnresolvedLocalProof {
+    Preceding,
+    Later,
+    Conditional,
+    AddressMismatch,
+    KindMismatch,
+    Weaker,
+}
+
+fn unresolved_local_memory_state_variant(proof: UnresolvedLocalProof) -> Vec<u8> {
+    let path: PathBuf = fixture_dir().join("cff_memory_state.obf.wat");
+    let source: String = std::fs::read_to_string(&path).expect("read memory-state fixture");
+    let global_value: i32 = match proof {
+        UnresolvedLocalProof::Later => 65_532,
+        UnresolvedLocalProof::Preceding
+        | UnresolvedLocalProof::Conditional
+        | UnresolvedLocalProof::AddressMismatch
+        | UnresolvedLocalProof::KindMismatch
+        | UnresolvedLocalProof::Weaker => 32,
+    };
+    let mut variant: String = source.replacen(
+        "(memory (;0;) 1)",
+        &format!("(global (;0;) (mut i32) (i32.const {global_value}))\n  (memory (;0;) 1)"),
+        1,
+    );
+    variant = variant.replacen(
+        "i32.const 32\n    local.set 2",
+        "global.get 0\n    local.set 2",
+        1,
+    );
+    let initial_write: &str = "local.get 2\n    i32.const 0\n    i32.store offset=4";
+    let replacement: String = match proof {
+        UnresolvedLocalProof::Preceding => {
+            format!("local.get 2\n    i32.const 91\n    i32.store offset=8\n    {initial_write}")
+        }
+        UnresolvedLocalProof::Later => {
+            variant = variant.replacen(
+                "(memory (;0;) 1)",
+                "(memory (;0;) 1)\n  (global (;1;) (mut i32) (i32.const 0))\n  (export \"marker\" (global 1))",
+                1,
+            );
+            format!(
+                "{initial_write}\n    i32.const 1\n    global.set 1\n    local.get 2\n    i32.const 91\n    i32.store offset=8"
+            )
+        }
+        UnresolvedLocalProof::Conditional => format!(
+            "i32.const 0\n    if\n      local.get 2\n      i32.const 91\n      i32.store offset=8\n    end\n    {initial_write}"
+        ),
+        UnresolvedLocalProof::AddressMismatch => {
+            format!("i32.const 48\n    i32.const 91\n    i32.store offset=8\n    {initial_write}")
+        }
+        UnresolvedLocalProof::KindMismatch => {
+            format!("local.get 2\n    i64.const 91\n    i64.store offset=8\n    {initial_write}")
+        }
+        UnresolvedLocalProof::Weaker => {
+            format!("local.get 2\n    i32.const 91\n    i32.store\n    {initial_write}")
+        }
+    };
+    variant = variant.replacen(initial_write, &replacement, 1);
+    wat::parse_str(&variant).expect("assemble unresolved-local memory state")
 }
 
 #[test]
@@ -910,8 +1108,8 @@ fn wall_reason_harness_entrypoint() {
     }
     let observable: Vec<u8> = assemble_fixture("cff_global_state_observable.obf.wat");
     recover_module(&observable).expect("recover exported state global module");
-    let temp_state: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
-    recover_module(temp_state).expect("recover rustc next-state-temporary module");
+    let unsupported: Vec<u8> = computed_state_call_variant();
+    recover_module(&unsupported).expect("recover effectful state transition module");
 }
 
 #[test]
