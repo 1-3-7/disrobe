@@ -1892,7 +1892,7 @@ fn main() -> miette::Result<()> {
         #[cfg(feature = "dotnet")]
         Cmd::Dotnet { action } => dotnet::run(action),
         #[cfg(feature = "mobile")]
-        Cmd::Hermes { action } => hermes::run(action),
+        Cmd::Hermes { action } => hermes::run(action, fmt),
         #[cfg(feature = "swift")]
         Cmd::Macho { action } => macho::run(action),
         #[cfg(feature = "lua")]

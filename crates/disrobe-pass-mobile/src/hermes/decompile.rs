@@ -52,11 +52,6 @@ fn push_format_line(output: &mut String, args: Arguments<'_>) {
 
 const OPCODE_SLOTS: usize = 256;
 
-#[must_use]
-pub fn opcode_label(opcode: u8) -> Cow<'static, str> {
-    opcode_label_in(OPCODES_HBC96, opcode)
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct OpcodeTally {
     reconstructed: u32,
@@ -3484,13 +3479,6 @@ mod tests {
         );
         assert_eq!(report.total_fallback_ops, 1);
         assert_eq!(report.total_unaccounted_ops, 0);
-    }
-
-    #[test]
-    fn opcode_label_names_the_table_entry_and_falls_back_to_the_byte() {
-        assert_eq!(opcode_label(0), "Unreachable");
-        assert_eq!(opcode_label(22), "Add");
-        assert_eq!(opcode_label(u8::MAX), "Unknown_0xff");
     }
 
     fn loop_module(shape: &str) -> HermesModule {

@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_mobile::{
-    DecompileReport, DisassemblyReport, HermesModule, decompile_hermes_module, disassemble_hermes,
-    hermes_disasm_function, parse_hermes_module,
+    DecompileReport, DisassemblyReport, HERMES_LIFTED_VERSIONS, HermesModule,
+    decompile_hermes_module, disassemble_hermes, hermes_disasm_function, parse_hermes_module,
 };
 
 use super::emit::EmitSpec;
 use super::globals;
+use super::output::{self, OutputFormat};
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum HermesCmd {
@@ -41,10 +42,11 @@ pub(crate) enum HermesCmd {
         out: Option<PathBuf>,
         #[arg(
             long,
-            value_name = "INDEX",
-            help = "print the instructions of one function by its zero-based index instead of writing the whole-bundle summary"
+            value_name = "INDEX_OR_NAME",
+            allow_hyphen_values = true,
+            help = "print one function by its zero-based index or exact name instead of writing the whole-bundle summary"
         )]
-        function: Option<usize>,
+        function: Option<String>,
     },
     #[command(
         about = "parse the Hermes header and report version, function count, string/identifier counts"
@@ -55,14 +57,14 @@ pub(crate) enum HermesCmd {
     },
 }
 
-pub(crate) fn run(action: HermesCmd) -> miette::Result<()> {
+pub(crate) fn run(action: HermesCmd, format: OutputFormat) -> miette::Result<()> {
     match action {
         HermesCmd::Decompile { input, out, emit } => decompile(input, out, emit),
         HermesCmd::Disasm {
             input,
             out,
             function,
-        } => disasm(input, out, function),
+        } => disasm(input, out, function, format),
         HermesCmd::Info { input } => info(input),
     }
 }
@@ -143,13 +145,19 @@ fn decompile(input: PathBuf, out: Option<PathBuf>, emit_kinds: Vec<String>) -> m
     Ok(())
 }
 
-fn disasm(input: PathBuf, out: Option<PathBuf>, function: Option<usize>) -> miette::Result<()> {
+fn disasm(
+    input: PathBuf,
+    out: Option<PathBuf>,
+    function: Option<String>,
+    format: OutputFormat,
+) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&input)
         .map_err(|e| miette::miette!("DR-CLI-0460: cannot read input: {e}"))?;
     let module: HermesModule = parse_hermes_module(&bytes)
         .map_err(|e| miette::miette!("DR-CLI-0461: hermes parse: {e}"))?;
-    if let Some(index) = function {
-        return disasm_one_function(&input, &module, index);
+    if let Some(selector) = function {
+        let index: usize = resolve_function_index(&module, &selector)?;
+        return disasm_one_function(&input, &module, index, format);
     }
     let report: DisassemblyReport = disassemble_hermes(&module);
     let stem: String = input
@@ -176,31 +184,123 @@ fn disasm(input: PathBuf, out: Option<PathBuf>, function: Option<usize>) -> miet
     Ok(())
 }
 
+fn resolve_function_index(module: &HermesModule, selector: &str) -> miette::Result<usize> {
+    if !selector.is_empty() && selector.bytes().all(|byte: u8| byte.is_ascii_digit()) {
+        let index: usize = selector.parse::<usize>().map_err(|_: std::num::ParseIntError| {
+            miette::miette!(
+                "DR-CLI-0875: Hermes function index {selector} exceeds the supported index range"
+            )
+        })?;
+        validate_function_index(index, module.functions.len())?;
+        return Ok(index);
+    }
+    if selector.starts_with('-')
+        && selector.len() > 1
+        && selector[1..].bytes().all(|byte: u8| byte.is_ascii_digit())
+    {
+        return Err(miette::miette!(
+            "DR-CLI-0875: Hermes function index {selector} is negative; indexes are zero-based"
+        ));
+    }
+    let mut first_match: usize = 0;
+    let mut match_count: usize = 0;
+    for (index, header) in module.functions.iter().enumerate() {
+        let is_match: bool = module
+            .string_by_global_id(header.function_name_id)
+            .is_some_and(|name: &str| name == selector);
+        if is_match {
+            if match_count == 0 {
+                first_match = index;
+            }
+            match_count += 1;
+        }
+    }
+    match match_count {
+        0 => Err(miette::miette!(
+            "DR-CLI-0875: no Hermes function has the exact name {selector:?}"
+        )),
+        1 => Ok(first_match),
+        count => Err(miette::miette!(
+            "DR-CLI-0875: Hermes function name {selector:?} is ambiguous across {} entries; select a zero-based index",
+            count
+        )),
+    }
+}
+
 fn disasm_one_function(
     input: &std::path::Path,
     module: &HermesModule,
     index: usize,
+    format: OutputFormat,
 ) -> miette::Result<()> {
-    let total: usize = module.functions.len();
-    if index >= total {
+    if !HERMES_LIFTED_VERSIONS.contains(&module.header.version) {
         return Err(miette::miette!(
-            "DR-CLI-0465: function index {index} is past the end of this bundle, which declares {total} function(s) numbered 0 to {}",
-            total.saturating_sub(1)
+            "DR-CLI-0876: Hermes bytecode version {} has no opcode table; per-function disassembly supports versions {:?}",
+            module.header.version,
+            HERMES_LIFTED_VERSIONS
         ));
     }
-    let instructions: Vec<String> = hermes_disasm_function(module, index);
-    println!("hermes disasm: {}", input.display());
-    println!(
-        "  bytecode version: {}  function {index} of {total}",
-        module.header.version
-    );
-    for line in &instructions {
-        println!("  {line}");
+    let total: usize = module.functions.len();
+    validate_function_index(index, total)?;
+    let function_name: Option<String> = module
+        .functions
+        .get(index)
+        .and_then(|header: &disrobe_pass_mobile::SmallFunctionHeader| {
+            module.string_by_global_id(header.function_name_id)
+        })
+        .filter(|name: &&str| !name.is_empty())
+        .map(str::to_owned);
+    let report: HermesFunctionDisassembly = HermesFunctionDisassembly {
+        schema: "disrobe.hermes.function-disassembly/v1",
+        input: input.display().to_string(),
+        bytecode_version: module.header.version,
+        function_index: index,
+        function_count: total,
+        function_name,
+        instructions: hermes_disasm_function(module, index),
+    };
+    output::emit(format, &report, || {
+        println!("hermes disasm: {}", input.display());
+        println!(
+            "  bytecode version: {}  function {index} of {total}",
+            module.header.version
+        );
+        if let Some(name) = &report.function_name {
+            println!("  function name: {name}");
+        }
+        for line in &report.instructions {
+            println!("  {line}");
+        }
+        if report.instructions.is_empty() {
+            println!("  this function declares no instruction bytes");
+        }
+    })
+}
+
+fn validate_function_index(index: usize, total: usize) -> miette::Result<()> {
+    if index < total {
+        return Ok(());
     }
-    if instructions.is_empty() {
-        println!("  this function declares no instruction bytes");
+    if total == 0 {
+        return Err(miette::miette!(
+            "DR-CLI-0875: function index {index} is invalid because this bundle declares 0 functions"
+        ));
     }
-    Ok(())
+    Err(miette::miette!(
+        "DR-CLI-0875: function index {index} is past the end of this bundle, which declares {total} function(s) numbered 0 to {}",
+        total - 1
+    ))
+}
+
+#[derive(Debug, serde::Serialize)]
+struct HermesFunctionDisassembly {
+    schema: &'static str,
+    input: String,
+    bytecode_version: u32,
+    function_index: usize,
+    function_count: usize,
+    function_name: Option<String>,
+    instructions: Vec<String>,
 }
 
 fn info(input: PathBuf) -> miette::Result<()> {
@@ -272,4 +372,93 @@ fn apply_emit_stubs(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_function_index, validate_function_index};
+    use disrobe_pass_mobile::{HermesHeader, HermesModule, HermesStringKind, SmallFunctionHeader};
+
+    #[test]
+    fn an_empty_function_table_has_no_valid_index() {
+        let result: Result<(), String> =
+            validate_function_index(0, 0).map_err(|error: miette::Report| error.to_string());
+        assert_eq!(
+            result,
+            Err(
+                "DR-CLI-0875: function index 0 is invalid because this bundle declares 0 functions"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn duplicate_function_names_require_an_index() {
+        let header: SmallFunctionHeader = SmallFunctionHeader {
+            offset: 0,
+            param_count: 0,
+            bytecode_size_bytes: 0,
+            function_name_id: 0,
+            info_offset: 0,
+            frame_size: 0,
+            env_size: 0,
+            highest_read_cache_index: 0,
+            highest_write_cache_index: 0,
+            prohibit_invoke: 0,
+            strict_mode: false,
+            has_exception_handler: false,
+            has_debug_info: false,
+            overflowed: false,
+        };
+        let module: HermesModule = HermesModule {
+            header: HermesHeader {
+                version: 96,
+                source_hash: [0u8; 20],
+                file_length: 0,
+                global_code_index: 0,
+                function_count: 2,
+                string_kind_count: 0,
+                identifier_count: 1,
+                string_count: 0,
+                overflow_string_count: 0,
+                string_storage_size: 0,
+                big_int_count: 0,
+                big_int_storage_size: 0,
+                reg_exp_count: 0,
+                reg_exp_storage_size: 0,
+                array_buffer_size: 0,
+                obj_key_buffer_size: 0,
+                obj_value_buffer_size: 0,
+                segment_id: 0,
+                cjs_module_count: 0,
+                function_source_count: 0,
+                debug_info_offset: 0,
+                flags: 0,
+            },
+            functions: vec![header, header],
+            identifiers: vec!["duplicate".to_owned()],
+            strings: Vec::new(),
+            string_kinds: vec![HermesStringKind::Identifier],
+            overflow_resolved: 0,
+            utf16_strings: 0,
+            raw_bytecode_size: 0,
+            array_buffer: Vec::new(),
+            obj_key_buffer: Vec::new(),
+            obj_value_buffer: Vec::new(),
+            big_int_table: Vec::new(),
+            big_int_storage: Vec::new(),
+            reg_exp_table: Vec::new(),
+            reg_exp_storage: Vec::new(),
+            raw_image: Vec::new(),
+        };
+        let result: Result<usize, String> = resolve_function_index(&module, "duplicate")
+            .map_err(|error: miette::Report| error.to_string());
+        assert_eq!(
+            result,
+            Err(
+                "DR-CLI-0875: Hermes function name \"duplicate\" is ambiguous across 2 entries; select a zero-based index"
+                    .to_owned()
+            )
+        );
+    }
 }

@@ -18,7 +18,7 @@ pub use bigint::{bigint_literal, recover_bigints};
 pub use builtins::{builtin_name, get_template_object_builtin, is_template_object_builtin};
 pub use decompile::{
     DeclineCount, DecompileReport, DecompiledFunction, OpcodeCount, decompile_function,
-    decompile_module, disassemble_function_instructions, opcode_label,
+    decompile_module, disassemble_function_instructions,
 };
 pub use literals::{BufferKind, LiteralValue, decode_literals};
 pub use regex::{RecoveredRegExp, recover_regexp, recover_regexps};

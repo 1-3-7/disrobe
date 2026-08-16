@@ -36,7 +36,7 @@ disrobe flutter inventory-standalone vm_data vm_instructions isolate_data isolat
 
 `mobile detect` classifies the package; `mobile extract` pulls bundles out of the container. It writes a `manifest.json` for React Native, Flutter, Cordova/Capacitor, NativeScript, and Xamarin extraction; Android APK/Dex and Android bundle paths write child files directly without a manifest.
 
-`hermes decompile` lifts each function back to pseudo-JavaScript. `hermes disasm` emits a per-function summary without a JS surface. `hermes info` prints the version, function count, string count, and identifier count.
+`hermes decompile` lifts each function back to pseudo-JavaScript. `hermes disasm` emits a per-function summary without a JS surface. Pass `--function <INDEX_OR_NAME>` to select a zero-based index or exact function name, and add `--json` to receive the same instruction list as a structured document. Duplicate names require an index. `hermes info` prints the version, function count, string count, and identifier count.
 
 `flutter dump` reports the four Dart snapshot sections and their sizes. `flutter map` parses a Flutter `obfuscation_map.json` into a typed original-to-obfuscated lookup.
 

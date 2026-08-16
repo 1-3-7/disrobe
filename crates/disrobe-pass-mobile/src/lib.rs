@@ -117,9 +117,9 @@ pub use hermes::{
     disassemble_function_instructions as hermes_disasm_function,
     get_template_object_builtin as hermes_get_template_object_builtin, header_size_for_version,
     is_template_object_builtin, lift_to_js_surface as hermes_lift_to_js_surface,
-    opcode_label as hermes_opcode_label, parse as parse_hermes_module,
-    parse_header as parse_hermes_header, recover_bigints as recover_hermes_bigints,
-    recover_regexp as recover_hermes_regexp, recover_regexps as recover_hermes_regexps,
+    parse as parse_hermes_module, parse_header as parse_hermes_header,
+    recover_bigints as recover_hermes_bigints, recover_regexp as recover_hermes_regexp,
+    recover_regexps as recover_hermes_regexps,
 };
 pub use ios::{
     FatArchEntry, IpaEntry, IpaExtractionReport, MACHO_FAT_MAGIC_64_BE, MACHO_FAT_MAGIC_BE,
