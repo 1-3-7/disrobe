@@ -1,7 +1,7 @@
 use disrobe_pass_jvm::{
-    ApkResourceReport, BackendCapability, ClassFile, DecompiledClass, DexFile, JniSurfaceReport,
-    analyze_apk_resources, analyze_jni_surface, decompile_class, detect_all, detect_available,
-    parse_classfile, parse_dex,
+    ApkResourceReport, BackendCapability, ClassFile, DecompiledClass, DecompiledDex, DexFile,
+    JniSurfaceReport, analyze_apk_resources, analyze_jni_surface, decompile_class, decompile_dex,
+    detect_all, detect_available, parse_classfile, parse_dex,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -11,6 +11,7 @@ use crate::err::map;
 use crate::llm::null_bundled_value;
 use crate::typed::{
     ApkResources, DetectionList, DexFileReport, JniLink, JvmBackends, JvmClass, JvmDecompiledClass,
+    JvmDecompiledDex,
 };
 
 #[pyfunction]
@@ -33,6 +34,14 @@ fn jvm_decompile_class(class_bytes: &[u8]) -> PyResult<JvmDecompiledClass> {
     let cf: ClassFile = parse_classfile(class_bytes).map_err(map("jvm parse class"))?;
     let decompiled: DecompiledClass = decompile_class(&cf);
     Ok(JvmDecompiledClass::from_value(to_value(&decompiled)?))
+}
+
+#[pyfunction]
+#[pyo3(text_signature = "(dex_bytes)")]
+fn jvm_decompile_dex(dex_bytes: &[u8]) -> PyResult<JvmDecompiledDex> {
+    let dex: DexFile = parse_dex(dex_bytes).map_err(map("jvm parse dex"))?;
+    let decompiled: DecompiledDex = decompile_dex(&dex, dex_bytes);
+    Ok(JvmDecompiledDex::from_value(to_value(&decompiled)?))
 }
 
 #[pyfunction]
@@ -79,6 +88,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jvm_parse_class, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_parse_dex, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_decompile_class, m)?)?;
+    m.add_function(wrap_pyfunction!(jvm_decompile_dex, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_detect, m)?)?;
     m.add_function(wrap_pyfunction!(jvm_backends, m)?)?;
     m.add_function(wrap_pyfunction!(apk_resources, m)?)?;

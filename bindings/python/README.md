@@ -60,7 +60,7 @@ See `help(disrobe)` for the full function list & per-function docstrings.
 | nuitka | `nuitka_detect`, `nuitka_extract` |
 | hermes (react-native) | `hermes_disasm`, `hermes_lift`, `hermes_info` |
 | mach-o | `macho_dump` |
-| jvm / android | `jvm_parse_class`, `jvm_parse_dex`, `jvm_decompile_class`, `jvm_detect`, `jvm_backends` |
+| jvm / android | `jvm_parse_class`, `jvm_parse_dex`, `jvm_decompile_class`, `jvm_decompile_dex`, `jvm_detect`, `jvm_backends` |
 | .net | `dotnet_parse_pe`, `dotnet_parse_metadata`, `dotnet_detect`, `dotnet_analyze`, `dotnet_decompile`, `dotnet_recover_decoders`, `dotnet_backends` |
 | wasm | `wasm_analyze`, `wasm_detect` |
 | js | `js_detect`, `js_unminify`, `js_unbundle` |

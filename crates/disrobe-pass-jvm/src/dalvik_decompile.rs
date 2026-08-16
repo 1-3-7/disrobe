@@ -69,9 +69,12 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         crate::dalvik_desugar::DefaultInterfaceRecovery::analyze(dex, bytes, &code_report);
     let method_refs: crate::dalvik_desugar::MethodReferenceRecovery =
         crate::dalvik_desugar::MethodReferenceRecovery::analyze(dex, bytes, &code_report);
+    let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
+        crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
         method_refs: &method_refs,
+        core_library: &core_library,
     };
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
     for descriptor_name in &dex.class_descriptors {
@@ -133,7 +136,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         }
         let recovery: Option<&crate::dalvik_strdec::DexStringRecovery> =
             string_recovery.get(class_descriptor);
-        let rendered: RenderedClass = render_class(
+        let mut rendered: RenderedClass = render_class(
             dex,
             class_descriptor,
             methods,
@@ -143,8 +146,18 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
             &generic_by_method,
             desugar,
         );
+        if class_count == 0 && !desugar.core_library.diagnostics().is_empty() {
+            let mut annotated: String = String::with_capacity(rendered.text.len());
+            for diagnostic in desugar.core_library.diagnostics() {
+                let _: std::fmt::Result = writeln!(annotated, "// {diagnostic}");
+            }
+            annotated.push_str(&rendered.text);
+            rendered.text = annotated;
+        }
+        if !source.is_empty() {
+            source.push('\n');
+        }
         source.push_str(&rendered.text);
-        source.push('\n');
         match sources.entry(rendered.source_path) {
             std::collections::btree_map::Entry::Vacant(slot) => {
                 slot.insert(rendered.text);
@@ -230,7 +243,8 @@ fn render_class(
     >,
     desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> RenderedClass {
-    let binary: String = descriptor::binary_to_source(class_descriptor);
+    let projected_class: String = desugar.core_library.project_type(class_descriptor);
+    let binary: String = descriptor::binary_to_source(&projected_class);
     let (package, simple): (Option<&str>, &str) = match binary.rfind('.') {
         Some(p) => (Some(&binary[..p]), &binary[p + 1..]),
         None => (None, binary.as_str()),
@@ -255,7 +269,10 @@ fn render_class(
         Some(interfaces) if !interfaces.is_empty() => {
             let names: Vec<String> = interfaces
                 .iter()
-                .map(|interface: &String| descriptor::binary_to_source(interface))
+                .map(|interface: &String| {
+                    let projected: String = desugar.core_library.project_type(interface);
+                    descriptor::binary_to_source(&projected)
+                })
                 .collect();
             format!(" implements {}", names.join(", "))
         }
@@ -302,6 +319,7 @@ fn render_class(
                         simple,
                         method,
                         Some("default interface bridge is absent"),
+                        desugar,
                     )
                 },
                 |bridge: &CodeItem| {
@@ -315,25 +333,26 @@ fn render_class(
                     simple,
                     method,
                     Some("code item is present on a bodyless declaration"),
+                    desugar,
                 )
             }
             (DexCodeState::Decoded(_), Some(item), None) => {
                 render_method(dex, simple, item, cff, generic_sites, desugar, None)
             }
             (DexCodeState::Decoded(_), None, None) => {
-                render_unavailable_method(simple, method, Some("decoded body is absent"))
+                render_unavailable_method(simple, method, Some("decoded body is absent"), desugar)
             }
             (DexCodeState::Absent, _, None) => {
                 let expected_absence: bool = method.access_flags & (ACC_NATIVE | ACC_ABSTRACT) != 0;
                 if expected_absence {
-                    render_unavailable_method(simple, method, None)
+                    render_unavailable_method(simple, method, None, desugar)
                 } else {
-                    render_unavailable_method(simple, method, Some("code item is absent"))
+                    render_unavailable_method(simple, method, Some("code item is absent"), desugar)
                 }
             }
             (DexCodeState::Refused(error), _, None) => {
                 let reason: String = error.to_string();
-                render_unavailable_method(simple, method, Some(&reason))
+                render_unavailable_method(simple, method, Some(&reason), desugar)
             }
         };
         let _ = writeln!(text, "{}", rendered.text);
@@ -427,8 +446,10 @@ fn render_unavailable_method(
     class_simple: &str,
     method: &DexMethodCode,
     refusal: Option<&str>,
+    desugar: crate::dalvik_desugar::DesugarView<'_>,
 ) -> RenderedMethod {
-    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&method.method_descriptor);
+    let projected_descriptor: String = desugar.core_library.project_type(&method.method_descriptor);
+    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&projected_descriptor);
     let is_constructor: bool = method.method_name == "<init>";
     let is_clinit: bool = method.method_name == "<clinit>";
     let is_static: bool = method.access_flags & ACC_STATIC != 0;
@@ -524,7 +545,8 @@ fn render_method(
         item.method_name.as_str(),
         |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.name.as_str(),
     );
-    let parsed: Option<MethodDescriptor> = descriptor::parse_method(method_descriptor);
+    let projected_method_descriptor: String = desugar.core_library.project_type(method_descriptor);
+    let parsed: Option<MethodDescriptor> = descriptor::parse_method(&projected_method_descriptor);
     let footprint: u16 = parsed
         .as_ref()
         .map(|md| {

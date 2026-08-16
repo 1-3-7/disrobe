@@ -36,6 +36,7 @@ pub mod const_fold;
 pub mod dalvik;
 pub mod dalvik_blackobf;
 pub mod dalvik_cfg;
+mod dalvik_core_library;
 pub mod dalvik_decompile;
 pub(crate) mod dalvik_desugar;
 pub mod dalvik_dexguard;

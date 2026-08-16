@@ -17,6 +17,17 @@ import disrobe
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 SAMPLE_ELF = (FIXTURES / "sample.elf").read_bytes()
+ROOT: pathlib.Path = pathlib.Path(__file__).parents[3]
+CORE_LIBRARY_DEX: bytes = (
+    ROOT / "corpus" / "jvm" / "desugar-core" / "CoreLibraryProbe-min21.dex"
+).read_bytes()
+CORE_LIBRARY_SOURCE: str = (
+    ROOT
+    / "corpus"
+    / "jvm"
+    / "desugar-core"
+    / "CoreLibraryProbe.recovered.java.txt"
+).read_text(encoding="utf-8")
 
 
 def _build_disasm_dr() -> bytes:
@@ -35,6 +46,20 @@ def _build_disasm_dr() -> bytes:
 def test_version_is_string() -> None:
     assert isinstance(disrobe.__version__, str)
     assert disrobe.__version__.count(".") >= 2
+
+
+def test_jvm_dex_decompile_recovers_core_library_calls() -> None:
+    report: disrobe.JvmDecompiledDex = disrobe.jvm_decompile_dex(CORE_LIBRARY_DEX)
+    source: str | None = report.source
+    assert isinstance(report, disrobe.JvmDecompiledDex)
+    assert source == CORE_LIBRARY_SOURCE
+    assert source is not None
+    assert report.source_count >= 1
+    assert "java.time.Duration.ofMinutes" in source
+    assert "java.util.concurrent.TimeUnit.SECONDS.convert" in source
+    assert "j$." not in source
+    assert "$-EL" not in source
+    assert "$-CC" not in source
 
 
 def test_codeobject_mutation_and_roundtrip() -> None:

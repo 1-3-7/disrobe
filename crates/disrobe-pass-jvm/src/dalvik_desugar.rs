@@ -565,6 +565,7 @@ pub(crate) struct MethodReferenceRecovery {
 pub(crate) struct DesugarView<'a> {
     pub(crate) interfaces: &'a DefaultInterfaceRecovery,
     pub(crate) method_refs: &'a MethodReferenceRecovery,
+    pub(crate) core_library: &'a crate::dalvik_core_library::CoreLibraryRecovery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

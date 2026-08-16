@@ -51,6 +51,23 @@ bytes = 102539
 notes = "real kotlinc 2.1.20 output bundled w/ kotlinx-coroutines-core-jvm 1.10.2 at runtime; smoke-runs to `KT-DONE`."
 
 [[megafile]]
+path = "desugar-core/CoreLibraryProbe.java"
+language = "java"
+target = "D8 9.1.31, DEX 035, minimum API 21 and 34"
+fixtures = [
+    "desugar-core/CoreLibraryProbe-min21.dex",
+    "desugar-core/CoreLibraryProbe-min21-debug.dex",
+    "desugar-core/CoreLibraryProbe-min34.dex",
+    "desugar-core/CoreLibraryProbe-min21.apk",
+    "desugar-core/CoreLibraryProbe-min21-multidex.apk",
+    "desugar-core/SecondaryProbe.java",
+    "desugar-core/CoreLibraryProbe.recovered.java.txt",
+    "desugar-core/AndroidManifest.xml",
+    "desugar-core/provenance.toml",
+]
+notes = "The minimum-21 release and debug artifacts use the official desugar_jdk_libs_configuration 2.1.5 and contain direct relocation, receiver-first $-EL, interface-static $-CC, and DesugarTimeUnit calls across time, streams, functions, Optional, concurrent, and NIO APIs. The minimum-34 artifact preserves the authored API shape for comparison. Single-dex and multidex APKs grade automatic routing. The focused test validates the D8 marker and generated descriptors before recovery, compares exact recovered source bytes, recompiles every recovered compilation unit with javac, and executes every API probe method through an independent harness. The provenance file records source, tool, platform, configuration, library, artifact hashes, and exact build commands."
+
+[[megafile]]
 path = "zkmshape/StaticTableCrypt.java"
 language = "java"
 target = "Java 25"

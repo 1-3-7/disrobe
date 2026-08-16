@@ -312,10 +312,10 @@ fn const_class(
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
-    let ty: String = insn
-        .index
-        .and_then(|i| ctx.type_at(i))
-        .map_or_else(|| "Object".to_string(), descriptor::binary_to_source);
+    let ty: String = insn.index.and_then(|i| ctx.type_at(i)).map_or_else(
+        || "Object".to_string(),
+        |value: &str| source_type(ctx, value),
+    );
     let text: String = format!("{ty}.class");
     file.write_materialized(dest, Expr::Const(text.clone()));
     LiftOutcome::Statement(format!("{} = {text}", lvalue(dest)))
@@ -330,10 +330,10 @@ fn check_cast(
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
-    let ty: String = insn
-        .index
-        .and_then(|i| ctx.type_at(i))
-        .map_or_else(|| "Object".to_string(), descriptor::binary_to_source);
+    let ty: String = insn.index.and_then(|i| ctx.type_at(i)).map_or_else(
+        || "Object".to_string(),
+        |value: &str| source_type(ctx, value),
+    );
     let value: Expr = file.read(ctx, dest);
     file.write(
         dest,
@@ -355,10 +355,10 @@ fn instance_of(
     else {
         return LiftOutcome::None;
     };
-    let ty: String = insn
-        .index
-        .and_then(|i| ctx.type_at(i))
-        .map_or_else(|| "Object".to_string(), descriptor::binary_to_source);
+    let ty: String = insn.index.and_then(|i| ctx.type_at(i)).map_or_else(
+        || "Object".to_string(),
+        |value: &str| source_type(ctx, value),
+    );
     let value: Expr = file.read(ctx, src);
     file.write(
         dest,
@@ -389,10 +389,10 @@ fn new_instance(
     let Some(&dest): Option<&u16> = regs.first() else {
         return LiftOutcome::None;
     };
-    let ty: String = insn
-        .index
-        .and_then(|i| ctx.type_at(i))
-        .map_or_else(|| "Object".to_string(), descriptor::binary_to_source);
+    let ty: String = insn.index.and_then(|i| ctx.type_at(i)).map_or_else(
+        || "Object".to_string(),
+        |value: &str| source_type(ctx, value),
+    );
     file.write(dest, Expr::New(ty));
     LiftOutcome::None
 }
@@ -413,7 +413,7 @@ fn new_array(
         .map(|descr| descr.trim_start_matches('[').to_string())
         .map_or_else(
             || "Object".to_string(),
-            |inner| descriptor::binary_to_source(&inner),
+            |inner: String| source_type(ctx, &inner),
         );
     let size: Expr = file.read(ctx, size_reg);
     file.write(
@@ -475,17 +475,14 @@ fn instance_get(
         return LiftOutcome::None;
     };
     let name: String = field.name.clone();
-    let owner: String = field.class.clone();
+    let owner: String = ctx.desugar.core_library.project_type(&field.class);
     let boolean: bool = field.type_name == "Z";
     let receiver: Expr = file.read(ctx, obj);
-    let expr: Expr = match &receiver {
-        Expr::This => Expr::Field {
-            receiver: Box::new(Expr::This),
-            owner,
-            name,
-            boolean,
-        },
-        _ => Expr::Opaque(format!("{}.{name}", receiver.render())),
+    let expr: Expr = Expr::Field {
+        receiver: Box::new(receiver),
+        owner,
+        name,
+        boolean,
     };
     file.write(dest, expr);
     LiftOutcome::None
@@ -525,7 +522,7 @@ fn static_get(
     let Some(field): Option<&FieldId> = insn.index.and_then(|i| ctx.field_id(i)) else {
         return LiftOutcome::None;
     };
-    let owner: String = descriptor::binary_to_source(&field.class);
+    let owner: String = source_type(ctx, &field.class);
     file.write(
         dest,
         Expr::StaticField {
@@ -549,7 +546,7 @@ fn static_put(
     let Some(field): Option<&FieldId> = insn.index.and_then(|i| ctx.field_id(i)) else {
         return LiftOutcome::None;
     };
-    let owner: String = descriptor::binary_to_source(&field.class);
+    let owner: String = source_type(ctx, &field.class);
     let value_expr: Expr = file.read(ctx, value);
     LiftOutcome::Statement(format!("{owner}.{} = {}", field.name, value_expr.render()))
 }
@@ -568,25 +565,50 @@ fn invoke(
     let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = insn
         .index
         .and_then(|index: u32| ctx.desugar.interfaces.rewrites_call(index));
-    let owner: String = recovered_default.map_or_else(
-        || descriptor::binary_to_source(&method.class),
-        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
-            descriptor::binary_to_source(&recovered.interface)
+    let core_projection: Option<crate::dalvik_core_library::CoreMethodProjection> =
+        ctx.desugar.core_library.project_method(method).filter(
+            |projection: &crate::dalvik_core_library::CoreMethodProjection| {
+                core_projection_matches_invoke(projection, method, is_static, insn.regs.len())
+            },
+        );
+    let owner_descriptor: &str = recovered_default.map_or_else(
+        || {
+            core_projection
+                .as_ref()
+                .map_or(method.class.as_str(), |projection| {
+                    projection.owner.as_str()
+                })
         },
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.interface.as_str(),
     );
-    let name: String =
-        recovered_default.map_or_else(|| method.name.clone(), |recovered| recovered.name.clone());
-    let returns_void: bool = method.proto.return_type == "V";
+    let owner: String = descriptor::binary_to_source(owner_descriptor);
+    let name: String = recovered_default.map_or_else(
+        || {
+            core_projection
+                .as_ref()
+                .map_or_else(|| method.name.clone(), |projection| projection.name.clone())
+        },
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| recovered.name.clone(),
+    );
+    let returns_void: bool = core_projection
+        .as_ref()
+        .map_or(method.proto.return_type == "V", |projection| {
+            projection.return_type == "V"
+        });
+    let core_receiver_first: bool = core_projection.as_ref().is_some_and(|projection| {
+        projection.shape == crate::dalvik_core_library::CoreInvokeShape::ReceiverFirst
+    });
 
     let mut reg_iter: std::slice::Iter<'_, u16> = insn.regs.iter();
-    let receiver_register: Option<u16> = if !is_static || recovered_default.is_some() {
-        insn.regs.first().copied()
-    } else {
-        None
-    };
+    let receiver_register: Option<u16> =
+        if !is_static || recovered_default.is_some() || core_receiver_first {
+            insn.regs.first().copied()
+        } else {
+            None
+        };
     let receiver: Option<Expr> = if !is_static {
         reg_iter.next().map(|&r| file.read(ctx, r))
-    } else if recovered_default.is_some() {
+    } else if recovered_default.is_some() || core_receiver_first {
         reg_iter.next().map(|&r| file.read(ctx, r))
     } else {
         None
@@ -596,6 +618,8 @@ fn invoke(
             return LiftOutcome::None;
         };
         parameters
+    } else if let Some(projection) = &core_projection {
+        projection.parameters.as_slice()
     } else {
         &method.proto.parameters
     };
@@ -620,7 +644,7 @@ fn invoke(
             let reference: Option<String> =
                 ctx.desugar.method_refs.recovered(&method.class).and_then(
                     |recovered: &crate::dalvik_desugar::RecoveredMethodRef| {
-                        render_method_reference(recovered, &args)
+                        render_method_reference(ctx.desugar.core_library, recovered, &args)
                     },
                 );
             let constructed: Expr =
@@ -642,7 +666,11 @@ fn invoke(
         owner,
         method: name,
         args,
-        returns_bool: method.proto.return_type == "Z",
+        returns_bool: core_projection
+            .as_ref()
+            .map_or(method.proto.return_type == "Z", |projection| {
+                projection.return_type == "Z"
+            }),
     };
     if returns_void {
         return LiftOutcome::Statement(call.render());
@@ -659,6 +687,7 @@ fn invoke(
 }
 
 fn render_method_reference(
+    core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
     recovered: &crate::dalvik_desugar::RecoveredMethodRef,
     args: &[Expr],
 ) -> Option<String> {
@@ -680,7 +709,7 @@ fn render_method_reference(
     }
     Some(format!(
         "{}::{name}",
-        descriptor::binary_to_source(&recovered.owner)
+        descriptor::binary_to_source(&core_library.project_type(&recovered.owner))
     ))
 }
 
@@ -699,6 +728,32 @@ fn returns_receiver(method: &MethodId) -> bool {
         method.name.as_str(),
         "append" | "appendCodePoint" | "delete" | "deleteCharAt" | "insert" | "replace" | "reverse"
     ) && method.proto.return_type == method.class
+}
+
+fn core_projection_matches_invoke(
+    projection: &crate::dalvik_core_library::CoreMethodProjection,
+    method: &MethodId,
+    is_static: bool,
+    register_count: usize,
+) -> bool {
+    if projection.shape != crate::dalvik_core_library::CoreInvokeShape::Preserve && !is_static {
+        return false;
+    }
+    let parameter_words: Option<usize> =
+        method
+            .proto
+            .parameters
+            .iter()
+            .try_fold(0usize, |count: usize, parameter: &String| {
+                count.checked_add(if is_category_two(parameter) { 2 } else { 1 })
+            });
+    parameter_words.and_then(|count: usize| count.checked_add(usize::from(!is_static)))
+        == Some(register_count)
+}
+
+fn source_type(ctx: &MethodContext<'_>, binary: &str) -> String {
+    let projected: String = ctx.desugar.core_library.project_type(binary);
+    descriptor::binary_to_source(&projected)
 }
 
 fn unary(
@@ -967,7 +1022,9 @@ const fn comparez_op(op: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::returns_receiver;
+    use super::{core_projection_matches_invoke, render_method_reference, returns_receiver};
+    use crate::dalvik_core_library::{CoreInvokeShape, CoreLibraryRecovery, CoreMethodProjection};
+    use crate::dalvik_desugar::{MethodRefKind, RecoveredMethodRef};
     use crate::dex::{MethodId, ProtoId};
 
     fn method(class: &str, name: &str, returns: &str) -> MethodId {
@@ -998,5 +1055,58 @@ mod tests {
         assert!(returns_receiver(&append));
         assert!(!returns_receiver(&concat));
         assert!(!returns_receiver(&builder_factory));
+    }
+
+    #[test]
+    fn core_library_projection_requires_static_shape_and_exact_register_words() {
+        let mut target: MethodId =
+            method("Lj$/util/Collection$-EL;", "stream", "Ljava/lang/Object;");
+        target.proto.parameters = vec!["Ljava/util/Collection;".to_string(), "J".to_string()];
+        let projection: CoreMethodProjection = CoreMethodProjection {
+            owner: "Ljava/util/Collection;".to_string(),
+            name: "stream".to_string(),
+            parameters: vec!["J".to_string()],
+            return_type: "Ljava/lang/Object;".to_string(),
+            shape: CoreInvokeShape::ReceiverFirst,
+        };
+        assert!(core_projection_matches_invoke(
+            &projection,
+            &target,
+            true,
+            3
+        ));
+        assert!(!core_projection_matches_invoke(
+            &projection,
+            &target,
+            true,
+            2
+        ));
+        assert!(!core_projection_matches_invoke(
+            &projection,
+            &target,
+            false,
+            4
+        ));
+    }
+
+    #[test]
+    fn method_reference_owner_uses_marker_confirmed_core_library_projection() {
+        let bytes: &[u8] =
+            include_bytes!("../../../corpus/jvm/desugar-core/CoreLibraryProbe-min21.dex");
+        let dex: Result<crate::dex::DexFile, crate::error::Error> = crate::dex::parse(bytes);
+        assert!(dex.is_ok());
+        let Ok(dex): Result<crate::dex::DexFile, crate::error::Error> = dex else {
+            return;
+        };
+        let recovery: CoreLibraryRecovery = CoreLibraryRecovery::analyze(&dex);
+        let reference: RecoveredMethodRef = RecoveredMethodRef {
+            kind: MethodRefKind::Static,
+            owner: "Lj$/time/Duration;".to_string(),
+            name: "ofMinutes".to_string(),
+        };
+        assert_eq!(
+            render_method_reference(&recovery, &reference, &[]),
+            Some("java.time.Duration::ofMinutes".to_string())
+        );
     }
 }

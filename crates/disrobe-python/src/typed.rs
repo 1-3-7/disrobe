@@ -747,6 +747,20 @@ typed_report!(
 );
 
 typed_report!(
+    JvmDecompiledDex,
+    "JvmDecompiledDex",
+    "Pseudo-Java decompilation of a DEX file with per-class source and lift-fidelity counts.",
+    accessors {
+        source -> Option<String> : |d| field_str(d, "source"),
+        source_count -> usize : |d| object_len(d, "sources"),
+        class_count -> usize : |d| field_u64(d, "class_count").map_or(0, u64_to_usize),
+        method_count -> usize : |d| field_u64(d, "method_count").map_or(0, u64_to_usize),
+        fully_lifted_methods -> usize : |d| field_u64(d, "fully_lifted_methods").map_or(0, u64_to_usize),
+        fallback_methods -> usize : |d| field_u64(d, "fallback_methods").map_or(0, u64_to_usize),
+    }
+);
+
+typed_report!(
     DetectionList,
     "DetectionList",
     "Ordered list of obfuscator/protector detection hits over an artifact.",
@@ -1290,6 +1304,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<JvmClass>()?;
     m.add_class::<DexFileReport>()?;
     m.add_class::<JvmDecompiledClass>()?;
+    m.add_class::<JvmDecompiledDex>()?;
     m.add_class::<DetectionList>()?;
     m.add_class::<JvmBackends>()?;
     m.add_class::<BackendList>()?;

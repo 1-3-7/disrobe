@@ -186,6 +186,7 @@ bundle: LlmBundle = {
 | JVM / Android | `jvm_parse_class(class_bytes)` | `JvmClass` |
 | | `jvm_parse_dex(dex_bytes)` | `DexFileReport` |
 | | `jvm_decompile_class(class_bytes)` | `JvmDecompiledClass` |
+| | `jvm_decompile_dex(dex_bytes)` | `JvmDecompiledDex` |
 | | `jvm_detect(class_bytes)` | `DetectionList` |
 | | `jvm_backends()` | `JvmBackends` |
 | | `apk_resources(apk_bytes)` | `ApkResources` |
@@ -988,7 +989,7 @@ JDK 25). <!-- m:dalvik_verifier_pct -->100%<!-- /m --> of verifier-presented com
 ```python
 import disrobe
 from disrobe import (
-    JvmClass, DexFileReport, JvmDecompiledClass,
+    JvmClass, DexFileReport, JvmDecompiledClass, JvmDecompiledDex,
     DetectionList, JvmBackends, ApkResources,
 )
 
@@ -1010,6 +1011,13 @@ with open("Hello.class", "rb") as fh:
 source: str | None = decompiled.source
 fully_lifted_methods: int = decompiled.fully_lifted_methods
 fallback_methods: int = decompiled.fallback_methods
+
+with open("classes.dex", "rb") as fh:
+    decompiled_dex: JvmDecompiledDex = disrobe.jvm_decompile_dex(fh.read())
+dex_source: str | None = decompiled_dex.source
+source_count: int = decompiled_dex.source_count
+dex_fully_lifted_methods: int = decompiled_dex.fully_lifted_methods
+dex_fallback_methods: int = decompiled_dex.fallback_methods
 
 detections: DetectionList = disrobe.jvm_detect(open("obf.class", "rb").read())
 detection_count: int = detections.count
@@ -1037,6 +1045,7 @@ tools but never shell out to them. Counts are informational only.
 | `JvmClass` | `major_version: int \| None`, `minor_version: int \| None`, `method_count: int`, `field_count: int`, `constant_pool_count: int`, `llm` |
 | `DexFileReport` | `string_count: int`, `type_count: int`, `class_count: int`, `method_count: int`, `llm` |
 | `JvmDecompiledClass` | `source: str \| None`, `method_count: int`, `field_count: int`, `fully_lifted_methods: int`, `fallback_methods: int` |
+| `JvmDecompiledDex` | `source: str \| None`, `source_count: int`, `class_count: int`, `method_count: int`, `fully_lifted_methods: int`, `fallback_methods: int` |
 | `DetectionList` | `count: int` |
 | `JvmBackends` | `jvm_count: int`, `android_count: int`, `llm` |
 | `ApkResources` | `package: str \| None`, `manifest_xml: str \| None`, `resource_entry_count: int`, `certificate_count: int`, `dex_count: int`, `llm` |
