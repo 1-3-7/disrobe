@@ -17,7 +17,7 @@ Before `disrobe` can decompile anything, it often has to get inside a container.
 
 | Category | Formats |
 |---|---|
-| Archives and installers | ZIP (incl. ZIP64 + AES), tar.gz / tar.bz2 / tar.xz / tar.zst, 7z, RAR4 and RAR5 (stored members from both; RAR5 LZ "normal" method decoded in-tree; RAR 2.9/3.x LZ used by compressed RAR4 is named per-entry, not decoded in-tree), `.cab`, MSI, MSIX / APPX, NSIS (solid and non-solid), Inno Setup (decoded setup-data block stream; per-file split via version-specific `TSetupHeader` parse is the documented limit), InstallShield (stored and zlib members), `.deb`, `.rpm` (metadata), AppImage, Flatpak, Snap |
+| Archives and installers | ZIP (incl. ZIP64 + AES), tar.gz / tar.bz2 / tar.xz / tar.zst, 7z, RAR4 and RAR5 (stored members from both; RAR5 LZ "normal" method decoded in-tree; RAR 2.9/3.x LZ used by compressed RAR4 is named per-entry, not decoded in-tree), `.cab`, MSI, MSIX / APPX, NSIS (solid and non-solid), Inno Setup 4.0.9 through setup-data profile 7.0.0.3 (stored, zlib, BZip2, LZMA1, and LZMA2 members, including solid groups), InstallShield (stored and zlib members), `.deb`, `.rpm` (metadata), AppImage, Flatpak, Snap |
 | Bare compression streams | gzip, bzip2, zstd, lzma, lzip, lz4-frame, zlib, `.Z` (Unix compress) |
 | Legacy archives | ar, arj (methods 1-3 decoded; method 4 carved verbatim), arc (rle / squeeze / lzw decoded; methods 5-7 carved verbatim), lzh, lzop, FreeBSD uzip, Xamarin xalz, par2, ELF appended-overlay carve, StuffIt (classic stored forks decoded; compressed forks carved verbatim with a documented note), partclone (decoded) |
 | Embedded-linux filesystems | squashfs, cramfs, ext4, romfs, minixfs, jffs2, UBI + UBIFS, yaffs, erofs (chunk and lcluster lz4 / deflate / zstd decoded; microlzma and compact index carved), NTFS, android-sparse, btrfs-send |
@@ -65,7 +65,7 @@ Bypasses of any of these are treated as security issues; see the [security polic
 Where a format's payload is not decoded in-tree, the table above names it per entry rather than implying full extraction:
 
 - Compressed RAR4 (RAR 2.9/3.x LZ) is named per-entry, not decoded.
-- Inno Setup splits per file only through a version-specific `TSetupHeader` parse; that is the documented limit.
+- Inno Setup follows finite version profiles from the loader through both metadata blocks, file and data records, solid groups, filters, and checksums. Unsupported profiles and encrypted content without a secret refuse by name.
 - arj method 4, arc methods 5-7, StuffIt compressed forks, and erofs microlzma and compact index are carved verbatim rather than decoded.
 - OTP-AES Airoha firmware is an information-theoretic wall and is carved verbatim.
 - A minidump only contains the memory it captured. Truncated and never-captured ranges are reported with a reason per gap instead of being filled in.

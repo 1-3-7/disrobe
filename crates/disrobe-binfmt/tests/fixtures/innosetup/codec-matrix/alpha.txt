@@ -1,0 +1,4 @@
+alpha file content for the Inno Setup codec matrix
+0123456789 repeated alpha payload
+0123456789 repeated alpha payload
+0123456789 repeated alpha payload

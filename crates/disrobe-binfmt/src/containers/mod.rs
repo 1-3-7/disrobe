@@ -173,9 +173,9 @@ pub use hfsplus::{
     locate_hfsplus_volumes, parse_hfsplus, parse_hfsplus_at,
 };
 pub use innosetup::{
-    InnoCompression, InnoFileChunk, InnoFilter, InnoSetupInfo, SetupLoaderOffsets, data_area_start,
-    detect_innosetup, extract_inno_block_stream, extract_inno_file_chunks, innosetup_external_hint,
-    unfilter_instructions,
+    InnoCompression, InnoFilter, InnoNamedRecovery, InnoRecoveredFile, InnoSetupInfo,
+    SetupLoaderOffsets, detect_innosetup, extract_inno_block_stream, recover_inno_named_files,
+    recover_inno_named_files_with_limits, unfilter_instructions,
 };
 pub use installshield::{
     InstallShieldFile, InstallShieldHeader, detect_installshield, installshield_external_hint,

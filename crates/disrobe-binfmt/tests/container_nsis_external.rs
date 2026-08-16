@@ -1,5 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use disrobe_binfmt::containers::innosetup::{InnosetupExternalHint, innosetup_external_hint};
 use disrobe_binfmt::containers::installshield::{
     InstallshieldExternalHint, installshield_external_hint,
 };
@@ -22,13 +21,6 @@ fn nsis_signature_detected_in_pe_tail_synthetic() {
     assert_eq!(header.offset, 2048);
     assert_eq!(header.header_size, 4096);
     assert_eq!(header.archive_size, 65_536);
-}
-
-#[test]
-fn innosetup_external_hint_points_to_innoextract() {
-    let hint: InnosetupExternalHint = innosetup_external_hint();
-    assert_eq!(hint.tool_binary, "innoextract");
-    assert!(hint.install_hint.to_lowercase().contains("install"));
 }
 
 #[test]

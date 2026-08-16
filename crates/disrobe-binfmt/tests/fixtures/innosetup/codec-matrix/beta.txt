@@ -1,0 +1,4 @@
+beta file content for the Inno Setup codec matrix
+abcdefghijklmnopqrstuvwxyz repeated beta payload
+abcdefghijklmnopqrstuvwxyz repeated beta payload
+abcdefghijklmnopqrstuvwxyz repeated beta payload

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 
@@ -1998,6 +1998,23 @@ fn extract_flatpak(
     })
 }
 
+fn inno_output_key(name: &str) -> String {
+    name.chars().flat_map(char::to_uppercase).collect()
+}
+
+fn reserve_inno_output(reserved: &mut BTreeSet<String>, name: &str) -> bool {
+    reserved.insert(inno_output_key(name))
+}
+
+const fn ratio_output_limit(compressed: u64, max_ratio: u64) -> u64 {
+    if compressed == 0 || max_ratio == u64::MAX {
+        return u64::MAX;
+    }
+    compressed
+        .saturating_mul(max_ratio.saturating_add(1))
+        .saturating_sub(1)
+}
+
 fn extract_innosetup(
     bytes: &[u8],
     out_dir: &Path,
@@ -2005,24 +2022,26 @@ fn extract_innosetup(
 ) -> Result<ExtractionResult> {
     let info: crate::containers::InnoSetupInfo = crate::containers::detect_innosetup(bytes)
         .ok_or_else(|| {
-            Error::InnoSetup(
-                "no `Inno Setup Setup Data (X.Y.Z)` id string found in input".to_owned(),
-            )
+            Error::InnoSetup("no validated Inno Setup loader table found in input".to_owned())
         })?;
-    std::fs::create_dir_all(out_dir)?;
-    let installer_quota: ExtractionQuota = ExtractionQuota {
-        max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
-        max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
-        ..quota
-    };
-    let mut guard: QuotaGuard = QuotaGuard::new(installer_quota);
+    let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut reserved: BTreeSet<String> = [
+        ".disrobe-innosetup-info.json",
+        "setup-headers.bin",
+        "setup-engine.lzma",
+    ]
+    .into_iter()
+    .map(inno_output_key)
+    .collect();
 
-    let info_json: String =
-        serde_json::to_string_pretty(&info).unwrap_or_else(|_: serde_json::Error| String::new());
-    let info_path: PathBuf = out_dir.join(".disrobe-innosetup-info.json");
+    let info_json: String = serde_json::to_string_pretty(&info)?;
+    let info_size: u64 = info_json.len() as u64;
+    guard.admit_entry(".disrobe-innosetup-info.json", info_size, info_size)?;
+    std::fs::create_dir_all(out_dir)?;
+    let info_path: PathBuf = prepare_entry_path(out_dir, ".disrobe-innosetup-info.json")?;
     std::fs::write(&info_path, info_json.as_bytes())?;
     encoding.insert(
         ".disrobe-innosetup-info.json".to_owned(),
@@ -2031,65 +2050,199 @@ fn extract_innosetup(
     entries_out.push(ExtractedEntry {
         name: ".disrobe-innosetup-info.json".to_owned(),
         disk_path: Some(info_path),
-        uncompressed_size: info_json.len() as u64,
-        compressed_size: info_json.len() as u64,
+        uncompressed_size: info_size,
+        compressed_size: info_size,
         compression: EntryCompression::Stored,
         is_executable: false,
     });
 
-    if let Ok(decoded) = crate::containers::extract_inno_block_stream(bytes, &info) {
+    let header_report: &QuotaReport = guard.report();
+    if header_report.entries_accepted >= quota.max_entries {
+        return Err(Error::QuotaExceeded {
+            entry: "setup-headers.bin".to_owned(),
+            reason: format!("max_entries={} reached", quota.max_entries),
+        });
+    }
+    let header_aggregate_compressed: u64 = header_report
+        .total_compressed_bytes
+        .saturating_add(info.stored_size);
+    let header_aggregate_limit: u64 =
+        ratio_output_limit(header_aggregate_compressed, quota.max_aggregate_ratio)
+            .saturating_sub(header_report.total_uncompressed_bytes);
+    let header_limit: u64 = quota
+        .max_per_entry_uncompressed
+        .min(
+            quota
+                .max_total_uncompressed
+                .saturating_sub(header_report.total_uncompressed_bytes),
+        )
+        .min(ratio_output_limit(
+            info.stored_size,
+            quota.max_per_entry_ratio,
+        ))
+        .min(header_aggregate_limit);
+    if info.stored_size > header_limit {
+        return Err(Error::QuotaExceeded {
+            entry: "setup-headers.bin".to_owned(),
+            reason: format!(
+                "stored setup header size {} exceeds allocation cap {header_limit}",
+                info.stored_size
+            ),
+        });
+    }
+    if let Ok(decoded) = crate::containers::innosetup::extract_inno_block_stream_with_limit(
+        bytes,
+        &info,
+        header_limit,
+    ) {
         let tool_blob_name: String = "setup-headers.bin".to_owned();
-        let blob_path: PathBuf = out_dir.join(&tool_blob_name);
+        let header_compression: EntryCompression = match info.compression {
+            crate::containers::InnoCompression::Stored => EntryCompression::Stored,
+            crate::containers::InnoCompression::Zlib => EntryCompression::Deflate,
+            crate::containers::InnoCompression::Lzma1
+            | crate::containers::InnoCompression::Lzma2 => EntryCompression::Lzma,
+        };
+        let decoded_size: u64 = decoded.len() as u64;
+        guard.admit_entry(&tool_blob_name, decoded_size, info.stored_size)?;
+        let blob_path: PathBuf = prepare_entry_path(out_dir, &tool_blob_name)?;
         std::fs::write(&blob_path, &decoded)?;
-        encoding.insert(tool_blob_name.clone(), EntryCompression::Deflate);
+        encoding.insert(tool_blob_name.clone(), header_compression);
         entries_out.push(ExtractedEntry {
             name: tool_blob_name,
             disk_path: Some(blob_path),
-            uncompressed_size: decoded.len() as u64,
-            compressed_size: info.stored_size.into(),
-            compression: EntryCompression::Deflate,
+            uncompressed_size: decoded_size,
+            compressed_size: info.stored_size,
+            compression: header_compression,
             is_executable: false,
         });
     } else {
         violations.push(
-            "inno setup-data header stream uses lzma1 props (not decoded in-tree); per-file content is still recovered from the data area".to_owned(),
+            "inno setup-data header stream did not decode; per-file content recovery continues from validated metadata and the data area".to_owned(),
         );
     }
 
-    let chunks: Vec<crate::containers::InnoFileChunk> =
-        crate::containers::extract_inno_file_chunks(bytes, &info, quota.max_total_uncompressed);
-    for (index, chunk) in chunks.iter().enumerate() {
-        let tool_name: String = format!("file-{index}.bin");
-        let size: u64 = chunk.data.len() as u64;
-        if let Err(e) = guard.admit_entry(&tool_name, size, size) {
-            violations.push(format!("inno-quota `{tool_name}`: {e}"));
-            continue;
+    let remaining_entries: usize = quota
+        .max_entries
+        .saturating_sub(guard.report().entries_accepted);
+    let metadata_limit: u64 = quota
+        .max_per_entry_uncompressed
+        .min(quota.max_total_uncompressed)
+        .min(header_limit);
+    let metadata: Result<crate::containers::innosetup::InnoMetadata> =
+        crate::containers::innosetup::recover_inno_metadata_with_limits(
+            bytes,
+            metadata_limit,
+            remaining_entries,
+        );
+    let mut emitted_named_files: bool = false;
+    match metadata {
+        Ok(metadata) => {
+            let recovery: crate::containers::InnoNamedRecovery =
+                crate::containers::innosetup::recover_inno_named_files_with_quota(
+                    bytes,
+                    &metadata,
+                    crate::containers::innosetup::InnoRecoveryLimits {
+                        max_entries: remaining_entries,
+                        max_total: quota
+                            .max_total_uncompressed
+                            .saturating_sub(guard.report().total_uncompressed_bytes),
+                        max_per_entry: quota.max_per_entry_uncompressed,
+                        max_per_entry_ratio: quota.max_per_entry_ratio,
+                        max_aggregate_ratio: quota.max_aggregate_ratio,
+                        initial_uncompressed: guard.report().total_uncompressed_bytes,
+                        initial_compressed: guard.report().total_compressed_bytes,
+                    },
+                )?;
+            violations.extend(
+                recovery
+                    .refusals
+                    .into_iter()
+                    .map(|reason: String| format!("inno-file-refusal: {reason}")),
+            );
+            let mut charged_compressed_groups: BTreeSet<usize> = BTreeSet::new();
+            for file in recovery.files {
+                let safe_name: String = match sanitize_entry_path(&file.path) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        violations.push(format!("inno-slip: {error}"));
+                        continue;
+                    }
+                };
+                if !reserve_inno_output(&mut reserved, &safe_name) {
+                    violations.push(format!(
+                        "inno-output-collision: `{safe_name}` conflicts with another output path"
+                    ));
+                    continue;
+                }
+                let size: u64 = file.data.len() as u64;
+                let compressed_size: u64 =
+                    if charged_compressed_groups.contains(&file.compressed_group) {
+                        0
+                    } else {
+                        file.compressed_size
+                    };
+                if let Err(error) = guard.admit_entry(&safe_name, size, compressed_size) {
+                    violations.push(format!("inno-quota `{safe_name}`: {error}"));
+                    continue;
+                }
+                charged_compressed_groups.insert(file.compressed_group);
+                let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+                std::fs::write(&disk_path, &file.data)?;
+                let entry_compression: EntryCompression = match file.compression {
+                    crate::containers::innosetup::InnoFileCompression::Stored => {
+                        EntryCompression::Stored
+                    }
+                    crate::containers::innosetup::InnoFileCompression::Bzip2 => {
+                        EntryCompression::Bzip2
+                    }
+                    crate::containers::innosetup::InnoFileCompression::Zlib => {
+                        EntryCompression::Deflate
+                    }
+                    crate::containers::innosetup::InnoFileCompression::Lzma1
+                    | crate::containers::innosetup::InnoFileCompression::Lzma2 => {
+                        EntryCompression::Lzma
+                    }
+                };
+                encoding.insert(safe_name.clone(), entry_compression);
+                entries_out.push(ExtractedEntry {
+                    name: safe_name,
+                    disk_path: Some(disk_path),
+                    uncompressed_size: size,
+                    compressed_size: file.compressed_size,
+                    compression: entry_compression,
+                    is_executable: false,
+                });
+                emitted_named_files = true;
+            }
         }
-        let disk_path: PathBuf = out_dir.join(&tool_name);
-        std::fs::write(&disk_path, &chunk.data)?;
-        let entry_compression: EntryCompression = match chunk.compression {
-            crate::containers::InnoCompression::Stored => EntryCompression::Stored,
-            _ => EntryCompression::Deflate,
-        };
-        encoding.insert(tool_name.clone(), entry_compression);
-        entries_out.push(ExtractedEntry {
-            name: tool_name,
-            disk_path: Some(disk_path),
-            uncompressed_size: size,
-            compressed_size: size,
-            compression: entry_compression,
-            is_executable: false,
-        });
+        Err(error) => {
+            violations.push(format!("inno-metadata-refusal: {error}"));
+        }
     }
     if let Some(loader) = info.loader
         && loader.exe_offset > 0
         && loader.exe_compressed_size > 0
     {
-        let start: usize = loader.exe_offset as usize;
-        let end: usize = start.saturating_add(loader.exe_compressed_size as usize);
-        if let Some(engine) = bytes.get(start..end.min(bytes.len())) {
+        let start: usize =
+            usize::try_from(loader.exe_offset).map_err(|_error: std::num::TryFromIntError| {
+                Error::InnoSetup("setup engine offset overflows this platform".to_owned())
+            })?;
+        let size: usize = usize::try_from(loader.exe_compressed_size).map_err(
+            |_error: std::num::TryFromIntError| {
+                Error::InnoSetup("setup engine size overflows this platform".to_owned())
+            },
+        )?;
+        let end: usize = start.checked_add(size).ok_or_else(|| {
+            Error::InnoSetup("setup engine extent overflows this platform".to_owned())
+        })?;
+        if let Some(engine) = bytes.get(start..end) {
             let tool_name: String = "setup-engine.lzma".to_owned();
-            let disk_path: PathBuf = out_dir.join(&tool_name);
+            guard.admit_entry(
+                &tool_name,
+                loader.exe_uncompressed_size,
+                engine.len() as u64,
+            )?;
+            let disk_path: PathBuf = prepare_entry_path(out_dir, &tool_name)?;
             std::fs::write(&disk_path, engine)?;
             encoding.insert(tool_name.clone(), EntryCompression::Stored);
             entries_out.push(ExtractedEntry {
@@ -2102,14 +2255,8 @@ fn extract_innosetup(
             });
         }
     }
-    if chunks.is_empty() {
-        violations.push(
-            "inno data area held no decodable file chunks (a password-encrypted installer gates file content behind a runtime password: only salt and verifier are present in the artifact)".to_owned(),
-        );
-    } else {
-        violations.push(
-            "inno per-file destination names and solid-chunk file boundaries require the version-gated TSetupFile/data_entry walk; members are emitted by data-area chunk order (solid chunks are emitted as one concatenated member)".to_owned(),
-        );
+    if !emitted_named_files {
+        violations.push("inno metadata produced no named embedded members".to_owned());
     }
 
     Ok(ExtractionResult {
@@ -5767,6 +5914,256 @@ mod tests {
     }
 
     #[test]
+    fn extract_innosetup_applies_entry_quota_before_writing_sidecars() {
+        let bytes: Vec<u8> = crate::containers::innosetup::tests::build_named_file_test_inno(
+            "app\\tool.exe",
+            b"payload",
+        )
+        .expect("build Inno test image");
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-zero-entry-quota");
+        let out: PathBuf = scratch.path().join("out");
+        let quota: ExtractionQuota = ExtractionQuota {
+            max_entries: 0,
+            ..ExtractionQuota::default_safe()
+        };
+        let error: Error =
+            extract_to_with_quota(ContainerKind::InnoSetup, &bytes, &out, quota).unwrap_err();
+        assert!(matches!(error, Error::QuotaExceeded { .. }));
+        assert!(!out.join(".disrobe-innosetup-info.json").exists());
+        assert!(!out.join("setup-headers.bin").exists());
+    }
+
+    #[test]
+    fn extract_innosetup_threads_size_and_ratio_quotas_into_setup_outputs() {
+        let bytes: Vec<u8> = crate::containers::innosetup::tests::build_named_file_test_inno(
+            "app\\tool.exe",
+            b"payload",
+        )
+        .expect("build Inno test image");
+        for (suffix, quota) in [
+            (
+                "per-entry",
+                ExtractionQuota {
+                    max_per_entry_uncompressed: 400,
+                    ..ExtractionQuota::default_safe()
+                },
+            ),
+            (
+                "aggregate",
+                ExtractionQuota {
+                    max_total_uncompressed: 600,
+                    ..ExtractionQuota::default_safe()
+                },
+            ),
+            (
+                "ratio",
+                ExtractionQuota {
+                    max_per_entry_ratio: 0,
+                    max_aggregate_ratio: 0,
+                    ..ExtractionQuota::default_safe()
+                },
+            ),
+        ] {
+            let scratch: disrobe_core::scratch::ScratchDir = temp_dir(&format!("inno-{suffix}"));
+            let out: PathBuf = scratch.path().join("out");
+            let error: Error =
+                extract_to_with_quota(ContainerKind::InnoSetup, &bytes, &out, quota).unwrap_err();
+            assert!(matches!(error, Error::QuotaExceeded { .. }), "{suffix}");
+            assert!(!out.join("setup-headers.bin").exists(), "{suffix}");
+        }
+    }
+
+    #[test]
+    fn extract_innosetup_reserves_sidecars_and_windows_folded_names() {
+        let reserved: Vec<u8> = crate::containers::innosetup::tests::build_named_file_test_inno(
+            ".DISROBE-INNOSETUP-INFO.JSON",
+            b"overwrite",
+        )
+        .expect("build reserved-name Inno image");
+        let reserved_scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-reserved-output");
+        let reserved_result: ExtractionResult =
+            extract_to(ContainerKind::InnoSetup, &reserved, reserved_scratch.path())
+                .expect("extract reserved-name Inno image");
+        let sidecar: Vec<u8> =
+            std::fs::read(reserved_scratch.path().join(".disrobe-innosetup-info.json"))
+                .expect("read Inno sidecar");
+        assert_ne!(sidecar, b"overwrite");
+        assert!(
+            reserved_result
+                .integrity_violations
+                .iter()
+                .any(|violation: &String| violation.contains("collision"))
+        );
+
+        let aliases: Vec<u8> = crate::containers::innosetup::tests::build_named_aliases_test_inno(
+            &["app\\Tool.exe", "app/tool.exe", "app\\tool.exe"],
+            b"payload",
+        )
+        .expect("build alias Inno image");
+        let alias_scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-case-collision");
+        let alias_result: ExtractionResult =
+            extract_to(ContainerKind::InnoSetup, &aliases, alias_scratch.path())
+                .expect("extract alias Inno image");
+        assert_eq!(
+            alias_result
+                .entries
+                .iter()
+                .filter(|entry: &&ExtractedEntry| entry.name.eq_ignore_ascii_case("app/tool.exe"))
+                .count(),
+            1
+        );
+        assert!(
+            alias_result
+                .integrity_violations
+                .iter()
+                .any(|violation: &String| violation.contains("collision"))
+        );
+    }
+
+    #[test]
+    fn extract_innosetup_charges_a_solid_extent_once_and_every_member_output() {
+        let alpha: Vec<u8> = vec![b'A'; 64 * 1024];
+        let beta: Vec<u8> = vec![b'B'; 64 * 1024];
+        let bytes: Vec<u8> = crate::containers::innosetup::tests::build_solid_members_test_inno(&[
+            ("app\\alpha.bin", &alpha),
+            ("app\\beta.bin", &beta),
+        ])
+        .expect("build solid-member Inno image");
+        let metadata: crate::containers::innosetup::InnoMetadata =
+            crate::containers::innosetup::recover_inno_metadata(&bytes)
+                .expect("parse solid-member Inno metadata");
+        assert_eq!(metadata.data_entries.len(), 2);
+        assert_eq!(
+            metadata.data_entries[0].chunk_size,
+            metadata.data_entries[1].chunk_size
+        );
+        assert_eq!(
+            metadata.data_entries[0].chunk_offset,
+            metadata.data_entries[1].chunk_offset
+        );
+        let chunk_size: u64 = metadata.data_entries[0].chunk_size;
+
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-solid-quota-baseline");
+        let result: ExtractionResult = extract_to_with_quota(
+            ContainerKind::InnoSetup,
+            &bytes,
+            scratch.path(),
+            ExtractionQuota {
+                max_per_entry_ratio: 10_000,
+                max_aggregate_ratio: 10_000,
+                ..ExtractionQuota::default_safe()
+            },
+        )
+        .expect("extract solid-member Inno image");
+        let fixed_compressed: u64 = result
+            .entries
+            .iter()
+            .filter(|entry: &&ExtractedEntry| !entry.name.starts_with("app/"))
+            .map(|entry: &ExtractedEntry| entry.compressed_size)
+            .sum();
+        let fixed_uncompressed: u64 = result
+            .entries
+            .iter()
+            .filter(|entry: &&ExtractedEntry| !entry.name.starts_with("app/"))
+            .map(|entry: &ExtractedEntry| entry.uncompressed_size)
+            .sum();
+        let member_output: u64 = u64::try_from(alpha.len() + beta.len()).expect("member output");
+        let expected_compressed: u64 = fixed_compressed + chunk_size;
+        let expected_uncompressed: u64 = fixed_uncompressed + member_output;
+        assert_eq!(result.quota.total_compressed_bytes, expected_compressed);
+        assert_eq!(result.quota.total_uncompressed_bytes, expected_uncompressed);
+        assert_eq!(
+            std::fs::read(scratch.path().join("app/alpha.bin")).expect("alpha"),
+            alpha
+        );
+        assert_eq!(
+            std::fs::read(scratch.path().join("app/beta.bin")).expect("beta"),
+            beta
+        );
+
+        let boundary: u64 = expected_uncompressed / expected_compressed;
+        let duplicated_denominator_ratio: u64 =
+            expected_uncompressed / (expected_compressed + chunk_size);
+        assert!(boundary > duplicated_denominator_ratio);
+        let exact: ExtractionQuota = ExtractionQuota {
+            max_total_uncompressed: expected_uncompressed,
+            max_per_entry_ratio: 10_000,
+            max_aggregate_ratio: boundary,
+            ..ExtractionQuota::default_safe()
+        };
+        let exact_scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-solid-quota-exact");
+        extract_to_with_quota(
+            ContainerKind::InnoSetup,
+            &bytes,
+            exact_scratch.path(),
+            exact,
+        )
+        .expect("admit exact solid quota boundary");
+        let below_scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-solid-quota-below");
+        assert!(
+            extract_to_with_quota(
+                ContainerKind::InnoSetup,
+                &bytes,
+                below_scratch.path(),
+                ExtractionQuota {
+                    max_total_uncompressed: expected_uncompressed - 1,
+                    max_per_entry_ratio: 10_000,
+                    max_aggregate_ratio: boundary - 1,
+                    ..ExtractionQuota::default_safe()
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn extract_innosetup_keeps_the_solid_charge_after_an_earlier_member_is_refused() {
+        let refused: Vec<u8> = vec![b'R'; 32 * 1024];
+        let accepted: Vec<u8> = vec![b'A'; 32 * 1024];
+        let bytes: Vec<u8> = crate::containers::innosetup::tests::build_solid_members_test_inno(&[
+            (".DISROBE-INNOSETUP-INFO.JSON", &refused),
+            ("app\\accepted.bin", &accepted),
+        ])
+        .expect("build refused solid-member Inno image");
+        let metadata: crate::containers::innosetup::InnoMetadata =
+            crate::containers::innosetup::recover_inno_metadata(&bytes)
+                .expect("parse refused solid-member Inno metadata");
+        let chunk_size: u64 = metadata.data_entries[0].chunk_size;
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("inno-solid-quota-refused");
+        let result: ExtractionResult = extract_to_with_quota(
+            ContainerKind::InnoSetup,
+            &bytes,
+            scratch.path(),
+            ExtractionQuota {
+                max_per_entry_ratio: 10_000,
+                max_aggregate_ratio: 10_000,
+                ..ExtractionQuota::default_safe()
+            },
+        )
+        .expect("extract refused solid-member Inno image");
+        let fixed_compressed: u64 = result
+            .entries
+            .iter()
+            .filter(|entry: &&ExtractedEntry| !entry.name.starts_with("app/"))
+            .map(|entry: &ExtractedEntry| entry.compressed_size)
+            .sum();
+        assert_eq!(
+            result.quota.total_compressed_bytes,
+            fixed_compressed + chunk_size
+        );
+        assert_eq!(
+            std::fs::read(scratch.path().join("app/accepted.bin")).expect("accepted member"),
+            accepted
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|violation: &String| violation.contains("collision"))
+        );
+    }
+
+    #[test]
     fn extract_zip_recovers_reference_utf8_names_byte_identically() {
         let bytes: &[u8] = include_bytes!("../tests/fixtures/containers/utf8_names_zip.bin");
         let scratch: disrobe_core::scratch::ScratchDir = temp_dir("zip-utf8-names");
@@ -6085,6 +6482,7 @@ mod tests {
                  consumer",
             ),
         ),
+        row("extract_innosetup", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_installshield", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_iso", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_jffs2", NameOrigin::ArchiveSupplied, DRIVEN),
@@ -6310,6 +6708,14 @@ mod tests {
             minimum_exercised: 40,
             minimum_refused_as_a_slip: 34,
             build: build_hostile_nsis,
+        },
+        DrivenWritePath {
+            function: "extract_innosetup",
+            kind: ContainerKind::InnoSetup,
+            slip_tag: "inno-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_innosetup,
         },
         DrivenWritePath {
             function: "extract_installshield",
@@ -6631,6 +7037,10 @@ mod tests {
         Some(crate::containers::nsis::build_test_nsis(name, body))
     }
 
+    fn build_hostile_innosetup(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        crate::containers::innosetup::tests::build_named_file_test_inno(name, body).ok()
+    }
+
     fn build_hostile_installshield(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         if name.len() > 200 || name.contains('\u{0}') {
             return None;
@@ -6911,6 +7321,11 @@ mod tests {
     #[test]
     fn hostile_names_reach_the_installshield_write_path_guard() {
         drive_write_path("extract_installshield");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_innosetup_write_path_guard() {
+        drive_write_path("extract_innosetup");
     }
 
     #[test]

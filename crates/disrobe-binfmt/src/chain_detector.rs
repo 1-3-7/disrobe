@@ -120,6 +120,7 @@ const TAG_SEVENZIP: &str = "7z";
 const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
 const TAG_RPM: &str = "rpm";
+const TAG_INNOSETUP: &str = "inno-setup";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
@@ -157,7 +158,7 @@ const SPECIFICITY_PREFIX_MAGIC: u16 = 50;
 const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
 
 const fn tag_specificity(tag: &str) -> u16 {
-    if matches!(tag.as_bytes(), b"dotnet-single-file") {
+    if matches!(tag.as_bytes(), b"dotnet-single-file" | b"inno-setup") {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
         SPECIFICITY_PREFIX_MAGIC
@@ -165,10 +166,10 @@ const fn tag_specificity(tag: &str) -> u16 {
 }
 
 const fn tag_marker(tag: &str) -> &'static str {
-    if matches!(tag.as_bytes(), b"dotnet-single-file") {
-        "bundle-signature+header"
-    } else {
-        "container-magic"
+    match tag.as_bytes() {
+        b"dotnet-single-file" => "bundle-signature+header",
+        b"inno-setup" => "pe-resource+setup-data-header",
+        _ => "container-magic",
     }
 }
 
@@ -382,9 +383,62 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
         TAG_RPM => extract_rpm_members(bytes),
+        TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_innosetup_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let metadata: crate::containers::innosetup::InnoMetadata =
+        crate::containers::innosetup::recover_inno_metadata_with_limits(
+            bytes,
+            MAX_MEMBER_BYTES,
+            MAX_MEMBER_COUNT,
+        )
+        .map_err(|error: crate::error::Error| fail(format!("Inno Setup metadata: {error}")))?;
+    if metadata.files.len() > MAX_MEMBER_COUNT {
+        return Err(fail(format!(
+            "Inno Setup member count {} exceeds cap {MAX_MEMBER_COUNT}",
+            metadata.files.len()
+        )));
+    }
+    let recovered: crate::containers::InnoNamedRecovery =
+        crate::containers::innosetup::recover_inno_named_files_with_quota(
+            bytes,
+            &metadata,
+            crate::containers::innosetup::InnoRecoveryLimits {
+                max_entries: MAX_MEMBER_COUNT,
+                max_total: MAX_MEMBER_BYTES,
+                max_per_entry: MAX_MEMBER_BYTES,
+                max_per_entry_ratio: 1_000,
+                max_aggregate_ratio: 1_000,
+                initial_uncompressed: 0,
+                initial_compressed: 0,
+            },
+        )
+        .map_err(|error: crate::error::Error| fail(format!("Inno Setup payload: {error}")))?;
+    if !recovered.refusals.is_empty() {
+        return Err(fail(format!(
+            "Inno Setup payload contains {} refused member(s): {}",
+            recovered.refusals.len(),
+            recovered.refusals.join("; ")
+        )));
+    }
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(recovered.files.len());
+    for file in recovered.files {
+        let name: String = crate::quota::sanitize_entry_path(&file.path).map_err(
+            |error: crate::error::Error| fail(format!("Inno Setup member path: {error}")),
+        )?;
+        if !names.insert(name.clone()) {
+            return Err(fail(format!(
+                "Inno Setup payload contains duplicate normalized path `{name}`"
+            )));
+        }
+        members.push((name, file.data));
+    }
+    Ok(members)
 }
 
 fn extract_rpm_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -664,6 +718,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
         return Some(TAG_RPM);
     }
+    if crate::containers::detect_innosetup(bytes).is_some() {
+        return Some(TAG_INNOSETUP);
+    }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);
     }
@@ -683,6 +740,7 @@ mod tests {
 
     const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
+    const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -786,6 +844,20 @@ mod tests {
             .detect(&ctx(&[0x1f, 0x8b, 0x08, 0x00]))
             .expect("gzip magic");
         assert_eq!(v.format_tag, TAG_GZIP);
+    }
+
+    #[test]
+    fn inno_setup_real_members_reach_the_container_pass() {
+        assert_eq!(sniff_container_tag(REAL_INNOSETUP), Some(TAG_INNOSETUP));
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_INNOSETUP, REAL_INNOSETUP).expect("Inno Setup members");
+        assert_eq!(members.len(), 94);
+        let compiler: &(String, Vec<u8>) = members
+            .iter()
+            .find(|(path, _data): &&(String, Vec<u8>)| path == "app/Compil32.exe")
+            .expect("compiler member");
+        assert_eq!(compiler.1.len(), 3_940_272);
+        assert!(compiler.1.starts_with(b"MZ"));
     }
 
     #[test]

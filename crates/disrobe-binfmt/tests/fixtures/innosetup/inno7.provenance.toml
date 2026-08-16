@@ -1,0 +1,19 @@
+schema = "disrobe.fixture.provenance/v1"
+producer = "Inno Setup 7.1.0"
+release_tag = "is-7_1_0"
+release_tag_object = "ba5ca8a66638b0fa8175e8736fe3a6bd16f70136"
+release_commit = "7d634620f1d1caca6c76e8398da7133153db9e7b"
+verification = "gh release verify-asset <fixture> --repo jrsoftware/issrc"
+authenticode_subject = "CN=Pyrsys B.V., O=Pyrsys B.V., S=Noord-Holland, C=NL"
+
+[fixtures.x86]
+url = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x86.exe"
+sha256 = "f9671174e0d15ba9b4f6b56564c6aed32ea8db9c3cb9bf6f2af0850fe7894f60"
+size = 13119232
+product_version = "7.1.0 (32-bit)"
+
+[fixtures.x64]
+url = "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe"
+sha256 = "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
+size = 14304168
+product_version = "7.1.0"
