@@ -4,6 +4,7 @@ mod common;
 use std::path::PathBuf;
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
+use disrobe_binfmt::containers::{arc_entry_bytes, parse_arc};
 use disrobe_binfmt::{ExtractionResult, extract_to};
 
 fn temp_dir(tag: &str) -> disrobe_core::scratch::ScratchDir {
@@ -65,6 +66,48 @@ fn arc_fixed_lzw_methods_are_byte_exact() {
 #[test]
 fn historical_arc_method6_member_is_byte_exact() {
     run("arc", "dosamatc.arc", ContainerKind::Arc, "COMPAQ.BAT");
+}
+
+#[test]
+fn arc_dynamic_lzw_methods_are_byte_exact() {
+    for (fixture, member) in [
+        ("method8-rle.arc", "DreamAlone"),
+        ("method9.arc", "crystals.669"),
+    ] {
+        run("arc", fixture, ContainerKind::Arc, member);
+    }
+}
+
+#[test]
+fn arc_dynamic_lzw_real_wires_reject_framing_and_body_mutations() {
+    let method8: Vec<u8> =
+        common::load_fixture("arc", "method8-rle.arc").expect("load method 8 fixture");
+    let method8_archive: disrobe_binfmt::containers::ArcArchive =
+        parse_arc(&method8).expect("parse method 8 fixture");
+    let mut wrong_width: Vec<u8> = method8;
+    wrong_width[method8_archive.entries[0].data_offset] = 11;
+    let wrong_width_archive: disrobe_binfmt::containers::ArcArchive =
+        parse_arc(&wrong_width).expect("parse wrong-width fixture");
+    assert!(arc_entry_bytes(&wrong_width, &wrong_width_archive.entries[0], 1 << 20).is_err());
+
+    let mut method9: Vec<u8> =
+        common::load_fixture("arc", "method9.arc").expect("load method 9 fixture");
+    let archive: disrobe_binfmt::containers::ArcArchive =
+        parse_arc(&method9).expect("parse method 9 fixture");
+    let entry: &disrobe_binfmt::containers::ArcEntry = &archive.entries[0];
+    let data_end: usize = entry.data_offset + entry.compressed_size as usize;
+    method9.insert(data_end, 0);
+    method9[15..19].copy_from_slice(&(entry.compressed_size + 1).to_le_bytes());
+    let appended_archive: disrobe_binfmt::containers::ArcArchive =
+        parse_arc(&method9).expect("parse appended method 9 fixture");
+    assert!(arc_entry_bytes(&method9, &appended_archive.entries[0], 1 << 20).is_err());
+
+    let mut changed_body: Vec<u8> =
+        common::load_fixture("arc", "method9.arc").expect("reload method 9 fixture");
+    changed_body[entry.data_offset + 17] ^= 0x40;
+    let changed_archive: disrobe_binfmt::containers::ArcArchive =
+        parse_arc(&changed_body).expect("parse changed method 9 fixture");
+    assert!(arc_entry_bytes(&changed_body, &changed_archive.entries[0], 1 << 20).is_err());
 }
 
 #[test]

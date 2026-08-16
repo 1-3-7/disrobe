@@ -11,6 +11,11 @@ independent_reference_sha256 = "1c6e5b1ea3d528a4508772642f1f1e3aa0fb950a03ddfd11
 second_reference = "Deark 1.7.3"
 second_reference_url = "https://entropymine.com/deark/releases/deark-1.7.3.tar.gz"
 second_reference_sha256 = "84f9e0134830389e4ab12c89dc09cf42a3f885ec551254e9fdc22952858add11"
+dynamic_reference_repository = "https://github.com/gaborbata/nomarch.git"
+dynamic_reference_commit = "47b7aa272d6d52e6a5d1cf33dcd0f9bd62d0c506"
+dynamic_reference_file = "readlzw.c"
+dynamic_reference_release = "nomarch 1.4"
+dynamic_reference_release_sha256 = "fe20da34e0d3ba0cf6388701f44ac22224cf65130ddbc5fcbc27bc4949a6e1ad"
 
 [[artifacts]]
 path = "dosamatc.arc"
@@ -52,3 +57,43 @@ sha256 = "b814dc1e5c8f8924b9f00f7190d7c4f3d13bedf5178a2007639eb6bc9e150900"
 path = "expected/METHOD7.BIN"
 method = 7
 sha256 = "b814dc1e5c8f8924b9f00f7190d7c4f3d13bedf5178a2007639eb6bc9e150900"
+
+[[artifacts]]
+path = "method8-rle.arc"
+sha256 = "d237cc63494a73c5ff8562e68d44c8ca4c63cfba82911a8e8bc40f3b7e1dac27"
+source_repository = "https://github.com/neumatho/NostalgicPlayer.git"
+source_commit = "ba613c6388059847d0533e59605204afc83b0abb"
+source_path = "Source/Agents/Decrunchers/ArchiveDecruncher.Test/Data/Arc-Method8-RLE.arc"
+retrieved = "2026-08-16"
+redistribution = "The source repository publishes the fixture under its MIT license."
+method = 8
+member = "DreamAlone"
+member_size = 108648
+member_md5 = "64d67d1d5d123c6542a8099255ad8ca2"
+member_sha256 = "ccea1a26ddb101d777e8436efac98333734ed2b3a3326297ba99228b661960d5"
+verification = "NostalgicPlayer records the member MD5. Nomarch 1.4 independently decoded the member and validated its ARC CRC."
+
+[[artifacts.members]]
+path = "expected/DreamAlone"
+method = 8
+sha256 = "ccea1a26ddb101d777e8436efac98333734ed2b3a3326297ba99228b661960d5"
+
+[[artifacts]]
+path = "method9.arc"
+sha256 = "4ce71cf53f8c1e0d3768d9443642d64691b2394ffe66f7a670d716be56fbf8c5"
+source_repository = "https://github.com/neumatho/NostalgicPlayer.git"
+source_commit = "ba613c6388059847d0533e59605204afc83b0abb"
+source_path = "Source/Agents/Decrunchers/ArchiveDecruncher.Test/Data/Arc-Method9.arc"
+retrieved = "2026-08-16"
+redistribution = "The source repository publishes the fixture under its MIT license."
+method = 9
+member = "crystals.669"
+member_size = 26618
+member_md5 = "0bfbfe214139cfef08f7223cf8c3ba3f"
+member_sha256 = "acd8c8d1214dfb7c44436438903a12fdabb2688b8d2f6255f716b8d637f9c926"
+verification = "NostalgicPlayer records the member MD5. Nomarch 1.4 independently decoded the member and validated its ARC CRC."
+
+[[artifacts.members]]
+path = "expected/crystals.669"
+method = 9
+sha256 = "acd8c8d1214dfb7c44436438903a12fdabb2688b8d2f6255f716b8d637f9c926"

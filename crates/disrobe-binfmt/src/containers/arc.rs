@@ -25,7 +25,7 @@ pub fn detect_arc(bytes: &[u8]) -> bool {
     if bytes.len() < 2 + FNLEN + 4 || bytes[0] != ARC_MARKER {
         return false;
     }
-    let method: u8 = bytes[1];
+    let method: u8 = bytes[1] & 0x7f;
     if !(1..=11).contains(&method) {
         return false;
     }
@@ -55,7 +55,8 @@ pub(crate) fn parse_arc_with_entry_limit(bytes: &[u8], max_entries: usize) -> Re
                 bytes[cursor]
             )));
         }
-        let method: u8 = bytes[cursor + 1];
+        let raw_method: u8 = bytes[cursor + 1];
+        let method: u8 = raw_method & 0x7f;
         if method == 0 {
             terminated = true;
             break;
@@ -76,7 +77,13 @@ pub(crate) fn parse_arc_with_entry_limit(bytes: &[u8], max_entries: usize) -> Re
         } else {
             (compressed_size, crc_off + 2)
         };
-        let data_offset: usize = header_end;
+        let data_offset: usize = if raw_method & 0x80 == 0 {
+            header_end
+        } else {
+            header_end
+                .checked_add(12)
+                .ok_or_else(|| Error::Arc("arc: Spark header size overflow".to_owned()))?
+        };
         let data_end: usize = data_offset
             .checked_add(compressed_size as usize)
             .ok_or_else(|| Error::Arc("arc: data size overflow".to_owned()))?;
@@ -197,8 +204,8 @@ pub fn entry_bytes(bytes: &[u8], entry: &ArcEntry, max_out: u64) -> Result<Vec<u
             )?;
             crate::containers::arc_codec::un_rle(&intermediate, cap)?
         }
-        8 => crate::containers::arc_codec::un_crunch(raw, cap)?,
-        9 => crate::containers::arc_codec::un_squash(raw, cap)?,
+        8 => crate::containers::arc_codec::un_crunch(raw, expected)?,
+        9 => crate::containers::arc_codec::un_squash(raw, expected)?,
         other => {
             return Err(Error::Arc(format!(
                 "arc: entry `{}` uses compression method {other}, which is not decodable in-tree",

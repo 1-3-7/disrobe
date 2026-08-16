@@ -253,36 +253,94 @@ pub(crate) fn un_crunch_fixed(input: &[u8], new_hash: bool, cap: usize) -> Resul
     Ok(output)
 }
 
-struct LzwBitReader<'a> {
+struct LzwGroupReader<'a> {
     src: &'a [u8],
-    bit_pos: usize,
+    cursor: usize,
+    group_start: usize,
+    group_end: usize,
+    group_width: u32,
+    code_index: usize,
+    code_count: usize,
 }
 
-impl<'a> LzwBitReader<'a> {
+impl<'a> LzwGroupReader<'a> {
     const fn new(src: &'a [u8]) -> Self {
-        Self { src, bit_pos: 0 }
+        Self {
+            src,
+            cursor: 0,
+            group_start: 0,
+            group_end: 0,
+            group_width: 0,
+            code_index: 0,
+            code_count: 0,
+        }
     }
 
-    fn read_code(&mut self, width: u32) -> Option<u32> {
+    const fn realign(&mut self) {
+        self.code_index = self.code_count;
+    }
+
+    fn read_code(&mut self, width: u32) -> Result<Option<u32>> {
+        if width == 0 || width > u32::BITS {
+            return Err(Error::Arc("arc-lzw: invalid code width".to_owned()));
+        }
+        if self.group_width != width || self.code_index >= self.code_count {
+            if self.cursor >= self.src.len() {
+                return Ok(None);
+            }
+            let width_bytes: usize = usize::try_from(width)
+                .map_err(|_| Error::Arc("arc-lzw: invalid code width".to_owned()))?;
+            self.group_start = self.cursor;
+            let group_limit: usize = self
+                .cursor
+                .checked_add(width_bytes)
+                .ok_or_else(|| Error::Arc("arc-lzw: group range overflow".to_owned()))?;
+            self.group_end = group_limit.min(self.src.len());
+            self.cursor = self.group_end;
+            self.group_width = width;
+            self.code_index = 0;
+            self.code_count = (self.group_end - self.group_start)
+                .checked_mul(8)
+                .ok_or_else(|| Error::Arc("arc-lzw: group size overflow".to_owned()))?
+                / width_bytes;
+            if self.code_count == 0 {
+                return Err(Error::Arc("arc-lzw: bit underrun".to_owned()));
+            }
+        }
+        let bit_pos: usize = self
+            .group_start
+            .checked_mul(8)
+            .and_then(|start: usize| {
+                self.code_index
+                    .checked_mul(width as usize)
+                    .and_then(|offset: usize| start.checked_add(offset))
+            })
+            .ok_or_else(|| Error::Arc("arc-lzw: bit position overflow".to_owned()))?;
         let mut code: u32 = 0;
         for i in 0..width {
-            let byte_index: usize = self.bit_pos / 8;
-            let bit_index: u32 = (self.bit_pos % 8) as u32;
-            let byte: u8 = *self.src.get(byte_index)?;
+            let absolute_bit: usize = bit_pos
+                .checked_add(i as usize)
+                .ok_or_else(|| Error::Arc("arc-lzw: bit position overflow".to_owned()))?;
+            let byte_index: usize = absolute_bit / 8;
+            if byte_index >= self.group_end {
+                return Err(Error::Arc("arc-lzw: bit underrun".to_owned()));
+            }
+            let bit_index: u32 = (absolute_bit % 8) as u32;
+            let byte: u8 = self.src[byte_index];
             let bit: u32 = u32::from((byte >> bit_index) & 1);
             code |= bit << i;
-            self.bit_pos += 1;
         }
-        Some(code)
+        self.code_index += 1;
+        Ok(Some(code))
     }
 }
 
 const LZW_CLEAR: u32 = 256;
 const LZW_MIN_BITS: u32 = 9;
 
-fn lzw_decode(input: &[u8], max_bits: u32, has_clear: bool, cap: usize) -> Result<Vec<u8>> {
-    let first_code: u32 = if has_clear { 257 } else { 256 };
-    let mut reader: LzwBitReader<'_> = LzwBitReader::new(input);
+fn lzw_decode(input: &[u8], max_bits: u32, cap: usize) -> Result<Vec<u8>> {
+    let first_code: u32 = 257;
+    let mut reader: LzwGroupReader<'_> = LzwGroupReader::new(input);
     let mut out: Vec<u8> = Vec::new();
     let mut prefix: Vec<u32> = vec![0; 1 << max_bits];
     let mut suffix: Vec<u8> = vec![0; 1 << max_bits];
@@ -291,20 +349,29 @@ fn lzw_decode(input: &[u8], max_bits: u32, has_clear: bool, cap: usize) -> Resul
     let mut width: u32 = LZW_MIN_BITS;
     let mut old_code: Option<u32> = None;
     let mut first_byte: u8 = 0;
+    let mut needs_code_after_clear: bool = false;
 
     loop {
-        if next_code + 1 > (1 << width) - 1 && width < max_bits {
+        if next_code > (1 << width) - 1 && width < max_bits {
             width += 1;
         }
-        let Some(code) = reader.read_code(width) else {
+        let Some(code) = reader.read_code(width)? else {
+            if needs_code_after_clear {
+                return Err(Error::Arc(
+                    "arc-lzw: clear code has no following code".to_owned(),
+                ));
+            }
             break;
         };
-        if has_clear && code == LZW_CLEAR {
+        if code == LZW_CLEAR {
             next_code = first_code;
             width = LZW_MIN_BITS;
             old_code = None;
+            reader.realign();
+            needs_code_after_clear = true;
             continue;
         }
+        needs_code_after_clear = false;
         let Some(prev) = old_code else {
             if code > 0xFF {
                 return Err(Error::Arc(
@@ -313,6 +380,9 @@ fn lzw_decode(input: &[u8], max_bits: u32, has_clear: bool, cap: usize) -> Resul
             }
             first_byte = code as u8;
             out.push(first_byte);
+            if out.len() > cap {
+                return Err(Error::Arc("arc-lzw: output exceeds cap".to_owned()));
+            }
             old_code = Some(code);
             continue;
         };
@@ -354,12 +424,23 @@ fn lzw_decode(input: &[u8], max_bits: u32, has_clear: bool, cap: usize) -> Resul
 }
 
 pub fn un_crunch(input: &[u8], cap: usize) -> Result<Vec<u8>> {
-    let lzw: Vec<u8> = lzw_decode(input, 12, true, cap)?;
+    let (&max_width, body): (&u8, &[u8]) = input
+        .split_first()
+        .ok_or_else(|| Error::Arc("arc-lzw: missing method 8 width header".to_owned()))?;
+    if max_width != 12 {
+        return Err(Error::Arc(format!(
+            "arc-lzw: method 8 width header is {max_width}, expected 12"
+        )));
+    }
+    let intermediate_cap: usize = cap
+        .checked_mul(2)
+        .ok_or_else(|| Error::Arc("arc-lzw: intermediate size cap overflow".to_owned()))?;
+    let lzw: Vec<u8> = lzw_decode(body, 12, intermediate_cap)?;
     un_rle(&lzw, cap)
 }
 
 pub fn un_squash(input: &[u8], cap: usize) -> Result<Vec<u8>> {
-    lzw_decode(input, 13, false, cap)
+    lzw_decode(input, 13, cap)
 }
 
 #[derive(Clone, Copy)]
@@ -738,45 +819,80 @@ mod tests {
 
     struct LzwBitWriter {
         out: Vec<u8>,
+        group: Vec<u8>,
         bit_pos: usize,
+        width: u32,
     }
 
     impl LzwBitWriter {
         fn new() -> Self {
             Self {
                 out: Vec::new(),
+                group: Vec::new(),
                 bit_pos: 0,
+                width: 0,
             }
         }
 
         fn write_code(&mut self, code: u32, width: u32) {
+            if self.width != 0 && self.width != width {
+                self.flush_group(true);
+            }
+            if self.width == 0 {
+                self.width = width;
+                self.group.resize(width as usize, 0);
+            }
             for i in 0..width {
                 let bit: u8 = ((code >> i) & 1) as u8;
                 let byte_index: usize = self.bit_pos / 8;
                 let bit_index: u32 = (self.bit_pos % 8) as u32;
-                if byte_index >= self.out.len() {
-                    self.out.push(0);
-                }
-                self.out[byte_index] |= bit << bit_index;
+                self.group[byte_index] |= bit << bit_index;
                 self.bit_pos += 1;
             }
+            if self.bit_pos == width as usize * 8 {
+                self.flush_group(true);
+            }
+        }
+
+        fn flush_group(&mut self, complete: bool) {
+            if self.bit_pos == 0 {
+                return;
+            }
+            let bytes: usize = if complete {
+                self.width as usize
+            } else {
+                self.bit_pos.div_ceil(8)
+            };
+            self.out.extend_from_slice(&self.group[..bytes]);
+            self.group.fill(0);
+            self.bit_pos = 0;
+            self.width = 0;
+        }
+
+        fn realign(&mut self) {
+            self.flush_group(true);
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            self.flush_group(false);
+            self.out
         }
     }
 
-    fn lzw_encode(input: &[u8], max_bits: u32, has_clear: bool) -> Vec<u8> {
-        let first_code: u32 = if has_clear { 257 } else { 256 };
+    fn lzw_encode(input: &[u8], max_bits: u32) -> Vec<u8> {
+        let first_code: u32 = 257;
         let mut writer: LzwBitWriter = LzwBitWriter::new();
         let mut table: std::collections::BTreeMap<Vec<u8>, u32> = std::collections::BTreeMap::new();
         let mut next_code: u32 = first_code;
         let mut width: u32 = LZW_MIN_BITS;
         if input.is_empty() {
-            return writer.out;
+            return writer.finish();
         }
         let emit = |code: u32, next_code: u32, width: &mut u32, writer: &mut LzwBitWriter| {
+            writer.write_code(code, *width);
             if next_code > (1 << *width) - 1 && *width < max_bits {
                 *width += 1;
             }
-            writer.write_code(code, *width);
         };
         let mut current: Vec<u8> = vec![input[0]];
         for &byte in &input[1..] {
@@ -796,7 +912,7 @@ mod tests {
         }
         let code: u32 = emit_string(&current, &table);
         emit(code, next_code, &mut width, &mut writer);
-        writer.out
+        writer.finish()
     }
 
     fn emit_string(s: &[u8], table: &std::collections::BTreeMap<Vec<u8>, u32>) -> u32 {
@@ -823,15 +939,15 @@ mod tests {
         for _ in 0..50 {
             input.extend_from_slice(b"the quick brown fox ");
         }
-        let lzw: Vec<u8> = lzw_encode(&input, 12, true);
-        let decoded: Vec<u8> = lzw_decode(&lzw, 12, true, 1 << 20).expect("lzw decode");
+        let lzw: Vec<u8> = lzw_encode(&input, 12);
+        let decoded: Vec<u8> = lzw_decode(&lzw, 12, 1 << 20).expect("lzw decode");
         assert_eq!(decoded, input);
     }
 
     #[test]
     fn squash_13bit_round_trip() {
         let input: Vec<u8> = (0u8..=255).cycle().take(5000).collect();
-        let lzw: Vec<u8> = lzw_encode(&input, 13, false);
+        let lzw: Vec<u8> = lzw_encode(&input, 13);
         let decoded: Vec<u8> = un_squash(&lzw, 1 << 20).expect("squash decode");
         assert_eq!(decoded, input);
     }
@@ -842,9 +958,57 @@ mod tests {
         input.extend(std::iter::repeat_n(b'X', 200));
         input.extend_from_slice(b"crunch+rle payload crunch+rle payload");
         let rle: Vec<u8> = rle_encode(&input);
-        let lzw: Vec<u8> = lzw_encode(&rle, 12, true);
+        let mut lzw: Vec<u8> = vec![12];
+        lzw.extend(lzw_encode(&rle, 12));
         let decoded: Vec<u8> = un_crunch(&lzw, 1 << 20).expect("un_crunch");
         assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn dynamic_lzw_clear_realigns_the_code_group() {
+        let mut writer: LzwBitWriter = LzwBitWriter::new();
+        for code in [u32::from(b'A'), u32::from(b'B'), LZW_CLEAR] {
+            writer.write_code(code, LZW_MIN_BITS);
+        }
+        writer.realign();
+        for code in [u32::from(b'C'), u32::from(b'D')] {
+            writer.write_code(code, LZW_MIN_BITS);
+        }
+        let encoded: Vec<u8> = writer.finish();
+        let decoded: Vec<u8> = un_squash(&encoded, 4).expect("decode clear-aligned stream");
+        assert_eq!(decoded, b"ABCD");
+
+        let mut truncated_writer: LzwBitWriter = LzwBitWriter::new();
+        truncated_writer.write_code(u32::from(b'A'), LZW_MIN_BITS);
+        truncated_writer.write_code(LZW_CLEAR, LZW_MIN_BITS);
+        let truncated: Vec<u8> = truncated_writer.finish();
+        assert!(matches!(
+            un_squash(&truncated, 4),
+            Err(Error::Arc(message)) if message.contains("no following code")
+        ));
+    }
+
+    #[test]
+    fn dynamic_lzw_rejects_invalid_method8_headers_and_bit_underruns() {
+        assert!(matches!(
+            un_crunch(&[], 16),
+            Err(Error::Arc(message)) if message.contains("missing method 8 width header")
+        ));
+        assert!(matches!(
+            un_crunch(&[13, 0, 0], 16),
+            Err(Error::Arc(message)) if message.contains("expected 12")
+        ));
+        assert!(matches!(
+            un_squash(&[0], 16),
+            Err(Error::Arc(message)) if message.contains("bit underrun")
+        ));
+        let mut writer: LzwBitWriter = LzwBitWriter::new();
+        writer.write_code(u32::from(b'A'), LZW_MIN_BITS);
+        writer.write_code(300, LZW_MIN_BITS);
+        assert!(matches!(
+            un_squash(&writer.finish(), 16),
+            Err(Error::Arc(message)) if message.contains("ahead of table")
+        ));
     }
 
     enum TreeNode {
