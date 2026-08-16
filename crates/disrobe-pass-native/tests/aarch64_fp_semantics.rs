@@ -459,6 +459,30 @@ const FJCVTZS_RETURN: &[u8] = &[0x00, 0x00, 0x7e, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
 const FJCVTZS_LIVE_FLAGS: &[u8] = &[
     0x00, 0x00, 0x7e, 0x1e, 0x20, 0x00, 0x00, 0x54, 0xc0, 0x03, 0x5f, 0xd6,
 ];
+const FJCVTZS_ACCEPTED_TAIL_FUNCTIONS: &[(&str, &str)] = &[
+    (
+        "fjcvtzs_safe_tail",
+        "nop\n    mov w1, #0\n    add w1, w1, #1",
+    ),
+    (
+        "fjcvtzs_cmn_overwrite",
+        "mov w1, #0\n    cmn w1, #0\n    mov w2, w1",
+    ),
+    (
+        "fjcvtzs_tst_overwrite",
+        "mov w1, #0\n    tst w1, w1\n    mov w2, w1",
+    ),
+];
+const FJCVTZS_REJECTED_TAIL_FUNCTIONS: &[(&str, &str)] = &[
+    (
+        "fjcvtzs_flag_consumer",
+        "mov w1, w0\n    csel w0, w0, wzr, eq",
+    ),
+    (
+        "fjcvtzs_control_split",
+        "mov w1, w0\n    cbz w1, 1f\n    add w1, w1, #1\n1:",
+    ),
+];
 const LITERAL_POOL_ELF: &[u8] = include_bytes!("fixtures/aarch64_recovery/literal_pool.elf");
 
 fn recovered_fixture<'program>(
@@ -475,6 +499,60 @@ fn recovered_fixture<'program>(
                 program.unrecovered
             )
         })
+}
+
+fn unrecovered_reason<'program>(program: &'program RecoveredProgram, name: &str) -> &'program str {
+    program
+        .unrecovered
+        .iter()
+        .find(|function| function.name == name)
+        .map_or_else(
+            || panic!("the toolchain-built fixture function {name} must refuse"),
+            |function| function.reason.as_str(),
+        )
+}
+
+fn toolchain_fjcvtzs_dead_flags_fixture() -> &'static RecoveredProgram {
+    static PROGRAM: std::sync::OnceLock<RecoveredProgram> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        use std::fmt::Write as _;
+
+        let directory: tempfile::TempDir = tempfile::tempdir().expect("aarch64 fixture scratch");
+        let assembly_path: PathBuf = directory.path().join("fjcvtzs_dead_flags.s");
+        let elf_path: PathBuf = directory.path().join("fjcvtzs_dead_flags.elf");
+        let mut assembly: String = ".text\n.arch armv8.3-a\n".to_owned();
+        for (name, tail) in FJCVTZS_ACCEPTED_TAIL_FUNCTIONS
+            .iter()
+            .chain(FJCVTZS_REJECTED_TAIL_FUNCTIONS)
+        {
+            writeln!(
+                assembly,
+                ".p2align 2\n.globl {name}\n.type {name},%function\n{name}:\n    fjcvtzs w0, d0\n    {tail}\n    ret\n.size {name}, .-{name}"
+            )
+            .expect("format aarch64 fjcvtzs fixture");
+        }
+        std::fs::write(&assembly_path, assembly).expect("write aarch64 fjcvtzs fixture");
+        let mut build: Command = Command::new("clang");
+        build
+            .args([
+                "--target=aarch64-unknown-linux-gnu",
+                "-nostdlib",
+                "-fuse-ld=lld",
+                "-shared",
+                "-Wl,--hash-style=both",
+            ])
+            .arg(&assembly_path)
+            .arg("-o")
+            .arg(&elf_path);
+        let output: std::process::Output = run_bounded(build, "aarch64 fjcvtzs fixture build");
+        assert!(
+            output.status.success(),
+            "aarch64 fjcvtzs fixture failed to build:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let elf: Vec<u8> = std::fs::read(&elf_path).expect("read aarch64 fjcvtzs fixture");
+        recover_aarch64_program(&elf)
+    })
 }
 
 #[test]
@@ -601,14 +679,45 @@ fn javascript_float_to_integer_return_recovers_with_modular_semantics() {
 }
 
 #[test]
+fn toolchain_built_javascript_conversions_require_a_safe_terminating_tail() {
+    let program: &RecoveredProgram = toolchain_fjcvtzs_dead_flags_fixture();
+    for (name, _) in FJCVTZS_ACCEPTED_TAIL_FUNCTIONS {
+        let recovery: &RecoveredFunction = recovered_fixture(program, name);
+        assert!(
+            recovery.source.contains("fpx_js_i32_f64"),
+            "{name} C must preserve JavaScript ToInt32 semantics:\n{}",
+            recovery.source
+        );
+        let rust: &str = recovery
+            .rust_source
+            .as_deref()
+            .unwrap_or_else(|| panic!("{name} must recover Rust"));
+        assert!(
+            rust.contains("fpx_js_i32_f64"),
+            "{name} Rust must preserve JavaScript ToInt32 semantics:\n{rust}"
+        );
+    }
+    for (name, _) in FJCVTZS_REJECTED_TAIL_FUNCTIONS {
+        let refusal: &str = unrecovered_reason(program, name);
+        assert!(
+            refusal.contains("exactness flags remain live"),
+            "{name} must refuse before consuming flags or splitting control flow: {refusal}"
+        );
+    }
+}
+
+#[test]
 fn javascript_float_to_integer_executes_directed_boundaries() {
     let compiler: String = cc().expect("javascript conversion execution needs a host C compiler");
-    let recovery: LeafRecovery =
-        recover_aarch64_function(FJCVTZS_RETURN, 0).expect("fjcvtzs w0, d0; ret must recover");
+    let recovery: RecoveredFunction =
+        recovered_fixture(toolchain_fjcvtzs_dead_flags_fixture(), "fjcvtzs_safe_tail").clone();
+    let c_function: String =
+        recovery
+            .source
+            .replacen(&format!(" {}(", recovery.name), " recovered(", 1);
     let directory: tempfile::TempDir = tempfile::tempdir().expect("javascript conversion scratch");
     let c_source: String = format!(
-        "{}\nint main(void) {{ return recovered(0.0) == 0u && recovered(-0.0) == 0u && recovered(1.75) == 1u && recovered(-1.75) == UINT32_MAX && recovered(2147483648.0) == UINT32_C(0x80000000) && recovered(4294967297.75) == 1u && recovered(-4294967297.75) == UINT32_MAX && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000001))) == 0u && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == 0u && recovered(0x1p84) == 0u ? 0 : 1; }}\n",
-        recovery.source
+        "{c_function}\nint main(void) {{ return recovered(0.0) == 0u && recovered(-0.0) == 0u && recovered(1.75) == 1u && recovered(-1.75) == UINT32_MAX && recovered(2147483648.0) == UINT32_C(0x80000000) && recovered(4294967297.75) == 1u && recovered(-4294967297.75) == UINT32_MAX && recovered(fp_d_from_bits(UINT64_C(0x7ff8000000000001))) == 0u && recovered(fp_d_from_bits(UINT64_C(0x7ff0000000000000))) == 0u && recovered(0x1p84) == 0u ? 0 : 1; }}\n"
     );
     let c_path: PathBuf = directory.path().join("javascript_conversion.c");
     let c_exe: PathBuf = directory.path().join("javascript_conversion.exe");
@@ -636,12 +745,17 @@ fn javascript_float_to_integer_executes_directed_boundaries() {
         .rust_source
         .as_deref()
         .expect("javascript conversion must recover Rust");
+    let rust_function: String = rust.replacen(
+        &format!("pub fn {}(", recovery.name),
+        "pub fn recovered(",
+        1,
+    );
     let rust_path: PathBuf = directory.path().join("javascript_conversion.rs");
     let rust_exe: PathBuf = directory.path().join("javascript_conversion_rust.exe");
     let assertions: &str = "assert_eq!(recovered(0.0) as u32, 0); assert_eq!(recovered(-0.0) as u32, 0); assert_eq!(recovered(1.75) as u32, 1); assert_eq!(recovered(-1.75) as u32, u32::MAX); assert_eq!(recovered(2_147_483_648.0) as u32, 0x8000_0000); assert_eq!(recovered(4_294_967_297.75) as u32, 1); assert_eq!(recovered(-4_294_967_297.75) as u32, u32::MAX); assert_eq!(recovered(f64::from_bits(0x7ff8_0000_0000_0001)) as u32, 0); assert_eq!(recovered(f64::INFINITY) as u32, 0); assert_eq!(recovered(2_f64.powi(84)) as u32, 0);";
     std::fs::write(
         &rust_path,
-        format!("{rust}\n#[test]\nfn boundaries() {{ {assertions} }}\n"),
+        format!("{rust_function}\n#[test]\nfn boundaries() {{ {assertions} }}\n"),
     )
     .expect("write javascript conversion Rust");
     let mut rust_build: Command = Command::new("rustc");

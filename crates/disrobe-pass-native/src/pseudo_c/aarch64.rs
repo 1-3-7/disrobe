@@ -445,6 +445,69 @@ fn instruction_accesses_fpcr(insn: &DisasmInsn) -> bool {
         .is_some_and(|word: u32| matches!(word & 0xffff_ffe0, 0xd51b_4400 | 0xd53b_4400))
 }
 
+fn javascript_tail_overwrites_nzcv(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "adds" | "subs" | "cmp" | "cmn" | "tst" | "fcmp" | "fcmpe"
+    )
+}
+
+fn javascript_tail_reads_nzcv(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "csel"
+            | "csinc"
+            | "csinv"
+            | "csneg"
+            | "cinc"
+            | "cinv"
+            | "cneg"
+            | "cset"
+            | "csetm"
+            | "ccmp"
+            | "ccmn"
+            | "fccmp"
+            | "fccmpe"
+            | "fcsel"
+    )
+}
+
+fn javascript_tail_preserves_nzcv(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "nop" | "mov" | "movz" | "movk" | "movn" | "add" | "sub"
+    )
+}
+
+fn javascript_tail_changes_control_flow(insn: &DisasmInsn) -> bool {
+    is_control_flow(insn)
+        || aarch64_is_indirect_branch(&insn.mnemonic)
+        || aarch64_is_indirect_call(&insn.mnemonic)
+        || aarch64_is_return(&insn.mnemonic)
+        || aarch64_is_trap(&insn.mnemonic)
+        || aarch64_is_exception_entry(&insn.mnemonic)
+}
+
+fn javascript_exactness_flags_dead(insns: &[DisasmInsn], index: usize) -> bool {
+    for insn in insns
+        .iter()
+        .skip(index.saturating_add(1))
+        .take(MAX_INSTRUCTIONS)
+    {
+        let mnemonic: &str = &insn.mnemonic;
+        if mnemonic == "ret" {
+            return true;
+        }
+        if javascript_tail_changes_control_flow(insn) || javascript_tail_reads_nzcv(mnemonic) {
+            return false;
+        }
+        if !javascript_tail_preserves_nzcv(mnemonic) && !javascript_tail_overwrites_nzcv(mnemonic) {
+            return false;
+        }
+    }
+    false
+}
+
 fn recover_with_calls_and_image<'image>(
     machine_code: &[u8],
     base: u64,
@@ -572,10 +635,8 @@ fn recover_with_calls_and_image<'image>(
                 "stack-frame instruction is outside a recognized prologue or epilogue",
             ));
         }
-        let javascript_flags_dead: bool = insn.mnemonic == "fjcvtzs"
-            && insns
-                .get(index + 1)
-                .is_some_and(|next: &DisasmInsn| next.mnemonic == "ret");
+        let javascript_flags_dead: bool =
+            insn.mnemonic == "fjcvtzs" && javascript_exactness_flags_dead(&insns, index);
         if let Some(stmts) = try_lower_scalar_fp(
             insn,
             frame.info_at(index),
