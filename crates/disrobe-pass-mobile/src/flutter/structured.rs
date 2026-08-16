@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 
 use disrobe_cfg::{Flow, FlowError, FlowGraph};
 use disrobe_nir::{
-    HirCond, HirFunction, HirStmt, NirBlock, NirFunction, NirInstr, NirOp, SourceLang, SourceRef,
-    basic_blocks, structurize_function,
+    HirCond, HirCondExpr, HirCondTest, HirFunction, HirStmt, NirBlock, NirFunction, NirInstr,
+    NirOp, SourceLang, SourceRef, basic_blocks, structurize_function,
 };
 
 use super::aot_lift::{
@@ -162,13 +162,17 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
                 }
             }
         }
+        let reads_memory: bool = arm64_reads_memory(&insn.text);
+        let writes_memory: bool = arm64_writes_memory(&insn.text)
+            || (insn.flow == Arm64FlowKind::Sequential
+                && !arm64_sequential_is_foldable(&insn.text));
         lowered.push(NirInstr {
             address: insn.address,
             op,
             mnemonic,
             operands,
-            reads_memory: false,
-            writes_memory: false,
+            reads_memory,
+            writes_memory,
             byte_width: false,
             source: SourceRef::new(SourceLang::NativeArm, insn.address),
         });
@@ -181,6 +185,45 @@ fn build_nir(func: &Arm64Function, abi: &DartAbi<'_>) -> Option<NirFunction> {
         instructions: lowered,
         source: SourceRef::new(SourceLang::NativeArm, abi.fn_start),
     })
+}
+
+fn arm64_reads_memory(text: &str) -> bool {
+    let Some(mnemonic): Option<&str> = text.split_ascii_whitespace().next() else {
+        return false;
+    };
+    mnemonic.starts_with("ld") || mnemonic.starts_with("cas") || mnemonic.starts_with("swp")
+}
+
+fn arm64_writes_memory(text: &str) -> bool {
+    let Some(mnemonic): Option<&str> = text.split_ascii_whitespace().next() else {
+        return false;
+    };
+    mnemonic.starts_with("st")
+        || mnemonic.starts_with("cas")
+        || mnemonic.starts_with("swp")
+        || [
+            "cpy", "ldadd", "ldclr", "ldeor", "ldset", "ldsmax", "ldsmin", "ldumax", "ldumin",
+            "set",
+        ]
+        .iter()
+        .any(|prefix: &&str| mnemonic.starts_with(prefix))
+}
+
+fn arm64_sequential_is_foldable(text: &str) -> bool {
+    let Some(mnemonic): Option<&str> = text.split_ascii_whitespace().next() else {
+        return false;
+    };
+    arm64_reads_memory(text)
+        || [
+            "adc", "add", "adr", "and", "asr", "aut", "bfi", "bfm", "bfx", "ccm", "cinc", "cinv",
+            "cls", "clz", "cmn", "cmp", "cneg", "csel", "csinc", "csinv", "csneg", "eon", "eor",
+            "extr", "f", "lsl", "lsr", "madd", "mneg", "mov", "mrs", "msub", "mul", "mvn", "neg",
+            "ngc", "nop", "orn", "orr", "pac", "rbit", "rev", "ror", "sbc", "sbf", "scvt", "sdiv",
+            "smadd", "smne", "smsub", "sub", "tst", "ubf", "ucvt", "udiv", "umadd", "umne",
+            "umsub", "xpac",
+        ]
+        .iter()
+        .any(|prefix: &&str| mnemonic.starts_with(prefix))
 }
 
 fn tail_call_addresses(nir: &NirFunction) -> BTreeSet<u64> {
@@ -364,7 +407,7 @@ fn round_trip_ok(blocks: &[NirBlock], hir: &HirFunction) -> bool {
     }
     let mut flattener: Flattener<'_> = Flattener::new(&reachable);
     flattener.link(&hir.body, None);
-    if flattener.edges != input_edges {
+    if !flattener.valid || flattener.edges != input_edges {
         return false;
     }
     let hir_blocks: BTreeSet<u64> = hir.block_starts();
@@ -381,6 +424,7 @@ struct Flattener<'a> {
     reachable: &'a BTreeSet<u64>,
     edges: BTreeSet<(u64, u64)>,
     loops: Vec<(u64, Option<u64>)>,
+    valid: bool,
 }
 
 impl<'a> Flattener<'a> {
@@ -389,6 +433,7 @@ impl<'a> Flattener<'a> {
             reachable,
             edges: BTreeSet::new(),
             loops: Vec::new(),
+            valid: true,
         }
     }
 
@@ -420,7 +465,18 @@ impl<'a> Flattener<'a> {
                 self.loops.pop();
                 entry.or(Some(*label))
             }
-            HirStmt::If { .. } => cont,
+            HirStmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let then_target: Option<u64> = self.arm(then_branch, cont);
+                let else_target: Option<u64> = self.arm(else_branch, cont);
+                if then_target != cond.taken_target || else_target != cond.fallthrough_target {
+                    self.valid = false;
+                }
+                self.link_condition(&cond.expression)
+            }
             HirStmt::Seq { body } => self.link_seq(body, cont),
             HirStmt::Dispatch { .. } | HirStmt::GotoGraph { .. } => cont,
         }
@@ -445,19 +501,12 @@ impl<'a> Flattener<'a> {
 
     fn link_branch_block(&mut self, source: u64, rest: &[HirStmt], cont: Option<u64>) -> u64 {
         match rest.first() {
-            Some(HirStmt::If {
-                then_branch,
-                else_branch,
-                ..
-            }) => {
+            Some(condition @ HirStmt::If { .. }) => {
                 let after: Option<u64> = self.link_seq(&rest[1..], cont);
-                let then_target: Option<u64> = self.arm(then_branch, after);
-                let else_target: Option<u64> = self.arm(else_branch, after);
-                if let Some(t) = then_target {
-                    self.edges.insert((source, t));
-                }
-                if let Some(t) = else_target {
-                    self.edges.insert((source, t));
+                if let Some(condition_entry) = self.link(condition, after)
+                    && condition_entry != source
+                {
+                    self.edges.insert((source, condition_entry));
                 }
             }
             Some(HirStmt::Return { .. }) => {}
@@ -487,6 +536,35 @@ impl<'a> Flattener<'a> {
             HirStmt::Return { .. } => None,
             other => self.link(other, cont),
         }
+    }
+
+    fn link_condition(&mut self, expression: &HirCondExpr) -> Option<u64> {
+        let mut entry: Option<u64> = None;
+        let mut pending: Vec<&HirCondExpr> = vec![expression];
+        while let Some(current) = pending.pop() {
+            match current {
+                HirCondExpr::Test { test, .. } => {
+                    entry.get_or_insert(test.block_start);
+                    for target in [test.taken_target, test.fallthrough_target]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if self.reachable.contains(&target) {
+                            self.edges.insert((test.block_start, target));
+                        }
+                    }
+                    for route in test.taken_route.iter().chain(&test.fallthrough_route) {
+                        if self.reachable.contains(&route.successor) {
+                            self.edges.insert((route.block_start, route.successor));
+                        }
+                    }
+                }
+                HirCondExpr::All { terms } | HirCondExpr::Any { terms } => {
+                    pending.extend(terms.iter().rev());
+                }
+            }
+        }
+        entry
     }
 }
 
@@ -621,7 +699,23 @@ fn emit_stmt(
             then_branch,
             else_branch,
         } => {
-            push_indented(out, indent, &format!("if ({}) {{", condition_of(cond)));
+            let root: Option<&HirCondTest> = first_condition_test(&cond.expression);
+            if let Some(test) = root {
+                emit_condition_prelude(test, indent, arguments, out);
+            }
+            push_indented(
+                out,
+                indent,
+                &format!(
+                    "if ({}) {{",
+                    condition_of(
+                        cond,
+                        root.map(|test: &HirCondTest| test.block_start),
+                        indent,
+                        arguments,
+                    )
+                ),
+            );
             emit_stmt(then_branch, indent + 1, reachable, arguments, out);
             if has_content(else_branch, reachable, arguments) {
                 push_indented(out, indent, "} else {");
@@ -641,11 +735,115 @@ fn emit_stmt(
     }
 }
 
-fn condition_of(cond: &HirCond) -> String {
-    if cond.mnemonic.is_empty() {
-        format!("cond@{:#x}", cond.at)
+fn first_condition_test(expression: &HirCondExpr) -> Option<&HirCondTest> {
+    match expression {
+        HirCondExpr::Test { test, .. } => Some(test),
+        HirCondExpr::All { terms } | HirCondExpr::Any { terms } => {
+            terms.iter().find_map(first_condition_test)
+        }
+    }
+}
+
+fn condition_prelude(test: &HirCondTest) -> &[disrobe_nir::HirLeafStmt] {
+    match test.stmts.split_last() {
+        Some((last, preceding)) if last.instr.class() == disrobe_nir::NirClass::ConditionalJump => {
+            preceding
+        }
+        _ => &test.stmts,
+    }
+}
+
+fn emit_condition_prelude(
+    test: &HirCondTest,
+    indent: usize,
+    arguments: &DartCallArguments,
+    out: &mut String,
+) {
+    for statement in condition_prelude(test) {
+        if let Some(line) = render_leaf(&statement.instr, arguments) {
+            push_indented(out, indent, &line);
+        }
+    }
+}
+
+fn condition_of(
+    cond: &HirCond,
+    root_block: Option<u64>,
+    indent: usize,
+    arguments: &DartCallArguments,
+) -> String {
+    condition_expression_of(&cond.expression, root_block, indent, arguments, 0)
+}
+
+fn condition_expression_of(
+    expression: &HirCondExpr,
+    root_block: Option<u64>,
+    indent: usize,
+    arguments: &DartCallArguments,
+    parent_precedence: u8,
+) -> String {
+    let precedence: u8 = match expression {
+        HirCondExpr::Test { .. } => 3,
+        HirCondExpr::All { .. } => 2,
+        HirCondExpr::Any { .. } => 1,
+    };
+    let rendered: String = match expression {
+        HirCondExpr::Test { test, negated } => {
+            let predicate: String = if test.mnemonic.is_empty() {
+                format!("cond@{:#x}", test.at)
+            } else {
+                test.mnemonic.clone()
+            };
+            let prelude: &[disrobe_nir::HirLeafStmt] = condition_prelude(test);
+            let expression: String = if prelude.is_empty() || root_block == Some(test.block_start) {
+                predicate
+            } else {
+                let mut closure: String = String::from("(() {\n");
+                for statement in prelude {
+                    if let Some(line) = render_leaf(&statement.instr, arguments) {
+                        push_indented(&mut closure, indent.saturating_add(1), &line);
+                    }
+                }
+                push_indented(
+                    &mut closure,
+                    indent.saturating_add(1),
+                    &format!("return {predicate};"),
+                );
+                for _ in 0..indent {
+                    closure.push_str("  ");
+                }
+                closure.push_str("})()");
+                closure
+            };
+            if *negated {
+                format!("!({expression})")
+            } else {
+                expression
+            }
+        }
+        HirCondExpr::All { terms } | HirCondExpr::Any { terms } => {
+            let separator: &str = if matches!(expression, HirCondExpr::All { .. }) {
+                " && "
+            } else {
+                " || "
+            };
+            if terms.is_empty() {
+                "condition".to_owned()
+            } else {
+                terms
+                    .iter()
+                    .map(|term: &HirCondExpr| {
+                        condition_expression_of(term, root_block, indent, arguments, precedence)
+                    })
+                    .collect::<Vec<String>>()
+                    .join(separator)
+            }
+        }
+    };
+    if precedence < parent_precedence {
+        format!("({rendered})")
     } else {
-        cond.mnemonic.clone()
+        rendered
     }
 }
 
@@ -716,7 +914,7 @@ fn push_indented(out: &mut String, indent: usize, line: &str) {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
-    use disrobe_nir::{HirCond, HirStmt};
+    use disrobe_nir::HirStmt;
 
     use super::*;
     use crate::flutter::disasm::disassemble_range;
@@ -792,6 +990,14 @@ mod tests {
 
     fn ldr_pool(rt: u32, byte_offset: u32) -> u32 {
         0xF940_0000 | ((byte_offset / 8) << 10) | (27 << 5) | rt
+    }
+
+    fn ldr_unsigned(rt: u32, rn: u32) -> u32 {
+        0xF940_0000 | (rn << 5) | rt
+    }
+
+    fn str_unsigned(rt: u32, rn: u32) -> u32 {
+        0xF900_0000 | (rn << 5) | rt
     }
 
     fn blr(reg: u32) -> u32 {
@@ -996,6 +1202,81 @@ mod tests {
     }
 
     #[test]
+    fn compound_condition_emits_a_lazy_guarded_load_with_exact_grouping() {
+        let base: u64 = 0x9000;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 0),
+            bcc(0, base + 0x4, base + 0x1C),
+            cmp_imm(1, 0),
+            bcc(1, base + 0xC, base + 0x20),
+            ldr_unsigned(2, 3),
+            cmp_imm(2, 0),
+            bcc(1, base + 0x18, base + 0x20),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("compound".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(rendered.contains("&& ("), "got:\n{rendered}");
+        assert!(rendered.contains(" || "), "got:\n{rendered}");
+        assert!(rendered.contains("!("), "got:\n{rendered}");
+        assert!(rendered.contains("(() {"), "got:\n{rendered}");
+        assert_eq!(
+            rendered.matches("address: 0x00009010").count(),
+            1,
+            "the guarded load must occur exactly once inside its lazy closure:\n{rendered}",
+        );
+        let condition: usize = rendered.find("if (").expect("compound condition");
+        let closure: usize = rendered.find("(() {").expect("lazy closure");
+        let load: usize = rendered.find("address: 0x00009010").expect("guarded load");
+        assert!(condition < closure && closure < load, "got:\n{rendered}");
+    }
+
+    #[test]
+    fn compound_condition_refuses_a_guarded_store() {
+        let base: u64 = 0x9400;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 0),
+            bcc(0, base + 0x4, base + 0x18),
+            str_unsigned(2, 3),
+            cmp_imm(1, 0),
+            bcc(1, base + 0x10, base + 0x1C),
+            ret(),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("store".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(!rendered.contains("&&"), "got:\n{rendered}");
+        assert!(!rendered.contains("(() {"), "got:\n{rendered}");
+    }
+
+    #[test]
+    fn compound_condition_refuses_a_guarded_supervisor_call() {
+        let base: u64 = 0x9800;
+        let bytes: Vec<u8> = words(&[
+            cmp_imm(0, 0),
+            bcc(0, base + 0x4, base + 0x18),
+            0xD400_0001,
+            cmp_imm(1, 0),
+            bcc(1, base + 0x10, base + 0x1C),
+            ret(),
+            ret(),
+            ret(),
+        ]);
+        let func: Arm64Function =
+            disassemble_range(&bytes, base, 0, bytes.len(), Some("svc".to_owned()));
+        let resolve: &dyn Fn(u64) -> Option<String> = &no_names;
+        let rendered: String = structure(&func, &abi(&func, resolve)).expect("must structure");
+        assert!(!rendered.contains("&&"), "got:\n{rendered}");
+        assert!(!rendered.contains("(() {"), "got:\n{rendered}");
+    }
+
+    #[test]
     fn gate_accepts_faithful_structure_and_rejects_tampered() {
         let base: u64 = 0x2000;
         let bytes: Vec<u8> = words(&[
@@ -1044,12 +1325,7 @@ mod tests {
                     stmts: Vec::new(),
                 };
                 HirStmt::If {
-                    cond: HirCond {
-                        at: cond.at,
-                        mnemonic: cond.mnemonic.clone(),
-                        operands: cond.operands.clone(),
-                        taken_target: cond.taken_target,
-                    },
+                    cond: cond.clone(),
                     then_branch: Box::new(bogus),
                     else_branch: else_branch.clone(),
                 }

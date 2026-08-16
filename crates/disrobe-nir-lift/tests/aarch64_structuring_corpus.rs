@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_nir::{
-    HirFunction, HirStmt, NirFunction, NirInstr, SplitBudget, structurize_function_with_budget,
+    HirFunction, HirStmt, NirFunction, NirInstr, SplitBudget, SurfaceFunction, basic_blocks,
+    emit_pseudo_source, structurize_function_with_budget, surfacify_function,
 };
 use disrobe_nir_lift::lower_aarch64;
 
@@ -33,6 +34,23 @@ fn source_addresses(function: &NirFunction) -> BTreeSet<u64> {
         .iter()
         .map(|instruction: &NirInstr| instruction.address)
         .collect()
+}
+
+fn corpus_function(optimization: &str, name: &str) -> NirFunction {
+    let (_optimization, _name, bytes): &(&str, &str, &[u8]) = CORPUS
+        .iter()
+        .find(|(candidate_optimization, candidate_name, _bytes)| {
+            *candidate_optimization == optimization && *candidate_name == name
+        })
+        .expect("find committed corpus function");
+    lift(bytes, name).expect("lift committed corpus function")
+}
+
+fn added_blocks(optimization: &str, name: &str) -> usize {
+    let function: NirFunction = corpus_function(optimization, name);
+    let original: usize = basic_blocks(&function).len();
+    let hir: HirFunction = structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+    hir.block_starts().len().saturating_sub(original)
 }
 
 fn survey(budget: SplitBudget) -> (Vec<CaseId>, usize) {
@@ -155,5 +173,114 @@ fn duplication_stays_bounded_against_the_original_block_count() {
     assert!(
         worst.1 <= worst.0.saturating_mul(3).saturating_add(8),
         "block duplication grew past three times the original plus eight: {worst:?}"
+    );
+}
+
+#[test]
+fn short_circuit_condition_family_needs_no_reconvergence_clones() {
+    const CASES: [(&str, &str); 8] = [
+        ("O0", "fc_seland_d"),
+        ("O0", "fc_seland_f"),
+        ("O0", "fc_selor_d"),
+        ("O0", "fc_selor_f"),
+        ("O0", "fc_seland3_f"),
+        ("O0", "fc_seland3_mix_f"),
+        ("O0", "fc_selor3_f"),
+        ("O0", "and_or_cond"),
+    ];
+    for (optimization, name) in CASES {
+        let function: NirFunction = corpus_function(optimization, name);
+        let first: HirFunction =
+            structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+        let second: HirFunction =
+            structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+        assert_eq!(first, second, "{optimization} {name} changed across runs");
+        assert_eq!(
+            added_blocks(optimization, name),
+            0,
+            "{optimization} {name} must not clone a guarded tail"
+        );
+    }
+}
+
+#[test]
+fn short_circuit_source_emits_one_compound_condition() {
+    let function: NirFunction = corpus_function("O0", "fc_seland_f");
+    let hir: HirFunction = structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+    assert_eq!(hir.to_nir_function().instructions, function.instructions);
+    let surface: SurfaceFunction = surfacify_function(&hir);
+    assert_eq!(
+        surface.to_nir_function().instructions,
+        function.instructions
+    );
+    let source: String =
+        emit_pseudo_source(&surface).expect("emit the committed short-circuit function");
+    assert_eq!(
+        source.matches("if (").count(),
+        1,
+        "the compound guard must emit as one if:\n{source}"
+    );
+    assert!(
+        source.contains(" && "),
+        "the emitted condition must preserve short-circuit conjunction:\n{source}"
+    );
+}
+
+#[test]
+fn non_short_circuit_peel_family_remains_exactly_fifty_blocks() {
+    const CASES: [(&str, &str, usize); 15] = [
+        ("O1", "find_key", 1),
+        ("O2", "find_key", 1),
+        ("O3", "find_key", 1),
+        ("Os", "find_key", 1),
+        ("O2", "accum_u64", 2),
+        ("O3", "accum_u64", 2),
+        ("O2", "arr_max", 2),
+        ("O3", "arr_max", 2),
+        ("O2", "even_count", 2),
+        ("O3", "even_count", 2),
+        ("O2", "sum_int_idx", 2),
+        ("O3", "sum_int_idx", 2),
+        ("O2", "nested_sum", 3),
+        ("O3", "nested_sum", 3),
+        ("O3", "vol_two_guards", 2),
+    ];
+    let fixed_cases: usize = CASES
+        .into_iter()
+        .map(|(optimization, name, expected): (&str, &str, usize)| {
+            let actual: usize = added_blocks(optimization, name);
+            assert_eq!(actual, expected, "{optimization} {name} changed shape");
+            actual
+        })
+        .sum();
+    let large_cases: usize =
+        added_blocks("O2", "mem_copy_manual") + added_blocks("O3", "mem_copy_manual");
+    assert_eq!(
+        large_cases, 22,
+        "the rotated copy loops must remain unchanged"
+    );
+    assert_eq!(
+        fixed_cases + large_cases,
+        50,
+        "the existing peel retains the measured non-short-circuit surface"
+    );
+}
+
+#[test]
+fn total_corpus_block_growth_is_exactly_fifty() {
+    let total: usize = CORPUS
+        .iter()
+        .filter_map(|(_optimization, name, bytes): &(&str, &str, &[u8])| {
+            let function: NirFunction = lift(bytes, name)?;
+            let original: usize = basic_blocks(&function).len();
+            let hir: HirFunction =
+                structurize_function_with_budget(&function, SplitBudget::TightForGraph);
+            let added: usize = hir.block_starts().len().saturating_sub(original);
+            Some(added)
+        })
+        .sum();
+    assert_eq!(
+        total, 50,
+        "compound conditions must remove 18 cloned blocks"
     );
 }

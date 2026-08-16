@@ -13,6 +13,11 @@ use crate::types::{
 };
 
 const MAX_REGION_DEPTH: usize = 128;
+const MAX_SHORT_CIRCUIT_TESTS: usize = 64;
+
+const MAX_SHORT_CIRCUIT_WORK: usize = 65_536;
+
+const MAX_SHORT_CIRCUIT_CLONE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -200,11 +205,38 @@ impl Drop for HirStmt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HirCond {
+pub struct HirCondRoute {
+    pub block_start: u64,
+    pub stmts: Vec<HirLeafStmt>,
+    pub successor: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HirCondTest {
+    pub block_start: u64,
+    pub stmts: Vec<HirLeafStmt>,
     pub at: u64,
     pub mnemonic: String,
     pub operands: Vec<String>,
     pub taken_target: Option<u64>,
+    pub fallthrough_target: Option<u64>,
+    pub taken_route: Vec<HirCondRoute>,
+    pub fallthrough_route: Vec<HirCondRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "condition", rename_all = "kebab-case")]
+pub enum HirCondExpr {
+    Test { test: HirCondTest, negated: bool },
+    All { terms: Vec<Self> },
+    Any { terms: Vec<Self> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HirCond {
+    pub expression: HirCondExpr,
+    pub taken_target: Option<u64>,
+    pub fallthrough_target: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -593,6 +625,34 @@ struct Structurer<'a> {
     placed: usize,
 }
 
+struct ShortCircuitCandidate {
+    expression: HirCondExpr,
+    tests: BTreeSet<u64>,
+    bridges: BTreeSet<u64>,
+    taken_target: u64,
+    fallthrough_target: u64,
+}
+
+enum DecisionExpression {
+    Constant(bool),
+    Expression {
+        expression: HirCondExpr,
+        negations: usize,
+    },
+}
+
+struct DecisionContext<'index, 'blocks, 'sets> {
+    index: &'index BlockIndex<'blocks>,
+    true_target: u64,
+    false_target: u64,
+    lang: SourceLang,
+    tests: &'sets BTreeSet<u64>,
+    active: &'sets mut BTreeSet<u64>,
+    used: &'sets mut BTreeSet<u64>,
+    work: &'sets mut usize,
+    clone_bytes: &'sets mut usize,
+}
+
 impl<'a> Structurer<'a> {
     const fn new(index: &'a BlockIndex<'a>, lang: SourceLang) -> Self {
         Self {
@@ -666,9 +726,12 @@ impl<'a> Structurer<'a> {
     }
 
     fn acyclic_region(&mut self, block: &'a NirBlock, bounds: &Bounds, depth: usize) -> HirStmt {
+        if block.kind == BlockKind::Conditional {
+            return self.conditional_region(block, bounds, depth);
+        }
         let leaf: HirStmt = leaf_statement(block, self.lang);
         let tail: HirStmt = match block.kind {
-            BlockKind::Conditional => self.conditional_tail(block, bounds, depth),
+            BlockKind::Conditional => HirStmt::Empty,
             BlockKind::Jump => self.jump_tail(block, bounds, depth),
             BlockKind::FallThrough => self.fallthrough_tail(block, bounds, depth),
             BlockKind::Return => terminal_tail(block, self.lang),
@@ -680,24 +743,66 @@ impl<'a> Structurer<'a> {
         sequence(vec![leaf, tail])
     }
 
-    fn conditional_tail(&mut self, block: &'a NirBlock, bounds: &Bounds, depth: usize) -> HirStmt {
-        let Some(last): Option<&NirInstr> = block.instructions.last() else {
-            self.fail(StructureFailure::MissingTerminator);
-            return HirStmt::Empty;
-        };
-        let taken: Option<u64> = last.direct_target();
-        let fallthrough: Option<u64> = block
-            .successors
-            .iter()
-            .copied()
-            .find(|s: &u64| Some(*s) != taken);
-        let cond: HirCond = HirCond {
-            at: last.address,
-            mnemonic: last.mnemonic.clone(),
-            operands: last.operands.clone(),
-            taken_target: taken,
-        };
-        let (then_target, else_target): (Option<u64>, Option<u64>) = (taken, fallthrough);
+    fn conditional_region(
+        &mut self,
+        block: &'a NirBlock,
+        bounds: &Bounds,
+        depth: usize,
+    ) -> HirStmt {
+        let candidate: Option<ShortCircuitCandidate> =
+            short_circuit_candidate(self.index, block, self.lang, &self.visited);
+        let (cond, then_target, else_target): (HirCond, Option<u64>, Option<u64>) =
+            if let Some(candidate) = candidate {
+                for test in candidate
+                    .tests
+                    .iter()
+                    .copied()
+                    .filter(|test: &u64| *test != block.start)
+                {
+                    self.visited.insert(test);
+                    self.placed += 1;
+                }
+                for bridge in candidate.bridges {
+                    self.visited.insert(bridge);
+                    self.placed += 1;
+                }
+                (
+                    HirCond {
+                        expression: candidate.expression,
+                        taken_target: Some(candidate.taken_target),
+                        fallthrough_target: Some(candidate.fallthrough_target),
+                    },
+                    Some(candidate.taken_target),
+                    Some(candidate.fallthrough_target),
+                )
+            } else {
+                let Some(last): Option<&NirInstr> = block.instructions.last() else {
+                    self.fail(StructureFailure::MissingTerminator);
+                    return HirStmt::Empty;
+                };
+                let taken: Option<u64> = last.direct_target();
+                let fallthrough: Option<u64> = block
+                    .successors
+                    .iter()
+                    .copied()
+                    .find(|successor: &u64| Some(*successor) != taken);
+                let Some(test): Option<HirCondTest> = condition_test(block, self.lang) else {
+                    self.fail(StructureFailure::MissingTerminator);
+                    return HirStmt::Empty;
+                };
+                (
+                    HirCond {
+                        expression: HirCondExpr::Test {
+                            test,
+                            negated: false,
+                        },
+                        taken_target: taken,
+                        fallthrough_target: fallthrough,
+                    },
+                    taken,
+                    fallthrough,
+                )
+            };
         let follow: Option<u64> = conditional_follow(self.index, block);
         let branch_bounds: Bounds = follow.map_or_else(
             || bounds.clone(),
@@ -739,6 +844,542 @@ impl<'a> Structurer<'a> {
             .map_or(HirStmt::Empty, |target: u64| {
                 self.region(target, bounds, depth + 1)
             })
+    }
+}
+
+fn condition_test(block: &NirBlock, lang: SourceLang) -> Option<HirCondTest> {
+    let last: &NirInstr = block.instructions.last()?;
+    if last.class() != NirClass::ConditionalJump {
+        return None;
+    }
+    let taken_target: Option<u64> = last.direct_target();
+    let fallthrough_target: Option<u64> = block
+        .successors
+        .iter()
+        .copied()
+        .find(|successor: &u64| Some(*successor) != taken_target);
+    Some(HirCondTest {
+        block_start: block.start,
+        stmts: leaf_stmts(block, lang),
+        at: last.address,
+        mnemonic: last.mnemonic.clone(),
+        operands: last.operands.clone(),
+        taken_target,
+        fallthrough_target,
+        taken_route: Vec::new(),
+        fallthrough_route: Vec::new(),
+    })
+}
+
+fn short_circuit_candidate(
+    index: &BlockIndex<'_>,
+    root: &NirBlock,
+    lang: SourceLang,
+    visited: &BTreeSet<u64>,
+) -> Option<ShortCircuitCandidate> {
+    let mut tests: BTreeSet<u64> = BTreeSet::new();
+    let mut outcomes: BTreeSet<u64> = BTreeSet::new();
+    let mut pending: Vec<u64> = vec![root.start];
+    let mut work: usize = MAX_SHORT_CIRCUIT_WORK;
+    let mut clone_bytes: usize = MAX_SHORT_CIRCUIT_CLONE_BYTES;
+    while let Some(start) = pending.pop() {
+        if tests.contains(&start) {
+            continue;
+        }
+        if tests.len() >= MAX_SHORT_CIRCUIT_TESTS {
+            return None;
+        }
+        let block: &NirBlock = index.block(start)?;
+        if block.kind != BlockKind::Conditional
+            || !condition_block_is_foldable(block, lang, start != root.start)
+        {
+            return None;
+        }
+        tests.insert(start);
+        for successor in &block.successors {
+            let (resolved, _route): (u64, Vec<HirCondRoute>) = resolve_condition_edge(
+                index,
+                *successor,
+                root.start,
+                lang,
+                &mut work,
+                &mut clone_bytes,
+            )?;
+            let successor_block: &NirBlock = index.block(resolved)?;
+            outcomes.insert(resolved);
+            if successor_block.kind == BlockKind::Conditional
+                && condition_block_is_foldable(successor_block, lang, true)
+                && resolved > root.start
+                && !index.is_loop_header(resolved)
+            {
+                pending.push(resolved);
+            }
+        }
+    }
+    if tests.len() < 2 || outcomes.len() < 2 {
+        return None;
+    }
+    let outcome_values: Vec<u64> = outcomes.iter().copied().collect();
+    let mut best: Option<(usize, usize, ShortCircuitCandidate)> = None;
+    for taken_target in &outcome_values {
+        for fallthrough_target in &outcome_values {
+            if taken_target == fallthrough_target {
+                continue;
+            }
+            let mut active: BTreeSet<u64> = BTreeSet::new();
+            let mut used: BTreeSet<u64> = BTreeSet::new();
+            let mut context: DecisionContext<'_, '_, '_> = DecisionContext {
+                index,
+                true_target: *taken_target,
+                false_target: *fallthrough_target,
+                lang,
+                tests: &tests,
+                active: &mut active,
+                used: &mut used,
+                work: &mut work,
+                clone_bytes: &mut clone_bytes,
+            };
+            let Some(DecisionExpression::Expression {
+                expression,
+                negations,
+            }) = recover_decision_expression(&mut context, root.start)
+            else {
+                continue;
+            };
+            if used.len() < 2 {
+                continue;
+            }
+            let bridges: BTreeSet<u64> = condition_bridges(&expression);
+            if !condition_region_is_private(index, root.start, &used, &bridges, visited) {
+                continue;
+            }
+            let candidate: ShortCircuitCandidate = ShortCircuitCandidate {
+                expression,
+                tests: used,
+                bridges,
+                taken_target: *taken_target,
+                fallthrough_target: *fallthrough_target,
+            };
+            let replace: bool = best.as_ref().is_none_or(
+                |(best_tests, best_negations, best_candidate): &(
+                    usize,
+                    usize,
+                    ShortCircuitCandidate,
+                )| {
+                    candidate.tests.len() > *best_tests
+                        || (candidate.tests.len() == *best_tests
+                            && (
+                                negations,
+                                candidate.taken_target,
+                                candidate.fallthrough_target,
+                            ) < (
+                                *best_negations,
+                                best_candidate.taken_target,
+                                best_candidate.fallthrough_target,
+                            ))
+                },
+            );
+            if replace {
+                best = Some((candidate.tests.len(), negations, candidate));
+            }
+        }
+    }
+    best.map(|(_, _, candidate): (usize, usize, ShortCircuitCandidate)| candidate)
+}
+
+fn condition_bridges(expression: &HirCondExpr) -> BTreeSet<u64> {
+    let mut bridges: BTreeSet<u64> = BTreeSet::new();
+    let mut pending: Vec<&HirCondExpr> = vec![expression];
+    while let Some(current) = pending.pop() {
+        match current {
+            HirCondExpr::Test { test, .. } => bridges.extend(
+                test.taken_route
+                    .iter()
+                    .chain(&test.fallthrough_route)
+                    .map(|route: &HirCondRoute| route.block_start),
+            ),
+            HirCondExpr::All { terms } | HirCondExpr::Any { terms } => pending.extend(terms),
+        }
+    }
+    bridges
+}
+
+fn condition_region_is_private(
+    index: &BlockIndex<'_>,
+    root: u64,
+    tests: &BTreeSet<u64>,
+    bridges: &BTreeSet<u64>,
+    visited: &BTreeSet<u64>,
+) -> bool {
+    for test in tests {
+        if (*test != root && visited.contains(test)) || !index.dominates(root, *test) {
+            return false;
+        }
+        if *test != root {
+            let predecessors: &[u64] = index.predecessors(*test);
+            if predecessors.len() != 1
+                || (!tests.contains(&predecessors[0]) && !bridges.contains(&predecessors[0]))
+            {
+                return false;
+            }
+        }
+    }
+    if bridges
+        .iter()
+        .any(|bridge: &u64| visited.contains(bridge) || index.predecessors(*bridge).len() != 1)
+    {
+        return false;
+    }
+    !index
+        .immediate_post_dominator(root)
+        .is_some_and(|follow: u64| tests.contains(&follow))
+}
+
+fn condition_block_is_foldable(block: &NirBlock, lang: SourceLang, guarded: bool) -> bool {
+    let Some((last, preceding)): Option<(&NirInstr, &[NirInstr])> = block.instructions.split_last()
+    else {
+        return false;
+    };
+    if last.class() != NirClass::ConditionalJump
+        || block.successors.len() != 2
+        || block.successors[0] == block.successors[1]
+    {
+        return false;
+    }
+    !guarded
+        || preceding
+            .iter()
+            .all(|instruction: &NirInstr| condition_instruction_is_foldable(instruction, lang))
+}
+
+fn condition_instruction_is_foldable(instruction: &NirInstr, lang: SourceLang) -> bool {
+    if let NirOp::CallOther { effect } = &instruction.op
+        && lang == SourceLang::NativeArm
+        && aarch64_unmatched_is_read_only(&effect.name)
+    {
+        return true;
+    }
+    if instruction.writes_memory {
+        return false;
+    }
+    match &instruction.op {
+        NirOp::CallOther { effect } => !effect.writes_memory && !effect.unknown_registers,
+        NirOp::Nop
+        | NirOp::Const
+        | NirOp::BinOp { .. }
+        | NirOp::Load
+        | NirOp::Phi
+        | NirOp::RawLoad { .. }
+        | NirOp::Subpiece { .. }
+        | NirOp::Deposit { .. }
+        | NirOp::Copy { .. }
+        | NirOp::Value { .. }
+        | NirOp::Piece { .. } => true,
+        _ => false,
+    }
+}
+
+fn aarch64_unmatched_is_read_only(name: &str) -> bool {
+    let Some(encoded): Option<&str> = name.strip_prefix("decode_unmatched_0x") else {
+        return false;
+    };
+    let Ok(raw): Result<u32, _> = u32::from_str_radix(encoded, 16) else {
+        return false;
+    };
+    let unsigned_immediate_load: bool = raw & 0x3B00_0000 == 0x3900_0000 && raw & 0x0040_0000 != 0;
+    let floating_compare: bool = raw & 0xFF20_FC1F == 0x1E20_2000;
+    unsigned_immediate_load || floating_compare
+}
+
+fn condition_block_clone_bytes(block: &NirBlock) -> Option<usize> {
+    block
+        .instructions
+        .iter()
+        .try_fold(0_usize, |total: usize, instruction: &NirInstr| {
+            let mut bytes: usize = instruction
+                .mnemonic
+                .len()
+                .checked_add(instruction.source.label.len())?;
+            bytes = instruction
+                .operands
+                .iter()
+                .try_fold(bytes, |sum: usize, value: &String| {
+                    sum.checked_add(value.len())
+                })?;
+            let operation_bytes: usize = match &instruction.op {
+                NirOp::ExternCall { symbol } => symbol.len(),
+                NirOp::RawLoad { addr, .. } => addr.len(),
+                NirOp::RawStore { addr, value, .. } => addr.len().checked_add(value.len())?,
+                NirOp::Subpiece { src, .. } | NirOp::Copy { src, .. } => src.len(),
+                NirOp::Deposit { cell, value, .. } => cell.len().checked_add(value.len())?,
+                NirOp::CallOther { effect } => effect
+                    .reads
+                    .iter()
+                    .chain(&effect.writes)
+                    .try_fold(effect.name.len(), |sum: usize, value: &String| {
+                        sum.checked_add(value.len())
+                    })?,
+                NirOp::Value { inputs, .. } => inputs
+                    .iter()
+                    .try_fold(0_usize, |sum: usize, value: &String| {
+                        sum.checked_add(value.len())
+                    })?,
+                NirOp::Piece { high, low, .. } => high.len().checked_add(low.len())?,
+                NirOp::Nop
+                | NirOp::Const
+                | NirOp::BinOp { .. }
+                | NirOp::Load
+                | NirOp::Store
+                | NirOp::Call { .. }
+                | NirOp::IndirectCall
+                | NirOp::Branch { .. }
+                | NirOp::CondBranch { .. }
+                | NirOp::Phi
+                | NirOp::Return
+                | NirOp::Interrupt
+                | NirOp::Unmodeled { .. }
+                | NirOp::NoReturnCall { .. }
+                | NirOp::TailCall { .. } => 0,
+            };
+            total.checked_add(bytes.checked_add(operation_bytes)?)
+        })
+}
+
+fn charge_condition_clone(
+    block: &NirBlock,
+    work: &mut usize,
+    clone_bytes: &mut usize,
+) -> Option<()> {
+    *work = work.checked_sub(block.instructions.len())?;
+    *clone_bytes = clone_bytes.checked_sub(condition_block_clone_bytes(block)?)?;
+    Some(())
+}
+
+fn recover_decision_expression(
+    context: &mut DecisionContext<'_, '_, '_>,
+    start: u64,
+) -> Option<DecisionExpression> {
+    if start == context.true_target {
+        return Some(DecisionExpression::Constant(true));
+    }
+    if start == context.false_target {
+        return Some(DecisionExpression::Constant(false));
+    }
+    if !context.tests.contains(&start)
+        || !context.active.insert(start)
+        || !context.used.insert(start)
+    {
+        return None;
+    }
+    let block: &NirBlock = context.index.block(start)?;
+    charge_condition_clone(block, context.work, context.clone_bytes)?;
+    let mut test: HirCondTest = condition_test(block, context.lang)?;
+    let direct_taken: u64 = test.taken_target?;
+    let direct_fallthrough: u64 = test.fallthrough_target?;
+    let (mut taken_target, taken_route): (u64, Vec<HirCondRoute>) = resolve_condition_edge(
+        context.index,
+        direct_taken,
+        start,
+        context.lang,
+        context.work,
+        context.clone_bytes,
+    )?;
+    let (mut fallthrough_target, fallthrough_route): (u64, Vec<HirCondRoute>) =
+        resolve_condition_edge(
+            context.index,
+            direct_fallthrough,
+            start,
+            context.lang,
+            context.work,
+            context.clone_bytes,
+        )?;
+    test.taken_route = taken_route;
+    test.fallthrough_route = fallthrough_route;
+    if normalize_negated_predicate(&mut test) {
+        std::mem::swap(&mut taken_target, &mut fallthrough_target);
+    }
+    let taken: DecisionExpression = recover_decision_expression(context, taken_target)?;
+    let fallthrough: DecisionExpression = recover_decision_expression(context, fallthrough_target)?;
+    context.active.remove(&start);
+    combine_decision(test, taken, fallthrough)
+}
+
+fn normalize_negated_predicate(test: &mut HirCondTest) -> bool {
+    let Some((_branch, preceding)): Option<(&HirLeafStmt, &[HirLeafStmt])> =
+        test.stmts.split_last()
+    else {
+        return false;
+    };
+    let Some(predicate): Option<&HirLeafStmt> = preceding.last() else {
+        return false;
+    };
+    let NirOp::Value {
+        op: ValueOp::BoolNegate,
+        inputs,
+        ..
+    } = &predicate.instr.op
+    else {
+        return false;
+    };
+    let Some(branch_operand): Option<&mut String> = test.operands.first_mut() else {
+        return false;
+    };
+    let Some(destination): Option<&String> = predicate.instr.operands.first() else {
+        return false;
+    };
+    let Some(input): Option<&String> = inputs.first() else {
+        return false;
+    };
+    if branch_operand != destination {
+        return false;
+    }
+    branch_operand.clone_from(input);
+    true
+}
+
+fn resolve_condition_edge(
+    index: &BlockIndex<'_>,
+    start: u64,
+    lower_bound: u64,
+    lang: SourceLang,
+    work: &mut usize,
+    clone_bytes: &mut usize,
+) -> Option<(u64, Vec<HirCondRoute>)> {
+    let mut current: u64 = start;
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
+    let mut route: Vec<HirCondRoute> = Vec::new();
+    while let Some(block) = index.block(current) {
+        if block.kind != BlockKind::Jump {
+            break;
+        }
+        let transparent: bool = block.instructions.len() == 1
+            && block.instructions[0].class() == NirClass::UnconditionalJump
+            && !block.instructions[0].writes_memory
+            && block.successors.len() == 1;
+        if !transparent {
+            break;
+        }
+        if current <= lower_bound
+            || index.is_loop_header(current)
+            || !seen.insert(current)
+            || route.len() >= MAX_SHORT_CIRCUIT_TESTS
+        {
+            return None;
+        }
+        let successor: u64 = block.successors[0];
+        charge_condition_clone(block, work, clone_bytes)?;
+        route.push(HirCondRoute {
+            block_start: current,
+            stmts: leaf_stmts(block, lang),
+            successor,
+        });
+        current = successor;
+    }
+    Some((current, route))
+}
+
+fn combine_decision(
+    test: HirCondTest,
+    taken: DecisionExpression,
+    fallthrough: DecisionExpression,
+) -> Option<DecisionExpression> {
+    match (taken, fallthrough) {
+        (DecisionExpression::Constant(true), DecisionExpression::Constant(false)) => {
+            Some(test_expression(test, false))
+        }
+        (DecisionExpression::Constant(false), DecisionExpression::Constant(true)) => {
+            Some(test_expression(test, true))
+        }
+        (
+            DecisionExpression::Constant(true),
+            DecisionExpression::Expression {
+                expression,
+                negations,
+            },
+        ) => Some(join_decision(
+            test_expression(test, false),
+            expression,
+            negations,
+            false,
+        )),
+        (
+            DecisionExpression::Constant(false),
+            DecisionExpression::Expression {
+                expression,
+                negations,
+            },
+        ) => Some(join_decision(
+            test_expression(test, true),
+            expression,
+            negations,
+            true,
+        )),
+        (
+            DecisionExpression::Expression {
+                expression,
+                negations,
+            },
+            DecisionExpression::Constant(true),
+        ) => Some(join_decision(
+            test_expression(test, true),
+            expression,
+            negations,
+            false,
+        )),
+        (
+            DecisionExpression::Expression {
+                expression,
+                negations,
+            },
+            DecisionExpression::Constant(false),
+        ) => Some(join_decision(
+            test_expression(test, false),
+            expression,
+            negations,
+            true,
+        )),
+        _ => None,
+    }
+}
+
+fn test_expression(test: HirCondTest, negated: bool) -> DecisionExpression {
+    DecisionExpression::Expression {
+        expression: HirCondExpr::Test { test, negated },
+        negations: usize::from(negated),
+    }
+}
+
+fn join_decision(
+    left: DecisionExpression,
+    right: HirCondExpr,
+    right_negations: usize,
+    conjunction: bool,
+) -> DecisionExpression {
+    let DecisionExpression::Expression {
+        expression: left,
+        negations: left_negations,
+    } = left
+    else {
+        return DecisionExpression::Constant(false);
+    };
+    let mut terms: Vec<HirCondExpr> = Vec::new();
+    match (conjunction, left) {
+        (true, HirCondExpr::All { terms: nested })
+        | (false, HirCondExpr::Any { terms: nested }) => terms.extend(nested),
+        (_, expression) => terms.push(expression),
+    }
+    match (conjunction, right) {
+        (true, HirCondExpr::All { terms: nested })
+        | (false, HirCondExpr::Any { terms: nested }) => terms.extend(nested),
+        (_, expression) => terms.push(expression),
+    }
+    DecisionExpression::Expression {
+        expression: if conjunction {
+            HirCondExpr::All { terms }
+        } else {
+            HirCondExpr::Any { terms }
+        },
+        negations: left_negations.saturating_add(right_negations),
     }
 }
 
@@ -1315,10 +1956,11 @@ fn collect_block_starts(stmt: &HirStmt, out: &mut BTreeSet<u64>) {
             }
             HirStmt::Seq { body } => pending.extend(body),
             HirStmt::If {
+                cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
+                collect_condition_block_starts(&cond.expression, out);
                 pending.push(then_branch);
                 pending.push(else_branch);
             }
@@ -1360,10 +2002,11 @@ fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
             }
             HirStmt::Seq { body } => pending.extend(body),
             HirStmt::If {
+                cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
+                collect_condition_instructions(&cond.expression, out);
                 pending.push(then_branch);
                 pending.push(else_branch);
             }
@@ -1390,12 +2033,54 @@ fn collect_instructions(stmt: &HirStmt, out: &mut Vec<NirInstr>) {
     }
 }
 
+fn collect_condition_block_starts(expression: &HirCondExpr, out: &mut BTreeSet<u64>) {
+    let mut pending: Vec<&HirCondExpr> = vec![expression];
+    while let Some(current) = pending.pop() {
+        match current {
+            HirCondExpr::Test { test, .. } => {
+                out.insert(test.block_start);
+                out.extend(
+                    test.taken_route
+                        .iter()
+                        .chain(&test.fallthrough_route)
+                        .map(|route: &HirCondRoute| route.block_start),
+                );
+            }
+            HirCondExpr::All { terms } | HirCondExpr::Any { terms } => pending.extend(terms),
+        }
+    }
+}
+
+fn collect_condition_instructions(expression: &HirCondExpr, out: &mut Vec<NirInstr>) {
+    let mut pending: Vec<&HirCondExpr> = vec![expression];
+    while let Some(current) = pending.pop() {
+        match current {
+            HirCondExpr::Test { test, .. } => {
+                out.extend(
+                    test.stmts
+                        .iter()
+                        .map(|leaf: &HirLeafStmt| leaf.instr.clone()),
+                );
+                for route in test.taken_route.iter().chain(&test.fallthrough_route) {
+                    out.extend(
+                        route
+                            .stmts
+                            .iter()
+                            .map(|leaf: &HirLeafStmt| leaf.instr.clone()),
+                    );
+                }
+            }
+            HirCondExpr::All { terms } | HirCondExpr::Any { terms } => pending.extend(terms),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::reducible::CnsBudget;
-    use crate::types::{NirOp, SourceLang, SourceRef};
+    use crate::types::{CallOtherEffect, NirOp, SourceLang, SourceRef};
 
     fn instr(address: u64, op: NirOp, mnemonic: &str, operands: &[&str]) -> NirInstr {
         NirInstr {
@@ -1419,6 +2104,155 @@ mod tests {
             instructions,
             source: SourceRef::new(SourceLang::NativeX86, 0),
         }
+    }
+
+    fn guarded_condition_block(mut preceding: NirInstr) -> NirBlock {
+        preceding.address = 0;
+        NirBlock {
+            start: 0,
+            end: 2,
+            instructions: vec![
+                preceding,
+                instr(1, NirOp::CondBranch { target: Some(4) }, "jnz", &["4"]),
+            ],
+            successors: vec![2, 4],
+            kind: BlockKind::Conditional,
+        }
+    }
+
+    #[test]
+    fn guarded_condition_rejects_an_instruction_marked_as_memory_writing() {
+        let mut operation: NirInstr = instr(0, NirOp::Nop, "opaque", &[]);
+        operation.writes_memory = true;
+        assert!(!condition_block_is_foldable(
+            &guarded_condition_block(operation),
+            SourceLang::NativeX86,
+            true,
+        ));
+    }
+
+    #[test]
+    fn guarded_condition_rejects_unknown_or_memory_writing_callother_effects() {
+        for effect in [
+            CallOtherEffect {
+                name: "memory_effect".to_owned(),
+                writes_memory: true,
+                ..CallOtherEffect::default()
+            },
+            CallOtherEffect {
+                name: "unknown_effect".to_owned(),
+                unknown_registers: true,
+                ..CallOtherEffect::default()
+            },
+        ] {
+            let operation: NirInstr = instr(0, NirOp::CallOther { effect }, "callother", &[]);
+            assert!(!condition_block_is_foldable(
+                &guarded_condition_block(operation),
+                SourceLang::NativeArm,
+                true,
+            ));
+        }
+    }
+
+    #[test]
+    fn guarded_aarch64_unmatched_loads_and_compares_are_read_only_but_stores_are_not() {
+        for name in ["decode_unmatched_0xbd401fe0", "decode_unmatched_0x1e212000"] {
+            let operation: NirInstr = instr(
+                0,
+                NirOp::CallOther {
+                    effect: CallOtherEffect {
+                        name: name.to_owned(),
+                        reads_memory: true,
+                        writes_memory: true,
+                        unknown_registers: true,
+                        ..CallOtherEffect::default()
+                    },
+                },
+                "callother",
+                &[],
+            );
+            assert!(condition_block_is_foldable(
+                &guarded_condition_block(operation),
+                SourceLang::NativeArm,
+                true,
+            ));
+        }
+        let store: NirInstr = instr(
+            0,
+            NirOp::CallOther {
+                effect: CallOtherEffect {
+                    name: "decode_unmatched_0xbd001fe0".to_owned(),
+                    reads_memory: true,
+                    writes_memory: true,
+                    unknown_registers: true,
+                    ..CallOtherEffect::default()
+                },
+            },
+            "callother",
+            &[],
+        );
+        assert!(!condition_block_is_foldable(
+            &guarded_condition_block(store),
+            SourceLang::NativeArm,
+            true,
+        ));
+    }
+
+    #[test]
+    fn sixty_four_test_short_circuit_chain_uses_only_its_two_terminal_outcomes() {
+        let true_target: u64 = 0x1000;
+        let false_target: u64 = 0x2000;
+        let mut blocks: Vec<NirBlock> = Vec::with_capacity(MAX_SHORT_CIRCUIT_TESTS + 2);
+        for index in 0..MAX_SHORT_CIRCUIT_TESTS {
+            let start: u64 = u64::try_from(index).expect("test index fits u64") * 4;
+            let fallthrough: u64 = if index + 1 == MAX_SHORT_CIRCUIT_TESTS {
+                false_target
+            } else {
+                start + 4
+            };
+            blocks.push(NirBlock {
+                start,
+                end: start + 4,
+                instructions: vec![instr(
+                    start,
+                    NirOp::CondBranch {
+                        target: Some(true_target),
+                    },
+                    "jnz",
+                    &["true"],
+                )],
+                successors: vec![true_target, fallthrough],
+                kind: BlockKind::Conditional,
+            });
+        }
+        for target in [true_target, false_target] {
+            blocks.push(NirBlock {
+                start: target,
+                end: target + 1,
+                instructions: vec![instr(target, NirOp::Return, "ret", &[])],
+                successors: Vec::new(),
+                kind: BlockKind::Return,
+            });
+        }
+        let index: BlockIndex<'_> = BlockIndex::build(&blocks);
+        let candidate: ShortCircuitCandidate =
+            short_circuit_candidate(&index, &blocks[0], SourceLang::NativeX86, &BTreeSet::new())
+                .expect("the maximum bounded chain remains recoverable");
+        assert_eq!(candidate.tests.len(), MAX_SHORT_CIRCUIT_TESTS);
+        assert_eq!(
+            BTreeSet::from([candidate.taken_target, candidate.fallthrough_target]),
+            BTreeSet::from([true_target, false_target]),
+        );
+    }
+
+    #[test]
+    fn condition_clone_budget_counts_owned_instruction_bytes() {
+        let mut operation: NirInstr = instr(0, NirOp::Nop, "opaque", &[]);
+        operation.mnemonic = "x".repeat(MAX_SHORT_CIRCUIT_CLONE_BYTES + 1);
+        let block: NirBlock = guarded_condition_block(operation);
+        let mut work: usize = MAX_SHORT_CIRCUIT_WORK;
+        let mut clone_bytes: usize = MAX_SHORT_CIRCUIT_CLONE_BYTES;
+        assert!(charge_condition_clone(&block, &mut work, &mut clone_bytes).is_none());
     }
 
     #[test]

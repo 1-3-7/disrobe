@@ -3,8 +3,8 @@ use std::fmt::{self, Write};
 use thiserror::Error;
 
 use crate::surface::{
-    SurfaceCase, SurfaceCondition, SurfaceExpr, SurfaceFunction, SurfaceLeaf, SurfaceStatement,
-    SurfaceStmt,
+    SurfaceCase, SurfaceCondition, SurfaceConditionExpr, SurfaceConditionTest, SurfaceExpr,
+    SurfaceFunction, SurfaceLeaf, SurfaceStatement, SurfaceStmt,
 };
 use crate::types::{BinaryOp, NirClass};
 
@@ -153,9 +153,19 @@ fn emit_stmt(
             then_branch,
             else_branch,
         } => {
+            let root_test: Option<&SurfaceConditionTest> = first_condition_test(&cond.expression);
+            if let Some(test) = root_test {
+                emit_condition_prelude(test, indent, output);
+            }
             write_indent(indent, output);
             output.push_str("if (");
-            emit_condition(cond, output);
+            emit_condition(
+                cond,
+                root_test.map(|test: &SurfaceConditionTest| test.block_start),
+                indent,
+                depth,
+                output,
+            )?;
             output.push_str(") {\n");
             emit_stmt(
                 then_branch,
@@ -268,12 +278,24 @@ fn emit_goto_terminator(
             output.push_str("if (");
             if let Some(leaf) = last {
                 let condition: SurfaceCondition = SurfaceCondition {
-                    at: leaf.instr.address,
-                    mnemonic: leaf.instr.mnemonic.clone(),
-                    operands: leaf.instr.operands.clone(),
+                    expression: SurfaceConditionExpr::Test {
+                        test: SurfaceConditionTest {
+                            block_start: case.block_start,
+                            statements: Vec::new(),
+                            at: leaf.instr.address,
+                            mnemonic: leaf.instr.mnemonic.clone(),
+                            operands: leaf.instr.operands.clone(),
+                            taken_target: taken,
+                            fallthrough_target: fallthrough,
+                            taken_route: Vec::new(),
+                            fallthrough_route: Vec::new(),
+                        },
+                        negated: false,
+                    },
                     taken_target: taken,
+                    fallthrough_target: fallthrough,
                 };
-                emit_condition(&condition, output);
+                emit_condition(&condition, None, indent, 0, output)?;
             } else {
                 output.push_str("condition");
             }
@@ -400,11 +422,127 @@ fn emit_leaf(leaf: &SurfaceLeaf, indent: usize, output: &mut BoundedOutput) {
     }
 }
 
-fn emit_condition(condition: &SurfaceCondition, output: &mut BoundedOutput) {
-    match condition.operands.first() {
+fn first_condition_test(expression: &SurfaceConditionExpr) -> Option<&SurfaceConditionTest> {
+    match expression {
+        SurfaceConditionExpr::Test { test, .. } => Some(test),
+        SurfaceConditionExpr::All { terms } | SurfaceConditionExpr::Any { terms } => {
+            terms.iter().find_map(first_condition_test)
+        }
+    }
+}
+
+fn condition_prelude(test: &SurfaceConditionTest) -> &[SurfaceLeaf] {
+    match test.statements.split_last() {
+        Some((last, preceding)) if last.instr.class() == NirClass::ConditionalJump => preceding,
+        _ => &test.statements,
+    }
+}
+
+fn emit_condition_prelude(test: &SurfaceConditionTest, indent: usize, output: &mut BoundedOutput) {
+    for statement in condition_prelude(test) {
+        emit_leaf(statement, indent, output);
+    }
+}
+
+fn emit_condition(
+    condition: &SurfaceCondition,
+    root_block: Option<u64>,
+    indent: usize,
+    depth: usize,
+    output: &mut BoundedOutput,
+) -> Result<(), EmitError> {
+    emit_condition_expr(
+        &condition.expression,
+        root_block,
+        indent,
+        depth.saturating_add(1),
+        0,
+        output,
+    )
+}
+
+fn emit_condition_expr(
+    expression: &SurfaceConditionExpr,
+    root_block: Option<u64>,
+    indent: usize,
+    depth: usize,
+    parent_precedence: u8,
+    output: &mut BoundedOutput,
+) -> Result<(), EmitError> {
+    if depth >= MAX_EMIT_DEPTH {
+        return Err(EmitError::DepthExceeded {
+            limit: MAX_EMIT_DEPTH,
+        });
+    }
+    let precedence: u8 = match expression {
+        SurfaceConditionExpr::Test { .. } => 3,
+        SurfaceConditionExpr::All { .. } => 2,
+        SurfaceConditionExpr::Any { .. } => 1,
+    };
+    let parenthesized: bool = precedence < parent_precedence;
+    if parenthesized {
+        output.push('(');
+    }
+    match expression {
+        SurfaceConditionExpr::Test { test, negated } => {
+            if *negated {
+                output.push_str("!(");
+            }
+            let prelude: &[SurfaceLeaf] = condition_prelude(test);
+            let inline_prelude: bool = !prelude.is_empty() && root_block != Some(test.block_start);
+            if inline_prelude {
+                output.push_str("[&]() {\n");
+                for statement in prelude {
+                    emit_leaf(statement, indent.saturating_add(1), output);
+                }
+                write_indent(indent.saturating_add(1), output);
+                output.push_str("return ");
+                emit_condition_test(test, output);
+                output.push_str(";\n");
+                write_indent(indent, output);
+                output.push_str("}()");
+            } else {
+                emit_condition_test(test, output);
+            }
+            if *negated {
+                output.push(')');
+            }
+        }
+        SurfaceConditionExpr::All { terms } | SurfaceConditionExpr::Any { terms } => {
+            let operator: &str = if matches!(expression, SurfaceConditionExpr::All { .. }) {
+                " && "
+            } else {
+                " || "
+            };
+            if terms.is_empty() {
+                output.push_str("condition");
+            }
+            for (index, term) in terms.iter().enumerate() {
+                if index != 0 {
+                    output.push_str(operator);
+                }
+                emit_condition_expr(
+                    term,
+                    root_block,
+                    indent,
+                    depth.saturating_add(1),
+                    precedence,
+                    output,
+                )?;
+            }
+        }
+    }
+    if parenthesized {
+        output.push(')');
+    }
+    Ok(())
+}
+
+fn emit_condition_test(test: &SurfaceConditionTest, output: &mut BoundedOutput) {
+    match test.operands.first() {
         Some(value) => output.push_str(value),
-        None if condition.mnemonic.is_empty() => output.push_str("condition"),
-        None => output.push_str(&condition.mnemonic),
+        None if test.mnemonic.is_empty() => output.push_str("condition"),
+        None => output.push_str(&test.mnemonic),
     }
 }
 
@@ -554,6 +692,282 @@ mod tests {
         };
         emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
             .expect("emit terminal call")
+    }
+
+    fn short_circuit_instruction(
+        address: u64,
+        op: NirOp,
+        mnemonic: &str,
+        operands: &[&str],
+    ) -> NirInstr {
+        NirInstr {
+            address,
+            op,
+            mnemonic: mnemonic.to_owned(),
+            operands: operands
+                .iter()
+                .map(|operand: &&str| (*operand).to_owned())
+                .collect(),
+            reads_memory: false,
+            writes_memory: false,
+            byte_width: false,
+            source: SourceRef::new(SourceLang::NativeX86, address),
+        }
+    }
+
+    #[test]
+    fn shared_guarded_tail_emits_one_compound_short_circuit_condition() {
+        let function: NirFunction = NirFunction {
+            name: "short_circuit_or".to_owned(),
+            address: 0,
+            end: 9,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(6) },
+                    "branch_first",
+                    &["first"],
+                ),
+                short_circuit_instruction(
+                    2,
+                    NirOp::CondBranch { target: Some(6) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(4, NirOp::Branch { target: Some(8) }, "skip", &["8"]),
+                short_circuit_instruction(6, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(8, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let hir: crate::hir::HirFunction = structurize_function(&function);
+        assert_eq!(hir.to_nir_function().instructions, function.instructions);
+        let surface: SurfaceFunction = surfacify_function(&hir);
+        assert_eq!(
+            surface.to_nir_function().instructions,
+            function.instructions
+        );
+        let source: String = emit_pseudo_source(&surface).expect("emit short-circuit condition");
+        assert_eq!(
+            source.matches("if (").count(),
+            1,
+            "the condition chain must emit one if:\n{source}"
+        );
+        assert!(
+            source.contains("if (first || second)"),
+            "the two tests must retain short-circuit order:\n{source}"
+        );
+        assert_eq!(
+            source.matches("result = 1;").count(),
+            1,
+            "the guarded tail must emit exactly once:\n{source}"
+        );
+    }
+
+    #[test]
+    fn effectful_second_test_keeps_the_existing_nested_recovery() {
+        let mut store: NirInstr =
+            short_circuit_instruction(2, NirOp::Store, "store", &["mem[cursor]", "value"]);
+        store.writes_memory = true;
+        let function: NirFunction = NirFunction {
+            name: "effectful_short_circuit".to_owned(),
+            address: 0,
+            end: 10,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_first",
+                    &["first"],
+                ),
+                store,
+                short_circuit_instruction(
+                    3,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(5, NirOp::Branch { target: Some(9) }, "skip", &["9"]),
+                short_circuit_instruction(7, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(9, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let source: String =
+            emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
+                .expect("emit effectful short-circuit condition");
+        assert_eq!(
+            source.matches("if (").count(),
+            2,
+            "an effectful test block must retain nested control flow:\n{source}"
+        );
+        assert_eq!(
+            source.matches("result = 1;").count(),
+            2,
+            "the existing peel must remain authoritative for the refused shape:\n{source}"
+        );
+    }
+
+    #[test]
+    fn calling_second_test_keeps_the_existing_nested_recovery() {
+        let function: NirFunction = NirFunction {
+            name: "calling_short_circuit".to_owned(),
+            address: 0,
+            end: 10,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_first",
+                    &["first"],
+                ),
+                short_circuit_instruction(
+                    2,
+                    NirOp::Call {
+                        target: Some(0x1000),
+                    },
+                    "call",
+                    &["observe"],
+                ),
+                short_circuit_instruction(
+                    3,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(5, NirOp::Branch { target: Some(9) }, "skip", &["9"]),
+                short_circuit_instruction(7, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(9, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let source: String =
+            emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
+                .expect("emit calling short-circuit condition");
+        assert_eq!(source.matches("if (").count(), 2, "{source}");
+        assert_eq!(source.matches("result = 1;").count(), 2, "{source}");
+        assert_eq!(source.matches("observe();").count(), 1, "{source}");
+    }
+
+    #[test]
+    fn memory_read_in_second_test_stays_short_circuited_inside_the_condition() {
+        let mut load: NirInstr =
+            short_circuit_instruction(2, NirOp::Load, "load", &["value", "mem[cursor]"]);
+        load.reads_memory = true;
+        let function: NirFunction = NirFunction {
+            name: "reading_short_circuit".to_owned(),
+            address: 0,
+            end: 10,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_first",
+                    &["first"],
+                ),
+                load,
+                short_circuit_instruction(
+                    3,
+                    NirOp::CondBranch { target: Some(7) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(5, NirOp::Branch { target: Some(9) }, "skip", &["9"]),
+                short_circuit_instruction(7, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(9, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let source: String =
+            emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
+                .expect("emit reading short-circuit condition");
+        assert_eq!(source.matches("if (").count(), 1, "{source}");
+        assert_eq!(source.matches("result = 1;").count(), 1, "{source}");
+        assert!(source.contains("value = mem[mem[cursor]];"), "{source}");
+        let first_position: usize = source.find("first ||").expect("first test");
+        let load_position: usize = source
+            .find("value = mem[mem[cursor]];")
+            .expect("memory read");
+        assert!(first_position < load_position, "{source}");
+    }
+
+    #[test]
+    fn three_test_chain_preserves_left_to_right_short_circuit_order() {
+        let function: NirFunction = NirFunction {
+            name: "short_circuit_three".to_owned(),
+            address: 0,
+            end: 11,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(8) },
+                    "branch_first",
+                    &["first"],
+                ),
+                short_circuit_instruction(
+                    2,
+                    NirOp::CondBranch { target: Some(8) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(
+                    4,
+                    NirOp::CondBranch { target: Some(8) },
+                    "branch_third",
+                    &["third"],
+                ),
+                short_circuit_instruction(6, NirOp::Branch { target: Some(10) }, "skip", &["10"]),
+                short_circuit_instruction(8, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(10, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let source: String =
+            emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
+                .expect("emit three-test condition");
+        assert!(source.contains("if (first || second || third)"), "{source}");
+        assert_eq!(source.matches("if (").count(), 1, "{source}");
+        assert_eq!(source.matches("result = 1;").count(), 1, "{source}");
+    }
+
+    #[test]
+    fn negated_first_test_forms_a_short_circuit_conjunction() {
+        let function: NirFunction = NirFunction {
+            name: "short_circuit_negated".to_owned(),
+            address: 0,
+            end: 10,
+            is_export: false,
+            instructions: vec![
+                short_circuit_instruction(
+                    0,
+                    NirOp::CondBranch { target: Some(8) },
+                    "branch_first",
+                    &["first"],
+                ),
+                short_circuit_instruction(
+                    2,
+                    NirOp::CondBranch { target: Some(6) },
+                    "branch_second",
+                    &["second"],
+                ),
+                short_circuit_instruction(4, NirOp::Branch { target: Some(8) }, "skip", &["8"]),
+                short_circuit_instruction(6, NirOp::Const, "assign", &["result", "1"]),
+                short_circuit_instruction(7, NirOp::Return, "return", &["result"]),
+                short_circuit_instruction(8, NirOp::Const, "assign", &["result", "0"]),
+                short_circuit_instruction(9, NirOp::Return, "return", &["result"]),
+            ],
+            source: SourceRef::new(SourceLang::NativeX86, 0),
+        };
+        let source: String =
+            emit_pseudo_source(&surfacify_function(&structurize_function(&function)))
+                .expect("emit negated conjunction");
+        assert!(source.contains("if (!(first) && second)"), "{source}");
+        assert_eq!(source.matches("if (").count(), 1, "{source}");
     }
 
     #[test]

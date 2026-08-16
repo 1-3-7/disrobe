@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::hir::{
-    HirCond, HirDispatchCase, HirExpr, HirFunction, HirInstrStmt, HirLeafStmt, HirModule, HirStmt,
+    HirCond, HirCondExpr, HirCondRoute, HirCondTest, HirDispatchCase, HirExpr, HirFunction,
+    HirInstrStmt, HirLeafStmt, HirModule, HirStmt,
 };
 use crate::types::{BinaryOp, NirInstr, NirModule, NirSymbol, SourceLang, SourceRef};
 
@@ -159,22 +160,45 @@ pub struct SurfaceLocal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SurfaceCondition {
+pub struct SurfaceConditionRoute {
+    pub block_start: u64,
+    pub statements: Vec<SurfaceLeaf>,
+    pub successor: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceConditionTest {
+    pub block_start: u64,
+    pub statements: Vec<SurfaceLeaf>,
     pub at: u64,
     pub mnemonic: String,
     pub operands: Vec<String>,
     pub taken_target: Option<u64>,
+    pub fallthrough_target: Option<u64>,
+    pub taken_route: Vec<SurfaceConditionRoute>,
+    pub fallthrough_route: Vec<SurfaceConditionRoute>,
 }
 
-impl SurfaceCondition {
-    fn from_hir(cond: &HirCond) -> Self {
-        Self {
-            at: cond.at,
-            mnemonic: cond.mnemonic.clone(),
-            operands: cond.operands.clone(),
-            taken_target: cond.taken_target,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "condition", rename_all = "kebab-case")]
+pub enum SurfaceConditionExpr {
+    Test {
+        test: SurfaceConditionTest,
+        negated: bool,
+    },
+    All {
+        terms: Vec<Self>,
+    },
+    Any {
+        terms: Vec<Self>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceCondition {
+    pub expression: SurfaceConditionExpr,
+    pub taken_target: Option<u64>,
+    pub fallthrough_target: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -481,10 +505,13 @@ fn hir_stmt_exceeds_depth(stmt: &HirStmt) -> bool {
                 }
             }
             HirStmt::If {
+                cond,
                 then_branch,
                 else_branch,
-                ..
             } => {
+                if condition_exceeds_depth(&cond.expression, child_depth) {
+                    return true;
+                }
                 pending.push((then_branch, child_depth));
                 pending.push((else_branch, child_depth));
             }
@@ -496,6 +523,23 @@ fn hir_stmt_exceeds_depth(stmt: &HirStmt) -> bool {
             | HirStmt::Dispatch { .. }
             | HirStmt::GotoGraph { .. }
             | HirStmt::Empty => {}
+        }
+    }
+    false
+}
+
+fn condition_exceeds_depth(expression: &HirCondExpr, depth: usize) -> bool {
+    let mut pending: Vec<(&HirCondExpr, usize)> = vec![(expression, depth)];
+    while let Some((current, current_depth)) = pending.pop() {
+        if current_depth >= MAX_SURFACE_DEPTH {
+            return true;
+        }
+        let child_depth: usize = current_depth.saturating_add(1);
+        match current {
+            HirCondExpr::Test { .. } => {}
+            HirCondExpr::All { terms } | HirCondExpr::Any { terms } => {
+                pending.extend(terms.iter().map(|term: &HirCondExpr| (term, child_depth)));
+            }
         }
     }
     false
@@ -533,7 +577,7 @@ impl Lifter {
                 let then_lowered: SurfaceStmt = self.lift(then_branch, depth + 1);
                 let else_lowered: SurfaceStmt = self.lift(else_branch, depth + 1);
                 SurfaceStmt::If {
-                    cond: SurfaceCondition::from_hir(cond),
+                    cond: self.lift_condition(cond),
                     then_branch: Box::new(then_lowered),
                     else_branch: Box::new(else_lowered),
                 }
@@ -578,6 +622,82 @@ impl Lifter {
                 .map(|leaf: &HirLeafStmt| self.lift_leaf_stmt(leaf))
                 .collect(),
             successors: case.successors.clone(),
+        }
+    }
+
+    fn lift_condition(&mut self, condition: &HirCond) -> SurfaceCondition {
+        SurfaceCondition {
+            expression: self.lift_condition_expression(&condition.expression, 0),
+            taken_target: condition.taken_target,
+            fallthrough_target: condition.fallthrough_target,
+        }
+    }
+
+    fn lift_condition_expression(
+        &mut self,
+        expression: &HirCondExpr,
+        depth: usize,
+    ) -> SurfaceConditionExpr {
+        if depth >= MAX_SURFACE_DEPTH {
+            self.complete = false;
+            return SurfaceConditionExpr::Any { terms: Vec::new() };
+        }
+        let child_depth: usize = depth.saturating_add(1);
+        match expression {
+            HirCondExpr::Test { test, negated } => SurfaceConditionExpr::Test {
+                test: self.lift_condition_test(test),
+                negated: *negated,
+            },
+            HirCondExpr::All { terms } => SurfaceConditionExpr::All {
+                terms: terms
+                    .iter()
+                    .map(|term: &HirCondExpr| self.lift_condition_expression(term, child_depth))
+                    .collect(),
+            },
+            HirCondExpr::Any { terms } => SurfaceConditionExpr::Any {
+                terms: terms
+                    .iter()
+                    .map(|term: &HirCondExpr| self.lift_condition_expression(term, child_depth))
+                    .collect(),
+            },
+        }
+    }
+
+    fn lift_condition_test(&mut self, test: &HirCondTest) -> SurfaceConditionTest {
+        SurfaceConditionTest {
+            block_start: test.block_start,
+            statements: test
+                .stmts
+                .iter()
+                .map(|leaf: &HirLeafStmt| self.lift_leaf_stmt(leaf))
+                .collect(),
+            at: test.at,
+            mnemonic: test.mnemonic.clone(),
+            operands: test.operands.clone(),
+            taken_target: test.taken_target,
+            fallthrough_target: test.fallthrough_target,
+            taken_route: test
+                .taken_route
+                .iter()
+                .map(|route: &HirCondRoute| self.lift_condition_route(route))
+                .collect(),
+            fallthrough_route: test
+                .fallthrough_route
+                .iter()
+                .map(|route: &HirCondRoute| self.lift_condition_route(route))
+                .collect(),
+        }
+    }
+
+    fn lift_condition_route(&mut self, route: &HirCondRoute) -> SurfaceConditionRoute {
+        SurfaceConditionRoute {
+            block_start: route.block_start,
+            statements: route
+                .stmts
+                .iter()
+                .map(|leaf: &HirLeafStmt| self.lift_leaf_stmt(leaf))
+                .collect(),
+            successor: route.successor,
         }
     }
 
@@ -737,10 +857,11 @@ fn collect_locals(stmt: &SurfaceStmt, out: &mut BTreeMap<String, SurfaceType>) {
             }
         }
         SurfaceStmt::If {
+            cond,
             then_branch,
             else_branch,
-            ..
         } => {
+            collect_condition_locals(&cond.expression, out);
             collect_locals(then_branch, out);
             collect_locals(else_branch, out);
         }
@@ -774,10 +895,11 @@ fn collect_block_starts(stmt: &SurfaceStmt, out: &mut BTreeSet<u64>) {
             }
         }
         SurfaceStmt::If {
+            cond,
             then_branch,
             else_branch,
-            ..
         } => {
+            collect_condition_block_starts(&cond.expression, out);
             collect_block_starts(then_branch, out);
             collect_block_starts(else_branch, out);
         }
@@ -819,10 +941,11 @@ fn collect_addresses(stmt: &SurfaceStmt, out: &mut BTreeSet<u64>) {
             }
         }
         SurfaceStmt::If {
+            cond,
             then_branch,
             else_branch,
-            ..
         } => {
+            collect_condition_addresses(&cond.expression, out);
             collect_addresses(then_branch, out);
             collect_addresses(else_branch, out);
         }
@@ -861,10 +984,11 @@ fn collect_instructions(stmt: &SurfaceStmt, out: &mut Vec<NirInstr>) {
             }
         }
         SurfaceStmt::If {
+            cond,
             then_branch,
             else_branch,
-            ..
         } => {
+            collect_condition_instructions(&cond.expression, out);
             collect_instructions(then_branch, out);
             collect_instructions(else_branch, out);
         }
@@ -873,6 +997,88 @@ fn collect_instructions(stmt: &SurfaceStmt, out: &mut Vec<NirInstr>) {
         | SurfaceStmt::Continue { .. }
         | SurfaceStmt::Return { .. }
         | SurfaceStmt::Nop => {}
+    }
+}
+
+fn condition_tests(expression: &SurfaceConditionExpr) -> Vec<&SurfaceConditionTest> {
+    let mut tests: Vec<&SurfaceConditionTest> = Vec::new();
+    let mut pending: Vec<&SurfaceConditionExpr> = vec![expression];
+    while let Some(current) = pending.pop() {
+        match current {
+            SurfaceConditionExpr::Test { test, .. } => tests.push(test),
+            SurfaceConditionExpr::All { terms } | SurfaceConditionExpr::Any { terms } => {
+                pending.extend(terms.iter().rev());
+            }
+        }
+    }
+    tests
+}
+
+fn collect_condition_locals(
+    expression: &SurfaceConditionExpr,
+    out: &mut BTreeMap<String, SurfaceType>,
+) {
+    for test in condition_tests(expression) {
+        for leaf in &test.statements {
+            leaf.stmt.collect_locals(out);
+        }
+        for route in test.taken_route.iter().chain(&test.fallthrough_route) {
+            for leaf in &route.statements {
+                leaf.stmt.collect_locals(out);
+            }
+        }
+    }
+}
+
+fn collect_condition_block_starts(expression: &SurfaceConditionExpr, out: &mut BTreeSet<u64>) {
+    out.extend(
+        condition_tests(expression)
+            .into_iter()
+            .map(|test: &SurfaceConditionTest| test.block_start),
+    );
+    for test in condition_tests(expression) {
+        out.extend(
+            test.taken_route
+                .iter()
+                .chain(&test.fallthrough_route)
+                .map(|route: &SurfaceConditionRoute| route.block_start),
+        );
+    }
+}
+
+fn collect_condition_addresses(expression: &SurfaceConditionExpr, out: &mut BTreeSet<u64>) {
+    for test in condition_tests(expression) {
+        out.extend(
+            test.statements
+                .iter()
+                .map(|leaf: &SurfaceLeaf| leaf.instr.address),
+        );
+        for route in test.taken_route.iter().chain(&test.fallthrough_route) {
+            out.extend(
+                route
+                    .statements
+                    .iter()
+                    .map(|leaf: &SurfaceLeaf| leaf.instr.address),
+            );
+        }
+    }
+}
+
+fn collect_condition_instructions(expression: &SurfaceConditionExpr, out: &mut Vec<NirInstr>) {
+    for test in condition_tests(expression) {
+        out.extend(
+            test.statements
+                .iter()
+                .map(|leaf: &SurfaceLeaf| leaf.instr.clone()),
+        );
+        for route in test.taken_route.iter().chain(&test.fallthrough_route) {
+            out.extend(
+                route
+                    .statements
+                    .iter()
+                    .map(|leaf: &SurfaceLeaf| leaf.instr.clone()),
+            );
+        }
     }
 }
 
