@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::error::{Error, Result};
 
 pub const ARC_MARKER: u8 = 0x1A;
@@ -36,11 +38,16 @@ pub fn detect_arc(bytes: &[u8]) -> bool {
 }
 
 pub fn parse_arc(bytes: &[u8]) -> Result<ArcArchive> {
+    parse_arc_with_entry_limit(bytes, crate::quota::DEFAULT_MAX_ENTRIES)
+}
+
+pub(crate) fn parse_arc_with_entry_limit(bytes: &[u8], max_entries: usize) -> Result<ArcArchive> {
     if bytes.first() != Some(&ARC_MARKER) {
         return Err(Error::Arc("arc: missing 0x1a archive marker".to_owned()));
     }
     let mut cursor: usize = 0;
     let mut entries: Vec<ArcEntry> = Vec::new();
+    let mut terminated: bool = false;
     while cursor + 2 <= bytes.len() {
         if bytes[cursor] != ARC_MARKER {
             return Err(Error::Arc(format!(
@@ -50,6 +57,7 @@ pub fn parse_arc(bytes: &[u8]) -> Result<ArcArchive> {
         }
         let method: u8 = bytes[cursor + 1];
         if method == 0 {
+            terminated = true;
             break;
         }
         let name_start: usize = cursor + 2;
@@ -77,6 +85,12 @@ pub fn parse_arc(bytes: &[u8]) -> Result<ArcArchive> {
                 "arc: entry `{name}` data runs past end of archive"
             )));
         }
+        if entries.len() >= max_entries {
+            return Err(Error::QuotaExceeded {
+                entry: name,
+                reason: format!("ARC entry count exceeds cap {max_entries}"),
+            });
+        }
         entries.push(ArcEntry {
             name,
             method,
@@ -90,7 +104,29 @@ pub fn parse_arc(bytes: &[u8]) -> Result<ArcArchive> {
     if entries.is_empty() {
         return Err(Error::Arc("arc: no entries before end marker".to_owned()));
     }
+    if !terminated {
+        return Err(Error::Arc("arc: missing end marker".to_owned()));
+    }
     Ok(ArcArchive { entries })
+}
+
+pub(crate) fn admit_output_path(paths: &mut BTreeSet<String>, name: &str) -> Result<()> {
+    let key: String = name.to_ascii_lowercase();
+    let has_ancestor: bool = key
+        .match_indices('/')
+        .any(|(index, _): (usize, &str)| paths.contains(&key[..index]));
+    let descendant_prefix: String = format!("{key}/");
+    let has_descendant: bool = paths
+        .range(descendant_prefix.clone()..)
+        .next()
+        .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix));
+    if paths.contains(&key) || has_ancestor || has_descendant {
+        return Err(Error::Arc(format!(
+            "arc: normalized output path collision at `{name}`"
+        )));
+    }
+    paths.insert(key);
+    Ok(())
 }
 
 #[must_use]
@@ -98,19 +134,69 @@ pub const fn entry_is_stored(entry: &ArcEntry) -> bool {
     entry.method == 1 || entry.method == 2
 }
 
+pub(crate) fn preflight_entry_quota(
+    entry: &ArcEntry,
+    quota: crate::quota::ExtractionQuota,
+) -> Result<()> {
+    let mut guard: crate::quota::QuotaGuard =
+        crate::quota::QuotaGuard::new(crate::quota::ExtractionQuota {
+            max_entries: 1,
+            max_total_uncompressed: quota.max_per_entry_uncompressed,
+            max_per_entry_uncompressed: quota.max_per_entry_uncompressed,
+            max_per_entry_ratio: quota.max_per_entry_ratio,
+            max_aggregate_ratio: u64::MAX,
+        });
+    guard.admit_entry(
+        &entry.name,
+        u64::from(entry.original_size),
+        u64::from(entry.compressed_size),
+    )
+}
+
 fn entry_raw<'a>(bytes: &'a [u8], entry: &ArcEntry) -> Result<&'a [u8]> {
+    let end: usize = entry
+        .data_offset
+        .checked_add(entry.compressed_size as usize)
+        .ok_or_else(|| Error::Arc(format!("arc: entry `{}` data range overflow", entry.name)))?;
     bytes
-        .get(entry.data_offset..entry.data_offset + entry.compressed_size as usize)
+        .get(entry.data_offset..end)
         .ok_or_else(|| Error::Arc(format!("arc: entry `{}` data out of bounds", entry.name)))
 }
 
 pub fn entry_bytes(bytes: &[u8], entry: &ArcEntry, max_out: u64) -> Result<Vec<u8>> {
     let raw: &[u8] = entry_raw(bytes, entry)?;
     let cap: usize = usize::try_from(max_out).map_or(usize::MAX, |value: usize| value);
+    let expected: usize = usize::try_from(entry.original_size).map_err(|_| {
+        Error::Arc(format!(
+            "arc: entry `{}` original size does not fit this platform",
+            entry.name
+        ))
+    })?;
+    if expected > cap {
+        return Err(Error::Arc(format!(
+            "arc: entry `{}` output exceeds cap",
+            entry.name
+        )));
+    }
     let decoded: Vec<u8> = match entry.method {
         1 | 2 => raw.to_vec(),
         3 => crate::containers::arc_codec::un_rle(raw, cap)?,
         4 => crate::containers::arc_codec::un_squeeze(raw, cap)?,
+        5 => crate::containers::arc_codec::un_crunch_fixed(raw, false, cap)?,
+        6 | 7 => {
+            let intermediate_cap: usize = expected.checked_mul(2).ok_or_else(|| {
+                Error::Arc(format!(
+                    "arc: entry `{}` intermediate size overflow",
+                    entry.name
+                ))
+            })?;
+            let intermediate: Vec<u8> = crate::containers::arc_codec::un_crunch_fixed(
+                raw,
+                entry.method == 7,
+                intermediate_cap,
+            )?;
+            crate::containers::arc_codec::un_rle(&intermediate, cap)?
+        }
         8 => crate::containers::arc_codec::un_crunch(raw, cap)?,
         9 => crate::containers::arc_codec::un_squash(raw, cap)?,
         other => {
@@ -120,12 +206,19 @@ pub fn entry_bytes(bytes: &[u8], entry: &ArcEntry, max_out: u64) -> Result<Vec<u
             )));
         }
     };
-    if entry.method != 1 && decoded.len() as u64 != u64::from(entry.original_size) {
+    if decoded.len() != expected {
         return Err(Error::Arc(format!(
             "arc: entry `{}` decoded to {} bytes, header declares {}",
             entry.name,
             decoded.len(),
             entry.original_size
+        )));
+    }
+    let actual_crc: u16 = crate::containers::lzh::crc16_arc(&decoded);
+    if actual_crc != entry.crc16 {
+        return Err(Error::Arc(format!(
+            "arc: entry `{}` CRC mismatch: header {:04x}, decoded {:04x}",
+            entry.name, entry.crc16, actual_crc
         )));
     }
     Ok(decoded)
@@ -159,7 +252,7 @@ pub(crate) fn build_entry(method: u8, name: &str, data: &[u8], orig: u32) -> Vec
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&crate::containers::lzh::crc16_arc(data).to_le_bytes());
     if method != 1 {
         out.extend_from_slice(&orig.to_le_bytes());
     }
@@ -204,7 +297,7 @@ mod tests {
         assert_eq!(entry_bytes(&blob, entry, 1 << 20).expect("bytes"), payload);
     }
 
-    fn build_entry_compressed(method: u8, name: &str, comp: &[u8], orig: u32) -> Vec<u8> {
+    fn build_entry_compressed(method: u8, name: &str, comp: &[u8], decoded: &[u8]) -> Vec<u8> {
         let mut out: Vec<u8> = vec![ARC_MARKER, method];
         let mut name_field: [u8; FNLEN] = [0u8; FNLEN];
         let nb: &[u8] = name.as_bytes();
@@ -213,8 +306,8 @@ mod tests {
         out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&orig.to_le_bytes());
+        out.extend_from_slice(&crate::containers::lzh::crc16_arc(decoded).to_le_bytes());
+        out.extend_from_slice(&(decoded.len() as u32).to_le_bytes());
         out.extend_from_slice(comp);
         out
     }
@@ -256,7 +349,7 @@ mod tests {
             v
         };
         let comp: Vec<u8> = rle_encode_for_test(&payload);
-        let mut blob: Vec<u8> = build_entry_compressed(3, "rle.txt", &comp, payload.len() as u32);
+        let mut blob: Vec<u8> = build_entry_compressed(3, "rle.txt", &comp, &payload);
         blob.push(ARC_MARKER);
         blob.push(0);
         let archive: ArcArchive = parse_arc(&blob).expect("parse arc");
@@ -266,10 +359,99 @@ mod tests {
     }
 
     #[test]
+    fn fixed_lzw_methods_decode_reference_wires_through_arc_entries() {
+        const METHOD_FIVE: &[u8] = &[
+            0x0a, 0x50, 0x82, 0xd6, 0x69, 0x8b, 0x98, 0xb3, 0x77, 0x37, 0x70,
+        ];
+        const METHOD_SIX: &[u8] = &[
+            0x0a, 0x54, 0xff, 0x10, 0x00, 0x82, 0x5a, 0x00, 0xc4, 0x5a, 0x03, 0x13, 0x6d, 0x45,
+            0xa0,
+        ];
+        const METHOD_SEVEN: &[u8] = &[
+            0x84, 0x03, 0xaf, 0xb8, 0x43, 0x21, 0x93, 0x4e, 0x02, 0x93, 0x4e, 0xd0, 0x50, 0x69,
+            0x34,
+        ];
+        let cases: [(u8, &str, &[u8], &[u8]); 3] = [
+            (5, "method5.bin", METHOD_FIVE, b"ABABABAABABABA"),
+            (6, "method6.bin", METHOD_SIX, b"AAAAABBBBBCCCCCAAAAABBBBB"),
+            (7, "method7.bin", METHOD_SEVEN, b"AAAAABBBBBCCCCCAAAAABBBBB"),
+        ];
+        for (method, name, compressed, expected) in cases {
+            let mut blob: Vec<u8> = build_entry_compressed(method, name, compressed, expected);
+            blob.extend_from_slice(&[ARC_MARKER, 0]);
+            let archive: ArcArchive = parse_arc(&blob).expect("parse fixed LZW ARC entry");
+            let decoded: Vec<u8> =
+                entry_bytes(&blob, &archive.entries[0], 1 << 20).expect("decode fixed LZW ARC");
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn fixed_lzw_accepts_an_empty_member_and_preflights_the_ratio_boundary() {
+        let mut blob: Vec<u8> = build_entry_compressed(5, "empty.bin", &[], &[]);
+        blob.extend_from_slice(&[ARC_MARKER, 0]);
+        let archive: ArcArchive = parse_arc(&blob).expect("parse empty fixed LZW ARC entry");
+        let decoded: Vec<u8> =
+            entry_bytes(&blob, &archive.entries[0], 0).expect("decode empty fixed LZW ARC");
+        assert!(decoded.is_empty());
+
+        let entry: ArcEntry = ArcEntry {
+            name: "ratio.bin".to_owned(),
+            method: 5,
+            compressed_size: 1,
+            original_size: 100,
+            crc16: 0,
+            data_offset: 0,
+        };
+        let exact: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+            max_per_entry_uncompressed: 100,
+            max_per_entry_ratio: 100,
+            ..crate::quota::ExtractionQuota::default_safe()
+        };
+        preflight_entry_quota(&entry, exact).expect("admit exact ARC ratio boundary");
+        let below: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+            max_per_entry_ratio: 99,
+            ..exact
+        };
+        assert!(matches!(
+            preflight_entry_quota(&entry, below),
+            Err(Error::QuotaExceeded { .. })
+        ));
+    }
+
+    #[test]
     fn unsupported_method_errors() {
-        let payload: &[u8] = b"\x01\x02\x03 old crunch variant";
-        let blob: Vec<u8> = build_entry_compressed(5, "old.dat", payload, 4096);
+        let payload: &[u8] = b"\x01\x02\x03 unsupported arc variant";
+        let mut blob: Vec<u8> = build_entry_compressed(10, "old.dat", payload, &[0; 16]);
+        blob.extend_from_slice(&[ARC_MARKER, 0]);
         let archive: ArcArchive = parse_arc(&blob).expect("parse arc");
         assert!(entry_bytes(&blob, &archive.entries[0], 1 << 20).is_err());
+    }
+
+    #[test]
+    fn decoded_member_with_a_mismatched_crc_is_rejected() {
+        let payload: &[u8] = b"crc protected arc member";
+        let mut blob: Vec<u8> = build_entry(2, "crc.txt", payload, payload.len() as u32);
+        blob[23..25].copy_from_slice(&0x1234_u16.to_le_bytes());
+        blob.extend_from_slice(&[ARC_MARKER, 0]);
+        let archive: ArcArchive = parse_arc(&blob).expect("parse arc");
+        let decoded: Result<Vec<u8>> = entry_bytes(&blob, &archive.entries[0], 1 << 20);
+        assert!(matches!(decoded, Err(Error::Arc(message)) if message.contains("CRC")));
+    }
+
+    #[test]
+    fn parser_enforces_the_entry_limit_before_retaining_another_member() {
+        let mut blob: Vec<u8> = build_entry(2, "one.txt", b"one", 3);
+        blob.extend_from_slice(&build_entry(2, "two.txt", b"two", 3));
+        blob.extend_from_slice(&[ARC_MARKER, 0]);
+        let parsed: Result<ArcArchive> = parse_arc_with_entry_limit(&blob, 1);
+        assert!(matches!(parsed, Err(Error::QuotaExceeded { .. })));
+    }
+
+    #[test]
+    fn parser_rejects_an_archive_without_the_end_marker() {
+        let blob: Vec<u8> = build_entry(2, "one.txt", b"one", 3);
+        let parsed: Result<ArcArchive> = parse_arc(&blob);
+        assert!(matches!(parsed, Err(Error::Arc(message)) if message.contains("end marker")));
     }
 }

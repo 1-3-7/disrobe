@@ -11,12 +11,19 @@ use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
 const IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net9_x86_64.exe");
 const LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net9_x86_64.link.map.txt");
 const UNWIND: &str = include_str!("fixtures/native_aot/invoke_map_net9_x86_64.unwind.txt");
+const NET8_IMAGE: &[u8] = include_bytes!("fixtures/native_aot/invoke_map_net8_x86_64.exe");
+const NET8_LINK_MAP: &str = include_str!("fixtures/native_aot/invoke_map_net8_x86_64.link.map.txt");
+const NET8_UNWIND: &str = include_str!("fixtures/native_aot/invoke_map_net8_x86_64.unwind.txt");
 const EXCEPTION_DIRECTORY_INDEX: usize = 3;
 const AMD64_MACHINE: u16 = 0x8664;
 const RUNTIME_FUNCTION_SIZE: usize = 12;
 
 fn compiler_method_rva(symbol: &str) -> Result<u32, &'static str> {
-    let base_text: &str = LINK_MAP
+    compiler_method_rva_from(LINK_MAP, symbol)
+}
+
+fn compiler_method_rva_from(link_map: &str, symbol: &str) -> Result<u32, &'static str> {
+    let base_text: &str = link_map
         .lines()
         .find_map(|line: &str| {
             line.split_once("Preferred load address is ")
@@ -25,7 +32,7 @@ fn compiler_method_rva(symbol: &str) -> Result<u32, &'static str> {
         .ok_or("compiler map load address is absent")?;
     let base: u64 = u64::from_str_radix(base_text.trim(), 16)
         .map_err(|_: std::num::ParseIntError| "compiler map load address is malformed")?;
-    let address_text: &str = LINK_MAP
+    let address_text: &str = link_map
         .lines()
         .find(|line: &&str| line.contains(symbol))
         .and_then(|line: &str| line.split_whitespace().nth(2))
@@ -38,8 +45,8 @@ fn compiler_method_rva(symbol: &str) -> Result<u32, &'static str> {
     u32::try_from(rva).map_err(|_: std::num::TryFromIntError| "compiler map RVA does not fit u32")
 }
 
-fn evidence_address(label: &str) -> Result<u64, &'static str> {
-    let address: &str = UNWIND
+fn evidence_address_from(unwind: &str, label: &str) -> Result<u64, &'static str> {
+    let address: &str = unwind
         .lines()
         .find_map(|line: &str| line.strip_prefix(label))
         .ok_or("LLVM unwind evidence field is absent")?;
@@ -48,11 +55,15 @@ fn evidence_address(label: &str) -> Result<u64, &'static str> {
 }
 
 fn evidence_range() -> Result<(u32, u32), &'static str> {
+    evidence_range_from(UNWIND)
+}
+
+fn evidence_range_from(unwind: &str) -> Result<(u32, u32), &'static str> {
     let image_base: u64 = 0x0000_0001_4000_0000;
-    let start: u64 = evidence_address("StartAddress: ")?
+    let start: u64 = evidence_address_from(unwind, "StartAddress: ")?
         .checked_sub(image_base)
         .ok_or("LLVM start address precedes the image base")?;
-    let end: u64 = evidence_address("EndAddress: ")?
+    let end: u64 = evidence_address_from(unwind, "EndAddress: ")?
         .checked_sub(image_base)
         .ok_or("LLVM end address precedes the image base")?;
     Ok((
@@ -60,6 +71,96 @@ fn evidence_range() -> Result<(u32, u32), &'static str> {
             .map_err(|_: std::num::TryFromIntError| "start RVA does not fit u32")?,
         u32::try_from(end).map_err(|_: std::num::TryFromIntError| "end RVA does not fit u32")?,
     ))
+}
+
+#[test]
+fn net8_auto_emits_the_compiler_method_with_signature_range_and_body() -> Result<(), &'static str> {
+    let expected_start: u32 =
+        compiler_method_rva_from(NET8_LINK_MAP, "feat017_ManifestProbe__Add")?;
+    let expected_range: (u32, u32) = evidence_range_from(NET8_UNWIND)?;
+    assert_eq!(expected_range, (expected_start, 0x0011_b6a4));
+    let pe: PeImage = parse(NET8_IMAGE)
+        .map_err(|_: disrobe_pass_dotnet::Error| "NativeAOT fixture is not a PE image")?;
+    assert_eq!(
+        (pe.bitness, pe.machine),
+        (PeBitness::Pe32Plus, AMD64_MACHINE)
+    );
+    let code_offset: usize = pe
+        .rva_to_offset(expected_start)
+        .ok_or("compiler method body is not file backed")?;
+    assert_eq!(
+        NET8_IMAGE.get(code_offset..code_offset + 4),
+        Some([0x8d, 0x04, 0x11, 0xc3].as_slice())
+    );
+
+    let input: Artifact = Artifact::new(Rung::Raw, NET8_IMAGE.to_vec(), [0u8; 32]);
+    let output: Artifact = match DOTNET_PASS.run(&input) {
+        Ok(output) => output,
+        Err(error) => panic!("{error}"),
+    };
+    let document: serde_json::Value = serde_json::from_slice(&output.envelope)
+        .map_err(|_: serde_json::Error| "NativeAOT artifact is not JSON")?;
+    let method: &serde_json::Value = document["methods"]
+        .as_array()
+        .and_then(|methods: &Vec<serde_json::Value>| {
+            methods.iter().find(|method: &&serde_json::Value| {
+                method["declaring_type"] == "ManifestProbe" && method["name"] == "Add"
+            })
+        })
+        .ok_or("compiler-emitted ManifestProbe.Add metadata is absent")?;
+    let int32: &serde_json::Value = document["types"]
+        .as_array()
+        .and_then(|types: &Vec<serde_json::Value>| {
+            types
+                .iter()
+                .find(|candidate: &&serde_json::Value| candidate["record_offset"] == 4892)
+        })
+        .ok_or("compiler-emitted System.Int32 type record is absent")?;
+    assert_eq!(int32["qualified_name"], "System.Int32");
+    assert_eq!(
+        method["signature"],
+        serde_json::json!({
+            "record_offset": 29127,
+            "calling_convention": 0,
+            "generic_parameter_count": 0,
+            "return_type": {"kind": "definition", "record_offset": 4892},
+            "parameter_types": [
+                {"kind": "definition", "record_offset": 4892},
+                {"kind": "definition", "record_offset": 4892}
+            ],
+            "vararg_parameter_types": []
+        })
+    );
+    assert_eq!(method["entrypoint_rva"], expected_start);
+    assert_eq!(method["code_range"]["start_rva"], expected_range.0);
+    assert_eq!(method["code_range"]["end_rva"], expected_range.1);
+    assert_eq!(method["body"]["status"], "recovered");
+    assert_eq!(
+        method["body"]["pseudo_c"],
+        "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n"
+    );
+
+    let mut unknown_header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(NET8_IMAGE)
+        .ready_to_run
+        .ok_or("compiler-emitted NativeAOT header is absent")?;
+    assert_eq!(
+        (unknown_header.major_version, unknown_header.minor_version),
+        (9, 1)
+    );
+    unknown_header.minor_version = 2;
+    let attribution: disrobe_pass_dotnet::aot::AotMetadataAttribution =
+        disrobe_pass_dotnet::aot::recover_metadata_attribution(NET8_IMAGE, &unknown_header)
+            .map_err(|_: disrobe_pass_dotnet::Error| "unknown metadata version recovery failed")?;
+    assert_eq!(
+        attribution.status,
+        AotMetadataStatus::UnsupportedVersion {
+            major_version: 9,
+            minor_version: 2,
+        }
+    );
+    assert!(attribution.types.is_empty());
+    assert!(attribution.methods.is_empty());
+    Ok(())
 }
 
 fn directory_header_offset(image: &[u8]) -> Result<usize, &'static str> {

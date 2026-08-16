@@ -120,6 +120,7 @@ const TAG_SEVENZIP: &str = "7z";
 const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
 const TAG_RPM: &str = "rpm";
+const TAG_ARC: &str = "arc";
 const TAG_LZH: &str = "lzh";
 const TAG_INNOSETUP: &str = "inno-setup";
 const TAG_ISO: &str = "iso";
@@ -308,8 +309,24 @@ fn inventory_entries(tag: &str, bytes: &[u8]) -> Inventory {
     match tag {
         TAG_ZIP => zip_inventory(bytes),
         TAG_TAR => tar_inventory(bytes),
+        TAG_ARC => arc_inventory(bytes),
         _ => Inventory::ExtractionRequired,
     }
+}
+
+fn arc_inventory(bytes: &[u8]) -> Inventory {
+    let archive: crate::containers::ArcArchive =
+        match crate::containers::arc::parse_arc_with_entry_limit(bytes, MAX_MEMBER_COUNT) {
+            Ok(archive) => archive,
+            Err(error) => return Inventory::Unreadable(error.to_string()),
+        };
+    Inventory::Listed(
+        archive
+            .entries
+            .into_iter()
+            .map(|entry: crate::containers::ArcEntry| (entry.name, u64::from(entry.original_size)))
+            .collect(),
+    )
 }
 
 fn zip_inventory(bytes: &[u8]) -> Inventory {
@@ -384,11 +401,53 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
         TAG_RPM => extract_rpm_members(bytes),
+        TAG_ARC => extract_arc_members(bytes),
         TAG_LZH => extract_lzh_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_arc_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+        max_entries: MAX_MEMBER_COUNT,
+        max_total_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    };
+    let archive: crate::containers::ArcArchive =
+        crate::containers::arc::parse_arc_with_entry_limit(bytes, quota.max_entries)
+            .map_err(|error: crate::error::Error| fail(format!("arc payload: {error}")))?;
+    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut prepared: Vec<(&crate::containers::ArcEntry, String)> = Vec::new();
+    for entry in &archive.entries {
+        let name: String = crate::quota::sanitize_entry_path(&entry.name)
+            .map_err(|error: crate::error::Error| fail(format!("arc member path: {error}")))?;
+        crate::containers::arc::admit_output_path(&mut names, &name)
+            .map_err(|error: crate::error::Error| fail(format!("arc member path: {error}")))?;
+        crate::containers::arc::preflight_entry_quota(entry, quota)
+            .map_err(|error: crate::error::Error| fail(format!("arc quota: {error}")))?;
+        prepared.push((entry, name));
+    }
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(prepared.len());
+    for (entry, name) in prepared {
+        let data: Vec<u8> =
+            crate::containers::arc_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
+                .map_err(|error: crate::error::Error| {
+                    fail(format!("arc member `{name}`: {error}"))
+                })?;
+        guard
+            .admit_entry(&name, data.len() as u64, u64::from(entry.compressed_size))
+            .map_err(|error: crate::error::Error| fail(format!("arc quota: {error}")))?;
+        members.push((name, data));
+    }
+    if members.is_empty() && !archive.entries.is_empty() {
+        return Err(fail("arc payload contains no verified members".to_owned()));
+    }
+    Ok(members)
 }
 
 fn extract_lzh_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -774,6 +833,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
         return Some(TAG_RPM);
     }
+    if crate::containers::arc::parse_arc_with_entry_limit(bytes, MAX_MEMBER_COUNT).is_ok() {
+        return Some(TAG_ARC);
+    }
     if crate::containers::detect_lzh(bytes) {
         return Some(TAG_LZH);
     }
@@ -819,6 +881,49 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].0, "subdir/subdir2/HELLO.TXT");
         assert_eq!(members[0].1, b"hello world!\r\n");
+    }
+
+    #[test]
+    fn arc_reaches_the_container_chain_with_verified_member_bytes() {
+        let archive: Vec<u8> =
+            crate::containers::arc::synth_stored_arc("hello.txt", b"verified ARC child bytes")
+                .expect("build ARC fixture");
+        assert_eq!(sniff_container_tag(&archive), Some(TAG_ARC));
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_ARC, &archive).expect("extract ARC members");
+        assert_eq!(
+            members,
+            vec![("hello.txt".to_owned(), b"verified ARC child bytes".to_vec())]
+        );
+        let manifest: String = render_container_manifest(TAG_ARC, &archive);
+        assert!(manifest.contains("entries=1 listing=read-only"));
+        assert!(manifest.contains("hello.txt\tbytes=24"));
+    }
+
+    #[test]
+    fn arc_chain_records_a_bad_member_instead_of_silently_skipping_it() {
+        let mut archive: Vec<u8> = crate::containers::arc::build_entry(2, "bad.bin", b"bad", 3);
+        archive[23..25].copy_from_slice(&0x1234_u16.to_le_bytes());
+        archive.extend_from_slice(&crate::containers::arc::build_entry(
+            2,
+            "good.bin",
+            b"verified",
+            8,
+        ));
+        archive.extend_from_slice(&[crate::containers::arc::ARC_MARKER, 0]);
+        let error: CoreError =
+            extract_members(TAG_ARC, &archive).expect_err("reject bad ARC member");
+        let message: String = error.to_string();
+        assert!(message.contains("bad.bin"));
+        assert!(message.contains("CRC"));
+    }
+
+    #[test]
+    fn arc_chain_sniff_requires_a_complete_structural_archive() {
+        let truncated: Vec<u8> =
+            crate::containers::arc::build_entry(2, "short.bin", b"abc", 3)[..24].to_vec();
+        assert!(crate::containers::detect_arc(&truncated));
+        assert_ne!(sniff_container_tag(&truncated), Some(TAG_ARC));
     }
 
     #[test]

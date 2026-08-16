@@ -690,7 +690,7 @@ pub(crate) fn parse_lzh_with_quota(
                     member.original_size
                 )));
             }
-            let decoded_crc: u16 = lha_crc16_bytes(&data);
+            let decoded_crc: u16 = crc16_arc(&data);
             if decoded_crc != member.file_crc {
                 return Err(Error::Lzh(format!(
                     "lzh `{path}`: decoded CRC {decoded_crc:04x} differs from declared CRC {:04x}",
@@ -726,7 +726,7 @@ pub fn parse_lzh(bytes: &[u8], max_total: u64) -> Result<LzhArchive> {
     )
 }
 
-fn lha_crc16_bytes(data: &[u8]) -> u16 {
+pub(crate) fn crc16_arc(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;
     for &byte in data {
         crc ^= u16::from(byte);
@@ -739,11 +739,6 @@ fn lha_crc16_bytes(data: &[u8]) -> u16 {
         }
     }
     crc
-}
-
-#[cfg(test)]
-pub(crate) fn lha_crc16(data: &[u8]) -> u16 {
-    lha_crc16_bytes(data)
 }
 
 #[cfg(test)]
@@ -762,7 +757,7 @@ pub(crate) fn build_stored_lzh(name: &str, body: &[u8]) -> Option<Vec<u8>> {
     out.push(0);
     out.push(name_len);
     out.extend_from_slice(name.as_bytes());
-    out.extend_from_slice(&lha_crc16(body).to_le_bytes());
+    out.extend_from_slice(&crc16_arc(body).to_le_bytes());
     out[1] = out[2..]
         .iter()
         .fold(0u8, |acc: u8, &b: &u8| acc.wrapping_add(b));
@@ -831,7 +826,7 @@ mod tests {
         assert_eq!(file.method, "-lh2-");
         assert!(file.decoder_supported);
         assert_eq!(file.data.len() as u64, file.original_size);
-        assert_eq!(lha_crc16(&file.data), 0xd157);
+        assert_eq!(crc16_arc(&file.data), 0xd157);
     }
 
     #[test]
@@ -876,7 +871,7 @@ mod tests {
         let mut split: Vec<u8> = archive.to_vec();
         split[39] = 0x39;
         split[33..35].fill(0);
-        let crc: u16 = lha_crc16(&split[..82]);
+        let crc: u16 = crc16_arc(&split[..82]);
         split[33..35].copy_from_slice(&crc.to_le_bytes());
         let error: Error = parse_lzh(&split, 1024).expect_err("require another archive volume");
         assert!(
@@ -910,7 +905,7 @@ mod tests {
         oversized[62..70].copy_from_slice(&14u64.to_le_bytes());
         oversized[70..78].copy_from_slice(&(1u64 << 40).to_le_bytes());
         oversized[33..35].fill(0);
-        let crc: u16 = lha_crc16(&oversized[..82]);
+        let crc: u16 = crc16_arc(&oversized[..82]);
         oversized[33..35].copy_from_slice(&crc.to_le_bytes());
         let error: Error = parse_lzh(&oversized, 1024).expect_err("reject 64-bit size quota");
         assert!(error.to_string().contains("per-entry cap 1024"));

@@ -500,10 +500,29 @@ note = "method-0 (stored) members recovered byte-exact with valid crc32; methods
 [[wave6_legacy]]
 format = "arc (legacy)"
 path = "arc/hello.arc"
-status = "stored byte-exact; crunch/squeeze carve-only"
-oracle = "spec-construct per the System Enhancement Associates ARC header"
-layout = "0x1a marker + method byte + 13-byte name + sizes; method 0 ends the archive"
-note = "methods 1-2 (stored) recovered byte-exact; crunched/squeezed/crushed members detected and surfaced as an honest carve-only note"
+status = "methods 1-7 byte-exact; methods 8-9 retain size and CRC verification"
+oracle = "System Enhancement Associates ARC 5.21 wire format and the portable ARC 5.21q source at commit 70f0b93516d0ee222db5cf1241aad0db1b721c0d"
+layout = "0x1a marker + method byte + 13-byte name + sizes + CRC-16/ARC; method 0 ends the archive"
+sha256 = "92e73a13a45799bf9fd5a874cdfea16b454fe8665a76a875a1aa8b2f9a8e5bf4"
+note = "hello.arc grades stored method 2. Its corrected CRC-16/ARC is b949. Methods 8-9 are not graded by this artifact."
+
+[[wave6_legacy]]
+format = "arc fixed LZW methods 5-7"
+path = "arc/methods.arc"
+status = "methods 5-7 byte-exact with CRC verification"
+oracle = "portable ARC 5.21q arclzw.c oldh, newh, hash, GOCODE, init_ucr, and getb_ucr at commit 70f0b93516d0ee222db5cf1241aad0db1b721c0d"
+layout = "fixed 4096-slot hashed dictionary; 12-bit code pairs; methods 6-7 apply ARC RLE90 after LZW"
+sha256 = "fba5eb114ec5c736346af963f391efcd28c048865aaf9ba4c75727131a829eff"
+note = "METHOD5.BIN uses the squared old hash. METHOD6.BIN uses the old hash plus RLE90. METHOD7.BIN uses the multiplicative new hash plus RLE90. Expected member SHA-256 values are recorded in arc/provenance.toml."
+
+[[wave6_legacy]]
+format = "arc historical fixed LZW method 6"
+path = "arc/dosamatc.arc"
+status = "method 6 byte-exact with CRC verification"
+oracle = "PCjs LegacyArc.uncrunchSync and Deark 1.7.3"
+layout = "historical 1985 ARC package with method-6 old-hash fixed LZW followed by RLE90"
+sha256 = "ec0f540a8e2db509c91971b8bafb86d01e9236f8a046138e5e12764557179fd4"
+note = "COMPAQ.BAT independently decodes to 886 bytes with SHA-256 c0951c38a978543fa0adaa80ea7287b71d41c656f06ecd3762be9ed51907ce4b. The package documentation permits evaluation copies."
 
 [[wave6_legacy]]
 format = "lzh/lha"

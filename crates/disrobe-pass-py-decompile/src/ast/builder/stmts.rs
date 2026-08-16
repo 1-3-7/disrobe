@@ -1127,7 +1127,7 @@ fn structure_legacy_with(
         return Ok(None);
     };
     let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..setup_idx])?;
+        structure_legacy_with_head(code, stream, lo, setup_idx)?;
     let context_expr: Expr = head_residual
         .into_iter()
         .next_back()
@@ -1163,17 +1163,17 @@ fn structure_legacy_with(
     let region_end: usize = cleanup_idx.min(hi).max(body_start);
     let (body_end, is_return): (usize, bool) =
         legacy_with_body_bound(stream, body_start, region_end);
+    let trailing_return: Option<Stmt> =
+        if is_return || region_contains_setup_with(stream, body_start, body_end) {
+            None
+        } else {
+            legacy_with_post_cleanup_return(code, stream, body_end, region_end)?
+        };
     let body: Vec<Stmt> = if is_return && !region_contains_setup_with(stream, body_start, body_end)
     {
         legacy_with_return_body(code, stream, body_start, body_end)?
     } else {
-        let mut stmts: Vec<Stmt> = structure_stmts(code, stream, body_start, body_end)?;
-        if !region_contains_setup_with(stream, body_start, body_end)
-            && let Some(ret) = legacy_with_post_cleanup_return(code, stream, body_end, region_end)?
-        {
-            stmts.push(ret);
-        }
-        stmts
+        structure_stmts(code, stream, body_start, body_end)?
     };
     let with_stmt: Stmt = Stmt::With {
         items: vec![WithItem {
@@ -1186,7 +1186,69 @@ fn structure_legacy_with(
     };
     let mut out: Vec<Stmt> = head_stmts;
     out.push(with_stmt);
+    if let Some(ret) = trailing_return {
+        out.push(ret);
+    }
     Ok(Some((out, hi)))
+}
+
+fn structure_legacy_with_head(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    setup_idx: usize,
+) -> Result<(Vec<Stmt>, Vec<Expr>)> {
+    let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..setup_idx])?;
+    let Some(guard): Option<usize> = (lo..setup_idx).find(|&k: &usize| {
+        is_forward_cond_jump(&stream.ops[k])
+            && !is_chain_cond_jump(&stream.ops, k)
+            && !is_value_form_shortcircuit(&stream.ops, k)
+    }) else {
+        return Ok((head_stmts, head_residual));
+    };
+    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+        .filter(|&target: &usize| target > guard && target <= setup_idx)
+    else {
+        return Ok((head_stmts, head_residual));
+    };
+    if !region_ends_in_hard_terminator(stream, guard + 1, target) {
+        return Ok((head_stmts, head_residual));
+    }
+    let (test_head, mut test_residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
+    let Some(raw_test): Option<Expr> = test_residual.pop() else {
+        return Ok((head_stmts, head_residual));
+    };
+    if !test_head.is_empty() || !test_residual.is_empty() {
+        return Ok((head_stmts, head_residual));
+    }
+    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, target)?;
+    if then_body.is_empty() || !head_stmts.starts_with(&then_body) {
+        return Ok((head_stmts, head_residual));
+    }
+    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+    let test: Expr = if matches!(
+        stream.ops[guard],
+        CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+    ) {
+        Expr::UnaryOp {
+            op: crate::bytecode::opcode::UnaryOp::Not,
+            operand: Box::new(test),
+        }
+    } else {
+        test
+    };
+    let then_body_len: usize = then_body.len();
+    let mut structured_head: Vec<Stmt> = Vec::with_capacity(head_stmts.len() + 1);
+    structured_head.push(Stmt::If {
+        test,
+        body: non_empty(then_body),
+        orelse: Vec::new(),
+        line: None,
+    });
+    structured_head.extend(head_stmts.into_iter().skip(then_body_len));
+    Ok((structured_head, head_residual))
 }
 
 fn legacy_with_return_body(

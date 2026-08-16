@@ -15,8 +15,6 @@ use super::{
 
 const METADATA_SECTION_ID: i32 = 313;
 const METADATA_SIGNATURE: u32 = 0xDEAD_DFFD;
-const SUPPORTED_MAJOR_VERSION: u16 = 10;
-const SUPPORTED_MINOR_VERSION: u16 = 1;
 const HANDLE_ARRAY_SIGNATURE: u8 = 0x01;
 const HANDLE_BY_REFERENCE_SIGNATURE: u8 = 0x02;
 const HANDLE_FUNCTION_POINTER_SIGNATURE: u8 = 0x25;
@@ -43,6 +41,33 @@ const MAX_METADATA_STRING_STORAGE_BYTES: usize = 16_777_216;
 const MAX_METADATA_OUTPUT_BYTES: usize = 16_777_216;
 const MAX_METADATA_TYPE_SIGNATURE_DEPTH: usize = 256;
 const MAX_METADATA_TYPE_SIGNATURE_WORK: usize = 1_048_576;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MetadataProfile {
+    major_version: u16,
+    minor_version: u16,
+}
+
+impl MetadataProfile {
+    const fn matches(self, major_version: u16, minor_version: u16) -> bool {
+        self.major_version == major_version && self.minor_version == minor_version
+    }
+}
+
+const METADATA_PROFILES: [MetadataProfile; 3] = [
+    MetadataProfile {
+        major_version: 8,
+        minor_version: 0,
+    },
+    MetadataProfile {
+        major_version: 9,
+        minor_version: 1,
+    },
+    MetadataProfile {
+        major_version: 10,
+        minor_version: 1,
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AotMetadataAttribution {
@@ -2043,9 +2068,14 @@ pub fn recover_metadata_attribution(
     let Some(section): Option<&AotSection> = metadata_section(header)? else {
         return Ok(AotMetadataAttribution::default());
     };
-    if header.major_version != SUPPORTED_MAJOR_VERSION
-        || header.minor_version != SUPPORTED_MINOR_VERSION
-    {
+    let profile: Option<MetadataProfile> =
+        METADATA_PROFILES
+            .iter()
+            .copied()
+            .find(|profile: &MetadataProfile| {
+                profile.matches(header.major_version, header.minor_version)
+            });
+    if profile.is_none() {
         return Ok(AotMetadataAttribution {
             status: AotMetadataStatus::UnsupportedVersion {
                 major_version: header.major_version,

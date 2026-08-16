@@ -56,6 +56,18 @@ fn arc_stored_member_byte_exact() {
 }
 
 #[test]
+fn arc_fixed_lzw_methods_are_byte_exact() {
+    for member in ["METHOD5.BIN", "METHOD6.BIN", "METHOD7.BIN"] {
+        run("arc", "methods.arc", ContainerKind::Arc, member);
+    }
+}
+
+#[test]
+fn historical_arc_method6_member_is_byte_exact() {
+    run("arc", "dosamatc.arc", ContainerKind::Arc, "COMPAQ.BAT");
+}
+
+#[test]
 fn lzh_lh0_member_byte_exact() {
     run("lzh", "hello.lzh", ContainerKind::Lzh, "HELLO.TXT");
 }

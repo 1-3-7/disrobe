@@ -3963,35 +3963,42 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
 }
 
 fn extract_arc(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
-    let archive: crate::containers::ArcArchive = crate::containers::parse_arc(bytes)?;
+    let archive: crate::containers::ArcArchive =
+        crate::containers::arc::parse_arc_with_entry_limit(bytes, quota.max_entries)?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
-    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
-    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut prepared: Vec<(&crate::containers::ArcEntry, String)> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
     for entry in &archive.entries {
         let safe_name: String = match sanitize_entry_path(&entry.name) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("arc-slip: {e}"));
+            Ok(name) => name,
+            Err(error) => {
+                violations.push(format!("arc-slip: {error}"));
                 continue;
             }
         };
-        let data: Vec<u8> = match crate::containers::arc_entry_bytes(
-            bytes,
-            entry,
-            quota.max_per_entry_uncompressed,
-        ) {
-            Ok(d) => d,
-            Err(e) => {
-                violations.push(format!("arc `{safe_name}`: {e}"));
-                continue;
+        crate::containers::arc::admit_output_path(&mut names, &safe_name)?;
+        crate::containers::arc::preflight_entry_quota(entry, quota)?;
+        prepared.push((entry, safe_name));
+    }
+    let mut recovered: Vec<(&crate::containers::ArcEntry, String, Vec<u8>)> = Vec::new();
+    for (entry, safe_name) in prepared {
+        match crate::containers::arc_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed) {
+            Ok(data) => {
+                guard.admit_entry(
+                    &safe_name,
+                    data.len() as u64,
+                    u64::from(entry.compressed_size),
+                )?;
+                recovered.push((entry, safe_name, data));
             }
-        };
-        let size: u64 = data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, u64::from(entry.compressed_size)) {
-            violations.push(format!("arc-quota `{safe_name}`: {e}"));
-            continue;
+            Err(error) => violations.push(format!("arc `{safe_name}`: {error}")),
         }
+    }
+    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    for (entry, safe_name, data) in recovered {
+        let size: u64 = data.len() as u64;
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
         std::fs::write(&disk_path, &data)?;
         let compression: EntryCompression = if crate::containers::arc_entry_is_stored(entry) {
@@ -5730,6 +5737,111 @@ mod tests {
     fn temp_dir(suffix: &str) -> disrobe_core::scratch::ScratchDir {
         let purpose: String = format!("binfmt-extract-{suffix}");
         disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir")
+    }
+
+    fn synth_arc_entries(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive: Vec<u8> = Vec::new();
+        for (name, body) in files {
+            archive.extend_from_slice(&crate::containers::arc::build_entry(
+                2,
+                name,
+                body,
+                body.len() as u32,
+            ));
+        }
+        archive.extend_from_slice(&[crate::containers::arc::ARC_MARKER, 0]);
+        archive
+    }
+
+    #[test]
+    fn extract_arc_preflights_declared_size_before_decoding() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-quota-preflight");
+        let mut archive: Vec<u8> =
+            crate::containers::arc::build_entry(5, "large.bin", &[0xff, 0xff], 1024);
+        archive.extend_from_slice(&[crate::containers::arc::ARC_MARKER, 0]);
+        let quota: ExtractionQuota = ExtractionQuota {
+            max_per_entry_uncompressed: 8,
+            ..ExtractionQuota::default_safe()
+        };
+        let result: Result<ExtractionResult> =
+            extract_to_with_quota(ContainerKind::Arc, &archive, scratch.path(), quota);
+        assert!(matches!(result, Err(Error::QuotaExceeded { entry, .. }) if entry == "large.bin"));
+        assert!(
+            scratch
+                .path()
+                .read_dir()
+                .expect("read output")
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn extract_arc_rejects_case_collisions_before_output_creation() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-case-collision");
+        let archive: Vec<u8> =
+            synth_arc_entries(&[("Case.txt", b"first"), ("case.txt", b"second")]);
+        let result: Result<ExtractionResult> =
+            extract_to(ContainerKind::Arc, &archive, scratch.path());
+        assert!(matches!(result, Err(Error::Arc(message)) if message.contains("collision")));
+        assert!(
+            scratch
+                .path()
+                .read_dir()
+                .expect("read output")
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn extract_arc_rejects_path_prefix_collisions_before_output_creation() {
+        for files in [
+            [("a", b"first".as_slice()), ("a/b", b"second".as_slice())],
+            [("a/b", b"first".as_slice()), ("a", b"second".as_slice())],
+        ] {
+            let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-prefix-collision");
+            let archive: Vec<u8> = synth_arc_entries(&files);
+            let result: Result<ExtractionResult> =
+                extract_to(ContainerKind::Arc, &archive, scratch.path());
+            assert!(matches!(result, Err(Error::Arc(message)) if message.contains("collision")));
+            assert!(
+                scratch
+                    .path()
+                    .read_dir()
+                    .expect("read output")
+                    .next()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn extract_arc_reports_a_bad_member_and_writes_a_later_verified_member() {
+        let scratch: disrobe_core::scratch::ScratchDir = temp_dir("arc-partial-integrity");
+        let mut archive: Vec<u8> = crate::containers::arc::build_entry(2, "bad.bin", b"bad", 3);
+        archive[23..25].copy_from_slice(&0x1234_u16.to_le_bytes());
+        archive.extend_from_slice(&crate::containers::arc::build_entry(
+            2,
+            "good.bin",
+            b"verified",
+            8,
+        ));
+        archive.extend_from_slice(&[crate::containers::arc::ARC_MARKER, 0]);
+        let result: ExtractionResult =
+            extract_to(ContainerKind::Arc, &archive, scratch.path()).expect("extract ARC");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "good.bin");
+        assert_eq!(
+            std::fs::read(scratch.path().join("good.bin")).expect("read good ARC member"),
+            b"verified"
+        );
+        assert!(
+            result
+                .integrity_violations
+                .iter()
+                .any(|violation: &String| violation.contains("CRC"))
+        );
     }
 
     fn synth_zip(files: &[(&str, &[u8])]) -> Vec<u8> {

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>feat017</AssemblyName>
+    <PublishAot>true</PublishAot>
+    <IlcGenerateMapFile>true</IlcGenerateMapFile>
+    <IlcGenerateStackTraceData>true</IlcGenerateStackTraceData>
+    <StripSymbols>false</StripSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <LinkerArg Include="/MAP:$(NativeIntermediateOutputPath)invoke_map_net7_x86_64.link.map" />
+  </ItemGroup>
+</Project>
