@@ -50,15 +50,6 @@ impl DeferCallKind {
             Self::Return => "deferreturn",
         }
     }
-
-    const fn from_symbol(name: &str) -> Option<Self> {
-        match name.as_bytes() {
-            b"runtime.deferproc" => Some(Self::Proc),
-            b"runtime.deferprocStack" => Some(Self::ProcStack),
-            b"runtime.deferreturn" => Some(Self::Return),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -66,6 +57,59 @@ pub struct DeferCallSite {
     pub kind: DeferCallKind,
     pub offset: u32,
     pub va: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ControlEdgeKind {
+    Panic,
+    Recover,
+}
+
+impl ControlEdgeKind {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Panic => "panic",
+            Self::Recover => "recover",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlEdge {
+    pub kind: ControlEdgeKind,
+    pub function: String,
+    pub entry: u64,
+    pub offset: u32,
+    pub va: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeCallKind {
+    Defer(DeferCallKind),
+    Control(ControlEdgeKind),
+}
+
+impl RuntimeCallKind {
+    const fn from_symbol(name: &str) -> Option<Self> {
+        match name.as_bytes() {
+            b"runtime.deferproc" => Some(Self::Defer(DeferCallKind::Proc)),
+            b"runtime.deferprocStack" => Some(Self::Defer(DeferCallKind::ProcStack)),
+            b"runtime.deferreturn" => Some(Self::Defer(DeferCallKind::Return)),
+            b"runtime.gopanic" => Some(Self::Control(ControlEdgeKind::Panic)),
+            b"runtime.gorecover" => Some(Self::Control(ControlEdgeKind::Recover)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecoveredRuntimeCall {
+    function_entry: u64,
+    kind: RuntimeCallKind,
+    offset: u32,
+    va: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +235,8 @@ pub struct DeferReport {
     pub truncated: bool,
     pub functions: Vec<DeferFunc>,
     pub runtime_hooks: Vec<RuntimeDeferHook>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_edges: Vec<ControlEdge>,
 }
 
 impl DeferReport {
@@ -205,6 +251,7 @@ impl DeferReport {
             truncated: false,
             functions: Vec::new(),
             runtime_hooks: Vec::new(),
+            control_edges: Vec::new(),
         }
     }
 
@@ -344,30 +391,43 @@ fn read_func_defer_view(
 }
 
 fn collect_runtime_hooks(symbols: &GoSymbols) -> Vec<RuntimeDeferHook> {
-    let by_name: BTreeMap<&str, &GoFunc> = symbols
-        .funcs
-        .iter()
-        .map(|f: &GoFunc| (f.name.as_str(), f))
-        .collect();
+    let mut by_name: BTreeMap<&str, Option<&GoFunc>> = BTreeMap::new();
+    for function in &symbols.funcs {
+        let function: &GoFunc = function;
+        if !RUNTIME_DEFER_SYMBOLS.contains(&function.name.as_str()) {
+            continue;
+        }
+        match by_name.get_mut(function.name.as_str()) {
+            Some(candidate) => {
+                if matches!(*candidate, Some(existing) if existing != function) {
+                    *candidate = None;
+                }
+            }
+            None => {
+                by_name.insert(function.name.as_str(), Some(function));
+            }
+        }
+    }
     RUNTIME_DEFER_SYMBOLS
         .iter()
         .filter_map(|name: &&str| {
-            by_name.get(*name).map(|f: &&GoFunc| RuntimeDeferHook {
+            let function: Option<&GoFunc> = by_name.get(*name).copied().flatten();
+            function.map(|function: &GoFunc| RuntimeDeferHook {
                 name: (*name).to_owned(),
-                entry: f.entry,
-                va: f.va,
+                entry: function.entry,
+                va: function.va,
             })
         })
         .collect()
 }
 
-fn collect_runtime_call_targets(hooks: &[RuntimeDeferHook]) -> BTreeMap<u64, DeferCallKind> {
-    let mut candidates: BTreeMap<u64, Option<DeferCallKind>> = BTreeMap::new();
+fn collect_runtime_call_targets(hooks: &[RuntimeDeferHook]) -> BTreeMap<u64, RuntimeCallKind> {
+    let mut candidates: BTreeMap<u64, Option<RuntimeCallKind>> = BTreeMap::new();
     for hook in hooks {
         let Some(va): Option<u64> = hook.va else {
             continue;
         };
-        let Some(kind): Option<DeferCallKind> = DeferCallKind::from_symbol(&hook.name) else {
+        let Some(kind): Option<RuntimeCallKind> = RuntimeCallKind::from_symbol(&hook.name) else {
             continue;
         };
         match candidates.get_mut(&va) {
@@ -383,8 +443,8 @@ fn collect_runtime_call_targets(hooks: &[RuntimeDeferHook]) -> BTreeMap<u64, Def
     }
     candidates
         .into_iter()
-        .filter_map(|(va, kind): (u64, Option<DeferCallKind>)| {
-            kind.map(|kind: DeferCallKind| (va, kind))
+        .filter_map(|(va, kind): (u64, Option<RuntimeCallKind>)| {
+            kind.map(|kind: RuntimeCallKind| (va, kind))
         })
         .collect()
 }
@@ -411,24 +471,43 @@ fn collect_unique_function_entries(functions: &[GoFunc]) -> BTreeMap<u64, &GoFun
         .collect()
 }
 
+fn ordered_call_scan_functions<'a>(
+    symbols: &'a GoSymbols,
+    defer_functions: &[DeferFunc],
+) -> Vec<&'a GoFunc> {
+    let mut symbols_by_entry: BTreeMap<u64, &'a GoFunc> =
+        collect_unique_function_entries(&symbols.funcs);
+    let mut ordered: Vec<&'a GoFunc> = Vec::with_capacity(symbols_by_entry.len());
+    for function in defer_functions {
+        let symbol: Option<&GoFunc> = symbols_by_entry.remove(&function.entry);
+        if let Some(symbol) = symbol {
+            ordered.push(symbol);
+        }
+    }
+    ordered.extend(
+        symbols_by_entry
+            .into_values()
+            .filter(|function: &&GoFunc| !function.name.starts_with("runtime.")),
+    );
+    ordered
+}
+
 fn recover_x86_call_sites(
     image: &GoImage<'_>,
     bitness: u32,
     support: DeferCallSupport,
     symbols: &GoSymbols,
     hooks: &[RuntimeDeferHook],
-    functions: &mut [DeferFunc],
-) -> (DeferCallSupport, bool) {
-    let targets: BTreeMap<u64, DeferCallKind> = collect_runtime_call_targets(hooks);
+    functions: &[DeferFunc],
+) -> (DeferCallSupport, bool, Vec<RecoveredRuntimeCall>) {
+    let targets: BTreeMap<u64, RuntimeCallKind> = collect_runtime_call_targets(hooks);
     if targets.is_empty() {
-        return (support, false);
+        return (support, false, Vec::new());
     }
-    let symbols_by_entry: BTreeMap<u64, &GoFunc> = collect_unique_function_entries(&symbols.funcs);
+    let scan_functions: Vec<&GoFunc> = ordered_call_scan_functions(symbols, functions);
     let mut budget: CallScanBudget = CallScanBudget::new();
-    for function in functions {
-        let Some(symbol): Option<&&GoFunc> = symbols_by_entry.get(&function.entry) else {
-            continue;
-        };
+    let mut calls: Vec<RecoveredRuntimeCall> = Vec::new();
+    for symbol in scan_functions {
         let Some(va): Option<u64> = symbol.va else {
             continue;
         };
@@ -464,7 +543,7 @@ fn recover_x86_call_sites(
                 continue;
             }
             let target: u64 = instruction.near_branch_target();
-            let Some(kind): Option<&DeferCallKind> = targets.get(&target) else {
+            let Some(kind): Option<&RuntimeCallKind> = targets.get(&target) else {
                 continue;
             };
             let Some(raw_offset): Option<u64> = instruction.ip().checked_sub(va) else {
@@ -474,16 +553,17 @@ fn recover_x86_call_sites(
                 continue;
             };
             if !budget.claim_site() {
-                return (support, true);
+                return (support, true, calls);
             }
-            function.call_sites.push(DeferCallSite {
+            calls.push(RecoveredRuntimeCall {
+                function_entry: symbol.entry,
                 kind: *kind,
                 offset,
                 va: instruction.ip(),
             });
         }
     }
-    (support, budget.truncated)
+    (support, budget.truncated, calls)
 }
 
 fn arm64_bl_target(instruction_va: u64, word: u32) -> Option<u64> {
@@ -504,19 +584,22 @@ fn recover_arm64_call_sites(
     image: &GoImage<'_>,
     symbols: &GoSymbols,
     hooks: &[RuntimeDeferHook],
-    functions: &mut [DeferFunc],
-) -> (DeferCallSupport, bool) {
+    functions: &[DeferFunc],
+) -> (DeferCallSupport, bool, Vec<RecoveredRuntimeCall>) {
     let support: DeferCallSupport = DeferCallSupport::Arm64;
-    let targets: BTreeMap<u64, DeferCallKind> = collect_runtime_call_targets(hooks);
+    let targets: BTreeMap<u64, RuntimeCallKind> = collect_runtime_call_targets(hooks);
     if targets.is_empty() {
-        return (support, false);
+        return (support, false, Vec::new());
     }
-    let symbols_by_entry: BTreeMap<u64, &GoFunc> = collect_unique_function_entries(&symbols.funcs);
+    let scan_functions: Vec<&GoFunc> = ordered_call_scan_functions(symbols, functions);
+    let terminal_entry: Option<u64> = symbols
+        .funcs
+        .iter()
+        .map(|function: &GoFunc| function.entry)
+        .max();
     let mut budget: CallScanBudget = CallScanBudget::new();
-    for function in functions {
-        let Some(symbol): Option<&&GoFunc> = symbols_by_entry.get(&function.entry) else {
-            continue;
-        };
+    let mut calls: Vec<RecoveredRuntimeCall> = Vec::new();
+    for symbol in scan_functions {
         let Some(va): Option<u64> = symbol.va else {
             continue;
         };
@@ -534,6 +617,9 @@ fn recover_arm64_call_sites(
         }
         if len > MAX_CALL_SCAN_BYTES {
             budget.truncated = true;
+            continue;
+        }
+        if len == 1 && Some(symbol.entry) == terminal_entry {
             continue;
         }
         if !len.is_multiple_of(4) {
@@ -560,29 +646,30 @@ fn recover_arm64_call_sites(
             let Some(target): Option<u64> = arm64_bl_target(instruction_va, word) else {
                 continue;
             };
-            let Some(kind): Option<&DeferCallKind> = targets.get(&target) else {
+            let Some(kind): Option<&RuntimeCallKind> = targets.get(&target) else {
                 continue;
             };
             if !budget.claim_site() {
-                return (support, true);
+                return (support, true, calls);
             }
-            function.call_sites.push(DeferCallSite {
+            calls.push(RecoveredRuntimeCall {
+                function_entry: symbol.entry,
                 kind: *kind,
                 offset,
                 va: instruction_va,
             });
         }
     }
-    (support, budget.truncated)
+    (support, budget.truncated, calls)
 }
 
 fn recover_call_sites(
     image: &GoImage<'_>,
     symbols: &GoSymbols,
     hooks: &[RuntimeDeferHook],
-    functions: &mut [DeferFunc],
+    functions: &[DeferFunc],
     build_version: Option<&str>,
-) -> (DeferCallSupport, bool) {
+) -> (DeferCallSupport, bool, Vec<RecoveredRuntimeCall>) {
     match image.call_architecture() {
         Some(CallArchitecture::X86) => {
             recover_x86_call_sites(image, 32, DeferCallSupport::X86, symbols, hooks, functions)
@@ -602,8 +689,64 @@ fn recover_call_sites(
         {
             recover_arm64_call_sites(image, symbols, hooks, functions)
         }
-        Some(CallArchitecture::Arm64) | None => (DeferCallSupport::UnsupportedImage, false),
+        Some(CallArchitecture::Arm64) | None => {
+            (DeferCallSupport::UnsupportedImage, false, Vec::new())
+        }
     }
+}
+
+fn apply_recovered_calls(
+    symbols: &GoSymbols,
+    functions: &mut [DeferFunc],
+    calls: Vec<RecoveredRuntimeCall>,
+) -> Vec<ControlEdge> {
+    let symbols_by_entry: BTreeMap<u64, &GoFunc> = collect_unique_function_entries(&symbols.funcs);
+    let defer_indices: BTreeMap<u64, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, function): (usize, &DeferFunc)| (function.entry, index))
+        .collect();
+    let mut control_edges: Vec<ControlEdge> = Vec::new();
+    for call in calls {
+        match call.kind {
+            RuntimeCallKind::Defer(kind) => {
+                let Some(index): Option<&usize> = defer_indices.get(&call.function_entry) else {
+                    continue;
+                };
+                functions[*index].call_sites.push(DeferCallSite {
+                    kind,
+                    offset: call.offset,
+                    va: call.va,
+                });
+            }
+            RuntimeCallKind::Control(kind) => {
+                let Some(function): Option<&&GoFunc> = symbols_by_entry.get(&call.function_entry)
+                else {
+                    continue;
+                };
+                if function.name.starts_with("runtime.") {
+                    continue;
+                }
+                control_edges.push(ControlEdge {
+                    kind,
+                    function: function.name.clone(),
+                    entry: call.function_entry,
+                    offset: call.offset,
+                    va: call.va,
+                });
+            }
+        }
+    }
+    control_edges.sort_by(|left: &ControlEdge, right: &ControlEdge| {
+        left.entry
+            .cmp(&right.entry)
+            .then_with(|| left.va.cmp(&right.va))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.function.cmp(&right.function))
+            .then_with(|| left.offset.cmp(&right.offset))
+    });
+    control_edges.dedup();
+    control_edges
 }
 
 #[must_use]
@@ -714,18 +857,14 @@ fn recover_defers_inner(
     let call_based_functions: usize = functions.len().saturating_sub(open_coded_functions);
 
     let runtime_hooks: Vec<RuntimeDeferHook> = collect_runtime_hooks(symbols);
-    let (call_support, call_truncated): (DeferCallSupport, bool) = image.map_or(
-        (DeferCallSupport::NotAttempted, false),
-        |image: &GoImage<'_>| {
-            recover_call_sites(
-                image,
-                symbols,
-                &runtime_hooks,
-                &mut functions,
-                build_version,
-            )
-        },
-    );
+    let (call_support, call_truncated, calls): (DeferCallSupport, bool, Vec<RecoveredRuntimeCall>) =
+        image.map_or(
+            (DeferCallSupport::NotAttempted, false, Vec::new()),
+            |image: &GoImage<'_>| {
+                recover_call_sites(image, symbols, &runtime_hooks, &functions, build_version)
+            },
+        );
+    let control_edges: Vec<ControlEdge> = apply_recovered_calls(symbols, &mut functions, calls);
 
     DeferReport {
         support: DeferSupport::Recovered,
@@ -737,6 +876,7 @@ fn recover_defers_inner(
         truncated: truncated || call_truncated,
         functions,
         runtime_hooks,
+        control_edges,
     }
 }
 
@@ -775,7 +915,7 @@ mod tests {
         };
         let mut symbol: GoFunc = GoFunc::new(0, code.len() as u64, "main.partial".to_owned());
         symbol.va = Some(0x1000);
-        let symbols: GoSymbols = GoSymbols {
+        let mut symbols: GoSymbols = GoSymbols {
             version_label: "go1.16..go1.17".to_owned(),
             ptr_size: 8,
             funcs: vec![symbol],
@@ -787,7 +927,7 @@ mod tests {
             entry: 0x1008,
             va: Some(0x1008),
         }];
-        let mut functions: [DeferFunc; 1] = [DeferFunc {
+        let functions: [DeferFunc; 1] = [DeferFunc {
             name: "main.partial".to_owned(),
             entry: 0,
             va: Some(0x1000),
@@ -796,11 +936,30 @@ mod tests {
             deferreturn_va: None,
             call_sites: Vec::new(),
         }];
-        let (support, truncated): (DeferCallSupport, bool) =
-            recover_arm64_call_sites(&image, &symbols, &hooks, &mut functions);
+        let (support, truncated, calls): (DeferCallSupport, bool, Vec<RecoveredRuntimeCall>) =
+            recover_arm64_call_sites(&image, &symbols, &hooks, &functions);
         assert_eq!(support, DeferCallSupport::Arm64);
         assert!(truncated);
-        assert!(functions[0].call_sites.is_empty());
+        assert!(calls.is_empty());
+        symbols.funcs[0].end = 1;
+        let (sentinel_support, sentinel_truncated, sentinel_calls): (
+            DeferCallSupport,
+            bool,
+            Vec<RecoveredRuntimeCall>,
+        ) = recover_arm64_call_sites(&image, &symbols, &hooks, &functions);
+        assert_eq!(sentinel_support, DeferCallSupport::Arm64);
+        assert!(!sentinel_truncated);
+        assert!(sentinel_calls.is_empty());
+        let mut terminal: GoFunc = GoFunc::new(4, 5, "main.terminal".to_owned());
+        terminal.va = Some(0x1004);
+        symbols.funcs.push(terminal);
+        let (_support, nonterminal_truncated, nonterminal_calls): (
+            DeferCallSupport,
+            bool,
+            Vec<RecoveredRuntimeCall>,
+        ) = recover_arm64_call_sites(&image, &symbols, &hooks, &functions);
+        assert!(nonterminal_truncated);
+        assert!(nonterminal_calls.is_empty());
     }
 
     fn header(version: PclntabVersion, ptr_size: u8, section_addr: u64) -> PclntabHeader {
@@ -948,13 +1107,65 @@ mod tests {
                 entry: 4,
                 va: Some(0x2000),
             },
+            RuntimeDeferHook {
+                name: "runtime.gopanic".to_owned(),
+                entry: 5,
+                va: Some(0x3000),
+            },
+            RuntimeDeferHook {
+                name: "runtime.gorecover".to_owned(),
+                entry: 6,
+                va: Some(0x3000),
+            },
+            RuntimeDeferHook {
+                name: "runtime.gopanic".to_owned(),
+                entry: 7,
+                va: Some(0x4000),
+            },
         ];
-        let targets: BTreeMap<u64, DeferCallKind> = collect_runtime_call_targets(&hooks);
+        let targets: BTreeMap<u64, RuntimeCallKind> = collect_runtime_call_targets(&hooks);
         let reversed: Vec<RuntimeDeferHook> = hooks.iter().rev().cloned().collect();
         assert_eq!(targets.get(&0x1000), None);
-        assert_eq!(targets.get(&0x2000), Some(&DeferCallKind::ProcStack));
-        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets.get(&0x2000),
+            Some(&RuntimeCallKind::Defer(DeferCallKind::ProcStack))
+        );
+        assert_eq!(targets.get(&0x3000), None);
+        assert_eq!(
+            targets.get(&0x4000),
+            Some(&RuntimeCallKind::Control(ControlEdgeKind::Panic))
+        );
+        assert_eq!(targets.len(), 2);
         assert_eq!(collect_runtime_call_targets(&reversed), targets);
+    }
+
+    #[test]
+    fn conflicting_same_name_runtime_hooks_are_excluded_before_target_selection() {
+        let mut first_panic: GoFunc = GoFunc::new(1, 2, "runtime.gopanic".to_owned());
+        first_panic.va = Some(0x1000);
+        let mut second_panic: GoFunc = GoFunc::new(2, 3, "runtime.gopanic".to_owned());
+        second_panic.va = Some(0x2000);
+        let mut recover: GoFunc = GoFunc::new(3, 4, "runtime.gorecover".to_owned());
+        recover.va = Some(0x3000);
+        let symbols: GoSymbols = GoSymbols {
+            version_label: "go1.20+".to_owned(),
+            ptr_size: 8,
+            funcs: vec![first_panic, recover, second_panic],
+            source_files: Vec::new(),
+            package_set: Vec::new(),
+        };
+        let hooks: Vec<RuntimeDeferHook> = collect_runtime_hooks(&symbols);
+        let mut reversed_symbols: GoSymbols = symbols;
+        reversed_symbols.funcs.reverse();
+        assert!(
+            hooks
+                .iter()
+                .all(|hook: &RuntimeDeferHook| hook.name != "runtime.gopanic")
+        );
+        assert!(hooks.iter().any(|hook: &RuntimeDeferHook| {
+            hook.name == "runtime.gorecover" && hook.va == Some(0x3000)
+        }));
+        assert_eq!(collect_runtime_hooks(&reversed_symbols), hooks);
     }
 
     #[test]
@@ -971,6 +1182,10 @@ mod tests {
         }))
         .expect("the legacy report shape must deserialize");
         assert_eq!(report.call_support, DeferCallSupport::NotAttempted);
+        assert!(report.control_edges.is_empty());
+        let encoded: serde_json::Value =
+            serde_json::to_value(&report).expect("legacy report encode");
+        assert!(encoded.get("control_edges").is_none());
     }
 
     #[test]

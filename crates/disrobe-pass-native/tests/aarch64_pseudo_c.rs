@@ -10,10 +10,17 @@ use disrobe_pass_native::{
     recover_leaf_function_in_object,
 };
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
+
+#[cfg(feature = "chain")]
+use disrobe_core::chain::Pass as _;
+
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
 
 fn find_program(name: &str) -> Option<PathBuf> {
     let path: OsString = std::env::var_os("PATH")?;
@@ -63,6 +70,204 @@ fn compiled_crc32_fixture() -> Vec<u8> {
         ],
     );
     std::fs::read(object_path).expect("read crc32 fixture object")
+}
+
+fn compiled_extended_register_fixture() -> Vec<u8> {
+    let clang: PathBuf =
+        find_program("clang").expect("clang is required for the extended-register fixture");
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("aarch64_recovery")
+        .join("extended_register.s");
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create extended-register fixture scratch");
+    let object_path: PathBuf = scratch.path().join("extended_register.o");
+    run_tool(
+        &clang,
+        vec![
+            "--target=aarch64-none-elf".into(),
+            "-c".into(),
+            fixture.as_os_str().to_owned(),
+            "-o".into(),
+            object_path.as_os_str().to_owned(),
+        ],
+    );
+    std::fs::read(object_path).expect("read extended-register fixture object")
+}
+
+#[cfg(feature = "chain")]
+fn linked_extended_register_fixture() -> Vec<u8> {
+    let clang: PathBuf =
+        find_program("clang").expect("clang is required for the extended-register fixture");
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("aarch64_recovery")
+        .join("extended_register.s");
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create linked extended-register fixture scratch");
+    let image_path: PathBuf = scratch.path().join("extended_register.elf");
+    run_tool(
+        &clang,
+        vec![
+            "--target=aarch64-none-elf".into(),
+            "-nostdlib".into(),
+            "-fuse-ld=lld".into(),
+            "-Wl,-e,cmp_uxtb_eq".into(),
+            fixture.as_os_str().to_owned(),
+            "-o".into(),
+            image_path.as_os_str().to_owned(),
+        ],
+    );
+    std::fs::read(image_path).expect("read linked extended-register fixture")
+}
+
+fn assert_extended_register_execution(
+    recovered: &LeafRecovery,
+    name: &str,
+    cases: &[(u64, u64, u64)],
+    compiler: &Path,
+    rustc: &Path,
+    scratch: &Path,
+) {
+    let source: PathBuf = scratch.join(format!("extended_register_{name}.c"));
+    let executable: PathBuf = scratch.join(format!("extended_register_{name}.exe"));
+    let checks: String = cases.iter().enumerate().fold(
+        String::new(),
+        |mut output: String,
+         (index, (lhs, rhs, expected)): (usize, &(u64, u64, u64))|
+         -> String {
+            writeln!(
+                output,
+                "    if ((uint64_t)recovered(0x{lhs:016x}ULL, 0x{rhs:016x}ULL) != 0x{expected:016x}ULL) return {};",
+                index + 1
+            )
+            .expect("append extended-register C grade");
+            output
+        },
+    );
+    let driver: String = format!(
+        "{}\nint main(void) {{\n{checks}    return 0;\n}}\n",
+        recovered.source
+    );
+    std::fs::write(&source, driver).expect("write extended-register C grade");
+    run_tool(
+        compiler,
+        vec![
+            "-O2".into(),
+            source.as_os_str().to_owned(),
+            "-o".into(),
+            executable.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let result: CapturedOutput =
+        run_captured(&executable, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn extended-register C grade")
+            .expect("extended-register C grade timeout");
+    assert_eq!(result.exit_code, Some(0), "{name}: {}", recovered.source);
+
+    let rust_source: PathBuf = scratch.join(format!("extended_register_{name}.rs"));
+    let rust_executable: PathBuf = scratch.join(format!("extended_register_{name}_rust.exe"));
+    let rust_checks: String = cases.iter().fold(
+        String::new(),
+        |mut output: String, (lhs, rhs, expected): &(u64, u64, u64)| -> String {
+            writeln!(
+                output,
+                "    assert_eq!(recovered(0x{lhs:016x}u64, 0x{rhs:016x}u64), 0x{expected:016x}u64);"
+            )
+            .expect("append extended-register Rust grade");
+            output
+        },
+    );
+    let rust_driver: String = format!(
+        "{}\nfn main() {{\n{rust_checks}}}\n",
+        recovered
+            .rust_source
+            .as_deref()
+            .unwrap_or_else(|| panic!("{name} produced no pseudo-rust"))
+    );
+    std::fs::write(&rust_source, rust_driver).expect("write extended-register Rust grade");
+    run_tool(
+        rustc,
+        vec![
+            "-O".into(),
+            rust_source.as_os_str().to_owned(),
+            "-o".into(),
+            rust_executable.as_os_str().to_owned(),
+        ],
+    );
+    let rust_result: CapturedOutput =
+        run_captured(&rust_executable, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn extended-register Rust grade")
+            .expect("extended-register Rust grade timeout");
+    assert_eq!(
+        rust_result.exit_code,
+        Some(0),
+        "{name}: {}",
+        recovered
+            .rust_source
+            .as_deref()
+            .unwrap_or("missing pseudo-rust")
+    );
+}
+
+fn assert_extended_flag_alias(
+    object_bytes: &[u8],
+    alias: &str,
+    explicit: &str,
+    compiler: &Path,
+    scratch: &Path,
+) {
+    let recover = |symbol: &str| -> LeafRecovery {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(object_bytes, symbol)
+            .unwrap_or_else(|| panic!("extended-register fixture lacks {symbol}"));
+        recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"))
+    };
+    let alias_recovery: LeafRecovery = recover(alias);
+    let explicit_recovery: LeafRecovery = recover(explicit);
+    let alias_source: String = alias_recovery.source.replace("recovered(", "alias_flags(");
+    let explicit_source: String = explicit_recovery
+        .source
+        .replace("recovered(", "explicit_flags(");
+    let comparisons: String = [0x00_u64, 0x7f, 0x80, 0xff]
+        .into_iter()
+        .enumerate()
+        .fold(
+            String::new(),
+            |mut output: String, (index, rhs): (usize, u64)| -> String {
+                writeln!(
+                    output,
+                    "    if (alias_flags(0x8000000000000000ULL, 0x{rhs:016x}ULL) != explicit_flags(0x8000000000000000ULL, 0x{rhs:016x}ULL)) return {};",
+                    index + 1
+                )
+                .expect("append extended-register flag comparison");
+                output
+            },
+        );
+    let source: PathBuf = scratch.join(format!("{alias}_{explicit}_flags.c"));
+    let executable: PathBuf = scratch.join(format!("{alias}_{explicit}_flags.exe"));
+    let driver: String = format!(
+        "{alias_source}\n{explicit_source}\nint main(void) {{\n{comparisons}    return 0;\n}}\n"
+    );
+    std::fs::write(&source, driver).expect("write extended-register flag alias grade");
+    run_tool(
+        compiler,
+        vec![
+            "-O2".into(),
+            source.as_os_str().to_owned(),
+            "-o".into(),
+            executable.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let result: CapturedOutput =
+        run_captured(&executable, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn extended-register flag alias grade")
+            .expect("extended-register flag alias grade timeout");
+    assert_eq!(result.exit_code, Some(0), "{alias} versus {explicit}");
 }
 
 fn assert_crc_execution(
@@ -200,6 +405,255 @@ fn clang_crc32_intrinsics_lift_every_scalar_form() {
             "{symbol}"
         );
     }
+}
+
+#[test]
+fn clang_assembled_extended_register_forms_recover_and_execute() {
+    let object_bytes: Vec<u8> = compiled_extended_register_fixture();
+    let compiler: PathBuf = find_program("cc")
+        .or_else(|| find_program("clang"))
+        .expect("a native C compiler is required for the extended-register grade");
+    let rustup: PathBuf =
+        find_program("rustup").expect("rustup is required for the extended-register grade");
+    let rustc_output: CapturedOutput = run_tool(&rustup, vec!["which".into(), "rustc".into()]);
+    let rustc: PathBuf = PathBuf::from(String::from_utf8_lossy(&rustc_output.stdout).trim());
+    assert!(rustc.is_file(), "resolved Rust compiler does not exist");
+    let scratch: tempfile::TempDir =
+        tempfile::tempdir().expect("create extended-register execution scratch");
+    assert_extended_flag_alias(
+        &object_bytes,
+        "cmp_uxtb_eq",
+        "subs_uxtb_eq",
+        &compiler,
+        scratch.path(),
+    );
+    assert_extended_flag_alias(
+        &object_bytes,
+        "cmn_sxtb_mi",
+        "adds_sxtb_mi",
+        &compiler,
+        scratch.path(),
+    );
+    let boundary: [u64; 4] = [0x00, 0x7f, 0x80, 0xff];
+    let mut value_cases: Vec<(u64, u64, u64)> = Vec::with_capacity(8);
+    let mut n_cases: Vec<(u64, u64, u64)> = Vec::with_capacity(8);
+    let mut z_cases: Vec<(u64, u64, u64)> = Vec::with_capacity(8);
+    let mut c_cases: Vec<(u64, u64, u64)> = Vec::with_capacity(8);
+    let mut v_cases: Vec<(u64, u64, u64)> = Vec::with_capacity(8);
+    for rhs in boundary {
+        for lhs in [i64::MAX as u64, u64::MAX] {
+            let addend: u64 = u64::from(rhs as u8) << 1;
+            let (value, carry): (u64, bool) = lhs.overflowing_add(addend);
+            let overflow: bool = ((lhs ^ value) & (addend ^ value) & (1_u64 << 63)) != 0;
+            value_cases.push((lhs, rhs, value));
+            n_cases.push((lhs, rhs, u64::from((value as i64) < 0)));
+            z_cases.push((lhs, rhs, u64::from(value == 0)));
+            c_cases.push((lhs, rhs, u64::from(carry)));
+            v_cases.push((lhs, rhs, u64::from(overflow)));
+        }
+    }
+    for (symbol, cases) in [
+        ("nat001_adds_uxtb_value", &value_cases),
+        ("nat001_adds_uxtb_n", &n_cases),
+        ("nat001_adds_uxtb_z", &z_cases),
+        ("nat001_adds_uxtb_c", &c_cases),
+        ("nat001_adds_uxtb_v", &v_cases),
+    ] {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(&object_bytes, symbol)
+            .unwrap_or_else(|| panic!("extended-register fixture lacks {symbol}"));
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"));
+        assert_extended_register_execution(
+            &recovered,
+            symbol,
+            cases,
+            &compiler,
+            &rustc,
+            scratch.path(),
+        );
+    }
+    let symbols: [&str; 15] = [
+        "cmp_uxtb_eq",
+        "cmn_sxtb_mi",
+        "adds_uxtb_cs",
+        "adds_uxtb_hi",
+        "adds_uxtb_ls",
+        "add_uxth",
+        "subs_sxth_vs",
+        "add_uxtw",
+        "sub_sxtw",
+        "add_uxtx",
+        "sub_sxtx",
+        "cmp_w_uxtb_eq",
+        "cmn_w_sxtb_mi",
+        "adds_w_uxth_cs",
+        "subs_w_sxth_vs",
+    ];
+    for symbol in symbols {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(&object_bytes, symbol)
+            .unwrap_or_else(|| panic!("extended-register fixture lacks {symbol}"));
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"));
+        let cases: Vec<(u64, u64, u64)> = match symbol {
+            "cmp_uxtb_eq" => boundary
+                .into_iter()
+                .map(|rhs: u64| (0x80, rhs, u64::from(0x80 == rhs)))
+                .collect(),
+            "cmn_sxtb_mi" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let extended: u64 = u64::from_ne_bytes(i64::from(rhs as i8).to_ne_bytes());
+                    let sum: u64 = 0_u64.wrapping_add(extended);
+                    (0, rhs, u64::from((sum as i64) < 0))
+                })
+                .collect(),
+            "adds_uxtb_cs" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let addend: u64 = u64::from(rhs as u8) << 1;
+                    let lhs: u64 = u64::MAX.wrapping_sub(addend).wrapping_add(1);
+                    (lhs, rhs, u64::from(lhs.overflowing_add(addend).1))
+                })
+                .collect(),
+            "adds_uxtb_hi" | "adds_uxtb_ls" => [(0, 0), (0, 1), (u64::MAX, 1), (u64::MAX - 1, 1)]
+                .into_iter()
+                .map(|(lhs, rhs): (u64, u64)| {
+                    let addend: u64 = u64::from(rhs as u8) << 1;
+                    let (sum, carry): (u64, bool) = lhs.overflowing_add(addend);
+                    let expected: bool = if symbol == "adds_uxtb_hi" {
+                        carry && sum != 0
+                    } else {
+                        !carry || sum == 0
+                    };
+                    (lhs, rhs, u64::from(expected))
+                })
+                .collect(),
+            "add_uxth" => boundary
+                .into_iter()
+                .map(|rhs: u64| (7, rhs, 7_u64.wrapping_add((rhs as u16 as u64) << 1)))
+                .collect(),
+            "subs_sxth_vs" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let subtrahend: i64 = i64::from(rhs as i16).wrapping_shl(2);
+                    let lhs: i64 = i64::MIN;
+                    (
+                        lhs as u64,
+                        rhs,
+                        u64::from(lhs.overflowing_sub(subtrahend).1),
+                    )
+                })
+                .collect(),
+            "add_uxtw" => boundary
+                .into_iter()
+                .map(|rhs: u64| (7, rhs, 7_u64.wrapping_add((rhs as u32 as u64) << 3)))
+                .collect(),
+            "sub_sxtw" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let value: u64 =
+                        u64::from_ne_bytes(i64::from(rhs as i32).wrapping_shl(4).to_ne_bytes());
+                    (7, rhs, 7_u64.wrapping_sub(value))
+                })
+                .collect(),
+            "add_uxtx" => boundary
+                .into_iter()
+                .map(|rhs: u64| (7, rhs, 7_u64.wrapping_add(rhs)))
+                .collect(),
+            "sub_sxtx" => boundary
+                .into_iter()
+                .map(|rhs: u64| (7, rhs, 7_u64.wrapping_sub(rhs)))
+                .collect(),
+            "cmp_w_uxtb_eq" => boundary
+                .into_iter()
+                .map(|rhs: u64| (0x80, rhs, u64::from(0x80 == rhs)))
+                .collect(),
+            "cmn_w_sxtb_mi" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let sum: u32 = 0_u32.wrapping_add(i32::from(rhs as i8) as u32);
+                    (0, rhs, u64::from((sum as i32) < 0))
+                })
+                .collect(),
+            "adds_w_uxth_cs" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let addend: u32 = u32::from(rhs as u16) << 1;
+                    let lhs: u32 = u32::MAX.wrapping_sub(addend).wrapping_add(1);
+                    (
+                        u64::from(lhs),
+                        rhs,
+                        u64::from(lhs.overflowing_add(addend).1),
+                    )
+                })
+                .collect(),
+            "subs_w_sxth_vs" => boundary
+                .into_iter()
+                .map(|rhs: u64| {
+                    let subtrahend: i32 = i32::from(rhs as i16).wrapping_shl(2);
+                    let lhs: i32 = i32::MIN;
+                    (
+                        lhs as u32 as u64,
+                        rhs,
+                        u64::from(lhs.overflowing_sub(subtrahend).1),
+                    )
+                })
+                .collect(),
+            _ => unreachable!(),
+        };
+        assert_extended_register_execution(
+            &recovered,
+            symbol,
+            &cases,
+            &compiler,
+            &rustc,
+            scratch.path(),
+        );
+    }
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn auto_native_pass_surfaces_aarch64_pseudo_source_and_typed_refusals() {
+    let image_bytes: Vec<u8> = linked_extended_register_fixture();
+    let artifact: Artifact = Artifact::new(Rung::Raw, image_bytes, [0_u8; 32]);
+    let children: Vec<disrobe_core::chain::ChildArtifact> =
+        disrobe_pass_native::chain_detector::NATIVE_IMAGE_PASS
+            .extract_children(&artifact)
+            .expect("registered native image pass extracts aarch64 reports");
+    let pseudo: &disrobe_core::chain::ChildArtifact = children
+        .iter()
+        .find(|child: &&disrobe_core::chain::ChildArtifact| {
+            child.handle.relative_path == "pseudo-source.json"
+        })
+        .expect("auto native output includes pseudo-source.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&pseudo.bytes).expect("pseudo-source report is json");
+    assert_eq!(report["run"].as_bool(), Some(true));
+    let recovered: &[serde_json::Value] = report["recovered"]
+        .as_array()
+        .expect("recovered function array");
+    assert!(
+        recovered.iter().any(|function: &serde_json::Value| {
+            function["name"].as_str() == Some("nat001_adds_uxtb_value")
+                && function["source"]
+                    .as_str()
+                    .is_some_and(|source: &str| source.contains("return"))
+        }),
+        "{report}"
+    );
+    let unrecovered: &[serde_json::Value] = report["unrecovered"]
+        .as_array()
+        .expect("unrecovered function array");
+    assert!(
+        unrecovered.iter().any(|function: &serde_json::Value| {
+            function["name"].as_str() == Some("nat001_sp_refusal")
+                && function["reason"]
+                    .as_str()
+                    .is_some_and(|reason: &str| reason.contains("stack pointer"))
+        }),
+        "{report}"
+    );
 }
 
 #[test]

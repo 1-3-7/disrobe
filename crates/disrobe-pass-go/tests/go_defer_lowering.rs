@@ -4,6 +4,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_pass_go::defers::{ControlEdge, ControlEdgeKind};
 use disrobe_pass_go::{
     DeferCallKind, DeferCallSite, DeferCallSupport, DeferFunc, DeferLowering, DeferReport,
     DeferSupport, GoAnalysis, RuntimeDeferHook, analyze,
@@ -63,6 +64,7 @@ struct ObjdumpFunc {
     defer_setup_lines: Vec<u32>,
     deferreturn_bytes: Vec<(u64, Vec<u8>)>,
     runtime_calls: Vec<(DeferCallKind, u64)>,
+    control_calls: Vec<(ControlEdgeKind, u64)>,
 }
 
 impl ObjdumpFunc {
@@ -92,6 +94,7 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
                         defer_setup_lines: Vec::new(),
                         deferreturn_bytes: Vec::new(),
                         runtime_calls: Vec::new(),
+                        control_calls: Vec::new(),
                     },
                 );
             }
@@ -118,6 +121,12 @@ fn parse_objdump_reference(text: &str) -> BTreeMap<String, ObjdumpFunc> {
                     }
                     "runtime.deferprocat" => {
                         entry.defer_setup_lines.push(src_line);
+                    }
+                    "runtime.gopanic" => {
+                        entry.control_calls.push((ControlEdgeKind::Panic, pc));
+                    }
+                    "runtime.gorecover" => {
+                        entry.control_calls.push((ControlEdgeKind::Recover, pc));
                     }
                     _ => {}
                 }
@@ -227,6 +236,87 @@ fn arm64_call_sites_match_the_real_toolchain_disassembly() {
     );
 }
 
+#[test]
+fn panic_and_recover_edges_match_every_real_toolchain_disassembly() {
+    let mut graded: usize = 0;
+    for fixture in FIXTURES {
+        let bytes: Vec<u8> = common::required_fixture(fixture.binary);
+        let first: GoAnalysis = analyze(&bytes).expect("first panic edge analysis");
+        let second: GoAnalysis = analyze(&bytes).expect("second panic edge analysis");
+        assert_eq!(
+            first.defers.control_edges, second.defers.control_edges,
+            "{} panic edge recovery is not deterministic",
+            fixture.binary
+        );
+        let reference: BTreeMap<String, ObjdumpFunc> = parse_objdump_reference(
+            &std::fs::read_to_string(common::fixture_path(&format!(
+                "{}.objdump.txt",
+                fixture.binary
+            )))
+            .expect("objdump panic edge reference"),
+        );
+        let referenced_names: BTreeSet<&str> = reference.keys().map(String::as_str).collect();
+        let expected_set: BTreeSet<(String, ControlEdgeKind, u64)> = reference
+            .iter()
+            .flat_map(|(name, function): (&String, &ObjdumpFunc)| {
+                function
+                    .control_calls
+                    .iter()
+                    .map(|(kind, va): &(ControlEdgeKind, u64)| (name.clone(), *kind, *va))
+            })
+            .collect();
+        let actual_set: BTreeSet<(String, ControlEdgeKind, u64)> = first
+            .defers
+            .control_edges
+            .iter()
+            .filter(|edge: &&ControlEdge| referenced_names.contains(edge.function.as_str()))
+            .map(|edge: &ControlEdge| (edge.function.clone(), edge.kind, edge.va))
+            .collect();
+        assert_eq!(
+            expected_set.len(),
+            3,
+            "{} objdump reference lost a panic/recover call",
+            fixture.binary
+        );
+        assert_eq!(
+            actual_set, expected_set,
+            "{} complete authored panic/recover edge set differs",
+            fixture.binary
+        );
+        for (name, function) in &reference {
+            if function.control_calls.is_empty() {
+                continue;
+            }
+            let actual: Vec<(ControlEdgeKind, u64)> = first
+                .defers
+                .control_edges
+                .iter()
+                .filter(|edge: &&ControlEdge| edge.function == *name)
+                .map(|edge: &ControlEdge| (edge.kind, edge.va))
+                .collect();
+            assert_eq!(
+                actual, function.control_calls,
+                "{}: {name} panic/recover calls differ from go tool objdump",
+                fixture.binary
+            );
+            graded += actual.len();
+        }
+        assert!(
+            first
+                .defers
+                .control_edges
+                .iter()
+                .all(|edge: &ControlEdge| edge.function != "main.OpenCodedOne"),
+            "{} gave a no-panic function a control edge",
+            fixture.binary
+        );
+    }
+    assert!(
+        graded >= 12,
+        "graded only {graded} panic/recover call sites"
+    );
+}
+
 #[cfg(feature = "chain")]
 #[test]
 fn registered_go_pass_emits_arm64_defer_calls() {
@@ -257,6 +347,62 @@ fn registered_go_pass_emits_arm64_defer_calls() {
             .count()
             >= 10,
         "registered pass sidecar omitted ARM64 runtime defer calls"
+    );
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn registered_go_pass_labels_panic_and_direct_recover_edges() {
+    let bytes: Vec<u8> = common::required_fixture(FIXTURES[1].binary);
+    let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+    let rendered: Artifact = GO_PASS.run(&artifact).expect("GO_PASS panic edge run");
+    let report: &str = std::str::from_utf8(&rendered.envelope).expect("GO_PASS report UTF-8");
+    assert!(
+        report.contains("panic edge main.WithRecover @ 0x"),
+        "registered pass omitted the recovered panic edge: {report}"
+    );
+    assert!(
+        report.contains("panic edge main.Panics @ 0x"),
+        "registered pass omitted the standalone panic edge: {report}"
+    );
+    assert!(
+        report.contains("recover edge main.WithRecover.func1 @ 0x"),
+        "registered pass moved or omitted the direct deferred recover edge: {report}"
+    );
+
+    let children: Vec<ChildArtifact> = GO_PASS
+        .extract_children(&artifact)
+        .expect("GO_PASS panic edge children");
+    let sidecar: &ChildArtifact = children
+        .iter()
+        .find(|child: &&ChildArtifact| child.handle.relative_path == "go-analysis.json")
+        .expect("registered pass must emit go-analysis.json");
+    let analysis: serde_json::Value =
+        serde_json::from_slice(&sidecar.bytes).expect("GO_PASS panic edge analysis JSON");
+    let edges: &[serde_json::Value] = analysis["defers"]["control_edges"]
+        .as_array()
+        .expect("typed control edge array");
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge: &&serde_json::Value| {
+                edge["kind"] == "panic"
+                    && matches!(
+                        edge["function"].as_str(),
+                        Some("main.WithRecover" | "main.Panics")
+                    )
+            })
+            .count(),
+        2,
+    );
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge: &&serde_json::Value| {
+                edge["kind"] == "recover" && edge["function"] == "main.WithRecover.func1"
+            })
+            .count(),
+        1,
     );
 }
 

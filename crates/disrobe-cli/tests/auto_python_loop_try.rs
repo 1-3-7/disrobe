@@ -44,6 +44,15 @@ const WALRUS_SOURCE: &str = r#"def guarded_divide(values, primary, secondary):
     return out
 "#;
 
+const SHARED_RETEST_SOURCE: &str = r"def consume(active, next_item, sink):
+    while active():
+        try:
+            sink(next_item())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
 fn python_312() -> PathBuf {
     if let Ok(output) = Command::new("uv")
         .args(["python", "find", "3.12"])
@@ -187,6 +196,63 @@ fn auto_routes_generated_pyc_and_preserves_guarded_try_loop() {
             .count(),
         1
     );
+}
+
+#[test]
+fn auto_routes_plain_try_handler_fallthrough_inside_the_while() {
+    let input_scratch: disrobe_core::scratch::ScratchDir =
+        scratch("auto-python-shared-retest-input");
+    let source: PathBuf = input_scratch.path().join("shared_retest.py");
+    let pyc: PathBuf = input_scratch.path().join("shared_retest.pyc");
+    std::fs::write(&source, SHARED_RETEST_SOURCE).expect("write Python fixture source");
+    compile_source(&python_312(), &source, &pyc);
+
+    let out_scratch: disrobe_core::scratch::ScratchDir =
+        scratch("auto-python-shared-retest-output");
+    let output: std::process::Output = Command::new(env!("CARGO_BIN_EXE_disrobe"))
+        .arg("auto")
+        .arg(&pyc)
+        .arg("--out")
+        .arg(out_scratch.path())
+        .arg("--max-depth")
+        .arg("3")
+        .arg("--capture-stages")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap_or_else(|error: std::io::Error| panic!("failed to spawn disrobe auto: {error}"));
+    assert!(
+        output.status.success(),
+        "disrobe auto failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let chain_raw: String = std::fs::read_to_string(out_scratch.path().join("chain.json"))
+        .expect("read auto chain.json");
+    let chain: serde_json::Value = serde_json::from_str(&chain_raw).expect("parse auto chain.json");
+    let passes: Vec<&str> = chain
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .expect("chain.json nodes")
+        .iter()
+        .filter_map(|node: &serde_json::Value| node.get("pass").and_then(serde_json::Value::as_str))
+        .collect();
+    assert!(passes.contains(&"py.decompile"), "passes: {passes:?}");
+
+    let recovered: String = terminal_decompile_source(out_scratch.path())
+        .expect("captured py.decompile output must contain recovered source");
+    assert_eq!(
+        recovered.matches("while active():").count(),
+        1,
+        "{recovered}"
+    );
+    assert_eq!(recovered.matches("try:").count(), 1, "{recovered}");
+    assert_eq!(
+        recovered.matches("except LookupError:").count(),
+        1,
+        "{recovered}"
+    );
+    assert_eq!(recovered.matches("sink(None)").count(), 1, "{recovered}");
+    assert!(!recovered.contains("decompile-error"), "{recovered}");
 }
 
 #[test]

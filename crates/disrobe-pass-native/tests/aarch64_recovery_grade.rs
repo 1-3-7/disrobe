@@ -328,6 +328,65 @@ fn is_increment_nineteen_fp(name: &str) -> bool {
     INCREMENT_NINETEEN_FP_FUNCTIONS.contains(&name)
 }
 
+const INCREMENT_TWENTY_FUNCTIONS: &[&str] = &[
+    "nat001_adds_uxtb_value",
+    "nat001_adds_uxtb_n",
+    "nat001_adds_uxtb_z",
+    "nat001_adds_uxtb_c",
+    "nat001_adds_uxtb_v",
+];
+const INCREMENT_TWENTY_EXPECTED_CASES: usize = 5;
+
+fn is_increment_twenty(name: &str) -> bool {
+    INCREMENT_TWENTY_FUNCTIONS.contains(&name)
+}
+
+fn increment_twenty_compare_block(
+    opt: &str,
+    name: &str,
+    recovered: &str,
+    seed: u64,
+) -> Option<String> {
+    let expected: &str = match name {
+        "nat001_adds_uxtb_value" => "sum",
+        "nat001_adds_uxtb_n" => "(sum >> 63) & 1u",
+        "nat001_adds_uxtb_z" => "sum == 0",
+        "nat001_adds_uxtb_c" => "sum < lhs",
+        "nat001_adds_uxtb_v" => "(((lhs ^ sum) & (addend ^ sum)) >> 63) & 1u",
+        _ => return None,
+    };
+    Some(format!(
+        "{{ uint64_t st = 0x{seed:016x}ULL; int case_failed = 0; for (int i = 0; i < ITER; ++i) {{ \
+         uint64_t lhs = xs(&st); uint64_t rhs = xs(&st); \
+         uint64_t addend = ((uint64_t)(uint8_t)rhs) << 1; \
+         uint64_t sum = lhs + addend; uint64_t expected = {expected}; \
+         uint64_t actual = (uint64_t){recovered}(lhs, rhs); \
+         if (actual != expected) {{ case_failed = 1; printf(\"FAIL {opt} {name} i=%d actual=%llu expected=%llu\\n\", i, (unsigned long long)actual, (unsigned long long)expected); break; }} }} \
+         if (case_failed) {{ ++fails; }} else {{ ++passed; }} }}\n"
+    ))
+}
+
+#[test]
+fn recorded_extended_register_increment_recovers_every_compiler_row() {
+    let rows: Vec<(&str, &str, &[u8])> = CASES
+        .iter()
+        .copied()
+        .filter(|(_, name, _): &(&str, &str, &[u8])| is_increment_twenty(name))
+        .collect();
+    assert_eq!(rows.len(), INCREMENT_TWENTY_EXPECTED_CASES);
+    for (opt, name, bytes) in rows {
+        assert_eq!(opt, "NAT001");
+        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0)
+            .unwrap_or_else(|error| panic!("{name} rejected: {error}"));
+        assert!(
+            recovery.source.contains("return"),
+            "{name}: {}",
+            recovery.source
+        );
+        assert!(recovery.rust_source.is_some(), "{name}");
+    }
+}
+
 #[test]
 #[ignore = "recompile-differential over the whole corpus; needs a host c compiler and is codegen-sensitive, so it is opt-in via --ignored until the ci platform matrix is verified green"]
 fn corpus_grade_report() {
@@ -651,6 +710,23 @@ fn corpus_grade_report() {
         }
     }
 
+    let increment_twenty_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_twenty(name))
+        .count();
+    assert_eq!(
+        increment_twenty_corpus_cases, INCREMENT_TWENTY_EXPECTED_CASES,
+        "the generated corpus must contain every NAT-001 extended-register row"
+    );
+    for required_name in INCREMENT_TWENTY_FUNCTIONS {
+        assert!(
+            CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                *opt == "NAT001" && name == required_name
+            }),
+            "required NAT-001 case `{required_name}` is absent from the generated corpus"
+        );
+    }
+
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let battery_o: PathBuf =
         build_ground_truth_object(&compiler, dir.path()).unwrap_or_else(|error: String| {
@@ -698,6 +774,8 @@ fn corpus_grade_report() {
     let mut increment_eighteen_driven: usize = 0;
     let mut increment_nineteen_recovered: usize = 0;
     let mut increment_nineteen_driven: usize = 0;
+    let mut increment_twenty_recovered: usize = 0;
+    let mut increment_twenty_driven: usize = 0;
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -722,6 +800,7 @@ fn corpus_grade_report() {
         let required_increment_seventeen: bool = is_increment_seventeen_fp(name);
         let required_increment_eighteen: bool = is_increment_eighteen(name);
         let required_increment_nineteen: bool = is_increment_nineteen_fp(name);
+        let required_increment_twenty: bool = is_increment_twenty(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
@@ -790,6 +869,9 @@ fn corpus_grade_report() {
         if required_increment_nineteen {
             increment_nineteen_recovered += 1;
         }
+        if required_increment_twenty {
+            increment_twenty_recovered += 1;
+        }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
         if let Some(expectation) = expected_fp {
@@ -814,7 +896,12 @@ fn corpus_grade_report() {
                 continue;
             }
         } else {
-            let Some(expected): Option<usize> = expected_arity(name) else {
+            let expected: Option<usize> = if required_increment_twenty {
+                Some(2)
+            } else {
+                expected_arity(name)
+            };
+            let Some(expected): Option<usize> = expected else {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
@@ -822,7 +909,10 @@ fn corpus_grade_report() {
                 ));
                 continue;
             };
-            if recovery.returns_fp.is_some() || !recovery.signature.parameter_types().is_empty() {
+            if !required_increment_twenty
+                && (recovery.returns_fp.is_some()
+                    || !recovery.signature.parameter_types().is_empty())
+            {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
@@ -853,7 +943,12 @@ fn corpus_grade_report() {
         } else {
             seed
         };
-        let Some(block): Option<String> = compare_block(opt, name, &rec_symbol, seed) else {
+        let block: Option<String> = if required_increment_twenty {
+            increment_twenty_compare_block(opt, name, &rec_symbol, seed)
+        } else {
+            compare_block(opt, name, &rec_symbol, seed)
+        };
+        let Some(block): Option<String> = block else {
             skips.push((
                 (*opt).to_owned(),
                 (*name).to_owned(),
@@ -922,6 +1017,9 @@ fn corpus_grade_report() {
         }
         if required_increment_nineteen {
             increment_nineteen_driven += 1;
+        }
+        if required_increment_twenty {
+            increment_twenty_driven += 1;
         }
     }
 
@@ -1050,6 +1148,12 @@ fn corpus_grade_report() {
     let integer_driven: usize = driven
         .checked_sub(fp_driven)
         .expect("fp driven count cannot exceed the total");
+    let previous_integer_recovered: usize = integer_recovered
+        .checked_sub(increment_twenty_recovered)
+        .expect("NAT-001 recovery count cannot exceed the integer total");
+    let previous_integer_driven: usize = integer_driven
+        .checked_sub(increment_twenty_driven)
+        .expect("NAT-001 driven count cannot exceed the integer total");
     eprintln!("================ AARCH64 CORPUS GRADE ================");
     eprintln!("attempted            {attempted}");
     eprintln!("recovered            {recovered}   (non-rejection; NOT a correctness claim)");
@@ -1129,6 +1233,10 @@ fn corpus_grade_report() {
         "increment-19 graded    {increment_nineteen_driven}/{INCREMENT_NINETEEN_EXPECTED_CASES}"
     );
     eprintln!(
+        "increment-20 recovered {increment_twenty_recovered}/{INCREMENT_TWENTY_EXPECTED_CASES}"
+    );
+    eprintln!("increment-20 graded    {increment_twenty_driven}/{INCREMENT_TWENTY_EXPECTED_CASES}");
+    eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
     eprintln!(
@@ -1179,11 +1287,11 @@ fn corpus_grade_report() {
         "all increment-1 fp cases must remain graded"
     );
     assert_eq!(
-        integer_recovered, EXPECTED_INTEGER_CASES,
+        previous_integer_recovered, EXPECTED_INTEGER_CASES,
         "all previously recovered integer cases must remain recovered"
     );
     assert_eq!(
-        integer_driven, EXPECTED_INTEGER_CASES,
+        previous_integer_driven, EXPECTED_INTEGER_CASES,
         "all previously graded integer cases must remain graded"
     );
     assert_eq!(
@@ -1329,6 +1437,14 @@ fn corpus_grade_report() {
     assert_eq!(
         increment_nineteen_driven, INCREMENT_NINETEEN_EXPECTED_CASES,
         "every increment-19 corpus case must be graded"
+    );
+    assert_eq!(
+        increment_twenty_recovered, INCREMENT_TWENTY_EXPECTED_CASES,
+        "every increment-20 corpus case must recover"
+    );
+    assert_eq!(
+        increment_twenty_driven, INCREMENT_TWENTY_EXPECTED_CASES,
+        "every increment-20 corpus case must be graded"
     );
     assert!(
         skips.is_empty(),

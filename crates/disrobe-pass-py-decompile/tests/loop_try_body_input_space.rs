@@ -21,6 +21,7 @@ use disrobe_py_marshal::{CodeObject, Object, PyVersion as MarshalVersion, PycFil
 
 const ALL: &[&str] = &["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"];
 const BLOCK_STACK: &[&str] = &["3.9", "3.10"];
+const PLAIN_TRY_EXCEPT: &[&str] = &["3.9", "3.10", "3.12", "3.14", "3.15"];
 
 #[derive(Debug, Clone, Copy)]
 struct LoopTryCase {
@@ -34,8 +35,8 @@ const CASES: &[LoopTryCase] = &[
     LoopTryCase {
         label: "while_try_except",
         source: "def f(active, nxt, sink):\n    while active():\n        try:\n            sink(nxt())\n        except LookupError:\n            sink(None)\n",
-        equivalent_on: BLOCK_STACK,
-        open_reason: "the table era rebuilds the handler back edge as a second loop entry",
+        equivalent_on: PLAIN_TRY_EXCEPT,
+        open_reason: "3.11 and 3.13 use distinct table-era loop joins outside this slice",
     },
     LoopTryCase {
         label: "while_try_break",

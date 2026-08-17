@@ -108,6 +108,60 @@ def retain_mixed_handler_flow(active, next_item, sink):
 ";
 
 #[cfg(feature = "chain")]
+const WHILE_TRY_SHARED_RETEST: &str = r"
+def consume(active, next_item, sink):
+    while active():
+        try:
+            sink(next_item())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
+#[cfg(feature = "chain")]
+const WHILE_TRY_SHARED_RETEST_DRIVER: &str = r"
+def values(items):
+    iterator = iter(items)
+    def read():
+        try:
+            return next(iterator)
+        except StopIteration:
+            raise LookupError
+    return read
+
+def active_after(items):
+    iterator = iter(items)
+    return lambda: next(iterator, False)
+
+events = []
+consume(active_after([True, True, False]), values(['one']), events.append)
+print(events)
+";
+
+#[cfg(feature = "chain")]
+const WHILE_TRY_PRELUDE_SIDE_EFFECT: &str = r"
+def consume(active, next_item, sink, marker):
+    while active():
+        marker()
+        try:
+            sink(next_item())
+        except LookupError:
+            sink(None)
+    sink('done')
+";
+
+#[cfg(feature = "chain")]
+const WHILE_TRY_PRELUDE_SIDE_EFFECT_DRIVER: &str = r"
+events = []
+active_values = iter([True, False])
+consume(lambda: next(active_values, False), lambda: 'one', events.append, lambda: events.append('marker'))
+print(events)
+idle = []
+consume(lambda: False, lambda: 'unused', idle.append, lambda: idle.append('marker'))
+print(idle)
+";
+
+#[cfg(feature = "chain")]
 const WHILE_AND_TRY_BREAK: &str = r"
 def consume(primary, secondary, next_item, sink):
     while primary() and secondary():
@@ -382,6 +436,124 @@ fn post311_while_and_try_break_reaches_registered_pass_and_runs_equivalently() {
                 panic!("py{} execute mutation: {error}", interpreter.alias)
             });
         assert_ne!(mutated_output, original_output);
+    }
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn table_era_plain_try_handler_fallthrough_reaches_registered_pass_and_runs_equivalently() {
+    for interpreter in
+        required_post311_interpreters()
+            .into_iter()
+            .filter(|interpreter: &BandInterpreter| {
+                matches!(interpreter.alias, "3.12" | "3.14" | "3.15")
+            })
+    {
+        let label: String = format!("while_try_shared_retest_{}", interpreter.alias);
+        let scratch: PathBuf = band_scratch(&label);
+        let original_path: PathBuf = scratch.join(format!("{label}.src.py"));
+        let original_exec_path: PathBuf = scratch.join(format!("{label}.exec.py"));
+        let original_pyc: PathBuf = scratch.join(format!("{label}.src.pyc"));
+        let original_program: String =
+            format!("{WHILE_TRY_SHARED_RETEST}\n{WHILE_TRY_SHARED_RETEST_DRIVER}");
+        fs::write(&original_path, WHILE_TRY_SHARED_RETEST)
+            .unwrap_or_else(|error: std::io::Error| panic!("write original: {error}"));
+        fs::write(&original_exec_path, &original_program)
+            .unwrap_or_else(|error: std::io::Error| panic!("write original runtime: {error}"));
+        compile_source(&interpreter.path, &original_path, &original_pyc).unwrap_or_else(
+            |error: String| panic!("py{} compile original: {error}", interpreter.alias),
+        );
+        let original_output: String = execute_source(&interpreter.path, &original_exec_path)
+            .unwrap_or_else(|error: String| {
+                panic!("py{} execute original: {error}", interpreter.alias)
+            });
+        let pyc: Vec<u8> = fs::read(&original_pyc)
+            .unwrap_or_else(|error: std::io::Error| panic!("read original pyc: {error}"));
+        let recovered_artifact: Artifact = PY_DECOMPILE_PASS
+            .run(&Artifact::new(Rung::Raw, pyc, [0_u8; 32]))
+            .unwrap_or_else(|error| panic!("py{} registered pass: {error}", interpreter.alias));
+        let recovered: String = String::from_utf8(recovered_artifact.envelope)
+            .unwrap_or_else(|error: std::string::FromUtf8Error| panic!("recovered UTF-8: {error}"));
+
+        assert_eq!(
+            recovered.matches("while active():").count(),
+            1,
+            "{recovered}"
+        );
+        assert_eq!(recovered.matches("try:").count(), 1, "{recovered}");
+        assert_eq!(
+            recovered.matches("except LookupError:").count(),
+            1,
+            "{recovered}"
+        );
+        assert_eq!(recovered.matches("sink(None)").count(), 1, "{recovered}");
+        assert!(!recovered.contains("decompile-error"), "{recovered}");
+
+        let recovered_path: PathBuf = scratch.join(format!("{label}.recovered.py"));
+        let recovered_pyc: PathBuf = scratch.join(format!("{label}.recovered.pyc"));
+        let recovered_program: String = format!("{recovered}\n{WHILE_TRY_SHARED_RETEST_DRIVER}");
+        fs::write(&recovered_path, &recovered_program)
+            .unwrap_or_else(|error: std::io::Error| panic!("write recovered: {error}"));
+        compile_source(&interpreter.path, &recovered_path, &recovered_pyc).unwrap_or_else(
+            |error: String| panic!("py{} compile recovered: {error}", interpreter.alias),
+        );
+        let recovered_output: String = execute_source(&interpreter.path, &recovered_path)
+            .unwrap_or_else(|error: String| {
+                panic!("py{} execute recovered: {error}", interpreter.alias)
+            });
+        assert_eq!(recovered_output, original_output);
+
+        let mutated_path: PathBuf = scratch.join(format!("{label}.mutated.py"));
+        let mutated: String = recovered_program.replacen("sink(None)", "sink('wrong')", 1);
+        assert_ne!(mutated, recovered_program);
+        fs::write(&mutated_path, mutated)
+            .unwrap_or_else(|error: std::io::Error| panic!("write mutation: {error}"));
+        let mutated_output: String = execute_source(&interpreter.path, &mutated_path)
+            .unwrap_or_else(|error: String| {
+                panic!("py{} execute mutation: {error}", interpreter.alias)
+            });
+        assert_ne!(mutated_output, original_output);
+    }
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn table_era_plain_try_refuses_to_drop_a_pre_try_side_effect() {
+    for interpreter in
+        required_post311_interpreters()
+            .into_iter()
+            .filter(|interpreter: &BandInterpreter| {
+                matches!(interpreter.alias, "3.12" | "3.14" | "3.15")
+            })
+    {
+        let label: String = format!("while_try_prelude_side_effect_{}", interpreter.alias);
+        let scratch: PathBuf = band_scratch(&label);
+        let original_path: PathBuf = scratch.join(format!("{label}.original.py"));
+        let recovered_path: PathBuf = scratch.join(format!("{label}.recovered.py"));
+        let original_program: String =
+            format!("{WHILE_TRY_PRELUDE_SIDE_EFFECT}\n{WHILE_TRY_PRELUDE_SIDE_EFFECT_DRIVER}");
+        let recovered: String =
+            recover_registered_source(&interpreter, WHILE_TRY_PRELUDE_SIDE_EFFECT, &label);
+        assert_eq!(recovered.matches("marker()").count(), 1, "{recovered}");
+        let recovered_program: String =
+            format!("{recovered}\n{WHILE_TRY_PRELUDE_SIDE_EFFECT_DRIVER}");
+        fs::write(&original_path, original_program)
+            .unwrap_or_else(|error: std::io::Error| panic!("write original: {error}"));
+        fs::write(&recovered_path, recovered_program)
+            .unwrap_or_else(|error: std::io::Error| panic!("write recovered: {error}"));
+        let original_output: String = execute_source(&interpreter.path, &original_path)
+            .unwrap_or_else(|error: String| {
+                panic!("py{} execute original: {error}", interpreter.alias)
+            });
+        let recovered_output: String = execute_source(&interpreter.path, &recovered_path)
+            .unwrap_or_else(|error: String| {
+                panic!("py{} execute recovered: {error}", interpreter.alias)
+            });
+        assert_eq!(recovered_output, original_output);
+        assert_eq!(
+            original_output.lines().collect::<Vec<&str>>(),
+            ["['marker', 'one', 'done']", "['done']"]
+        );
     }
 }
 

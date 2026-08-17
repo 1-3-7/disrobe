@@ -11846,7 +11846,9 @@ fn condition_is_sound(kind: CondKind, flags: &Flags) -> bool {
     }
     match flags {
         Flags::Cmp { .. } | Flags::CmpMem { .. } | Flags::Test { .. } => true,
-        Flags::Add { .. } => kind.sign_zero_only() || kind.is_overflow(),
+        Flags::Add { .. } => {
+            kind.sign_zero_only() || kind.is_overflow() || kind.is_unsigned_order()
+        }
         Flags::TestImm { .. } => matches!(kind, CondKind::E | CondKind::Ne),
         Flags::Sign { .. } => kind.sign_zero_only(),
         Flags::FpCmp { .. } => true,
@@ -21268,6 +21270,37 @@ fn add_cond_expr(kind: CondKind, lhs_expr: &str, rhs_expr: &str, width: Width) -
             matches!(kind, CondKind::Vs),
         );
     }
+    if kind.is_unsigned_order() {
+        let lhs: String = unsigned_operand(lhs_expr, width);
+        let rhs: String = unsigned_operand(rhs_expr, width);
+        let bits: u32 = width.bits();
+        return c_render(|cx: &mut Cx<'_>| {
+            let make_lhs = |cx: &mut Cx<'_>| -> CExpr { cx.var(&lhs) };
+            let make_sum = |cx: &mut Cx<'_>| -> CExpr {
+                let combined: CExpr = c_bin(BinaryOp::Add, cx.var(&lhs), cx.var(&rhs));
+                c_cast(cx, &format!("uint{bits}_t"), combined)
+            };
+            let carry: CExpr = c_bin(BinaryOp::Lt, make_sum(cx), make_lhs(cx));
+            let nonzero: CExpr = c_bin(BinaryOp::Ne, make_sum(cx), CExpr::int(0));
+            match kind {
+                CondKind::A => c_bin(BinaryOp::LogAnd, carry, nonzero),
+                CondKind::Ae => carry,
+                CondKind::B => CExpr::Unary {
+                    op: UnaryOp::Not,
+                    operand: Box::new(carry),
+                },
+                CondKind::Be => c_bin(
+                    BinaryOp::LogOr,
+                    CExpr::Unary {
+                        op: UnaryOp::Not,
+                        operand: Box::new(carry),
+                    },
+                    c_bin(BinaryOp::Eq, make_sum(cx), CExpr::int(0)),
+                ),
+                _ => unreachable!(),
+            }
+        });
+    }
     let sum: String = sign_truncated_sum(lhs_expr, rhs_expr, width);
     let op: BinaryOp = match kind {
         CondKind::E => BinaryOp::Eq,
@@ -23673,6 +23706,30 @@ fn rs_add_cond_expr(kind: CondKind, lhs: &str, rhs: &str, width: Width) -> Optio
             true,
             matches!(kind, CondKind::Vs),
         ));
+    }
+    if kind.is_unsigned_order() {
+        let unsigned_type: &str = rs_uint_ty(width);
+        let lhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(lhs, width));
+        let rhs: String = format!("(({}) as {unsigned_type})", rs_unsigned_operand(rhs, width));
+        let sum: String = match (parse_expr(&lhs), parse_expr(&rhs)) {
+            (Some(left), Some(right)) => {
+                render_rust_expr(&method_call(left, "wrapping_add", vec![right]))
+            }
+            _ => format!("({lhs}).wrapping_add({rhs})"),
+        };
+        let carry: String = rs_binary_text(&sum, &lhs, RBinOp::Lt, "<");
+        let nonzero: String = rs_binary_text(&sum, "0", RBinOp::Ne, "!=");
+        let condition: String = match kind {
+            CondKind::A => rs_binary_text(&carry, &nonzero, RBinOp::And, "&&"),
+            CondKind::Ae => carry,
+            CondKind::B => format!("!({carry})"),
+            CondKind::Be => {
+                let zero: String = rs_binary_text(&sum, "0", RBinOp::Eq, "==");
+                rs_binary_text(&format!("!({carry})"), &zero, RBinOp::Or, "||")
+            }
+            _ => return None,
+        };
+        return Some(condition);
     }
     let sum: String = rs_sign_truncated_sum(lhs, rhs, width);
     let (op, op_text): (RBinOp, &str) = match kind {

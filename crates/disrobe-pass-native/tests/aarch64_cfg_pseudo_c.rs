@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use disrobe_pass_native::{
-    Arch, DisasmInsn, Error, LeafRecovery, RecoveredFunction, RecoveredProgram, disassemble,
-    recover_aarch64_function, recover_aarch64_program,
+    Arch, DisasmInsn, Error, LeafRecovery, PseudoReg, RecoveredFunction, RecoveredProgram,
+    disassemble, recover_aarch64_function, recover_aarch64_program,
 };
 use object::write::{
     Object as WriteObject, Relocation as WriteRelocation, StandardSection, Symbol as WriteSymbol,
@@ -2340,35 +2340,48 @@ fn aarch64_real_encoded_extended_register_add_with_an_unallocated_imm3_of_five_r
 }
 
 #[test]
-fn aarch64_real_encoded_cmn_with_a_byte_extend_never_reaches_the_extended_register_add_path() {
-    let bytes: [u8; 8] = [0x1f, 0x00, 0x21, 0xab, 0xc0, 0x03, 0x5f, 0xd6];
-    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
-    let error: Error = result.expect_err("cmn x0,w1,uxtb must reject");
-    match error {
-        Error::LlvmIr(message) => {
-            assert!(
-                message.contains("source width does not match destination width"),
-                "{message}"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+fn aarch64_clang_assembled_cmn_sxtb_drives_the_negative_flag() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x80, 0x21, 0xab, 0xe0, 0x57, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("cmn x0,w1,sxtb; cset w0,mi");
+    assert!(
+        recovery
+            .source
+            .contains("(int64_t)(int8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        recovery.source
+    );
+    assert!(recovery.source.contains("< 0"), "{}", recovery.source);
 }
 
 #[test]
-fn aarch64_real_encoded_cmp_with_a_byte_extend_rejects_the_same_way_as_cmn() {
-    let bytes: [u8; 8] = [0x1f, 0x00, 0x21, 0xeb, 0xc0, 0x03, 0x5f, 0xd6];
-    let result: Result<LeafRecovery, Error> = recover_aarch64_function(&bytes, 0);
-    let error: Error = result.expect_err("cmp x0,w1,uxtb must reject");
-    match error {
-        Error::LlvmIr(message) => {
-            assert!(
-                message.contains("source width does not match destination width"),
-                "{message}"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+fn aarch64_clang_assembled_cmp_uxtb_drives_the_equal_flag() {
+    let bytes: [u8; 12] = [
+        0x1f, 0x00, 0x21, 0xeb, 0xe0, 0x17, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+    ];
+    let recovery: LeafRecovery =
+        recover_aarch64_function(&bytes, 0).expect("cmp x0,w1,uxtb; cset w0,eq");
+    assert!(
+        recovery
+            .source
+            .contains("(uint64_t)(uint8_t)((r_a64_x1) & 0xffULL)"),
+        "{}",
+        recovery.source
+    );
+    assert!(recovery.source.contains(" == "), "{}", recovery.source);
+}
+
+#[test]
+fn aarch64_extended_zero_register_source_reads_zero() {
+    let bytes: [u8; 8] = [0x00, 0x00, 0x3f, 0x8b, 0xc0, 0x03, 0x5f, 0xd6];
+    let recovery: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("add x0,x0,wzr,uxtb");
+    assert_eq!(
+        recovery.signature.observed_integer_registers(),
+        vec![PseudoReg::Rax]
+    );
+    assert!(!recovery.source.contains("r_a64_x1"), "{}", recovery.source);
 }
 
 #[test]
@@ -2380,7 +2393,9 @@ fn aarch64_real_encoded_cmn_with_a_zero_shift_uxtx_extend_lifts_only_because_the
     assert_eq!(insns[0].operands, "x0, x1", "{:?}", insns[0]);
     let r: LeafRecovery = recover_aarch64_function(&bytes, 0).expect("cmn x0,x1,uxtx");
     assert!(
-        r.source.contains("r_a64_tmp = r_a64_tmp + (r_a64_x1);"),
+        r.source.contains("r_a64_flag_lhs = r_rax;")
+            && r.source.contains("r_a64_flag_rhs =")
+            && r.source.contains("r_a64_x1"),
         "{}",
         r.source
     );

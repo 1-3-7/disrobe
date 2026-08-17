@@ -6,8 +6,9 @@ use super::exprs::{
 };
 use super::function_meta::load_const;
 use super::loops::{
-    find_for_with_cold_handler, find_loop, for_cold_handler_exit_epilogue, is_walrus_store_shape,
-    loop_header_owns_test, non_empty, try_enclosed_by_loop,
+    exprs_equal_ignoring_lines, find_for_with_cold_handler, find_loop,
+    for_cold_handler_exit_epilogue, is_walrus_store_shape, loop_header_owns_test, non_empty,
+    try_enclosed_by_loop,
 };
 use super::postprocess::is_implicit_none_return;
 use super::stmts::{
@@ -2567,6 +2568,11 @@ pub(super) fn try_structure_loop_then_nested_try(
     if stream.exception_table.is_empty() {
         return Ok(None);
     }
+    if loop_continue_target().is_none()
+        && let Some(stmts) = try_structure_table_era_plain_try_loop(code, stream, lo, hi)?
+    {
+        return Ok(Some(stmts));
+    }
     let Some(loop_header): Option<usize> = loop_continue_target() else {
         return Ok(None);
     };
@@ -2682,6 +2688,248 @@ pub(super) fn try_structure_loop_then_nested_try(
     });
     out.extend(structure_stmts(code, stream, region_end, hi)?);
     Ok(Some(out))
+}
+
+fn try_structure_table_era_plain_try_loop(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+) -> Result<Option<Vec<Stmt>>> {
+    if stream.is_pre_311() || lo >= hi || hi > stream.ops.len() {
+        return Ok(None);
+    }
+    let Some(region): Option<TryRegion> = find_try_region(stream, lo, hi) else {
+        return Ok(None);
+    };
+    if region.is_with()
+        || region.is_finally()
+        || region.try_start <= lo
+        || region.region_end() != hi
+        || !matches!(
+            stream.ops.get(region.handler_start),
+            Some(CanonicalOp::PushExcInfo)
+        )
+    {
+        return Ok(None);
+    }
+    let typed_checks: usize = (region.handler_start..region.region_end())
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::CheckExcMatch))
+        .count();
+    if typed_checks != 1 {
+        return Ok(None);
+    }
+    let protected_end: usize = region.protected_end();
+    let Some(guard): Option<usize> = (lo..region.try_start).rev().find(|&index: &usize| {
+        is_forward_cond_jump(&stream.ops[index])
+            && !is_chain_cond_jump(&stream.ops, index)
+            && !is_value_form_shortcircuit(&stream.ops, index)
+            && resolve_jump_target(stream, index, &stream.ops[index]).is_some_and(
+                |target: usize| {
+                    target >= protected_end
+                        && target < region.handler_start
+                        && target > region.try_start
+                },
+            )
+    }) else {
+        return Ok(None);
+    };
+    let Some(exit): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
+        return Ok(None);
+    };
+    if (guard + 1..region.try_start).any(|index: usize| {
+        !matches!(
+            stream.ops[index],
+            CanonicalOp::Resume(_)
+                | CanonicalOp::Nop
+                | CanonicalOp::Cache
+                | CanonicalOp::ExtendedArg(_)
+        )
+    }) {
+        return Ok(None);
+    }
+    let Some(test_start): Option<usize> = guard_test_split_after_stmts(code, stream, lo, guard)
+    else {
+        return Ok(None);
+    };
+    if (lo..test_start).any(|index: usize| {
+        resolve_jump_target(stream, index, &stream.ops[index])
+            .is_some_and(|target: usize| target > test_start)
+    }) {
+        return Ok(None);
+    }
+    let (test_head, test_values): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[test_start..guard])?;
+    let [raw_test]: &[Expr] = test_values.as_slice() else {
+        return Ok(None);
+    };
+    if !test_head.is_empty() || !is_direct_zero_argument_name_call(raw_test) {
+        return Ok(None);
+    }
+    let test: Expr = fallthrough_cond_test(stream, guard, raw_test.clone());
+    let Some(handler_reentry): Option<usize> =
+        plain_handler_backjump_target(stream, region.handler_start, region.region_end())
+    else {
+        return Ok(None);
+    };
+    let Some(normal_latch): Option<usize> = (region.try_start..exit)
+        .rev()
+        .find(|&index: &usize| is_back_edge(&stream.ops[index]))
+    else {
+        return Ok(None);
+    };
+    let Some(normal_target): Option<usize> =
+        resolve_jump_target(stream, normal_latch, &stream.ops[normal_latch])
+    else {
+        return Ok(None);
+    };
+    let direct_header_reentry: bool = normal_target == handler_reentry
+        && normal_target >= test_start
+        && normal_target < region.try_start
+        && (test_start..normal_target).all(|index: usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::Resume(_)
+                    | CanonicalOp::Nop
+                    | CanonicalOp::Cache
+                    | CanonicalOp::ExtendedArg(_)
+            )
+        });
+    let body_end: usize = if direct_header_reentry {
+        normal_latch
+    } else if normal_target > guard
+        && normal_target <= region.try_start
+        && (normal_target..region.try_start).all(|index: usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::Nop | CanonicalOp::Cache | CanonicalOp::ExtendedArg(_)
+            )
+        })
+        && handler_reentry == protected_end
+    {
+        let Some(bottom_guard): Option<usize> =
+            (protected_end..normal_latch).find(|&index: &usize| {
+                is_forward_cond_jump(&stream.ops[index])
+                    && !is_chain_cond_jump(&stream.ops, index)
+                    && resolve_jump_target(stream, index, &stream.ops[index])
+                        .is_some_and(|target: usize| target > normal_latch && target <= exit)
+            })
+        else {
+            return Ok(None);
+        };
+        let Some(bottom_exit): Option<usize> =
+            resolve_jump_target(stream, bottom_guard, &stream.ops[bottom_guard])
+        else {
+            return Ok(None);
+        };
+        let duplicate_implicit_exit: bool = bottom_exit < exit
+            && tail_is_implicit_none_return(code, stream, bottom_exit, exit)
+            && tail_is_implicit_none_return(code, stream, exit, region.handler_start);
+        if bottom_exit != exit && !duplicate_implicit_exit {
+            return Ok(None);
+        }
+        let (bottom_head, bottom_values): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[protected_end..bottom_guard])?;
+        let [bottom_raw]: &[Expr] = bottom_values.as_slice() else {
+            return Ok(None);
+        };
+        let bottom_test: Expr = fallthrough_cond_test(stream, bottom_guard, bottom_raw.clone());
+        if !bottom_head.is_empty()
+            || !exprs_equal_ignoring_lines(&test, &bottom_test)
+            || first_significant(stream, bottom_guard + 1, bottom_exit) != Some(normal_latch)
+        {
+            return Ok(None);
+        }
+        protected_end
+    } else {
+        return Ok(None);
+    };
+    if body_end <= region.try_start
+        || (body_end..normal_latch)
+            .any(|index: usize| completes_handler_loop_stmt(&stream.ops[index]))
+    {
+        return Ok(None);
+    }
+    let handlers: Vec<ExceptHandler> =
+        parse_except_handlers(code, stream, region.handler_start, region.region_end())?;
+    let [handler]: &[ExceptHandler] = handlers.as_slice() else {
+        return Ok(None);
+    };
+    let handler_is_lookup: bool = matches!(
+        handler,
+        ExceptHandler {
+            typ: Some(Expr::Name { id, ctx: ExprCtx::Load, .. }),
+            name: None,
+            body,
+            ..
+        } if id == "LookupError" && !body.is_empty()
+    );
+    if !handler_is_lookup {
+        return Ok(None);
+    }
+    let try_body: Vec<Stmt> = structure_stmts(code, stream, region.try_start, body_end)?;
+    if try_body.is_empty() {
+        return Ok(None);
+    }
+    let mut out: Vec<Stmt> = structure_stmts(code, stream, lo, test_start)?;
+    out.push(Stmt::While {
+        test,
+        body: vec![Stmt::Try {
+            body: try_body,
+            handlers,
+            orelse: Vec::new(),
+            finalbody: Vec::new(),
+            line: None,
+        }],
+        orelse: Vec::new(),
+        line: None,
+    });
+    out.extend(structure_stmts(code, stream, exit, region.handler_start)?);
+    Ok(Some(out))
+}
+
+#[must_use]
+fn is_direct_zero_argument_name_call(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } if args.is_empty()
+            && keywords.is_empty()
+            && matches!(func.as_ref(), Expr::Name { ctx: ExprCtx::Load, .. })
+    )
+}
+
+fn plain_handler_backjump_target(
+    stream: &DecodedStream,
+    handler_start: usize,
+    region_end: usize,
+) -> Option<usize> {
+    let pop_except: usize = handler_pop_except_idx(stream, handler_start, region_end)?;
+    let scan_hi: usize = region_end.min(stream.ops.len());
+    let after_teardown: usize = skip_except_name_teardown(stream, pop_except + 1, scan_hi);
+    let next: usize = first_significant(stream, after_teardown, scan_hi)?;
+    if !matches!(
+        stream.ops[next],
+        CanonicalOp::JumpBackward(_) | CanonicalOp::JumpBackwardNoInterrupt(_)
+    ) {
+        return None;
+    }
+    resolve_jump_target(stream, next, &stream.ops[next])
+}
+
+#[must_use]
+const fn completes_handler_loop_stmt(op: &CanonicalOp) -> bool {
+    matches!(
+        op,
+        CanonicalOp::Return
+            | CanonicalOp::ReturnConst(_)
+            | CanonicalOp::Raise(_)
+            | CanonicalOp::Reraise(_)
+            | CanonicalOp::Yield
+    )
 }
 
 fn strip_trailing_continuation(stmts: &mut Vec<Stmt>, cont: &[Stmt]) {

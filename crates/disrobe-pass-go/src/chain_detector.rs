@@ -271,6 +271,19 @@ fn push_defer_section(out: &mut String, a: &GoAnalysis) {
             &format!("runtime hook {} // entry {:#x}", hook.name, hook.entry),
         );
     }
+    for edge in &a.defers.control_edges {
+        let edge: &crate::defers::ControlEdge = edge;
+        push_line(
+            out,
+            &format!(
+                "{} edge {} @ {:#x} // +{:#x}",
+                edge.kind.label(),
+                edge.function,
+                edge.va,
+                edge.offset,
+            ),
+        );
+    }
     for func in a.defers.functions.iter().take(MAX_LISTED_FUNCS) {
         let func: &DeferFunc = func;
         push_line(

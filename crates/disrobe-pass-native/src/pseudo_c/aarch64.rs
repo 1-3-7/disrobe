@@ -3223,6 +3223,127 @@ fn lower_crc32(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     Ok((dest, stmts))
 }
 
+fn lower_arithmetic_rhs(
+    insn: &DisasmInsn,
+    source_token: &str,
+    modifier: Option<&str>,
+    width: Width,
+    scratch: RegRef,
+) -> Result<(Vec<Stmt>, Source)> {
+    let encoded_extend: Option<(bool, Width, i64)> = encoded_extended_register(insn);
+    let parsed_extend: Option<(bool, Width, i64)> = modifier.and_then(parse_extend_modifier);
+    if let (Some(encoded), Some(rendered)) = (encoded_extend, modifier)
+        && parsed_extend.is_none()
+    {
+        let rendered_shift: Option<i64> = parse_shift_modifier(rendered, width)
+            .ok()
+            .and_then(|(op, amount): (BinOp, i64)| (op == BinOp::Shl).then_some(amount));
+        let encoded_has_shift_alias: bool = !encoded.0
+            && matches!(encoded.1, Width::W32 | Width::W64)
+            && rendered_shift.is_some_and(|amount: i64| amount == encoded.2);
+        if !encoded_has_shift_alias {
+            return Err(reject_at(
+                insn,
+                "rendered extended register modifier is malformed",
+            ));
+        }
+    }
+    if let Some(encoded) = encoded_extend
+        && modifier.is_none()
+        && (encoded.0 || !matches!(encoded.1, Width::W32 | Width::W64))
+    {
+        return Err(reject_at(
+            insn,
+            "rendered extended register modifier is absent",
+        ));
+    }
+    if encoded_extend.is_some() && parsed_extend.is_some() && encoded_extend != parsed_extend {
+        return Err(reject_at(
+            insn,
+            "encoded and rendered extended register modifiers disagree",
+        ));
+    }
+    if let Some((signed, src_width, shift)) = encoded_extend.or(parsed_extend) {
+        let expected_class: Width = extend_register_class(src_width);
+        let source: Source = match source_token.trim() {
+            "wzr" if expected_class == Width::W32 => Source::Imm(0),
+            "xzr" if expected_class == Width::W64 => Source::Imm(0),
+            "wzr" | "xzr" => {
+                return Err(reject_at(
+                    insn,
+                    "extended zero register has the wrong source width",
+                ));
+            }
+            _ => {
+                let src_reg: RegRef = parse_reg(source_token)?;
+                if src_reg.width != expected_class {
+                    let reason: &str = if expected_class == Width::W64 {
+                        "extended register operand requires a 64-bit source register"
+                    } else {
+                        "extended register operand requires a 32-bit source register"
+                    };
+                    return Err(reject_at(insn, reason));
+                }
+                let extend_source: RegRef = RegRef {
+                    reg: src_reg.reg,
+                    width: src_width,
+                };
+                Source::Reg(extend_source)
+            }
+        };
+        let mut prefix: Vec<Stmt> = Vec::new();
+        match source {
+            Source::Imm(0) => prefix.push(Stmt::Assign {
+                dest: scratch,
+                src: Source::Imm(0),
+            }),
+            Source::Reg(reg) => prefix.push(Stmt::Extend {
+                dest: scratch,
+                src: ExtSource::Reg(reg),
+                signed,
+            }),
+            Source::Imm(_) | Source::Lea { .. } | Source::Mem(_) => {
+                return Err(reject_at(insn, "invalid extended register source"));
+            }
+        }
+        if shift > 0 {
+            prefix.push(Stmt::BinAssign {
+                dest: scratch,
+                op: BinOp::Shl,
+                src: Source::Imm(shift),
+            });
+        }
+        return Ok((prefix, Source::Reg(scratch)));
+    }
+    let parsed: Source = parse_source(source_token, width)?;
+    if let Source::Reg(reg) = parsed
+        && reg.width != width
+    {
+        return Err(reject_at(insn, "mixed-width integer alu source"));
+    }
+    let Some(modifier): Option<&str> = modifier else {
+        return Ok((Vec::new(), parsed));
+    };
+    let Source::Reg(reg): Source = parsed else {
+        return Err(reject_at(insn, "shift modifier requires a register source"));
+    };
+    let (shift_op, amount): (BinOp, i64) = parse_shift_modifier(modifier, width)?;
+    Ok((
+        vec![
+            Stmt::Assign {
+                dest: scratch,
+                src: Source::Reg(reg),
+            },
+            Stmt::BinAssign {
+                dest: scratch,
+                op: shift_op,
+                src: Source::Imm(amount),
+            },
+        ],
+        Source::Reg(scratch),
+    ))
+}
+
 fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     if !(3..=4).contains(&operands.len()) {
@@ -3265,86 +3386,22 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
         "smulh" => (BinOp::Smulh, false),
         _ => return Err(reject_at(insn, "unsupported integer alu instruction")),
     };
-    let mut prefix: Vec<Stmt> = Vec::new();
     let rhs_width: Width = if is_widening_mul {
         Width::W32
     } else {
         dest.width
     };
-    let encoded_extend: Option<(bool, Width, i64)> = if dest.width == Width::W64 {
-        encoded_extended_register(insn)
-    } else {
-        None
+    let scratch: RegRef = RegRef {
+        reg: Reg::A64Tmp2,
+        width: dest.width,
     };
-    let extend: Option<(bool, Width, i64)> = encoded_extend.or_else(|| {
-        if operands.len() == 4 {
-            parse_extend_modifier(operands[3])
-        } else {
-            None
-        }
-    });
-    let mut rhs: Source = if let Some((signed, src_width, shift)) = extend {
-        let src_reg: RegRef = parse_reg(operands[2])?;
-        let expected_class: Width = extend_register_class(src_width);
-        if src_reg.width != expected_class {
-            let reason: &str = if expected_class == Width::W64 {
-                "extended register operand requires a 64-bit source register"
-            } else {
-                "extended register operand requires a 32-bit source register"
-            };
-            return Err(reject_at(insn, reason));
-        }
-        let extend_source: RegRef = RegRef {
-            reg: src_reg.reg,
-            width: src_width,
-        };
-        let extended: RegRef = RegRef {
-            reg: Reg::A64Tmp2,
-            width: dest.width,
-        };
-        prefix.push(Stmt::Extend {
-            dest: extended,
-            src: ExtSource::Reg(extend_source),
-            signed,
-        });
-        if shift > 0 {
-            prefix.push(Stmt::BinAssign {
-                dest: extended,
-                op: BinOp::Shl,
-                src: Source::Imm(shift),
-            });
-        }
-        Source::Reg(extended)
-    } else {
-        let parsed: Source = parse_source(operands[2], rhs_width)?;
-        if let Source::Reg(reg) = parsed
-            && reg.width != rhs_width
-        {
-            return Err(reject_at(insn, "mixed-width integer alu source"));
-        }
-        if operands.len() == 4 {
-            let Source::Reg(reg): Source = parsed else {
-                return Err(reject_at(insn, "shift modifier requires a register source"));
-            };
-            let (shift_op, amount): (BinOp, i64) = parse_shift_modifier(operands[3], dest.width)?;
-            let shifted: RegRef = RegRef {
-                reg: Reg::A64Tmp2,
-                width: dest.width,
-            };
-            prefix.push(Stmt::Assign {
-                dest: shifted,
-                src: Source::Reg(reg),
-            });
-            prefix.push(Stmt::BinAssign {
-                dest: shifted,
-                op: shift_op,
-                src: Source::Imm(amount),
-            });
-            Source::Reg(shifted)
-        } else {
-            parsed
-        }
-    };
+    let (mut prefix, mut rhs): (Vec<Stmt>, Source) = lower_arithmetic_rhs(
+        insn,
+        operands[2],
+        operands.get(3).copied(),
+        rhs_width,
+        scratch,
+    )?;
     if negate_rhs {
         rhs = match rhs {
             Source::Imm(value) => Source::Imm(!value),
@@ -3376,14 +3433,17 @@ fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
 
 fn flag_arithmetic_operands(insn: &DisasmInsn) -> Result<(Vec<Stmt>, RegRef, Source)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
-    if operands.len() != 3 {
+    let has_destination: bool = matches!(insn.mnemonic.as_str(), "adds" | "subs");
+    let expected: std::ops::RangeInclusive<usize> = if has_destination { 3..=4 } else { 2..=3 };
+    if !expected.contains(&operands.len()) {
         return Err(reject_at(
             insn,
             "flag-setting arithmetic has an unsupported modifier",
         ));
     }
-    let lhs: RegRef = parse_reg(operands[1])?;
-    let rhs: Source = parse_source(operands[2], lhs.width)?;
+    let lhs_index: usize = usize::from(has_destination);
+    let rhs_index: usize = lhs_index + 1;
+    let lhs: RegRef = parse_reg(operands[lhs_index])?;
     let flag_lhs: RegRef = RegRef {
         reg: Reg::A64FlagLhs,
         width: lhs.width,
@@ -3392,16 +3452,24 @@ fn flag_arithmetic_operands(insn: &DisasmInsn) -> Result<(Vec<Stmt>, RegRef, Sou
         reg: Reg::A64FlagRhs,
         width: lhs.width,
     };
-    let snapshots: Vec<Stmt> = vec![
-        Stmt::Assign {
-            dest: flag_lhs,
-            src: Source::Reg(lhs),
-        },
-        Stmt::Assign {
+    let (mut rhs_stmts, rhs): (Vec<Stmt>, Source) = lower_arithmetic_rhs(
+        insn,
+        operands[rhs_index],
+        operands.get(rhs_index + 1).copied(),
+        lhs.width,
+        flag_rhs,
+    )?;
+    let mut snapshots: Vec<Stmt> = vec![Stmt::Assign {
+        dest: flag_lhs,
+        src: Source::Reg(lhs),
+    }];
+    snapshots.append(&mut rhs_stmts);
+    if rhs != Source::Reg(flag_rhs) {
+        snapshots.push(Stmt::Assign {
             dest: flag_rhs,
             src: rhs,
-        },
-    ];
+        });
+    }
     Ok((snapshots, flag_lhs, Source::Reg(flag_rhs)))
 }
 
@@ -3417,6 +3485,25 @@ fn add_flags(insn: &DisasmInsn) -> Result<(Vec<Stmt>, Flags)> {
 
 fn lower_flag_setter(insn: &DisasmInsn) -> Result<(Vec<Stmt>, TrackedFlags)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
+    let has_extend: bool = encoded_extended_register(insn).is_some()
+        || operands
+            .get(2)
+            .is_some_and(|modifier: &&str| parse_extend_modifier(modifier).is_some());
+    if matches!(insn.mnemonic.as_str(), "cmp" | "cmn") && has_extend {
+        let (stmts, value): (Vec<Stmt>, Flags) = if insn.mnemonic == "cmp" {
+            subtract_flags(insn)?
+        } else {
+            add_flags(insn)?
+        };
+        return Ok((
+            stmts,
+            TrackedFlags {
+                value,
+                nz_only: false,
+                mark: 0,
+            },
+        ));
+    }
     if !(2..=3).contains(&operands.len()) {
         return Err(reject_at(insn, "malformed flag-setting instruction"));
     }
@@ -3457,18 +3544,17 @@ fn lower_flag_setter(insn: &DisasmInsn) -> Result<(Vec<Stmt>, TrackedFlags)> {
         reg: Reg::A64Tmp,
         width: lhs.width,
     };
-    let op: BinOp = if insn.mnemonic == "cmn" {
-        BinOp::Add
-    } else {
-        BinOp::And
-    };
     stmts.push(Stmt::Assign {
         dest: temp,
         src: Source::Reg(lhs),
     });
     stmts.push(Stmt::BinAssign {
         dest: temp,
-        op,
+        op: if insn.mnemonic == "cmn" {
+            BinOp::Add
+        } else {
+            BinOp::And
+        },
         src: rhs,
     });
     Ok((
@@ -5684,7 +5770,10 @@ fn parse_extend_modifier(token: &str) -> Option<(bool, Width, i64)> {
 }
 
 fn encoded_extended_register(insn: &DisasmInsn) -> Option<(bool, Width, i64)> {
-    if !matches!(insn.mnemonic.as_str(), "add" | "adds" | "sub" | "subs") {
+    if !matches!(
+        insn.mnemonic.as_str(),
+        "add" | "adds" | "sub" | "subs" | "cmp" | "cmn"
+    ) {
         return None;
     }
     let word: u32 = aarch64_instruction_word(insn)?;
@@ -8235,7 +8324,7 @@ mod tests {
         let x_word: u32 = 0x8b21_6000;
         let message_for_x_class: String = format!(
             "{:?}",
-            lower_alu_case("add", "x0, x0, w1, uxtb", x_word)
+            lower_alu_case("add", "x0, x0, w1, uxtx", x_word)
                 .expect_err("w1 cannot satisfy a full 64-bit extend")
         );
         assert!(
@@ -8257,8 +8346,7 @@ mod tests {
     }
 
     #[test]
-    fn adds_with_an_extended_register_now_computes_its_arithmetic_result_even_though_the_flag_snapshot_stays_unsupported()
-     {
+    fn adds_with_an_extended_register_computes_its_arithmetic_result() {
         let (_, stmts): (RegRef, Vec<Stmt>) =
             lower_alu_case("adds", "x0, x0, w1, uxtb", 0xab21_0000).expect("adds byte extend");
         assert!(
@@ -8267,6 +8355,66 @@ mod tests {
                 .any(|stmt: &Stmt| matches!(stmt, Stmt::Extend { .. })),
             "{stmts:?}"
         );
+    }
+
+    #[test]
+    fn encoded_and_rendered_extended_register_modifiers_must_agree() {
+        let message: String = format!(
+            "{:?}",
+            lower_alu_case("add", "x0, x0, w1, uxtb #1", 0x8b21_0000)
+                .expect_err("encoded shift zero cannot be rendered as shift one")
+        );
+        assert!(
+            message.contains("encoded and rendered extended register modifiers disagree"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn malformed_or_absent_rendered_extended_register_modifiers_reject() {
+        for operands in ["x0, x0, w1, uxtb #", "x0, x0, w1"] {
+            let message: String = format!(
+                "{:?}",
+                lower_alu_case("add", operands, 0x8b21_0000)
+                    .expect_err("encoded byte extension needs an exact rendered modifier")
+            );
+            assert!(
+                message.contains("rendered extended register modifier"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoded_aliases_and_widths_validate_rendered_extended_registers() {
+        let cmp: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: 0xeb21_001f_u32.to_le_bytes().to_vec(),
+            mnemonic: "cmp".to_owned(),
+            operands: "x0, w1, uxtb".to_owned(),
+        };
+        assert_eq!(encoded_extended_register(&cmp), Some((false, Width::W8, 0)));
+
+        let w_add: DisasmInsn = DisasmInsn {
+            address: 0,
+            bytes: 0x0b21_0000_u32.to_le_bytes().to_vec(),
+            mnemonic: "add".to_owned(),
+            operands: "w0, w0, w1, uxtb".to_owned(),
+        };
+        assert_eq!(
+            encoded_extended_register(&w_add),
+            Some((false, Width::W8, 0))
+        );
+
+        for (operands, word) in [
+            ("x0, x0, x1", 0x8b21_6000_u32),
+            ("x0, x0, x1, lsl #3", 0x8b21_6c00_u32),
+            ("w0, w0, w1", 0x0b21_4000_u32),
+            ("w0, w0, w1, lsl #2", 0x0b21_4800_u32),
+        ] {
+            lower_alu_case("add", operands, word)
+                .unwrap_or_else(|error: Error| panic!("{operands} rejected: {error:?}"));
+        }
     }
 
     #[test]

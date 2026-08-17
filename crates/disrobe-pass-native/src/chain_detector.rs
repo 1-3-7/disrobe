@@ -39,6 +39,14 @@ const _: () = assert!(
 
 const IMAGE_MANIFEST_PATH: &str = "native-image.manifest.json";
 
+const PSEUDO_SOURCE_PATH: &str = "pseudo-source.json";
+
+const MAX_AUTO_PSEUDO_IMAGE_BYTES: usize = 1024 * 1024;
+
+const MAX_AUTO_PSEUDO_FUNCTIONS: usize = 256;
+
+const MAX_AUTO_PSEUDO_REPORT_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug)]
 pub struct NativeImageDetector;
 
@@ -147,9 +155,10 @@ fn image_verdict_for(image: StructuralFormat) -> DetectVerdict {
 fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
     let mut children: Vec<ChildArtifact> = Vec::new();
     let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(bytes);
+    let pseudo_report: Option<serde_json::Value> = aarch64_pseudo_report(bytes)?;
     let manifest: Vec<u8> = serialize_image_report(
         IMAGE_MANIFEST_PATH,
-        &image_manifest(image, bytes.len(), &identity),
+        &image_manifest(image, bytes.len(), &identity, pseudo_report.as_ref()),
     )?;
     push_image_terminal(&mut children, IMAGE_MANIFEST_PATH, manifest)?;
     let identity_json: Vec<u8> = serialize_image_report("identity.json", &identity)?;
@@ -176,7 +185,90 @@ fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec
         let recon_json: Vec<u8> = serialize_image_report("recon.json", &recon)?;
         push_image_terminal(&mut children, "recon.json", recon_json)?;
     }
+    if let Some(report) = pseudo_report {
+        let mut pseudo_json: Vec<u8> = serialize_image_report(PSEUDO_SOURCE_PATH, &report)?;
+        if pseudo_json.len() > MAX_AUTO_PSEUDO_REPORT_BYTES {
+            pseudo_json = serialize_image_report(
+                PSEUDO_SOURCE_PATH,
+                &serde_json::json!({
+                    "schema": "disrobe.native.pseudo-source/v1",
+                    "run": false,
+                    "reason": "pseudo-source report exceeds the bounded auto output",
+                    "report_bytes": pseudo_json.len(),
+                    "report_byte_limit": MAX_AUTO_PSEUDO_REPORT_BYTES,
+                }),
+            )?;
+        }
+        push_image_terminal(&mut children, PSEUDO_SOURCE_PATH, pseudo_json)?;
+    }
     Ok(children)
+}
+
+fn aarch64_pseudo_report(bytes: &[u8]) -> CoreResult<Option<serde_json::Value>> {
+    if crate::disasm_ir::image_arch(bytes) != Some(crate::arch::Arch::Aarch64) {
+        return Ok(None);
+    }
+    if bytes.len() > MAX_AUTO_PSEUDO_IMAGE_BYTES {
+        return Ok(Some(serde_json::json!({
+            "schema": "disrobe.native.pseudo-source/v1",
+            "run": false,
+            "reason": "aarch64 image exceeds the bounded auto pseudo-source input",
+            "image_bytes": bytes.len(),
+            "image_byte_limit": MAX_AUTO_PSEUDO_IMAGE_BYTES,
+        })));
+    }
+    let payload: disrobe_ir::payload::DisasmPayload = crate::disasm_ir::build_disasm_payload(bytes)
+        .map_err(|error: crate::Error| {
+            CoreError::PassFailure(format!(
+                "DR-NAT-0944: native.image-classify: build aarch64 function inventory: {error}"
+            ))
+        })?;
+    let spans: Vec<crate::disasm_ir::FunctionSpan> =
+        crate::disasm_ir::function_spans(&payload, crate::arch::Arch::Aarch64);
+    if spans.len() > MAX_AUTO_PSEUDO_FUNCTIONS {
+        return Ok(Some(serde_json::json!({
+            "schema": "disrobe.native.pseudo-source/v1",
+            "run": false,
+            "reason": "aarch64 function inventory exceeds the bounded auto pseudo-source sweep",
+            "functions": spans.len(),
+            "function_limit": MAX_AUTO_PSEUDO_FUNCTIONS,
+        })));
+    }
+    let mut recovered: Vec<serde_json::Value> = Vec::with_capacity(spans.len());
+    let mut unrecovered: Vec<serde_json::Value> = Vec::new();
+    for span in spans {
+        let code: Vec<u8> = payload
+            .instructions
+            .iter()
+            .filter(|instruction: &&disrobe_ir::payload::DisasmInstruction| {
+                instruction.offset >= span.address && instruction.offset < span.end
+            })
+            .flat_map(|instruction: &disrobe_ir::payload::DisasmInstruction| {
+                instruction.bytes.iter().copied()
+            })
+            .collect();
+        match crate::pseudo_c::recover_aarch64_function(&code, span.address) {
+            Ok(function) => recovered.push(serde_json::json!({
+                "name": span.name,
+                "address": span.address,
+                "source": function.source,
+                "rust_source": function.rust_source,
+            })),
+            Err(error) => unrecovered.push(serde_json::json!({
+                "name": span.name,
+                "address": span.address,
+                "reason": error.to_string(),
+            })),
+        }
+    }
+    Ok(Some(serde_json::json!({
+        "schema": "disrobe.native.pseudo-source/v1",
+        "run": true,
+        "functions_recovered": recovered.len(),
+        "functions_unrecovered": unrecovered.len(),
+        "recovered": recovered,
+        "unrecovered": unrecovered,
+    })))
 }
 
 fn serialize_image_report<T: serde::Serialize>(path: &str, value: &T) -> CoreResult<Vec<u8>> {
@@ -191,7 +283,16 @@ fn image_manifest(
     image: StructuralFormat,
     byte_len: usize,
     identity: &crate::sig_engine::SigReport,
+    pseudo_report: Option<&serde_json::Value>,
 ) -> serde_json::Value {
+    let pseudo_run: bool = pseudo_report
+        .and_then(|report: &serde_json::Value| report.get("run"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let pseudo_reason: &str = pseudo_report
+        .and_then(|report: &serde_json::Value| report.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("the bounded auto pseudo-source sweep is available only for aarch64 images");
     serde_json::json!({
         "schema": "disrobe.native.image-classify/v1",
         "structural_format": image.label(),
@@ -200,10 +301,12 @@ fn image_manifest(
         "linker": identity.linker,
         "entropy": identity.entropy,
         "control_flow_recovery_sweep": {
-            "run": false,
-            "reason": "the control-flow recovery sweep costs tens of seconds per megabyte of \
-                       code, so every plain image would pay minutes for it; run \
-                       native.packer-unpack or the dedicated native command when you want it",
+            "run": pseudo_run,
+            "reason": if pseudo_run {
+                serde_json::Value::Null
+            } else {
+                pseudo_reason.into()
+            },
         },
     })
 }

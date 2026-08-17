@@ -899,7 +899,7 @@ impl crate::ast::visitor::VisitorMut for LineStripper {
     }
 }
 
-fn exprs_equal_ignoring_lines(a: &Expr, b: &Expr) -> bool {
+pub(super) fn exprs_equal_ignoring_lines(a: &Expr, b: &Expr) -> bool {
     use crate::ast::visitor::VisitorMut as _;
     let mut sa: Expr = a.clone();
     let mut sb: Expr = b.clone();

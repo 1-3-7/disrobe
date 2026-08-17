@@ -9,11 +9,19 @@ from pathlib import Path
 
 HERE: Path = Path(__file__).resolve().parent
 SRC: Path = HERE / "corpus.c"
+EXTENDED_SRC: Path = HERE / "extended_register.s"
 OUT: Path = HERE.parent.parent / "aarch64_recovery_corpus.inc"
 LITERAL_POOL_SRC: Path = HERE / "literal_pool.s"
 LITERAL_POOL_OUT: Path = HERE / "literal_pool.elf"
 LITERAL_POOL_SHA256: str = "50a882c7bf80d2d4db2ebf0ccc1d98ab677117cb790a4ad4d9327812f8b34cc5"
 LEVELS: tuple[str, ...] = ("O0", "O1", "O2", "O3", "Os")
+EXTENDED_NAMES: tuple[str, ...] = (
+    "nat001_adds_uxtb_value",
+    "nat001_adds_uxtb_n",
+    "nat001_adds_uxtb_z",
+    "nat001_adds_uxtb_c",
+    "nat001_adds_uxtb_v",
+)
 FUNC_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]+ <([A-Za-z_][A-Za-z0-9_]*)>:\s*$")
 INSN_RE: re.Pattern[str] = re.compile(r"^\s*[0-9a-f]+:\s+([0-9a-f]{8})\s+(\S+)(.*)$")
 
@@ -230,6 +238,59 @@ def verify_literal_pool(out_dir: Path, /) -> str:
     return version.stdout.splitlines()[0]
 
 
+def disassemble_extended(out_dir: Path, /) -> dict[str, list[int]]:
+    obj: Path = out_dir / "extended_register.o"
+    subprocess.run(
+        [
+            "clang",
+            "--target=aarch64-none-elf",
+            "-c",
+            str(EXTENDED_SRC),
+            "-o",
+            str(obj),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    dumped: subprocess.CompletedProcess[str] = subprocess.run(
+        ["llvm-objdump", "-d", str(obj)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    functions: dict[str, list[int]] = {}
+    seen_uxtb: set[str] = set()
+    current: str | None = None
+    for line in dumped.stdout.splitlines():
+        matched_func: re.Match[str] | None = FUNC_RE.match(line)
+        if matched_func is not None:
+            name: str = matched_func.group(1)
+            current = name if name in EXTENDED_NAMES else None
+            if current is not None:
+                functions[current] = []
+            continue
+        if current is None:
+            continue
+        matched_insn: re.Match[str] | None = INSN_RE.match(line)
+        if matched_insn is None:
+            continue
+        word: int = int(matched_insn.group(1), 16)
+        opcode: str = matched_insn.group(2)
+        operands: str = matched_insn.group(3).split("//")[0].strip()
+        functions[current].extend(word.to_bytes(4, "little"))
+        if opcode == "adds" and "uxtb #1" in operands:
+            seen_uxtb.add(current)
+    missing: set[str] = set(EXTENDED_NAMES) - functions.keys()
+    if missing:
+        raise SystemExit(f"extended-register corpus lacks {sorted(missing)}")
+    missing_uxtb: set[str] = set(EXTENDED_NAMES) - seen_uxtb
+    if missing_uxtb:
+        raise SystemExit(
+            f"extended-register corpus lost adds uxtb #1 in {sorted(missing_uxtb)}"
+        )
+    return functions
+
+
 def gate_fixed_point(
     level: str,
     mnemonics: dict[str, set[str]],
@@ -354,23 +415,47 @@ def gate(level: str, mnemonics: dict[str, set[str]], /) -> None:
 
 
 def main() -> int:
+    incremental_extended: bool = sys.argv[1:] == ["--extended-only"]
+    if sys.argv[1:] and not incremental_extended:
+        raise SystemExit("usage: gen_corpus.py [--extended-only]")
     rows: list[str] = []
     per_level: dict[str, int] = {}
     with tempfile.TemporaryDirectory() as tmp:
         out_dir: Path = Path(tmp)
-        literal_toolchain: str = verify_literal_pool(out_dir)
-        for level in LEVELS:
-            functions, mnemonics, encodings, order = disassemble(level, out_dir)
-            gate(level, mnemonics)
-            gate_fixed_point(level, mnemonics, encodings)
-            gate_fp_predicate(level, mnemonics, order)
-            per_level[level] = len(functions)
-            for name in sorted(functions):
-                body: list[int] = functions[name]
-                joined: str = ", ".join(f"0x{value:02x}" for value in body)
-                rows.append(f'    ("{level}", "{name}", &[{joined}]),')
+        literal_toolchain: str = "not run for the bounded extended-register increment"
+        if incremental_extended:
+            relative_out: str = OUT.relative_to(HERE.parents[4]).as_posix()
+            baseline: subprocess.CompletedProcess[str] = subprocess.run(
+                ["git", "show", f"HEAD:{relative_out}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=HERE.parents[4],
+            )
+            rows.extend(
+                line
+                for line in baseline.stdout.splitlines()
+                if line.startswith("    (") and not line.startswith('    ("NAT001",')
+            )
+        else:
+            literal_toolchain = verify_literal_pool(out_dir)
+            for level in LEVELS:
+                functions, mnemonics, encodings, order = disassemble(level, out_dir)
+                gate(level, mnemonics)
+                gate_fixed_point(level, mnemonics, encodings)
+                gate_fp_predicate(level, mnemonics, order)
+                per_level[level] = len(functions)
+                for name in sorted(functions):
+                    body: list[int] = functions[name]
+                    joined: str = ", ".join(f"0x{value:02x}" for value in body)
+                    rows.append(f'    ("{level}", "{name}", &[{joined}]),')
+        extended: dict[str, list[int]] = disassemble_extended(out_dir)
+        for name in EXTENDED_NAMES:
+            body: list[int] = extended[name]
+            joined: str = ", ".join(f"0x{value:02x}" for value in body)
+            rows.append(f'    ("NAT001", "{name}", &[{joined}]),')
     OUT.write_text("[\n" + "\n".join(rows) + "\n]\n", encoding="utf-8")
-    total: int = sum(per_level.values())
+    total: int = len(rows)
     print(f"levels={per_level} total_cases={total}")
     print(f"literal_pool_sha256={LITERAL_POOL_SHA256} toolchain={literal_toolchain}")
     print(f"wrote {OUT}")
