@@ -2608,10 +2608,16 @@ fn apply_binary(op: BinOp, lhs: &Val, rhs: &Val) -> Eval<Val> {
         BinOp::BitXor | BinOp::BitAnd | BinOp::BitOr => bitwise(op, lhs, rhs),
         BinOp::Shl | BinOp::Shr => {
             let a: i64 = to_int(lhs)?;
-            let b: u32 = u32::try_from(to_int(rhs)?).map_err(|_| Abstain::OutOfRange)?;
-            if b >= 64 {
-                return Ok(Val::Int(0));
+            let b: i64 = to_int(rhs)?;
+            if b.is_negative() {
+                return Err(Abstain::OutOfRange);
             }
+            if b >= 64 {
+                let saturated: i64 =
+                    i64::from(matches!(op, BinOp::Shr) && a.is_negative()).wrapping_neg();
+                return Ok(Val::Int(saturated));
+            }
+            let b: u32 = u32::try_from(b).map_err(|_| Abstain::OutOfRange)?;
             let shifted: i64 = if matches!(op, BinOp::Shl) {
                 a.wrapping_shl(b)
             } else {
@@ -2960,6 +2966,28 @@ mod tests {
             &[("d", &[0x2c, 0x4c, 0x6c])],
         );
         assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn oversized_integer_shifts_match_php_sign_extension() {
+        let cases: [(BinOp, i64, i64, i64); 6] = [
+            (BinOp::Shr, -9, 64, -1),
+            (BinOp::Shr, -1, i64::MAX, -1),
+            (BinOp::Shr, 9, 64, 0),
+            (BinOp::Shr, 0, i64::MAX, 0),
+            (BinOp::Shl, -9, 64, 0),
+            (BinOp::Shl, 9, i64::MAX, 0),
+        ];
+        for (operation, lhs, rhs, expected) in cases {
+            assert_eq!(
+                apply_binary(operation, &Val::Int(lhs), &Val::Int(rhs)),
+                Ok(Val::Int(expected))
+            );
+        }
+        assert_eq!(
+            apply_binary(BinOp::Shr, &Val::Int(-1), &Val::Int(-1)),
+            Err(Abstain::OutOfRange)
+        );
     }
 
     #[test]

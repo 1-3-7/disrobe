@@ -244,6 +244,21 @@ fn byte_rotation_runtime_equivalent() {
 }
 
 #[test]
+fn oversized_negative_right_shift_runtime_equivalent() {
+    let cipher: Vec<u8> = payload().bytes().map(|byte: u8| byte ^ 0xff).collect();
+    for (label, count) in [
+        ("word-width", "64"),
+        ("integer-maximum", "9223372036854775807"),
+    ] {
+        let body: String = format!(
+            "for ($i = 0; $i < strlen($d); $i++) {{ $o .= chr(ord($d[$i]) ^ ((-1 >> {count}) & 255)); }}"
+        );
+        let blob: Vec<u8> = loader_with_body(&cipher, "", &body);
+        recover_and_grade(&format!("oversized-negative-right-shift-{label}"), &blob);
+    }
+}
+
+#[test]
 fn negation_runtime_equivalent() {
     let cipher: Vec<u8> = payload().bytes().map(|b: u8| !b).collect();
     let blob: Vec<u8> = loader_with_body(

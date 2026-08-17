@@ -46,6 +46,22 @@ const MAX_METADATA_TYPE_SIGNATURE_WORK: usize = 1_048_576;
 struct MetadataProfile {
     major_version: u16,
     minor_version: u16,
+    handle_encoding: SerializedHandleEncoding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SerializedHandleEncoding {
+    Kind8Offset24,
+    Kind7Offset25,
+}
+
+impl SerializedHandleEncoding {
+    const fn decode(self, value: u32) -> (u32, u32) {
+        match self {
+            Self::Kind8Offset24 => (value & 0xff, value >> 8),
+            Self::Kind7Offset25 => (value & 0x7f, value >> 7),
+        }
+    }
 }
 
 impl MetadataProfile {
@@ -54,18 +70,26 @@ impl MetadataProfile {
     }
 }
 
-const METADATA_PROFILES: [MetadataProfile; 3] = [
+const METADATA_PROFILES: [MetadataProfile; 4] = [
     MetadataProfile {
         major_version: 8,
         minor_version: 0,
+        handle_encoding: SerializedHandleEncoding::Kind8Offset24,
     },
     MetadataProfile {
         major_version: 9,
         minor_version: 1,
+        handle_encoding: SerializedHandleEncoding::Kind8Offset24,
     },
     MetadataProfile {
         major_version: 10,
         minor_version: 1,
+        handle_encoding: SerializedHandleEncoding::Kind8Offset24,
+    },
+    MetadataProfile {
+        major_version: 16,
+        minor_version: 0,
+        handle_encoding: SerializedHandleEncoding::Kind7Offset25,
     },
 ];
 
@@ -235,10 +259,15 @@ impl MetadataBudget {
 struct MetadataCursor<'a> {
     bytes: &'a [u8],
     at: usize,
+    handle_encoding: SerializedHandleEncoding,
 }
 
 impl<'a> MetadataCursor<'a> {
-    fn new(bytes: &'a [u8], offset: u32) -> crate::error::Result<Self> {
+    fn new(
+        bytes: &'a [u8],
+        offset: u32,
+        handle_encoding: SerializedHandleEncoding,
+    ) -> crate::error::Result<Self> {
         let at: usize = usize::try_from(offset).map_err(|_: std::num::TryFromIntError| {
             invalid_metadata(usize::MAX, "metadata record offset does not fit usize")
         })?;
@@ -248,7 +277,11 @@ impl<'a> MetadataCursor<'a> {
                 "metadata record offset is outside the section",
             ));
         }
-        Ok(Self { bytes, at })
+        Ok(Self {
+            bytes,
+            at,
+            handle_encoding,
+        })
     }
 
     fn unsigned(&mut self) -> crate::error::Result<u32> {
@@ -361,14 +394,11 @@ impl<'a> MetadataCursor<'a> {
     fn raw_handle(&mut self) -> crate::error::Result<RawHandle> {
         let start: usize = self.at;
         let value: u32 = self.unsigned()?;
-        let kind_value: u32 = value & u32::from(u8::MAX);
+        let (kind_value, offset): (u32, u32) = self.handle_encoding.decode(value);
         let kind: u8 = u8::try_from(kind_value).map_err(|_: std::num::TryFromIntError| {
             invalid_metadata(start, "metadata handle kind does not fit u8")
         })?;
-        Ok(RawHandle {
-            kind,
-            offset: value >> 8,
-        })
+        Ok(RawHandle { kind, offset })
     }
 
     fn collection_count(&mut self, budget: &mut MetadataBudget) -> crate::error::Result<usize> {
@@ -514,6 +544,7 @@ struct MethodSignatureRecord {
 
 struct TypeSignatureValidator<'a> {
     bytes: &'a [u8],
+    handle_encoding: SerializedHandleEncoding,
     types: &'a BTreeMap<u32, TypeRecord>,
     method_signatures: &'a BTreeMap<u32, MethodSignatureRecord>,
     strings: &'a mut MetadataStrings,
@@ -528,6 +559,7 @@ struct TypeSignatureValidator<'a> {
 impl<'a> TypeSignatureValidator<'a> {
     const fn new(
         bytes: &'a [u8],
+        handle_encoding: SerializedHandleEncoding,
         types: &'a BTreeMap<u32, TypeRecord>,
         method_signatures: &'a BTreeMap<u32, MethodSignatureRecord>,
         strings: &'a mut MetadataStrings,
@@ -536,6 +568,7 @@ impl<'a> TypeSignatureValidator<'a> {
     ) -> Self {
         Self {
             bytes,
+            handle_encoding,
             types,
             method_signatures,
             strings,
@@ -589,7 +622,7 @@ impl<'a> TypeSignatureValidator<'a> {
             return Ok(None);
         }
         claim_record(self.record_count, raw.offset)?;
-        MetadataCursor::new(self.bytes, raw.offset).map(Some)
+        MetadataCursor::new(self.bytes, raw.offset, self.handle_encoding).map(Some)
     }
 
     fn finish_validation(&mut self, raw: RawHandle) {
@@ -1061,10 +1094,11 @@ fn owned_metadata_string(
 fn parse_scope(
     bytes: &[u8],
     offset: u32,
+    handle_encoding: SerializedHandleEncoding,
     budget: &mut MetadataBudget,
     strings: &mut MetadataStrings,
 ) -> crate::error::Result<ScopeRecord> {
-    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     let _flags: u32 = cursor.unsigned()?;
     let name_handle: u32 = cursor.typed_handle()?;
     let _hash_algorithm: u32 = cursor.unsigned()?;
@@ -1100,10 +1134,11 @@ fn parse_scope(
 fn parse_namespace(
     bytes: &[u8],
     offset: u32,
+    handle_encoding: SerializedHandleEncoding,
     budget: &mut MetadataBudget,
     strings: &mut MetadataStrings,
 ) -> crate::error::Result<NamespaceRecord> {
-    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     let parent: RawHandle = cursor.raw_handle()?;
     if !matches!(
         parent.kind,
@@ -1138,10 +1173,11 @@ fn parse_namespace(
 fn parse_type(
     bytes: &[u8],
     offset: u32,
+    handle_encoding: SerializedHandleEncoding,
     budget: &mut MetadataBudget,
     strings: &mut MetadataStrings,
 ) -> crate::error::Result<TypeRecord> {
-    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     let _flags: u32 = cursor.unsigned()?;
     let _base_type: RawHandle = cursor.raw_handle()?;
     let namespace: u32 = cursor.typed_handle()?;
@@ -1184,10 +1220,11 @@ fn parse_type(
 fn parse_method(
     bytes: &[u8],
     offset: u32,
+    handle_encoding: SerializedHandleEncoding,
     budget: &mut MetadataBudget,
     strings: &mut MetadataStrings,
 ) -> crate::error::Result<MethodRecord> {
-    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     let _flags: u32 = cursor.unsigned()?;
     let _impl_flags: u32 = cursor.unsigned()?;
     let name_handle: u32 = cursor.typed_handle()?;
@@ -1246,9 +1283,10 @@ fn type_signature(raw: RawHandle) -> crate::error::Result<AotTypeSignature> {
 fn parse_method_signature(
     bytes: &[u8],
     offset: u32,
+    handle_encoding: SerializedHandleEncoding,
     budget: &mut MetadataBudget,
 ) -> crate::error::Result<MethodSignatureRecord> {
-    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset)?;
+    let mut cursor: MetadataCursor<'_> = MetadataCursor::new(bytes, offset, handle_encoding)?;
     parse_method_signature_from_cursor(&mut cursor, offset, budget)
 }
 
@@ -1844,7 +1882,10 @@ fn type_namespace_qualifications(
     Ok(qualifications)
 }
 
-fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, Vec<AotMethod>)> {
+fn parse_metadata_records(
+    bytes: &[u8],
+    profile: MetadataProfile,
+) -> crate::error::Result<(Vec<AotType>, Vec<AotMethod>)> {
     let signature_bytes: &[u8] = bytes
         .get(0..4)
         .ok_or_else(|| invalid_metadata(0, "metadata signature is truncated"))?;
@@ -1857,7 +1898,7 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
     }
     let mut budget: MetadataBudget = MetadataBudget::new();
     let mut strings: MetadataStrings = MetadataStrings::new();
-    let mut root: MetadataCursor<'_> = MetadataCursor::new(bytes, 4)?;
+    let mut root: MetadataCursor<'_> = MetadataCursor::new(bytes, 4, profile.handle_encoding)?;
     let scope_offsets: Vec<u32> = root.typed_collection(&mut budget)?;
     require_unique_nonzero(&scope_offsets, 4, "scope handle is nil or duplicated")?;
     let root_end: usize = root.at;
@@ -1866,7 +1907,13 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
     let mut namespace_queue: VecDeque<u32> = VecDeque::new();
     for scope_offset in scope_offsets {
         claim_record(&mut record_count, scope_offset)?;
-        let scope: ScopeRecord = parse_scope(bytes, scope_offset, &mut budget, &mut strings)?;
+        let scope: ScopeRecord = parse_scope(
+            bytes,
+            scope_offset,
+            profile.handle_encoding,
+            &mut budget,
+            &mut strings,
+        )?;
         namespace_queue.push_back(scope.root_namespace);
         if scopes.insert(scope.offset, scope).is_some() {
             return Err(invalid_metadata(
@@ -1882,7 +1929,13 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
             continue;
         }
         claim_record(&mut record_count, offset)?;
-        let namespace: NamespaceRecord = parse_namespace(bytes, offset, &mut budget, &mut strings)?;
+        let namespace: NamespaceRecord = parse_namespace(
+            bytes,
+            offset,
+            profile.handle_encoding,
+            &mut budget,
+            &mut strings,
+        )?;
         for type_offset in &namespace.types {
             type_queue.push_back(*type_offset);
         }
@@ -1898,7 +1951,13 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
             continue;
         }
         claim_record(&mut record_count, offset)?;
-        let type_record: TypeRecord = parse_type(bytes, offset, &mut budget, &mut strings)?;
+        let type_record: TypeRecord = parse_type(
+            bytes,
+            offset,
+            profile.handle_encoding,
+            &mut budget,
+            &mut strings,
+        )?;
         for nested_offset in &type_record.nested_types {
             type_queue.push_back(*nested_offset);
         }
@@ -1910,7 +1969,13 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
     let mut methods: BTreeMap<u32, MethodRecord> = BTreeMap::new();
     for method_offset in method_offsets {
         claim_record(&mut record_count, method_offset)?;
-        let method: MethodRecord = parse_method(bytes, method_offset, &mut budget, &mut strings)?;
+        let method: MethodRecord = parse_method(
+            bytes,
+            method_offset,
+            profile.handle_encoding,
+            &mut budget,
+            &mut strings,
+        )?;
         methods.insert(method_offset, method);
     }
     let signatures: BTreeMap<u32, MethodSignatureRecord> = {
@@ -1920,8 +1985,12 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
                 continue;
             }
             claim_record(&mut record_count, method.signature_offset)?;
-            let signature: MethodSignatureRecord =
-                parse_method_signature(bytes, method.signature_offset, &mut budget)?;
+            let signature: MethodSignatureRecord = parse_method_signature(
+                bytes,
+                method.signature_offset,
+                profile.handle_encoding,
+                &mut budget,
+            )?;
             parsed.insert(method.signature_offset, signature);
         }
         parsed
@@ -1929,6 +1998,7 @@ fn parse_metadata_records(bytes: &[u8]) -> crate::error::Result<(Vec<AotType>, V
     let type_signature_ranges: Vec<RecordRange> = {
         let mut validator: TypeSignatureValidator<'_> = TypeSignatureValidator::new(
             bytes,
+            profile.handle_encoding,
             &types,
             &signatures,
             &mut strings,
@@ -2075,7 +2145,7 @@ pub fn recover_metadata_attribution(
             .find(|profile: &MetadataProfile| {
                 profile.matches(header.major_version, header.minor_version)
             });
-    if profile.is_none() {
+    let Some(profile): Option<MetadataProfile> = profile else {
         return Ok(AotMetadataAttribution {
             status: AotMetadataStatus::UnsupportedVersion {
                 major_version: header.major_version,
@@ -2084,9 +2154,10 @@ pub fn recover_metadata_attribution(
             types: Vec::new(),
             methods: Vec::new(),
         });
-    }
+    };
     let bytes: &[u8] = metadata_section_bytes(image, section)?;
-    let (types, mut methods): (Vec<AotType>, Vec<AotMethod>) = parse_metadata_records(bytes)?;
+    let (types, mut methods): (Vec<AotType>, Vec<AotMethod>) =
+        parse_metadata_records(bytes, profile)?;
     attach_invoke_map_entrypoints(image, header, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
         attach_method_bodies(image, &pe, &mut methods)?;
@@ -2105,8 +2176,8 @@ mod tests {
     use super::{
         HANDLE_SZ_ARRAY_SIGNATURE, HANDLE_TYPE_SPECIFICATION, MetadataBudget, MetadataCursor,
         MetadataStrings, MethodRecord, MethodSignatureRecord, NamespaceRecord, RawHandle,
-        ScopeRecord, TypeRecord, TypeSignatureValidator, validate_record_ranges,
-        validate_type_containment,
+        ScopeRecord, SerializedHandleEncoding, TypeRecord, TypeSignatureValidator,
+        validate_record_ranges, validate_type_containment,
     };
 
     fn encode_unsigned(value: u32) -> Vec<u8> {
@@ -2178,6 +2249,7 @@ mod tests {
         let mut record_count: usize = 0;
         let mut validator: TypeSignatureValidator<'_> = TypeSignatureValidator::new(
             &bytes,
+            SerializedHandleEncoding::Kind8Offset24,
             &types,
             &method_signatures,
             &mut strings,
@@ -2219,7 +2291,8 @@ mod tests {
             (&[0x0f, 0x78, 0x56, 0x34, 0x12], 0x1234_5678),
         ];
         for (encoded, expected) in cases {
-            let mut cursor: MetadataCursor<'_> = MetadataCursor::new(encoded, 0)?;
+            let mut cursor: MetadataCursor<'_> =
+                MetadataCursor::new(encoded, 0, SerializedHandleEncoding::Kind8Offset24)?;
             let actual: i32 = cursor.signed()?;
             assert_eq!(actual, expected);
             assert_eq!(cursor.at, encoded.len());
@@ -2231,7 +2304,8 @@ mod tests {
     fn signed_native_format_values_reject_truncation_and_bad_prefixes() -> crate::error::Result<()>
     {
         for encoded in [&[0x01][..], &[0x1f][..]] {
-            let mut cursor: MetadataCursor<'_> = MetadataCursor::new(encoded, 0)?;
+            let mut cursor: MetadataCursor<'_> =
+                MetadataCursor::new(encoded, 0, SerializedHandleEncoding::Kind8Offset24)?;
             assert!(matches!(
                 cursor.signed(),
                 Err(crate::error::Error::InvalidAotMetadata { .. })

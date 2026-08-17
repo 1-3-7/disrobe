@@ -47,13 +47,17 @@ fn primary_report() -> AotLiftReport {
     lift_libapp_aot(&read_sample("disrobe_sample/libapp_arm64.so")).expect("lift ARM64 AOT")
 }
 
-fn primary_pool() -> DartPoolTable {
-    let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
+fn pool(relative: &str) -> DartPoolTable {
+    let bytes: Vec<u8> = read_sample(relative);
     let vm: Vec<u8> = dart_vm_data_bytes(&bytes).expect("vm snapshot data");
     let isolate: Vec<u8> = dart_isolate_data_bytes(&bytes).expect("isolate snapshot data");
     DartPoolTable::build(&vm, &isolate, DartGraphLimits::default())
         .expect("the pinned object pool must deserialize")
         .expect("the pinned Dart 3.12.2 layout must match this sample")
+}
+
+fn primary_pool() -> DartPoolTable {
+    pool("disrobe_sample/libapp_arm64.so")
 }
 
 fn body(report: &AotLiftReport, name: &str) -> String {
@@ -137,20 +141,71 @@ fn pool_literal_kinds_are_typed_from_the_deserialized_cluster() {
     }
     eprintln!("pinned object-pool slot kinds: {tally:?}");
 
-    for observed in ["Str", "Double", "Integer", "List", "Named", "RawImmediate"] {
+    for observed in [
+        "Str",
+        "Double",
+        "Integer",
+        "List",
+        "Named",
+        "Type",
+        "TypeArguments",
+        "RawImmediate",
+    ] {
         assert!(
             tally.get(observed).copied().unwrap_or(0) > 0,
             "the pinned pool must carry at least one {observed} slot, got {tally:?}"
         );
     }
     eprintln!(
-        "pool literal kinds NOT observed in this corpus and therefore not claimed: null, true, false and Smi never reach a pool slot in this build (null and the booleans arrive through the null register and its +0x20/+0x30 offsets, Smis are inline immediates); Symbol, Type and TypeArguments slots deserialize but keep no readable value and stay Unresolved"
+        "pool literal kinds NOT observed in this corpus and therefore not claimed: null, true, false and Smi never reach a pool slot in this build (null and the booleans arrive through the null register and its +0x20/+0x30 offsets, Smis are inline immediates); Symbol slots deserialize but keep no readable value and stay Unresolved"
     );
 
     let unresolved: usize = tally.get("Unresolved").copied().unwrap_or(0);
     assert!(
         unresolved < table.slot_count(),
         "an all-unresolved pool would mean the cluster walk failed"
+    );
+}
+
+#[test]
+fn type_pool_entries_follow_the_pinned_dart_object_layout() {
+    let first: DartPoolTable = pool("pinned_graph_fixture/receipt_validator_arm64.so");
+    let second: DartPoolTable = pool("pinned_graph_fixture/receipt_validator_arm64.so");
+    let cases: [(u64, DartPoolLiteralKind, &str); 2] = [
+        (0x1630, DartPoolLiteralKind::Type, "InstructionsTable*"),
+        (0x13a8, DartPoolLiteralKind::TypeArguments, "<Error*>"),
+    ];
+    for (offset, kind, expected) in cases {
+        assert_eq!(first.kind_at_offset(offset, false), kind);
+        assert_eq!(
+            first.render_at_offset(offset, false).as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            second.render_at_offset(offset, false),
+            first.render_at_offset(offset, false),
+            "the same pinned snapshot must render type metadata identically"
+        );
+    }
+    let report: AotLiftReport = lift_libapp_aot(&read_sample(
+        "pinned_graph_fixture/receipt_validator_arm64.so",
+    ))
+    .expect("lift pinned receipt validator");
+    let rendered: Vec<String> = report
+        .functions
+        .iter()
+        .map(DartLiftedFunction::best_pseudo_dart)
+        .filter(|body: &String| body.contains("sub_0x1737c0(<Error*>, ?);"))
+        .collect();
+    assert!(
+        !rendered.is_empty(),
+        "the real public lift must inline the recovered type arguments at their call site"
+    );
+    assert!(
+        rendered
+            .iter()
+            .all(|body: &String| !body.contains("pool[627]")),
+        "a resolved TypeArguments slot must not remain an opaque pool reference"
     );
 }
 

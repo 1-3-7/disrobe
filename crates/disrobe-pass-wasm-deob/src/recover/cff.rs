@@ -30,9 +30,10 @@ pub(super) fn restructure_flattened(module: &mut Module) -> CffRecovery {
         };
         match restructure_one(func, cells) {
             Restructure::Linearized => recovery.functions_restructured += 1,
-            Restructure::Relooped => {
+            Restructure::Relooped { count, walled } => {
                 recovery.functions_restructured += 1;
-                recovery.conditional_restructured += 1;
+                recovery.conditional_restructured += count;
+                recovery.walled_branching_dispatchers += walled;
             }
             Restructure::WalledBranching => recovery.walled_branching_dispatchers += 1,
             Restructure::NotFlattened => {}
@@ -257,7 +258,7 @@ const fn child_seqs(instr: &Instr) -> [Option<InstrSeqId>; 2] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Restructure {
     Linearized,
-    Relooped,
+    Relooped { count: usize, walled: usize },
     WalledBranching,
     NotFlattened,
 }
@@ -265,14 +266,18 @@ enum Restructure {
 fn restructure_one(func: &mut LocalFunction, elidable: &ElidableCells) -> Restructure {
     let Some(plan): Option<Dispatcher> = detect_dispatcher(func) else {
         return match super::reloop::try_reloop(func, elidable) {
-            super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
+            super::reloop::ReloopOutcome::Restructured { count, walled } => {
+                Restructure::Relooped { count, walled }
+            }
             super::reloop::ReloopOutcome::Walled(_) => Restructure::WalledBranching,
             super::reloop::ReloopOutcome::NotApplicable => Restructure::NotFlattened,
         };
     };
     let Some(flow): Option<ExecutionPlan> = execution_plan(&plan) else {
         return match super::reloop::try_reloop(func, elidable) {
-            super::reloop::ReloopOutcome::Restructured => Restructure::Relooped,
+            super::reloop::ReloopOutcome::Restructured { count, walled } => {
+                Restructure::Relooped { count, walled }
+            }
             super::reloop::ReloopOutcome::Walled(_)
             | super::reloop::ReloopOutcome::NotApplicable => Restructure::WalledBranching,
         };

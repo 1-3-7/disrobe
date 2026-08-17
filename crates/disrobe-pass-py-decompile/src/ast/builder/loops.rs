@@ -23,7 +23,7 @@ use super::{
     StructureHiCapGuard, loop_frame_has_header, negate_cond_expr, none_jump_test, pop_loop_frame,
     push_loop_frame, with_boolop_context,
 };
-use crate::ast::node::{ConstValue, Expr, ExprCtx, Stmt};
+use crate::ast::node::{BoolOpKind, ConstValue, Expr, ExprCtx, Stmt};
 use crate::bytecode::opcode::CanonicalOp;
 use crate::error::Result;
 use disrobe_py_marshal::CodeObject;
@@ -2152,6 +2152,7 @@ fn structure_while_body_absorbing_break_handler(
     stream: &DecodedStream,
     region: &LoopRegion,
     hi: usize,
+    test: &Expr,
 ) -> Result<Vec<Stmt>> {
     if let Some(region_try) = while_break_handler_try(stream, region, hi) {
         if absorb_hoists_nested_try(stream, region, &region_try) {
@@ -2163,12 +2164,186 @@ fn structure_while_body_absorbing_break_handler(
         let try_hi: usize = region_try.region_end().min(hi);
         let mut body: Vec<Stmt> =
             structure_try(code, stream, region.body_start, try_hi, &region_try)?;
+        if normalize_two_call_and_handler_break(stream, region, &region_try, test, &mut body) {
+            let exit_tail: Vec<Stmt> = structure_stmts(code, stream, region.exit, hi)?;
+            strip_loop_exit_prefix_suffix(&mut body, &exit_tail);
+        }
         if loop_exit_return_absorbed(code, stream, region, hi, &body) {
             body.pop();
         }
         return Ok(body);
     }
-    structure_stmts(code, stream, region.body_start, region.body_end)
+    let mut body: Vec<Stmt> = structure_stmts(code, stream, region.body_start, region.body_end)?;
+    if let Some(region_try) = find_try_region(stream, region.body_start, region.body_end)
+        && region_try.try_start >= region.body_start
+        && region_try.protected_end() <= region.body_end
+        && region_try.region_end() <= region.body_end
+        && normalize_two_call_and_handler_break(stream, region, &region_try, test, &mut body)
+    {
+        let exit_tail: Vec<Stmt> = structure_stmts(code, stream, region.exit, hi)?;
+        strip_loop_exit_prefix_suffix(&mut body, &exit_tail);
+    }
+    Ok(body)
+}
+
+fn normalize_two_call_and_handler_break(
+    stream: &DecodedStream,
+    region: &LoopRegion,
+    region_try: &TryRegion,
+    test: &Expr,
+    body: &mut [Stmt],
+) -> bool {
+    let Expr::BoolOp {
+        op: BoolOpKind::And,
+        values,
+    } = test
+    else {
+        return false;
+    };
+    let [left, right]: &[Expr] = values.as_slice() else {
+        return false;
+    };
+    if !is_direct_zero_argument_call(left) || !is_direct_zero_argument_call(right) {
+        return false;
+    }
+    let matching_exit_edges: usize = (region_try.handler_start..region_try.region_end())
+        .filter(|&index: &usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+            ) && resolve_jump_target(stream, index, &stream.ops[index]) == Some(region.exit)
+        })
+        .count();
+    if matching_exit_edges != 1 {
+        return false;
+    }
+    let Some((
+        Stmt::Try {
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        },
+        _,
+    )): Option<(&mut Stmt, &mut [Stmt])> = body.split_first_mut()
+    else {
+        return false;
+    };
+    let [handler] = handlers.as_mut_slice() else {
+        return false;
+    };
+    let orelse_is_latch: bool = orelse.is_empty()
+        || matches!(
+            orelse.as_slice(),
+            [Stmt::If {
+                test: latch_test,
+                body: latch_body,
+                orelse: latch_else,
+                ..
+            }] if exprs_equal_ignoring_lines(latch_test, test)
+                && matches!(latch_body.as_slice(), [Stmt::Continue])
+                && latch_else.is_empty()
+        );
+    if handler.typ.is_none()
+        || !orelse_is_latch
+        || !finalbody.is_empty()
+        || !matches!(handler.body.as_slice(), [Stmt::Pass])
+    {
+        return false;
+    }
+    handler.body = vec![Stmt::Break];
+    orelse.clear();
+    true
+}
+
+fn strip_loop_exit_prefix_suffix(body: &mut Vec<Stmt>, exit_tail: &[Stmt]) {
+    let limit: usize = body.len().saturating_sub(1).min(exit_tail.len());
+    if let Some(count) = (1..=limit)
+        .rev()
+        .find(|&count: &usize| body[body.len() - count..] == exit_tail[..count])
+    {
+        body.truncate(body.len() - count);
+    }
+}
+
+fn is_direct_zero_argument_call(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call {
+            func,
+            args,
+            keywords,
+        } if args.is_empty()
+            && keywords.is_empty()
+            && matches!(func.as_ref(), Expr::Name { ctx: ExprCtx::Load, .. })
+    )
+}
+
+pub(super) fn is_post311_two_call_and_try_break_loop(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &LoopRegion,
+) -> bool {
+    if stream.is_pre_311() || region.infinite || !matches!(region.kind, LoopKind::While) {
+        return false;
+    }
+    let test: Expr = recover_while_test(code, stream, region);
+    let Expr::BoolOp {
+        op: BoolOpKind::And,
+        values,
+    } = &test
+    else {
+        return false;
+    };
+    let [left, right]: &[Expr] = values.as_slice() else {
+        return false;
+    };
+    if !is_direct_zero_argument_call(left) || !is_direct_zero_argument_call(right) {
+        return false;
+    }
+    let Some((_, entry_test)): Option<(usize, Expr)> =
+        recover_entry_guard_test(code, stream, lo, region)
+    else {
+        return false;
+    };
+    if !exprs_equal_ignoring_lines(&entry_test, &test) {
+        return false;
+    }
+    let Some(region_try): Option<TryRegion> =
+        find_try_region(stream, region.body_start, hi.min(stream.ops.len()))
+    else {
+        return false;
+    };
+    let try_starts_in_body: bool =
+        region_try.try_start >= region.body_start && region_try.try_start < region.back_edge;
+    if region_try.is_with()
+        || region_try.is_finally()
+        || !try_starts_in_body
+        || region_try.protected_end() > region.back_edge
+        || region_try.region_end() > hi
+    {
+        return false;
+    }
+    let typed_handlers: usize = (region_try.handler_start..region_try.region_end())
+        .filter(|&index: &usize| matches!(stream.ops[index], CanonicalOp::CheckExcMatch))
+        .count();
+    let exit_edges: usize = (region_try.handler_start..region_try.region_end())
+        .filter(|&index: &usize| {
+            matches!(
+                stream.ops[index],
+                CanonicalOp::JumpForward(_)
+                    | CanonicalOp::JumpAbsolute(_)
+                    | CanonicalOp::JumpBackward(_)
+                    | CanonicalOp::JumpBackwardNoInterrupt(_)
+            ) && resolve_jump_target(stream, index, &stream.ops[index]) == Some(region.exit)
+        })
+        .count();
+    typed_handlers == 1 && exit_edges == 1
 }
 
 pub(super) fn structure_loop(
@@ -2265,7 +2440,7 @@ pub(super) fn structure_loop(
                 let body: Vec<Stmt> = if region.infinite {
                     structure_infinite_while_body(code, stream, region)?
                 } else {
-                    structure_while_body_absorbing_break_handler(code, stream, region, hi)?
+                    structure_while_body_absorbing_break_handler(code, stream, region, hi, &test)?
                 };
                 let orelse: Vec<Stmt> = if region.infinite {
                     Vec::new()

@@ -34,7 +34,7 @@ impl WallReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReloopOutcome {
-    Restructured,
+    Restructured { count: usize, walled: usize },
     Walled(WallReason),
     NotApplicable,
 }
@@ -47,8 +47,50 @@ pub(super) struct ElidableCells {
     pub(super) memory_min_bytes: BTreeMap<MemoryId, u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RootCandidate {
+    sequence: InstrSeqId,
+    branch_exits: bool,
+}
+
 pub(super) fn try_reloop(func: &mut LocalFunction, elidable: &ElidableCells) -> ReloopOutcome {
-    let Some(disp): Option<Dispatcher> = detect(func) else {
+    let Some(roots): Option<Vec<RootCandidate>> = nested_roots(func) else {
+        return wall(WallReason::UnstructurableStateGraph);
+    };
+    let mut restructured: usize = 0;
+    let mut first_wall: Option<WallReason> = None;
+    let mut walled: usize = 0;
+    for root in roots {
+        match try_reloop_root(func, elidable, root) {
+            ReloopOutcome::Restructured {
+                count,
+                walled: nested_walls,
+            } => {
+                restructured = restructured.saturating_add(count);
+                walled = walled.saturating_add(nested_walls);
+            }
+            ReloopOutcome::Walled(reason) => {
+                first_wall.get_or_insert(reason);
+                walled = walled.saturating_add(1);
+            }
+            ReloopOutcome::NotApplicable => {}
+        }
+    }
+    if restructured != 0 {
+        return ReloopOutcome::Restructured {
+            count: restructured,
+            walled,
+        };
+    }
+    first_wall.map_or(ReloopOutcome::NotApplicable, ReloopOutcome::Walled)
+}
+
+fn try_reloop_root(
+    func: &mut LocalFunction,
+    elidable: &ElidableCells,
+    root: RootCandidate,
+) -> ReloopOutcome {
+    let Some(disp): Option<Dispatcher> = detect(func, root) else {
         return ReloopOutcome::NotApplicable;
     };
     if !cell_is_elidable(func, &disp, elidable) {
@@ -60,8 +102,59 @@ pub(super) fn try_reloop(func: &mut LocalFunction, elidable: &ElidableCells) -> 
     let Some(tree): Option<SNode> = structure(&graph) else {
         return wall(WallReason::UnstructurableStateGraph);
     };
-    emit(func, &disp, &graph, &tree);
-    ReloopOutcome::Restructured
+    emit(func, root.sequence, &disp, &graph, &tree);
+    ReloopOutcome::Restructured {
+        count: 1,
+        walled: 0,
+    }
+}
+
+fn nested_roots(func: &LocalFunction) -> Option<Vec<RootCandidate>> {
+    let entry: InstrSeqId = func.entry_block();
+    let mut pending: Vec<(RootCandidate, bool)> = vec![(
+        RootCandidate {
+            sequence: entry,
+            branch_exits: false,
+        },
+        false,
+    )];
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut roots: Vec<RootCandidate> = Vec::new();
+    while let Some((candidate, expanded)) = pending.pop() {
+        if expanded {
+            roots.push(candidate);
+            continue;
+        }
+        let sequence: InstrSeqId = candidate.sequence;
+        if !seen.insert(sequence) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT {
+            return None;
+        }
+        pending.push((candidate, true));
+        let body: &Body = &func.block(sequence).instrs;
+        let mut children: Vec<InstrSeqId> = Vec::new();
+        for (instruction, _location) in body {
+            if !push_nested_sequences(instruction, &mut children, NODE_LIMIT) {
+                return None;
+            }
+        }
+        for child in children.into_iter().rev() {
+            let branch_exits: bool = body.iter().any(|(instruction, _location)| {
+                matches!(instruction, Instr::Block(block) if block.seq == child)
+                    || matches!(instruction, Instr::IfElse(if_else) if if_else.consequent == child || if_else.alternative == child)
+            });
+            pending.push((
+                RootCandidate {
+                    sequence: child,
+                    branch_exits,
+                },
+                false,
+            ));
+        }
+    }
+    Some(roots)
 }
 
 fn wall(reason: WallReason) -> ReloopOutcome {
@@ -165,6 +258,8 @@ enum Selector {
 
 #[derive(Debug, Clone)]
 struct Dispatcher {
+    root: InstrSeqId,
+    root_branch_exits: bool,
     preamble: Body,
     suffix: Body,
     entry_state: i32,
@@ -211,7 +306,31 @@ fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &Elidable
             }
         },
     };
-    owned_by_dispatcher && !reads_cell(func, &disp.suffix, disp.cell)
+    owned_by_dispatcher
+        && !reads_cell(func, &disp.suffix, disp.cell)
+        && !reads_cell_outside_root(func, disp.root, disp.cell)
+}
+
+fn reads_cell_outside_root(func: &LocalFunction, root: InstrSeqId, cell: StateCell) -> bool {
+    let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut remaining: usize = RENDER_GUARD;
+    while let Some(sequence) = pending.pop() {
+        if sequence == root || !seen.insert(sequence) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT
+            || body_reads_cell(
+                &func.block(sequence).instrs,
+                cell,
+                &mut pending,
+                &mut remaining,
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn memory_address_is_in_bounds(
@@ -507,9 +626,8 @@ fn push_nested_sequence(
     true
 }
 
-fn detect(func: &LocalFunction) -> Option<Dispatcher> {
-    let entry: InstrSeqId = func.entry_block();
-    let entry_instrs: &Body = &func.block(entry).instrs;
+fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
+    let entry_instrs: &Body = &func.block(root.sequence).instrs;
     let loop_index: usize = entry_instrs
         .iter()
         .position(|(instr, _)| matches!(instr, Instr::Loop(_)))?;
@@ -527,7 +645,7 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
         _ => None,
     })?;
 
-    let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> = build_parent_map(func, entry);
+    let parents: BTreeMap<InstrSeqId, (InstrSeqId, usize)> = build_parent_map(func, root.sequence);
     let (targets, default, selector): (Vec<InstrSeqId>, InstrSeqId, Selector) =
         find_switch(func, wrapper)?;
     let cell: StateCell = resolve_state_cell(loop_body, selector)?;
@@ -572,6 +690,8 @@ fn detect(func: &LocalFunction) -> Option<Dispatcher> {
     }
 
     Some(Dispatcher {
+        root: root.sequence,
+        root_branch_exits: root.branch_exits,
         preamble,
         suffix,
         entry_state,
@@ -879,7 +999,7 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
             return None;
         }
         let body: &Body = disp.state_to_body.get(&state)?;
-        let mut node: Node = classify_case(func, body, disp.cell)?;
+        let mut node: Node = classify_case(func, body, disp)?;
         canonicalize_transition(&mut node.trans, disp);
         match &node.trans {
             Trans::Exit => {}
@@ -920,15 +1040,15 @@ const fn canonicalize_transition(trans: &mut Trans, disp: &Dispatcher) {
     }
 }
 
-fn classify_case(func: &LocalFunction, body: &Body, cell: StateCell) -> Option<Node> {
-    let node: Node = classify_case_shape(func, body, cell)?;
-    if reads_cell(func, &node.work, cell) || reads_cell(func, &node.cond, cell) {
+fn classify_case(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> Option<Node> {
+    let node: Node = classify_case_shape(func, body, disp)?;
+    if reads_cell(func, &node.work, disp.cell) || reads_cell(func, &node.cond, disp.cell) {
         return None;
     }
     Some(node)
 }
 
-fn classify_case_shape(func: &LocalFunction, body: &Body, cell: StateCell) -> Option<Node> {
+fn classify_case_shape(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> Option<Node> {
     let return_pos: Option<usize> = body
         .iter()
         .position(|(instr, _)| matches!(instr, Instr::Return(_)));
@@ -944,8 +1064,20 @@ fn classify_case_shape(func: &LocalFunction, body: &Body, cell: StateCell) -> Op
         });
     }
 
+    if let Some(((Instr::Br(branch), _location), work)) = body.split_last()
+        && disp.root_branch_exits
+        && branch.block == disp.root
+        && structured_work_is_bounded(func, work)
+    {
+        return Some(Node {
+            work: work.to_vec(),
+            cond: Vec::new(),
+            trans: Trans::Exit,
+        });
+    }
+
     let stripped: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(body);
-    if let Some(node) = classify_select_conditional(stripped, cell) {
+    if let Some(node) = classify_select_conditional(func, stripped, disp.cell) {
         return Some(node);
     }
     let (last, head): (
@@ -954,9 +1086,9 @@ fn classify_case_shape(func: &LocalFunction, body: &Body, cell: StateCell) -> Op
     ) = stripped.split_last()?;
 
     if let Instr::Block(_) = &last.0 {
-        return classify_conditional(func, head, last, cell);
+        return classify_conditional(func, head, last, disp.cell);
     }
-    classify_goto(stripped, cell)
+    classify_goto(func, stripped, disp.cell)
 }
 
 fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
@@ -966,10 +1098,14 @@ fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
     }
 }
 
-fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) -> Option<Node> {
+fn classify_goto(
+    func: &LocalFunction,
+    stripped: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+) -> Option<Node> {
     let (next, head_len): (i32, usize) = state_write_expression(stripped, cell)?;
     let work: Body = stripped.get(..head_len)?.to_vec();
-    if !is_flat(&work) {
+    if !structured_work_is_bounded(func, &work) {
         return None;
     }
     Some(Node {
@@ -980,6 +1116,7 @@ fn classify_goto(stripped: &[(Instr, walrus::ir::InstrLocId)], cell: StateCell) 
 }
 
 fn classify_select_conditional(
+    func: &LocalFunction,
     stripped: &[(Instr, walrus::ir::InstrLocId)],
     cell: StateCell,
 ) -> Option<Node> {
@@ -999,7 +1136,7 @@ fn classify_select_conditional(
         .get(candidate.condition_start..select_index)?
         .to_vec();
     if cond.is_empty()
-        || !is_flat(&work)
+        || !structured_work_is_bounded(func, &work)
         || !is_flat(&cond)
         || !condition_has_isolated_value_stack(&cond)
     {
@@ -1100,7 +1237,7 @@ fn classify_conditional(
     cell: StateCell,
 ) -> Option<Node> {
     let work: Body = head.to_vec();
-    if !is_flat(&work) {
+    if !structured_work_is_bounded(func, &work) {
         return None;
     }
     let idiom: Conditional = condition_from_blocks(func, outer_instr, cell)?;
@@ -1165,6 +1302,33 @@ fn condition_from_blocks(
 
 fn is_flat(instrs: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
     instrs.iter().all(|(instr, _)| !is_control(instr))
+}
+
+fn structured_work_is_bounded(
+    func: &LocalFunction,
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+) -> bool {
+    let mut budget: usize = TRANSITION_INSTRUCTION_LIMIT;
+    let mut pending: Vec<&[(Instr, walrus::ir::InstrLocId)]> = vec![instrs];
+    while let Some(sequence) = pending.pop() {
+        if sequence.len() > budget {
+            return false;
+        }
+        budget -= sequence.len();
+        for (instruction, _location) in sequence {
+            match instruction {
+                Instr::Block(block) => pending.push(&func.block(block.seq).instrs),
+                Instr::Loop(_)
+                | Instr::IfElse(_)
+                | Instr::Br(_)
+                | Instr::BrIf(_)
+                | Instr::BrTable(_)
+                | Instr::Return(_) => return false,
+                _ => {}
+            }
+        }
+    }
+    true
 }
 
 fn is_flat_except_return(instrs: &[(Instr, walrus::ir::InstrLocId)]) -> bool {
@@ -1494,7 +1658,13 @@ fn state_flow(graph: &Graph) -> Option<FlowGraph<i32>> {
     .ok()
 }
 
-fn emit(func: &mut LocalFunction, disp: &Dispatcher, graph: &Graph, tree: &SNode) {
+fn emit(
+    func: &mut LocalFunction,
+    root: InstrSeqId,
+    disp: &Dispatcher,
+    graph: &Graph,
+    tree: &SNode,
+) {
     let mut loop_labels: BTreeMap<i32, InstrSeqId> = BTreeMap::new();
     let body: Body = emit_snode(func, tree, graph, &mut loop_labels);
 
@@ -1502,8 +1672,7 @@ fn emit(func: &mut LocalFunction, disp: &Dispatcher, graph: &Graph, tree: &SNode
     rebuilt.extend(body);
     rebuilt.extend(disp.suffix.clone());
 
-    let entry: InstrSeqId = func.entry_block();
-    let seq: &mut walrus::ir::InstrSeq = func.block_mut(entry);
+    let seq: &mut walrus::ir::InstrSeq = func.block_mut(root);
     seq.instrs = rebuilt;
 }
 
@@ -1718,6 +1887,29 @@ mod tests {
             NODE_LIMIT
         ));
         assert!(pending.len() <= NODE_LIMIT);
+    }
+
+    #[test]
+    fn nested_root_enumeration_debits_one_aggregate_node_budget() {
+        let mut module: walrus::Module = walrus::Module::default();
+        let mut builder: walrus::FunctionBuilder =
+            walrus::FunctionBuilder::new(&mut module.types, &[], &[]);
+        let children: Vec<InstrSeqId> = (0..NODE_LIMIT)
+            .map(|_index: usize| builder.dangling_instr_seq(InstrSeqType::Simple(None)).id())
+            .collect();
+        for child in children {
+            builder
+                .func_body()
+                .instr(Instr::Block(walrus::ir::Block { seq: child }));
+        }
+        let function: walrus::FunctionId = builder.finish(Vec::new(), &mut module.funcs);
+        let walrus::FunctionKind::Local(local): &walrus::FunctionKind =
+            &module.funcs.get(function).kind
+        else {
+            panic!("constructed function must be local");
+        };
+
+        assert_eq!(nested_roots(local), None);
     }
 
     fn node(trans: Trans) -> Node {

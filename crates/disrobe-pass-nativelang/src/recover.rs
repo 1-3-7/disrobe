@@ -406,12 +406,17 @@ fn recover_d_lang(image: &NativeImage<'_>, types: &TypeReport) -> Recovery {
     if demangled.is_empty() {
         if image.kind == ImageKind::Pe {
             debug::dbg_line(|| {
-                "d rtti fallback: mining structurally corroborated druntime ClassInfo records"
+                "d rtti fallback: mining structurally corroborated druntime ClassInfo and TypeInfo_Struct records"
                     .to_owned()
             });
-            let scan: DClassInfoScan = mine_d_class_info(image);
-            scanned_count = Some((scan.names_sampled, scan.truncated));
-            for symbol in scan.symbols {
+            let class_scan: DRttiScan = mine_d_class_info(image);
+            let struct_scan: DRttiScan = mine_d_struct_info(image);
+            let names_sampled: usize = class_scan
+                .names_sampled
+                .saturating_add(struct_scan.names_sampled);
+            let truncated: bool = class_scan.truncated || struct_scan.truncated;
+            scanned_count = Some((names_sampled, truncated));
+            for symbol in class_scan.symbols.into_iter().chain(struct_scan.symbols) {
                 if seen.insert(symbol.demangled.clone()) {
                     demangled.push(symbol);
                 }
@@ -683,7 +688,7 @@ struct DClassInfoEvidence<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DClassInfoScan {
+struct DRttiScan {
     symbols: Vec<DemangledSymbol>,
     names_sampled: usize,
     truncated: bool,
@@ -793,26 +798,44 @@ fn d_class_info_at<'a>(
     Some(DClassInfoEvidence { name })
 }
 
-fn mine_d_class_info(image: &NativeImage<'_>) -> DClassInfoScan {
+fn mine_d_class_info(image: &NativeImage<'_>) -> DRttiScan {
     mine_d_class_info_with_limits(image, D_CLASS_INFO_LIMITS)
 }
 
-fn mine_d_class_info_with_limits(
+fn mine_d_class_info_with_limits(image: &NativeImage<'_>, limits: DClassInfoLimits) -> DRttiScan {
+    mine_d_records_with_limits(image, limits, 8, d_class_symbol_at)
+}
+
+fn d_class_symbol_at(
+    image: &NativeImage<'_>,
+    section: &Section<'_>,
+    offset: usize,
+) -> Option<DemangledSymbol> {
+    let evidence: DClassInfoEvidence<'_> = d_class_info_at(image, section, offset)?;
+    mine_d_rtti_name(evidence.name)
+}
+
+fn mine_d_records_with_limits<Candidate>(
     image: &NativeImage<'_>,
     limits: DClassInfoLimits,
-) -> DClassInfoScan {
+    minimum_words: usize,
+    candidate_at: Candidate,
+) -> DRttiScan
+where
+    Candidate: for<'a> Fn(&NativeImage<'a>, &Section<'a>, usize) -> Option<DemangledSymbol>,
+{
     let pointer_size: usize = usize::from(image.ptr_size);
     let sections_truncated: bool = image.sections.len() > limits.sections;
     if !matches!(pointer_size, 4 | 8) || sections_truncated {
-        return DClassInfoScan {
+        return DRttiScan {
             symbols: Vec::new(),
             names_sampled: 0,
             truncated: sections_truncated,
         };
     }
-    let minimum_size: usize = pointer_size.saturating_mul(8);
+    let minimum_size: usize = pointer_size.saturating_mul(minimum_words);
     let mut symbols: Vec<DemangledSymbol> = Vec::new();
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut accepted_name_bytes: usize = 0;
     let mut names_sampled: usize = 0;
     let mut scanned_bytes: usize = 0;
@@ -842,40 +865,164 @@ fn mine_d_class_info_with_limits(
                 break;
             }
             candidates = candidates.saturating_add(1);
-            let evidence: Option<DClassInfoEvidence<'_>> = d_class_info_at(image, section, offset);
-            if let Some(evidence) = evidence {
-                names_sampled = names_sampled.saturating_add(1);
-                if seen.contains(evidence.name) {
-                    continue;
-                }
-                let Some(next_name_bytes): Option<usize> =
-                    accepted_name_bytes.checked_add(evidence.name.len())
-                else {
-                    truncated = true;
-                    break 'sections;
-                };
-                if symbols.len() >= limits.symbols || next_name_bytes > limits.name_bytes {
-                    truncated = true;
-                    break 'sections;
-                }
-                accepted_name_bytes = next_name_bytes;
-                seen.insert(evidence.name);
-                let Some(symbol): Option<DemangledSymbol> = mine_d_rtti_name(evidence.name) else {
-                    continue;
-                };
-                symbols.push(symbol);
+            let Some(symbol): Option<DemangledSymbol> = candidate_at(image, section, offset) else {
+                continue;
+            };
+            names_sampled = names_sampled.saturating_add(1);
+            if !seen.insert(symbol.demangled.clone()) {
+                continue;
             }
+            let Some(next_name_bytes): Option<usize> =
+                accepted_name_bytes.checked_add(symbol.demangled.len())
+            else {
+                truncated = true;
+                break 'sections;
+            };
+            if symbols.len() >= limits.symbols || next_name_bytes > limits.name_bytes {
+                truncated = true;
+                break 'sections;
+            }
+            accepted_name_bytes = next_name_bytes;
+            symbols.push(symbol);
         }
         scanned_bytes = scanned_bytes.saturating_add(scan_length);
     }
     symbols.sort_by(|left: &DemangledSymbol, right: &DemangledSymbol| {
         left.demangled.cmp(&right.demangled)
     });
-    DClassInfoScan {
+    DRttiScan {
         symbols,
         names_sampled,
         truncated,
     }
+}
+
+fn mapped_d_word(image: &NativeImage<'_>, address: u64) -> Option<u64> {
+    let bytes: &[u8] = mapped_d_slice(
+        image,
+        address,
+        u64::from(image.ptr_size),
+        usize::from(image.ptr_size),
+    )?;
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    read_d_word(&mut reader, image.ptr_size)
+}
+
+fn d_class_info_name_at<'a>(image: &NativeImage<'a>, address: u64) -> Option<&'a str> {
+    let record_bytes: u64 = u64::from(image.ptr_size).checked_mul(8)?;
+    let candidate: &[u8] = mapped_d_slice(image, address, record_bytes, MAX_D_RTTI_SLICE_LEN)?;
+    let mut reader: ByteReader<'_> = ByteReader::new(candidate);
+    let object_vtable: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let _monitor: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let initializer_length: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let initializer_pointer: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let name_length: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let name_pointer: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let vtable_length: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let vtable_pointer: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    if !mapped_d_pointer(image, object_vtable) {
+        return None;
+    }
+    mapped_d_slice(
+        image,
+        initializer_pointer,
+        initializer_length,
+        MAX_D_RTTI_SLICE_LEN,
+    )?;
+    if vtable_length == 0 || vtable_length > MAX_D_RTTI_VECTOR_LEN as u64 {
+        return None;
+    }
+    let vtable_bytes: u64 = vtable_length.checked_mul(u64::from(image.ptr_size))?;
+    let vtable: &[u8] = mapped_d_slice(image, vtable_pointer, vtable_bytes, MAX_D_RTTI_SLICE_LEN)?;
+    let mut vtable_reader: ByteReader<'_> = ByteReader::new(vtable);
+    if read_d_word(&mut vtable_reader, image.ptr_size) != Some(address) {
+        return None;
+    }
+    let name_bytes: &[u8] = mapped_d_slice(image, name_pointer, name_length, MAX_D_RTTI_NAME_LEN)?;
+    std::str::from_utf8(name_bytes).ok()
+}
+
+fn demangle_d_struct_type(mangled: &str) -> Option<DemangledSymbol> {
+    if !mangled.starts_with('S') || mangled.len() > MAX_D_RTTI_NAME_LEN {
+        return None;
+    }
+    let probe: String = format!("_D7__probeF{mangled}Zv");
+    let parsed: DemangledSymbol = demangle_d(&probe)?;
+    let qualified: &str = parsed.params.first()?;
+    let mut symbol: DemangledSymbol = mine_d_rtti_name(qualified)?;
+    mangled.clone_into(&mut symbol.mangled);
+    Some(symbol)
+}
+
+fn d_struct_info_at<'a>(
+    image: &NativeImage<'a>,
+    section: &Section<'a>,
+    offset: usize,
+) -> Option<DemangledSymbol> {
+    if image.ptr_size != 8 {
+        return None;
+    }
+    let candidate: &[u8] = section.data.get(offset..)?;
+    let mut reader: ByteReader<'_> = ByteReader::new(candidate);
+    let object_vtable: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let _monitor: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let mangled_length: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let mangled_pointer: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let initializer_length: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let initializer_pointer: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let hash_function: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let equals_function: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let compare_function: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let string_function: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let flags: u32 = reader.read_u32_le().ok()?;
+    reader.skip(4).ok()?;
+    let destructor: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let postblit: u64 = read_d_word(&mut reader, image.ptr_size)?;
+    let alignment: u32 = reader.read_u32_le().ok()?;
+    reader.skip(4).ok()?;
+
+    let class_info_address: u64 = mapped_d_word(image, object_vtable)?;
+    if d_class_info_name_at(image, class_info_address)? != "TypeInfo_Struct" {
+        return None;
+    }
+    if initializer_pointer != 0 {
+        mapped_d_slice(
+            image,
+            initializer_pointer,
+            initializer_length,
+            MAX_D_RTTI_SLICE_LEN,
+        )?;
+    }
+    for function in [
+        hash_function,
+        equals_function,
+        compare_function,
+        string_function,
+        destructor,
+        postblit,
+    ] {
+        if function != 0 && !mapped_d_pointer(image, function) {
+            return None;
+        }
+    }
+    if flags > 3 || alignment == 0 || !alignment.is_power_of_two() {
+        return None;
+    }
+    let mangled_bytes: &[u8] =
+        mapped_d_slice(image, mangled_pointer, mangled_length, MAX_D_RTTI_NAME_LEN)?;
+    let mangled: &str = std::str::from_utf8(mangled_bytes).ok()?;
+    demangle_d_struct_type(mangled)
+}
+
+fn mine_d_struct_info(image: &NativeImage<'_>) -> DRttiScan {
+    if image.ptr_size != 8 {
+        return DRttiScan {
+            symbols: Vec::new(),
+            names_sampled: 0,
+            truncated: false,
+        };
+    }
+    mine_d_records_with_limits(image, D_CLASS_INFO_LIMITS, 14, d_struct_info_at)
 }
 
 fn mine_d_rtti_name(token: &str) -> Option<DemangledSymbol> {
@@ -1011,7 +1158,7 @@ mod tests {
         bytes
     }
 
-    fn scan_class_info(bytes: &[u8], pointer_size: u8) -> DClassInfoScan {
+    fn scan_class_info(bytes: &[u8], pointer_size: u8) -> DRttiScan {
         scan_class_info_with_section_count(bytes, pointer_size, 1)
     }
 
@@ -1019,7 +1166,7 @@ mod tests {
         bytes: &[u8],
         pointer_size: u8,
         section_count: usize,
-    ) -> DClassInfoScan {
+    ) -> DRttiScan {
         let image: NativeImage<'_> = class_info_image(bytes, pointer_size, section_count);
         mine_d_class_info(&image)
     }
@@ -1028,7 +1175,7 @@ mod tests {
         bytes: &[u8],
         pointer_size: u8,
         limits: DClassInfoLimits,
-    ) -> DClassInfoScan {
+    ) -> DRttiScan {
         let image: NativeImage<'_> = class_info_image(bytes, pointer_size, 1);
         mine_d_class_info_with_limits(&image, limits)
     }
@@ -1066,12 +1213,81 @@ mod tests {
         }
     }
 
+    fn struct_info_section(declared_mangled_length: u64, class_name: &str) -> Vec<u8> {
+        const ADDRESS: u64 = 0x1000;
+        const TYPE_VTABLE: usize = 0x100;
+        const CLASS_INFO: usize = 0x180;
+        const CLASS_VTABLE: usize = 0x280;
+        const CLASS_NAME: usize = 0x300;
+        const MANGLED_NAME: usize = 0x340;
+        const INITIALIZER: usize = 0x380;
+        const HASH_FUNCTION: usize = 0x3A0;
+        const MANGLED: &str = "S6module6Packet";
+        let mut bytes: Vec<u8> = vec![0_u8; 0x400];
+        write_word(&mut bytes, 0, ADDRESS + TYPE_VTABLE as u64, 8);
+        write_word(&mut bytes, 16, declared_mangled_length, 8);
+        write_word(&mut bytes, 24, ADDRESS + MANGLED_NAME as u64, 8);
+        write_word(&mut bytes, 32, 16, 8);
+        write_word(&mut bytes, 40, ADDRESS + INITIALIZER as u64, 8);
+        write_word(&mut bytes, 48, ADDRESS + HASH_FUNCTION as u64, 8);
+        write_word(&mut bytes, 80, 1, 8);
+        write_word(&mut bytes, 104, 8, 8);
+        write_word(&mut bytes, TYPE_VTABLE, ADDRESS + CLASS_INFO as u64, 8);
+        write_word(&mut bytes, CLASS_INFO, ADDRESS + HASH_FUNCTION as u64, 8);
+        write_word(&mut bytes, CLASS_INFO + 16, 16, 8);
+        write_word(&mut bytes, CLASS_INFO + 24, ADDRESS + INITIALIZER as u64, 8);
+        write_word(&mut bytes, CLASS_INFO + 32, class_name.len() as u64, 8);
+        write_word(&mut bytes, CLASS_INFO + 40, ADDRESS + CLASS_NAME as u64, 8);
+        write_word(&mut bytes, CLASS_INFO + 48, 1, 8);
+        write_word(
+            &mut bytes,
+            CLASS_INFO + 56,
+            ADDRESS + CLASS_VTABLE as u64,
+            8,
+        );
+        write_word(&mut bytes, CLASS_VTABLE, ADDRESS + CLASS_INFO as u64, 8);
+        bytes[CLASS_NAME..CLASS_NAME + class_name.len()].copy_from_slice(class_name.as_bytes());
+        bytes[MANGLED_NAME..MANGLED_NAME + MANGLED.len()].copy_from_slice(MANGLED.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn struct_info_recovers_a_demangled_type_from_exact_dmd_vtable_provenance() {
+        let bytes: Vec<u8> = struct_info_section(15, "TypeInfo_Struct");
+        let image: NativeImage<'_> = class_info_image(&bytes, 8, 1);
+        let first: DRttiScan = mine_d_struct_info(&image);
+        let second: DRttiScan = mine_d_struct_info(&image);
+        assert_eq!(first, second);
+        assert_eq!(first.names_sampled, 1);
+        assert_eq!(first.symbols.len(), 1);
+        assert_eq!(first.symbols[0].mangled, "S6module6Packet");
+        assert_eq!(first.symbols[0].demangled, "module.Packet");
+    }
+
+    #[test]
+    fn struct_info_refuses_an_enormous_mangled_name_before_allocation() {
+        let bytes: Vec<u8> = struct_info_section(u64::MAX, "TypeInfo_Struct");
+        let image: NativeImage<'_> = class_info_image(&bytes, 8, 1);
+        let scan: DRttiScan = mine_d_struct_info(&image);
+        assert!(scan.symbols.is_empty());
+        assert_eq!(scan.names_sampled, 0);
+    }
+
+    #[test]
+    fn struct_info_refuses_a_decoy_without_the_exact_runtime_class() {
+        let bytes: Vec<u8> = struct_info_section(15, "TypeInfo_Classx");
+        let image: NativeImage<'_> = class_info_image(&bytes, 8, 1);
+        let scan: DRttiScan = mine_d_struct_info(&image);
+        assert!(scan.symbols.is_empty());
+        assert_eq!(scan.names_sampled, 0);
+    }
+
     #[test]
     fn class_info_recovers_utf8_template_name_for_pe32_and_pe32_plus() {
         let name: &str = "módulo.Contêiner!(std.type.Tuple!(int, string))";
         for pointer_size in [4u8, 8u8] {
             let bytes: Vec<u8> = class_info_section(pointer_size, name, name.len() as u64);
-            let scan: DClassInfoScan = scan_class_info(&bytes, pointer_size);
+            let scan: DRttiScan = scan_class_info(&bytes, pointer_size);
             assert_eq!(scan.names_sampled, 1);
             assert_eq!(scan.symbols.len(), 1);
             assert_eq!(scan.symbols[0].demangled, name);
@@ -1087,7 +1303,7 @@ mod tests {
                 u64::MAX
             };
             let bytes: Vec<u8> = class_info_section(pointer_size, "decoy.NotAType", maximum);
-            let scan: DClassInfoScan = scan_class_info(&bytes, pointer_size);
+            let scan: DRttiScan = scan_class_info(&bytes, pointer_size);
             assert!(scan.symbols.is_empty());
             assert_eq!(scan.names_sampled, 0);
         }
@@ -1098,7 +1314,7 @@ mod tests {
         for pointer_size in [4u8, 8u8] {
             let mut bytes: Vec<u8> = class_info_section(pointer_size, "decoy.NotAType", 14);
             write_word(&mut bytes, 0x140, 0x1180, pointer_size);
-            let scan: DClassInfoScan = scan_class_info(&bytes, pointer_size);
+            let scan: DRttiScan = scan_class_info(&bytes, pointer_size);
             assert!(scan.symbols.is_empty());
         }
     }
@@ -1106,7 +1322,7 @@ mod tests {
     #[test]
     fn class_info_accepts_the_windows_pe_section_ceiling() {
         let bytes: Vec<u8> = class_info_section(8, "module.ExactBoundary", 20);
-        let scan: DClassInfoScan = scan_class_info_with_section_count(&bytes, 8, 96);
+        let scan: DRttiScan = scan_class_info_with_section_count(&bytes, 8, 96);
         assert_eq!(scan.symbols.len(), 1);
         assert_eq!(scan.symbols[0].demangled, "module.ExactBoundary");
         assert!(!scan.truncated);
@@ -1115,7 +1331,7 @@ mod tests {
     #[test]
     fn class_info_refuses_more_than_the_windows_pe_section_ceiling() {
         let bytes: Vec<u8> = class_info_section(8, "module.OverBoundary", 19);
-        let scan: DClassInfoScan = scan_class_info_with_section_count(&bytes, 8, 97);
+        let scan: DRttiScan = scan_class_info_with_section_count(&bytes, 8, 97);
         assert!(scan.symbols.is_empty());
         assert!(scan.truncated);
     }
@@ -1123,7 +1339,7 @@ mod tests {
     #[test]
     fn class_info_accepts_the_exact_symbol_and_name_byte_boundaries() {
         let bytes: Vec<u8> = overlapping_class_info_section(8, 2);
-        let scan: DClassInfoScan = scan_class_info_with_limits(
+        let scan: DRttiScan = scan_class_info_with_limits(
             &bytes,
             8,
             DClassInfoLimits {
@@ -1145,7 +1361,7 @@ mod tests {
     #[test]
     fn class_info_stops_at_the_unique_symbol_ceiling() {
         let bytes: Vec<u8> = overlapping_class_info_section(8, 3);
-        let scan: DClassInfoScan = scan_class_info_with_limits(
+        let scan: DRttiScan = scan_class_info_with_limits(
             &bytes,
             8,
             DClassInfoLimits {
@@ -1161,7 +1377,7 @@ mod tests {
     #[test]
     fn class_info_stops_at_the_cumulative_unique_name_byte_ceiling() {
         let bytes: Vec<u8> = overlapping_class_info_section(8, 3);
-        let scan: DClassInfoScan = scan_class_info_with_limits(
+        let scan: DRttiScan = scan_class_info_with_limits(
             &bytes,
             8,
             DClassInfoLimits {

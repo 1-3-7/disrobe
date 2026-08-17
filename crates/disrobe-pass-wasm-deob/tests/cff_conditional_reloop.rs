@@ -3,6 +3,12 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(feature = "chain")]
+use disrobe_core::chain::Pass;
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
+#[cfg(feature = "chain")]
+use disrobe_pass_wasm_deob::chain_detector::WASM_DEOB_PASS;
 use disrobe_pass_wasm_deob::{RecoveredModule, recover_module};
 use wasmtime::{Config, Engine, Linker, Module, Store, Val};
 
@@ -174,6 +180,135 @@ fn conditional_cff_reloops_to_clean_behavior_under_wasmtime() {
         let obf_bytes: Vec<u8> = assemble(case.obf);
         assert_reloops_to_clean_behavior(&clean_bytes, &obf_bytes, case.export, case.obf);
     }
+}
+
+#[test]
+#[cfg(feature = "chain")]
+fn nested_dispatch_loops_reloop_inner_first_under_wasmtime() {
+    let clean_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.clean.wat");
+    let obf_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.obf.wat");
+    let mutant_bytes: Vec<u8> = assemble_fixture("cff_nested_dispatch.mutant.wat");
+    let eng: Engine = engine();
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut obfuscated: Inst = instantiate(&eng, &obf_bytes);
+    assert_equivalent(&mut clean, &mut obfuscated, "nested_dispatch");
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut mutant: Inst = instantiate(&eng, &mutant_bytes);
+    assert_distinguished(&mut clean, &mut mutant, "nested_dispatch");
+
+    let recovered: RecoveredModule =
+        recover_module(&obf_bytes).expect("recover nested dispatch loops");
+    assert_eq!(
+        recovered.report.flattened_conditional_restructured, 2,
+        "both nested dispatchers must be reported: {:?}",
+        recovered.report
+    );
+    assert!(
+        !contains_br_table(&recovered.bytes),
+        "both nested br_table dispatchers must be removed"
+    );
+    let mut clean: Inst = instantiate(&eng, &clean_bytes);
+    let mut recovered: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(&mut clean, &mut recovered, "nested_dispatch");
+
+    let input: Artifact = Artifact::new(Rung::Raw, obf_bytes, [0x25; 32]);
+    let surfaced: Artifact = WASM_DEOB_PASS
+        .run(&input)
+        .expect("registered wasm pass must surface nested dispatch recovery");
+    assert_eq!(surfaced.rung, Rung::Surface);
+    let source: &str = std::str::from_utf8(&surfaced.envelope).expect("surface WAT is UTF-8");
+    assert!(source.contains("(module"));
+    assert!(!source.contains("br_table"));
+}
+
+#[test]
+fn nested_dispatch_refusals_preserve_ancestor_reads_and_loop_branch_semantics() {
+    let fixture: String =
+        std::fs::read_to_string(fixture_dir().join("cff_nested_dispatch.obf.wat"))
+            .expect("read nested dispatcher fixture");
+    let module_prefix: &str = fixture
+        .strip_suffix(")\n")
+        .expect("fixture module terminator");
+    let source: String = format!(
+        r#"{module_prefix}
+  (func (export "observe_nested_state") (result i32)
+    (local i32)
+    block $root
+      i32.const 0
+      local.set 0
+      loop $dispatch
+        block $default
+          block $case3
+            block $case2
+              block $case1
+                block $case0
+                  local.get 0
+                  br_table $case0 $case1 $case2 $case3
+                end
+                i32.const 1
+                local.set 0
+                br $default
+              end
+              i32.const 3
+              local.set 0
+              br $default
+            end
+            i32.const 3
+            local.set 0
+            br $default
+          end
+          br $root
+        end
+        br $dispatch
+      end
+    end
+    local.get 0)
+  (func
+    (local i32)
+    loop $candidate
+      i32.const 0
+      local.set 0
+      loop $dispatch
+        block $default
+          block $case3
+            block $case2
+              block $case1
+                block $case0
+                  local.get 0
+                  br_table $case0 $case1 $case2 $case3
+                end
+                i32.const 1
+                local.set 0
+                br $default
+              end
+              i32.const 3
+              local.set 0
+              br $default
+            end
+            i32.const 3
+            local.set 0
+            br $default
+          end
+          br $candidate
+        end
+        br $dispatch
+      end
+    end)
+)"#
+    );
+    let bytes: Vec<u8> = wat::parse_str(&source).expect("assemble mixed nested dispatchers");
+    let recovered: RecoveredModule = recover_module(&bytes).expect("recover mixed dispatchers");
+
+    assert_eq!(recovered.report.flattened_conditional_restructured, 2);
+    assert_eq!(recovered.report.flattened_dispatchers_walled, 2);
+    assert_eq!(count_br_tables(&recovered.bytes), 2);
+    let eng: Engine = engine();
+    let mut original: Inst = instantiate(&eng, &bytes);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_eq!(
+        call_no_args(&mut original, "observe_nested_state"),
+        call_no_args(&mut candidate, "observe_nested_state")
+    );
 }
 
 #[test]
@@ -1182,15 +1317,27 @@ fn default_entry_and_conditional_state_reloop_under_wasmtime() {
 }
 
 fn contains_br_table(bytes: &[u8]) -> bool {
+    count_br_tables(bytes) != 0
+}
+
+fn count_br_tables(bytes: &[u8]) -> usize {
     let module: walrus::Module = walrus::Module::from_buffer(bytes).expect("round-trip");
-    module.funcs.iter_local().any(|(_, func)| {
-        func_seq_ids(func).into_iter().any(|seq| {
-            func.block(seq)
-                .instrs
-                .iter()
-                .any(|(instr, _)| matches!(instr, walrus::ir::Instr::BrTable(_)))
+    module
+        .funcs
+        .iter_local()
+        .map(|(_, func): (walrus::FunctionId, &walrus::LocalFunction)| {
+            func_seq_ids(func)
+                .into_iter()
+                .map(|seq: walrus::ir::InstrSeqId| {
+                    func.block(seq)
+                        .instrs
+                        .iter()
+                        .filter(|(instr, _location)| matches!(instr, walrus::ir::Instr::BrTable(_)))
+                        .count()
+                })
+                .sum::<usize>()
         })
-    })
+        .sum()
 }
 
 fn contains_computed_state_binop(bytes: &[u8]) -> bool {

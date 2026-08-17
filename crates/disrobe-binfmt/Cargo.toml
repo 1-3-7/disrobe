@@ -37,7 +37,7 @@ flate2 = { workspace = true }
 liblzma = { workspace = true }
 lz4_flex = { workspace = true }
 lzfse_rust = "0.2.1"
-lzma-rs = "0.3.0"
+lzma-rs = { version = "0.3.0", features = ["raw_decoder"] }
 lzokay = { version = "2.0.1", default-features = false, features = ["decompress"] }
 memchr = { workspace = true }
 md5 = { workspace = true }

@@ -45,6 +45,8 @@ const SMALL_INTEGER_BOUND: i64 = 1 << 20;
 
 const ELISION: &str = "...";
 
+const NULL_OBJECT_REFERENCE: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DartPoolLiteralKind {
@@ -53,6 +55,8 @@ pub enum DartPoolLiteralKind {
     Integer,
     List,
     Named,
+    Type,
+    TypeArguments,
     RawImmediate,
     NativeFunction,
     Unresolved,
@@ -68,6 +72,8 @@ enum DartPoolObjectKind {
     Function,
     Field,
     Library,
+    Type,
+    TypeArguments,
     Opaque,
 }
 
@@ -78,6 +84,8 @@ struct DartPoolObject {
     text_is_escaped: bool,
     immediate: Option<i64>,
     references: Vec<u32>,
+    class_id: Option<i32>,
+    type_flags: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +228,8 @@ impl DartPoolTable {
             | DartPoolObjectKind::Function
             | DartPoolObjectKind::Field
             | DartPoolObjectKind::Library => DartPoolLiteralKind::Named,
+            DartPoolObjectKind::Type => DartPoolLiteralKind::Type,
+            DartPoolObjectKind::TypeArguments => DartPoolLiteralKind::TypeArguments,
             DartPoolObjectKind::Opaque => DartPoolLiteralKind::Unresolved,
         }
     }
@@ -277,8 +287,95 @@ impl DartPoolTable {
             DartPoolObjectKind::Library => {
                 self.declared_name(object, self.declarations.declarations.library.url_reference)
             }
+            DartPoolObjectKind::Type => self.render_type(object, depth, path, budget),
+            DartPoolObjectKind::TypeArguments => {
+                self.render_type_arguments(object, depth, path, budget)
+            }
             DartPoolObjectKind::Opaque => None,
         }
+    }
+
+    fn render_type(
+        &self,
+        object: &DartPoolObject,
+        depth: usize,
+        path: &mut BTreeSet<u32>,
+        budget: &mut usize,
+    ) -> Option<String> {
+        let class_id: i32 = object.class_id?;
+        let mut matched: bool = false;
+        let mut declared: Option<String> = None;
+        for candidate in &self.objects {
+            if candidate.kind == DartPoolObjectKind::Class && candidate.class_id == Some(class_id) {
+                if matched {
+                    return None;
+                }
+                matched = true;
+                declared = self.declared_name(
+                    candidate,
+                    self.declarations.declarations.class.name_reference,
+                );
+            }
+        }
+        let mut rendered: String = if matched {
+            declared?
+        } else {
+            u16::try_from(class_id)
+                .ok()
+                .and_then(predefined_name)
+                .map(str::to_owned)?
+        };
+        let arguments: u32 = *object.references.get(2)?;
+        if !self.is_null_object(arguments) {
+            let arguments_object: &DartPoolObject = self.object(arguments)?;
+            if arguments_object.kind != DartPoolObjectKind::TypeArguments {
+                return None;
+            }
+            rendered.push_str(&self.render_object(arguments, depth + 1, path, budget)?);
+        }
+        match object.type_flags? & 0x3 {
+            0 => rendered.push('?'),
+            1 => {}
+            2 => rendered.push('*'),
+            _ => return None,
+        }
+        Some(rendered)
+    }
+
+    fn render_type_arguments(
+        &self,
+        object: &DartPoolObject,
+        depth: usize,
+        path: &mut BTreeSet<u32>,
+        budget: &mut usize,
+    ) -> Option<String> {
+        let elements: &[u32] = object.references.get(1..)?;
+        let capacity: usize = elements.len().min(*budget);
+        let mut rendered: Vec<String> = Vec::with_capacity(capacity);
+        for element in elements {
+            let value: &DartPoolObject = self.object(*element)?;
+            if value.kind != DartPoolObjectKind::Type {
+                return None;
+            }
+            rendered.push(self.render_object(*element, depth + 1, path, budget)?);
+        }
+        Some(format!("<{}>", rendered.join(", ")))
+    }
+
+    fn is_null_object(&self, reference: u32) -> bool {
+        if reference != NULL_OBJECT_REFERENCE {
+            return false;
+        }
+        self.object(reference)
+            .is_some_and(|object: &DartPoolObject| {
+                object.kind == DartPoolObjectKind::Opaque
+                    && object.text.is_none()
+                    && !object.text_is_escaped
+                    && object.immediate.is_none()
+                    && object.references.is_empty()
+                    && object.class_id.is_none()
+                    && object.type_flags.is_none()
+            })
     }
 
     fn declared_name(&self, object: &DartPoolObject, slot: usize) -> Option<String> {
@@ -374,6 +471,8 @@ fn compact(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject {
         text_is_escaped: node.text_is_escaped,
         immediate: node.immediate,
         references: node.references.clone(),
+        class_id: node.class_id,
+        type_flags: node.type_flags,
     }
 }
 
@@ -384,6 +483,8 @@ fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject
         DartGraphNodeKind::Function => return DartPoolObjectKind::Function,
         DartGraphNodeKind::Field => return DartPoolObjectKind::Field,
         DartGraphNodeKind::Library => return DartPoolObjectKind::Library,
+        DartGraphNodeKind::Type => return DartPoolObjectKind::Type,
+        DartGraphNodeKind::TypeArguments => return DartPoolObjectKind::TypeArguments,
         DartGraphNodeKind::Unknown
         | DartGraphNodeKind::Other
         | DartGraphNodeKind::PatchClass
@@ -465,6 +566,8 @@ mod tests {
             text_is_escaped: false,
             immediate: None,
             references: Vec::new(),
+            class_id: None,
+            type_flags: None,
         }
     }
 
@@ -475,6 +578,32 @@ mod tests {
             text_is_escaped: false,
             immediate: None,
             references,
+            class_id: None,
+            type_flags: None,
+        }
+    }
+
+    fn type_object(references: Vec<u32>, class_id: i32, type_flags: u64) -> DartPoolObject {
+        DartPoolObject {
+            kind: DartPoolObjectKind::Type,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references,
+            class_id: Some(class_id),
+            type_flags: Some(type_flags),
+        }
+    }
+
+    fn type_arguments_object(references: Vec<u32>) -> DartPoolObject {
+        DartPoolObject {
+            kind: DartPoolObjectKind::TypeArguments,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references,
+            class_id: None,
+            type_flags: None,
         }
     }
 
@@ -534,6 +663,57 @@ mod tests {
             rendered, "[[?]]",
             "a pool cycle must stop at the placeholder rather than recurse"
         );
+    }
+
+    #[test]
+    fn cyclic_type_arguments_refuse_without_recursive_growth() {
+        let objects: Vec<DartPoolObject> = vec![
+            text_object("unused"),
+            type_arguments_object(vec![0, 2]),
+            type_object(vec![0, 0, 1], 40, 642),
+        ];
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(1)], objects);
+        assert_eq!(
+            pool.kind_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            DartPoolLiteralKind::TypeArguments
+        );
+        assert_eq!(pool.render_slot(0, false), None);
+        assert_eq!(pool.render_slot(0, false), None);
+    }
+
+    #[test]
+    fn type_references_refuse_unrelated_object_kinds() {
+        let objects: Vec<DartPoolObject> = vec![
+            text_object("wrong"),
+            text_object("not-null"),
+            type_object(vec![0, 0, 0], 40, 641),
+            type_arguments_object(vec![0, 0]),
+        ];
+        let pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(2), DartPoolSlot::Object(3)],
+            objects,
+        );
+        assert_eq!(pool.render_slot(0, false), None);
+        assert_eq!(pool.render_slot(1, false), None);
+    }
+
+    #[test]
+    fn canonical_null_reference_renders_a_bare_type() {
+        let objects: Vec<DartPoolObject> = vec![
+            text_object("unused"),
+            DartPoolObject {
+                kind: DartPoolObjectKind::Opaque,
+                text: None,
+                text_is_escaped: false,
+                immediate: None,
+                references: Vec::new(),
+                class_id: None,
+                type_flags: None,
+            },
+            type_object(vec![0, 0, NULL_OBJECT_REFERENCE], 40, 641),
+        ];
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(2)], objects);
+        assert_eq!(pool.render_slot(0, false).as_deref(), Some("Error"));
     }
 
     #[test]

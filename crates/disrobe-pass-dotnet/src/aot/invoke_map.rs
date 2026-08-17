@@ -23,6 +23,46 @@ const MAX_INVOKE_MAP_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INVOKE_MAP_BUCKETS: usize = 65_536;
 const MAX_INVOKE_MAP_ENTRIES: usize = 1_048_576;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvokeMapLayout {
+    FlaggedMetadataOrName,
+    EmbeddedMetadataOnly,
+}
+
+impl InvokeMapLayout {
+    const fn for_header(header: &ReadyToRunHeader) -> Self {
+        if header.major_version == 16 && header.minor_version == 0 {
+            Self::EmbeddedMetadataOnly
+        } else {
+            Self::FlaggedMetadataOrName
+        }
+    }
+
+    const fn allowed_flags(self) -> u32 {
+        match self {
+            Self::FlaggedMetadataOrName => INVOKE_FLAGS_MASK,
+            Self::EmbeddedMetadataOnly => {
+                INVOKE_FLAGS_MASK & !(HAS_METADATA_HANDLE | IS_UNIVERSAL_CANONICAL_ENTRY)
+            }
+        }
+    }
+
+    const fn has_metadata_offset(self, flags: u32) -> bool {
+        match self {
+            Self::FlaggedMetadataOrName => flags & HAS_METADATA_HANDLE != 0,
+            Self::EmbeddedMetadataOnly => true,
+        }
+    }
+
+    const fn is_universal_canonical(self, flags: u32) -> bool {
+        matches!(self, Self::FlaggedMetadataOrName) && flags & IS_UNIVERSAL_CANONICAL_ENTRY != 0
+    }
+
+    const fn has_generic_signature_reference(self, flags: u32) -> bool {
+        matches!(self, Self::FlaggedMetadataOrName) && flags & REQUIRES_INST_ARG != 0
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct InvokeIdentity {
     method_offset: u32,
@@ -354,6 +394,7 @@ pub(super) fn attach_invoke_map_entrypoints(
     header: &ReadyToRunHeader,
     methods: &mut [AotMethod],
 ) -> crate::error::Result<()> {
+    let layout: InvokeMapLayout = InvokeMapLayout::for_header(header);
     let Some(invoke_section): Option<&AotSection> = unique_section(header, INVOKE_MAP_SECTION_ID)?
     else {
         return Ok(());
@@ -408,7 +449,7 @@ pub(super) fn attach_invoke_map_entrypoints(
     for offset in offsets {
         let mut cursor: usize = offset;
         let flags: u32 = decode_unsigned(invoke_bytes, &mut cursor)?;
-        if flags & !INVOKE_FLAGS_MASK != 0 {
+        if flags & !layout.allowed_flags() != 0 {
             return Err(invalid(offset, "invoke-map entry uses unsupported flags"));
         }
         let method_offset: u32 = decode_unsigned(invoke_bytes, &mut cursor)?;
@@ -418,7 +459,7 @@ pub(super) fn attach_invoke_map_entrypoints(
         } else {
             Some(decode_unsigned(invoke_bytes, &mut cursor)?)
         };
-        if flags & HAS_METADATA_HANDLE == 0 {
+        if !layout.has_metadata_offset(flags) {
             continue;
         }
         let position: usize = method_indices
@@ -438,11 +479,16 @@ pub(super) fn attach_invoke_map_entrypoints(
         if flags & NEEDS_PARAMETER_INTERPRETATION == 0 {
             let _invoke_stub_index: u32 = decode_unsigned(invoke_bytes, &mut cursor)?;
         }
-        let generic_flags: u32 =
-            flags & (IS_GENERIC_METHOD | REQUIRES_INST_ARG | IS_UNIVERSAL_CANONICAL_ENTRY);
-        let generic_count: usize = if flags & IS_GENERIC_METHOD != 0
-            && flags & IS_UNIVERSAL_CANONICAL_ENTRY == 0
-        {
+        let is_universal_canonical: bool = layout.is_universal_canonical(flags);
+        let generic_flags: u32 = flags
+            & (IS_GENERIC_METHOD
+                | REQUIRES_INST_ARG
+                | if is_universal_canonical {
+                    IS_UNIVERSAL_CANONICAL_ENTRY
+                } else {
+                    0
+                });
+        let generic_count: usize = if flags & IS_GENERIC_METHOD != 0 && !is_universal_canonical {
             usize::try_from(
                 method
                     .signature
@@ -465,10 +511,10 @@ pub(super) fn attach_invoke_map_entrypoints(
             .map_err(|_| invalid(offset, "generic invoke-map allocation failed"))?;
         generic_context.push(generic_flags);
         if flags & IS_GENERIC_METHOD != 0 {
-            if flags & REQUIRES_INST_ARG != 0 {
+            if layout.has_generic_signature_reference(flags) {
                 generic_context.push(decode_unsigned(invoke_bytes, &mut cursor)?);
             }
-            if flags & IS_UNIVERSAL_CANONICAL_ENTRY == 0 {
+            if !is_universal_canonical {
                 for _ in 0..generic_count {
                     generic_context.push(decode_unsigned(invoke_bytes, &mut cursor)?);
                 }

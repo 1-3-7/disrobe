@@ -1137,7 +1137,7 @@ pub fn detect(image: &[u8]) -> AotReport {
         || symbols.contains_key("modules_table")
         || symbols.contains_key("rhp_alloc")
         || symbols.contains_key("corelib_module");
-    let runtime: AotRuntime = classify_runtime(image);
+    let runtime: AotRuntime = classify_runtime(image, ready_to_run.as_ref());
     AotReport {
         is_native_aot,
         recovered_symbols: symbols,
@@ -1150,8 +1150,11 @@ pub fn detect(image: &[u8]) -> AotReport {
     }
 }
 
-fn classify_runtime(image: &[u8]) -> AotRuntime {
-    if byte_search::contains(image, b"net10.0") {
+fn classify_runtime(image: &[u8], ready_to_run: Option<&ReadyToRunHeader>) -> AotRuntime {
+    if ready_to_run.is_some_and(|header: &ReadyToRunHeader| {
+        header.major_version == 16 && header.minor_version == 0
+    }) || byte_search::contains(image, b"net10.0")
+    {
         AotRuntime::Net10
     } else if byte_search::contains(image, b"net9.0") {
         AotRuntime::Net9

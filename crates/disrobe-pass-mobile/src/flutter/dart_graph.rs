@@ -95,6 +95,8 @@ pub(super) enum DartGraphNodeKind {
     Field,
     Library,
     String,
+    Type,
+    TypeArguments,
     FunctionType,
     Other,
 }
@@ -117,6 +119,7 @@ pub(super) struct DartGraphNode {
     pub(super) immediate: Option<i64>,
     pub(super) pool_slots: Vec<DartPoolSlot>,
     pub(super) text_is_escaped: bool,
+    pub(super) type_flags: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -851,8 +854,20 @@ impl DartGraphParser<'_> {
     fn fill_types(&mut self, cluster: &DartGraphCluster) -> Result<()> {
         for reference in cluster.start_reference..cluster.end_reference {
             let references: Vec<u32> = self.read_references(3)?;
-            let _flags: u64 = self.cursor.read_unsigned("type flags")?;
-            self.node_mut(reference)?.references = references;
+            let flags: u64 = self.cursor.read_unsigned("type flags")?;
+            let class_id: i32 =
+                i32::try_from(flags >> 4).map_err(|_: std::num::TryFromIntError| -> Error {
+                    Error::DartGraphInvalidClusterValue {
+                        index: cluster.index,
+                        field: "type class id",
+                        value: i64::MAX,
+                        offset: self.cursor.position(),
+                    }
+                })?;
+            let node: &mut DartGraphNode = self.node_mut(reference)?;
+            node.references = references;
+            node.class_id = Some(class_id);
+            node.type_flags = Some(flags);
         }
         Ok(())
     }
@@ -1399,6 +1414,8 @@ const fn node_kind(kind: DartClusterBodyKind) -> DartGraphNodeKind {
         DartClusterBodyKind::Field => DartGraphNodeKind::Field,
         DartClusterBodyKind::Library => DartGraphNodeKind::Library,
         DartClusterBodyKind::String => DartGraphNodeKind::String,
+        DartClusterBodyKind::Type => DartGraphNodeKind::Type,
+        DartClusterBodyKind::TypeArguments => DartGraphNodeKind::TypeArguments,
         DartClusterBodyKind::FunctionType => DartGraphNodeKind::FunctionType,
         _ => DartGraphNodeKind::Other,
     }
