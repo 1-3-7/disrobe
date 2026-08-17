@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
 use serde::{Deserialize, Serialize};
 
-use crate::binary::GoImage;
+use crate::binary::{CallArchitecture, Endian, GoImage, ImageKind};
 use crate::moduledata::build_minor;
 use crate::pclntab::{LocatedPclntab, PclntabHeader, PclntabVersion, read_u32};
 use crate::symbols::{FuncTabEntry, GoFunc, GoSymbols, func_table, read_word};
@@ -75,6 +75,7 @@ pub enum DeferCallSupport {
     NotAttempted,
     X86,
     X86_64,
+    Arm64,
     UnsupportedImage,
 }
 
@@ -85,6 +86,7 @@ impl DeferCallSupport {
             Self::NotAttempted => "not-attempted",
             Self::X86 => "x86",
             Self::X86_64 => "x86-64",
+            Self::Arm64 => "arm64",
             Self::UnsupportedImage => "unsupported-image",
         }
     }
@@ -411,15 +413,12 @@ fn collect_unique_function_entries(functions: &[GoFunc]) -> BTreeMap<u64, &GoFun
 
 fn recover_x86_call_sites(
     image: &GoImage<'_>,
+    bitness: u32,
+    support: DeferCallSupport,
     symbols: &GoSymbols,
     hooks: &[RuntimeDeferHook],
     functions: &mut [DeferFunc],
 ) -> (DeferCallSupport, bool) {
-    let (bitness, support): (u32, DeferCallSupport) = match image.x86_bitness() {
-        Some(32) => (32, DeferCallSupport::X86),
-        Some(64) => (64, DeferCallSupport::X86_64),
-        _ => return (DeferCallSupport::UnsupportedImage, false),
-    };
     let targets: BTreeMap<u64, DeferCallKind> = collect_runtime_call_targets(hooks);
     if targets.is_empty() {
         return (support, false);
@@ -485,6 +484,126 @@ fn recover_x86_call_sites(
         }
     }
     (support, budget.truncated)
+}
+
+fn arm64_bl_target(instruction_va: u64, word: u32) -> Option<u64> {
+    if !instruction_va.is_multiple_of(4) || word & 0xfc00_0000 != 0x9400_0000 {
+        return None;
+    }
+    let encoded: u32 = (word & 0x03ff_ffff) << 6;
+    let immediate: i32 = i32::from_ne_bytes(encoded.to_ne_bytes()) >> 6;
+    let displacement: i64 = i64::from(immediate) * 4;
+    if displacement >= 0 {
+        instruction_va.checked_add(u64::try_from(displacement).ok()?)
+    } else {
+        instruction_va.checked_sub(displacement.unsigned_abs())
+    }
+}
+
+fn recover_arm64_call_sites(
+    image: &GoImage<'_>,
+    symbols: &GoSymbols,
+    hooks: &[RuntimeDeferHook],
+    functions: &mut [DeferFunc],
+) -> (DeferCallSupport, bool) {
+    let support: DeferCallSupport = DeferCallSupport::Arm64;
+    let targets: BTreeMap<u64, DeferCallKind> = collect_runtime_call_targets(hooks);
+    if targets.is_empty() {
+        return (support, false);
+    }
+    let symbols_by_entry: BTreeMap<u64, &GoFunc> = collect_unique_function_entries(&symbols.funcs);
+    let mut budget: CallScanBudget = CallScanBudget::new();
+    for function in functions {
+        let Some(symbol): Option<&&GoFunc> = symbols_by_entry.get(&function.entry) else {
+            continue;
+        };
+        let Some(va): Option<u64> = symbol.va else {
+            continue;
+        };
+        if !va.is_multiple_of(4) {
+            continue;
+        }
+        let Some(raw_len): Option<u64> = symbol.end.checked_sub(symbol.entry) else {
+            continue;
+        };
+        let Ok(len): Result<usize, _> = usize::try_from(raw_len) else {
+            continue;
+        };
+        if len == 0 {
+            continue;
+        }
+        if len > MAX_CALL_SCAN_BYTES {
+            budget.truncated = true;
+            continue;
+        }
+        if !len.is_multiple_of(4) {
+            budget.truncated = true;
+            continue;
+        }
+        if !budget.claim_bytes(len) {
+            break;
+        }
+        let Some(code): Option<&[u8]> = image.data_at_va(va, len) else {
+            continue;
+        };
+        for (index, bytes) in code.chunks_exact(4).enumerate() {
+            let Some(byte_offset): Option<usize> = index.checked_mul(4) else {
+                continue;
+            };
+            let Ok(offset): Result<u32, _> = u32::try_from(byte_offset) else {
+                continue;
+            };
+            let Some(instruction_va): Option<u64> = va.checked_add(u64::from(offset)) else {
+                continue;
+            };
+            let word: u32 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let Some(target): Option<u64> = arm64_bl_target(instruction_va, word) else {
+                continue;
+            };
+            let Some(kind): Option<&DeferCallKind> = targets.get(&target) else {
+                continue;
+            };
+            if !budget.claim_site() {
+                return (support, true);
+            }
+            function.call_sites.push(DeferCallSite {
+                kind: *kind,
+                offset,
+                va: instruction_va,
+            });
+        }
+    }
+    (support, budget.truncated)
+}
+
+fn recover_call_sites(
+    image: &GoImage<'_>,
+    symbols: &GoSymbols,
+    hooks: &[RuntimeDeferHook],
+    functions: &mut [DeferFunc],
+    build_version: Option<&str>,
+) -> (DeferCallSupport, bool) {
+    match image.call_architecture() {
+        Some(CallArchitecture::X86) => {
+            recover_x86_call_sites(image, 32, DeferCallSupport::X86, symbols, hooks, functions)
+        }
+        Some(CallArchitecture::X86_64) => recover_x86_call_sites(
+            image,
+            64,
+            DeferCallSupport::X86_64,
+            symbols,
+            hooks,
+            functions,
+        ),
+        Some(CallArchitecture::Arm64)
+            if image.kind() == ImageKind::Elf
+                && image.endian() == Endian::Little
+                && build_version == Some("go1.17.13") =>
+        {
+            recover_arm64_call_sites(image, symbols, hooks, functions)
+        }
+        Some(CallArchitecture::Arm64) | None => (DeferCallSupport::UnsupportedImage, false),
+    }
 }
 
 #[must_use]
@@ -598,7 +717,13 @@ fn recover_defers_inner(
     let (call_support, call_truncated): (DeferCallSupport, bool) = image.map_or(
         (DeferCallSupport::NotAttempted, false),
         |image: &GoImage<'_>| {
-            recover_x86_call_sites(image, symbols, &runtime_hooks, &mut functions)
+            recover_call_sites(
+                image,
+                symbols,
+                &runtime_hooks,
+                &mut functions,
+                build_version,
+            )
         },
     );
 
@@ -619,7 +744,64 @@ fn recover_defers_inner(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::binary::Endian;
+    use crate::binary::{Endian, ImageKind, Section};
+
+    #[test]
+    fn arm64_bl_target_requires_an_aligned_direct_call_and_checked_target() {
+        assert_eq!(arm64_bl_target(0x1000, 0x9400_0002), Some(0x1008));
+        assert_eq!(arm64_bl_target(0x1000, 0x97ff_ffff), Some(0x0ffc));
+        assert_eq!(arm64_bl_target(0x1002, 0x9400_0002), None);
+        assert_eq!(arm64_bl_target(0x1000, 0x1400_0002), None);
+        assert_eq!(arm64_bl_target(u64::MAX - 3, 0x9400_0002), None);
+        assert_eq!(arm64_bl_target(0, 0x97ff_ffff), None);
+    }
+
+    #[test]
+    fn arm64_call_scan_rejects_a_trailing_partial_instruction() {
+        let code: [u8; 5] = [0x02, 0x00, 0x00, 0x94, 0xff];
+        let image: GoImage<'_> = GoImage {
+            kind: ImageKind::Elf,
+            endian: Endian::Little,
+            ptr_size: 8,
+            sections: vec![Section {
+                name: ".text".to_owned(),
+                address: 0x1000,
+                data: &code,
+                mapped_len: code.len() as u64,
+            }],
+            raw: &[],
+            symbol_addrs: Vec::new(),
+            flat: false,
+        };
+        let mut symbol: GoFunc = GoFunc::new(0, code.len() as u64, "main.partial".to_owned());
+        symbol.va = Some(0x1000);
+        let symbols: GoSymbols = GoSymbols {
+            version_label: "go1.16..go1.17".to_owned(),
+            ptr_size: 8,
+            funcs: vec![symbol],
+            source_files: Vec::new(),
+            package_set: Vec::new(),
+        };
+        let hooks: [RuntimeDeferHook; 1] = [RuntimeDeferHook {
+            name: "runtime.deferreturn".to_owned(),
+            entry: 0x1008,
+            va: Some(0x1008),
+        }];
+        let mut functions: [DeferFunc; 1] = [DeferFunc {
+            name: "main.partial".to_owned(),
+            entry: 0,
+            va: Some(0x1000),
+            lowering: DeferLowering::CallBased,
+            deferreturn_offset: 0,
+            deferreturn_va: None,
+            call_sites: Vec::new(),
+        }];
+        let (support, truncated): (DeferCallSupport, bool) =
+            recover_arm64_call_sites(&image, &symbols, &hooks, &mut functions);
+        assert_eq!(support, DeferCallSupport::Arm64);
+        assert!(truncated);
+        assert!(functions[0].call_sites.is_empty());
+    }
 
     fn header(version: PclntabVersion, ptr_size: u8, section_addr: u64) -> PclntabHeader {
         PclntabHeader {

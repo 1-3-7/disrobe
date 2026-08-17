@@ -1,0 +1,18 @@
+schema = "disrobe.fixture.provenance/v1"
+producer = "erofs-utils mkfs.erofs"
+release_tag = "main"
+release_commit = "7db78788b000999e2de88decd2ba90654f26171c"
+source_url = "https://github.com/erofs/erofs-utils"
+reference_command = "mkfs.erofs -b4096 -zlzma,dictsize=4096 -C8192 -T0 --all-time -U00000000-0000-0000-0000-000000000000 lzma-compact-big-xattr.erofs source && fsck.erofs --extract=extracted --overwrite --no-preserve lzma-compact-big-xattr.erofs"
+fixture_sha256 = "472b4cbc1e3cf2f59de0c55a9b3ef1cb9182e316b529718be8b64c4d559c4552"
+fixture_size = 24576
+source_file = "payload.txt"
+source_sha256 = "e7807e2e9a4b306c2c83d38059553aa2f67bc5aeec0ea2f8594adf5a634070b6"
+source_size = 42450
+reference_extracted_sha256 = "e7807e2e9a4b306c2c83d38059553aa2f67bc5aeec0ea2f8594adf5a634070b6"
+block_size = 4096
+physical_cluster_size = 8192
+lzma_dictionary_size = 4096
+inode_size = 64
+inline_xattr_size = 44
+compression_index = "compact"

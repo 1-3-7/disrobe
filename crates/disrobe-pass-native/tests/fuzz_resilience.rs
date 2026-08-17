@@ -8,6 +8,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::error::Error;
+use disrobe_pass_native::reconstruct_pdb_cxx;
 use disrobe_pass_native::stub_emu::cpu::NoopHost;
 use disrobe_pass_native::stub_emu::mem::MAX_MAP_BYTES;
 use disrobe_pass_native::stub_emu::{Cpu, CpuMode, ExitReason, Memory, Perm, Reg};
@@ -795,5 +797,84 @@ fn the_emulator_memory_refuses_a_hostile_size_rather_than_reserving_it() {
     assert!(
         peak < CASE_ALLOC_CEILING,
         "a hostile map or read reserved {peak} bytes"
+    );
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let raw: [u8; 2] = bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
+    Some(u16::from_le_bytes(raw))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let raw: [u8; 4] = bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
+    Some(u32::from_le_bytes(raw))
+}
+
+fn first_embedded_argument_list(pdb_bytes: &[u8]) -> Option<Vec<u8>> {
+    let cursor: Cursor<&[u8]> = Cursor::new(pdb_bytes);
+    let mut pdb_file: pdb::PDB<'_, Cursor<&[u8]>> = pdb::PDB::open(cursor).ok()?;
+    let stream = pdb_file.raw_stream(pdb::StreamIndex(2)).ok()??;
+    let bytes: &[u8] = stream.as_slice();
+    let header_size: usize = read_u32(bytes, 4)? as usize;
+    let record_bytes: usize = read_u32(bytes, 16)? as usize;
+    let end: usize = header_size.checked_add(record_bytes)?;
+    let mut offset: usize = header_size;
+    while offset < end {
+        let length: usize = usize::from(read_u16(bytes, offset)?);
+        let start: usize = offset.checked_add(2)?;
+        let next: usize = start.checked_add(length)?;
+        let record: &[u8] = bytes.get(start..next)?;
+        if read_u16(record, 0) == Some(0x1201)
+            && record.len() == 10
+            && pdb_bytes
+                .windows(record.len())
+                .any(|candidate: &[u8]| candidate == record)
+        {
+            return Some(record.to_vec());
+        }
+        offset = next;
+    }
+    None
+}
+
+fn pdb_with_argument_count(count: u32) -> Vec<u8> {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("pdb_cxx_recovery.pdb");
+    let mut bytes: Vec<u8> =
+        std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let record: Vec<u8> = first_embedded_argument_list(&bytes)
+        .expect("fixture must contain an embedded LF_ARGLIST record");
+    let starts: Vec<usize> = bytes
+        .windows(record.len())
+        .enumerate()
+        .filter_map(|(offset, candidate): (usize, &[u8])| (candidate == record).then_some(offset))
+        .collect();
+    assert!(
+        !starts.is_empty(),
+        "selected LF_ARGLIST must be embedded in fixture bytes"
+    );
+    for start in starts {
+        bytes[start + 2..start + 6].copy_from_slice(&count.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn pdb_argument_list_count_is_bounded_before_dependency_allocation() {
+    let bytes: Vec<u8> = pdb_with_argument_count(u32::MAX);
+    reset_peak_allocation();
+    let result = reconstruct_pdb_cxx(&bytes);
+    let peak: usize = peak_allocation();
+    let message: String = result
+        .expect_err("oversized LF_ARGLIST count must refuse")
+        .to_string();
+    assert!(message.contains("LF_ARGLIST"), "{message}");
+    assert!(message.contains("4294967295"), "{message}");
+    assert!(message.contains("record holds at most"), "{message}");
+    assert!(
+        peak < CASE_ALLOC_CEILING,
+        "a ten-byte LF_ARGLIST record forced a {peak}-byte allocation"
     );
 }

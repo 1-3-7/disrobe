@@ -22,6 +22,13 @@ pub enum ImageKind {
     MachO,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallArchitecture {
+    X86,
+    X86_64,
+    Arm64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Section<'a> {
     pub name: String,
@@ -85,11 +92,12 @@ impl<'a> GoImage<'a> {
     }
 
     #[must_use]
-    pub(crate) fn x86_bitness(&self) -> Option<u32> {
+    pub(crate) fn call_architecture(&self) -> Option<CallArchitecture> {
         let file: ObjFile<'_, &'_ [u8]> = ObjFile::parse(self.raw).ok()?;
         match file.architecture() {
-            Architecture::I386 => Some(32),
-            Architecture::X86_64 => Some(64),
+            Architecture::I386 => Some(CallArchitecture::X86),
+            Architecture::X86_64 => Some(CallArchitecture::X86_64),
+            Architecture::Aarch64 => Some(CallArchitecture::Arm64),
             _ => None,
         }
     }

@@ -1,7 +1,7 @@
 <?php
 
 const DZOA_MAGIC = "DZOA";
-const DZOA_VERSION = 2;
+const DZOA_VERSION = 3;
 
 const OT_UNUSED = 0;
 const OT_CONST = 1;
@@ -20,6 +20,11 @@ const L_LONG = 2;
 const L_DOUBLE = 3;
 const L_STR = 4;
 const L_ARRAY = 5;
+const L_SWITCH_LONG = 6;
+const L_SWITCH_STRING = 7;
+
+const SWITCH_TABLE_CAP = 65536;
+const SWITCH_KEY_BYTES_CAP = 1048576;
 
 const OPMAP = [
     'NOP' => 0,
@@ -202,6 +207,9 @@ final class ParsedOp
     public int $result = 0;
     public int $ext = 0;
     public int $line = 0;
+    public ?string $switchKind = null;
+    public array $switchEntries = [];
+    public ?int $switchDefault = null;
 }
 
 final class ParsedOpArray
@@ -310,7 +318,7 @@ function serialize_var_names(array $vars): string
     return $out;
 }
 
-function serialize_literals(LiteralPool $pool): string
+function serialize_literals(LiteralPool $pool, int $schemaVersion): string
 {
     $items = $pool->items();
     $out = le32(count($items));
@@ -334,6 +342,24 @@ function serialize_literals(LiteralPool $pool): string
             case 'array':
                 $out .= chr(L_ARRAY) . le32($value);
                 break;
+            case 'switch-long':
+                if ($schemaVersion < 3) {
+                    fail("DZOA schema version $schemaVersion cannot encode SWITCH_LONG targets");
+                }
+                $out .= chr(L_SWITCH_LONG) . le32(count($value));
+                foreach ($value as [$key, $target]) {
+                    $out .= le64($key) . le32($target);
+                }
+                break;
+            case 'switch-string':
+                if ($schemaVersion < 3) {
+                    fail("DZOA schema version $schemaVersion cannot encode SWITCH_STRING targets");
+                }
+                $out .= chr(L_SWITCH_STRING) . le32(count($value));
+                foreach ($value as [$key, $target]) {
+                    $out .= push_string($key) . le32($target);
+                }
+                break;
             default:
                 fail("unknown literal tag $tag");
         }
@@ -351,7 +377,7 @@ function serialize_body(ParsedOpArray $oa, int $schemaVersion): string
     if ($schemaVersion >= 2) {
         $out .= serialize_var_names($oa->vars);
     }
-    $out .= serialize_literals($oa->pool);
+    $out .= serialize_literals($oa->pool, $schemaVersion);
     $out .= le32(count($oa->ops));
     foreach ($oa->ops as $op) {
         $out .= chr($op->opcode);
@@ -483,6 +509,87 @@ function rejoin_string_operands(array $rawLines): array
     return $lines;
 }
 
+function build_switch_op(
+    string $mnemonic,
+    array $tokens,
+    ParsedOpArray $oa,
+    int $address
+): ParsedOp {
+    $subjectToken = array_shift($tokens);
+    if ($subjectToken === null) {
+        fail("$mnemonic at line $address has no subject");
+    }
+    [$subjectType, $subjectValue] = parse_operand($subjectToken, $oa);
+    if ($subjectType === null || $subjectType === OT_UNUSED) {
+        fail("$mnemonic at line $address has an unparseable subject '$subjectToken'");
+    }
+    if (count($tokens) < 4 || (count($tokens) % 2) !== 0) {
+        fail("$mnemonic at line $address has an incomplete dispatch table");
+    }
+    $entryCount = intdiv(count($tokens), 2) - 1;
+    if ($entryCount < 1 || $entryCount > SWITCH_TABLE_CAP) {
+        fail("$mnemonic at line $address carries $entryCount entries, cap " . SWITCH_TABLE_CAP);
+    }
+    $entries = [];
+    $seen = [];
+    $default = null;
+    $keyBytes = 0;
+    while ($tokens !== []) {
+        $keyToken = array_shift($tokens);
+        $targetToken = array_shift($tokens);
+        if ($keyToken === null || $targetToken === null) {
+            fail("$mnemonic at line $address has an incomplete key-target pair");
+        }
+        $targetToken = rtrim($targetToken, ',');
+        if (!preg_match('/^\d+$/', $targetToken)) {
+            fail("$mnemonic at line $address has an invalid target '$targetToken'");
+        }
+        $target = (int) $targetToken;
+        if ($keyToken === 'default:') {
+            if ($default !== null || $tokens !== []) {
+                fail("$mnemonic at line $address has an ambiguous default target");
+            }
+            $default = $target;
+            continue;
+        }
+        if ($mnemonic === 'SWITCH_LONG') {
+            if (!preg_match('/^(-?\d+):$/', $keyToken, $match)) {
+                fail("$mnemonic at line $address has a non-integer key '$keyToken'");
+            }
+            $key = (int) $match[1];
+            $identity = 'i:' . $match[1];
+        } else {
+            if (!preg_match('/^"((?:[^"\\\\]|\\\\.)*)":$/s', $keyToken, $match)) {
+                fail("$mnemonic at line $address has a non-string key '$keyToken'");
+            }
+            $key = stripcslashes($match[1]);
+            $keyBytes += strlen($key) + 1;
+            if ($keyBytes > SWITCH_KEY_BYTES_CAP) {
+                fail("$mnemonic at line $address exceeds string-key byte cap " . SWITCH_KEY_BYTES_CAP);
+            }
+            $identity = 's:' . $key;
+        }
+        if (isset($seen[$identity])) {
+            fail("$mnemonic at line $address repeats key '$keyToken'");
+        }
+        $seen[$identity] = true;
+        $entries[] = [$key, $target];
+    }
+    if ($default === null || count($entries) !== $entryCount) {
+        fail("$mnemonic at line $address has no exact default target");
+    }
+    $op = new ParsedOp();
+    $op->opcode = OPMAP[$mnemonic];
+    $op->op1Type = $subjectType;
+    $op->op1 = $subjectValue;
+    $op->line = $address + 1;
+    $op->switchKind = $mnemonic === 'SWITCH_LONG' ? 'switch-long' : 'switch-string';
+    $op->switchEntries = $entries;
+    $op->switchDefault = $default;
+
+    return $op;
+}
+
 function parse_dump(string $text): array
 {
     $lines = rejoin_string_operands(preg_split('/\r\n|\n|\r/', $text));
@@ -584,6 +691,13 @@ function parse_dump(string $text): array
         }
 
         $tokens = tokenize_operands($rest);
+
+        if ($mnemonic === 'SWITCH_LONG' || $mnemonic === 'SWITCH_STRING') {
+            $op = build_switch_op($mnemonic, $tokens, $current['oa'], $addr);
+            $current['oa']->ops[] = $op;
+            $current['index'][$addr] = count($current['oa']->ops) - 1;
+            continue;
+        }
 
         $isFcallInit = in_array($mnemonic, ['INIT_FCALL', 'INIT_FCALL_BY_NAME', 'INIT_NS_FCALL_BY_NAME'], true);
         if ($isFcallInit) {
@@ -747,6 +861,24 @@ function parse_dump(string $text): array
                 $oa->ops[$opPos]->op2 = $resolved;
             }
         }
+        foreach ($oa->ops as $op) {
+            if ($op->switchKind === null) {
+                continue;
+            }
+            $resolvedEntries = [];
+            foreach ($op->switchEntries as [$key, $targetAddress]) {
+                if (!isset($entry['index'][$targetAddress])) {
+                    fail("{$op->switchKind} target $targetAddress is outside its op_array");
+                }
+                $resolvedEntries[] = [$key, $entry['index'][$targetAddress]];
+            }
+            if ($op->switchDefault === null || !isset($entry['index'][$op->switchDefault])) {
+                fail("{$op->switchKind} default target is outside its op_array");
+            }
+            $op->op2Type = OT_CONST;
+            $op->op2 = $oa->pool->intern($op->switchKind, $resolvedEntries);
+            $op->ext = $entry['index'][$op->switchDefault];
+        }
     }
     unset($entry);
 
@@ -773,6 +905,22 @@ function nest_arrays(array $arrays): ParsedOpArray
     }
 
     return $main;
+}
+
+function requires_dzoa_v3(ParsedOpArray $oa): bool
+{
+    foreach ($oa->ops as $op) {
+        if ($op->switchKind !== null) {
+            return true;
+        }
+    }
+    foreach ($oa->children as $child) {
+        if (requires_dzoa_v3($child)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function dump_text(array $stdout_stderr): string
@@ -939,7 +1087,9 @@ $arrays = parse_dump($dump);
 $main = nest_arrays($arrays);
 
 $forced = getenv('DZOA_FORCE_VERSION');
-$schemaVersion = ($forced !== false && $forced !== '') ? (int) $forced : DZOA_VERSION;
+$schemaVersion = ($forced !== false && $forced !== '')
+    ? (int) $forced
+    : (requires_dzoa_v3($main) ? DZOA_VERSION : 2);
 
 $container = DZOA_MAGIC . chr($schemaVersion) . serialize_body($main, $schemaVersion);
 require_distinct_outputs($outPath, $dumpPath);

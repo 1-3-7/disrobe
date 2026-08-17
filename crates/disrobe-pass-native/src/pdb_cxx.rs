@@ -320,6 +320,12 @@ fn is_compiler_generated_symbol(name: &str) -> bool {
 pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
     let cursor: Cursor<&[u8]> = Cursor::new(bytes);
     let mut pdb_file: pdb::PDB<'_, Cursor<&[u8]>> = pdb::PDB::open(cursor).map_err(pdb_err)?;
+    let tpi_stream = pdb_file
+        .raw_stream(pdb::StreamIndex(2))
+        .map_err(pdb_err)?
+        .ok_or_else(|| Error::Pdb("PDB has no TPI stream".to_owned()))?;
+    validate_tpi_argument_lists(tpi_stream.as_slice())?;
+    drop(tpi_stream);
     let type_info: pdb::TypeInformation<'_> = pdb_file.type_information().map_err(pdb_err)?;
     let catalog: TypeCatalog<'_> = TypeCatalog::build(&type_info)?;
 
@@ -462,6 +468,128 @@ pub fn reconstruct_pdb_cxx(bytes: &[u8]) -> Result<PdbCxxReconstruction> {
         module_stream_coverage,
         header_text,
     })
+}
+
+const LF_ARGLIST: u16 = 0x1201;
+const TPI_HEADER_MIN_BYTES: usize = 56;
+const TPI_HEADER_MAX_BYTES: usize = 1024;
+
+fn validate_tpi_argument_lists(stream: &[u8]) -> Result<()> {
+    if stream.is_empty() {
+        return Ok(());
+    }
+    let header_size: usize = read_tpi_u32(stream, 4, "header size")? as usize;
+    if !(TPI_HEADER_MIN_BYTES..=TPI_HEADER_MAX_BYTES).contains(&header_size) {
+        return Err(Error::Pdb(format!(
+            "TPI header size {header_size} is outside {TPI_HEADER_MIN_BYTES}..={TPI_HEADER_MAX_BYTES}"
+        )));
+    }
+    let record_bytes: usize = read_tpi_u32(stream, 16, "record byte count")? as usize;
+    let records_end: usize = header_size.checked_add(record_bytes).ok_or_else(|| {
+        Error::Pdb(format!(
+            "TPI record range overflows: header {header_size}, records {record_bytes}"
+        ))
+    })?;
+    if records_end != stream.len() {
+        return Err(Error::Pdb(format!(
+            "TPI declares {record_bytes} record bytes after a {header_size}-byte header, but the stream contains {} record bytes",
+            stream.len().saturating_sub(header_size)
+        )));
+    }
+
+    let mut offset: usize = header_size;
+    while offset < records_end {
+        let length: usize = usize::from(read_tpi_u16(stream, offset, "record length")?);
+        if length < 2 {
+            return Err(Error::Pdb(format!(
+                "TPI record at byte {offset} has invalid length {length}"
+            )));
+        }
+        let data_start: usize = offset
+            .checked_add(2)
+            .ok_or_else(|| Error::Pdb(format!("TPI record offset {offset} overflows")))?;
+        let next: usize = data_start.checked_add(length).ok_or_else(|| {
+            Error::Pdb(format!(
+                "TPI record at byte {offset} overflows its length {length}"
+            ))
+        })?;
+        if next > records_end {
+            return Err(Error::Pdb(format!(
+                "TPI record at byte {offset} declares {length} bytes beyond the {record_bytes}-byte record region"
+            )));
+        }
+        let record: &[u8] = &stream[data_start..next];
+        if read_u16(record, 0).is_some_and(|kind: u16| kind == LF_ARGLIST) {
+            validate_argument_list(record, offset)?;
+        }
+        offset = next;
+    }
+    Ok(())
+}
+
+fn validate_argument_list(record: &[u8], offset: usize) -> Result<()> {
+    let count: usize = read_tpi_u32(record, 2, "LF_ARGLIST entry count")? as usize;
+    let body: &[u8] = record.get(6..).ok_or_else(|| {
+        Error::Pdb(format!(
+            "LF_ARGLIST at TPI byte {offset} is truncated before its entry count"
+        ))
+    })?;
+    let available: usize = body.len() / 4;
+    if count > available {
+        return Err(Error::Pdb(format!(
+            "LF_ARGLIST at TPI byte {offset} declares {count} entries but the record holds at most {available}"
+        )));
+    }
+    let entry_bytes: usize = count.checked_mul(4).ok_or_else(|| {
+        Error::Pdb(format!(
+            "LF_ARGLIST at TPI byte {offset} entry count {count} overflows"
+        ))
+    })?;
+    let trailing: &[u8] = body.get(entry_bytes..).ok_or_else(|| {
+        Error::Pdb(format!(
+            "LF_ARGLIST at TPI byte {offset} declares {count} entries beyond its record"
+        ))
+    })?;
+    if !valid_codeview_padding(trailing) {
+        return Err(Error::Pdb(format!(
+            "LF_ARGLIST at TPI byte {offset} declares {count} entries but carries {} additional bytes",
+            trailing.len()
+        )));
+    }
+    Ok(())
+}
+
+fn valid_codeview_padding(bytes: &[u8]) -> bool {
+    bytes.is_empty()
+        || (bytes.len() <= 3
+            && bytes.first().is_some_and(|first: &u8| {
+                *first >= 0xf1 && usize::from(*first & 0x0f) == bytes.len()
+            }))
+}
+
+fn read_tpi_u16(bytes: &[u8], offset: usize, field: &str) -> Result<u16> {
+    read_u16(bytes, offset).ok_or_else(|| {
+        Error::Pdb(format!(
+            "TPI is truncated while reading {field} at byte {offset}"
+        ))
+    })
+}
+
+fn read_tpi_u32(bytes: &[u8], offset: usize, field: &str) -> Result<u32> {
+    let raw: [u8; 4] = bytes
+        .get(offset..offset.saturating_add(4))
+        .and_then(|slice: &[u8]| slice.try_into().ok())
+        .ok_or_else(|| {
+            Error::Pdb(format!(
+                "TPI is truncated while reading {field} at byte {offset}"
+            ))
+        })?;
+    Ok(u32::from_le_bytes(raw))
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    let raw: [u8; 2] = bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
+    Some(u16::from_le_bytes(raw))
 }
 
 fn assign_udt_names(catalog: &TypeCatalog<'_>) -> BTreeMap<u32, String> {
@@ -621,4 +749,89 @@ fn render_udt(u: &EmittedUdt) -> String {
     }
     out.push_str("};\n");
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn argument_list(count: u32, arguments: &[u32], padding: &[u8]) -> Vec<u8> {
+        let mut record: Vec<u8> = Vec::new();
+        record.extend_from_slice(&LF_ARGLIST.to_le_bytes());
+        record.extend_from_slice(&count.to_le_bytes());
+        for argument in arguments {
+            record.extend_from_slice(&argument.to_le_bytes());
+        }
+        record.extend_from_slice(padding);
+        record
+    }
+
+    fn tpi(records: &[Vec<u8>]) -> Vec<u8> {
+        let record_bytes: usize = records
+            .iter()
+            .map(|record: &Vec<u8>| record.len() + 2)
+            .sum();
+        let mut stream: Vec<u8> = vec![0; TPI_HEADER_MIN_BYTES];
+        stream[4..8].copy_from_slice(&(TPI_HEADER_MIN_BYTES as u32).to_le_bytes());
+        stream[8..12].copy_from_slice(&0x1000_u32.to_le_bytes());
+        stream[12..16].copy_from_slice(&(0x1000_u32 + records.len() as u32).to_le_bytes());
+        stream[16..20].copy_from_slice(&(record_bytes as u32).to_le_bytes());
+        for record in records {
+            let length: u16 = u16::try_from(record.len()).expect("test record length");
+            stream.extend_from_slice(&length.to_le_bytes());
+            stream.extend_from_slice(record);
+        }
+        stream
+    }
+
+    #[test]
+    fn argument_list_count_cannot_exceed_record_capacity() {
+        for count in [2_u32, u32::from(u16::MAX), u32::MAX] {
+            let stream: Vec<u8> = tpi(&[argument_list(count, &[0x1000], &[])]);
+            let error: String = validate_tpi_argument_lists(&stream)
+                .expect_err("oversized LF_ARGLIST must refuse")
+                .to_string();
+            assert!(error.contains("LF_ARGLIST"), "{error}");
+            assert!(error.contains(&count.to_string()), "{error}");
+            assert!(error.contains("at most 1"), "{error}");
+        }
+    }
+
+    #[test]
+    fn argument_list_requires_exact_entries_or_codeview_padding() {
+        let valid: Vec<u8> = tpi(&[
+            argument_list(0, &[], &[]),
+            argument_list(1, &[0x1000], &[]),
+            argument_list(1, &[0x1000], &[0xf3, 0, 0]),
+        ]);
+        validate_tpi_argument_lists(&valid).expect("valid argument lists");
+
+        let extra_entry: Vec<u8> = tpi(&[argument_list(0, &[0x1000], &[])]);
+        let error: String = validate_tpi_argument_lists(&extra_entry)
+            .expect_err("undeclared argument entry must refuse")
+            .to_string();
+        assert!(error.contains("carries 4 additional bytes"), "{error}");
+
+        let truncated: Vec<u8> = tpi(&[argument_list(1, &[], &[])]);
+        let error: String = validate_tpi_argument_lists(&truncated)
+            .expect_err("truncated argument list must refuse")
+            .to_string();
+        assert!(error.contains("at most 0"), "{error}");
+    }
+
+    #[test]
+    fn argument_list_preflight_covers_the_entire_tpi_stream() {
+        let mut stream: Vec<u8> = tpi(&[]);
+        let trailing: Vec<u8> = argument_list(u32::MAX, &[0x1000], &[]);
+        let trailing_length: u16 = u16::try_from(trailing.len()).expect("test record length");
+        stream.extend_from_slice(&trailing_length.to_le_bytes());
+        stream.extend_from_slice(&trailing);
+
+        let error: String = validate_tpi_argument_lists(&stream)
+            .expect_err("undeclared trailing TPI records must refuse")
+            .to_string();
+        assert!(error.contains("declares 0 record bytes"), "{error}");
+        assert!(error.contains("contains 12 record bytes"), "{error}");
+    }
 }

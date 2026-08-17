@@ -5,9 +5,16 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use disrobe_pass_go::{
-    DeferCallKind, DeferCallSupport, DeferFunc, DeferLowering, DeferReport, DeferSupport,
-    GoAnalysis, RuntimeDeferHook, analyze,
+    DeferCallKind, DeferCallSite, DeferCallSupport, DeferFunc, DeferLowering, DeferReport,
+    DeferSupport, GoAnalysis, RuntimeDeferHook, analyze,
 };
+
+#[cfg(feature = "chain")]
+use disrobe_core::chain::{ChildArtifact, Pass};
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung};
+#[cfg(feature = "chain")]
+use disrobe_pass_go::chain_detector::GO_PASS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Fixture {
@@ -181,23 +188,75 @@ fn x86_call_sites_match_the_real_toolchain_disassembly() {
 }
 
 #[test]
-fn arm64_call_site_exclusion_is_explicit_and_emits_no_shape_matches() {
-    let (analysis, _objdump, _compiler): (
+fn arm64_call_sites_match_the_real_toolchain_disassembly() {
+    let (analysis, objdump, _compiler): (
         GoAnalysis,
         BTreeMap<String, ObjdumpFunc>,
         Vec<(u32, CompilerKind)>,
     ) = load(FIXTURES[2]);
-    assert_eq!(
-        analysis.defers.call_support,
-        DeferCallSupport::UnsupportedImage
+    assert_eq!(analysis.defers.call_support, DeferCallSupport::Arm64);
+    let recovered: BTreeMap<&str, &DeferFunc> = analysis
+        .defers
+        .functions
+        .iter()
+        .map(|function: &DeferFunc| (function.name.as_str(), function))
+        .collect();
+    let mut graded: usize = 0;
+    for (name, reference) in &objdump {
+        if reference.runtime_calls.is_empty() {
+            continue;
+        }
+        let function: &&DeferFunc = recovered
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("{}: missing defer function {name}", FIXTURES[2].binary));
+        let actual: Vec<(DeferCallKind, u64)> = function
+            .call_sites
+            .iter()
+            .map(|call: &DeferCallSite| (call.kind, call.va))
+            .collect();
+        assert_eq!(
+            actual, reference.runtime_calls,
+            "{}: {name} runtime defer calls differ from go tool objdump",
+            FIXTURES[2].binary
+        );
+        graded += actual.len();
+    }
+    assert!(
+        graded >= 10,
+        "graded only {graded} ARM64 runtime defer call sites"
     );
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn registered_go_pass_emits_arm64_defer_calls() {
+    let bytes: Vec<u8> = common::required_fixture(FIXTURES[2].binary);
+    let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
+    let rendered: Artifact = GO_PASS.run(&artifact).expect("GO_PASS ARM64 run");
+    let report: &str = std::str::from_utf8(&rendered.envelope).expect("GO_PASS report UTF-8");
+    assert!(
+        report.contains("call-sites=arm64"),
+        "registered pass did not expose ARM64 call support: {report}"
+    );
+    let children: Vec<ChildArtifact> = GO_PASS
+        .extract_children(&artifact)
+        .expect("GO_PASS ARM64 children");
+    let sidecar: &ChildArtifact = children
+        .iter()
+        .find(|child: &&ChildArtifact| child.handle.relative_path == "go-analysis.json")
+        .expect("registered pass must emit go-analysis.json");
+    let analysis: GoAnalysis =
+        serde_json::from_slice(&sidecar.bytes).expect("GO_PASS ARM64 analysis JSON");
+    assert_eq!(analysis.defers.call_support, DeferCallSupport::Arm64);
     assert!(
         analysis
             .defers
             .functions
             .iter()
-            .all(|function: &DeferFunc| function.call_sites.is_empty()),
-        "unsupported ARM64 instructions must not be decoded as x86 call shapes"
+            .flat_map(|function: &DeferFunc| function.call_sites.iter())
+            .count()
+            >= 10,
+        "registered pass sidecar omitted ARM64 runtime defer calls"
     );
 }
 

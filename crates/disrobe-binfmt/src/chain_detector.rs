@@ -127,6 +127,7 @@ const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
 const TAG_UEFI_FV: &str = "uefi-fv";
+const TAG_EROFS: &str = "erofs";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -163,7 +164,7 @@ const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
 const fn tag_specificity(tag: &str) -> u16 {
     if matches!(
         tag.as_bytes(),
-        b"dotnet-single-file" | b"inno-setup" | b"uefi-fv"
+        b"dotnet-single-file" | b"inno-setup" | b"uefi-fv" | b"erofs"
     ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
@@ -176,6 +177,7 @@ const fn tag_marker(tag: &str) -> &'static str {
         b"dotnet-single-file" => "bundle-signature+header",
         b"inno-setup" => "pe-resource+setup-data-header",
         b"uefi-fv" => "fv-header+checksum",
+        b"erofs" => "superblock+root-inode",
         _ => "container-magic",
     }
 }
@@ -411,8 +413,53 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         TAG_UEFI_FV => extract_uefi_fv_members(bytes),
+        TAG_EROFS => extract_erofs_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_erofs_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let walk: crate::containers::erofs::ErofsWalk =
+        crate::containers::erofs::walk_erofs(bytes, MAX_MEMBER_BYTES)
+            .map_err(|error: crate::error::Error| fail(format!("erofs payload: {error}")))?;
+    if walk.files.len() > MAX_MEMBER_COUNT {
+        return Err(fail(format!(
+            "erofs member count {} exceeds {MAX_MEMBER_COUNT}",
+            walk.files.len()
+        )));
+    }
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(walk.files.len());
+    for file in walk.files {
+        if file.is_symlink {
+            continue;
+        }
+        let name: String = crate::quota::sanitize_entry_path(&file.path)
+            .map_err(|error: crate::error::Error| fail(format!("erofs member path: {error}")))?;
+        let key: String = name.to_ascii_lowercase();
+        let mut ancestor: &str = key.as_str();
+        loop {
+            let split: Option<(&str, &str)> = ancestor.rsplit_once('/');
+            let Some((prefix, _)) = split else {
+                break;
+            };
+            if keys.contains(prefix) {
+                return Err(fail(format!("erofs member path collision at `{name}`")));
+            }
+            ancestor = prefix;
+        }
+        let descendant_prefix: String = format!("{key}/");
+        if !keys.insert(key.clone())
+            || keys
+                .range(descendant_prefix.clone()..)
+                .next()
+                .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix))
+        {
+            return Err(fail(format!("erofs member path collision at `{name}`")));
+        }
+        members.push((name, file.data));
+    }
+    Ok(members)
 }
 
 fn extract_uefi_fv_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -885,6 +932,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if crate::containers::detect_uefi_fv(bytes) {
         return Some(TAG_UEFI_FV);
     }
+    if crate::containers::erofs::validate_erofs_image(bytes) {
+        return Some(TAG_EROFS);
+    }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);
     }
@@ -906,6 +956,7 @@ mod tests {
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
     const REAL_LZH_LEVEL3: &[u8] = include_bytes!("../tests/fixtures/lzh/level3/h3_subdir.lzh");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
+    const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
 
     fn ctx(bytes: &[u8]) -> DetectContext<'_> {
         DetectContext {
@@ -1093,6 +1144,26 @@ mod tests {
             .find(|child: &&ChildArtifact| child.handle.relative_path == "BrotliDriver")
             .expect("BrotliDriver chain child");
         assert_eq!(driver.bytes, DRIVER);
+    }
+
+    #[test]
+    fn compact_erofs_reaches_the_chain_with_exact_regular_file_bytes() {
+        use sha2::{Digest as _, Sha256};
+
+        assert_eq!(sniff_container_tag(REAL_EROFS), Some(TAG_EROFS));
+        let artifact: Artifact = Artifact::new(Rung::Raw, REAL_EROFS.to_vec(), [0u8; 32]);
+        let children: Vec<ChildArtifact> = CONTAINER_PASS
+            .extract_children(&artifact)
+            .expect("extract erofs children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].handle.relative_path, "payload.txt");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&children[0].bytes)),
+            "ff288b1f999038b715ef29b34313251f031250e6f2ad2a0cf4291d832f6b1b20"
+        );
+
+        let truncated: &[u8] = &REAL_EROFS[..REAL_EROFS.len() - 4096];
+        assert_ne!(sniff_container_tag(truncated), Some(TAG_EROFS));
     }
 
     #[test]

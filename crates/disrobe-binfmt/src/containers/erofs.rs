@@ -137,6 +137,27 @@ pub fn detect_erofs(bytes: &[u8]) -> Option<ErofsSuperblock> {
     })
 }
 
+#[cfg(feature = "chain")]
+pub(crate) fn validate_erofs_image(bytes: &[u8]) -> bool {
+    let Some(sb): Option<ErofsSuperblock> = detect_erofs(bytes) else {
+        return false;
+    };
+    if sb.feature_incompat & EROFS_FEATURE_INCOMPAT_48BIT != 0 || sb.extra_devices != 0 {
+        return false;
+    }
+    let Some(declared_bytes): Option<u64> = sb.blocks.checked_mul(u64::from(sb.block_size)) else {
+        return false;
+    };
+    if declared_bytes == 0 || declared_bytes > bytes.len() as u64 {
+        return false;
+    }
+    if parse_compression_config(bytes, &sb).is_err() {
+        return false;
+    }
+    read_inode(bytes, &sb, sb.root_nid)
+        .is_ok_and(|inode: ErofsInode| inode.mode & S_IFMT == S_IFDIR)
+}
+
 fn inode_offset(sb: &ErofsSuperblock, nid: u64) -> Result<usize> {
     let meta_base: u64 = u64::from(sb.meta_blkaddr)
         .checked_mul(u64::from(sb.block_size))
@@ -354,10 +375,9 @@ fn inode_data(
             }
             Ok(out)
         }
-        EROFS_INODE_COMPRESSED_FULL => compressed_full_data(bytes, sb, compression, inode, path),
-        EROFS_INODE_COMPRESSED_COMPACT => Err(Error::Erofs(format!(
-            "erofs `{path}` uses the compact (2/4-byte packed) compression index, which is not decoded in-tree"
-        ))),
+        EROFS_INODE_COMPRESSED_FULL | EROFS_INODE_COMPRESSED_COMPACT => {
+            compressed_data(bytes, sb, compression, inode, path)
+        }
         EROFS_INODE_CHUNK_BASED => chunk_based_data(bytes, sb, inode, path),
         other => Err(Error::Erofs(format!(
             "inode `{path}` has unknown data layout {other}"
@@ -458,6 +478,7 @@ const Z_EROFS_LCLUSTER_TYPE_HEAD2: u16 = 3;
 const Z_EROFS_LI_PARTIAL_REF: u16 = 1 << 15;
 const Z_EROFS_LI_HOLE: u16 = 1 << 14;
 const Z_EROFS_LI_D0_CBLKCNT: u16 = 1 << 11;
+const Z_EROFS_ADVISE_COMPACTED_2B: u16 = 0x0001;
 const Z_EROFS_ADVISE_EXTENTS: u16 = 0x0001;
 const Z_EROFS_ADVISE_BIG_PCLUSTER_1: u16 = 0x0002;
 const Z_EROFS_ADVISE_BIG_PCLUSTER_2: u16 = 0x0004;
@@ -537,6 +558,269 @@ fn full_index_entries(
     Ok(entries)
 }
 
+fn compact_pack_entries(
+    bytes: &[u8],
+    pack_base: usize,
+    entry_size: usize,
+    lclusterbits: u32,
+    big_pcluster: bool,
+    real_count: usize,
+    path: &str,
+) -> Result<Vec<FullIndexEntry>> {
+    let pack_count: usize = match entry_size {
+        4 if lclusterbits <= 14 => 2,
+        2 if lclusterbits <= 12 => 16,
+        _ => {
+            return Err(Error::Erofs(format!(
+                "erofs `{path}` compact index width is invalid for {lclusterbits} logical-cluster bits"
+            )));
+        }
+    };
+    if real_count == 0 || real_count > pack_count {
+        return Err(Error::Erofs(format!(
+            "erofs `{path}` compact pack has invalid entry count {real_count}"
+        )));
+    }
+    let pack_size: usize = entry_size
+        .checked_mul(pack_count)
+        .ok_or_else(|| Error::Erofs("compact pack size overflow".to_owned()))?;
+    let pack: &[u8] = bytes
+        .get(
+            pack_base
+                ..pack_base
+                    .checked_add(pack_size)
+                    .ok_or_else(|| Error::Erofs("compact pack end overflow".to_owned()))?,
+        )
+        .ok_or_else(|| Error::Erofs(format!("erofs `{path}` compact pack out of bounds")))?;
+    let lobits: u32 = lclusterbits.max(Z_EROFS_LI_D0_CBLKCNT.ilog2() + 1);
+    let encodebits: usize = pack_size
+        .checked_mul(8)
+        .and_then(|bits: usize| bits.checked_sub(32))
+        .map(|bits: usize| bits / pack_count)
+        .ok_or_else(|| Error::Erofs("compact pack bit width overflow".to_owned()))?;
+    let low_mask: u32 = (1u32 << lobits) - 1;
+    let mut packed: [(u16, u16); 16] = [(0, 0); 16];
+    for (index, slot) in packed.iter_mut().enumerate().take(pack_count) {
+        let bit_position: usize = encodebits
+            .checked_mul(index)
+            .ok_or_else(|| Error::Erofs("compact entry bit position overflow".to_owned()))?;
+        let byte_position: usize = bit_position / 8;
+        let word: u32 = rd_u32(pack, byte_position).ok_or_else(|| {
+            Error::Erofs(format!(
+                "erofs `{path}` compact entry {index} out of bounds"
+            ))
+        })?;
+        let value: u32 = word >> (bit_position & 7);
+        *slot = (((value >> lobits) & 0x3) as u16, (value & low_mask) as u16);
+    }
+    let trailer_offset: usize = pack_size - 4;
+    let trailer_block: u32 = rd_u32(pack, trailer_offset)
+        .ok_or_else(|| Error::Erofs(format!("erofs `{path}` compact trailer out of bounds")))?;
+    let mut entries: Vec<FullIndexEntry> = Vec::with_capacity(real_count);
+    for index in 0..real_count {
+        let (kind, low): (u16, u16) = packed[index];
+        if kind == Z_EROFS_LCLUSTER_TYPE_NONHEAD {
+            let first: u16 = if low & Z_EROFS_LI_D0_CBLKCNT != 0 || index + 1 < pack_count {
+                low
+            } else {
+                let (previous_kind, previous_low): (u16, u16) = packed[index - 1];
+                if previous_kind != Z_EROFS_LCLUSTER_TYPE_NONHEAD
+                    || previous_low & Z_EROFS_LI_D0_CBLKCNT != 0
+                {
+                    1
+                } else {
+                    previous_low.checked_add(1).ok_or_else(|| {
+                        Error::Erofs("compact lookback distance overflow".to_owned())
+                    })?
+                }
+            };
+            entries.push(FullIndexEntry {
+                kind,
+                partial: false,
+                hole: false,
+                cluster_offset: 0,
+                first,
+                second: 0,
+            });
+            continue;
+        }
+        let mut cursor: isize = isize::try_from(index)
+            .map_err(|_| Error::Erofs("compact pack index exceeds isize".to_owned()))?;
+        let mut preceding_blocks: u32 = u32::from(!big_pcluster);
+        while cursor > 0 {
+            cursor -= 1;
+            let prior_index: usize = usize::try_from(cursor)
+                .map_err(|_| Error::Erofs("compact prior index is negative".to_owned()))?;
+            let (prior_kind, prior_low): (u16, u16) = packed[prior_index];
+            if prior_kind == Z_EROFS_LCLUSTER_TYPE_NONHEAD {
+                if big_pcluster {
+                    if prior_low & Z_EROFS_LI_D0_CBLKCNT != 0 {
+                        cursor -= 1;
+                        preceding_blocks = preceding_blocks
+                            .checked_add(u32::from(prior_low & !Z_EROFS_LI_D0_CBLKCNT))
+                            .ok_or_else(|| {
+                                Error::Erofs("compact physical block count overflow".to_owned())
+                            })?;
+                    } else {
+                        if prior_low <= 1 {
+                            return Err(Error::Erofs(format!(
+                                "erofs `{path}` compact big-pcluster lookback {prior_low} is invalid"
+                            )));
+                        }
+                        cursor -= isize::try_from(prior_low - 2).map_err(|_| {
+                            Error::Erofs("compact lookback exceeds isize".to_owned())
+                        })?;
+                    }
+                } else {
+                    cursor -= isize::try_from(prior_low)
+                        .map_err(|_| Error::Erofs("compact lookback exceeds isize".to_owned()))?;
+                    if cursor >= 0 {
+                        preceding_blocks = preceding_blocks.checked_add(1).ok_or_else(|| {
+                            Error::Erofs("compact physical block count overflow".to_owned())
+                        })?;
+                    }
+                }
+            } else {
+                preceding_blocks = preceding_blocks.checked_add(1).ok_or_else(|| {
+                    Error::Erofs("compact physical block count overflow".to_owned())
+                })?;
+            }
+        }
+        let block_address: u32 = trailer_block
+            .checked_add(preceding_blocks)
+            .ok_or_else(|| Error::Erofs("compact physical block address overflow".to_owned()))?;
+        entries.push(FullIndexEntry {
+            kind,
+            partial: false,
+            hole: false,
+            cluster_offset: low,
+            first: block_address as u16,
+            second: (block_address >> 16) as u16,
+        });
+    }
+    Ok(entries)
+}
+
+fn compact_index_entries(
+    bytes: &[u8],
+    index_base: usize,
+    count: usize,
+    lclusterbits: u32,
+    advise: u16,
+    path: &str,
+) -> Result<Vec<FullIndexEntry>> {
+    if count > MAX_FULL_INDEX_ENTRIES {
+        return Err(Error::Erofs(format!(
+            "z compact index entry count {count} exceeds {MAX_FULL_INDEX_ENTRIES}"
+        )));
+    }
+    if lclusterbits > 14 {
+        return Err(Error::Erofs(format!(
+            "erofs `{path}` compact index uses {lclusterbits} logical-cluster bits"
+        )));
+    }
+    let use_two_byte: bool = advise & Z_EROFS_ADVISE_COMPACTED_2B != 0;
+    if use_two_byte && lclusterbits > 12 {
+        return Err(Error::Erofs(format!(
+            "erofs `{path}` uses two-byte compact indexes with {lclusterbits} logical-cluster bits"
+        )));
+    }
+    let alignment_entries: usize = ((32 - (index_base & 31)) / 4) & 7;
+    let initial_four_byte: usize = if use_two_byte && alignment_entries < count {
+        alignment_entries
+    } else {
+        0
+    };
+    let two_byte: usize = if use_two_byte {
+        (count - initial_four_byte) & !15
+    } else {
+        0
+    };
+    let final_four_byte: usize = count - initial_four_byte - two_byte;
+    let big_pcluster_1: bool = advise & Z_EROFS_ADVISE_BIG_PCLUSTER_1 != 0;
+    let big_pcluster_2: bool = advise & Z_EROFS_ADVISE_BIG_PCLUSTER_2 != 0;
+    if big_pcluster_1 != big_pcluster_2 {
+        return Err(Error::Erofs(format!(
+            "erofs `{path}` compact index has inconsistent big-pcluster flags"
+        )));
+    }
+    let mut entries: Vec<FullIndexEntry> = Vec::with_capacity(count);
+    let mut position: usize = index_base;
+    for region_count in [initial_four_byte, final_four_byte] {
+        if region_count == 0 {
+            if two_byte > 0 && entries.len() == initial_four_byte {
+                for _ in 0..(two_byte / 16) {
+                    let mut pack: Vec<FullIndexEntry> = compact_pack_entries(
+                        bytes,
+                        position,
+                        2,
+                        lclusterbits,
+                        big_pcluster_1,
+                        16,
+                        path,
+                    )?;
+                    entries.append(&mut pack);
+                    position = position.checked_add(32).ok_or_else(|| {
+                        Error::Erofs("compact two-byte position overflow".to_owned())
+                    })?;
+                }
+            }
+            continue;
+        }
+        let mut remaining: usize = region_count;
+        while remaining > 0 {
+            let real_count: usize = remaining.min(2);
+            let mut pack: Vec<FullIndexEntry> = compact_pack_entries(
+                bytes,
+                position,
+                4,
+                lclusterbits,
+                big_pcluster_1,
+                real_count,
+                path,
+            )?;
+            entries.append(&mut pack);
+            position = position
+                .checked_add(8)
+                .ok_or_else(|| Error::Erofs("compact four-byte position overflow".to_owned()))?;
+            remaining -= real_count;
+        }
+        if entries.len() == initial_four_byte && two_byte > 0 {
+            for _ in 0..(two_byte / 16) {
+                let mut pack: Vec<FullIndexEntry> = compact_pack_entries(
+                    bytes,
+                    position,
+                    2,
+                    lclusterbits,
+                    big_pcluster_1,
+                    16,
+                    path,
+                )?;
+                entries.append(&mut pack);
+                position = position
+                    .checked_add(32)
+                    .ok_or_else(|| Error::Erofs("compact two-byte position overflow".to_owned()))?;
+            }
+        }
+    }
+    if entries.len() != count {
+        return Err(Error::Erofs(format!(
+            "erofs `{path}` compact index decoded {} of {count} entries",
+            entries.len()
+        )));
+    }
+    let mut next_head: usize = count;
+    for index in (0..count).rev() {
+        if entries[index].kind == Z_EROFS_LCLUSTER_TYPE_NONHEAD {
+            entries[index].second = u16::try_from(next_head - index)
+                .map_err(|_| Error::Erofs("compact lookahead exceeds u16".to_owned()))?;
+        } else {
+            next_head = index;
+        }
+    }
+    Ok(entries)
+}
+
 fn resolve_head(entries: &[FullIndexEntry], start: usize, path: &str) -> Result<usize> {
     let mut index: usize = start;
     for _ in 0..=entries.len() {
@@ -561,7 +845,7 @@ fn resolve_head(entries: &[FullIndexEntry], start: usize, path: &str) -> Result<
     )))
 }
 
-fn compressed_full_data(
+fn compressed_data(
     bytes: &[u8],
     sb: &ErofsSuperblock,
     compression: ErofsCompressionConfig,
@@ -581,13 +865,15 @@ fn compressed_full_data(
     let clusterbits_byte: u8 = *bytes
         .get(header_off + 7)
         .ok_or_else(|| Error::Erofs("z map clusterbits oob".to_owned()))?;
-    if advise
-        & (Z_EROFS_ADVISE_EXTENTS
-            | Z_EROFS_ADVISE_INLINE_PCLUSTER
-            | Z_EROFS_ADVISE_INTERLACED_PCLUSTER
-            | Z_EROFS_ADVISE_FRAGMENT_PCLUSTER)
-        != 0
-    {
+    let unsupported_advise: u16 = Z_EROFS_ADVISE_INLINE_PCLUSTER
+        | Z_EROFS_ADVISE_INTERLACED_PCLUSTER
+        | Z_EROFS_ADVISE_FRAGMENT_PCLUSTER
+        | if inode.format == EROFS_INODE_COMPRESSED_FULL {
+            Z_EROFS_ADVISE_EXTENTS
+        } else {
+            0
+        };
+    if advise & unsupported_advise != 0 {
         return Err(Error::Erofs(format!(
             "erofs `{path}` uses an unsupported compressed extent, inline, interlaced, or fragment layout"
         )));
@@ -597,13 +883,25 @@ fn compressed_full_data(
     let lcluster_size: usize = 1usize << lclusterbits;
     let block_size: usize = sb.block_size as usize;
     let size: usize = inode.size as usize;
-    let index_base: usize = header_off
-        .checked_add(16)
-        .ok_or_else(|| Error::Erofs("z full index offset overflow".to_owned()))?;
     let lcluster_count: usize = size.div_ceil(lcluster_size);
-
-    let entries: Vec<FullIndexEntry> =
-        full_index_entries(bytes, index_base, lcluster_count, lcluster_size, path)?;
+    let entries: Vec<FullIndexEntry> = if inode.format == EROFS_INODE_COMPRESSED_FULL {
+        let index_base: usize = header_off
+            .checked_add(16)
+            .ok_or_else(|| Error::Erofs("z full index offset overflow".to_owned()))?;
+        full_index_entries(bytes, index_base, lcluster_count, lcluster_size, path)?
+    } else {
+        let index_base: usize = header_off
+            .checked_add(8)
+            .ok_or_else(|| Error::Erofs("z compact index offset overflow".to_owned()))?;
+        compact_index_entries(
+            bytes,
+            index_base,
+            lcluster_count,
+            lclusterbits,
+            advise,
+            path,
+        )?
+    };
     let mut extents: Vec<MappedExtent> = Vec::new();
     let mut physical_blocks_seen: std::collections::BTreeSet<u32> =
         std::collections::BTreeSet::new();
@@ -678,6 +976,12 @@ fn compressed_full_data(
         } else {
             size
         };
+        if logical_start == size
+            && next == entries.len()
+            && entry.kind == Z_EROFS_LCLUSTER_TYPE_PLAIN
+        {
+            break;
+        }
         if logical_start >= logical_end || logical_end > size {
             return Err(Error::Erofs(format!(
                 "erofs `{path}` has invalid compressed logical range {logical_start}..{logical_end}"
@@ -1483,6 +1787,53 @@ mod tests {
     }
 
     #[test]
+    fn compact_index_bounds_are_enforced_before_extent_recovery() {
+        let truncated: [u8; 7] = [0; 7];
+        assert!(compact_pack_entries(&truncated, 0, 4, 12, false, 1, "short").is_err());
+
+        let packs: [u8; 64] = [0; 64];
+        assert!(
+            compact_index_entries(&packs, 0, 16, 13, Z_EROFS_ADVISE_COMPACTED_2B, "wide").is_err()
+        );
+        assert!(
+            compact_index_entries(&packs, 0, 2, 12, Z_EROFS_ADVISE_BIG_PCLUSTER_1, "flags")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn compact_terminal_sentinel_must_be_a_plain_end_marker() {
+        const IMAGE: &[u8] = include_bytes!("../../tests/fixtures/erofs/lzma-compact-mixed.erofs");
+        let mut mutated: Vec<u8> = IMAGE.to_vec();
+        let sb: ErofsSuperblock = detect_erofs(&mutated).expect("erofs superblock");
+        let compression: ErofsCompressionConfig =
+            parse_compression_config(&mutated, &sb).expect("compression config");
+        let root: ErofsInode = read_inode(&mutated, &sb, sb.root_nid).expect("root inode");
+        let payload_nid: u64 = read_directory(&mutated, &sb, compression, &root, 1 << 20, "")
+            .expect("root directory")
+            .into_iter()
+            .find_map(|(nid, name, _): (u64, String, u8)| (name == "payload.txt").then_some(nid))
+            .expect("payload inode");
+        let payload: ErofsInode = read_inode(&mutated, &sb, payload_nid).expect("payload inode");
+        let metadata_end: usize = inode_metadata_end(&payload).expect("metadata end");
+        let header_off: usize = (metadata_end + 7) & !7;
+        let index_base: usize = header_off + 8;
+        let count: usize = (payload.size as usize).div_ceil(sb.block_size as usize);
+        let initial: usize = ((32 - (index_base & 31)) / 4) & 7;
+        let two_byte: usize = (count - initial) & !15;
+        let final_count: usize = count - initial - two_byte;
+        let final_base: usize = index_base + initial.div_ceil(2) * 8 + (two_byte / 16) * 32;
+        let sentinel_in_final: usize = final_count - 1;
+        let sentinel_pack: usize = final_base + (sentinel_in_final / 2) * 8;
+        let type_shift: u32 = 12 + 16 * (sentinel_in_final % 2) as u32;
+        let word: u32 = rd_u32(&mutated, sentinel_pack).expect("sentinel pack");
+        let changed: u32 =
+            (word & !(0x3 << type_shift)) | (u32::from(Z_EROFS_LCLUSTER_TYPE_HEAD1) << type_shift);
+        mutated[sentinel_pack..sentinel_pack + 4].copy_from_slice(&changed.to_le_bytes());
+        assert!(walk_erofs(&mutated, 1 << 20).is_err());
+    }
+
+    #[test]
     fn official_full_index_supports_head2_and_rejects_bad_links() {
         use sha2::{Digest as _, Sha256};
 
@@ -1769,7 +2120,7 @@ mod tests {
     }
 
     #[test]
-    fn compressed_compact_inode_errors_instead_of_empty_success() {
+    fn malformed_compact_inode_refuses_unsupported_layout_flags() {
         let size: u32 = 32;
         let image: Vec<u8> = build_single_file_erofs("file.bin", move |b: &mut ErofsBuilder| {
             let nid: u64 = b.write_compact_inode_flat_plain(S_IFREG | 0o644, size, 0);
@@ -1780,7 +2131,9 @@ mod tests {
         });
         let err: Error = walk_erofs(&image, 64 * 1024 * 1024)
             .expect_err("compact compressed data must not recover as an empty file");
-        assert!(matches!(err, Error::Erofs(msg) if msg.contains("compact")));
+        assert!(
+            matches!(err, Error::Erofs(message) if message.contains("unsupported compressed extent"))
+        );
     }
 
     fn deflate_compress(input: &[u8]) -> Vec<u8> {

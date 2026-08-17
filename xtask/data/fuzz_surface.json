@@ -9,9 +9,9 @@
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 625,
+    "named_by_a_resilience_suite": 630,
     "named_by_a_suite_recording_seed_reach": 127,
-    "named_by_neither": 744
+    "named_by_neither": 739
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -583,7 +583,7 @@
       "parse_shaped": 73,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 19,
+      "named_by_a_resilience_suite": 22,
       "named_by_a_suite_recording_seed_reach": 10,
       "named_by_neither": [
         "disrobe-pass-native/src/api_hash.rs::harvested_hash_constants",
@@ -718,8 +718,6 @@
         "disrobe-pass-native/src/packers/pe_sections.rs::name_is",
         "disrobe-pass-native/src/packers/pe_sections.rs::name_trimmed",
         "disrobe-pass-native/src/packers/pe_sections.rs::parse_pe_image",
-        "disrobe-pass-native/src/packers/pe_sections.rs::read_u16",
-        "disrobe-pass-native/src/packers/pe_sections.rs::read_u32",
         "disrobe-pass-native/src/packers/pe_sections.rs::read_u64",
         "disrobe-pass-native/src/packers/pe_sections.rs::section_by_name",
         "disrobe-pass-native/src/packers/pe_unbind.rs::unbind_pe",
@@ -755,7 +753,6 @@
         "disrobe-pass-native/src/pass.rs::analyze_deobf_report",
         "disrobe-pass-native/src/patch.rs::apply_patches",
         "disrobe-pass-native/src/patch.rs::apply_patches_reported",
-        "disrobe-pass-native/src/pdb_cxx.rs::reconstruct_pdb_cxx",
         "disrobe-pass-native/src/plt_resolve.rs::classify_tail_calls",
         "disrobe-pass-native/src/plt_resolve.rs::resolve_elf_plt_imports",
         "disrobe-pass-native/src/plt_resolve.rs::resolve_pe_iat_imports",
@@ -959,7 +956,7 @@
       "parse_shaped": 18,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 16,
+      "named_by_a_resilience_suite": 18,
       "named_by_a_suite_recording_seed_reach": 5,
       "named_by_neither": [
         "disrobe-pass-shell/src/pdf/names.rs::name_to_string",
@@ -975,8 +972,6 @@
         "disrobe-pass-shell/src/xlm/biff.rs::iter_biff12",
         "disrobe-pass-shell/src/xlm/biff.rs::iter_biff8",
         "disrobe-pass-shell/src/xlm/biff.rs::read_short_xlunicode",
-        "disrobe-pass-shell/src/xlm/biff.rs::read_u16",
-        "disrobe-pass-shell/src/xlm/biff.rs::read_u32",
         "disrobe-pass-shell/src/xlm/biff.rs::read_varint_u32",
         "disrobe-pass-shell/src/xlm/biff.rs::read_wide_string",
         "disrobe-pass-shell/src/xlm/biff.rs::read_wide_string32",

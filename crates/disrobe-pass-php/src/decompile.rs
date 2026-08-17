@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const OPARRAY_MAGIC: &[u8; 4] = b"DZOA";
 
-pub const OPARRAY_VERSION: u8 = 2;
+pub const OPARRAY_VERSION: u8 = 3;
 
 pub const OPARRAY_MIN_VERSION: u8 = 1;
 
-pub const OPARRAY_MAX_VERSION: u8 = 2;
+pub const OPARRAY_MAX_VERSION: u8 = 3;
 
 const SANE_OP_CAP: u32 = 4_000_000;
 const SANE_LITERAL_CAP: u32 = 4_000_000;
@@ -151,6 +151,8 @@ pub enum Literal {
     Double(f64),
     Str(String),
     Array(u32),
+    SwitchLong(Vec<(i64, u32)>),
+    SwitchString(Vec<(String, u32)>),
 }
 
 impl Eq for Literal {}
@@ -164,7 +166,7 @@ impl Literal {
             Self::Long(n) => n.to_string(),
             Self::Double(d) => render_php_double(*d),
             Self::Str(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
-            Self::Array(_) => "array()".to_owned(),
+            Self::Array(_) | Self::SwitchLong(_) | Self::SwitchString(_) => "array()".to_owned(),
         }
     }
 
@@ -613,7 +615,7 @@ fn parse_one(cur: &mut Cursor<'_>, version: u8, depth: u32) -> Result<OpArray> {
     } else {
         Vec::new()
     };
-    let literals: Vec<Literal> = parse_literals(cur)?;
+    let literals: Vec<Literal> = parse_literals(cur, version)?;
     let ops: Vec<Op> = parse_ops(cur)?;
     let child_count: u32 = cur.u32()?;
     if child_count > SANE_CHILD_CAP {
@@ -665,7 +667,7 @@ fn read_opt_string(cur: &mut Cursor<'_>) -> Result<Option<String>> {
     Ok(Some(cur.string(SANE_NAME_CAP)?))
 }
 
-fn parse_literals(cur: &mut Cursor<'_>) -> Result<Vec<Literal>> {
+fn parse_literals(cur: &mut Cursor<'_>, version: u8) -> Result<Vec<Literal>> {
     let count: u32 = cur.u32()?;
     if count > SANE_LITERAL_CAP {
         return Err(Error::OpArrayFieldOversize {
@@ -685,11 +687,69 @@ fn parse_literals(cur: &mut Cursor<'_>) -> Result<Vec<Literal>> {
             3 => Literal::Double(cur.f64()?),
             4 => Literal::Str(cur.string(SANE_NAME_CAP)?),
             5 => Literal::Array(cur.u32()?),
+            6 if version >= 3 => Literal::SwitchLong(parse_switch_long(cur)?),
+            7 if version >= 3 => Literal::SwitchString(parse_switch_string(cur)?),
             other => return Err(Error::OpArrayBadLiteralTag(other)),
         };
         out.push(lit);
     }
     Ok(out)
+}
+
+fn switch_table_count(cur: &mut Cursor<'_>, minimum_entry_size: usize) -> Result<u32> {
+    let count: u32 = cur.u32()?;
+    if count as usize > SANE_SWITCH_ARM_CAP {
+        return Err(Error::OpArrayFieldOversize {
+            field: "switch_table",
+            value: count,
+            cap: SANE_SWITCH_ARM_CAP as u32,
+        });
+    }
+    let minimum_bytes: usize =
+        (count as usize)
+            .checked_mul(minimum_entry_size)
+            .ok_or(Error::OpArrayFieldOversize {
+                field: "switch_table_bytes",
+                value: u32::MAX,
+                cap: SANE_SWITCH_LABEL_WORK_CAP as u32,
+            })?;
+    cur.need(minimum_bytes)?;
+    Ok(count)
+}
+
+fn parse_switch_long(cur: &mut Cursor<'_>) -> Result<Vec<(i64, u32)>> {
+    let count: u32 = switch_table_count(cur, size_of::<i64>() + size_of::<u32>())?;
+    let mut entries: Vec<(i64, u32)> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
+    for _ in 0..count {
+        entries.push((cur.i64()?, cur.u32()?));
+    }
+    Ok(entries)
+}
+
+fn parse_switch_string(cur: &mut Cursor<'_>) -> Result<Vec<(String, u32)>> {
+    let count: u32 = switch_table_count(cur, size_of::<u32>() * 2)?;
+    let mut entries: Vec<(String, u32)> = Vec::with_capacity((count as usize).min(MAX_PREALLOC));
+    let mut work: usize = 0;
+    for _ in 0..count {
+        let key: String = cur.string(SANE_NAME_CAP)?;
+        work =
+            work.checked_add(key.len().saturating_add(1))
+                .ok_or(Error::OpArrayFieldOversize {
+                    field: "switch_table_work",
+                    value: u32::MAX,
+                    cap: SANE_SWITCH_LABEL_WORK_CAP as u32,
+                })?;
+        if work > SANE_SWITCH_LABEL_WORK_CAP {
+            let value: u32 = u32::try_from(work).map_or(u32::MAX, |value: u32| value);
+            return Err(Error::OpArrayFieldOversize {
+                field: "switch_table_work",
+                value,
+                cap: SANE_SWITCH_LABEL_WORK_CAP as u32,
+            });
+        }
+        entries.push((key, cur.u32()?));
+    }
+    Ok(entries)
 }
 
 fn parse_ops(cur: &mut Cursor<'_>) -> Result<Vec<Op>> {
@@ -1162,6 +1222,15 @@ struct SwitchArmPlan {
     terminates: bool,
 }
 
+struct SwitchDispatch {
+    subject_key: (OperandType, u32),
+    subject: String,
+    labels_by_target: BTreeMap<u32, Vec<Option<String>>>,
+    result_keys: BTreeSet<(OperandType, u32)>,
+    default_target: u32,
+    dispatch_end: u32,
+}
+
 struct Lifter<'a> {
     ops: &'a [Op],
     literals: &'a [Literal],
@@ -1280,7 +1349,9 @@ impl<'a> Lifter<'a> {
     fn try_structure(&mut self, i: u32, end: u32, depth: u32) -> Option<(Vec<Stmt>, u32)> {
         let op: &Op = self.ops.get(i as usize)?;
         match op.opcode {
-            o if o == op::CASE || o == op::IS_EQUAL => self.structure_switch(i, end, depth),
+            op::CASE | op::IS_EQUAL | op::SWITCH_LONG | op::SWITCH_STRING => {
+                self.structure_switch(i, end, depth)
+            }
             o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
@@ -1299,6 +1370,16 @@ impl<'a> Lifter<'a> {
         if !self.call_stack.is_empty() {
             return None;
         }
+        let first: &Op = self.ops.get(i as usize)?;
+        let dispatch: SwitchDispatch = match first.opcode {
+            op::CASE | op::IS_EQUAL => self.linear_switch_dispatch(i, end)?,
+            op::SWITCH_LONG | op::SWITCH_STRING => self.optimized_switch_dispatch(i, end)?,
+            _ => return None,
+        };
+        self.structure_switch_dispatch(dispatch, end, depth)
+    }
+
+    fn linear_switch_dispatch(&self, i: u32, end: u32) -> Option<SwitchDispatch> {
         let first: &Op = self.ops.get(i as usize)?;
         if !matches!(
             first.op1_type,
@@ -1392,6 +1473,95 @@ impl<'a> Lifter<'a> {
             return None;
         }
         let default_target: u32 = default_jump.op1;
+        Some(SwitchDispatch {
+            subject_key,
+            subject,
+            labels_by_target,
+            result_keys,
+            default_target,
+            dispatch_end: cursor.checked_add(1)?,
+        })
+    }
+
+    fn optimized_switch_dispatch(&self, i: u32, end: u32) -> Option<SwitchDispatch> {
+        let first: &Op = self.ops.get(i as usize)?;
+        if !matches!(
+            first.op1_type,
+            OperandType::Const | OperandType::Cv | OperandType::TmpVar | OperandType::Var
+        ) || first.op2_type != OperandType::Const
+            || first.result_type != OperandType::Unused
+        {
+            return None;
+        }
+        let subject_key: (OperandType, u32) = (first.op1_type, first.op1);
+        let subject: String = self.defined_operand_expr(first.op1_type, first.op1)?.text;
+        let mut labels_by_target: BTreeMap<u32, Vec<Option<String>>> = BTreeMap::new();
+        let mut seen_long: BTreeSet<i64> = BTreeSet::new();
+        let mut seen_string: BTreeSet<&str> = BTreeSet::new();
+        let mut work: usize = 0;
+        match (first.opcode, self.literals.get(first.op2 as usize)?) {
+            (op::SWITCH_LONG, Literal::SwitchLong(entries)) => {
+                if entries.is_empty() || entries.len() > SANE_SWITCH_ARM_CAP {
+                    return None;
+                }
+                for &(key, target) in entries {
+                    if !seen_long.insert(key) || target <= i || target >= end {
+                        return None;
+                    }
+                    let label: String = key.to_string();
+                    work = switch_label_work_after(work, label.len().checked_add(1)?)?;
+                    labels_by_target
+                        .entry(target)
+                        .or_default()
+                        .push(Some(label));
+                }
+            }
+            (op::SWITCH_STRING, Literal::SwitchString(entries)) => {
+                if entries.is_empty() || entries.len() > SANE_SWITCH_ARM_CAP {
+                    return None;
+                }
+                for (key, target) in entries {
+                    if !seen_string.insert(key.as_str()) || *target <= i || *target >= end {
+                        return None;
+                    }
+                    let label: String = Literal::Str(key.clone()).render();
+                    work = switch_label_work_after(work, label.len().checked_add(1)?)?;
+                    labels_by_target
+                        .entry(*target)
+                        .or_default()
+                        .push(Some(label));
+                }
+            }
+            _ => return None,
+        }
+        let default_target: u32 = first.extended_value;
+        if default_target <= i || default_target >= end {
+            return None;
+        }
+        Some(SwitchDispatch {
+            subject_key,
+            subject,
+            labels_by_target,
+            result_keys: BTreeSet::new(),
+            default_target,
+            dispatch_end: i.checked_add(1)?,
+        })
+    }
+
+    fn structure_switch_dispatch(
+        &mut self,
+        dispatch: SwitchDispatch,
+        end: u32,
+        depth: u32,
+    ) -> Option<(Vec<Stmt>, u32)> {
+        let SwitchDispatch {
+            subject_key,
+            subject,
+            mut labels_by_target,
+            result_keys,
+            default_target,
+            dispatch_end,
+        }: SwitchDispatch = dispatch;
         let case_targets: Vec<u32> = labels_by_target.keys().copied().collect();
         let explicit_default_join: bool = case_targets.last().is_some_and(|last: &u32| {
             default_target > *last
@@ -1435,7 +1605,6 @@ impl<'a> Lifter<'a> {
                 .or_default()
                 .push(None);
         }
-        let dispatch_end: u32 = cursor.checked_add(1)?;
         if labels_by_target
             .keys()
             .any(|target: &u32| *target < dispatch_end)
@@ -2600,7 +2769,18 @@ impl<'a> Lifter<'a> {
                     .unwrap_or_else(|| Expr::atom("''".to_owned()));
                 Some(format!("{} {};", include_kind(op.extended_value), arg.text))
             }
-            other => Some(self.refuse(idx, other, refusal_reason(other))),
+            other => {
+                let reason: &'static str = if matches!(other, op::SWITCH_LONG | op::SWITCH_STRING)
+                    && matches!(
+                        self.literals.get(op.op2 as usize),
+                        Some(Literal::SwitchLong(_) | Literal::SwitchString(_))
+                    ) {
+                    REASON_OPTIMIZED_SWITCH
+                } else {
+                    refusal_reason(other)
+                };
+                Some(self.refuse(idx, other, reason))
+            }
         }
     }
 
@@ -3059,6 +3239,8 @@ const REASON_ROPE: &str =
     "the rope operands, element indexes or declared length do not form a php 8 rope";
 const REASON_ROPE_BUDGET: &str = "the rope exceeds the bounded php 8 rope folding budget";
 const REASON_DISPATCH: &str = "switch and match dispatch is not reconstructed";
+const REASON_OPTIMIZED_SWITCH: &str =
+    "the optimized switch table or its control-flow region is structurally ambiguous";
 const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";
 const REASON_DECLARATION: &str = "the declared body is not carried in this op array";
 const REASON_UNMODELLED: &str = "the expression lifter does not model this opcode";

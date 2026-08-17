@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 11] = [
+const PINNED_SAMPLES: [&str; 12] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -45,11 +45,12 @@ const PINNED_SAMPLES: [&str; 11] = [
     "keyed_foreach",
     "objects",
     "switch_linear",
+    "switch_optimized",
     "variable_variable",
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 9] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 10] = [
     "arithmetic",
     "control_flow",
     "do_while",
@@ -58,10 +59,11 @@ const BEHAVIORALLY_GRADED_SAMPLES: [&str; 9] = [
     "keyed_foreach",
     "objects",
     "switch_linear",
+    "switch_optimized",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 11] = [
+const OPCODE_NAMING_SAMPLES: [&str; 12] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -71,6 +73,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 11] = [
     "keyed_foreach",
     "objects",
     "switch_linear",
+    "switch_optimized",
     "variable_variable",
     "versioned",
 ];
@@ -460,6 +463,41 @@ fn objects_oparray_roundtrips_behaviorally() {
 #[test]
 fn php_84_linear_switch_oparray_roundtrips_behaviorally() {
     behavioral_roundtrip("switch_linear");
+}
+
+#[test]
+fn php_84_optimized_switch_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("switch_optimized");
+}
+
+#[test]
+fn optimized_switch_emitter_refuses_schemas_without_table_payloads() {
+    let graded: &str = "the PHP 8.4 optimized switch DZOA schema boundary";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let source: PathBuf = required_sample("switch_optimized");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_switch_schema")
+            .expect("create switch schema scratch directory");
+    for version in [1u8, 2u8] {
+        let output: PathBuf = scratch.path().join(format!("switch-v{version}.dzoa"));
+        let error: String = emit_dzoa_versioned(&php, &dll, &source, &output, Some(version), None)
+            .expect_err("schemas without typed switch literals must be refused");
+        if error.contains("no opcache configuration produced") {
+            unmeasured(&PHP_OPCACHE, graded, &error);
+            return;
+        }
+        assert!(
+            error.contains(&format!(
+                "DZOA schema version {version} cannot encode SWITCH_"
+            )),
+            "{error}"
+        );
+    }
 }
 
 const EMITTER_SEND_FAMILY_TARGET: &str = "ZEND_SEND_VAL";
