@@ -556,15 +556,26 @@ pub(crate) struct RecoveredMethodRef {
     pub(crate) name: String,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RecoveredCapturedLambda {
+    pub(crate) helper_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RecoveredFunctional {
+    MethodReference(RecoveredMethodRef),
+    CapturedLambda(RecoveredCapturedLambda),
+}
+
 #[derive(Debug, Default)]
-pub(crate) struct MethodReferenceRecovery {
-    by_class: BTreeMap<String, RecoveredMethodRef>,
+pub(crate) struct FunctionalRecovery {
+    by_class: BTreeMap<String, RecoveredFunctional>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DesugarView<'a> {
     pub(crate) interfaces: &'a DefaultInterfaceRecovery,
-    pub(crate) method_refs: &'a MethodReferenceRecovery,
+    pub(crate) functionals: &'a FunctionalRecovery,
     pub(crate) core_library: &'a crate::dalvik_core_library::CoreLibraryRecovery,
 }
 
@@ -599,7 +610,7 @@ const BOX_TYPES: [(&str, &str, &str); 8] = [
     ("Ljava/lang/Short;", "shortValue", "S"),
 ];
 
-impl MethodReferenceRecovery {
+impl FunctionalRecovery {
     pub(crate) fn analyze(dex: &DexFile, bytes: &[u8], report: &CodeItemsReport) -> Self {
         if !report.is_fully_decoded() || dex.call_site_ids_size != 0 || dex.method_handles_size != 0
         {
@@ -619,7 +630,7 @@ impl MethodReferenceRecovery {
         for method in report.methods() {
             owned.entry(method.class.as_str()).or_default().push(method);
         }
-        let mut candidates: BTreeMap<String, RecoveredMethodRef> = BTreeMap::new();
+        let mut candidates: BTreeMap<String, RecoveredFunctional> = BTreeMap::new();
         for (class, declaration) in &classes {
             if !is_lambda_shaped(declaration) {
                 continue;
@@ -627,7 +638,7 @@ impl MethodReferenceRecovery {
             let Some(methods): Option<&Vec<&DexMethodCode>> = owned.get(class.as_str()) else {
                 continue;
             };
-            let Some(recovered): Option<RecoveredMethodRef> = match_lambda_class(
+            let Some(recovered): Option<RecoveredFunctional> = match_functional_class(
                 dex,
                 report,
                 &classes,
@@ -642,12 +653,13 @@ impl MethodReferenceRecovery {
         if candidates.is_empty() {
             return Self::default();
         }
+        let candidate_classes: BTreeSet<String> = candidates.keys().cloned().collect();
         let accepted: BTreeSet<String> =
-            exclusively_constructed(dex, report, &classes, &candidates).unwrap_or_default();
+            exclusively_constructed(dex, report, &classes, &candidate_classes).unwrap_or_default();
         Self {
             by_class: candidates
                 .into_iter()
-                .filter(|(class, _): &(String, RecoveredMethodRef)| accepted.contains(class))
+                .filter(|(class, _): &(String, RecoveredFunctional)| accepted.contains(class))
                 .collect(),
         }
     }
@@ -656,7 +668,7 @@ impl MethodReferenceRecovery {
         self.by_class.contains_key(class)
     }
 
-    pub(crate) fn recovered(&self, class: &str) -> Option<&RecoveredMethodRef> {
+    pub(crate) fn recovered(&self, class: &str) -> Option<&RecoveredFunctional> {
         self.by_class.get(class)
     }
 }
@@ -670,14 +682,14 @@ fn is_lambda_shaped(declaration: &ClassDeclaration) -> bool {
         && declaration.interfaces.len() == 1
 }
 
-fn match_lambda_class(
+fn match_functional_class(
     dex: &DexFile,
     report: &CodeItemsReport,
     classes: &BTreeMap<String, ClassDeclaration>,
     declared_access: &BTreeMap<u32, u32>,
     class: &str,
     methods: &[&DexMethodCode],
-) -> Option<RecoveredMethodRef> {
+) -> Option<RecoveredFunctional> {
     if methods.len() != 2 {
         return None;
     }
@@ -704,12 +716,15 @@ fn match_lambda_class(
     let constructor_item: &CodeItem = report.decoded().get(constructor_index)?;
     let implementation_item: &CodeItem = report.decoded().get(implementation_index)?;
     let captures: Vec<u32> = constructor_captures(dex, class, constructor_item)?;
+    let functional_interface: &str = classes.get(class)?.interfaces.first()?;
     match_reference_body(
         dex,
         classes,
         declared_access,
         implementation_item,
+        implementation.method_index,
         &captures,
+        functional_interface,
     )
 }
 
@@ -799,8 +814,10 @@ fn match_reference_body(
     classes: &BTreeMap<String, ClassDeclaration>,
     declared_access: &BTreeMap<u32, u32>,
     item: &CodeItem,
+    implementation_method: u32,
     captures: &[u32],
-) -> Option<RecoveredMethodRef> {
+    functional_interface: &str,
+) -> Option<RecoveredFunctional> {
     if !item.tries.is_empty() {
         return None;
     }
@@ -894,9 +911,6 @@ fn match_reference_body(
                     continue;
                 }
                 if target.is_some()
-                    || declared_access
-                        .get(&call.method_index)
-                        .is_some_and(|flags: &u32| flags & ACC_SYNTHETIC != 0)
                     || classes
                         .get(&method.class)
                         .is_some_and(|d: &ClassDeclaration| d.access_flags & ACC_SYNTHETIC != 0)
@@ -941,7 +955,23 @@ fn match_reference_body(
             }
         }
     }
+    let synthetic_target: bool = declared_access
+        .get(&target.method_index)
+        .is_some_and(|flags: &u32| flags & ACC_SYNTHETIC != 0);
+    if synthetic_target {
+        return classify_captured_lambda(
+            dex,
+            method,
+            &target,
+            implementation_method,
+            captures,
+            param_regs.len(),
+            functional_interface,
+        )
+        .map(RecoveredFunctional::CapturedLambda);
+    }
     classify_reference(method, &target, captures.len(), param_regs.len())
+        .map(RecoveredFunctional::MethodReference)
 }
 
 fn adapter_source(call: &TargetCall) -> Option<RefValue> {
@@ -999,6 +1029,48 @@ fn args_are_parameters(args: &[RefValue], offset: usize) -> bool {
                 .checked_add(offset)
                 .is_some_and(|expected: usize| *value == RefValue::Parameter(expected))
         })
+}
+
+fn classify_captured_lambda(
+    dex: &DexFile,
+    method: &crate::dex::MethodId,
+    target: &TargetCall,
+    implementation_method: u32,
+    captures: &[u32],
+    interface_arity: usize,
+    functional_interface: &str,
+) -> Option<RecoveredCapturedLambda> {
+    if target.is_static
+        || target.is_constructor
+        || captures.len() != 2
+        || interface_arity != 1
+        || target.receiver != Some(RefValue::Capture(0))
+        || target.args.as_slice() != [RefValue::Capture(1), RefValue::Parameter(0)]
+        || functional_interface != "Ljava/util/function/IntUnaryOperator;"
+        || !method.name.starts_with("lambda$")
+        || !crate::name_disambig::is_java_source_identifier(&method.name)
+    {
+        return None;
+    }
+    let receiver_field: &crate::dex::FieldId = dex.field_ids.get(*captures.first()? as usize)?;
+    let captured_field: &crate::dex::FieldId = dex.field_ids.get(*captures.get(1)? as usize)?;
+    let implementation: &crate::dex::MethodId =
+        dex.method_ids.get(implementation_method as usize)?;
+    if receiver_field.type_name != method.class
+        || captured_field.type_name != "I"
+        || implementation.name != "applyAsInt"
+        || implementation.proto.parameters.as_slice() != ["I"]
+        || implementation.proto.return_type != "I"
+        || method.proto.parameters.len() != 2
+        || method.proto.parameters.first()? != &captured_field.type_name
+        || method.proto.parameters.get(1)? != implementation.proto.parameters.first()?
+        || method.proto.return_type != implementation.proto.return_type
+    {
+        return None;
+    }
+    Some(RecoveredCapturedLambda {
+        helper_name: method.name.clone(),
+    })
 }
 
 fn classify_reference(
@@ -1066,20 +1138,20 @@ fn exclusively_constructed(
     dex: &DexFile,
     report: &CodeItemsReport,
     classes: &BTreeMap<String, ClassDeclaration>,
-    candidates: &BTreeMap<String, RecoveredMethodRef>,
+    candidates: &BTreeSet<String>,
 ) -> Option<BTreeSet<String>> {
-    let mut accepted: BTreeSet<String> = candidates.keys().cloned().collect();
+    let mut accepted: BTreeSet<String> = candidates.clone();
     let types: BTreeMap<u32, String> = dex
         .type_names
         .iter()
         .enumerate()
-        .filter(|(_, name): &(usize, &String)| candidates.contains_key(*name))
+        .filter(|(_, name): &(usize, &String)| candidates.contains(*name))
         .filter_map(|(index, name): (usize, &String)| {
             Some((u32::try_from(index).ok()?, name.clone()))
         })
         .collect();
     let binary_names: BTreeMap<String, String> = candidates
-        .keys()
+        .iter()
         .map(|class: &String| {
             (
                 class
@@ -1115,9 +1187,7 @@ fn exclusively_constructed(
     let mut work: usize = 0;
     let mut constructed_here: BTreeSet<String> = BTreeSet::new();
     for item in report.decoded() {
-        if candidates.contains_key(item.class.as_str()) {
-            continue;
-        }
+        let owner_is_candidate: bool = candidates.contains(item.class.as_str());
         let insns: Vec<DalvikInsn> = decode_method(&item.insns);
         work = work.checked_add(insns.len())?;
         if work > MAX_DESUGAR_SCAN_INSNS {
@@ -1127,6 +1197,11 @@ fn exclusively_constructed(
         for insn in &insns {
             let constructed: Option<String> = construction_site(dex, candidates, insn);
             if let Some(class) = constructed {
+                if owner_is_candidate {
+                    accepted.remove(item.class.as_str());
+                    accepted.remove(&class);
+                    continue;
+                }
                 constructed_here.insert(class.clone());
                 let receiver: u16 = *insn.regs.first()?;
                 match live.remove(&receiver) {
@@ -1167,7 +1242,7 @@ fn exclusively_constructed(
                 }
             }
             if let Some(class) = referenced_candidate(dex, candidates, &types, insn) {
-                accepted.remove(&class);
+                debit_candidate_reference(&mut accepted, item.class.as_str(), &class);
             }
         }
         for pending in live.values() {
@@ -1178,20 +1253,28 @@ fn exclusively_constructed(
     Some(accepted)
 }
 
+fn debit_candidate_reference(accepted: &mut BTreeSet<String>, owner: &str, referenced: &str) {
+    if owner == referenced {
+        return;
+    }
+    accepted.remove(referenced);
+    accepted.remove(owner);
+}
+
 const fn transfers_control(op: u8) -> bool {
     matches!(op, 0x0E..=0x11 | 0x27..=0x2C | 0x32..=0x3D)
 }
 
 fn construction_site(
     dex: &DexFile,
-    candidates: &BTreeMap<String, RecoveredMethodRef>,
+    candidates: &BTreeSet<String>,
     insn: &DalvikInsn,
 ) -> Option<String> {
     if insn.op != 0x70 {
         return None;
     }
     let method: &crate::dex::MethodId = dex.method_ids.get(insn.index? as usize)?;
-    if method.name != "<init>" || !candidates.contains_key(&method.class) {
+    if method.name != "<init>" || !candidates.contains(&method.class) {
         return None;
     }
     Some(method.class.clone())
@@ -1199,7 +1282,7 @@ fn construction_site(
 
 fn referenced_candidate(
     dex: &DexFile,
-    candidates: &BTreeMap<String, RecoveredMethodRef>,
+    candidates: &BTreeSet<String>,
     types: &BTreeMap<u32, String>,
     insn: &DalvikInsn,
 ) -> Option<String> {
@@ -1210,12 +1293,12 @@ fn referenced_candidate(
             .field_ids
             .get(index as usize)
             .map(|field: &crate::dex::FieldId| field.class.clone())
-            .filter(|class: &String| candidates.contains_key(class)),
+            .filter(|class: &String| candidates.contains(class)),
         0x6E..=0x72 | 0x74..=0x78 => dex
             .method_ids
             .get(index as usize)
             .map(|method: &crate::dex::MethodId| method.class.clone())
-            .filter(|class: &String| candidates.contains_key(class)),
+            .filter(|class: &String| candidates.contains(class)),
         _ => None,
     }
 }
@@ -1309,5 +1392,19 @@ mod tests {
             "run",
             wide_descriptor
         ));
+    }
+
+    #[test]
+    fn candidate_census_preserves_self_references_and_debits_cross_references() {
+        let mut accepted: BTreeSet<String> = ["LA;", "LB;", "LC;"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        debit_candidate_reference(&mut accepted, "LA;", "LA;");
+        assert_eq!(accepted.len(), 3);
+        debit_candidate_reference(&mut accepted, "LA;", "LB;");
+        assert_eq!(accepted, BTreeSet::from(["LC;".to_owned()]));
+        debit_candidate_reference(&mut accepted, "LCaller;", "LC;");
+        assert!(accepted.is_empty());
     }
 }

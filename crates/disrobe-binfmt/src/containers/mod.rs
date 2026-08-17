@@ -103,7 +103,9 @@ pub use apfs::{
     drec_name, extract_apfs_files, is_file_extent_record, is_inode_record, parse_apfs,
     resolve_omap_tree, walk_fs_tree_leaf,
 };
-pub use appimage::{AppImageLayout, parse_appimage};
+pub use appimage::{
+    AppImageFormat, AppImageLayout, AppImagePayloadLayout, detect_appimage, parse_appimage,
+};
 pub use ar::{ArArchive, ArMember, detect_ar, member_bytes as ar_member_bytes, parse_ar};
 pub use arc::{
     ArcArchive, ArcEntry, detect_arc, entry_bytes as arc_entry_bytes,
@@ -181,7 +183,10 @@ pub use installshield::{
     InstallShieldFile, InstallShieldHeader, detect_installshield, installshield_external_hint,
     walk_installshield,
 };
-pub use iso::{IsoEntry, IsoImage, detect_iso, file_data as iso_file_data, parse_iso};
+pub use iso::{
+    IsoEntry, IsoEntryKind, IsoExtent, IsoImage, ZisofsInfo, detect_iso,
+    file_data as iso_file_data, parse_iso, read_file_data as read_iso_file_data,
+};
 pub use jffs2::{Jffs2Endian, Jffs2File, Jffs2Walk, detect_jffs2, walk_jffs2};
 pub use legacy_detect::{
     PartcloneImage, QnxKind, StuffItKind, detect_partclone, detect_qnx, detect_stuffit,

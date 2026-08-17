@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1402,
-    "parse_shaped": 575,
+    "entry_points": 1406,
+    "parse_shaped": 577,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 630,
     "named_by_a_suite_recording_seed_reach": 127,
-    "named_by_neither": 739
+    "named_by_neither": 743
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,8 +22,8 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 237,
-      "parse_shaped": 159,
+      "entry_points": 239,
+      "parse_shaped": 161,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
       "named_by_a_resilience_suite": 153,
@@ -33,6 +33,7 @@
         "disrobe-binfmt/src/containers/apfs.rs::extract_apfs_files",
         "disrobe-binfmt/src/containers/apfs.rs::resolve_omap_tree",
         "disrobe-binfmt/src/containers/apfs.rs::walk_fs_tree_leaf",
+        "disrobe-binfmt/src/containers/appimage.rs::detect_appimage",
         "disrobe-binfmt/src/containers/arc.rs::entry_bytes",
         "disrobe-binfmt/src/containers/arj.rs::entry_bytes",
         "disrobe-binfmt/src/containers/bare_stream.rs::inflate_zlib_verified",
@@ -58,6 +59,7 @@
         "disrobe-binfmt/src/containers/innosetup.rs::recover_inno_named_files",
         "disrobe-binfmt/src/containers/innosetup.rs::recover_inno_named_files_with_limits",
         "disrobe-binfmt/src/containers/innosetup.rs::unfilter_instructions",
+        "disrobe-binfmt/src/containers/iso.rs::read_file_data",
         "disrobe-binfmt/src/containers/lha_dyn.rs::decode_bounded",
         "disrobe-binfmt/src/containers/lzms.rs::lzms_compress",
         "disrobe-binfmt/src/containers/minidump/carve.rs::carve_module",
@@ -133,7 +135,7 @@
     },
     {
       "crate": "disrobe-core",
-      "entry_points": 100,
+      "entry_points": 102,
       "parse_shaped": 15,
       "with_declared_coverage_guided_target": 12,
       "with_replay_proven_semantic_reach": 0,
@@ -173,6 +175,8 @@
         "disrobe-core/src/codec/framed.rs::yenc_encode",
         "disrobe-core/src/codec/framed.rs::z85_decode",
         "disrobe-core/src/codec/framed.rs::z85_encode",
+        "disrobe-core/src/codec/hash.rs::md5_digest",
+        "disrobe-core/src/codec/hash.rs::sha1_digest",
         "disrobe-core/src/codec/hex.rs::decode_bytes",
         "disrobe-core/src/codec/mod.rs::blind_cascade",
         "disrobe-core/src/codec/mod.rs::cascade_or_wall",

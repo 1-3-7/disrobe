@@ -2,7 +2,7 @@ use indexmap::{IndexMap, IndexSet};
 use oxc_allocator::Allocator;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
-    ArrayExpression, BindingPatternKind, CallExpression, Expression, FunctionBody,
+    ArrayExpression, BindingPatternKind, CallExpression, Expression, FormalParameter, FunctionBody,
     ObjectExpression, ObjectPropertyKind, PropertyKey, PropertyKind, Statement,
 };
 use oxc_parser::Parser;
@@ -147,7 +147,8 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, SystemRegisterParamStats) {
 }
 
 fn dependency_count(call: &CallExpression<'_>) -> Option<usize> {
-    let dependencies_expression: &Expression<'_> = call.arguments.first()?.as_expression()?;
+    let (dependencies_expression, _declaration_expression): (&Expression<'_>, &Expression<'_>) =
+        registration_arguments(call)?;
     let Expression::ArrayExpression(dependencies) = dependencies_expression.get_inner_expression()
     else {
         return None;
@@ -271,10 +272,8 @@ fn registration_edits(
 }
 
 fn registration<'a>(call: &'a CallExpression<'a>) -> Option<Registration<'a>> {
-    if call.optional || call.type_parameters.is_some() || call.arguments.len() != 2 {
-        return None;
-    }
-    let dependencies_expression: &Expression<'_> = call.arguments[0].as_expression()?;
+    let (dependencies_expression, declaration_expression): (&Expression<'_>, &Expression<'_>) =
+        registration_arguments(call)?;
     let Expression::ArrayExpression(dependencies) = dependencies_expression.get_inner_expression()
     else {
         return None;
@@ -289,7 +288,6 @@ fn registration<'a>(call: &'a CallExpression<'a>) -> Option<Registration<'a>> {
         };
         dependency_names.push(literal.value.as_str());
     }
-    let declaration_expression: &Expression<'_> = call.arguments[1].as_expression()?;
     let Expression::FunctionExpression(declaration) = declaration_expression.get_inner_expression()
     else {
         return None;
@@ -299,7 +297,7 @@ fn registration<'a>(call: &'a CallExpression<'a>) -> Option<Registration<'a>> {
         || declaration.generator
         || declaration.type_parameters.is_some()
         || declaration.params.rest.is_some()
-        || !declaration.params.items.is_empty()
+        || !declaration_parameters_valid(&declaration.params.items)
         || body_has_dynamic_scope(body)
     {
         return None;
@@ -326,6 +324,46 @@ fn registration<'a>(call: &'a CallExpression<'a>) -> Option<Registration<'a>> {
         dependencies: dependency_names,
         setters,
     })
+}
+
+fn declaration_parameters_valid(parameters: &[FormalParameter<'_>]) -> bool {
+    (parameters.is_empty() || parameters.len() == 2)
+        && parameters.iter().all(|parameter: &FormalParameter<'_>| {
+            parameter.decorators.is_empty()
+                && parameter.accessibility.is_none()
+                && !parameter.readonly
+                && !parameter.r#override
+                && !parameter.pattern.optional
+                && parameter.pattern.type_annotation.is_none()
+                && matches!(
+                    &parameter.pattern.kind,
+                    BindingPatternKind::BindingIdentifier(_)
+                )
+        })
+}
+
+fn registration_arguments<'a>(
+    call: &'a CallExpression<'a>,
+) -> Option<(&'a Expression<'a>, &'a Expression<'a>)> {
+    if call.optional || call.type_parameters.is_some() {
+        return None;
+    }
+    match call.arguments.as_slice() {
+        [dependencies, declaration] => {
+            Some((dependencies.as_expression()?, declaration.as_expression()?))
+        }
+        [name, dependencies, declaration] => {
+            let name_expression: &Expression<'_> = name.as_expression()?;
+            if !matches!(
+                name_expression.get_inner_expression(),
+                Expression::StringLiteral(_)
+            ) {
+                return None;
+            }
+            Some((dependencies.as_expression()?, declaration.as_expression()?))
+        }
+        _ => None,
+    }
 }
 
 fn direct_returned_object<'a>(body: &'a FunctionBody<'a>) -> Option<&'a ObjectExpression<'a>> {

@@ -47,6 +47,10 @@ const ELISION: &str = "...";
 
 const NULL_OBJECT_REFERENCE: u32 = 1;
 
+const SYMBOL_CLASS_NAME: &str = "Symbol";
+
+const SYMBOL_LIBRARY_URI: &str = "dart:_internal";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DartPoolLiteralKind {
@@ -57,6 +61,7 @@ pub enum DartPoolLiteralKind {
     Named,
     Type,
     TypeArguments,
+    Symbol,
     RawImmediate,
     NativeFunction,
     Unresolved,
@@ -74,6 +79,7 @@ enum DartPoolObjectKind {
     Library,
     Type,
     TypeArguments,
+    Symbol,
     Opaque,
 }
 
@@ -126,10 +132,11 @@ impl DartPoolTable {
         };
         let function_parameters: BTreeMap<String, Option<u8>> =
             index_function_parameters(&inventory);
-        let objects: Vec<DartPoolObject> = nodes
+        let mut objects: Vec<DartPoolObject> = nodes
             .iter()
             .map(|node: &DartGraphNode| compact(node, layout))
             .collect::<Vec<DartPoolObject>>();
+        classify_symbol_objects(&mut objects, layout);
         Ok(Some(Self {
             slots,
             objects,
@@ -230,6 +237,7 @@ impl DartPoolTable {
             | DartPoolObjectKind::Library => DartPoolLiteralKind::Named,
             DartPoolObjectKind::Type => DartPoolLiteralKind::Type,
             DartPoolObjectKind::TypeArguments => DartPoolLiteralKind::TypeArguments,
+            DartPoolObjectKind::Symbol => DartPoolLiteralKind::Symbol,
             DartPoolObjectKind::Opaque => DartPoolLiteralKind::Unresolved,
         }
     }
@@ -291,8 +299,25 @@ impl DartPoolTable {
             DartPoolObjectKind::TypeArguments => {
                 self.render_type_arguments(object, depth, path, budget)
             }
+            DartPoolObjectKind::Symbol => self.render_symbol(object),
             DartPoolObjectKind::Opaque => None,
         }
+    }
+
+    fn render_symbol(&self, object: &DartPoolObject) -> Option<String> {
+        let name_reference: u32 = *object.references.first()?;
+        let name: &DartPoolObject = self.object(name_reference)?;
+        if name.kind != DartPoolObjectKind::Text {
+            return None;
+        }
+        let text: &str = name.text.as_deref()?;
+        if text.chars().count() > MAX_LITERAL_CHARS {
+            return None;
+        }
+        Some(format!(
+            "Symbol({})",
+            render_string(text, name.text_is_escaped)
+        ))
     }
 
     fn render_type(
@@ -476,6 +501,87 @@ fn compact(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObject {
     }
 }
 
+fn classify_symbol_objects(objects: &mut [DartPoolObject], layout: DartPinnedLayout) {
+    let mut symbol_class_id: Option<i32> = None;
+    for object in objects.iter() {
+        if object.kind != DartPoolObjectKind::Class {
+            continue;
+        }
+        let Some(name_reference): Option<u32> = object
+            .references
+            .get(layout.declarations.class.name_reference)
+            .copied()
+        else {
+            continue;
+        };
+        if exact_text(objects, name_reference) != Some(SYMBOL_CLASS_NAME) {
+            continue;
+        }
+        let Some(library_reference): Option<u32> = object
+            .references
+            .get(layout.declarations.class.library_reference)
+            .copied()
+        else {
+            continue;
+        };
+        let Ok(library_index): core::result::Result<usize, _> = usize::try_from(library_reference)
+        else {
+            continue;
+        };
+        let Some(library): Option<&DartPoolObject> = objects.get(library_index) else {
+            continue;
+        };
+        if library.kind != DartPoolObjectKind::Library {
+            continue;
+        }
+        let Some(uri_reference): Option<u32> = library
+            .references
+            .get(layout.declarations.library.url_reference)
+            .copied()
+        else {
+            continue;
+        };
+        if exact_text(objects, uri_reference) != Some(SYMBOL_LIBRARY_URI) {
+            continue;
+        }
+        let Some(class_id): Option<i32> = object.class_id else {
+            return;
+        };
+        if symbol_class_id.replace(class_id).is_some() {
+            return;
+        }
+    }
+    let Some(symbol_class_id): Option<i32> = symbol_class_id else {
+        return;
+    };
+    for index in 0..objects.len() {
+        let is_symbol: bool = {
+            let object: &DartPoolObject = &objects[index];
+            object.kind == DartPoolObjectKind::Opaque
+                && object.class_id == Some(symbol_class_id)
+                && object.references.len() == 1
+                && object
+                    .references
+                    .first()
+                    .and_then(|reference: &u32| objects.get(usize::try_from(*reference).ok()?))
+                    .is_some_and(|name: &DartPoolObject| {
+                        name.kind == DartPoolObjectKind::Text && name.text.is_some()
+                    })
+        };
+        if is_symbol {
+            objects[index].kind = DartPoolObjectKind::Symbol;
+        }
+    }
+}
+
+fn exact_text(objects: &[DartPoolObject], reference: u32) -> Option<&str> {
+    let object: &DartPoolObject = objects.get(usize::try_from(reference).ok()?)?;
+    if object.kind != DartPoolObjectKind::Text || object.text_is_escaped {
+        return None;
+    }
+    object.text.as_deref()
+}
+
 fn object_kind(node: &DartGraphNode, layout: DartPinnedLayout) -> DartPoolObjectKind {
     match node.kind {
         DartGraphNodeKind::String => return DartPoolObjectKind::Text,
@@ -607,13 +713,62 @@ mod tests {
         }
     }
 
-    fn table(slots: Vec<DartPoolSlot>, objects: Vec<DartPoolObject>) -> DartPoolTable {
+    fn opaque_object(references: Vec<u32>, class_id: i32) -> DartPoolObject {
+        DartPoolObject {
+            kind: DartPoolObjectKind::Opaque,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references,
+            class_id: Some(class_id),
+            type_flags: None,
+        }
+    }
+
+    fn declaration_object(
+        kind: DartPoolObjectKind,
+        references: Vec<u32>,
+        class_id: Option<i32>,
+    ) -> DartPoolObject {
+        DartPoolObject {
+            kind,
+            text: None,
+            text_is_escaped: false,
+            immediate: None,
+            references,
+            class_id,
+            type_flags: None,
+        }
+    }
+
+    fn table(slots: Vec<DartPoolSlot>, mut objects: Vec<DartPoolObject>) -> DartPoolTable {
+        classify_symbol_objects(
+            &mut objects,
+            super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
+        );
         DartPoolTable {
             slots,
             objects,
             declarations: super::super::dart_graph_layout::DART_3_12_2_ANDROID_ARM64_PRODUCT_LAYOUT,
             function_parameters: BTreeMap::new(),
         }
+    }
+
+    fn symbol_objects(library_uri: &str, symbol_name: &str) -> Vec<DartPoolObject> {
+        let mut library_references: Vec<u32> = vec![0; 10];
+        library_references[1] = 2;
+        let mut class_references: Vec<u32> = vec![0; 13];
+        class_references[0] = 1;
+        class_references[7] = 3;
+        vec![
+            text_object("unused"),
+            text_object(SYMBOL_CLASS_NAME),
+            text_object(library_uri),
+            declaration_object(DartPoolObjectKind::Library, library_references, None),
+            declaration_object(DartPoolObjectKind::Class, class_references, Some(402)),
+            text_object(symbol_name),
+            opaque_object(vec![5], 402),
+        ]
     }
 
     #[test]
@@ -630,6 +785,49 @@ mod tests {
         record_parameter_count(&mut index, "missing", None);
         assert_eq!(index.get("large").copied().flatten(), None);
         assert_eq!(index.get("missing").copied().flatten(), None);
+    }
+
+    #[test]
+    fn exact_internal_symbol_instance_renders_from_its_string_field() {
+        let objects: Vec<DartPoolObject> = symbol_objects(SYMBOL_LIBRARY_URI, "shipment.status");
+        let pool: DartPoolTable = table(vec![DartPoolSlot::Object(6)], objects);
+        assert_eq!(
+            pool.kind_at_offset(DART_POOL_ELEMENT_BASE_BYTES, false),
+            DartPoolLiteralKind::Symbol
+        );
+        assert_eq!(
+            pool.render_slot(0, false).as_deref(),
+            Some("Symbol(\"shipment.status\")")
+        );
+    }
+
+    #[test]
+    fn symbol_classification_refuses_ambiguous_or_malformed_instances() {
+        let public_pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(6)],
+            symbol_objects("dart:core", "shipment.status"),
+        );
+        assert_eq!(public_pool.render_slot(0, false), None);
+
+        let mut duplicate_objects: Vec<DartPoolObject> =
+            symbol_objects(SYMBOL_LIBRARY_URI, "shipment.status");
+        duplicate_objects.push(duplicate_objects[4].clone());
+        let duplicate_pool: DartPoolTable = table(vec![DartPoolSlot::Object(6)], duplicate_objects);
+        assert_eq!(duplicate_pool.render_slot(0, false), None);
+
+        let mut extra_reference_objects: Vec<DartPoolObject> =
+            symbol_objects(SYMBOL_LIBRARY_URI, "shipment.status");
+        extra_reference_objects[6].references.push(5);
+        let extra_reference_pool: DartPoolTable =
+            table(vec![DartPoolSlot::Object(6)], extra_reference_objects);
+        assert_eq!(extra_reference_pool.render_slot(0, false), None);
+
+        let long_name: String = "s".repeat(MAX_LITERAL_CHARS + 1);
+        let long_name_pool: DartPoolTable = table(
+            vec![DartPoolSlot::Object(6)],
+            symbol_objects(SYMBOL_LIBRARY_URI, &long_name),
+        );
+        assert_eq!(long_name_pool.render_slot(0, false), None);
     }
 
     #[test]

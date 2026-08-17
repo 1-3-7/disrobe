@@ -138,7 +138,8 @@ pub fn detect(source: &[u8]) -> Detection {
         markers.push("rollup-output".to_owned());
         return classified(JsObfuscator::Rollup, 0.7, markers, "rollup-output");
     }
-    if !head.contains('\n') && head.len() > 200 {
+    let single_line_head: &str = head.trim_end_matches(['\r', '\n']);
+    if !single_line_head.contains(['\r', '\n']) && single_line_head.len() > 200 {
         markers.push("single-line-large".to_owned());
         return classified(JsObfuscator::Minified, 0.5, markers, "single-line-large");
     }
@@ -303,6 +304,21 @@ mod tests {
         let src: &[u8] = b"const x = 1;\nfunction foo() { return x + 1; }";
         let det: Detection = detect(src);
         assert_eq!(det.family, JsObfuscator::Unknown);
+    }
+
+    #[test]
+    fn detects_single_line_named_system_register_with_trailing_newline() {
+        let source: String = format!(
+            "System.register(\"fixture/main\",[\"dep\"],function(e,c){{return{{setters:[function(a){{sink=a.value}}],execute:function(){{}}}}}});{}\n",
+            ";".repeat(160)
+        );
+        let det: Detection = detect(source.as_bytes());
+        assert_eq!(det.family, JsObfuscator::Minified);
+        assert!(
+            det.markers
+                .iter()
+                .any(|marker: &String| marker == "single-line-large")
+        );
     }
 
     #[test]

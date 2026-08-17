@@ -428,6 +428,33 @@ fn a_loop_counter_never_displaces_the_key_the_sink_still_reads() {
 }
 
 #[test]
+fn raw_md5_derived_key_runtime_equivalent() {
+    let key: &[u8] = &[
+        0xfe, 0x4c, 0x0f, 0x30, 0xaa, 0x35, 0x9c, 0x41, 0xd9, 0xf9, 0xa5, 0xf6, 0x9c, 0x8c, 0x41,
+        0x92,
+    ];
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = md5('seed', true); $i = 0;",
+        "while ($i < strlen($d)) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); $i++; }",
+    );
+    recover_and_grade("raw-md5-derived-key", &blob);
+}
+
+#[test]
+fn hexadecimal_sha1_derived_key_runtime_equivalent() {
+    let key: &[u8] = b"92713d4709377111cf31f2a71986c411bd6cb5b0";
+    let cipher: Vec<u8> = xor_repeating(payload().as_bytes(), key);
+    let blob: Vec<u8> = loader_with_body(
+        &cipher,
+        "$k = sha1('seed'); $i = 0;",
+        "while ($i < strlen($d)) { $o .= chr(ord($d[$i]) ^ ord($k[$i % strlen($k)])); $i++; }",
+    );
+    recover_and_grade("hexadecimal-sha1-derived-key", &blob);
+}
+
+#[test]
 fn a_runtime_sourced_key_still_walls_instead_of_inventing_a_body() {
     let graded: String = String::from("the runtime-keyed decode loop wall");
     let Some(php): Option<PhpRuntime> = require_php(&graded) else {

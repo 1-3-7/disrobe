@@ -576,6 +576,9 @@ pub fn detect_container_with_hint(bytes: &[u8], path: Option<&Path>) -> Option<C
         });
         crate::debug::dbg_hex("magic", bytes, 16);
     }
+    if crate::containers::detect_appimage(bytes).is_some() {
+        return Some(ContainerKind::AppImage);
+    }
     if let Some(kind) = detect_by_magic(bytes) {
         if let Some(extension_hint) = path.and_then(extension_subkind)
             && let Some(refined) = refine_with_extension(kind, extension_hint)

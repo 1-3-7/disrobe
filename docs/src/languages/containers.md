@@ -17,7 +17,7 @@ Before `disrobe` can decompile anything, it often has to get inside a container.
 
 | Category | Formats |
 |---|---|
-| Archives and installers | ZIP (incl. ZIP64 + AES), tar.gz / tar.bz2 / tar.xz / tar.zst, 7z, RAR4 and RAR5 (stored members from both; RAR5 LZ "normal" method decoded in-tree; RAR 2.9/3.x LZ used by compressed RAR4 is named per-entry, not decoded in-tree), `.cab`, MSI, MSIX / APPX, NSIS (solid and non-solid), Inno Setup 4.0.9 through setup-data profile 7.0.0.3 (stored, zlib, BZip2, LZMA1, and LZMA2 members, including solid groups), InstallShield (stored and zlib members), `.deb`, `.rpm` (metadata), AppImage, Flatpak, Snap |
+| Archives and installers | ZIP (incl. ZIP64 + AES), tar.gz / tar.bz2 / tar.xz / tar.zst, 7z, RAR4 and RAR5 (stored members from both; RAR5 LZ "normal" method decoded in-tree; RAR 2.9/3.x LZ used by compressed RAR4 is named per-entry, not decoded in-tree), `.cab`, MSI, MSIX / APPX, NSIS (solid and non-solid), Inno Setup 4.0.9 through setup-data profile 7.0.0.3 (stored, zlib, BZip2, LZMA1, and LZMA2 members, including solid groups), InstallShield (stored and zlib members), `.deb`, `.rpm` (metadata), AppImage Type 1 (ISO 9660, Rock Ridge, and zisofs) and Type 2 (SquashFS), Flatpak, Snap |
 | Bare compression streams | gzip, bzip2, zstd, lzma, lzip, lz4-frame, zlib, `.Z` (Unix compress) |
 | Legacy archives | ar, arj (methods 1-3 decoded; method 4 carved verbatim), arc (methods 1-9 decoded; independent byte checks cover methods 2 and 5-9; methods 8-9 use grouped dynamic LZW with exact declared-size and CRC checks; methods 10-11 refused), LZH header levels 0-3 (`-lh0-` through `-lh7-`, `-lhx-`, `-lz4-`, `-lz5-`, `-lzs-`, and `-pm0-` decoded; `-lhd-` directories retained; `-lhd-` symbolic links refused; `-pm1-` and `-pm2-` omitted by direct extraction and refused by recursive extraction; byte, code-page, and UTF-16 paths recovered; missing split volumes refused), lzop, FreeBSD uzip, Xamarin xalz, par2, ELF appended-overlay carve, StuffIt (classic stored forks decoded; compressed forks carved verbatim with a documented note), partclone (decoded) |
 | Embedded-linux filesystems | squashfs, cramfs, ext4, romfs, minixfs, jffs2, UBI + UBIFS, yaffs, erofs (chunk and lcluster lz4 / deflate / zstd decoded; microlzma and compact index carved), NTFS, android-sparse, btrfs-send |
@@ -25,7 +25,7 @@ Before `disrobe` can decompile anything, it often has to get inside a container.
 | Apple | `.dmg` (UDIF: koly trailer + blkx mish chunks; ADC / zlib / bzip2 / LZFSE / LZMA chunk decoders; then HFS+ catalog walk extracts individual files, all in-tree), `.pkg` (xar TOC + gzip / bzip2 heap, extracted in-tree) |
 | Vendor firmware | D-Link (SHRS / encrypted-img AES / alpha / fpkg), EnGenius XOR, Autel ECC table, QNAP PC1, plus CRC-verified Netgear (chk / trx), Xiaomi, Tesla, HP, Moxa, INSTAR, and Airoha carves; OTP-AES Airoha firmware is an information-theoretic wall and is carved verbatim |
 | Standalone executables | Bun `--compile` binaries (embedded JS module graph + sourcemaps), Unity AssetBundle (UnityFS), .NET single-file bundles (majors 1, 2 and 6; embedded assemblies routed to the CIL decompiler, native entries to the native pass) |
-| App / runtime | Electron `.asar`, Docker image tarball, OCI image manifest + layers, ISO 9660 + Joliet (extracted in-tree) |
+| App / runtime | Electron `.asar`, Docker image tarball, OCI image manifest + layers, ISO 9660 with Joliet fallback, Rock Ridge names, ordered multi-extent files, and zisofs v1 (extracted in-tree) |
 
 ## Commands
 

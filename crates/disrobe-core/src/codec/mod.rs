@@ -5,6 +5,7 @@ pub mod cipher;
 pub mod crc32;
 pub mod crypto_wall;
 pub mod framed;
+pub mod hash;
 pub mod hex;
 pub mod web_escape;
 
@@ -18,6 +19,7 @@ pub use base64::{Base64Alphabet, Base64Padding, base64_decode};
 pub use cipher::{StreamCipher, TeaVariant};
 pub use crc32::crc32_ieee;
 pub use crypto_wall::{CryptoWall, CryptoWallKind, classify as classify_crypto_wall};
+pub use hash::{md5_digest, sha1_digest};
 pub use hex::{decode as hex_decode, encode as hex_encode};
 
 const ADLER_MODULUS: u32 = 65_521;

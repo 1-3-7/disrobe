@@ -39,9 +39,10 @@ fn real_iso_joliet_rockridge_recovers_members_byte_exact() {
     assert_eq!(detect_container(&bytes), Some(ContainerKind::Iso));
 
     let image: IsoImage = parse_iso(&bytes).expect("parse iso");
+    assert!(image.rock_ridge, "fixture carries PVD Rock Ridge metadata");
     assert!(
-        image.joliet,
-        "fixture carries a Joliet supplementary descriptor"
+        !image.joliet,
+        "PVD Rock Ridge must take precedence over the Joliet fallback"
     );
     assert_eq!(image.volume_id, "DISROBE_TEST");
 

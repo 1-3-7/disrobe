@@ -11,12 +11,13 @@ use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
 const FIXTURE: &str = include_str!("fixtures/rollup_system_param/fixture.min.js");
+const NAMED_FIXTURE: &str = include_str!("fixtures/babel_system_named_param/fixture.min.js");
 const NODE_TIMEOUT: Duration = Duration::from_secs(30);
 const NODE_CAPTURE: usize = 1usize << 18;
 
 fn node_output(source: &str) -> Vec<u8> {
     let harness: String = format!(
-        r#"const modules={{"@fixture/math-utils":{{sum:(left,right)=>left+right}},"@fixture/difference-math":{{sum:(left,right)=>left-right}},"@fixture/text-format":{{default:value=>`value=${{value}}`}}}};globalThis.System={{register(dependencies,declare){{const registration=declare(()=>{{}},{{id:"fixture"}});registration.setters.forEach((setter,index)=>setter(modules[dependencies[index]]));registration.execute();}}}};{source};process.stdout.write(globalThis.__result);"#
+        r#"const modules={{"@fixture/math-utils":{{sum:(left,right)=>left+right}},"@fixture/difference-math":{{sum:(left,right)=>left-right}},"@fixture/text-format":{{default:value=>`value=${{value}}`}}}};globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;const registration=declare(()=>{{}},{{id:"fixture"}});registration.setters.forEach((setter,index)=>setter(modules[dependencies[index]]));registration.execute();}}}};{source};process.stdout.write(globalThis.__result);"#
     );
     let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
     let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
@@ -33,7 +34,7 @@ fn node_output(source: &str) -> Vec<u8> {
 
 fn node_live_outputs(source: &str) -> Vec<u8> {
     let harness: String = format!(
-        r#"let captured;globalThis.System={{register(dependencies,declare){{captured={{dependencies,registration:declare(()=>{{}},{{id:"fixture"}})}};}}}};{source};const initial=[{{sum:(left,right)=>left+right}},{{default:value=>`value=${{value}}`}}];const updated=[{{sum:(left,right)=>left-right}},{{default:value=>`updated=${{value}}`}}];captured.registration.setters.forEach((setter,index)=>setter(initial[index]));captured.registration.execute();const first=globalThis.__result;captured.registration.setters.forEach((setter,index)=>setter(updated[index]));captured.registration.execute();process.stdout.write(`${{first}}|${{globalThis.__result}}`);"#
+        r#"let captured;globalThis.System={{register(...args){{const [dependencies,declare]=args.length===3?args.slice(1):args;captured={{dependencies,registration:declare(()=>{{}},{{id:"fixture"}})}};}}}};{source};const initial=[{{sum:(left,right)=>left+right}},{{default:value=>`value=${{value}}`}}];const updated=[{{sum:(left,right)=>left-right}},{{default:value=>`updated=${{value}}`}}];captured.registration.setters.forEach((setter,index)=>setter(initial[index]));captured.registration.execute();const first=globalThis.__result;captured.registration.setters.forEach((setter,index)=>setter(updated[index]));captured.registration.execute();process.stdout.write(`${{first}}|${{globalThis.__result}}`);"#
     );
     let args: [&OsStr; 2] = [OsStr::new("-e"), OsStr::new(&harness)];
     let output: CapturedOutput = run_captured(Path::new("node"), &args, NODE_TIMEOUT, NODE_CAPTURE)
@@ -92,6 +93,43 @@ fn registered_pass_recovers_rollup_system_setter_parameter_names() {
 }
 
 #[test]
+fn registered_pass_recovers_named_system_setter_parameter_names() {
+    assert_eq!(NAMED_FIXTURE.len(), 232);
+    assert_eq!(NAMED_FIXTURE.lines().count(), 1);
+    let original_stdout: Vec<u8> = node_output(NAMED_FIXTURE);
+    let mutated: String =
+        NAMED_FIXTURE.replacen("@fixture/math-utils", "@fixture/difference-math", 1);
+    assert_ne!(node_output(&mutated), original_stdout);
+
+    let (_direct, direct_stats): (String, AstUnminifyStats) = unminify_ast(NAMED_FIXTURE);
+    assert_eq!(direct_stats.system_register_parameters_renamed, 2);
+    assert_eq!(direct_stats.amd_parameters_renamed, 0);
+    assert_eq!(direct_stats.commonjs_parameters_renamed, 0);
+    assert_eq!(direct_stats.global_iife_parameters_renamed, 0);
+
+    let input: Artifact =
+        Artifact::new(Rung::Raw, NAMED_FIXTURE.as_bytes().to_vec(), [0x59_u8; 32]);
+    let recovered: Artifact = JS_OBF_PASS
+        .run(&input)
+        .expect("the registered js.deob pass must recover the named registry module");
+    let recovered_source: String = String::from_utf8(recovered.envelope)
+        .expect("the recovered named registry module must remain UTF-8");
+    let compact_recovered: String = compact(&recovered_source);
+    assert!(compact_recovered.contains("System.register(\"fixture/main\",["));
+    assert!(compact_recovered.contains("function(mathUtils){u=mathUtils.sum}"));
+    assert!(compact_recovered.contains("function(textFormat){i=textFormat.default}"));
+    assert_eq!(node_output(&recovered_source), original_stdout);
+    assert_eq!(
+        node_live_outputs(&recovered_source),
+        node_live_outputs(NAMED_FIXTURE)
+    );
+    let repeated: Artifact = JS_OBF_PASS
+        .run(&input)
+        .expect("the registered pass must deterministically recover the named registry module");
+    assert_eq!(repeated.envelope, recovered_source.as_bytes());
+}
+
+#[test]
 fn system_register_recovery_is_transactional_and_fail_closed() {
     let accepted: &str = r#"System.register(["@fixture/math-utils","side","noop"],function(){return{setters:[function(a){sink=a.sum},null,function(){}],execute:function(){}}});"#;
     let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(accepted);
@@ -111,10 +149,13 @@ fn system_register_recovery_is_transactional_and_fail_closed() {
     assert!(compact(&suffix_recovered).contains("function(mathUtils_1){sink=mathUtils_1.sum}"));
     assert!(!suffix_recovered.contains("mathUtils_2"));
 
-    let excluded: [&str; 11] = [
+    let excluded: [&str; 14] = [
         r#"const System={register(){}};System.register(["dep"],function(){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
         r#"System["register"](["dep"],function(){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
         r#"System.register(name,["dep"],function(){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
+        r#"System.register("name",["dep"],function(e){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
+        r#"System.register("name",["dep"],function(e=side(),c){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
+        r#"System.register("name",["dep"],function({e},c){return{setters:[function(a){sink=a}],execute:function(){}}});"#,
         r"System.register([dep],function(){return{setters:[function(a){sink=a}],execute:function(){}}});",
         r#"System.register(["dep"],function(){return{setters:[a=>sink=a],execute:function(){}}});"#,
         r#"System.register(["dep"],function(){return{setters:[function(){side()}],execute:function(){}}});"#,

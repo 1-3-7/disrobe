@@ -642,9 +642,9 @@ fn invoke(
             .join(", ");
         if let Some(Expr::New(ty)) = &receiver {
             let reference: Option<String> =
-                ctx.desugar.method_refs.recovered(&method.class).and_then(
-                    |recovered: &crate::dalvik_desugar::RecoveredMethodRef| {
-                        render_method_reference(ctx.desugar.core_library, recovered, &args)
+                ctx.desugar.functionals.recovered(&method.class).and_then(
+                    |recovered: &crate::dalvik_desugar::RecoveredFunctional| {
+                        render_functional(ctx.desugar.core_library, recovered, &args)
                     },
                 );
             let constructed: Expr =
@@ -686,6 +686,21 @@ fn invoke(
     LiftOutcome::None
 }
 
+fn render_functional(
+    core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
+    recovered: &crate::dalvik_desugar::RecoveredFunctional,
+    args: &[Expr],
+) -> Option<String> {
+    match recovered {
+        crate::dalvik_desugar::RecoveredFunctional::MethodReference(reference) => {
+            render_method_reference(core_library, reference, args)
+        }
+        crate::dalvik_desugar::RecoveredFunctional::CapturedLambda(lambda) => {
+            render_captured_lambda(lambda, args)
+        }
+    }
+}
+
 fn render_method_reference(
     core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
     recovered: &crate::dalvik_desugar::RecoveredMethodRef,
@@ -710,6 +725,26 @@ fn render_method_reference(
     Some(format!(
         "{}::{name}",
         descriptor::binary_to_source(&core_library.project_type(&recovered.owner))
+    ))
+}
+
+fn render_captured_lambda(
+    recovered: &crate::dalvik_desugar::RecoveredCapturedLambda,
+    args: &[Expr],
+) -> Option<String> {
+    if args.len() != 2 {
+        return None;
+    }
+    let receiver_text: String = args.first()?.render();
+    let receiver: String = if is_expression_name(&receiver_text) {
+        receiver_text
+    } else {
+        format!("({receiver_text})")
+    };
+    let captured: String = args.get(1)?.render();
+    Some(format!(
+        "p0 -> {receiver}.{}({captured}, p0)",
+        recovered.helper_name
     ))
 }
 

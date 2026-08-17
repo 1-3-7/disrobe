@@ -67,13 +67,13 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
     let items: Vec<CodeItem> = code_report.decoded().to_vec();
     let interfaces: crate::dalvik_desugar::DefaultInterfaceRecovery =
         crate::dalvik_desugar::DefaultInterfaceRecovery::analyze(dex, bytes, &code_report);
-    let method_refs: crate::dalvik_desugar::MethodReferenceRecovery =
-        crate::dalvik_desugar::MethodReferenceRecovery::analyze(dex, bytes, &code_report);
+    let functionals: crate::dalvik_desugar::FunctionalRecovery =
+        crate::dalvik_desugar::FunctionalRecovery::analyze(dex, bytes, &code_report);
     let core_library: crate::dalvik_core_library::CoreLibraryRecovery =
         crate::dalvik_core_library::CoreLibraryRecovery::analyze(dex);
     let desugar: crate::dalvik_desugar::DesugarView<'_> = crate::dalvik_desugar::DesugarView {
         interfaces: &interfaces,
-        method_refs: &method_refs,
+        functionals: &functionals,
         core_library: &core_library,
     };
     let mut by_class: BTreeMap<String, Vec<&DexMethodCode>> = BTreeMap::new();
@@ -130,7 +130,7 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
 
     for (class_descriptor, methods) in &by_class {
         if desugar.interfaces.suppresses_class(class_descriptor)
-            || desugar.method_refs.suppresses_class(class_descriptor)
+            || desugar.functionals.suppresses_class(class_descriptor)
         {
             continue;
         }

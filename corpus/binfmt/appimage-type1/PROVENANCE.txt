@@ -1,0 +1,12 @@
+artifact=AppImageAssistant.AppImage
+source=https://github.com/AppImage/AppImageKit/releases/download/1/AppImageAssistant
+release=https://github.com/AppImage/AppImageKit/releases/tag/1
+release_published=2015-01-18T02:48:15Z
+size=1245184
+sha256=e78a149c2dd61becc92450bddbb0851c49867c6505330eb5ba8881c13f349c6e
+format_spec=https://github.com/AppImage/AppImageSpec/blob/51c2a1465cfef1be7a159477ada8cc36a790e96c/draft.md
+reference=libarchive bsdtar 3.8.5
+reference_command=bsdtar -tvf AppImageAssistant.AppImage; bsdtar -xOf AppImageAssistant.AppImage <path>
+manifest=MANIFEST.tsv
+manifest_sha256=c171dfe61c92ae17d2b37955c589aa01dc68c6103df8d001e2e058bc26a3b116
+execution=none

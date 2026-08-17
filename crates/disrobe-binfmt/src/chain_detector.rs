@@ -123,6 +123,7 @@ const TAG_RPM: &str = "rpm";
 const TAG_ARC: &str = "arc";
 const TAG_LZH: &str = "lzh";
 const TAG_INNOSETUP: &str = "inno-setup";
+const TAG_APPIMAGE: &str = "appimage";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
@@ -164,7 +165,7 @@ const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
 const fn tag_specificity(tag: &str) -> u16 {
     if matches!(
         tag.as_bytes(),
-        b"dotnet-single-file" | b"inno-setup" | b"uefi-fv" | b"erofs"
+        b"dotnet-single-file" | b"inno-setup" | b"appimage" | b"uefi-fv" | b"erofs"
     ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
@@ -176,6 +177,7 @@ const fn tag_marker(tag: &str) -> &'static str {
     match tag.as_bytes() {
         b"dotnet-single-file" => "bundle-signature+header",
         b"inno-setup" => "pe-resource+setup-data-header",
+        b"appimage" => "elf+validated-filesystem",
         b"uefi-fv" => "fv-header+checksum",
         b"erofs" => "superblock+root-inode",
         _ => "container-magic",
@@ -411,11 +413,129 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_ARC => extract_arc_members(bytes),
         TAG_LZH => extract_lzh_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
+        TAG_APPIMAGE => extract_appimage_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
         TAG_UEFI_FV => extract_uefi_fv_members(bytes),
         TAG_EROFS => extract_erofs_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_appimage_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let layout: crate::containers::AppImageLayout = crate::containers::parse_appimage(bytes)
+        .map_err(|error: crate::error::Error| fail(format!("appimage payload: {error}")))?;
+    match layout.payload {
+        crate::containers::AppImagePayloadLayout::Iso9660 => extract_iso_members(bytes),
+        crate::containers::AppImagePayloadLayout::Squashfs { offset, .. } => {
+            let base: usize =
+                usize::try_from(offset).map_err(|_error: std::num::TryFromIntError| {
+                    fail("appimage offset overflow".to_owned())
+                })?;
+            let walk: crate::containers::SquashfsWalk =
+                crate::containers::walk_squashfs(bytes, base, MAX_MEMBER_BYTES).map_err(
+                    |error: crate::error::Error| {
+                        fail(format!("appimage squashfs payload: {error}"))
+                    },
+                )?;
+            if walk.files.len() > MAX_MEMBER_COUNT {
+                return Err(fail(format!(
+                    "appimage member count {} exceeds {MAX_MEMBER_COUNT}",
+                    walk.files.len()
+                )));
+            }
+            let files: Vec<(String, Vec<u8>)> = walk
+                .files
+                .into_iter()
+                .filter(|file: &crate::containers::SquashfsFile| !file.is_symlink)
+                .map(|file: crate::containers::SquashfsFile| (file.path, file.data))
+                .collect();
+            preflight_chain_members(files, "appimage")
+        }
+    }
+}
+
+fn extract_iso_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let image: crate::containers::IsoImage = crate::containers::parse_iso(bytes)
+        .map_err(|error: crate::error::Error| fail(format!("appimage iso payload: {error}")))?;
+    if image.files.len() > MAX_MEMBER_COUNT {
+        return Err(fail(format!(
+            "appimage member count {} exceeds {MAX_MEMBER_COUNT}",
+            image.files.len()
+        )));
+    }
+    let mut total: u64 = 0;
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let entries: Vec<(&crate::containers::IsoEntry, String)> = image
+        .files
+        .iter()
+        .filter(|entry: &&crate::containers::IsoEntry| {
+            entry.kind == crate::containers::IsoEntryKind::Regular
+        })
+        .map(|entry: &crate::containers::IsoEntry| {
+            let name: String = preflight_chain_path(&mut keys, &entry.path, "appimage")?;
+            Ok((entry, name))
+        })
+        .collect::<CoreResult<Vec<_>>>()?;
+    let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
+    for (entry, name) in entries {
+        let output_size: u64 = entry
+            .zisofs
+            .map_or(entry.data_len, |info| u64::from(info.uncompressed_size));
+        total = total
+            .checked_add(output_size)
+            .ok_or_else(|| fail("appimage aggregate member size overflows".to_owned()))?;
+        if output_size > MAX_MEMBER_BYTES || total > MAX_MEMBER_BYTES {
+            return Err(fail(
+                "appimage aggregate member size exceeds limit".to_owned(),
+            ));
+        }
+        let data: Vec<u8> = crate::containers::read_iso_file_data(bytes, entry, output_size)
+            .map_err(|error: crate::error::Error| {
+                fail(format!("appimage member `{}`: {error}", entry.path))
+            })?;
+        files.push((name, data));
+    }
+    Ok(files)
+}
+
+fn preflight_chain_members(
+    files: Vec<(String, Vec<u8>)>,
+    format: &str,
+) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
+    for (raw_name, data) in files {
+        let name: String = preflight_chain_path(&mut keys, &raw_name, format)?;
+        members.push((name, data));
+    }
+    Ok(members)
+}
+
+fn preflight_chain_path(
+    keys: &mut std::collections::BTreeSet<String>,
+    raw_name: &str,
+    format: &str,
+) -> CoreResult<String> {
+    let name: String = crate::quota::sanitize_entry_path(raw_name)
+        .map_err(|error: crate::error::Error| fail(format!("{format} member path: {error}")))?;
+    let key: String = name.to_ascii_lowercase();
+    let mut ancestor: &str = key.as_str();
+    while let Some((prefix, _)) = ancestor.rsplit_once('/') {
+        if keys.contains(prefix) {
+            return Err(fail(format!("{format} member path collision at `{name}`")));
+        }
+        ancestor = prefix;
+    }
+    let descendant_prefix: String = format!("{key}/");
+    if !keys.insert(key)
+        || keys
+            .range(descendant_prefix.clone()..)
+            .next()
+            .is_some_and(|candidate: &String| candidate.starts_with(&descendant_prefix))
+    {
+        return Err(fail(format!("{format} member path collision at `{name}`")));
+    }
+    Ok(name)
 }
 
 fn extract_erofs_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -934,6 +1054,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if crate::containers::erofs::validate_erofs_image(bytes) {
         return Some(TAG_EROFS);
+    }
+    if crate::containers::detect_appimage(bytes).is_some() {
+        return Some(TAG_APPIMAGE);
     }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);

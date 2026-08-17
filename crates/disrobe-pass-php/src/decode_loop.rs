@@ -5,7 +5,7 @@ use crate::loader::{
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64_STD;
-use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt};
+use disrobe_core::codec::{CbcPadding, aes_cbc_decrypt, md5_digest, sha1_digest};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -1997,6 +1997,25 @@ impl Interp {
                 .map(Val::Str)
                 .ok_or(Abstain::TypeMismatch),
             b"bin2hex" => Ok(Val::Str(bin2hex(&to_bytes(arg0?)?))),
+            b"md5" | b"sha1" => {
+                if !(1..=2).contains(&args.len()) {
+                    return Err(Abstain::Unsupported);
+                }
+                let input: Vec<u8> = to_bytes(arg0?)?;
+                let raw_output: bool = match args.get(1) {
+                    Some(Val::Arr(_)) => return Err(Abstain::TypeMismatch),
+                    Some(value) => to_bool(value),
+                    None => false,
+                };
+                let digest: Vec<u8> = match name {
+                    b"md5" => md5_digest(&input).to_vec(),
+                    b"sha1" => sha1_digest(&input).to_vec(),
+                    _ => return Err(Abstain::RefusedCall),
+                };
+                let output: Vec<u8> = if raw_output { digest } else { bin2hex(&digest) };
+                self.check_size(output.len())?;
+                Ok(Val::Str(output))
+            }
             b"html_entity_decode" | b"htmlspecialchars_decode" => {
                 Ok(Val::Str(html_entity_decode(&to_bytes(arg0?)?)))
             }
@@ -2190,6 +2209,7 @@ const PURE_BUILTINS: &[&[u8]] = &[
     b"join",
     b"ltrim",
     b"max",
+    b"md5",
     b"min",
     b"openssl_decrypt",
     b"ord",
@@ -2197,6 +2217,7 @@ const PURE_BUILTINS: &[&[u8]] = &[
     b"range",
     b"rawurldecode",
     b"rtrim",
+    b"sha1",
     b"sizeof",
     b"str_repeat",
     b"str_replace",
@@ -3074,6 +3095,61 @@ mod tests {
                 String::from_utf8_lossy(name)
             );
         }
+    }
+
+    #[test]
+    fn digest_builtins_refuse_excluded_argument_shapes() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        for name in [b"md5".as_slice(), b"sha1".as_slice()] {
+            assert_eq!(interp.call_builtin(name, &[]), Err(Abstain::Unsupported));
+            assert_eq!(
+                interp.call_builtin(
+                    name,
+                    &[Val::Str(b"seed".to_vec()), Val::Int(0), Val::Int(0)],
+                ),
+                Err(Abstain::Unsupported)
+            );
+            assert_eq!(
+                interp.call_builtin(
+                    name,
+                    &[
+                        Val::Str(b"seed".to_vec()),
+                        Val::Arr(BTreeMap::from([(0, Val::Int(1))])),
+                    ],
+                ),
+                Err(Abstain::TypeMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn digest_builtins_match_php_output_modes() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        let seed: Val = Val::Str(b"seed".to_vec());
+        assert_eq!(
+            interp.call_builtin(b"md5", std::slice::from_ref(&seed)),
+            Ok(Val::Str(b"fe4c0f30aa359c41d9f9a5f69c8c4192".to_vec()))
+        );
+        assert_eq!(
+            interp.call_builtin(b"md5", &[seed.clone(), Val::Int(1)]),
+            Ok(Val::Str(vec![
+                0xfe, 0x4c, 0x0f, 0x30, 0xaa, 0x35, 0x9c, 0x41, 0xd9, 0xf9, 0xa5, 0xf6, 0x9c, 0x8c,
+                0x41, 0x92,
+            ]))
+        );
+        assert_eq!(
+            interp.call_builtin(b"sha1", std::slice::from_ref(&seed)),
+            Ok(Val::Str(
+                b"92713d4709377111cf31f2a71986c411bd6cb5b0".to_vec()
+            ))
+        );
+        assert_eq!(
+            interp.call_builtin(b"sha1", &[seed, Val::Int(1)]),
+            Ok(Val::Str(vec![
+                0x92, 0x71, 0x3d, 0x47, 0x09, 0x37, 0x71, 0x11, 0xcf, 0x31, 0xf2, 0xa7, 0x19, 0x86,
+                0xc4, 0x11, 0xbd, 0x6c, 0xb5, 0xb0,
+            ]))
+        );
     }
 
     #[test]

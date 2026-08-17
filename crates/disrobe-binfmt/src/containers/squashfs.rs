@@ -1383,6 +1383,12 @@ mod tests {
         let offset: usize = 0x10_000;
         let mut image: Vec<u8> = vec![0u8; offset];
         image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&2u16.to_le_bytes());
+        image[18..20].copy_from_slice(&62u16.to_le_bytes());
+        image[52..54].copy_from_slice(&64u16.to_le_bytes());
         image[8..11].copy_from_slice(&[b'A', b'I', 0x02]);
         image.append(&mut sqfs);
         let dir: disrobe_core::scratch::ScratchDir =

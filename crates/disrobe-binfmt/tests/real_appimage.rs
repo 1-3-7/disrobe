@@ -1,7 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod common;
 
-use disrobe_binfmt::containers::appimage::{AppImageLayout, parse_appimage};
+use disrobe_binfmt::containers::appimage::{
+    AppImageFormat, AppImageLayout, AppImagePayloadLayout, parse_appimage,
+};
 use disrobe_binfmt::containers::squashfs::SquashfsCompression;
 
 const FORMAT_DIR: &str = "appimage";
@@ -17,15 +19,14 @@ fn real_appimage_layout_recovered() {
     };
     assert!(bytes.len() > 1_000_000);
     let layout: AppImageLayout = parse_appimage(&bytes).expect("parse appimage");
-    assert!(layout.elf_present);
-    assert!(layout.appimage_magic_present);
-    assert_eq!(layout.squashfs_offset, 0x10_000);
-    assert_eq!(layout.superblock.version_major, 4);
-    assert!(matches!(
-        layout.superblock.compression,
-        SquashfsCompression::Xz
-    ));
-    assert!(layout.superblock.inode_count > 100);
+    assert_eq!(layout.format, AppImageFormat::Type2);
+    let AppImagePayloadLayout::Squashfs { offset, superblock } = layout.payload else {
+        panic!("type 2 payload was not squashfs");
+    };
+    assert_eq!(offset, 0x10_000);
+    assert_eq!(superblock.version_major, 4);
+    assert!(matches!(superblock.compression, SquashfsCompression::Xz));
+    assert!(superblock.inode_count > 100);
 }
 
 #[test]

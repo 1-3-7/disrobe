@@ -126,7 +126,7 @@ pub fn extract_to_with_quota(
         ContainerKind::Rar => extract_rar(bytes, out_dir, quota),
         ContainerKind::Pkg => extract_xar(bytes, out_dir, quota),
         ContainerKind::Dmg => extract_dmg(bytes, out_dir, quota),
-        ContainerKind::Iso => extract_iso(bytes, out_dir, quota),
+        ContainerKind::Iso => extract_iso(bytes, out_dir, quota, &[]),
         ContainerKind::Msix => extract_msix(bytes, out_dir, quota),
         ContainerKind::Oci | ContainerKind::DockerImage => {
             extract_oci_tarball(kind, bytes, out_dir, quota)
@@ -452,19 +452,38 @@ fn extract_appimage(
             Error::Decompression(s) => Error::AppImage(s),
             other => other,
         })?;
-    let base: usize =
-        usize::try_from(layout.squashfs_offset).map_err(|_e: std::num::TryFromIntError| {
-            Error::AppImage("squashfs offset overflow".to_owned())
-        })?;
     let mut result: ExtractionResult =
-        squashfs_walk_to_disk(bytes, base, ContainerKind::AppImage, out_dir, quota).map_err(
-            |e: Error| match e {
-                Error::Squashfs(s) => Error::AppImage(format!("embedded squashfs: {s}")),
-                other => other,
-            },
-        )?;
+        match layout.payload {
+            crate::containers::AppImagePayloadLayout::Iso9660 => {
+                let mut extracted: ExtractionResult =
+                    extract_iso(bytes, out_dir, quota, &[".disrobe-appimage-layout.json"])
+                        .map_err(|error: Error| match error {
+                            Error::Decompression(message) => {
+                                Error::AppImage(format!("embedded iso: {message}"))
+                            }
+                            other => other,
+                        })?;
+                extracted.kind = ContainerKind::AppImage;
+                extracted
+            }
+            crate::containers::AppImagePayloadLayout::Squashfs { offset, .. } => {
+                let base: usize =
+                    usize::try_from(offset).map_err(|_error: std::num::TryFromIntError| {
+                        Error::AppImage("squashfs offset overflow".to_owned())
+                    })?;
+                squashfs_walk_to_disk(bytes, base, ContainerKind::AppImage, out_dir, quota)
+                    .map_err(|error: Error| match error {
+                        Error::Squashfs(message) => {
+                            Error::AppImage(format!("embedded squashfs: {message}"))
+                        }
+                        other => other,
+                    })?
+            }
+        };
     let json: String =
-        serde_json::to_string_pretty(&layout).unwrap_or_else(|_: serde_json::Error| String::new());
+        serde_json::to_string_pretty(&layout).map_err(|error: serde_json::Error| {
+            Error::AppImage(format!("layout serialization: {error}"))
+        })?;
     let path: PathBuf = out_dir.join(".disrobe-appimage-layout.json");
     std::fs::write(&path, json.as_bytes())?;
     result.encoding.insert(
@@ -1697,54 +1716,156 @@ fn extract_dmg(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
     })
 }
 
-fn extract_iso(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
+fn extract_iso(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+    reserved_paths: &[&str],
+) -> Result<ExtractionResult> {
     let image: crate::containers::IsoImage = crate::containers::iso::parse_iso(bytes)?;
-    std::fs::create_dir_all(out_dir)?;
+    let layout: Vec<u8> =
+        serde_json::to_vec_pretty(&image).map_err(|error: serde_json::Error| {
+            Error::Decompression(format!("iso layout serialization: {error}"))
+        })?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
-    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
-    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
-
-    for entry in &image.files {
-        if entry.is_dir {
-            continue;
-        }
-        let safe_name: String = match sanitize_entry_path(&entry.path) {
-            Ok(s) => s,
-            Err(e) => {
-                violations.push(format!("iso-slip: {e}"));
-                continue;
+    let mut paths: BTreeMap<String, crate::containers::IsoEntryKind> = BTreeMap::new();
+    let mut directories: Vec<String> = Vec::new();
+    let mut files: Vec<(usize, String, u64, u64)> = Vec::new();
+    for (index, entry) in image.files.iter().enumerate() {
+        let safe_name: String = sanitize_entry_path(&entry.path).map_err(|error: Error| {
+            Error::Decompression(format!("iso entry path `{}`: {error}", entry.path))
+        })?;
+        preflight_iso_path(&paths, &safe_name, entry.kind)?;
+        let key: String = safe_name.to_ascii_lowercase();
+        paths.insert(key, entry.kind);
+        match entry.kind {
+            crate::containers::IsoEntryKind::Directory => directories.push(safe_name),
+            crate::containers::IsoEntryKind::Regular => {
+                let uncompressed_size: u64 = entry
+                    .zisofs
+                    .map_or(entry.data_len, |info| u64::from(info.uncompressed_size));
+                guard.admit_entry(&safe_name, uncompressed_size, entry.data_len)?;
+                files.push((index, safe_name, uncompressed_size, entry.data_len));
             }
-        };
-        let Some(data) = crate::containers::iso::file_data(bytes, entry) else {
-            violations.push(format!("iso-bounds `{safe_name}`: extent out of range"));
-            continue;
-        };
-        let size: u64 = data.len() as u64;
-        if let Err(e) = guard.admit_entry(&safe_name, size, size) {
-            violations.push(format!("iso-quota `{safe_name}`: {e}"));
-            continue;
+            crate::containers::IsoEntryKind::Symlink | crate::containers::IsoEntryKind::Other => {}
         }
+    }
+    for reserved_path in reserved_paths {
+        preflight_iso_path(
+            &paths,
+            reserved_path,
+            crate::containers::IsoEntryKind::Regular,
+        )?;
+    }
+    let layout_name: String = ".disrobe-iso-layout.json".to_owned();
+    preflight_iso_path(
+        &paths,
+        &layout_name,
+        crate::containers::IsoEntryKind::Regular,
+    )?;
+    guard.admit_entry(&layout_name, layout.len() as u64, layout.len() as u64)?;
+
+    let staging: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-iso-extract")?;
+    for directory in &directories {
+        prepare_entry_dir(staging.path(), directory)?;
+    }
+    for (index, safe_name, uncompressed_size, _) in &files {
+        let entry: &crate::containers::IsoEntry = &image.files[*index];
+        let data: Vec<u8> =
+            crate::containers::iso::read_file_data(bytes, entry, *uncompressed_size)?;
+        let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
+        std::fs::write(staged_path, data)?;
+    }
+    let staged_layout: PathBuf = prepare_entry_path(staging.path(), &layout_name)?;
+    std::fs::write(staged_layout, &layout)?;
+
+    std::fs::create_dir_all(out_dir)?;
+    directories.sort_by_key(|path: &String| path.matches('/').count());
+    for directory in &directories {
+        prepare_entry_dir(out_dir, directory)?;
+    }
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(files.len() + 1);
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    for (index, safe_name, uncompressed_size, compressed_size) in files {
+        let entry: &crate::containers::IsoEntry = &image.files[index];
+        let staged_path: PathBuf = staging.path().join(&safe_name);
         let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-        std::fs::write(&disk_path, data)?;
-        encoding.insert(safe_name.clone(), EntryCompression::Stored);
+        std::fs::copy(&staged_path, &disk_path)?;
+        let compression: EntryCompression = if entry.zisofs.is_some() {
+            EntryCompression::Deflate
+        } else {
+            EntryCompression::Stored
+        };
+        encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
             name: safe_name,
             disk_path: Some(disk_path),
-            uncompressed_size: size,
-            compressed_size: size,
-            compression: EntryCompression::Stored,
-            is_executable: false,
+            uncompressed_size,
+            compressed_size,
+            compression,
+            is_executable: entry.mode.is_some_and(|mode: u32| mode & 0o111 != 0),
         });
     }
+    let layout_path: PathBuf = prepare_entry_path(out_dir, &layout_name)?;
+    std::fs::copy(staging.path().join(&layout_name), &layout_path)?;
+    encoding.insert(layout_name.clone(), EntryCompression::Stored);
+    entries_out.push(ExtractedEntry {
+        name: layout_name,
+        disk_path: Some(layout_path),
+        uncompressed_size: layout.len() as u64,
+        compressed_size: layout.len() as u64,
+        compression: EntryCompression::Stored,
+        is_executable: false,
+    });
 
     Ok(ExtractionResult {
         kind: ContainerKind::Iso,
         entries: entries_out,
         encoding,
-        integrity_violations: violations,
+        integrity_violations: Vec::new(),
         quota: QuotaSummary::from(guard.report()),
     })
+}
+
+fn preflight_iso_path(
+    paths: &BTreeMap<String, crate::containers::IsoEntryKind>,
+    safe_name: &str,
+    kind: crate::containers::IsoEntryKind,
+) -> Result<()> {
+    let key: String = safe_name.to_ascii_lowercase();
+    if paths.contains_key(&key) {
+        return Err(Error::Decompression(format!(
+            "iso entry path collision at `{safe_name}`"
+        )));
+    }
+    let mut ancestor: &str = key.as_str();
+    while let Some((prefix, _)) = ancestor.rsplit_once('/') {
+        if paths
+            .get(prefix)
+            .is_some_and(|existing: &crate::containers::IsoEntryKind| {
+                *existing != crate::containers::IsoEntryKind::Directory
+            })
+        {
+            return Err(Error::Decompression(format!(
+                "iso entry path prefix collision at `{safe_name}`"
+            )));
+        }
+        ancestor = prefix;
+    }
+    if kind != crate::containers::IsoEntryKind::Directory {
+        let prefix: String = format!("{key}/");
+        if paths
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|(candidate, _)| candidate.starts_with(&prefix))
+        {
+            return Err(Error::Decompression(format!(
+                "iso entry path prefix collision at `{safe_name}`"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn extract_bun(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
@@ -7249,7 +7370,7 @@ mod tests {
         let path: &DrivenWritePath = driven_write_path(function);
         let mut exercised: usize = 0;
         let mut refused_through_the_tag: usize = 0;
-        let mut rpm_refused_before_write: usize = 0;
+        let mut refused_before_write: usize = 0;
         let mut contained_writes: usize = 0;
         for (name, verdict) in crate::quota::HOSTILE_ENTRY_NAMES {
             if name.is_empty() {
@@ -7271,22 +7392,28 @@ mod tests {
                         "{name:?} must stay extractable by {function}: {e}"
                     );
                     assert_no_escape_around(&out);
-                    if function == "extract_rpm" {
-                        match &e {
-                            Error::UnsafeEntryPath(rejected_name) => {
+                    if matches!(function, "extract_rpm" | "extract_iso") {
+                        match (function, &e) {
+                            ("extract_rpm", Error::UnsafeEntryPath(rejected_name)) => {
                                 assert_eq!(rejected_name, name, "RPM rejected the wrong path");
                             }
-                            other => panic!(
-                                "{name:?} reached an unrelated RPM refusal before writing: {other:?}"
+                            ("extract_iso", Error::Decompression(message)) => {
+                                assert!(
+                                    message.contains("iso entry path"),
+                                    "{name:?} reached an unrelated ISO refusal before writing: {e:?}"
+                                );
+                            }
+                            _ => panic!(
+                                "{name:?} reached an unrelated {function} refusal before writing: {e:?}"
                             ),
                         }
                         let mut output_entries: std::fs::ReadDir =
-                            std::fs::read_dir(&out).expect("read RPM output directory");
+                            std::fs::read_dir(&out).expect("read output directory after refusal");
                         assert!(
                             output_entries.next().is_none(),
-                            "{name:?} wrote inside the RPM output directory before refusal"
+                            "{name:?} wrote inside the output directory before refusal"
                         );
-                        rpm_refused_before_write += 1;
+                        refused_before_write += 1;
                     }
                     continue;
                 }
@@ -7308,8 +7435,8 @@ mod tests {
                         result.entries
                     );
                     refused_through_the_tag += usize::from(tagged);
-                    if function == "extract_rpm" {
-                        rpm_refused_before_write += usize::from(tagged);
+                    if matches!(function, "extract_rpm" | "extract_iso") {
+                        refused_before_write += usize::from(tagged);
                     }
                 }
                 crate::quota::HostileNameVerdict::ContainedWrite => {
@@ -7327,10 +7454,10 @@ mod tests {
             "{function} exercised only {exercised} hostile names, expected at least {}",
             path.minimum_exercised
         );
-        if function == "extract_rpm" {
+        if matches!(function, "extract_rpm" | "extract_iso") {
             assert!(
-                rpm_refused_before_write >= path.minimum_refused_as_a_slip,
-                "{function} refused only {rpm_refused_before_write} hostile names before writing, expected at least {}",
+                refused_before_write >= path.minimum_refused_as_a_slip,
+                "{function} refused only {refused_before_write} hostile names before writing, expected at least {}",
                 path.minimum_refused_as_a_slip
             );
         } else {

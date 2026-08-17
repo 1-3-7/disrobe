@@ -37,6 +37,15 @@ provenance = ".developer/scratch/binfmt-build/baker/src/main.rs::bake_appimage"
 note = "tail squashfs is the same real mksquashfs output as squashfs/hello.squashfs; ELF header has correct e_ident + AppImage type-2 magic (AI\\x02) at offset 8"
 
 [[fixtures]]
+path = "appimage-type1/AppImageAssistant.AppImage"
+format = "AppImage type 1 (ISO 9660, Rock Ridge, zisofs)"
+tool = "AppImageKit release 1"
+provenance = "appimage-type1/PROVENANCE.txt"
+size_bytes = 1_245_184
+sha256 = "e78a149c2dd61becc92450bddbb0851c49867c6505330eb5ba8881c13f349c6e"
+note = "official legacy no-marker image; appimage-type1/MANIFEST.tsv pins the independent libarchive manifest and content hashes"
+
+[[fixtures]]
 path = "cramfs/hello.cramfs"
 format = "cramfs"
 tool = "npitre/cramfs-tools mkcramfs (HEAD 2026-05-25)"

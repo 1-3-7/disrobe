@@ -9,6 +9,9 @@ use disrobe_core::subprocess::{CapturedOutput, run_captured};
 
 const SOURCE: &str =
     include_str!("../../disrobe-pass-js-deob/tests/fixtures/rollup_system_param/fixture.min.js");
+const NAMED_SOURCE: &str = include_str!(
+    "../../disrobe-pass-js-deob/tests/fixtures/babel_system_named_param/fixture.min.js"
+);
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 const CLI_CAPTURE: usize = 1usize << 20;
 
@@ -17,12 +20,16 @@ fn scratch(purpose: &str) -> disrobe_core::scratch::ScratchDir {
     disrobe_core::scratch::ScratchDir::create(purpose).expect("create scratch directory")
 }
 
-fn find_recovered_source(directory: &Path) -> Option<String> {
+fn find_recovered_source(
+    directory: &Path,
+    sum_fragment: &str,
+    format_fragment: &str,
+) -> Option<String> {
     let entries: std::fs::ReadDir = std::fs::read_dir(directory).ok()?;
     for entry in entries.filter_map(Result::ok) {
         let path: PathBuf = entry.path();
         if path.is_dir() {
-            if let Some(source) = find_recovered_source(&path) {
+            if let Some(source) = find_recovered_source(&path, sum_fragment, format_fragment) {
                 return Some(source);
             }
             continue;
@@ -32,9 +39,7 @@ fn find_recovered_source(directory: &Path) -> Option<String> {
                 .chars()
                 .filter(|character: &char| !character.is_whitespace())
                 .collect();
-            if compact.contains("function(mathUtils){t=mathUtils.sum}")
-                && compact.contains("function(textFormat){e=textFormat.default}")
-            {
+            if compact.contains(sum_fragment) && compact.contains(format_fragment) {
                 return Some(source);
             }
         }
@@ -44,13 +49,45 @@ fn find_recovered_source(directory: &Path) -> Option<String> {
 
 #[test]
 fn auto_recovers_rollup_system_register_setter_parameter_names() {
-    assert_eq!(SOURCE.len(), 213);
-    assert_eq!(SOURCE.lines().count(), 1);
-    let input_scratch: disrobe_core::scratch::ScratchDir = scratch("auto-js-system-input");
-    let input: PathBuf = input_scratch.path().join("bundle.js");
-    std::fs::write(&input, SOURCE).expect("write Rollup System.register fixture");
+    assert_auto_recovers(
+        SOURCE,
+        213,
+        "rollup",
+        None,
+        "function(mathUtils){t=mathUtils.sum}",
+        "function(textFormat){e=textFormat.default}",
+    );
+}
 
-    let output_scratch: disrobe_core::scratch::ScratchDir = scratch("auto-js-system-output");
+#[test]
+fn auto_recovers_babel_named_system_register_setter_parameter_names() {
+    assert_auto_recovers(
+        NAMED_SOURCE,
+        232,
+        "babel-named",
+        Some("fixture/main"),
+        "function(mathUtils){u=mathUtils.sum}",
+        "function(textFormat){i=textFormat.default}",
+    );
+}
+
+fn assert_auto_recovers(
+    source: &str,
+    expected_len: usize,
+    purpose: &str,
+    module_id: Option<&str>,
+    sum_fragment: &str,
+    format_fragment: &str,
+) {
+    assert_eq!(source.len(), expected_len);
+    assert_eq!(source.lines().count(), 1);
+    let input_scratch: disrobe_core::scratch::ScratchDir =
+        scratch(&format!("auto-js-system-{purpose}-input"));
+    let input: PathBuf = input_scratch.path().join("bundle.js");
+    std::fs::write(&input, source).expect("write System.register fixture");
+
+    let output_scratch: disrobe_core::scratch::ScratchDir =
+        scratch(&format!("auto-js-system-{purpose}-output"));
     let args: Vec<OsString> = vec![
         OsString::from("auto"),
         input.as_os_str().to_owned(),
@@ -87,7 +124,10 @@ fn auto_recovers_rollup_system_register_setter_parameter_names() {
         .filter_map(|node: &serde_json::Value| node.get("pass").and_then(serde_json::Value::as_str))
         .collect();
     assert!(passes.contains(&"js.deob"), "auto pass list: {passes:?}");
-    let recovered: String = find_recovered_source(output_scratch.path())
-        .expect("captured js.deob output must contain both recovered setter names");
-    assert!(!recovered.contains("function(s){t=s.sum}"));
+    let recovered: String =
+        find_recovered_source(output_scratch.path(), sum_fragment, format_fragment)
+            .expect("captured js.deob output must contain both recovered setter names");
+    if let Some(module_id) = module_id {
+        assert!(recovered.contains(module_id));
+    }
 }
