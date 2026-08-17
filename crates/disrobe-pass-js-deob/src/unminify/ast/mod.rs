@@ -468,6 +468,7 @@ pub struct AstUnminifyStats {
     pub builtin_prototypes_expanded: usize,
     pub amd_parameters_renamed: usize,
     pub commonjs_parameters_renamed: usize,
+    pub global_iife_parameters_renamed: usize,
 }
 
 enum RuleStats {
@@ -1291,8 +1292,9 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
             stats.builtin_prototypes_expanded += builtin_stats.prototypes_expanded;
         }
         RuleStats::AmdParam(amd_stats) => {
-            stats.amd_parameters_renamed += amd_stats.amd_parameters_renamed;
-            stats.commonjs_parameters_renamed += amd_stats.commonjs_parameters_renamed;
+            stats.amd_parameters_renamed += amd_stats.amd;
+            stats.commonjs_parameters_renamed += amd_stats.commonjs;
+            stats.global_iife_parameters_renamed += amd_stats.global_iife;
         }
         RuleStats::SplitVar(split_stats) => {
             stats.var_declarations_split += split_stats.declarations_split;

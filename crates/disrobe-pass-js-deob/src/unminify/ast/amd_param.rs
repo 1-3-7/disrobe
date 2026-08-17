@@ -18,8 +18,9 @@ use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct AmdParamStats {
-    pub(super) amd_parameters_renamed: usize,
-    pub(super) commonjs_parameters_renamed: usize,
+    pub(super) amd: usize,
+    pub(super) commonjs: usize,
+    pub(super) global_iife: usize,
 }
 
 pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
@@ -109,8 +110,9 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
             reserved.insert(new_name);
             edits.extend(candidate_edits);
             match factory.kind {
-                ModuleFactoryKind::Amd => stats.amd_parameters_renamed += 1,
-                ModuleFactoryKind::CommonJs => stats.commonjs_parameters_renamed += 1,
+                ModuleFactoryKind::Amd => stats.amd += 1,
+                ModuleFactoryKind::CommonJs => stats.commonjs += 1,
+                ModuleFactoryKind::GlobalIife => stats.global_iife += 1,
             }
         }
     }
@@ -131,10 +133,126 @@ struct AmdFactory<'a> {
 enum ModuleFactoryKind {
     Amd,
     CommonJs,
+    GlobalIife,
 }
 
 fn amd_factory<'a>(call: &'a CallExpression<'a>, symbols: &SymbolTable) -> Option<AmdFactory<'a>> {
-    direct_amd_factory(call, symbols).or_else(|| umd_factory(call, symbols))
+    direct_amd_factory(call, symbols)
+        .or_else(|| umd_factory(call, symbols))
+        .or_else(|| global_iife_factory(call, symbols))
+}
+
+fn global_iife_factory<'a>(
+    call: &'a CallExpression<'a>,
+    symbols: &SymbolTable,
+) -> Option<AmdFactory<'a>> {
+    if call.optional || call.type_parameters.is_some() {
+        return None;
+    }
+    let (parameters, body): (&FormalParameters<'_>, &FunctionBody<'_>) =
+        direct_iife_parts(&call.callee)?;
+    if body_has_dynamic_scope(body)
+        || parameters.rest.is_some()
+        || parameters.items.len() != call.arguments.len()
+        || parameters.items.is_empty()
+        || parameters.items.iter().any(|parameter| {
+            !matches!(
+                parameter.pattern.kind,
+                BindingPatternKind::BindingIdentifier(_)
+            )
+        })
+        || call
+            .arguments
+            .iter()
+            .any(|argument: &Argument<'_>| matches!(argument, Argument::SpreadElement(_)))
+    {
+        return None;
+    }
+    let mut dependencies: Vec<String> = Vec::with_capacity(call.arguments.len());
+    let mut unique_dependencies: IndexSet<String> = IndexSet::new();
+    for (parameter, argument) in parameters.items.iter().zip(&call.arguments) {
+        let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
+            return None;
+        };
+        let symbol_id: SymbolId = binding.symbol_id.get()?;
+        if symbols
+            .get_resolved_reference_ids(symbol_id)
+            .iter()
+            .any(|&reference_id: &ReferenceId| symbols.get_reference(reference_id).is_write())
+        {
+            return None;
+        }
+        let dependency: String = static_global_member_name(argument, symbols)?;
+        if !unique_dependencies.insert(dependency.clone()) {
+            return None;
+        }
+        dependencies.push(dependency);
+    }
+    Some(AmdFactory {
+        dependencies,
+        parameters,
+        kind: ModuleFactoryKind::GlobalIife,
+    })
+}
+
+fn direct_iife_parts<'a>(
+    callee: &'a Expression<'a>,
+) -> Option<(&'a FormalParameters<'a>, &'a FunctionBody<'a>)> {
+    match callee.get_inner_expression() {
+        Expression::FunctionExpression(function)
+            if !function.r#async && !function.generator && function.type_parameters.is_none() =>
+        {
+            Some((&function.params, function.body.as_ref()?))
+        }
+        Expression::ArrowFunctionExpression(function)
+            if !function.r#async && function.type_parameters.is_none() =>
+        {
+            Some((&function.params, &function.body))
+        }
+        _ => None,
+    }
+}
+
+fn static_global_member_name(argument: &Argument<'_>, symbols: &SymbolTable) -> Option<String> {
+    let expression: &Expression<'_> = argument.as_expression()?.get_inner_expression();
+    let (object, property): (&Expression<'_>, &str) = match expression {
+        Expression::StaticMemberExpression(member) if !member.optional => {
+            (&member.object, member.property.name.as_str())
+        }
+        Expression::ComputedMemberExpression(member) if !member.optional => {
+            let Expression::StringLiteral(property) = member.expression.get_inner_expression()
+            else {
+                return None;
+            };
+            (&member.object, property.value.as_str())
+        }
+        _ => return None,
+    };
+    if !is_static_global_chain(object, symbols) {
+        return None;
+    }
+    derive_module_names(property).into_iter().next()
+}
+
+fn is_static_global_chain(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    match expression.get_inner_expression() {
+        Expression::Identifier(identifier) => ["globalThis", "self", "window"]
+            .into_iter()
+            .any(|name: &str| unresolved_identifier_is(identifier, name, symbols)),
+        Expression::StaticMemberExpression(member) if !member.optional => {
+            is_static_global_chain(&member.object, symbols)
+        }
+        Expression::ComputedMemberExpression(member)
+            if !member.optional
+                && matches!(
+                    member.expression.get_inner_expression(),
+                    Expression::StringLiteral(_)
+                ) =>
+        {
+            is_static_global_chain(&member.object, symbols)
+        }
+        _ => false,
+    }
 }
 
 fn direct_amd_factory<'a>(

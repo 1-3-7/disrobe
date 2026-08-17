@@ -768,8 +768,9 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let (peeled, _peephole_stats): (String, UnminifyStats) = unminify(source);
     let (beautified, ast_stats): (String, AstUnminifyStats) = try_unminify_ast(&peeled)
         .map_err(|error: crate::error::Error| CoreError::PassFailure(error.to_string()))?;
-    let module_parameters_recovered: bool =
-        ast_stats.amd_parameters_renamed > 0 || ast_stats.commonjs_parameters_renamed > 0;
+    let module_parameters_recovered: bool = ast_stats.amd_parameters_renamed > 0
+        || ast_stats.commonjs_parameters_renamed > 0
+        || ast_stats.global_iife_parameters_renamed > 0;
     if beautified == source
         || (!module_parameters_recovered
             && beautified.matches('\n').count() <= source.matches('\n').count())
