@@ -29,6 +29,14 @@ struct BitReader<'a> {
     bit_pos: u32,
 }
 
+struct DecodeResult {
+    bytes: Vec<u8>,
+    consumed_bytes: usize,
+    unread_bits: u8,
+    remaining_commands: u32,
+    truncated_match: bool,
+}
+
 impl<'a> BitReader<'a> {
     const fn new(src: &'a [u8]) -> Self {
         Self {
@@ -75,19 +83,44 @@ impl HuffTree {
     }
 
     fn build(lengths: &[u8]) -> Result<Self> {
+        if lengths.is_empty() || lengths.iter().any(|length: &u8| *length > 16) {
+            return Err(Error::Decompression(
+                "lha: huffman code length exceeds 16".to_owned(),
+            ));
+        }
+        let max_nodes: usize = lengths
+            .len()
+            .checked_mul(2)
+            .and_then(|value: usize| value.checked_sub(1))
+            .ok_or_else(|| Error::Decompression("lha: huffman node limit overflow".to_owned()))?;
         let mut tree: Vec<i32> = Vec::new();
+        tree.try_reserve_exact(max_nodes).map_err(|error| {
+            Error::Decompression(format!("lha: cannot reserve huffman tree: {error}"))
+        })?;
         let mut max_allocated: usize = 1;
         let mut current_len: u8 = 1;
         loop {
             let max_limit: usize = max_allocated;
             while tree.len() < max_limit {
+                if max_allocated.saturating_add(2) > max_nodes {
+                    return Err(Error::Decompression(
+                        "lha: huffman tree exceeds symbol bound".to_owned(),
+                    ));
+                }
                 tree.push(-(max_allocated as i32));
                 max_allocated += 2;
             }
             let mut more_leaves: bool = false;
             for (value, &len) in lengths.iter().enumerate() {
                 match len.cmp(&current_len) {
-                    std::cmp::Ordering::Equal => tree.push(value as i32 + 1),
+                    std::cmp::Ordering::Equal => {
+                        if tree.len() >= max_nodes {
+                            return Err(Error::Decompression(
+                                "lha: huffman tree exceeds symbol bound".to_owned(),
+                            ));
+                        }
+                        tree.push(value as i32 + 1);
+                    }
                     std::cmp::Ordering::Greater => more_leaves = true,
                     std::cmp::Ordering::Less => {}
                 }
@@ -138,6 +171,11 @@ fn read_code_length(reader: &mut BitReader<'_>) -> Result<u8> {
             len = len
                 .checked_add(1)
                 .ok_or_else(|| Error::Decompression("lha: code length overflow".to_owned()))?;
+            if len > 16 {
+                return Err(Error::Decompression(
+                    "lha: huffman code length exceeds 16".to_owned(),
+                ));
+            }
         }
     }
     Ok(len)
@@ -240,9 +278,16 @@ fn read_offset(reader: &mut BitReader<'_>, offset_tree: &HuffTree) -> Result<usi
     }
 }
 
-pub fn decode(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<u8>> {
+fn decode_result(params: LhaParams, src: &[u8], expected_len: usize) -> Result<DecodeResult> {
     let mut reader: BitReader<'_> = BitReader::new(src);
-    let mut out: Vec<u8> = Vec::with_capacity(expected_len);
+    let mut out: Vec<u8> = Vec::new();
+    let mut trailing_commands: u32 = 0;
+    let mut truncated_match: bool = false;
+    out.try_reserve_exact(expected_len).map_err(|error| {
+        Error::Decompression(format!(
+            "lha: cannot reserve {expected_len} decoded bytes: {error}"
+        ))
+    })?;
     while out.len() < expected_len {
         let mut remaining_commands: u32 = reader.read_bits(16)?;
         if remaining_commands == 0 {
@@ -267,6 +312,9 @@ pub fn decode(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<
                     )));
                 }
                 let start: usize = out.len() - distance;
+                if length > expected_len.saturating_sub(out.len()) {
+                    truncated_match = true;
+                }
                 for i in 0..length {
                     let byte: u8 = out[start + i];
                     out.push(byte);
@@ -276,6 +324,7 @@ pub fn decode(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<
                 }
             }
         }
+        trailing_commands = remaining_commands;
     }
     if out.len() != expected_len {
         return Err(Error::Decompression(format!(
@@ -283,7 +332,57 @@ pub fn decode(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<
             out.len()
         )));
     }
-    Ok(out)
+    let consumed_bytes: usize = reader.byte_pos + usize::from(reader.bit_pos != 0);
+    let unread_bits: u8 = if reader.bit_pos == 0 {
+        0
+    } else {
+        let byte: u8 = *src
+            .get(reader.byte_pos)
+            .ok_or_else(|| Error::Decompression("lha: missing final partial byte".to_owned()))?;
+        let mask: u8 = (1u8 << (8 - reader.bit_pos)) - 1;
+        byte & mask
+    };
+    Ok(DecodeResult {
+        bytes: out,
+        consumed_bytes,
+        unread_bits,
+        remaining_commands: trailing_commands,
+        truncated_match,
+    })
+}
+
+pub fn decode(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<u8>> {
+    Ok(decode_result(params, src, expected_len)?.bytes)
+}
+
+pub(crate) fn decode_exact(params: LhaParams, src: &[u8], expected_len: usize) -> Result<Vec<u8>> {
+    let result: DecodeResult = decode_result(params, src, expected_len)?;
+    if result.remaining_commands != 0 {
+        return Err(Error::Decompression(format!(
+            "lha: decoded output ended with {} unconsumed commands",
+            result.remaining_commands
+        )));
+    }
+    if result.truncated_match {
+        return Err(Error::Decompression(
+            "lha: final match exceeds declared output size".to_owned(),
+        ));
+    }
+    if result.unread_bits != 0 {
+        return Err(Error::Decompression(
+            "lha: nonzero final-byte padding".to_owned(),
+        ));
+    }
+    let trailer: &[u8] = src
+        .get(result.consumed_bytes..)
+        .ok_or_else(|| Error::Decompression("lha: consumed extent overflow".to_owned()))?;
+    if trailer != [0] {
+        return Err(Error::Decompression(format!(
+            "lha: expected one terminal zero byte, found {} trailing bytes",
+            trailer.len()
+        )));
+    }
+    Ok(result.bytes)
 }
 
 #[cfg(test)]
@@ -300,7 +399,7 @@ mod tests {
     }
 
     fn greedy_tokens(input: &[u8], params: LhaParams) -> Vec<Token> {
-        let window: usize = 1 << params.history_bits;
+        let window: usize = 1 << params.history_bits.saturating_sub(1);
         let mut tokens: Vec<Token> = Vec::new();
         let mut pos: usize = 0;
         while pos < input.len() {
@@ -521,7 +620,7 @@ mod tests {
     fn encode_block(input: &[u8], params: LhaParams) -> Vec<u8> {
         let tokens: Vec<Token> = greedy_tokens(input, params);
         let mut cmd_freq: Vec<u32> = vec![0; NUM_COMMANDS];
-        let mut off_freq: Vec<u32> = vec![0; (params.history_bits + 1) as usize];
+        let mut off_freq: Vec<u32> = vec![0; params.history_bits as usize];
         for token in &tokens {
             match *token {
                 Token::Literal(b) => cmd_freq[b as usize] += 1,
@@ -766,5 +865,24 @@ mod tests {
             .sum();
         assert_eq!(kraft, 1u64 << max_len, "Kraft equality for complete code");
         HuffTree::build(&lengths).expect("decoder builds the encoder's lengths");
+    }
+
+    #[test]
+    fn huffman_tree_rejects_code_lengths_above_the_edk2_limit() {
+        let error: Error = match HuffTree::build(&[17, 17]) {
+            Err(error) => error,
+            Ok(_) => panic!("accepted code lengths above sixteen"),
+        };
+        assert!(error.to_string().contains("exceeds 16"), "{error}");
+    }
+
+    #[test]
+    fn exact_decode_rejects_a_final_match_past_the_declared_output() {
+        let input: Vec<u8> = b"abcd".iter().copied().cycle().take(128).collect();
+        let mut encoded: Vec<u8> = encode_block(&input, LH5);
+        encoded.push(0);
+        let error: Error = decode_exact(LH5, &encoded, input.len() - 1)
+            .expect_err("reject overlong terminal match");
+        assert!(error.to_string().contains("final match exceeds"), "{error}");
     }
 }

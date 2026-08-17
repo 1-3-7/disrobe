@@ -6,6 +6,7 @@ pub mod io;
 pub mod payload;
 pub mod sidecar;
 pub mod transcode;
+pub mod witness;
 
 pub use envelope::{Envelope, HEADER_SIZE, compute_root_hash};
 pub use error::{EnvelopeError, Result};
@@ -16,6 +17,9 @@ pub use payload::{
 };
 pub use sidecar::Sidecar;
 pub use transcode::{EnvelopeVersion, TranscodeFn, TranscodeKey, TranscodeRegistry, TranscodeStep};
+pub use witness::{
+    TransformKind, WitnessError, WitnessKind, WitnessRecord, WitnessSidecar, WitnessVerification,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

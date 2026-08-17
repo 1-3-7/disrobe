@@ -8,8 +8,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
+use disrobe_core::subprocess::{CapturedOutput, wait_with_output_timeout};
+use disrobe_pass_py_decompile::DecompileError;
 use disrobe_pass_py_decompile::bytecode::version::PyVersion;
 use disrobe_pass_py_decompile::engine::{build_real_source, marshal_to_decompile};
 use disrobe_pass_py_decompile::roundtrip::{Verdict, semantic_equiv};
@@ -84,6 +87,24 @@ def guarded_divide(values, primary, secondary):
     return out
 "#;
 
+const WHILE_AND_CONTINUE_BEFORE_TRY: &str = r#"
+def guarded_divide(values, primary, secondary):
+    out = []
+    position = 0
+    while position < len(values):
+        value = values[position]
+        position += 1
+        if primary(value) and secondary(value):
+            out.append(("guard", value))
+            continue
+        try:
+            out.append(("value", 12 // value))
+        except ZeroDivisionError:
+            break
+    out.append(("tail", position))
+    return out
+"#;
+
 const TRY_ELSE_POST_EFFECTS: &str = r#"
 def guarded_divide(values, primary, secondary):
     out = []
@@ -148,15 +169,32 @@ def guarded_divide(values, primary, secondary):
 
 const ALIASES: &[&str] = &["3.11", "3.12", "3.13", "3.14"];
 const TARGET_ALIASES: &[&str] = &["3.12", "3.14", "3.15"];
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+const CAPTURE_LIMIT: usize = 1024 * 1024;
+
+fn bounded_output(command: &mut Command, label: &str) -> Result<CapturedOutput, String> {
+    let child: Child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error: std::io::Error| format!("{label} spawn: {error}"))?;
+    wait_with_output_timeout(child, TOOL_TIMEOUT, CAPTURE_LIMIT)
+        .ok_or_else(|| format!("{label} timed out after {} seconds", TOOL_TIMEOUT.as_secs()))
+}
+
+fn scratch_path(name: &str) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| PathBuf::from("../../target"), PathBuf::from)
+        .join(name)
+}
 
 fn find_interpreter(alias: &str) -> Option<PathBuf> {
-    let output: std::process::Output = Command::new("uv")
-        .args(["python", "find", alias])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    let output: CapturedOutput = bounded_output(
+        Command::new("uv").args(["python", "find", alias]),
+        "uv python find",
+    )
+    .ok()?;
+    if output.exit_code != Some(0) {
         return None;
     }
     let raw: String = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -167,22 +205,21 @@ fn find_interpreter(alias: &str) -> Option<PathBuf> {
 fn compile_source(interpreter: &Path, source_path: &Path, pyc_path: &Path) -> Result<(), String> {
     let script: &str =
         "import py_compile,sys;py_compile.compile(sys.argv[1],cfile=sys.argv[2],doraise=True)";
-    let output: std::process::Output = Command::new(interpreter)
-        .args([
+    let output: CapturedOutput = bounded_output(
+        Command::new(interpreter).args([
             "-c",
             script,
             source_path.to_str().unwrap_or(""),
             pyc_path.to_str().unwrap_or(""),
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e: std::io::Error| format!("spawn: {e}"))?;
-    if output.status.success() {
+        ]),
+        "python compile",
+    )?;
+    if output.exit_code == Some(0) {
         return Ok(());
     }
     Err(format!(
         "exit={:?}: {}",
-        output.status.code(),
+        output.exit_code,
         String::from_utf8_lossy(&output.stderr).trim()
     ))
 }
@@ -199,17 +236,25 @@ fn read_code(pyc_path: &Path) -> Result<(CodeObject, MarshalVersion), String> {
 
 fn execute_fixture(interpreter: &Path, source_path: &Path) -> Result<String, String> {
     let script: &str = "import runpy,sys;ns=runpy.run_path(sys.argv[1]);f=ns['guarded_divide'];p=lambda value:value==2;s=lambda value:value==9;print(f([2,3,0,4],p,s));print(f([5,7],p,s));z=lambda value:value==0;print(f([0,3],z,s))";
-    let output: std::process::Output = Command::new(interpreter)
-        .args(["-c", script])
-        .arg(source_path)
-        .env("PYTHONHASHSEED", "0")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e: std::io::Error| format!("spawn execution: {e}"))?;
-    if !output.status.success() {
+    execute_fixture_script(interpreter, source_path, script)
+}
+
+fn execute_fixture_script(
+    interpreter: &Path,
+    source_path: &Path,
+    script: &str,
+) -> Result<String, String> {
+    let output: CapturedOutput = bounded_output(
+        Command::new(interpreter)
+            .args(["-c", script])
+            .arg(source_path)
+            .env("PYTHONHASHSEED", "0"),
+        "python execution",
+    )?;
+    if output.exit_code != Some(0) {
         return Err(format!(
             "exit={:?}: {}",
-            output.status.code(),
+            output.exit_code,
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -218,7 +263,7 @@ fn execute_fixture(interpreter: &Path, source_path: &Path) -> Result<String, Str
 
 #[test]
 fn top_tested_while_or_continue_before_try_recompiles_and_executes_equivalently() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-while-or-continue-before-try");
+    let scratch: PathBuf = scratch_path("py-while-or-continue-before-try");
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("fixture.py");
     fs::write(&source_path, WHILE_OR_CONTINUE_BEFORE_TRY).expect("write fixture");
@@ -238,9 +283,15 @@ fn top_tested_while_or_continue_before_try_recompiles_and_executes_equivalently(
         let (original, marshal_version): (CodeObject, MarshalVersion) =
             read_code(&orig_pyc).unwrap_or_else(|e: String| panic!("py{alias} read original: {e}"));
         let version: PyVersion = marshal_to_decompile(marshal_version)
-            .unwrap_or_else(|e| panic!("py{alias} version map: {e:?}"));
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} version map: {error:?}"));
         let recovered: String = build_real_source(&original, &version, marshal_version)
-            .unwrap_or_else(|e| panic!("py{alias} decompile: {e}"));
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} decompile: {error}"));
+        let repeated: String = build_real_source(&original, &version, marshal_version)
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} repeat: {error}"));
+        assert_eq!(
+            repeated, recovered,
+            "py{alias} output was not deterministic"
+        );
         let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
         fs::write(&recovered_path, &recovered).expect("write recovered");
         let recompiled_pyc: PathBuf = scratch.join(format!("recompiled.{alias}.pyc"));
@@ -293,8 +344,157 @@ fn top_tested_while_or_continue_before_try_recompiles_and_executes_equivalently(
 }
 
 #[test]
+fn top_tested_while_and_continue_before_try_recompiles_and_executes_equivalently() {
+    let scratch: PathBuf = scratch_path("py-while-and-continue-before-try");
+    fs::create_dir_all(&scratch).expect("scratch");
+    let source_path: PathBuf = scratch.join("fixture.py");
+    fs::write(&source_path, WHILE_AND_CONTINUE_BEFORE_TRY).expect("write fixture");
+    let execution_script: &str = "import runpy,sys;ns=runpy.run_path(sys.argv[1]);f=ns['guarded_divide'];p=lambda value:value%2==0;s=lambda value:value>0;print(f([2,3,-2,0,4],p,s));print(f([3,4],p,s))";
+
+    let mut checked: usize = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for &alias in TARGET_ALIASES {
+        let Some(interpreter): Option<PathBuf> = find_interpreter(alias) else {
+            failures.push(format!("py{alias}: interpreter unavailable"));
+            continue;
+        };
+        let original_output: String =
+            execute_fixture_script(&interpreter, &source_path, execution_script)
+                .unwrap_or_else(|error: String| panic!("py{alias} execute original: {error}"));
+        let original_lines: Vec<&str> = original_output.lines().collect();
+        assert_eq!(
+            original_lines,
+            [
+                "[('guard', 2), ('value', 4), ('value', -6), ('tail', 4)]",
+                "[('value', 4), ('guard', 4), ('tail', 2)]"
+            ]
+        );
+        let original_pyc: PathBuf = scratch.join(format!("orig.{alias}.pyc"));
+        compile_source(&interpreter, &source_path, &original_pyc)
+            .unwrap_or_else(|e: String| panic!("py{alias} compile original: {e}"));
+        let (original, marshal_version): (CodeObject, MarshalVersion) = read_code(&original_pyc)
+            .unwrap_or_else(|e: String| panic!("py{alias} read original: {e}"));
+        let version: PyVersion = marshal_to_decompile(marshal_version)
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} version map: {error:?}"));
+        let recovered: String = build_real_source(&original, &version, marshal_version)
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} decompile: {error}"));
+        let repeated: String = build_real_source(&original, &version, marshal_version)
+            .unwrap_or_else(|error: DecompileError| panic!("py{alias} repeat: {error}"));
+        assert_eq!(
+            repeated, recovered,
+            "py{alias} output was not deterministic"
+        );
+        let recovered_path: PathBuf = scratch.join(format!("recovered.{alias}.py"));
+        fs::write(&recovered_path, &recovered).expect("write recovered");
+        let recovered_pyc: PathBuf = scratch.join(format!("recompiled.{alias}.pyc"));
+        if let Err(error) = compile_source(&interpreter, &recovered_path, &recovered_pyc) {
+            failures.push(format!(
+                "py{alias}: recovered source does not compile: {error}\n{recovered}"
+            ));
+            continue;
+        }
+        let (recompiled, _): (CodeObject, MarshalVersion) = read_code(&recovered_pyc)
+            .unwrap_or_else(|e: String| panic!("py{alias} read recompiled: {e}"));
+        if let Verdict::CodeDiff(detail) = semantic_equiv(&original, &recompiled, marshal_version) {
+            failures.push(format!(
+                "py{alias}: bytecode differs ({detail:?})\n{recovered}"
+            ));
+            continue;
+        }
+        let recovered_output: String =
+            execute_fixture_script(&interpreter, &recovered_path, execution_script)
+                .unwrap_or_else(|error: String| panic!("py{alias} execute recovered: {error}"));
+        if recovered_output != original_output {
+            failures.push(format!(
+                "py{alias}: execution differs\noriginal: {original_output:?}\nrecovered: {recovered_output:?}\n{recovered}"
+            ));
+            continue;
+        }
+        checked += 1;
+        assert_eq!(
+            recovered
+                .matches("if primary(value) and secondary(value):")
+                .count(),
+            1
+        );
+        assert_eq!(recovered.matches("continue").count(), 1);
+        assert_eq!(recovered.matches("except ZeroDivisionError:").count(), 1);
+        assert_eq!(recovered.matches("break").count(), 1);
+        assert_eq!(
+            recovered
+                .matches("out.append((\"tail\", position))")
+                .count(),
+            1
+        );
+    }
+
+    assert_eq!(checked, TARGET_ALIASES.len(), "{}", failures.join("\n\n"));
+}
+
+#[test]
+fn excluded_and_guard_shapes_refuse_instead_of_emitting_incorrect_nesting() {
+    let guard_cases: [(&str, &str); 2] = [
+        (
+            "chained-and",
+            "primary(value) and secondary(value) and value > -100",
+        ),
+        (
+            "mixed-or-and",
+            "primary(value) or secondary(value) and value > 0",
+        ),
+    ];
+    let mut cases: Vec<(&str, String)> = guard_cases
+        .into_iter()
+        .map(|(label, guard): (&str, &str)| {
+            (
+                label,
+                WHILE_AND_CONTINUE_BEFORE_TRY.replace("primary(value) and secondary(value)", guard),
+            )
+        })
+        .collect();
+    cases.push((
+        "handler-continue",
+        WHILE_AND_CONTINUE_BEFORE_TRY.replace(
+            "except ZeroDivisionError:\n            break",
+            "except ZeroDivisionError:\n            continue",
+        ),
+    ));
+    for (label, source) in cases {
+        let scratch: PathBuf = scratch_path(&format!("py-{label}-continue-before-try"));
+        fs::create_dir_all(&scratch).expect("scratch");
+        let source_path: PathBuf = scratch.join("fixture.py");
+        fs::write(&source_path, source).expect("write fixture");
+        for &alias in TARGET_ALIASES {
+            let Some(interpreter): Option<PathBuf> = find_interpreter(alias) else {
+                panic!("py{alias}: interpreter unavailable");
+            };
+            let original_pyc: PathBuf = scratch.join(format!("orig.{alias}.pyc"));
+            compile_source(&interpreter, &source_path, &original_pyc)
+                .unwrap_or_else(|error: String| panic!("py{alias} {label} compile: {error}"));
+            let (original, marshal_version): (CodeObject, MarshalVersion) =
+                read_code(&original_pyc)
+                    .unwrap_or_else(|error: String| panic!("py{alias} {label} read: {error}"));
+            let version: PyVersion =
+                marshal_to_decompile(marshal_version).unwrap_or_else(|error: DecompileError| {
+                    panic!("py{alias} {label} version: {error:?}")
+                });
+            let recovered: String = build_real_source(&original, &version, marshal_version)
+                .unwrap_or_else(|error: DecompileError| {
+                    panic!("py{alias} {label} rendering: {error}")
+                });
+            assert!(
+                recovered.contains(
+                    "unsupported AND continue guard before try requires exact structuring"
+                ),
+                "py{alias} {label} did not refuse outside the declared shape:\n{recovered}"
+            );
+        }
+    }
+}
+
+#[test]
 fn try_else_continue_and_post_try_effects_are_preserved() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-try-else-continue-effects");
+    let scratch: PathBuf = scratch_path("py-try-else-continue-effects");
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("fixture.py");
     fs::write(&source_path, TRY_ELSE_POST_EFFECTS).expect("write fixture");
@@ -358,7 +558,7 @@ fn try_else_continue_and_post_try_effects_are_preserved() {
 
 #[test]
 fn effectful_walrus_or_continue_before_try_fails_closed() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-walrus-or-continue-before-try");
+    let scratch: PathBuf = scratch_path("py-walrus-or-continue-before-try");
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("fixture.py");
     fs::write(&source_path, WALRUS_OR_CONTINUE_BEFORE_TRY).expect("write fixture");
@@ -421,7 +621,7 @@ fn effectful_walrus_or_continue_before_try_fails_closed() {
 
 #[test]
 fn loop_continue_before_try_recompiles_equivalent() {
-    let scratch: PathBuf = PathBuf::from("../../target/py-continue-before-try");
+    let scratch: PathBuf = scratch_path("py-continue-before-try");
     fs::create_dir_all(&scratch).expect("scratch");
     let source_path: PathBuf = scratch.join("fixture.py");
     fs::write(&source_path, FIXTURE).expect("write fixture");

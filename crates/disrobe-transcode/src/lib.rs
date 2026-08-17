@@ -7,7 +7,7 @@ use disrobe_core::Rung;
 use disrobe_ir::payload::{
     DisasmPayload, RawPayload, decode_disasm, decode_raw, encode_disasm, encode_raw,
 };
-use disrobe_ir::{ENVELOPE_FORMAT_VERSION, Envelope};
+use disrobe_ir::{ENVELOPE_FORMAT_VERSION, Envelope, WitnessError, WitnessSidecar};
 
 pub const TRANSCODED_FORMAT_VERSION: u16 = ENVELOPE_FORMAT_VERSION;
 
@@ -21,6 +21,7 @@ pub enum TranscodeError {
     VerifySourceVersionMismatch,
     VerifyTargetVersionMismatch,
     VerifyLengthMismatch,
+    Witness(WitnessError),
 }
 
 impl fmt::Display for TranscodeError {
@@ -50,6 +51,7 @@ impl fmt::Display for TranscodeError {
                     "verify: transcoded length metadata does not match envelope bytes"
                 )
             }
+            Self::Witness(error) => write!(f, "witness: {error}"),
         }
     }
 }
@@ -59,6 +61,12 @@ impl std::error::Error for TranscodeError {}
 impl From<disrobe_ir::EnvelopeError> for TranscodeError {
     fn from(e: disrobe_ir::EnvelopeError) -> Self {
         Self::Envelope(e)
+    }
+}
+
+impl From<WitnessError> for TranscodeError {
+    fn from(error: WitnessError) -> Self {
+        Self::Witness(error)
     }
 }
 
@@ -163,4 +171,16 @@ pub fn verify_transcode_envelope(original_env: &Envelope, transcoded: &Transcode
 pub fn verify_transcode(original_input: &[u8], transcoded: &Transcoded) -> Result<()> {
     let original_env: Envelope = Envelope::decode(original_input)?;
     verify_transcode_envelope(&original_env, transcoded)
+}
+
+pub fn exact_transcode_witness(
+    original_input: &[u8],
+    original_env: &Envelope,
+    transcoded: &Transcoded,
+) -> Result<WitnessSidecar> {
+    verify_transcode_envelope(original_env, transcoded)?;
+    Ok(WitnessSidecar::exact_transcode(
+        original_input,
+        &transcoded.bytes,
+    )?)
 }

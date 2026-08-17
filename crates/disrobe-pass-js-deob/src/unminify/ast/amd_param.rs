@@ -18,7 +18,8 @@ use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct AmdParamStats {
-    pub(super) parameters_renamed: usize,
+    pub(super) amd_parameters_renamed: usize,
+    pub(super) commonjs_parameters_renamed: usize,
 }
 
 pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
@@ -107,7 +108,10 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
             }
             reserved.insert(new_name);
             edits.extend(candidate_edits);
-            stats.parameters_renamed += 1;
+            match factory.kind {
+                ModuleFactoryKind::Amd => stats.amd_parameters_renamed += 1,
+                ModuleFactoryKind::CommonJs => stats.commonjs_parameters_renamed += 1,
+            }
         }
     }
 
@@ -120,6 +124,13 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, AmdParamStats) {
 struct AmdFactory<'a> {
     dependencies: Vec<String>,
     parameters: &'a FormalParameters<'a>,
+    kind: ModuleFactoryKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModuleFactoryKind {
+    Amd,
+    CommonJs,
 }
 
 fn amd_factory<'a>(call: &'a CallExpression<'a>, symbols: &SymbolTable) -> Option<AmdFactory<'a>> {
@@ -157,6 +168,7 @@ fn direct_amd_factory<'a>(
     Some(AmdFactory {
         dependencies,
         parameters,
+        kind: ModuleFactoryKind::Amd,
     })
 }
 
@@ -190,7 +202,8 @@ fn umd_factory<'a>(call: &'a CallExpression<'a>, symbols: &SymbolTable) -> Optio
         return None;
     }
 
-    let registration: UmdRegistration = guarded_umd_registration(body, symbols)?;
+    let registration: UmdRegistration = guarded_umd_registration(body, symbols)
+        .or_else(|| guarded_commonjs_registration(body, symbols))?;
     for (parameter, argument) in wrapper.params.items.iter().zip(&call.arguments) {
         let BindingPatternKind::BindingIdentifier(binding) = &parameter.pattern.kind else {
             return None;
@@ -211,6 +224,7 @@ fn umd_factory<'a>(call: &'a CallExpression<'a>, symbols: &SymbolTable) -> Optio
         return Some(AmdFactory {
             dependencies: registration.dependencies,
             parameters: factory_parameters,
+            kind: registration.kind,
         });
     }
     None
@@ -254,6 +268,7 @@ fn static_dependencies(dependencies: &ArrayExpression<'_>) -> Option<Vec<String>
 struct UmdRegistration {
     factory_symbol: SymbolId,
     dependencies: Vec<String>,
+    kind: ModuleFactoryKind,
 }
 
 fn guarded_umd_registration(
@@ -304,6 +319,262 @@ fn guarded_umd_registration(
     (guarded_matches == 1).then_some(registration)
 }
 
+fn guarded_commonjs_registration(
+    body: &FunctionBody<'_>,
+    symbols: &SymbolTable,
+) -> Option<UmdRegistration> {
+    let mut all_assignments: CommonJsProbe<'_> = CommonJsProbe::new(symbols);
+    for statement in &body.statements {
+        all_assignments.visit_statement(statement);
+    }
+    if all_assignments.count != 1 {
+        return None;
+    }
+    let registration: UmdRegistration = all_assignments.registration?;
+    let mut guarded_matches: usize = 0;
+    for statement in &body.statements {
+        let Statement::IfStatement(if_statement) = statement else {
+            continue;
+        };
+        if !is_commonjs_guard(&if_statement.test, symbols) {
+            continue;
+        }
+        let mut branch_assignments: CommonJsProbe<'_> = CommonJsProbe::new(symbols);
+        branch_assignments.visit_statement(&if_statement.consequent);
+        if branch_assignments.count == 1
+            && branch_assignments.registration.as_ref().is_some_and(
+                |branch_registration: &UmdRegistration| {
+                    branch_registration.factory_symbol == registration.factory_symbol
+                        && branch_registration.dependencies == registration.dependencies
+                },
+            )
+        {
+            guarded_matches = guarded_matches.saturating_add(1);
+        }
+    }
+    (guarded_matches == 1).then_some(registration)
+}
+
+struct CommonJsProbe<'s> {
+    symbols: &'s SymbolTable,
+    count: usize,
+    registration: Option<UmdRegistration>,
+}
+
+impl<'s> CommonJsProbe<'s> {
+    const fn new(symbols: &'s SymbolTable) -> Self {
+        Self {
+            symbols,
+            count: 0,
+            registration: None,
+        }
+    }
+}
+
+impl<'a> Visit<'a> for CommonJsProbe<'_> {
+    fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        if is_global_module_exports_target(&assignment.left, self.symbols) {
+            self.count = self.count.saturating_add(1);
+            if let Some((dependencies, factory_symbol)) =
+                commonjs_factory_reference(assignment, self.symbols)
+            {
+                self.registration = Some(UmdRegistration {
+                    factory_symbol,
+                    dependencies,
+                    kind: ModuleFactoryKind::CommonJs,
+                });
+            }
+        }
+        oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
+    }
+
+    fn visit_function(&mut self, _function: &Function<'a>, _flags: oxc::syntax::scope::ScopeFlags) {
+    }
+
+    fn visit_arrow_function_expression(
+        &mut self,
+        _arrow: &oxc_ast::ast::ArrowFunctionExpression<'a>,
+    ) {
+    }
+}
+
+fn commonjs_factory_reference(
+    assignment: &oxc_ast::ast::AssignmentExpression<'_>,
+    symbols: &SymbolTable,
+) -> Option<(Vec<String>, SymbolId)> {
+    if assignment.operator != oxc_ast::ast::AssignmentOperator::Assign
+        || !is_global_module_exports_target(&assignment.left, symbols)
+    {
+        return None;
+    }
+    let Expression::CallExpression(call) = assignment.right.get_inner_expression() else {
+        return None;
+    };
+    if call.optional || call.type_parameters.is_some() {
+        return None;
+    }
+    let Expression::Identifier(factory) = &call.callee else {
+        return None;
+    };
+    let reference_id: ReferenceId = factory.reference_id.get()?;
+    let factory_symbol: SymbolId = symbols.get_reference(reference_id).symbol_id()?;
+    let dependencies: Vec<String> = call
+        .arguments
+        .iter()
+        .map(|argument: &Argument<'_>| static_require_specifier(argument, symbols))
+        .collect::<Option<Vec<String>>>()?;
+    (!dependencies.is_empty()).then_some((dependencies, factory_symbol))
+}
+
+fn static_require_specifier(argument: &Argument<'_>, symbols: &SymbolTable) -> Option<String> {
+    let Expression::CallExpression(call) = argument.as_expression()?.get_inner_expression() else {
+        return None;
+    };
+    if call.optional || call.type_parameters.is_some() || call.arguments.len() != 1 {
+        return None;
+    }
+    let Expression::Identifier(require) = &call.callee else {
+        return None;
+    };
+    if !unresolved_identifier_is(require, "require", symbols) {
+        return None;
+    }
+    let Some(Expression::StringLiteral(specifier)) = call.arguments[0].as_expression() else {
+        return None;
+    };
+    Some(specifier.value.as_str().to_owned())
+}
+
+fn is_global_module_exports_target(
+    target: &oxc_ast::ast::AssignmentTarget<'_>,
+    symbols: &SymbolTable,
+) -> bool {
+    let object: &Expression<'_> = match target {
+        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(member)
+            if !member.optional && member.property.name.as_str() == "exports" =>
+        {
+            &member.object
+        }
+        oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(member)
+            if !member.optional
+                && matches!(
+                    member.expression.get_inner_expression(),
+                    Expression::StringLiteral(literal) if literal.value.as_str() == "exports"
+                ) =>
+        {
+            &member.object
+        }
+        _ => return false,
+    };
+    let Expression::Identifier(module) = object.get_inner_expression() else {
+        return false;
+    };
+    unresolved_identifier_is(module, "module", symbols)
+}
+
+fn is_commonjs_guard(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    let Expression::LogicalExpression(logical) = expression.get_inner_expression() else {
+        return false;
+    };
+    if logical.operator != LogicalOperator::And {
+        return false;
+    }
+    let left_exports_guard: bool =
+        is_typeof_global_comparison(&logical.left, "exports", "object", true, symbols);
+    let right_exports_guard: bool =
+        is_typeof_global_comparison(&logical.right, "exports", "object", true, symbols);
+    let left_module_defined: bool =
+        is_typeof_global_comparison(&logical.left, "module", "undefined", false, symbols);
+    let right_module_defined: bool =
+        is_typeof_global_comparison(&logical.right, "module", "undefined", false, symbols);
+    let left_module_object: bool =
+        is_typeof_global_comparison(&logical.left, "module", "object", true, symbols);
+    let right_module_object: bool =
+        is_typeof_global_comparison(&logical.right, "module", "object", true, symbols);
+    let left_module_exports: bool = is_global_module_exports_expression(&logical.left, symbols);
+    let right_module_exports: bool = is_global_module_exports_expression(&logical.right, symbols);
+    (left_exports_guard && right_module_defined)
+        || (right_exports_guard && left_module_defined)
+        || (left_module_object && right_module_exports)
+        || (right_module_object && left_module_exports)
+}
+
+fn is_global_module_exports_expression(expression: &Expression<'_>, symbols: &SymbolTable) -> bool {
+    let object: &Expression<'_> = match expression.get_inner_expression() {
+        Expression::StaticMemberExpression(member)
+            if !member.optional && member.property.name.as_str() == "exports" =>
+        {
+            &member.object
+        }
+        Expression::ComputedMemberExpression(member)
+            if !member.optional
+                && matches!(
+                    member.expression.get_inner_expression(),
+                    Expression::StringLiteral(literal) if literal.value.as_str() == "exports"
+                ) =>
+        {
+            &member.object
+        }
+        _ => return false,
+    };
+    let Expression::Identifier(module) = object.get_inner_expression() else {
+        return false;
+    };
+    unresolved_identifier_is(module, "module", symbols)
+}
+
+fn is_typeof_global_comparison(
+    expression: &Expression<'_>,
+    identifier_name: &str,
+    literal_value: &str,
+    equality: bool,
+    symbols: &SymbolTable,
+) -> bool {
+    let Expression::BinaryExpression(binary) = expression.get_inner_expression() else {
+        return false;
+    };
+    let operator_matches: bool = if equality {
+        matches!(
+            binary.operator,
+            BinaryOperator::Equality | BinaryOperator::StrictEquality
+        )
+    } else {
+        matches!(
+            binary.operator,
+            BinaryOperator::Inequality | BinaryOperator::StrictInequality
+        )
+    };
+    operator_matches
+        && ((is_typeof_global(&binary.left, identifier_name, symbols)
+            && is_string_literal(&binary.right, literal_value))
+            || (is_typeof_global(&binary.right, identifier_name, symbols)
+                && is_string_literal(&binary.left, literal_value)))
+}
+
+fn is_typeof_global(
+    expression: &Expression<'_>,
+    identifier_name: &str,
+    symbols: &SymbolTable,
+) -> bool {
+    let Expression::UnaryExpression(unary) = expression.get_inner_expression() else {
+        return false;
+    };
+    if unary.operator != UnaryOperator::Typeof {
+        return false;
+    }
+    let Expression::Identifier(identifier) = unary.argument.get_inner_expression() else {
+        return false;
+    };
+    unresolved_identifier_is(identifier, identifier_name, symbols)
+}
+
+fn is_string_literal(expression: &Expression<'_>, expected: &str) -> bool {
+    matches!(
+        expression.get_inner_expression(),
+        Expression::StringLiteral(literal) if literal.value.as_str() == expected
+    )
+}
+
 struct DefineProbe<'s> {
     symbols: &'s SymbolTable,
     count: usize,
@@ -330,6 +601,7 @@ impl<'a> Visit<'a> for DefineProbe<'_> {
                 self.registration = Some(UmdRegistration {
                     factory_symbol: symbol_id,
                     dependencies: static_dependencies,
+                    kind: ModuleFactoryKind::Amd,
                 });
             }
         }

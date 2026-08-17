@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use serde::Deserialize;
@@ -37,6 +38,55 @@ struct DesugarMarker {
     #[serde(rename = "desugared-library-identifiers")]
     identifiers: Vec<String>,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct ExactHelperProjection {
+    source_owner: &'static str,
+    source_name: &'static str,
+    source_parameters: &'static [&'static str],
+    source_return_type: &'static str,
+    owner: &'static str,
+    name: &'static str,
+    parameters: &'static [&'static str],
+    return_type: &'static str,
+    shape: CoreInvokeShape,
+}
+
+const EXACT_HELPERS: &[ExactHelperProjection] = &[
+    ExactHelperProjection {
+        source_owner: "Lj$/util/DateRetargetClass;",
+        source_name: "toInstant",
+        source_parameters: &["Ljava/util/Date;"],
+        source_return_type: "Lj$/time/Instant;",
+        owner: "Ljava/util/Date;",
+        name: "toInstant",
+        parameters: &[],
+        return_type: "Ljava/time/Instant;",
+        shape: CoreInvokeShape::ReceiverFirst,
+    },
+    ExactHelperProjection {
+        source_owner: "Lj$/util/DesugarDate;",
+        source_name: "from",
+        source_parameters: &["Lj$/time/Instant;"],
+        source_return_type: "Ljava/util/Date;",
+        owner: "Ljava/util/Date;",
+        name: "from",
+        parameters: &["Ljava/time/Instant;"],
+        return_type: "Ljava/util/Date;",
+        shape: CoreInvokeShape::Static,
+    },
+    ExactHelperProjection {
+        source_owner: "Lj$/util/concurrent/DesugarTimeUnit;",
+        source_name: "convert",
+        source_parameters: &["Ljava/util/concurrent/TimeUnit;", "Lj$/time/Duration;"],
+        source_return_type: "J",
+        owner: "Ljava/util/concurrent/TimeUnit;",
+        name: "convert",
+        parameters: &["Ljava/time/Duration;"],
+        return_type: "J",
+        shape: CoreInvokeShape::ReceiverFirst,
+    },
+];
 
 impl CoreLibraryRecovery {
     pub(crate) fn analyze(dex: &DexFile) -> Self {
@@ -236,24 +286,42 @@ fn parse_marker(value: &str) -> Option<DesugarMarker> {
 }
 
 fn exact_helper_projection(method: &MethodId) -> Option<CoreMethodProjection> {
-    if method.class != "Lj$/util/concurrent/DesugarTimeUnit;"
-        || method.name != "convert"
-        || method.proto.parameters
-            != [
-                "Ljava/util/concurrent/TimeUnit;".to_string(),
-                "Lj$/time/Duration;".to_string(),
-            ]
-        || method.proto.return_type != "J"
-    {
-        return None;
-    }
+    let index: usize = EXACT_HELPERS
+        .binary_search_by(|projection: &ExactHelperProjection| {
+            compare_helper_projection(projection, method)
+        })
+        .ok()?;
+    let projection: &ExactHelperProjection = EXACT_HELPERS.get(index)?;
     Some(CoreMethodProjection {
-        owner: "Ljava/util/concurrent/TimeUnit;".to_string(),
-        name: "convert".to_string(),
-        parameters: vec!["Ljava/time/Duration;".to_string()],
-        return_type: "J".to_string(),
-        shape: CoreInvokeShape::ReceiverFirst,
+        owner: projection.owner.to_string(),
+        name: projection.name.to_string(),
+        parameters: projection
+            .parameters
+            .iter()
+            .map(|parameter: &&str| (*parameter).to_string())
+            .collect(),
+        return_type: projection.return_type.to_string(),
+        shape: projection.shape,
     })
+}
+
+fn compare_helper_projection(projection: &ExactHelperProjection, method: &MethodId) -> Ordering {
+    projection
+        .source_owner
+        .cmp(method.class.as_str())
+        .then_with(|| projection.source_name.cmp(method.name.as_str()))
+        .then_with(|| {
+            projection
+                .source_parameters
+                .iter()
+                .copied()
+                .cmp(method.proto.parameters.iter().map(String::as_str))
+        })
+        .then_with(|| {
+            projection
+                .source_return_type
+                .cmp(method.proto.return_type.as_str())
+        })
 }
 
 fn project_descriptor(descriptor: &str, enabled: bool) -> String {
@@ -396,6 +464,7 @@ fn is_relocatable(descriptor: &str) -> bool {
         && !descriptor.contains("$VivifiedWrapper")
         && !descriptor.contains("ApiFlips")
         && !descriptor.contains("Conversions")
+        && !descriptor.contains("RetargetClass")
 }
 
 #[cfg(test)]

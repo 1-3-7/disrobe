@@ -79,7 +79,7 @@ pub struct QuotaReport {
     pub max_observed_ratio: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct QuotaGuard {
     quota: ExtractionQuota,
     report: QuotaReport,

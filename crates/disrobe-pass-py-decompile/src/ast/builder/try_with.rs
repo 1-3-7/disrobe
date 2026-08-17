@@ -21,7 +21,7 @@ use super::{
     active_version, fallthrough_cond_test, loop_break_target, loop_continue_target,
     loop_frame_depth, none_jump_test, structure_hi_cap, then_arm_end_cap,
 };
-use crate::ast::node::{ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
+use crate::ast::node::{BoolOpKind, ConstValue, ExceptHandler, Expr, ExprCtx, Stmt, WithItem};
 use crate::bytecode::opcode::CanonicalOp;
 use crate::bytecode::version::PyVersion;
 use crate::error::{DecompileError, Result};
@@ -3042,28 +3042,69 @@ fn single_residual(mut residual: Vec<Expr>) -> Option<Expr> {
 }
 
 #[must_use]
-fn guard_prefix_is_or_chain(
+fn guard_prefix_kind(
     stream: &DecodedStream,
     lo: usize,
     guard: usize,
     body_entry: usize,
-) -> bool {
+    else_entry: usize,
+) -> Option<bool> {
     if (lo..guard).any(|k: usize| is_walrus_store_shape(&stream.ops, k)) {
-        return false;
+        return None;
     }
-    (lo..guard)
+    let jumps: Vec<usize> = (lo..guard)
         .filter(|&k: &usize| {
             is_forward_cond_jump(&stream.ops[k])
                 && !is_chain_cond_jump(&stream.ops, k)
                 && !is_value_form_shortcircuit(&stream.ops, k)
         })
-        .all(|k: usize| {
-            !stream.none_jump_kind.contains_key(&k)
-                && jump_taken_if_true(stream, k)
-                && resolve_jump_target(stream, k, &stream.ops[k])
-                    .and_then(|target: usize| first_significant(stream, target, stream.ops.len()))
-                    == Some(body_entry)
-        })
+        .collect();
+    let edge_matches = |k: usize, expected: usize| -> bool {
+        !stream.none_jump_kind.contains_key(&k)
+            && resolve_jump_target(stream, k, &stream.ops[k])
+                .and_then(|target: usize| first_significant(stream, target, stream.ops.len()))
+                == Some(expected)
+    };
+    if jumps
+        .iter()
+        .all(|&k: &usize| jump_taken_if_true(stream, k) && edge_matches(k, body_entry))
+    {
+        return Some(false);
+    }
+    matches!(jumps.as_slice(), [k] if !jump_taken_if_true(stream, *k) && edge_matches(*k, else_entry))
+        .then_some(true)
+}
+
+#[must_use]
+fn active_loop_is_top_tested_while(stream: &DecodedStream, lo: usize, hi: usize) -> bool {
+    let (Some(header), Some(exit)): (Option<usize>, Option<usize>) =
+        (loop_continue_target(), loop_break_target())
+    else {
+        return false;
+    };
+    if header >= lo {
+        return false;
+    }
+    (header..lo).any(|test: usize| {
+        is_forward_cond_jump(&stream.ops[test])
+            && resolve_jump_target(stream, test, &stream.ops[test]) == Some(exit)
+            && loop_header_owns_test(stream, header, hi, test)
+    })
+}
+
+#[must_use]
+fn tail_is_plain_typed_handler_break(tail: &[Stmt]) -> bool {
+    matches!(
+        tail.first(),
+        Some(Stmt::Try {
+            handlers,
+            orelse,
+            finalbody,
+            ..
+        }) if orelse.is_empty()
+            && finalbody.is_empty()
+            && matches!(handlers.as_slice(), [ExceptHandler { typ: Some(_), body, .. }] if matches!(body.as_slice(), [Stmt::Break]))
+    )
 }
 
 #[must_use]
@@ -3244,6 +3285,63 @@ fn effectful_walrus_continue_guard_before_try(
     })
 }
 
+#[must_use]
+fn expr_contains_and(expr: &Expr) -> bool {
+    match expr {
+        Expr::BoolOp {
+            op: BoolOpKind::And,
+            ..
+        } => true,
+        Expr::BoolOp { values, .. } => values.iter().any(expr_contains_and),
+        _ => false,
+    }
+}
+
+fn unsupported_and_continue_guard_before_try(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    region: &TryRegion,
+) -> Result<Option<usize>> {
+    if stream.is_pre_311() || loop_continue_target().is_none() {
+        return Ok(None);
+    }
+    if let Some(compound) = try_recover_compound_if(code, stream, lo, region.try_start)?
+        && expr_contains_and(&compound.test)
+    {
+        return Ok(Some(compound.last_jump));
+    }
+    Ok((lo..region.try_start).rev().find(|&guard: &usize| {
+        if !is_forward_cond_jump(&stream.ops[guard])
+            || is_chain_cond_jump(&stream.ops, guard)
+            || is_value_form_shortcircuit(&stream.ops, guard)
+        {
+            return false;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&target: &usize| target > guard && target <= hi)
+        else {
+            return false;
+        };
+        if first_significant(stream, target, hi).map_or(target, |entry: usize| entry)
+            != region.try_start
+            || then_continues_to_loop(stream, guard + 1, target).is_none()
+        {
+            return false;
+        }
+        (lo..guard).any(|prefix: usize| {
+            is_forward_cond_jump(&stream.ops[prefix])
+                && !is_chain_cond_jump(&stream.ops, prefix)
+                && !is_value_form_shortcircuit(&stream.ops, prefix)
+                && !jump_taken_if_true(stream, prefix)
+                && resolve_jump_target(stream, prefix, &stream.ops[prefix])
+                    .and_then(|edge: usize| first_significant(stream, edge, stream.ops.len()))
+                    == Some(region.try_start)
+        })
+    }))
+}
+
 pub(super) fn try_structure_loop_continue_guard_over_try(
     code: &CodeObject,
     stream: &DecodedStream,
@@ -3369,7 +3467,15 @@ fn try_structure_stmt_continue_guard_before_try(
     if (guard + 1..back).any(|k: usize| is_back_edge(&stream.ops[k])) {
         return Ok(None);
     }
-    if !guard_prefix_is_or_chain(stream, lo, guard, first_stmt) {
+    let Some(is_and_guard): Option<bool> =
+        guard_prefix_kind(stream, lo, guard, first_stmt, region.try_start)
+    else {
+        return Ok(None);
+    };
+    if is_and_guard
+        && (!active_loop_is_top_tested_while(stream, lo, hi)
+            || !handler_breaks_to_active_loop_exit(stream, region))
+    {
         return Ok(None);
     }
     let (head, test): (Vec<Stmt>, Expr) = if let Some(candidate) = compound {
@@ -3403,6 +3509,9 @@ fn try_structure_stmt_continue_guard_before_try(
     then_body.push(Stmt::Continue);
     let tail: Vec<Stmt> = structure_stmts(code, stream, region.try_start, hi)?;
     let tail: Vec<Stmt> = normalize_cold_breaking_try(stream, region, tail);
+    if is_and_guard && !tail_is_plain_typed_handler_break(&tail) {
+        return Ok(None);
+    }
     let exit_tail: Vec<Stmt> = match loop_break_target() {
         Some(exit) => structure_stmts(code, stream, exit, hi)?,
         None => Vec::new(),
@@ -3702,6 +3811,16 @@ pub(super) fn structure_try(
     if let Some(stmts) = try_structure_stmt_continue_guard_before_try(code, stream, lo, hi, region)?
     {
         return Ok(stmts);
+    }
+    if let Some(guard) = unsupported_and_continue_guard_before_try(code, stream, lo, hi, region)? {
+        return Err(DecompileError::AstDesync {
+            offset: stream
+                .offsets
+                .get(guard)
+                .map_or(0, |offset: &u32| *offset as usize),
+            reason: "unsupported AND continue guard before try requires exact structuring"
+                .to_owned(),
+        });
     }
     if let Some(guard) = effectful_walrus_continue_guard_before_try(stream, lo, hi, region) {
         return Err(DecompileError::AstDesync {

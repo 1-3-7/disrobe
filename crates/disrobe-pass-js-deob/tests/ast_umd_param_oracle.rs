@@ -6,6 +6,10 @@ use std::time::Duration;
 
 use boa_engine::{Context, Source};
 use disrobe_core::subprocess::{CapturedOutput, run_captured};
+#[cfg(feature = "chain")]
+use disrobe_core::{Artifact, Rung, chain::Pass};
+#[cfg(feature = "chain")]
+use disrobe_pass_js_deob::chain_detector::JS_OBF_PASS;
 use disrobe_pass_js_deob::{AstUnminifyStats, unminify_ast};
 
 const LOOP_LIMIT: u64 = 2_000_000;
@@ -34,6 +38,8 @@ var __modules = {{
     "./text-format": function(value) {{ return "value=" + value; }}
 }};
 var __root = {{ mathUtils: __modules["./math-utils"], textFormat: __modules["./text-format"] }};
+var module = {{ exports: null }};
+var require = function(id) {{ return __modules[id]; }};
 {define_setup}
 {program}
 {tail}
@@ -138,10 +144,131 @@ fn guarded_umd_arrow_factory_recovers_amd_dependency_names() {
 }
 
 #[test]
+fn guarded_commonjs_factory_recovers_required_dependency_names() {
+    let source: &str = r#"(function(factory) {
+    if (typeof exports === "object" && typeof module !== "undefined") {
+        module.exports = factory(require("./math-utils"), require("./text-format"));
+    } else {
+        __root.output = factory(__root.mathUtils, __root.textFormat);
+    }
+})(function(a, b) {
+    return b(a.sum(6, 7));
+});
+print(module.exports || __root.output);"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(
+        stats.commonjs_parameters_renamed, 2,
+        "the guarded CommonJS factory must reuse static require arguments:\n{recovered}"
+    );
+    assert_eq!(stats.amd_parameters_renamed, 0);
+    assert!(
+        recovered.contains("function(mathUtils, textFormat)"),
+        "the direct CommonJS factory argument must receive dependency-derived names:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("textFormat(mathUtils.sum(6, 7))"),
+        "resolved CommonJS factory references must follow both renames:\n{recovered}"
+    );
+    let (repeated, repeated_stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(repeated, recovered);
+    assert_eq!(repeated_stats.commonjs_parameters_renamed, 2);
+    assert_runtime_parity(source, &recovered);
+}
+
+#[test]
+fn computed_commonjs_export_with_reordered_guard_recovers_dependency_name() {
+    let source: &str = r#"(function(factory) {
+    if ("undefined" !== typeof module && "object" === typeof exports) {
+        module["exports"] = factory(require("./math-utils"));
+    } else {
+        __root.output = factory(__root.mathUtils);
+    }
+})(function(a) {
+    return a.sum(8, 9);
+});
+print(module.exports || __root.output);"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.commonjs_parameters_renamed, 1, "source:\n{recovered}");
+    assert_eq!(stats.amd_parameters_renamed, 0);
+    assert!(
+        recovered.contains("function(mathUtils)"),
+        "computed module exports must retain the dependency-derived rename:\n{recovered}"
+    );
+    assert_runtime_parity(source, &recovered);
+}
+
+#[test]
+fn canonical_umdjs_commonjs_guard_recovers_dependency_name() {
+    let source: &str = r#"(function(factory) {
+    if (typeof module === "object" && module.exports) {
+        module.exports = factory(require("./math-utils"));
+    } else {
+        __root.output = factory(__root.mathUtils);
+    }
+})(function(a) {
+    return a.sum(12, 13);
+});
+print(module.exports || __root.output);"#;
+    let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+    assert_eq!(stats.commonjs_parameters_renamed, 1, "source:\n{recovered}");
+    assert_eq!(stats.amd_parameters_renamed, 0);
+    assert!(
+        recovered.contains("function(mathUtils)"),
+        "the canonical umdjs CommonJS guard must recover its static require name:\n{recovered}"
+    );
+    assert_runtime_parity(source, &recovered);
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn registered_chain_pass_recovers_minified_commonjs_umd_parameters() {
+    let source: &str = r#"(function(factory){if(typeof module==="object"&&module.exports){module.exports=factory(require("./math-utils"),require("./text-format"));}else{__root.output=factory(__root.mathUtils,__root.textFormat);}})(function(a,b){var result=a.sum(10,11);return b(result);});print(module.exports||__root.output);"#;
+    assert!(source.len() > 200);
+    let artifact: Artifact = Artifact::new(Rung::Raw, source.as_bytes().to_vec(), [0_u8; 32]);
+    let recovered: Artifact = JS_OBF_PASS
+        .run(&artifact)
+        .expect("registered js.deob pass must recover the minified UMD wrapper");
+    let recovered_source: &str = std::str::from_utf8(recovered.envelope.as_slice())
+        .expect("the JavaScript surface must remain UTF-8");
+    assert!(
+        recovered_source.contains("mathUtils.sum(10,11)"),
+        "registered pass output must use the recovered dependency name:\n{recovered_source}"
+    );
+    assert!(
+        recovered_source.contains("textFormat(result)"),
+        "registered pass output must recover every CommonJS factory parameter:\n{recovered_source}"
+    );
+}
+
+#[test]
+fn ambiguous_or_dynamic_commonjs_wrappers_abstain() {
+    let cases: [&str; 8] = [
+        r#"(function(factory) { module.exports = factory(require("./math-utils")); })(function(a) { return a.sum(1, 2); });"#,
+        r#"(function(factory) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require(dependency)); } })(function(a) { return a.sum(1, 2); });"#,
+        r#"(function(factory, require) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); }, loader);"#,
+        r#"(function(factory, module) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); }, target);"#,
+        r#"(function(factory, exports) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); }, target);"#,
+        r#"(function(factory) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); module["exports"] = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); });"#,
+        r#"(function(factory) { if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); } })(function(a) { return eval("a.sum(1, 2)"); });"#,
+        r#"(function(factory) { factory = replacement; if (typeof exports === "object" && typeof module !== "undefined") { module.exports = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); });"#,
+    ];
+    for source in cases {
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_ast(source);
+        assert_eq!(
+            stats.commonjs_parameters_renamed, 0,
+            "an unproven CommonJS wrapper must abstain:\n{recovered}"
+        );
+        assert!(
+            recovered.contains("function(a)"),
+            "an unproven CommonJS wrapper must retain its factory parameter:\n{recovered}"
+        );
+    }
+}
+
+#[test]
 fn non_umd_and_ambiguous_wrappers_abstain() {
-    let cases: [&str; 11] = [
+    let cases: [&str; 10] = [
         r"(function(factory) { factory(__root.mathUtils); })(function(a) { print(a.sum(1, 2)); });",
-        r#"(function(factory) { if (typeof module === "object") { module.exports = factory(require("./math-utils")); } })(function(a) { return a.sum(1, 2); });"#,
         r#"(function(factory) { if (typeof define === "function" && define.amd) { define(["./math-utils"], factory); } })(function(a) { print(a.sum(1, 2)); });"#,
         r#"(function(factory, other) { if (typeof define === "function" && define.amd) { define(["./math-utils"], factory); } else { other(__root.mathUtils); } })(function(a) { print(a.sum(1, 2)); }, function(value) { return value; });"#,
         r#"(function(factory) { if (typeof define === "function" && define.amd) { define(dependencies, factory); } else { factory(__root.mathUtils); } })(function(a) { print(a.sum(1, 2)); });"#,

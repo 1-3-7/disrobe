@@ -16,6 +16,7 @@ const SECTION_HEADER2_LEN: usize = 8;
 const SECTION_ALIGN: usize = 4;
 const GUID_DEFINED_FIXED_LEN: usize = 20;
 const COMPRESSION_HEADER_LEN: usize = 5;
+const PI_COMPRESSION_HEADER_LEN: usize = 8;
 const CRC32_VENDOR_HEADER_LEN: usize = 4;
 const EDK2_BROTLI_HEADER_LEN: usize = 16;
 
@@ -183,6 +184,41 @@ pub enum FvCompressionCodec {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PiCompressionAlgorithm {
+    Standard,
+    Tiano,
+}
+
+impl PiCompressionAlgorithm {
+    const fn params(self) -> crate::containers::lha_huff::LhaParams {
+        match self {
+            Self::Standard => crate::containers::lha_huff::LhaParams {
+                history_bits: 14,
+                offset_bits: 4,
+            },
+            Self::Tiano => crate::containers::lha_huff::LhaParams {
+                history_bits: 20,
+                offset_bits: 5,
+            },
+        }
+    }
+
+    const fn codec(self) -> FvCompressionCodec {
+        match self {
+            Self::Standard => FvCompressionCodec::Standard,
+            Self::Tiano => FvCompressionCodec::TianoGuided,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Tiano => "tiano",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FvCodecOutcome {
     pub codec: FvCompressionCodec,
@@ -331,8 +367,10 @@ pub fn parse_fv_header(bytes: &[u8]) -> Result<FvHeader> {
     })
 }
 
+#[derive(Clone)]
 struct FvBudget {
     quota: QuotaGuard,
+    limits: ExtractionQuota,
     depth: usize,
     decompressed_total: u64,
     decompressed_ceiling: u64,
@@ -342,12 +380,52 @@ impl FvBudget {
     fn new(quota: ExtractionQuota, input_len: u64) -> Self {
         Self {
             quota: QuotaGuard::new(quota),
+            limits: quota,
             depth: 0,
             decompressed_total: 0,
             decompressed_ceiling: input_len
                 .saturating_mul(DECOMPRESSED_CEILING_MULTIPLIER)
                 .max(4 * 1024 * 1024),
         }
+    }
+
+    fn remaining_pi_decompressed(&self, compressed: u64) -> u64 {
+        let report: &crate::quota::QuotaReport = self.quota.report();
+        let aggregate_compressed: u64 = report.total_compressed_bytes.saturating_add(compressed);
+        let aggregate_limit: u64 = aggregate_compressed
+            .saturating_mul(self.limits.max_aggregate_ratio)
+            .saturating_sub(report.total_uncompressed_bytes);
+        let ratio_limit: u64 = if compressed == 0 {
+            u64::MAX
+        } else {
+            compressed.saturating_mul(self.limits.max_per_entry_ratio)
+        };
+        self.decompressed_ceiling
+            .saturating_sub(self.decompressed_total)
+            .min(self.limits.max_per_entry_uncompressed)
+            .min(
+                self.limits
+                    .max_total_uncompressed
+                    .saturating_sub(report.total_uncompressed_bytes),
+            )
+            .min(ratio_limit)
+            .min(aggregate_limit)
+    }
+
+    fn admit_pi_decompressed(&mut self, entry: &str, amount: u64, compressed: u64) -> Result<()> {
+        let new_total: u64 = self.decompressed_total.saturating_add(amount);
+        let remaining: u64 = self.remaining_pi_decompressed(compressed);
+        if amount > remaining {
+            return Err(Error::QuotaExceeded {
+                entry: entry.to_owned(),
+                reason: format!(
+                    "declared output {amount} exceeds remaining firmware extraction allowance {remaining}"
+                ),
+            });
+        }
+        self.quota.admit_entry(entry, amount, compressed)?;
+        self.decompressed_total = new_total;
+        Ok(())
     }
 
     fn admit_decompressed(&mut self, entry: &str, amount: u64) -> Result<()> {
@@ -384,12 +462,90 @@ fn decode_ui_name(payload: &[u8]) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
-fn decompress_standard(_payload: &[u8]) -> FvCodecOutcome {
-    FvCodecOutcome {
-        codec: FvCompressionCodec::Standard,
-        verified: false,
-        recovered: false,
-        note: "EFI standard/Tiano compression detected; no verified in-house decoder is wired up yet, payload left compressed".to_owned(),
+fn decompress_pi_compression(
+    payload: &[u8],
+    outer_uncompressed_len: Option<u32>,
+    algorithm: PiCompressionAlgorithm,
+    budget: &mut FvBudget,
+    entry: &str,
+) -> Result<Vec<u8>> {
+    let compressed_len: u32 = u32_le(payload, 0).ok_or_else(|| {
+        fv_err(format!(
+            "truncated {} compressed-size header",
+            algorithm.name()
+        ))
+    })?;
+    let original_len: u32 = u32_le(payload, 4).ok_or_else(|| {
+        fv_err(format!(
+            "truncated {} original-size header",
+            algorithm.name()
+        ))
+    })?;
+    if original_len == 0 {
+        return Err(fv_err(format!(
+            "{} stream declares zero output bytes",
+            algorithm.name()
+        )));
+    }
+    if let Some(outer_len) = outer_uncompressed_len
+        && outer_len != original_len
+    {
+        return Err(fv_err(format!(
+            "{} stream declares {original_len} output bytes but its compression section declares {outer_len}",
+            algorithm.name()
+        )));
+    }
+    let compressed_len: usize = usize::try_from(compressed_len).map_err(|_| {
+        fv_err(format!(
+            "{} compressed size does not fit usize",
+            algorithm.name()
+        ))
+    })?;
+    let exact_len: usize = PI_COMPRESSION_HEADER_LEN
+        .checked_add(compressed_len)
+        .ok_or_else(|| fv_err(format!("{} compressed extent overflow", algorithm.name())))?;
+    if payload.len() != exact_len {
+        return Err(fv_err(format!(
+            "{} stream declares {compressed_len} compressed bytes but its payload contains {}",
+            algorithm.name(),
+            payload.len().saturating_sub(PI_COMPRESSION_HEADER_LEN)
+        )));
+    }
+    let compressed: &[u8] = payload
+        .get(PI_COMPRESSION_HEADER_LEN..)
+        .ok_or_else(|| fv_err(format!("truncated {} payload header", algorithm.name())))?;
+    if compressed.last() != Some(&0) {
+        return Err(fv_err(format!(
+            "{} stream is missing its terminal zero byte",
+            algorithm.name()
+        )));
+    }
+    let compressed_size: u64 = u64::try_from(compressed.len()).unwrap_or(u64::MAX);
+    let remaining: u64 = budget.remaining_pi_decompressed(compressed_size);
+    if u64::from(original_len) > remaining {
+        return Err(Error::QuotaExceeded {
+            entry: entry.to_owned(),
+            reason: format!(
+                "declared {} output {} exceeds remaining firmware decompression ceiling {remaining}",
+                algorithm.name(),
+                original_len
+            ),
+        });
+    }
+    let expected_len: usize = usize::try_from(original_len).map_err(|_| {
+        fv_err(format!(
+            "{} output size does not fit usize",
+            algorithm.name()
+        ))
+    })?;
+    let checkpoint: FvBudget = budget.clone();
+    budget.admit_pi_decompressed(entry, u64::from(original_len), compressed_size)?;
+    match crate::containers::lha_huff::decode_exact(algorithm.params(), compressed, expected_len) {
+        Ok(decoded) => Ok(decoded),
+        Err(error) => {
+            *budget = checkpoint;
+            Err(error)
+        }
     }
 }
 
@@ -421,15 +577,23 @@ fn decompress_brotli_guided(payload: &[u8], budget: &mut FvBudget, entry: &str) 
             ),
         });
     }
+    let checkpoint: FvBudget = budget.clone();
+    budget.admit_decompressed(entry, declared_size)?;
     let decoded: Vec<u8> =
-        crate::containers::bare_stream::decompress_brotli(compressed, declared_size)?;
+        match crate::containers::bare_stream::decompress_brotli(compressed, declared_size) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                *budget = checkpoint;
+                return Err(error);
+            }
+        };
     if decoded.len() as u64 != declared_size {
+        *budget = checkpoint;
         return Err(fv_err(format!(
             "Brotli decoded {} bytes but the EDK2 header declares {declared_size}",
             decoded.len()
         )));
     }
-    budget.admit_decompressed(entry, declared_size)?;
     Ok(decoded)
 }
 
@@ -503,6 +667,134 @@ fn process_section_stream(
     Ok(())
 }
 
+fn process_decoded_section_stream(
+    decoded: &[u8],
+    inner_depth: usize,
+    budget: &mut FvBudget,
+    file: &mut FvFileRecord,
+    out: &mut FvExtraction,
+    entry: &str,
+    codec: &str,
+) -> Result<()> {
+    if inner_depth > MAX_FV_DEPTH {
+        return Err(fv_err(format!(
+            "{entry}: {codec}-decoded stream exceeds max recursion depth {MAX_FV_DEPTH}"
+        )));
+    }
+    validate_exact_section_stream(decoded, entry, codec)?;
+    let budget_before: FvBudget = budget.clone();
+    let file_sections_before: usize = file.sections.len();
+    let file_name_before: Option<String> = file.name.clone();
+    let volumes_before: usize = out.volumes_walked;
+    let files_before: usize = out.files.len();
+    let images_before: usize = out.pe_images.len();
+    let image_names_before: Vec<Option<String>> = out
+        .pe_images
+        .iter()
+        .map(|image: &FvPeImage| image.name.clone())
+        .collect();
+    let notes_before: usize = out.notes.len();
+    let truncated_before: bool = out.truncated;
+    out.truncated = false;
+    let parse_result: Result<()> = process_section_stream(decoded, inner_depth, budget, file, out);
+    let parse_error: Option<Error> = match parse_result {
+        Err(error) => Some(error),
+        Ok(()) if out.truncated => Some(fv_err(format!(
+            "{entry}: {codec}-decoded section stream is incomplete"
+        ))),
+        Ok(()) => None,
+    };
+    if let Some(error) = parse_error {
+        *budget = budget_before;
+        file.sections.truncate(file_sections_before);
+        file.name = file_name_before;
+        out.volumes_walked = volumes_before;
+        out.files.truncate(files_before);
+        out.pe_images.truncate(images_before);
+        for (image, name) in out.pe_images.iter_mut().zip(image_names_before) {
+            image.name = name;
+        }
+        out.notes.truncate(notes_before);
+        out.truncated = truncated_before;
+        return Err(error);
+    }
+    out.truncated = truncated_before;
+    Ok(())
+}
+
+fn validate_exact_section_stream(payload: &[u8], entry: &str, codec: &str) -> Result<()> {
+    if payload.is_empty() {
+        return Err(fv_err(format!(
+            "{entry}: {codec}-decoded section stream is empty"
+        )));
+    }
+    let mut offset: usize = 0;
+    let mut count: usize = 0;
+    while offset < payload.len() {
+        let remaining: usize = payload.len() - offset;
+        if remaining < SECTION_HEADER_LEN {
+            return Err(fv_err(format!(
+                "{entry}: {codec}-decoded section stream has {remaining} trailing bytes"
+            )));
+        }
+        if payload[offset..offset + SECTION_HEADER_LEN]
+            .iter()
+            .all(|byte: &u8| *byte == 0xFF)
+        {
+            if payload[offset..].iter().all(|byte: &u8| *byte == 0xFF) {
+                return Ok(());
+            }
+            return Err(fv_err(format!(
+                "{entry}: {codec}-decoded section stream has data after its terminator"
+            )));
+        }
+        count = count.saturating_add(1);
+        if count > MAX_SECTIONS_PER_FILE {
+            return Err(fv_err(format!(
+                "{entry}: {codec}-decoded section stream exceeds {MAX_SECTIONS_PER_FILE} sections"
+            )));
+        }
+        let raw_size: u32 = u24_le(payload, offset)
+            .ok_or_else(|| fv_err(format!("{entry}: truncated {codec} section size")))?;
+        let (header_len, total_size): (usize, usize) = if raw_size == 0x00FF_FFFF {
+            let extended: u32 = u32_le(payload, offset + SECTION_HEADER_LEN).ok_or_else(|| {
+                fv_err(format!("{entry}: truncated {codec} extended section size"))
+            })?;
+            (
+                SECTION_HEADER2_LEN,
+                usize::try_from(extended).map_err(|_| {
+                    fv_err(format!("{entry}: {codec} section size does not fit usize"))
+                })?,
+            )
+        } else {
+            (SECTION_HEADER_LEN, raw_size as usize)
+        };
+        if total_size < header_len {
+            return Err(fv_err(format!(
+                "{entry}: {codec} section at {offset} is smaller than its header"
+            )));
+        }
+        let end: usize = offset
+            .checked_add(total_size)
+            .filter(|end: &usize| *end <= payload.len())
+            .ok_or_else(|| {
+                fv_err(format!(
+                    "{entry}: {codec} section at {offset} exceeds its decoded stream"
+                ))
+            })?;
+        if end == payload.len() {
+            return Ok(());
+        }
+        offset = align_up_usize(end, SECTION_ALIGN);
+        if offset > payload.len() {
+            return Err(fv_err(format!(
+                "{entry}: {codec}-decoded section padding is truncated"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn record_section(
     kind: u8,
@@ -535,20 +827,60 @@ fn record_section(
             let compression_type: u8 = *body
                 .get(4)
                 .ok_or_else(|| fv_err("truncated compression section type byte"))?;
-            let compressed: &[u8] = body.get(COMPRESSION_HEADER_LEN..).unwrap_or(&[]);
+            let compressed: &[u8] = body
+                .get(COMPRESSION_HEADER_LEN..)
+                .ok_or_else(|| fv_err("truncated compression section payload"))?;
             match compression_type {
                 COMPRESSION_TYPE_NONE => {
                     let inner_depth: usize = depth + 1;
                     process_section_stream(compressed, inner_depth, budget, file, out)?;
                 }
                 COMPRESSION_TYPE_STANDARD => {
-                    let outcome: FvCodecOutcome = decompress_standard(compressed);
-                    out.notes.push(format!(
-                        "{}: {} (declared uncompressed length {uncompressed_len})",
-                        guid_to_string(&file.guid),
-                        outcome.note
-                    ));
-                    codec_outcome = Some(outcome);
+                    let entry: String = guid_to_string(&file.guid);
+                    let budget_before: FvBudget = budget.clone();
+                    match decompress_pi_compression(
+                        compressed,
+                        Some(uncompressed_len),
+                        PiCompressionAlgorithm::Standard,
+                        budget,
+                        &entry,
+                    )
+                    .and_then(|decoded: Vec<u8>| {
+                        process_decoded_section_stream(
+                            &decoded,
+                            depth + 1,
+                            budget,
+                            file,
+                            out,
+                            &entry,
+                            PiCompressionAlgorithm::Standard.name(),
+                        )?;
+                        Ok(decoded)
+                    }) {
+                        Ok(decoded) => {
+                            let note: String =
+                                format!("standard compression decoded to {} bytes", decoded.len());
+                            out.notes.push(format!("{entry}: {note}"));
+                            codec_outcome = Some(FvCodecOutcome {
+                                codec: PiCompressionAlgorithm::Standard.codec(),
+                                verified: true,
+                                recovered: true,
+                                note,
+                            });
+                        }
+                        Err(error) => {
+                            *budget = budget_before;
+                            let note: String =
+                                format!("standard compression decode failed: {error}");
+                            out.notes.push(format!("{entry}: {note}"));
+                            codec_outcome = Some(FvCodecOutcome {
+                                codec: PiCompressionAlgorithm::Standard.codec(),
+                                verified: false,
+                                recovered: false,
+                                note,
+                            });
+                        }
+                    }
                 }
                 other => {
                     let outcome: FvCodecOutcome = FvCodecOutcome {
@@ -623,16 +955,21 @@ fn record_guid_defined_section(
     })?;
     let entry: String = guid_to_string(&file.guid);
     if section_guid == GUID_LZMA_CUSTOM_COMPRESS {
+        let budget_before: FvBudget = budget.clone();
         match decompress_lzma_guided(payload, budget, &entry) {
             Ok(decoded) => {
                 let inner_depth: usize = depth + 1;
-                if inner_depth > MAX_FV_DEPTH {
-                    out.truncated = true;
-                    out.notes.push(format!(
-                        "{entry}: lzma-decoded stream exceeds max recursion depth {MAX_FV_DEPTH}, stopped"
-                    ));
-                } else {
-                    process_section_stream(&decoded, inner_depth, budget, file, out)?;
+                if let Err(error) = process_decoded_section_stream(
+                    &decoded,
+                    inner_depth,
+                    budget,
+                    file,
+                    out,
+                    &entry,
+                    "LZMA",
+                ) {
+                    *budget = budget_before;
+                    return Err(error);
                 }
                 *codec_outcome = Some(FvCodecOutcome {
                     codec: FvCompressionCodec::Lzma,
@@ -642,6 +979,7 @@ fn record_guid_defined_section(
                 });
             }
             Err(e) => {
+                *budget = budget_before;
                 out.notes
                     .push(format!("{entry}: lzma guided section decode failed: {e}"));
                 *codec_outcome = Some(FvCodecOutcome {
@@ -671,36 +1009,25 @@ fn record_guid_defined_section(
             ),
         });
     } else if section_guid == GUID_BROTLI_CUSTOM_COMPRESS {
-        let decoded: Vec<u8> = decompress_brotli_guided(payload, budget, &entry)?;
-        let inner_depth: usize = depth + 1;
-        if inner_depth > MAX_FV_DEPTH {
-            return Err(fv_err(format!(
-                "{entry}: Brotli-decoded stream exceeds max recursion depth {MAX_FV_DEPTH}"
-            )));
-        }
-        let file_sections_before: usize = file.sections.len();
-        let file_name_before: Option<String> = file.name.clone();
-        let volumes_before: usize = out.volumes_walked;
-        let files_before: usize = out.files.len();
-        let images_before: usize = out.pe_images.len();
-        let image_names_before: Vec<Option<String>> = out
-            .pe_images
-            .iter()
-            .map(|image: &FvPeImage| image.name.clone())
-            .collect();
-        let notes_before: usize = out.notes.len();
-        let truncated_before: bool = out.truncated;
-        if let Err(error) = process_section_stream(&decoded, inner_depth, budget, file, out) {
-            file.sections.truncate(file_sections_before);
-            file.name = file_name_before;
-            out.volumes_walked = volumes_before;
-            out.files.truncate(files_before);
-            out.pe_images.truncate(images_before);
-            for (image, name) in out.pe_images.iter_mut().zip(image_names_before) {
-                image.name = name;
+        let budget_before: FvBudget = budget.clone();
+        let decoded: Vec<u8> = match decompress_brotli_guided(payload, budget, &entry) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                *budget = budget_before;
+                return Err(error);
             }
-            out.notes.truncate(notes_before);
-            out.truncated = truncated_before;
+        };
+        let inner_depth: usize = depth + 1;
+        if let Err(error) = process_decoded_section_stream(
+            &decoded,
+            inner_depth,
+            budget,
+            file,
+            out,
+            &entry,
+            "Brotli",
+        ) {
+            *budget = budget_before;
             return Err(error);
         }
         out.notes.push(format!(
@@ -714,15 +1041,49 @@ fn record_guid_defined_section(
             note: format!("Brotli guided section decoded to {} bytes", decoded.len()),
         });
     } else if section_guid == GUID_TIANO_CUSTOM_COMPRESS {
-        out.notes.push(format!(
-            "{entry}: tiano-guided (standard algorithm via guid-defined section) detected; no verified in-house decoder is wired up yet, payload left compressed"
-        ));
-        *codec_outcome = Some(FvCodecOutcome {
-            codec: FvCompressionCodec::TianoGuided,
-            verified: false,
-            recovered: false,
-            note: "tiano guided section detected but not decoded".to_owned(),
-        });
+        let budget_before: FvBudget = budget.clone();
+        match decompress_pi_compression(
+            payload,
+            None,
+            PiCompressionAlgorithm::Tiano,
+            budget,
+            &entry,
+        )
+        .and_then(|decoded: Vec<u8>| {
+            process_decoded_section_stream(
+                &decoded,
+                depth + 1,
+                budget,
+                file,
+                out,
+                &entry,
+                PiCompressionAlgorithm::Tiano.name(),
+            )?;
+            Ok(decoded)
+        }) {
+            Ok(decoded) => {
+                let note: String =
+                    format!("tiano guided section decoded to {} bytes", decoded.len());
+                out.notes.push(format!("{entry}: {note}"));
+                *codec_outcome = Some(FvCodecOutcome {
+                    codec: PiCompressionAlgorithm::Tiano.codec(),
+                    verified: true,
+                    recovered: true,
+                    note,
+                });
+            }
+            Err(error) => {
+                *budget = budget_before;
+                let note: String = format!("tiano guided section decode failed: {error}");
+                out.notes.push(format!("{entry}: {note}"));
+                *codec_outcome = Some(FvCodecOutcome {
+                    codec: PiCompressionAlgorithm::Tiano.codec(),
+                    verified: false,
+                    recovered: false,
+                    note,
+                });
+            }
+        }
     } else {
         out.notes.push(format!(
             "{entry}: guid-defined section with unrecognized guid {} detected; left opaque",
@@ -1030,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_hello_b_standard_compression_as_detected_but_unverified() {
+    fn recovers_hello_b_standard_compression_byte_identical_to_the_prebuild_efi() {
         let extraction: FvExtraction =
             extract_uefi_fv(OUTER_FV, ExtractionQuota::default_safe()).expect("extract");
         let hello_b: &FvFileRecord = extraction
@@ -1045,15 +1406,15 @@ mod tests {
             .expect("compression section present");
         let codec: &FvCodecOutcome = compression.codec.as_ref().expect("codec outcome recorded");
         assert_eq!(codec.codec, FvCompressionCodec::Standard);
-        assert!(!codec.verified);
-        assert!(!codec.recovered);
-        assert!(
-            extraction
-                .pe_images
-                .iter()
-                .all(|p: &FvPeImage| p.file_guid != HELLO_B_GUID)
-        );
-        let _ = HELLO_B_EFI;
+        assert!(codec.verified);
+        assert!(codec.recovered);
+        let recovered: &FvPeImage = extraction
+            .pe_images
+            .iter()
+            .find(|image: &&FvPeImage| image.file_guid == HELLO_B_GUID)
+            .expect("HelloB pe image recovered");
+        assert_eq!(recovered.data.as_slice(), HELLO_B_EFI);
+        assert_eq!(recovered.name.as_deref(), Some("HelloB"));
     }
 
     #[test]
@@ -1226,9 +1587,82 @@ mod tests {
         &BROTLI_FV[guid_offset + GUID_DEFINED_FIXED_LEN..section_offset + section_size]
     }
 
+    fn edk2_tiano_payload() -> &'static [u8] {
+        const TIANO_FV: &[u8] = include_bytes!("../../tests/fixtures/uefi_fv/edk2_tiano_guided.fv");
+        let guid_offset: usize = TIANO_FV
+            .windows(GUID_TIANO_CUSTOM_COMPRESS.len())
+            .position(|window: &[u8]| window == GUID_TIANO_CUSTOM_COMPRESS)
+            .expect("Tiano guided-section GUID");
+        let section_offset: usize = guid_offset - SECTION_HEADER_LEN;
+        let section_size: usize = u24_le(TIANO_FV, section_offset)
+            .and_then(|value: u32| usize::try_from(value).ok())
+            .expect("normal guided section size");
+        &TIANO_FV[guid_offset + GUID_DEFINED_FIXED_LEN..section_offset + section_size]
+    }
+
+    fn edk2_standard_payload_range() -> std::ops::Range<usize> {
+        (0..INNER_FV
+            .len()
+            .saturating_sub(COMPRESSION_HEADER_LEN + PI_COMPRESSION_HEADER_LEN))
+            .find_map(|offset: usize| {
+                let section_size: usize =
+                    u24_le(INNER_FV, offset).and_then(|value: u32| usize::try_from(value).ok())?;
+                if INNER_FV.get(offset + 3) != Some(&SECTION_COMPRESSION)
+                    || INNER_FV.get(offset + 8) != Some(&COMPRESSION_TYPE_STANDARD)
+                {
+                    return None;
+                }
+                let section_end: usize = offset.checked_add(section_size)?;
+                let payload_start: usize =
+                    offset.checked_add(SECTION_HEADER_LEN + COMPRESSION_HEADER_LEN)?;
+                let compressed_len: usize = u32_le(INNER_FV, payload_start)
+                    .and_then(|value: u32| usize::try_from(value).ok())?;
+                let payload_end: usize = payload_start
+                    .checked_add(PI_COMPRESSION_HEADER_LEN)?
+                    .checked_add(compressed_len)?;
+                (payload_end == section_end && payload_end <= INNER_FV.len())
+                    .then_some(payload_start..payload_end)
+            })
+            .expect("real EDK2 Standard stream")
+    }
+
+    fn first_ffs_file(volume: &[u8]) -> &[u8] {
+        let header: FvHeader = parse_fv_header(volume).expect("firmware header");
+        let start: usize = header.header_length as usize;
+        let size: usize = u24_le(volume, start + 20)
+            .and_then(|value: u32| usize::try_from(value).ok())
+            .expect("normal FFS file size");
+        &volume[start..start + size]
+    }
+
+    fn ffs_file_range_containing(volume: &[u8], target: usize) -> std::ops::Range<usize> {
+        let header: FvHeader = parse_fv_header(volume).expect("firmware header");
+        let mut start: usize = header.header_length as usize;
+        while start + FFS_HEADER_LEN <= volume.len() {
+            let size: usize = u24_le(volume, start + 20)
+                .and_then(|value: u32| usize::try_from(value).ok())
+                .expect("normal FFS file size");
+            let end: usize = start.checked_add(size).expect("FFS file extent");
+            if (start..end).contains(&target) {
+                return start..end;
+            }
+            start = align_up_usize(end, FFS_FILE_ALIGN);
+        }
+        panic!("target offset is not inside an FFS file")
+    }
+
     fn brotli_guided_body(data_offset: u16, payload: &[u8]) -> Vec<u8> {
         let mut body: Vec<u8> = Vec::with_capacity(GUID_DEFINED_FIXED_LEN + payload.len());
         body.extend_from_slice(&GUID_BROTLI_CUSTOM_COMPRESS);
+        body.extend_from_slice(&data_offset.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(payload);
+        body
+    }
+
+    fn tiano_guided_body(data_offset: u16, payload: &[u8]) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::with_capacity(GUID_DEFINED_FIXED_LEN + payload.len());
+        body.extend_from_slice(&GUID_TIANO_CUSTOM_COMPRESS);
         body.extend_from_slice(&data_offset.to_le_bytes());
         body.extend_from_slice(&1u16.to_le_bytes());
         body.extend_from_slice(payload);
@@ -1287,6 +1721,36 @@ mod tests {
 
         assert_eq!(extraction.pe_images.len(), 1);
         assert_eq!(extraction.pe_images[0].data, HELLO_A_EFI);
+    }
+
+    #[test]
+    fn extended_tiano_guided_section_uses_its_eight_byte_common_header_for_data_offset() {
+        let payload: &[u8] = edk2_tiano_payload();
+        let body: Vec<u8> = tiano_guided_body(
+            u16::try_from(SECTION_HEADER2_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("extended guided header fits"),
+            payload,
+        );
+        let section_size: usize = SECTION_HEADER2_LEN + body.len();
+        let mut stream: Vec<u8> = Vec::with_capacity(section_size);
+        stream.extend_from_slice(&[0xff, 0xff, 0xff, SECTION_GUID_DEFINED]);
+        stream.extend_from_slice(
+            &u32::try_from(section_size)
+                .expect("section size fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&body);
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), stream.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        file.name = Some("TianoDriver".to_owned());
+        let mut extraction: FvExtraction = FvExtraction::default();
+
+        process_section_stream(&stream, 0, &mut budget, &mut file, &mut extraction)
+            .expect("decode extended Tiano guided section");
+
+        assert_eq!(extraction.pe_images.len(), 1);
+        assert_eq!(extraction.pe_images[0].data, HELLO_B_EFI);
     }
 
     #[test]
@@ -1354,6 +1818,235 @@ mod tests {
             );
             assert!(extraction.pe_images.is_empty());
         }
+    }
+
+    #[test]
+    fn tiano_stream_requires_exact_extent_terminal_padding_and_matching_algorithm() {
+        let valid: &[u8] = edk2_tiano_payload();
+        let expected_len: u32 = u32_le(valid, 4).expect("Tiano original size");
+        let mut valid_budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), valid.len() as u64);
+        let decoded: Vec<u8> = decompress_pi_compression(
+            valid,
+            None,
+            PiCompressionAlgorithm::Tiano,
+            &mut valid_budget,
+            "TianoDriver",
+        )
+        .expect("decode exact EDK2 Tiano stream");
+        assert_eq!(decoded.len(), expected_len as usize);
+
+        let mut truncated: Vec<u8> = valid[..valid.len() - 1].to_vec();
+        let truncated_len: u32 = u32::try_from(truncated.len() - PI_COMPRESSION_HEADER_LEN)
+            .expect("truncated compressed size fits");
+        truncated[..4].copy_from_slice(&truncated_len.to_le_bytes());
+        let mut trailing: Vec<u8> = valid.to_vec();
+        let terminal: u8 = trailing.pop().expect("terminal zero");
+        trailing.extend_from_slice(&[0x5a, terminal]);
+        let trailing_len: u32 = u32::try_from(trailing.len() - PI_COMPRESSION_HEADER_LEN)
+            .expect("trailing compressed size fits");
+        trailing[..4].copy_from_slice(&trailing_len.to_le_bytes());
+
+        for (label, payload) in [("truncated", truncated), ("trailing", trailing)] {
+            let mut budget: FvBudget =
+                FvBudget::new(ExtractionQuota::default_safe(), payload.len() as u64);
+            let error: Error = decompress_pi_compression(
+                &payload,
+                None,
+                PiCompressionAlgorithm::Tiano,
+                &mut budget,
+                "TianoDriver",
+            )
+            .expect_err("reject inexact Tiano stream");
+            assert_eq!(budget.decompressed_total, 0, "{label}: {error}");
+        }
+
+        let mut cross_budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), valid.len() as u64);
+        let cross_error: Error = decompress_pi_compression(
+            valid,
+            None,
+            PiCompressionAlgorithm::Standard,
+            &mut cross_budget,
+            "TianoDriver",
+        )
+        .expect_err("standard parameters must not decode a Tiano stream");
+        assert_eq!(cross_budget.decompressed_total, 0, "{cross_error}");
+
+        let standard_range: std::ops::Range<usize> = edk2_standard_payload_range();
+        let standard: &[u8] = &INNER_FV[standard_range];
+        let mut reverse_budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), standard.len() as u64);
+        let reverse_error: Error = decompress_pi_compression(
+            standard,
+            None,
+            PiCompressionAlgorithm::Tiano,
+            &mut reverse_budget,
+            "HelloB",
+        )
+        .expect_err("Tiano parameters must not decode a Standard stream");
+        assert_eq!(reverse_budget.decompressed_total, 0, "{reverse_error}");
+    }
+
+    #[test]
+    fn tiano_declared_output_is_rejected_before_allocation_when_quota_is_exhausted() {
+        let valid: &[u8] = edk2_tiano_payload();
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), valid.len() as u64);
+        budget.decompressed_ceiling = 835;
+        let error: Error = decompress_pi_compression(
+            valid,
+            None,
+            PiCompressionAlgorithm::Tiano,
+            &mut budget,
+            "TianoDriver",
+        )
+        .expect_err("reject declared output above remaining quota");
+        assert!(matches!(error, Error::QuotaExceeded { .. }));
+        assert_eq!(budget.decompressed_total, 0);
+    }
+
+    #[test]
+    fn public_extraction_quota_bounds_tiano_output_before_recovery() {
+        const TIANO_FV: &[u8] = include_bytes!("../../tests/fixtures/uefi_fv/edk2_tiano_guided.fv");
+        let quotas: [ExtractionQuota; 3] = [
+            ExtractionQuota {
+                max_per_entry_uncompressed: 500,
+                ..ExtractionQuota::default_safe()
+            },
+            ExtractionQuota {
+                max_total_uncompressed: 1_000,
+                ..ExtractionQuota::default_safe()
+            },
+            ExtractionQuota {
+                max_per_entry_ratio: 1,
+                ..ExtractionQuota::default_safe()
+            },
+        ];
+        for quota in quotas {
+            let extraction: FvExtraction =
+                extract_uefi_fv(TIANO_FV, quota).expect("quota refusal remains local to the codec");
+            assert!(extraction.pe_images.is_empty());
+            let outcome: &FvCodecOutcome = extraction
+                .files
+                .iter()
+                .flat_map(|file: &FvFileRecord| file.sections.iter())
+                .filter_map(|section: &FvSectionRecord| section.codec.as_ref())
+                .find(|codec: &&FvCodecOutcome| codec.codec == FvCompressionCodec::TianoGuided)
+                .expect("Tiano quota outcome");
+            assert!(!outcome.verified);
+            assert!(!outcome.recovered);
+            assert!(outcome.note.contains("quota exceeded"), "{}", outcome.note);
+        }
+    }
+
+    #[test]
+    fn malformed_decoded_stream_restores_budget_and_prior_outputs() {
+        let mut decoded: Vec<u8> = fv_section(SECTION_PE32, b"valid prefix");
+        decoded.extend_from_slice(&[0x01, 0x02, 0x03]);
+        let encoded: Vec<u8> = edk2_brotli_encode(&decoded);
+        let body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("normal guided header fits"),
+            &encoded,
+        );
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction {
+            pe_images: vec![FvPeImage {
+                file_guid: [0x24; 16],
+                name: Some("Prior".to_owned()),
+                data: b"prior".to_vec(),
+            }],
+            ..FvExtraction::default()
+        };
+        let mut outcome: Option<FvCodecOutcome> = None;
+
+        let error: Error = record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect_err("reject malformed decoded section stream");
+
+        assert!(error.to_string().contains("trailing bytes"), "{error}");
+        assert_eq!(budget.decompressed_total, 0);
+        assert_eq!(budget.quota.report().entries_accepted, 0);
+        assert_eq!(extraction.pe_images.len(), 1);
+        assert_eq!(extraction.pe_images[0].data, b"prior");
+        assert!(file.sections.is_empty());
+
+        let valid_body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("normal guided header fits"),
+            edk2_brotli_payload(),
+        );
+        record_guid_defined_section(
+            &valid_body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect("valid sibling decodes after malformed stream rollback");
+        assert_eq!(extraction.pe_images.len(), 2);
+        assert_eq!(extraction.pe_images[1].data, HELLO_A_EFI);
+    }
+
+    #[test]
+    fn corrupt_standard_file_does_not_hide_a_valid_sibling_file() {
+        let standard_range: std::ops::Range<usize> = edk2_standard_payload_range();
+        let inner_header: FvHeader = parse_fv_header(INNER_FV).expect("inner firmware header");
+        let inner_file_range: std::ops::Range<usize> =
+            ffs_file_range_containing(INNER_FV, standard_range.start);
+        let inner_file: &[u8] = &INNER_FV[inner_file_range.clone()];
+        let mut corrupt_file: Vec<u8> = inner_file.to_vec();
+        let corrupt_offset: usize =
+            standard_range.start + PI_COMPRESSION_HEADER_LEN + 1 - inner_file_range.start;
+        corrupt_file[corrupt_offset] ^= 0xff;
+        let sibling_volume: Vec<u8> =
+            hostile_named_image("Sibling", b"valid sibling").expect("construct sibling volume");
+        let sibling_file: &[u8] = first_ffs_file(&sibling_volume);
+        let mut combined: Vec<u8> = INNER_FV.to_vec();
+        let mut output_offset: usize = inner_header.header_length as usize;
+        combined[output_offset..].fill(0xff);
+        combined[output_offset..output_offset + sibling_file.len()].copy_from_slice(sibling_file);
+        output_offset = align_up_usize(output_offset + sibling_file.len(), FFS_FILE_ALIGN);
+        combined[output_offset..output_offset + corrupt_file.len()].copy_from_slice(&corrupt_file);
+
+        let extraction: FvExtraction = extract_uefi_fv(&combined, ExtractionQuota::default_safe())
+            .expect("extract sibling files");
+        assert!(extraction.pe_images.iter().any(|image: &FvPeImage| {
+            image.name.as_deref() == Some("Sibling") && image.data == b"valid sibling"
+        }));
+        assert!(
+            extraction
+                .pe_images
+                .iter()
+                .all(|image: &FvPeImage| image.file_guid != HELLO_B_GUID)
+        );
+        let failed_codec: &FvCodecOutcome = extraction
+            .files
+            .iter()
+            .flat_map(|file: &FvFileRecord| file.sections.iter())
+            .filter_map(|section: &FvSectionRecord| section.codec.as_ref())
+            .find(|codec: &&FvCodecOutcome| codec.codec == FvCompressionCodec::Standard)
+            .expect("failed Standard outcome");
+        assert!(!failed_codec.verified);
+        assert!(!failed_codec.recovered);
+        assert!(
+            extraction
+                .notes
+                .iter()
+                .any(|note: &String| note.contains("standard compression decode failed"))
+        );
     }
 
     #[test]
@@ -1498,5 +2191,7 @@ mod tests {
             extraction.pe_images[0].name.as_deref(),
             Some("OriginalName")
         );
+        assert_eq!(budget.decompressed_total, 0);
+        assert_eq!(budget.quota.report().entries_accepted, 0);
     }
 }

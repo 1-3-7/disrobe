@@ -258,6 +258,13 @@ pattern = "(shr ?x 0)"
 rewrite = "?x"
 
 [[rules]]
+name = "shift_left_by_zero_amount"
+provenance = "logical shift identity over fixed-width bitvectors, Warren, Hacker's Delight"
+direction = "contract"
+pattern = "(shl ?x 0)"
+rewrite = "?x"
+
+[[rules]]
 name = "xor_zero_identity"
 provenance = "Boolean algebra identity element"
 direction = "contract"

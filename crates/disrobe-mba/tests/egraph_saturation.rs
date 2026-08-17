@@ -209,3 +209,77 @@ fn only_saturation_closes_the_carry_identity_over_a_memory_load() {
         }
     }
 }
+
+#[test]
+fn variable_left_shift_preserves_and_rewrites_a_saturated_memory_identity() {
+    let cell: Expr = Expr::mem(Expr::var(0), Width::W8);
+    let sum: Expr = Expr::add(Expr::var(0), cell.clone());
+    let obfuscated_sum: Expr = Expr::add(
+        Expr::xor(cell, Expr::var(0)),
+        Expr::mul(
+            Expr::konst(2),
+            Expr::and(Expr::mem(Expr::var(0), Width::W8), Expr::var(0)),
+        ),
+    );
+    let obfuscated: Expr = Expr::shl(obfuscated_sum, Expr::var(1));
+    let expected: Expr = Expr::shl(sum, Expr::var(1));
+
+    for width in [
+        Width::W1,
+        Width::W2,
+        Width::W4,
+        Width::W8,
+        Width::W16,
+        Width::W32,
+        Width::W64,
+    ] {
+        let result: Simplification = simplify(&obfuscated, width);
+        assert!(
+            result.changed(),
+            "{width:?}: the variable left shift kept the carry identity opaque"
+        );
+        #[cfg(feature = "smt-verify")]
+        assert!(result.verification.is_proven(), "{width:?}: {result:?}");
+        #[cfg(not(feature = "smt-verify"))]
+        assert!(
+            matches!(result.verification, disrobe_mba::Verification::PolynomialIdentity(proven) if proven == width),
+            "{width:?}: {result:?}"
+        );
+        assert!(
+            result.simplified_nodes < result.original_nodes,
+            "{width:?}: {result:?}"
+        );
+        if width.bits() >= 4 {
+            assert_eq!(result.simplified, expected, "{width:?}");
+        }
+
+        let values: [u64; 7] = [0, 1, 2, 3, width.mask() / 2, width.mask() - 1, width.mask()];
+        for value in values {
+            for shift in [0, 1, u64::from(width.bits() - 1), u64::from(width.bits())] {
+                let memory = |address: u64, load_width: Width| -> u64 {
+                    address.wrapping_mul(0x9E37_79B9).rotate_left(7) & load_width.mask()
+                };
+                let environment: [u64; 2] = [value, shift];
+                let reference: u64 = expected.eval_with_mem(&environment, &memory, width);
+                assert_eq!(
+                    obfuscated.eval_with_mem(&environment, &memory, width),
+                    reference,
+                    "{width:?}: the input fixture disagrees at {environment:?}"
+                );
+                assert_eq!(
+                    result
+                        .simplified
+                        .eval_with_mem(&environment, &memory, width),
+                    reference,
+                    "{width:?}: the rewrite disagrees at {environment:?}"
+                );
+            }
+        }
+
+        let repeated: Simplification = simplify(&obfuscated, width);
+        assert_eq!(
+            repeated, result,
+            "{width:?}: simplification changed across runs"
+        );
+    }
+}

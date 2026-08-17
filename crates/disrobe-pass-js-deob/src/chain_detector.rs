@@ -766,9 +766,14 @@ fn run_unminify(bytes: &[u8], artifact: &Artifact) -> CoreResult<Artifact> {
     let source: &str = std::str::from_utf8(bytes)
         .map_err(|e| CoreError::PassFailure(format!("DR-JS-0909: input not utf-8: {e}")))?;
     let (peeled, _peephole_stats): (String, UnminifyStats) = unminify(source);
-    let (beautified, _ast_stats): (String, AstUnminifyStats) = try_unminify_ast(&peeled)
+    let (beautified, ast_stats): (String, AstUnminifyStats) = try_unminify_ast(&peeled)
         .map_err(|error: crate::error::Error| CoreError::PassFailure(error.to_string()))?;
-    if beautified == source || beautified.matches('\n').count() <= source.matches('\n').count() {
+    let module_parameters_recovered: bool =
+        ast_stats.amd_parameters_renamed > 0 || ast_stats.commonjs_parameters_renamed > 0;
+    if beautified == source
+        || (!module_parameters_recovered
+            && beautified.matches('\n').count() <= source.matches('\n').count())
+    {
         return Err(CoreError::PassFailure(
             "DR-JS-0917: js.deob: minified input produced no structural transform (already formatted, or no peephole/ast rule applied)"
                 .to_string(),

@@ -11,6 +11,7 @@ type Poly = BTreeMap<Monomial, u64>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Atom {
     Opaque(Expr),
+    ShiftLeft(Poly, Poly),
     ShiftRight(Poly, Poly),
 }
 
@@ -26,6 +27,10 @@ impl AtomTable {
 
     fn intern_shift_right(&mut self, value: Poly, amount: Poly) -> Option<u32> {
         self.intern_atom(Atom::ShiftRight(value, amount))
+    }
+
+    fn intern_shift_left(&mut self, value: Poly, amount: Poly) -> Option<u32> {
+        self.intern_atom(Atom::ShiftLeft(value, amount))
     }
 
     fn intern_atom(&mut self, atom: Atom) -> Option<u32> {
@@ -147,10 +152,11 @@ fn normalize(expr: &Expr, width: Width, atoms: &mut AtomTable) -> Option<Poly> {
             multiply(&left_poly, &right_poly, mask)
         }
         Expr::Binary(BinOp::Shl, left, right) => {
-            let Expr::Const(shift) = right.as_ref() else {
-                return Some(poly_atom(atoms.intern(expr)?));
-            };
             let left_poly: Poly = normalize(left, width, atoms)?;
+            let Expr::Const(shift) = right.as_ref() else {
+                let right_poly: Poly = normalize(right, width, atoms)?;
+                return Some(poly_atom(atoms.intern_shift_left(left_poly, right_poly)?));
+            };
             let amount: u64 = *shift & mask;
             let factor: u64 = if amount >= u64::from(width.bits()) {
                 0

@@ -1,0 +1,32 @@
+schema = "disrobe.jvm.d8-date-retarget/v1"
+source = "DateRetargetProbe.java"
+source_sha256 = "d6f94f47cd6f2c80c7da8560ad14e6be0913de7a2e935530a58df2d37c71e2ff"
+
+[compiler]
+version = "9.1.31"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[configuration]
+identifier = "com.tools.android:desugar_jdk_libs_configuration:2.1.5"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs_configuration/2.1.5/desugar_jdk_libs_configuration-2.1.5.jar"
+sha256 = "7bc9051b3a1ec19806311dcb6aa9b9ba7ef9c22caa6f4810da55bde285fb7770"
+
+[library]
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/desugar_jdk_libs/2.1.5/desugar_jdk_libs-2.1.5.jar"
+sha256 = "d8044befae095781b9a80bf1faa92edc30382d75d437476784c1bf991598a976"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+archive_sha256 = "16fdb74c55e59ae3ef52def135aec713508467bd56d7dabcd8c9be31fa8b20f3"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[artifact]
+path = "DateRetargetProbe-min21.dex"
+min_api = 21
+sha256 = "03958ca00c07340ac5afc76ff2f13d58f479641a2679d0c56041c5521c430b5f"
+
+[commands]
+javac = "javac --release 11 -d classes DateRetargetProbe.java"
+d8 = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --desugared-lib desugar.json --output output classes/fixtures/desugar/DateRetargetProbe.class"
