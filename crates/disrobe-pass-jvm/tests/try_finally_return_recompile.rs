@@ -6,9 +6,12 @@
     clippy::case_sensitive_file_extension_comparisons
 )]
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_pass_jvm::{
     Attribute, ClassFile, CodeAttribute, ConstantPoolEntry, DecompiledClass, Dex2JarResult,
     ExceptionEntry, MethodInfo, decompile_class, decompile_classfile_bytes, parse_classfile,
@@ -21,6 +24,23 @@ const D8_FINALLY_NESTED_SOURCE: &str =
     include_str!("fixtures/d8_finally_nested/D8FinallyNested.java");
 const D8_FINALLY_NESTED_SHA256: &str =
     "ac26dac355869a4c524da3963c0d98b6bbe98cc70afb47510b844c169389b1b9";
+const KOTLIN_FINALLY_NESTED_CLASS: &[u8] =
+    include_bytes!("fixtures/kotlin_finally_nested/FinallyNested.class");
+const KOTLIN_FINALLY_NESTED_SHA256: &str =
+    "dc36235c74f7cb530204b1d1e5d97184169ba4858f1e6a1a07dd06970d971942";
+const JVM_PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+const JVM_PROCESS_CAPTURE_LIMIT: usize = 1_048_576;
+const KOTLIN_FINALLY_RUNNER_SOURCE: &str = "public final class Runner {\n\
+    public static void main(String[] args) {\n\
+        int value = Integer.parseInt(args[0]);\n\
+        int divisor = Integer.parseInt(args[1]);\n\
+        try {\n\
+            System.out.print(\"value:\" + probe.FinallyNested.compute(value, divisor));\n\
+        } catch (Throwable error) {\n\
+            System.out.print(\"throw:\" + error.getClass().getName());\n\
+        }\n\
+    }\n\
+}\n";
 const D8_FINALLY_RUNNER_SOURCE: &str = "public final class Runner {\n\
     public static void main(String[] args) {\n\
         int left = Integer.parseInt(args[0]);\n\
@@ -206,6 +226,67 @@ fn run_d8_finally_runtime(
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("runtime output is UTF-8")
+}
+
+fn run_bounded(program: &Path, args: &[OsString], operation: &str) -> CapturedOutput {
+    run_captured(
+        program,
+        args,
+        JVM_PROCESS_TIMEOUT,
+        JVM_PROCESS_CAPTURE_LIMIT,
+    )
+    .unwrap_or_else(|error: std::io::Error| panic!("failed to launch {operation}: {error}"))
+    .unwrap_or_else(|| panic!("{operation} exceeded its wall-clock bound"))
+}
+
+fn compile_kotlin_finally_runtime(javac: &Path, directory: &Path, sources: &[PathBuf]) {
+    let mut args: Vec<OsString> = vec![
+        OsString::from("-proc:none"),
+        OsString::from("-g:none"),
+        OsString::from("-cp"),
+        directory.as_os_str().to_os_string(),
+        OsString::from("-d"),
+        directory.as_os_str().to_os_string(),
+    ];
+    args.extend(
+        sources
+            .iter()
+            .map(|source: &PathBuf| source.as_os_str().to_os_string()),
+    );
+    let output: CapturedOutput = run_bounded(javac, &args, "javac Kotlin finally runtime");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "Kotlin finally runtime source failed to compile:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_kotlin_finally_runtime(java: &Path, directory: &Path, value: i32, divisor: i32) -> String {
+    let args: [OsString; 6] = [
+        OsString::from("-Xverify:all"),
+        OsString::from("-cp"),
+        directory.as_os_str().to_os_string(),
+        OsString::from("Runner"),
+        OsString::from(value.to_string()),
+        OsString::from(divisor.to_string()),
+    ];
+    let output: CapturedOutput = run_bounded(java, &args, "Kotlin finally runtime");
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "Kotlin finally runtime failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("Kotlin finally runtime output is UTF-8")
+}
+
+fn without_annotation_lines(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line: &&str| !line.trim_start().starts_with('@'))
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
 
 fn normalize_javap(raw: &str) -> Vec<String> {
@@ -828,6 +909,98 @@ fn finally_with_a_nested_try_recompiles_to_equivalent_bytecode() {
         recompiled.original, recompiled.recovered,
         "recompiled nested-try finally bytecode differs from the original:\n{}",
         recompiled.source
+    );
+}
+
+#[test]
+fn kotlin_fallthrough_finally_with_nested_try_matches_the_compiled_runtime() {
+    let digest: sha2::digest::Output<sha2::Sha256> =
+        <sha2::Sha256 as sha2::Digest>::digest(KOTLIN_FINALLY_NESTED_CLASS);
+    assert_eq!(
+        format!("{digest:x}"),
+        KOTLIN_FINALLY_NESTED_SHA256,
+        "the Kotlin 2.4.10 fixture changed"
+    );
+
+    let class_file: ClassFile =
+        parse_classfile(KOTLIN_FINALLY_NESTED_CLASS).expect("parse Kotlin fixture");
+    let first: DecompiledClass = decompile_class(&class_file);
+    let second: DecompiledClass = decompile_class(&class_file);
+    assert_eq!(
+        first.source, second.source,
+        "Kotlin recovery is not deterministic"
+    );
+    let body: String = assert_finally_recovered(&first.source, " compute(");
+    assert!(
+        body.contains("catch (ArithmeticException"),
+        "Kotlin's nested typed catch is missing from the finally body:\n{body}"
+    );
+
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let java: PathBuf = find_on_path("java")
+        .unwrap_or_else(|| panic!("Kotlin finally runtime gate requires java on PATH"));
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_kotlin_finally_nested")
+            .expect("create Kotlin finally scratch directory");
+    let original_dir: PathBuf = scratch.path().join("original");
+    let recovered_dir: PathBuf = scratch.path().join("recovered");
+    let mutated_dir: PathBuf = scratch.path().join("mutated");
+    for directory in [&original_dir, &recovered_dir, &mutated_dir] {
+        std::fs::create_dir_all(directory.join("probe")).expect("create runtime directory");
+    }
+    std::fs::write(
+        original_dir.join("probe").join("FinallyNested.class"),
+        KOTLIN_FINALLY_NESTED_CLASS,
+    )
+    .expect("write Kotlin fixture class");
+    let original_runner: PathBuf = original_dir.join("Runner.java");
+    std::fs::write(&original_runner, KOTLIN_FINALLY_RUNNER_SOURCE)
+        .expect("write original runtime runner");
+    compile_kotlin_finally_runtime(&javac, &original_dir, &[original_runner]);
+
+    let compilable_source: String = without_annotation_lines(&first.source);
+    let recovered_source: PathBuf = recovered_dir.join("FinallyNested.java");
+    let recovered_runner: PathBuf = recovered_dir.join("Runner.java");
+    std::fs::write(&recovered_source, &compilable_source).expect("write recovered Kotlin source");
+    std::fs::write(&recovered_runner, KOTLIN_FINALLY_RUNNER_SOURCE)
+        .expect("write recovered runtime runner");
+    compile_kotlin_finally_runtime(
+        &javac,
+        &recovered_dir,
+        &[recovered_source, recovered_runner],
+    );
+
+    let cases: &[(i32, i32, &str)] = &[
+        (2, 5, "value:52"),
+        (2, 0, "value:-1"),
+        (0, 5, "throw:java.lang.ArithmeticException"),
+    ];
+    for &(value, divisor, expected) in cases {
+        let authored: String = run_kotlin_finally_runtime(&java, &original_dir, value, divisor);
+        let regenerated: String = run_kotlin_finally_runtime(&java, &recovered_dir, value, divisor);
+        assert_eq!(
+            authored, expected,
+            "unexpected Kotlin compiler runtime result"
+        );
+        assert_eq!(
+            regenerated, authored,
+            "recovered Kotlin finally changed runtime behavior for ({value}, {divisor})"
+        );
+    }
+
+    let mutation_count: usize = compilable_source.matches(" = -1;").count();
+    assert_eq!(mutation_count, 1, "nested catch assignment was not unique");
+    let mutated_source_text: String = compilable_source.replacen(" = -1;", " = -2;", 1);
+    let mutated_source: PathBuf = mutated_dir.join("FinallyNested.java");
+    let mutated_runner: PathBuf = mutated_dir.join("Runner.java");
+    std::fs::write(&mutated_source, mutated_source_text).expect("write mutated Kotlin source");
+    std::fs::write(&mutated_runner, KOTLIN_FINALLY_RUNNER_SOURCE)
+        .expect("write mutated runtime runner");
+    compile_kotlin_finally_runtime(&javac, &mutated_dir, &[mutated_source, mutated_runner]);
+    let mutated: String = run_kotlin_finally_runtime(&java, &mutated_dir, 2, 0);
+    assert_eq!(
+        mutated, "value:-2",
+        "catch mutation was not runtime-visible"
     );
 }
 

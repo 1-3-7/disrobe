@@ -1075,11 +1075,16 @@ impl<'a> Structurer<'a> {
         let mut exit_pc: Option<u32> = None;
         let mut catch_parameter_slots: BTreeSet<u16> = BTreeSet::new();
         for (a, b) in body.iter().zip(copy.iter()) {
-            match identity.catch_store_match(a, b, &self.slot_use_counts) {
+            match identity.catch_store_match(a, b) {
                 FinallyCatchStoreMatch::Absent => {}
                 FinallyCatchStoreMatch::Matched(body_slot, copy_slot) => {
+                    if self.slot_total_uses(body_slot) != 1 {
+                        return None;
+                    }
                     catch_parameter_slots.insert(body_slot);
-                    catch_parameter_slots.insert(copy_slot);
+                    if self.slot_total_uses(copy_slot) == 1 {
+                        catch_parameter_slots.insert(copy_slot);
+                    }
                     continue;
                 }
                 FinallyCatchStoreMatch::MatchedDiscard => continue,
@@ -2800,6 +2805,8 @@ enum FinallyCatchStoreMatch {
 struct FinallyCopyIndex {
     body_positions: BTreeMap<u32, usize>,
     copy_positions: BTreeMap<u32, usize>,
+    body_slot_uses: BTreeMap<u16, usize>,
+    copy_slot_uses: BTreeMap<u16, usize>,
     body_handlers: FinallyHandlerShapes,
     copy_handlers: FinallyHandlerShapes,
 }
@@ -2814,9 +2821,9 @@ impl FinallyCopyIndex {
         work: &mut usize,
         work_budget: usize,
     ) -> Option<Self> {
-        let body_positions: BTreeMap<u32, usize> =
+        let (body_positions, body_slot_uses): (BTreeMap<u32, usize>, BTreeMap<u16, usize>) =
             Self::positions(body, body_end, work, work_budget)?;
-        let copy_positions: BTreeMap<u32, usize> =
+        let (copy_positions, copy_slot_uses): (BTreeMap<u32, usize>, BTreeMap<u16, usize>) =
             Self::positions(copy, copy_end, work, work_budget)?;
         let mut body_handlers: FinallyHandlerShapes = BTreeMap::new();
         let mut copy_handlers: FinallyHandlerShapes = BTreeMap::new();
@@ -2831,6 +2838,8 @@ impl FinallyCopyIndex {
         Some(Self {
             body_positions,
             copy_positions,
+            body_slot_uses,
+            copy_slot_uses,
             body_handlers,
             copy_handlers,
         })
@@ -2841,12 +2850,17 @@ impl FinallyCopyIndex {
         end: Option<u32>,
         work: &mut usize,
         work_budget: usize,
-    ) -> Option<BTreeMap<u32, usize>> {
+    ) -> Option<(BTreeMap<u32, usize>, BTreeMap<u16, usize>)> {
         let mut positions: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut slot_uses: BTreeMap<u16, usize> = BTreeMap::new();
         for (index, instruction) in sequence.iter().enumerate() {
             Self::claim_work(work, work_budget)?;
             if positions.insert(instruction.pc, index).is_some() {
                 return None;
+            }
+            if let Some(slot) = any_load_slot(instruction).or_else(|| any_store_slot(instruction)) {
+                let uses: &mut usize = slot_uses.entry(slot).or_default();
+                *uses = uses.checked_add(1)?;
             }
         }
         if let Some(end_pc) = end
@@ -2854,7 +2868,7 @@ impl FinallyCopyIndex {
         {
             return None;
         }
-        Some(positions)
+        Some((positions, slot_uses))
     }
 
     fn claim_work(work: &mut usize, work_budget: usize) -> Option<()> {
@@ -2894,12 +2908,7 @@ impl FinallyCopyIndex {
         self.copy_positions.get(&pc).copied()
     }
 
-    fn catch_store_match(
-        &self,
-        body: &Instruction,
-        copy: &Instruction,
-        slot_use_counts: &BTreeMap<u16, usize>,
-    ) -> FinallyCatchStoreMatch {
+    fn catch_store_match(&self, body: &Instruction, copy: &Instruction) -> FinallyCatchStoreMatch {
         match (
             self.body_handlers.get(&body.pc),
             self.copy_handlers.get(&copy.pc),
@@ -2916,8 +2925,8 @@ impl FinallyCopyIndex {
                 else {
                     return FinallyCatchStoreMatch::Invalid;
                 };
-                if slot_use_counts.get(&body_slot) == Some(&1)
-                    && slot_use_counts.get(&copy_slot) == Some(&1)
+                if self.body_slot_uses.get(&body_slot) == Some(&1)
+                    && self.copy_slot_uses.get(&copy_slot) == Some(&1)
                 {
                     FinallyCatchStoreMatch::Matched(body_slot, copy_slot)
                 } else {
@@ -2997,11 +3006,9 @@ mod finally_copy_index_tests {
             &mut work,
             work_budget,
         );
-        let slot_use_counts: BTreeMap<u16, usize> = [(1, 1), (2, 1)].into_iter().collect();
         assert!(
             index.as_ref().is_some_and(|value: &FinallyCopyIndex| {
-                value.catch_store_match(&body[2], &copy[2], &slot_use_counts)
-                    == FinallyCatchStoreMatch::Matched(1, 2)
+                value.catch_store_match(&body[2], &copy[2]) == FinallyCatchStoreMatch::Matched(1, 2)
             }),
             "one debit per input"
         );
@@ -3066,9 +3073,8 @@ mod finally_copy_index_tests {
             MAX_STRUCTURE_WORK,
         )
         .ok_or("bounded typed handlers must build")?;
-        let one_use: BTreeMap<u16, usize> = std::iter::once((1, 1)).collect();
         assert_eq!(
-            index.catch_store_match(&body[1], &copy[1], &one_use),
+            index.catch_store_match(&body[1], &copy[1]),
             FinallyCatchStoreMatch::Matched(1, 1)
         );
         {
@@ -3080,7 +3086,7 @@ mod finally_copy_index_tests {
             shape.insert(("B".to_owned(), 0, 1));
         }
         assert_eq!(
-            index.catch_store_match(&body[1], &copy[1], &one_use),
+            index.catch_store_match(&body[1], &copy[1]),
             FinallyCatchStoreMatch::Invalid
         );
         {
@@ -3091,9 +3097,9 @@ mod finally_copy_index_tests {
                 .ok_or("copy handler shape must exist")?;
             assert!(shape.remove(&("B".to_owned(), 0, 1)));
         }
-        let reused: BTreeMap<u16, usize> = std::iter::once((1, 2)).collect();
+        index.copy_slot_uses.insert(1, 2);
         assert_eq!(
-            index.catch_store_match(&body[1], &copy[1], &reused),
+            index.catch_store_match(&body[1], &copy[1]),
             FinallyCatchStoreMatch::Invalid
         );
         Ok(())
@@ -3128,13 +3134,12 @@ mod finally_copy_index_tests {
             MAX_STRUCTURE_WORK,
         )
         .ok_or("typed discard handlers must build")?;
-        let no_slots: BTreeMap<u16, usize> = BTreeMap::new();
         assert_eq!(
-            index.catch_store_match(&body[1], &copy[1], &no_slots),
+            index.catch_store_match(&body[1], &copy[1]),
             FinallyCatchStoreMatch::MatchedDiscard
         );
         assert_eq!(
-            index.catch_store_match(&body[1], &astore(120, 1), &no_slots),
+            index.catch_store_match(&body[1], &astore(120, 1)),
             FinallyCatchStoreMatch::Invalid
         );
         Ok(())
