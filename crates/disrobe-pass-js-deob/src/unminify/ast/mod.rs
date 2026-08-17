@@ -42,6 +42,7 @@ mod sequence_split;
 mod split_var;
 mod spread_clone;
 mod spread_rebuild;
+mod system_register_param;
 mod template_literal;
 mod then_catch;
 mod type_constructor;
@@ -100,6 +101,7 @@ use sequence_split::SequenceSplitStats;
 use split_var::SplitVarStats;
 use spread_clone::SpreadCloneStats;
 use spread_rebuild::SpreadRebuildStats;
+use system_register_param::SystemRegisterParamStats;
 use template_literal::TemplateLiteralStats;
 use then_catch::ThenCatchStats;
 use type_constructor::TypeConstructorStats;
@@ -195,40 +197,41 @@ enum RuleStage {
     MergeElseIf = 12,
     DeMorgan = 13,
     LiteralLogic = 14,
-    BracketToDot = 15,
-    TemplateLiteral = 16,
-    OptionalChaining = 17,
-    NullishCoalescing = 18,
-    LiteralNormalize = 19,
-    ObjectShorthand = 20,
-    ForOf = 21,
-    AliasInline = 22,
-    DeadCode = 23,
-    InteropUnwrap = 24,
-    JsxRestore = 25,
-    JsxAutomatic = 26,
-    MbaSimplify = 27,
-    LoopCommaBody = 28,
-    ForToWhile = 29,
-    BlockStatement = 30,
-    UndefinedInit = 31,
-    VarToBlock = 32,
-    NumericLiteral = 33,
-    Exponent = 34,
-    TypeConstructor = 35,
-    ThenCatch = 36,
-    DefaultParam = 37,
-    ArgRest = 38,
-    ImportRename = 39,
-    ExportRename = 40,
-    LiteralLength = 41,
-    SpreadClone = 42,
-    RegeneratorRestore = 43,
-    RequireAlias = 44,
-    RequireDestructure = 45,
-    RequireMember = 46,
-    BuiltinPrototype = 47,
-    AmdParam = 48,
+    SystemRegisterParam = 15,
+    BracketToDot = 16,
+    TemplateLiteral = 17,
+    OptionalChaining = 18,
+    NullishCoalescing = 19,
+    LiteralNormalize = 20,
+    ObjectShorthand = 21,
+    ForOf = 22,
+    AliasInline = 23,
+    DeadCode = 24,
+    InteropUnwrap = 25,
+    JsxRestore = 26,
+    JsxAutomatic = 27,
+    MbaSimplify = 28,
+    LoopCommaBody = 29,
+    ForToWhile = 30,
+    BlockStatement = 31,
+    UndefinedInit = 32,
+    VarToBlock = 33,
+    NumericLiteral = 34,
+    Exponent = 35,
+    TypeConstructor = 36,
+    ThenCatch = 37,
+    DefaultParam = 38,
+    ArgRest = 39,
+    ImportRename = 40,
+    ExportRename = 41,
+    LiteralLength = 42,
+    SpreadClone = 43,
+    RegeneratorRestore = 44,
+    RequireAlias = 45,
+    RequireDestructure = 46,
+    RequireMember = 47,
+    BuiltinPrototype = 48,
+    AmdParam = 49,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +285,7 @@ pub enum AstRuleId {
     RequireMember,
     BuiltinPrototype,
     AmdParam,
+    SystemRegisterParam,
 }
 
 struct Edit {
@@ -469,6 +473,7 @@ pub struct AstUnminifyStats {
     pub amd_parameters_renamed: usize,
     pub commonjs_parameters_renamed: usize,
     pub global_iife_parameters_renamed: usize,
+    pub system_register_parameters_renamed: usize,
 }
 
 enum RuleStats {
@@ -520,6 +525,7 @@ enum RuleStats {
     RequireMember(RequireMemberStats),
     BuiltinPrototype(BuiltinPrototypeStats),
     AmdParam(AmdParamStats),
+    SystemRegisterParam(SystemRegisterParamStats),
 }
 
 struct Rule {
@@ -839,6 +845,12 @@ impl Default for AstPipeline {
                     requires: &[],
                     enabled: true,
                 },
+                Rule {
+                    id: AstRuleId::SystemRegisterParam,
+                    stage: RuleStage::SystemRegisterParam,
+                    requires: &[],
+                    enabled: true,
+                },
             ],
         }
     }
@@ -1110,6 +1122,11 @@ fn apply_rule(id: AstRuleId, source: &str) -> (RuleOutcome, RuleStats) {
             let (outcome, amd_stats): (RuleOutcome, AmdParamStats) = amd_param::recover(source);
             (outcome, RuleStats::AmdParam(amd_stats))
         }
+        AstRuleId::SystemRegisterParam => {
+            let (outcome, system_stats): (RuleOutcome, SystemRegisterParamStats) =
+                system_register_param::recover(source);
+            (outcome, RuleStats::SystemRegisterParam(system_stats))
+        }
         AstRuleId::SplitVar => {
             let (outcome, split_stats): (RuleOutcome, SplitVarStats) = split_var::recover(source);
             (outcome, RuleStats::SplitVar(split_stats))
@@ -1295,6 +1312,9 @@ const fn merge_stats(stats: &mut AstUnminifyStats, rule_stats: &RuleStats) {
             stats.amd_parameters_renamed += amd_stats.amd;
             stats.commonjs_parameters_renamed += amd_stats.commonjs;
             stats.global_iife_parameters_renamed += amd_stats.global_iife;
+        }
+        RuleStats::SystemRegisterParam(system_stats) => {
+            stats.system_register_parameters_renamed += system_stats.parameters_renamed;
         }
         RuleStats::SplitVar(split_stats) => {
             stats.var_declarations_split += split_stats.declarations_split;

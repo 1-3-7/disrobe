@@ -1,5 +1,9 @@
-use indexmap::IndexSet;
-use oxc_semantic::{AstNodes, NodeId, ScopeId, ScopeTree, Semantic, SymbolId, SymbolTable};
+use indexmap::{IndexMap, IndexSet};
+use oxc_ast::Visit;
+use oxc_ast::ast::{FunctionBody, IdentifierReference, WithStatement};
+use oxc_semantic::{
+    AstNodes, NodeId, ReferenceId, ScopeId, ScopeTree, Semantic, SymbolId, SymbolTable,
+};
 
 pub(super) fn collect_reserved_names(semantic: &Semantic<'_>) -> IndexSet<String> {
     let scopes: &ScopeTree = semantic.scopes();
@@ -80,6 +84,76 @@ impl RenameSafety<'_> {
             }
         }
         false
+    }
+}
+
+pub(super) fn choose_name(
+    safety: &RenameSafety<'_>,
+    symbol_id: SymbolId,
+    owner_scope: ScopeId,
+    local_name: &str,
+    preferred: &str,
+    reserved: &IndexSet<String>,
+    next_suffixes: &mut IndexMap<String, u32>,
+) -> Option<String> {
+    if safety.rename_is_safe(symbol_id, owner_scope, preferred, reserved, local_name) {
+        return Some(preferred.to_owned());
+    }
+    let mut suffix: u32 = next_suffixes
+        .get(preferred)
+        .copied()
+        .map_or(1, core::convert::identity);
+    let attempts: usize = safety
+        .symbols
+        .len()
+        .saturating_add(reserved.len())
+        .saturating_add(1);
+    for _ in 0..attempts {
+        let candidate: String = format!("{preferred}_{suffix}");
+        suffix = suffix.checked_add(1)?;
+        if safety.rename_is_safe(symbol_id, owner_scope, &candidate, reserved, local_name) {
+            next_suffixes.insert(preferred.to_owned(), suffix);
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+pub(super) fn unresolved_identifier_is(
+    identifier: &IdentifierReference<'_>,
+    expected: &str,
+    symbols: &SymbolTable,
+) -> bool {
+    if identifier.name.as_str() != expected {
+        return false;
+    }
+    let Some(reference_id): Option<ReferenceId> = identifier.reference_id.get() else {
+        return false;
+    };
+    symbols.get_reference(reference_id).symbol_id().is_none()
+}
+
+pub(super) fn body_has_dynamic_scope(body: &FunctionBody<'_>) -> bool {
+    let mut probe: DynamicScopeProbe = DynamicScopeProbe { found: false };
+    for statement in &body.statements {
+        probe.visit_statement(statement);
+    }
+    probe.found
+}
+
+struct DynamicScopeProbe {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for DynamicScopeProbe {
+    fn visit_identifier_reference(&mut self, identifier: &IdentifierReference<'a>) {
+        if identifier.name == "eval" {
+            self.found = true;
+        }
+    }
+
+    fn visit_with_statement(&mut self, _statement: &WithStatement<'a>) {
+        self.found = true;
     }
 }
 

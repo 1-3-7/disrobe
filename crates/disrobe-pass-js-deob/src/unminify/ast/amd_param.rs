@@ -12,7 +12,10 @@ use oxc_semantic::{
 use oxc_span::SourceType;
 
 use super::import_rename::push_reference_edits;
-use super::rename_scope::{RenameSafety, collect_reserved_names};
+use super::rename_scope::{
+    RenameSafety, body_has_dynamic_scope, choose_name, collect_reserved_names,
+    unresolved_identifier_is,
+};
 use super::require_alias::{derive_module_names, is_minified_local};
 use super::{Edit, RuleOutcome, edit_overlaps_comments};
 
@@ -870,76 +873,6 @@ fn is_define_amd_marker(expression: &Expression<'_>, symbols: &SymbolTable) -> b
     unresolved_identifier_is(identifier, "define", symbols)
 }
 
-fn unresolved_identifier_is(
-    identifier: &oxc_ast::ast::IdentifierReference<'_>,
-    expected: &str,
-    symbols: &SymbolTable,
-) -> bool {
-    if identifier.name.as_str() != expected {
-        return false;
-    }
-    let Some(reference_id): Option<ReferenceId> = identifier.reference_id.get() else {
-        return false;
-    };
-    symbols.get_reference(reference_id).symbol_id().is_none()
-}
-
 fn is_amd_runtime_dependency(specifier: &str) -> bool {
     matches!(specifier, "require" | "exports" | "module")
-}
-
-fn body_has_dynamic_scope(body: &FunctionBody<'_>) -> bool {
-    let mut probe: DynamicScopeProbe = DynamicScopeProbe { found: false };
-    for statement in &body.statements {
-        probe.visit_statement(statement);
-    }
-    probe.found
-}
-
-struct DynamicScopeProbe {
-    found: bool,
-}
-
-impl<'a> Visit<'a> for DynamicScopeProbe {
-    fn visit_identifier_reference(&mut self, identifier: &oxc_ast::ast::IdentifierReference<'a>) {
-        if identifier.name == "eval" {
-            self.found = true;
-        }
-    }
-
-    fn visit_with_statement(&mut self, _statement: &oxc_ast::ast::WithStatement<'a>) {
-        self.found = true;
-    }
-}
-
-fn choose_name(
-    safety: &RenameSafety<'_>,
-    symbol_id: SymbolId,
-    owner_scope: ScopeId,
-    local_name: &str,
-    preferred: &str,
-    reserved: &IndexSet<String>,
-    next_suffixes: &mut IndexMap<String, u32>,
-) -> Option<String> {
-    if safety.rename_is_safe(symbol_id, owner_scope, preferred, reserved, local_name) {
-        return Some(preferred.to_owned());
-    }
-    let mut suffix: u32 = next_suffixes
-        .get(preferred)
-        .copied()
-        .map_or(1, core::convert::identity);
-    let attempts: usize = safety
-        .symbols
-        .len()
-        .saturating_add(reserved.len())
-        .saturating_add(1);
-    for _ in 0..attempts {
-        let candidate: String = format!("{preferred}_{suffix}");
-        suffix = suffix.checked_add(1)?;
-        if safety.rename_is_safe(symbol_id, owner_scope, &candidate, reserved, local_name) {
-            next_suffixes.insert(preferred.to_owned(), suffix);
-            return Some(candidate);
-        }
-    }
-    None
 }

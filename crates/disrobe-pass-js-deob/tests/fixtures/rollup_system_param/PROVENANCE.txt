@@ -1,0 +1,15 @@
+Producer: Rollup 4.62.4, then Terser 5.50.0
+Runtime reference: SystemJS 6.15.1 under Node.js 24.19.0 on Windows x64
+Rollup source: https://github.com/rollup/rollup/tree/v4.62.4
+Terser source: https://github.com/terser/terser/tree/v5.50.0
+SystemJS source: https://github.com/systemjs/systemjs/tree/6.15.1
+
+Rollup command:
+node rollup/dist/bin/rollup entry.js --format system --external @fixture/math-utils,@fixture/text-format --file rollup.js
+
+Terser command:
+node terser/bin/terser rollup.js --compress --mangle --output fixture.min.js
+
+SHA-256 entry.js: A8C01C25BB4AA4999071AA0F1D5DB1D5C1EB6DD04282E11187A353AAC903474D
+SHA-256 rollup.js: 721BBF6542426B955E3DA88431757E553EF342B4CB330E4CBFA1479A2BED2D2C
+SHA-256 fixture.min.js: 38EC01876C2BA99ED64C8669D74E88E300F9BB9D1D09857F34221F768C4F58BD
