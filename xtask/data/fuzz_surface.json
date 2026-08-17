@@ -3,7 +3,7 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1396,
+    "entry_points": 1398,
     "parse_shaped": 574,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
@@ -11,7 +11,7 @@
     "with_replay_proven_semantic_reach": 18,
     "named_by_a_resilience_suite": 624,
     "named_by_a_suite_recording_seed_reach": 127,
-    "named_by_neither": 739
+    "named_by_neither": 741
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -577,7 +577,7 @@
     },
     {
       "crate": "disrobe-pass-native",
-      "entry_points": 222,
+      "entry_points": 223,
       "parse_shaped": 73,
       "with_declared_coverage_guided_target": 0,
       "with_replay_proven_semantic_reach": 0,
@@ -598,6 +598,7 @@
         "disrobe-pass-native/src/cxx_recovery.rs::parse_itanium_lsda",
         "disrobe-pass-native/src/cxx_recovery.rs::parse_windows_seh_scope_table",
         "disrobe-pass-native/src/cxx_recovery.rs::recover_cxx_hierarchy",
+        "disrobe-pass-native/src/cxx_recovery.rs::recover_itanium_exception_regions",
         "disrobe-pass-native/src/debug_info.rs::recover_pdb",
         "disrobe-pass-native/src/debug_info.rs::summarize_pdb",
         "disrobe-pass-native/src/delphi/mod.rs::decode_dfm",
@@ -1042,7 +1043,7 @@
     },
     {
       "crate": "disrobe-pass-wasm-deob",
-      "entry_points": 48,
+      "entry_points": 49,
       "parse_shaped": 9,
       "with_declared_coverage_guided_target": 14,
       "with_replay_proven_semantic_reach": 0,
@@ -1056,6 +1057,7 @@
         "disrobe-pass-wasm-deob/src/lift.rs::from_module",
         "disrobe-pass-wasm-deob/src/lift.rs::try_lift_function_from_module",
         "disrobe-pass-wasm-deob/src/lift.rs::try_lift_functions_from_module",
+        "disrobe-pass-wasm-deob/src/lift.rs::try_lift_typescript_module",
         "disrobe-pass-wasm-deob/src/lift.rs::with_module_context",
         "disrobe-pass-wasm-deob/src/obfuscators/cryptic_bytes.rs::peel_xor_layer",
         "disrobe-pass-wasm-deob/src/obfuscators/jscrambler/integrity_strip.rs::strip_integrity_imports",

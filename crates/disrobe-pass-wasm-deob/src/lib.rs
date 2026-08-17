@@ -95,8 +95,9 @@ pub use js_string_builtins::{
     TEXT_ENCODER_NAMESPACE, scan_js_string_builtins,
 };
 pub use lift::{
-    CalleeNames, LiftCoverage, LiftResult, LiftTarget, lift_function_body, rust_runtime_prelude,
-    try_lift_function_from_module, try_lift_functions_from_module, typescript_runtime_prelude,
+    CalleeNames, LiftCoverage, LiftResult, LiftTarget, TypeScriptModuleLift, lift_function_body,
+    rust_runtime_prelude, try_lift_function_from_module, try_lift_functions_from_module,
+    try_lift_typescript_module, typescript_runtime_prelude,
 };
 pub use lift_c::c_runtime_prelude;
 pub use lift_module_faithful::lift_module_faithful_wat;

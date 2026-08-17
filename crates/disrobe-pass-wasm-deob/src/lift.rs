@@ -1,9 +1,13 @@
 use serde::Serialize;
-use wasmparser::{FunctionBody, ValType};
+use wasmparser::{ExternalKind, FunctionBody, Parser, Payload, ValType, Validator, WasmFeatures};
 
 use crate::error::{AtomicMemoryRefusal, Error, Result};
 use crate::signature::{FunctionSig, ModuleSignatures, extract_signatures};
 use crate::ssa::{OpKind, UnOp};
+
+const MAX_TYPESCRIPT_MODULE_FUNCTIONS: usize = 4096;
+const MAX_TYPESCRIPT_MODULE_EXPORTS: usize = 65_536;
+const MAX_TYPESCRIPT_EXPORT_NAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum LiftTarget {
@@ -18,6 +22,14 @@ pub struct LiftResult {
     pub target: LiftTarget,
     pub pseudo_source: String,
     pub blocks_emitted: usize,
+    pub coverage: LiftCoverage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeScriptModuleLift {
+    pub source: String,
+    pub functions_emitted: usize,
+    pub exported_functions: Vec<String>,
     pub coverage: LiftCoverage,
 }
 
@@ -147,6 +159,231 @@ pub fn try_lift_functions_from_module(bytes: &[u8], target: LiftTarget) -> Resul
     Ok(results)
 }
 
+pub fn try_lift_typescript_module(bytes: &[u8]) -> Result<TypeScriptModuleLift> {
+    let mut validator: Validator = Validator::new_with_features(WasmFeatures::default());
+    validator
+        .validate_all(bytes)
+        .map_err(|error| Error::Parse(format!("invalid WebAssembly module: {error}")))?;
+    let prepared: PreparedModuleLift = PreparedModuleLift::from_bytes(bytes)?;
+    let function_count: usize = prepared.defined_function_count();
+    if function_count > MAX_TYPESCRIPT_MODULE_FUNCTIONS {
+        return Err(AtomicMemoryRefusal::FunctionCount {
+            actual: function_count,
+            limit: MAX_TYPESCRIPT_MODULE_FUNCTIONS,
+        }
+        .into());
+    }
+    let module: &crate::structured::ModuleCtx = prepared
+        .callees
+        .module_ctx()
+        .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
+    let memory64: bool = module.fixed_shared_memory_is_64()?;
+    let mut signatures: Vec<FunctionSig> = prepared.signatures.defined().to_vec();
+    for (function_index, signature) in signatures.iter_mut().enumerate() {
+        signature.name = format!("disrobeWasmFunction{function_index}");
+        signature.local_names.clear();
+    }
+    let callees: CalleeNames = CalleeNames::from_module(
+        bytes,
+        signatures
+            .iter()
+            .map(|signature: &FunctionSig| signature.name.clone())
+            .collect(),
+        prepared.signatures.call_signatures(),
+        prepared.signatures.type_signatures(),
+    );
+    for (function_index, signature) in signatures.iter().enumerate() {
+        let actual: usize = signature.results.len();
+        if actual > 1 {
+            return Err(AtomicMemoryRefusal::ResultCount {
+                function_index,
+                actual,
+                limit: 1,
+            }
+            .into());
+        }
+    }
+    let mut lifted_functions: Vec<String> = Vec::with_capacity(function_count);
+    let mut coverage: LiftCoverage = LiftCoverage::default();
+    for (defined_function_index, signature) in signatures.iter().enumerate() {
+        let module: &crate::structured::ModuleCtx = prepared
+            .callees
+            .module_ctx()
+            .ok_or(AtomicMemoryRefusal::MissingModuleContext)?;
+        let body: FunctionBody<'_> = module.function_body(bytes, defined_function_index)?;
+        let (pseudo_source, blocks_emitted, function_coverage): (String, usize, LiftCoverage) =
+            crate::structured::lift_body_structured_typescript_module(&body, signature, &callees)?;
+        let lifted: LiftResult = LiftResult {
+            target: LiftTarget::TypeScript,
+            pseudo_source,
+            blocks_emitted,
+            coverage: function_coverage,
+        };
+        coverage.total_ops = coverage
+            .total_ops
+            .checked_add(lifted.coverage.total_ops)
+            .ok_or_else(|| Error::Parse("TypeScript module operation count overflow".to_owned()))?;
+        coverage.translated_ops = coverage
+            .translated_ops
+            .checked_add(lifted.coverage.translated_ops)
+            .ok_or_else(|| Error::Parse("TypeScript module recovery count overflow".to_owned()))?;
+        coverage.untranslated.extend(lifted.coverage.untranslated);
+        let function_source: String = lifted
+            .pseudo_source
+            .strip_prefix("export function ")
+            .map_or_else(
+                || lifted.pseudo_source.clone(),
+                |body: &str| format!("function {body}"),
+            );
+        lifted_functions.push(function_source);
+    }
+    let imported_function_count: usize = prepared.signatures.imported_function_count();
+    let mut export_bindings: Vec<(String, String, usize)> = Vec::new();
+    for (function_index, export_name) in exact_typescript_function_exports(bytes)? {
+        let Some(defined_function_index): Option<usize> =
+            (function_index as usize).checked_sub(imported_function_count)
+        else {
+            continue;
+        };
+        let Some(signature): Option<&FunctionSig> = signatures.get(defined_function_index) else {
+            continue;
+        };
+        if export_name == "memory" {
+            return Err(AtomicMemoryRefusal::ReservedExportName {
+                function_index: defined_function_index,
+            }
+            .into());
+        }
+        export_bindings.push((export_name, signature.name.clone(), defined_function_index));
+    }
+    let exported_functions: Vec<String> = export_bindings
+        .iter()
+        .map(|(name, _, _): &(String, String, usize)| name.clone())
+        .collect();
+    let runtime_start: usize = TS_PRELUDE
+        .find("const WASM_LOGICAL_MEMORY_BYTE_LENGTH: number")
+        .ok_or_else(|| {
+            Error::Parse("TypeScript runtime memory boundary is unavailable".to_owned())
+        })?;
+    let runtime: &str = TS_PRELUDE
+        .get(runtime_start..)
+        .ok_or_else(|| Error::Parse("TypeScript runtime memory boundary is invalid".to_owned()))?;
+    let mut source: String = String::from(
+        "import { writeSync } from \"node:fs\";\n\nexport type LiftedInstance = Readonly<{\n  readonly memory: WebAssembly.Memory;\n",
+    );
+    for (export_name, _, defined_function_index) in &export_bindings {
+        let export_literal: String =
+            serde_json::to_string(export_name).map_err(|error| Error::Parse(error.to_string()))?;
+        let signature: &FunctionSig = prepared
+            .signatures
+            .defined()
+            .get(*defined_function_index)
+            .ok_or_else(|| Error::Parse("TypeScript export signature is unavailable".to_owned()))?;
+        crate::push_string_fmt(&mut source, format_args!("  readonly {export_literal}: ("));
+        for (parameter_index, parameter_type) in signature.params.iter().enumerate() {
+            if parameter_index > 0 {
+                source.push_str(", ");
+            }
+            crate::push_string_fmt(
+                &mut source,
+                format_args!(
+                    "p{parameter_index}: {}",
+                    crate::structured::typescript_type(*parameter_type)
+                ),
+            );
+        }
+        let result_type: &str = signature.results.first().map_or("void", |value_type| {
+            crate::structured::typescript_type(*value_type)
+        });
+        crate::push_string_fmt(&mut source, format_args!(") => {result_type};\n"));
+    }
+    source.push_str(
+        "}>;\nexport type InstantiateOptions = Readonly<{ memories?: readonly [WebAssembly.Memory?] }>;\n\nexport const instantiate = (options: InstantiateOptions = {}): LiftedInstance => {\n  const supplied: WebAssembly.Memory | undefined = options.memories?.[0];\n",
+    );
+    if memory64 {
+        source.push_str(
+            "  const memoryValue: unknown = supplied ?? Reflect.construct(WebAssembly.Memory, [{ initial: 1n, maximum: 1n, shared: true, address: \"i64\" }]);\n  if (!(memoryValue instanceof WebAssembly.Memory)) throw new TypeError(\"lifted WebAssembly memory construction failed\");\n  const memory: WebAssembly.Memory = memoryValue;\n",
+        );
+    } else {
+        source.push_str(
+            "  const memory: WebAssembly.Memory = supplied ?? new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true, address: \"i32\" });\n",
+        );
+    }
+    source.push_str(
+        "  const memoryBufferValue: unknown = memory.buffer;\n  if (!(memoryBufferValue instanceof SharedArrayBuffer)) throw new TypeError(\"lifted WebAssembly memory must be shared\");\n  if (memoryBufferValue.byteLength < 65536) throw new RangeError(\"lifted WebAssembly memory is smaller than one page\");\n  const WASM_MEMORY_BUFFER: SharedArrayBuffer = memoryBufferValue;\n",
+    );
+    for line in runtime.lines() {
+        source.push_str("  ");
+        source.push_str(line);
+        source.push('\n');
+    }
+    for function_source in &lifted_functions {
+        for line in function_source.lines() {
+            source.push_str("  ");
+            source.push_str(line);
+            source.push('\n');
+        }
+    }
+    source.push_str("  return { memory");
+    for (export_name, local_name, _) in &export_bindings {
+        let export_literal: String =
+            serde_json::to_string(export_name).map_err(|error| Error::Parse(error.to_string()))?;
+        crate::push_string_fmt(
+            &mut source,
+            format_args!(", [{export_literal}]: {local_name}"),
+        );
+    }
+    source.push_str(" };\n};\n");
+    Ok(TypeScriptModuleLift {
+        source,
+        functions_emitted: lifted_functions.len(),
+        exported_functions,
+        coverage,
+    })
+}
+
+fn exact_typescript_function_exports(bytes: &[u8]) -> Result<Vec<(u32, String)>> {
+    let mut exports: Vec<(u32, String)> = Vec::new();
+    let mut name_bytes: usize = 0;
+    for payload in Parser::new(0).parse_all(bytes) {
+        let payload: Payload<'_> = payload
+            .map_err(|error| Error::Parse(format!("invalid WebAssembly module: {error}")))?;
+        let Payload::ExportSection(reader) = payload else {
+            continue;
+        };
+        for export in reader {
+            let export: wasmparser::Export<'_> = export
+                .map_err(|error| Error::Parse(format!("invalid WebAssembly export: {error}")))?;
+            if export.kind != ExternalKind::Func {
+                continue;
+            }
+            let actual: usize = exports.len().saturating_add(1);
+            if actual > MAX_TYPESCRIPT_MODULE_EXPORTS {
+                return Err(AtomicMemoryRefusal::ExportCount {
+                    actual,
+                    limit: MAX_TYPESCRIPT_MODULE_EXPORTS,
+                }
+                .into());
+            }
+            name_bytes = name_bytes.checked_add(export.name.len()).ok_or(
+                AtomicMemoryRefusal::ExportNameBytes {
+                    actual: usize::MAX,
+                    limit: MAX_TYPESCRIPT_EXPORT_NAME_BYTES,
+                },
+            )?;
+            if name_bytes > MAX_TYPESCRIPT_EXPORT_NAME_BYTES {
+                return Err(AtomicMemoryRefusal::ExportNameBytes {
+                    actual: name_bytes,
+                    limit: MAX_TYPESCRIPT_EXPORT_NAME_BYTES,
+                }
+                .into());
+            }
+            exports.push((export.index, export.name.to_owned()));
+        }
+    }
+    Ok(exports)
+}
+
 fn try_lift_function_body(
     body: &FunctionBody<'_>,
     sig: &FunctionSig,
@@ -157,12 +394,16 @@ fn try_lift_function_body(
         LiftTarget::Rust => {
             try_lift_body_high(body, sig, callees, LiftTarget::Rust, HighLang::Rust)
         }
-        LiftTarget::TypeScript => try_lift_body_high(
-            body,
-            sig,
-            callees,
-            LiftTarget::TypeScript,
-            HighLang::TypeScript,
+        LiftTarget::TypeScript => crate::structured::lift_body_structured_typescript_standalone(
+            body, sig, callees,
+        )
+        .map(
+            |(pseudo_source, blocks_emitted, coverage): (String, usize, LiftCoverage)| LiftResult {
+                target: LiftTarget::TypeScript,
+                pseudo_source,
+                blocks_emitted,
+                coverage,
+            },
         ),
         LiftTarget::C => crate::lift_c::try_lift_function_body_c(body, sig, callees),
         LiftTarget::Wat => Ok(crate::lift_wat::lift_function_body_wat(body, sig)),

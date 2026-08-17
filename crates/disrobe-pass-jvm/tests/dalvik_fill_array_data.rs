@@ -192,6 +192,51 @@ fn build_dex() -> Vec<u8> {
     builder.build()
 }
 
+fn build_parameter_reuse_dex() -> Vec<u8> {
+    let mut insns: Vec<u16> = vec![
+        0x0138, 0x0003, 0x0012, 0x2112, 0x1123, 0x0000, 0x0126, 0x0000, 0x0000, 0x0111, 0x0300,
+        0x0004, 0x0002, 0x0000, 0x0007, 0x0000, 0xFFFF, 0xFFFF,
+    ];
+    let fill_pc: i32 = 6;
+    let payload_pc: i32 = 10;
+    let offset: u32 = (payload_pc - fill_pc) as u32;
+    insns[7] = (offset & 0xFFFF) as u16;
+    insns[8] = (offset >> 16) as u16;
+
+    let method: EncodedMethod = EncodedMethod {
+        tries: Vec::new(),
+        method: MethodRef {
+            class: CLASS.to_owned(),
+            proto: ProtoRef {
+                return_type: "[I".to_owned(),
+                params: vec!["Z".to_owned()],
+            },
+            name: "branchFill".to_owned(),
+        },
+        access_flags: 0x0009,
+        is_direct: true,
+        registers_size: 2,
+        ins_size: 1,
+        outs_size: 0,
+        insns,
+        relocations: vec![Reloc::TypeIndex {
+            unit: 5,
+            descriptor: "[I".to_owned(),
+        }],
+    };
+    let mut builder: DexBuilder = DexBuilder::new();
+    builder.add_class(ClassDef {
+        class: CLASS.to_owned(),
+        super_class: "Ljava/lang/Object;".to_owned(),
+        access_flags: 0x0001,
+        static_fields: Vec::new(),
+        static_values: Vec::new(),
+        direct_methods: vec![method],
+        virtual_methods: Vec::new(),
+    });
+    builder.build()
+}
+
 fn method_codes(class_bytes: &[u8]) -> BTreeMap<String, CodeAttribute> {
     let cf: ClassFile = parse_classfile(class_bytes).expect("parse class");
     let mut out: BTreeMap<String, CodeAttribute> = BTreeMap::new();
@@ -324,15 +369,93 @@ fn char_short_fill_round_trips_runtime_values() {
     );
 }
 
-fn find_java() -> Option<PathBuf> {
-    let home: std::ffi::OsString = std::env::var_os("JAVA_HOME")?;
-    let exe: PathBuf = if cfg!(windows) {
-        PathBuf::from(&home).join("bin").join("java.exe")
-    } else {
-        PathBuf::from(&home).join("bin").join("java")
+#[test]
+fn fill_array_data_survives_parameter_register_reuse_after_branch() {
+    let dex: Vec<u8> = build_parameter_reuse_dex();
+    let result: Dex2JarResult = translate_dex_bytes(&dex).expect("translate");
+    let class_bytes: &Vec<u8> = result
+        .jar_entries
+        .get(&format!("{INTERNAL}.class"))
+        .expect("class entry");
+    let codes: BTreeMap<String, CodeAttribute> = method_codes(class_bytes);
+    let code: &CodeAttribute = codes.get("branchFill").expect("branchFill code");
+    let insns: Vec<Instruction> = disassemble(&code.code).expect("disassemble");
+    let mnemonics: Vec<&str> = insns.iter().map(|i: &Instruction| i.mnemonic).collect();
+    assert!(!mnemonics.contains(&"athrow"), "stubbed: {mnemonics:?}");
+    assert_eq!(
+        mnemonics
+            .iter()
+            .filter(|mnemonic: &&&str| **mnemonic == "iastore")
+            .count(),
+        2,
+        "payload stores missing: {mnemonics:?}"
+    );
+
+    let Some(java): Option<PathBuf> = find_java() else {
+        eprintln!("skip jvm verify: no java");
+        return;
     };
-    if exe.is_file() {
-        return Some(exe);
+    let javac: PathBuf = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
+    if !javac.is_file() {
+        eprintln!("skip jvm verify: no javac");
+        return;
+    }
+    let jar: Vec<u8> = assemble_jar(&result).expect("jar");
+    let purpose: String = format!("disrobe_fill_branch_{}", std::process::id());
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create(&purpose).expect("create scratch dir");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let jar_path: PathBuf = dir.join("fill.jar");
+    let mut jar_file: std::fs::File = std::fs::File::create(&jar_path).expect("create jar");
+    jar_file.write_all(&jar).expect("write jar");
+    drop(jar_file);
+    let driver: &str = "public class B { public static void main(String[] a) throws Exception { \
+        Class<?> c = Class.forName(\"com.disrobe.Fill\"); \
+        java.lang.reflect.Method m = c.getDeclaredMethod(\"branchFill\", boolean.class); \
+        for (boolean v : new boolean[]{false, true}) { \
+            int[] values = (int[]) m.invoke(null, v); \
+            if (!java.util.Arrays.equals(values, new int[]{7, -1})) \
+                throw new IllegalStateException(java.util.Arrays.toString(values)); } \
+        System.out.println(\"BRANCH_FILL_OK\"); } }";
+    let src: PathBuf = dir.join("B.java");
+    std::fs::write(&src, driver).expect("write driver");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-d")
+        .arg(&dir)
+        .arg(&src)
+        .output()
+        .expect("javac");
+    assert!(
+        compile.status.success(),
+        "driver compile failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let cp: String = format!("{}{}{}", dir.display(), classpath_sep(), jar_path.display());
+    let run: std::process::Output = Command::new(&java)
+        .arg("-Xverify:all")
+        .arg("-cp")
+        .arg(&cp)
+        .arg("B")
+        .output()
+        .expect("java run");
+    let stdout: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stdout);
+    let stderr: std::borrow::Cow<'_, str> = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success() && stdout.contains("BRANCH_FILL_OK"),
+        "jvm value check failed: stdout={stdout} stderr={stderr}"
+    );
+}
+
+fn find_java() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("JAVA_HOME") {
+        let exe: PathBuf = if cfg!(windows) {
+            PathBuf::from(&home).join("bin").join("java.exe")
+        } else {
+            PathBuf::from(&home).join("bin").join("java")
+        };
+        if exe.is_file() {
+            return Some(exe);
+        }
     }
     let path_var: std::ffi::OsString = std::env::var_os("PATH")?;
     let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };

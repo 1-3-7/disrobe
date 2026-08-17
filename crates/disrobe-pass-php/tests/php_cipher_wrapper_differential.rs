@@ -423,6 +423,74 @@ fn defined_constant_key_drives_a_decode_loop_runtime_equivalent() {
 }
 
 #[test]
+fn file_scope_const_key_drives_a_decode_loop_runtime_equivalent() {
+    let graded: String =
+        String::from("a file-scope const expression used as the loop key against real php");
+    let Some(php): Option<PhpRuntime> = require_php(&graded) else {
+        return;
+    };
+    let label: &str = "file-scope-const-key";
+    let key: &[u8] = b"staticKey";
+    let cipher: Vec<u8> = payload()
+        .bytes()
+        .enumerate()
+        .map(|(i, b): (usize, u8)| b ^ key[i % key.len()])
+        .collect();
+    let blob: Vec<u8> = format!(
+        "<?php const XK = 'static' . 'Key'; $d = base64_decode('{}'); $o = ''; for ($i = 0; $i < strlen($d); $i++) {{ $o .= chr(ord($d[$i]) ^ ord(XK[$i % strlen(XK)])); }} ev\x61l($o);",
+        b64(&cipher)
+    )
+    .into_bytes();
+    grade(&php, label, &blob);
+}
+
+#[test]
+fn file_scope_const_refuses_unsupported_scope_and_order_cases() {
+    let key: &[u8] = b"staticKey";
+    let cipher: Vec<u8> = payload()
+        .bytes()
+        .enumerate()
+        .map(|(i, b): (usize, u8)| b ^ key[i % key.len()])
+        .collect();
+    let cipher_b64: String = b64(&cipher);
+    let cases: [(&str, &str, &str, &str); 4] = [
+        (
+            "namespace-const",
+            "namespace Foo; const XK = 'staticKey';",
+            "XK",
+            "",
+        ),
+        (
+            "class-const",
+            "class Holder { public const XK = 'staticKey'; }",
+            "Holder::XK",
+            "",
+        ),
+        (
+            "multiple-const",
+            "const UNUSED = 'unused', XK = 'staticKey';",
+            "XK",
+            "",
+        ),
+        ("const-after-sink", "", "XK", "const XK = 'staticKey';"),
+    ];
+    for case in cases {
+        let (label, setup, key_expr, trailing): (&str, &str, &str, &str) = case;
+        let blob: Vec<u8> = format!(
+            "<?php {setup} $d = base64_decode('{cipher_b64}'); $o = ''; for ($i = 0; $i < strlen($d); $i++) {{ $o .= chr(ord($d[$i]) ^ ord({key_expr}[$i % strlen({key_expr})])); }} ev\x61l($o); {trailing}"
+        )
+        .into_bytes();
+        let report: RecoveryReport = recover_php(&blob, None)
+            .unwrap_or_else(|error: disrobe_pass_php::Error| panic!("{label}: {error}"));
+        assert!(
+            !report.output.contains(MARKER),
+            "{label}: a constant outside the supported single global declaration boundary must not drive recovery; got:\n{}",
+            report.output
+        );
+    }
+}
+
+#[test]
 fn an_undefined_constant_leaves_the_loop_in_place() {
     let label: &str = "undefined-constant";
     let key: &[u8] = b"absentKey";

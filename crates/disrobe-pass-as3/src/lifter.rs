@@ -560,10 +560,27 @@ impl LiftedBody {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ScopeEntry {
     object: Expr,
     is_with: bool,
+    identity: usize,
+}
+
+fn scope_node_count_capped(entries: &[ScopeEntry], cap: usize) -> usize {
+    entries
+        .iter()
+        .fold(0usize, |total: usize, entry: &ScopeEntry| {
+            if total > cap {
+                return total;
+            }
+            let nodes: usize =
+                expr_node_count_capped(&entry.object, MAX_DUP_EXPR_NODES.saturating_add(1));
+            if nodes > MAX_DUP_EXPR_NODES {
+                return cap.saturating_add(1);
+            }
+            total.saturating_add(nodes)
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -711,15 +728,24 @@ struct Lifter<'a> {
     branch_marks: Vec<BranchMark>,
     hoisted_temporaries: u32,
     incoming_stacks: BTreeMap<usize, Vec<Vec<Expr>>>,
+    incoming_scopes: BTreeMap<usize, Vec<Vec<ScopeEntry>>>,
     untracked_stack_entries: BTreeSet<usize>,
+    untracked_scope_entries: BTreeSet<usize>,
     tracked_stack_nodes: usize,
+    tracked_scope_nodes: usize,
     stack_tracking_exhausted: bool,
+    scope_tracking_exhausted: bool,
     switch_direction_refusals: BTreeSet<usize>,
     switch_budget_refusals: BTreeSet<usize>,
 }
 
 impl Lifter<'_> {
     fn record_edge_stack(&mut self, target: usize) {
+        self.record_operand_edge(target);
+        self.record_scope_edge(target);
+    }
+
+    fn record_operand_edge(&mut self, target: usize) {
         const MAX_TRACKED_PREDECESSORS: usize = 256;
         const MAX_TRACKED_STACK_NODES: usize = 65_536;
         if self.stack_tracking_exhausted {
@@ -767,6 +793,58 @@ impl Lifter<'_> {
             .entry(target)
             .or_default()
             .push(self.stack.clone());
+    }
+
+    fn record_scope_edge(&mut self, target: usize) {
+        const MAX_TRACKED_PREDECESSORS: usize = 256;
+        const MAX_TRACKED_SCOPE_NODES: usize = 65_536;
+        if self.scope_tracking_exhausted {
+            self.untracked_scope_entries.insert(target);
+            self.incoming_scopes.remove(&target);
+            return;
+        }
+        if self.scope_stack.len() > STACK_SENTINEL_DEPTH
+            || self.untracked_scope_entries.contains(&target)
+        {
+            self.untracked_scope_entries.insert(target);
+            self.incoming_scopes.remove(&target);
+            return;
+        }
+        let remaining: usize = MAX_TRACKED_SCOPE_NODES.saturating_sub(self.tracked_scope_nodes);
+        let nodes: usize = scope_node_count_capped(&self.scope_stack, remaining);
+        if nodes > remaining {
+            self.untracked_scope_entries
+                .extend(self.incoming_scopes.keys().copied());
+            self.untracked_scope_entries.insert(target);
+            self.incoming_scopes.clear();
+            self.scope_tracking_exhausted = true;
+            return;
+        }
+        self.tracked_scope_nodes = self.tracked_scope_nodes.saturating_add(nodes);
+        if self
+            .incoming_scopes
+            .get(&target)
+            .is_some_and(|entries: &Vec<Vec<ScopeEntry>>| {
+                entries
+                    .iter()
+                    .any(|entry: &Vec<ScopeEntry>| entry == &self.scope_stack)
+            })
+        {
+            return;
+        }
+        if self
+            .incoming_scopes
+            .get(&target)
+            .is_some_and(|entries: &Vec<Vec<ScopeEntry>>| entries.len() == MAX_TRACKED_PREDECESSORS)
+        {
+            self.untracked_scope_entries.insert(target);
+            self.incoming_scopes.remove(&target);
+            return;
+        }
+        self.incoming_scopes
+            .entry(target)
+            .or_default()
+            .push(self.scope_stack.clone());
     }
 
     fn nearest_with(&self) -> Option<&Expr> {
@@ -963,12 +1041,90 @@ impl Lifter<'_> {
         self.stack = seeded;
     }
 
+    fn record_scope_refusal(&mut self, reason: &'static str) {
+        self.opaque_operands = self.opaque_operands.saturating_add(1);
+        self.statements.push(Stmt::Comment(reason.to_owned()));
+    }
+
+    fn mark_scope_conflict(&mut self, reason: &'static str) {
+        self.scope_stack.clear();
+        self.with_regions
+            .retain(|region: &WithRegion| region.close_stmt != region.open_stmt);
+        self.record_scope_refusal(reason);
+    }
+
+    fn reconcile_scope_entry(
+        &mut self,
+        offset: usize,
+        stack_analysis: &StackAnalysis,
+        is_exc_target: bool,
+    ) {
+        let untracked_entry: bool = self.untracked_scope_entries.remove(&offset);
+        let mut entries: Vec<Vec<ScopeEntry>> =
+            self.incoming_scopes.remove(&offset).unwrap_or_default();
+        if is_exc_target {
+            self.scope_stack.clear();
+            return;
+        }
+        if stack_analysis.scope_height_conflicts.contains(&offset)
+            || stack_analysis.scope_unreconciled.contains(&offset)
+        {
+            self.mark_scope_conflict(SCOPE_HEIGHT_CONFLICT_MARKER);
+            return;
+        }
+        let Some(&entry_height): Option<&usize> = stack_analysis.scope_entry_heights.get(&offset)
+        else {
+            return;
+        };
+        if stack_analysis.backward_entries.contains(&offset) && entry_height > 0 {
+            self.mark_scope_conflict(SCOPE_VALUE_CONFLICT_MARKER);
+            return;
+        }
+        if untracked_entry {
+            self.mark_scope_conflict(SCOPE_VALUE_CONFLICT_MARKER);
+            return;
+        }
+        if !stack_analysis.disconnected_entries.contains(&offset) {
+            entries.push(self.scope_stack.clone());
+        }
+        if entries.is_empty() {
+            if self.scope_stack.len() == entry_height {
+                return;
+            }
+            self.mark_scope_conflict(SCOPE_HEIGHT_CONFLICT_MARKER);
+            return;
+        }
+        if entries
+            .iter()
+            .any(|entry: &Vec<ScopeEntry>| entry.len() != entry_height)
+        {
+            self.mark_scope_conflict(SCOPE_HEIGHT_CONFLICT_MARKER);
+            return;
+        }
+        let first: &Vec<ScopeEntry> = &entries[0];
+        if first.iter().any(|entry: &ScopeEntry| entry.is_with)
+            || entries.iter().any(|entry: &Vec<ScopeEntry>| entry != first)
+        {
+            self.mark_scope_conflict(SCOPE_VALUE_CONFLICT_MARKER);
+            return;
+        }
+        self.scope_stack.clone_from(first);
+    }
+
     fn enter_label(&mut self, offset: usize, stack_analysis: &StackAnalysis, is_exc_target: bool) {
         let pending_value_arm: bool = self
             .branch_marks
             .iter()
             .any(|mark: &BranchMark| mark.else_label == offset);
         self.statements.push(Stmt::Label(offset));
+        self.reconcile_scope_entry(offset, stack_analysis, is_exc_target);
+        if is_exc_target {
+            self.stack.clear();
+            self.stack.push(Expr::CaughtException);
+            self.incoming_stacks.remove(&offset);
+            self.untracked_stack_entries.remove(&offset);
+            return;
+        }
         let resolved_value: bool =
             self.resolve_short_circuits(offset) | self.resolve_ternary(offset);
         if pending_value_arm {
@@ -1296,6 +1452,8 @@ fn collect_labels(lines: &[DisasmLine], exceptions: &[ExceptionInfo]) -> BTreeSe
 const STACK_SENTINEL_DEPTH: usize = 256;
 const STACK_CONFLICT_MARKER: &str = "unreconciled stack merge";
 const STACK_HEIGHT_CONFLICT_MARKER: &str = "unreconciled stack height";
+const SCOPE_HEIGHT_CONFLICT_MARKER: &str = "unreconciled scope height";
+const SCOPE_VALUE_CONFLICT_MARKER: &str = "unreconciled scope values";
 const SWITCH_DIRECTION_REFUSAL_MARKER: &str = "switch dispatch is backward or mixed";
 const SWITCH_ANALYSIS_BUDGET_MARKER: &str = "switch analysis budget exhausted";
 const SWITCH_INVALID_TARGET_REFUSAL_MARKER: &str = "switch dispatch has an invalid target";
@@ -1323,9 +1481,13 @@ fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> 
         scratch.dropped_opcodes.clear();
     }
     scratch.incoming_stacks.clear();
+    scratch.incoming_scopes.clear();
     scratch.untracked_stack_entries.clear();
+    scratch.untracked_scope_entries.clear();
     scratch.tracked_stack_nodes = 0;
+    scratch.tracked_scope_nodes = 0;
     scratch.stack_tracking_exhausted = false;
+    scratch.scope_tracking_exhausted = false;
     scratch.opaque_operands = 0;
     step(scratch, line, line.offset + 1, line.offset + 1);
     if scratch.opaque_operands > 0 {
@@ -1333,6 +1495,14 @@ fn line_stack_delta(scratch: &mut Lifter<'_>, line: &DisasmLine) -> Option<i64> 
     }
     let after: usize = scratch.stack.len();
     Some(after as i64 - STACK_SENTINEL_DEPTH as i64)
+}
+
+const fn line_scope_delta(line: &DisasmLine) -> i64 {
+    match line.opcode {
+        0x1C | 0x30 => 1,
+        0x1D => -1,
+        _ => 0,
+    }
 }
 
 fn line_successors(line: &DisasmLine, next_off: usize, end_off: usize) -> Vec<usize> {
@@ -1424,12 +1594,16 @@ impl HeightCell {
 
 struct StackAnalysis {
     entry_heights: BTreeMap<usize, usize>,
+    scope_entry_heights: BTreeMap<usize, usize>,
     value_joins: BTreeSet<usize>,
     switch_entries: BTreeSet<usize>,
     forward_entries: BTreeSet<usize>,
+    backward_entries: BTreeSet<usize>,
     disconnected_entries: BTreeSet<usize>,
     unreconciled: BTreeSet<usize>,
     height_conflicts: BTreeSet<usize>,
+    scope_unreconciled: BTreeSet<usize>,
+    scope_height_conflicts: BTreeSet<usize>,
     switch_direction_refusals: BTreeSet<usize>,
     switch_budget_refusals: BTreeSet<usize>,
 }
@@ -1517,12 +1691,16 @@ fn block_entry_heights(
     if labels.is_empty() {
         return StackAnalysis {
             entry_heights: BTreeMap::new(),
+            scope_entry_heights: BTreeMap::new(),
             value_joins: BTreeSet::new(),
             switch_entries: BTreeSet::new(),
             forward_entries: BTreeSet::new(),
+            backward_entries: BTreeSet::new(),
             disconnected_entries: BTreeSet::new(),
             unreconciled: BTreeSet::new(),
             height_conflicts: BTreeSet::new(),
+            scope_unreconciled: BTreeSet::new(),
+            scope_height_conflicts: BTreeSet::new(),
             switch_direction_refusals: BTreeSet::new(),
             switch_budget_refusals: BTreeSet::new(),
         };
@@ -1549,9 +1727,13 @@ fn block_entry_heights(
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
         incoming_stacks: BTreeMap::new(),
+        incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
+        untracked_scope_entries: BTreeSet::new(),
         tracked_stack_nodes: 0,
+        tracked_scope_nodes: 0,
         stack_tracking_exhausted: false,
+        scope_tracking_exhausted: false,
         switch_direction_refusals: BTreeSet::new(),
         switch_budget_refusals: BTreeSet::new(),
     };
@@ -1682,6 +1864,13 @@ fn block_entry_heights(
         })
         .map(|(target, _): (&usize, &BTreeSet<usize>)| *target)
         .collect();
+    let backward_entries: BTreeSet<usize> = predecessors
+        .iter()
+        .filter(|(target, sources): &(&usize, &BTreeSet<usize>)| {
+            sources.iter().any(|source: &usize| source >= *target)
+        })
+        .map(|(target, _): (&usize, &BTreeSet<usize>)| *target)
+        .collect();
     let disconnected_entries: BTreeSet<usize> = lines
         .windows(2)
         .filter_map(|pair: &[DisasmLine]| {
@@ -1798,14 +1987,112 @@ fn block_entry_heights(
             _ => None,
         })
         .collect();
+    let mut scope_entry: BTreeMap<usize, HeightCell> = lines
+        .iter()
+        .map(|line: &DisasmLine| (line.offset, HeightCell::Unknown))
+        .collect();
+    if let Some(first) = lines.first() {
+        scope_entry.insert(first.offset, HeightCell::Height(0));
+    }
+    for target in &exc_targets {
+        if valid_offsets.contains(target) {
+            scope_entry.insert(*target, HeightCell::Height(0));
+        }
+    }
+    let mut scope_worklist: VecDeque<usize> = VecDeque::new();
+    if let Some(first) = lines.first() {
+        scope_worklist.push_back(first.offset);
+    }
+    for target in &exc_targets {
+        if valid_offsets.contains(target) {
+            scope_worklist.push_back(*target);
+        }
+    }
+    let mut scope_poisoned: BTreeSet<usize> = BTreeSet::new();
+    let mut scope_iterations: usize = 0;
+    let mut scope_analysis_exhausted: bool = false;
+    while let Some(offset) = scope_worklist.pop_front() {
+        scope_iterations = scope_iterations.saturating_add(1);
+        if scope_iterations > cap {
+            scope_analysis_exhausted = true;
+            break;
+        }
+        let Some(HeightCell::Height(height)): Option<&HeightCell> = scope_entry.get(&offset) else {
+            continue;
+        };
+        let Some(line): Option<&&DisasmLine> = line_by_offset.get(&offset) else {
+            continue;
+        };
+        let exit_height: i64 = height.saturating_add(line_scope_delta(line));
+        if exit_height < 0 {
+            scope_poisoned.insert(offset);
+            continue;
+        }
+        let Some(targets): Option<&Vec<usize>> = succs.get(&offset) else {
+            continue;
+        };
+        for target in targets {
+            if !valid_offsets.contains(target) || exc_targets.contains(target) {
+                continue;
+            }
+            let current: HeightCell = scope_entry
+                .get(target)
+                .copied()
+                .unwrap_or(HeightCell::Unknown);
+            let joined: HeightCell = current.join(exit_height);
+            if joined == current {
+                continue;
+            }
+            match joined {
+                HeightCell::Conflict => {
+                    scope_entry.insert(*target, HeightCell::Conflict);
+                    scope_poisoned.insert(*target);
+                }
+                HeightCell::Height(_) => {
+                    scope_entry.insert(*target, joined);
+                    scope_worklist.push_back(*target);
+                }
+                HeightCell::Unknown => {}
+            }
+        }
+    }
+    let scope_height_conflicts: BTreeSet<usize> = scope_entry
+        .iter()
+        .filter_map(|(offset, cell): (&usize, &HeightCell)| {
+            matches!(cell, HeightCell::Conflict).then_some(*offset)
+        })
+        .collect();
+    let mut scope_unreconciled: BTreeSet<usize> = labels
+        .iter()
+        .copied()
+        .filter(|offset: &usize| {
+            scope_poisoned.contains(offset)
+                || (predecessors.contains_key(offset)
+                    && matches!(scope_entry.get(offset), Some(HeightCell::Unknown) | None))
+        })
+        .collect();
+    if scope_analysis_exhausted {
+        scope_unreconciled.extend(labels.iter().copied());
+    }
+    let scope_entry_heights: BTreeMap<usize, usize> = labels
+        .iter()
+        .filter_map(|offset: &usize| match scope_entry.get(offset) {
+            Some(HeightCell::Height(height)) if *height >= 0 => Some((*offset, *height as usize)),
+            _ => None,
+        })
+        .collect();
     StackAnalysis {
         entry_heights,
+        scope_entry_heights,
         value_joins,
         switch_entries,
         forward_entries,
+        backward_entries,
         disconnected_entries,
         unreconciled,
         height_conflicts,
+        scope_unreconciled,
+        scope_height_conflicts,
         switch_direction_refusals,
         switch_budget_refusals,
     }
@@ -2053,8 +2340,8 @@ fn step(lifter: &mut Lifter<'_>, line: &DisasmLine, next_off: usize, end_off: us
             let index: i64 = lifter.operand(ops, 0);
             emit_getouterscope(lifter, index);
         }
-        0x30 => emit_pushscope(lifter, false),
-        0x1C => emit_pushscope(lifter, true),
+        0x30 => emit_pushscope(lifter, false, line.offset),
+        0x1C => emit_pushscope(lifter, true, line.offset),
         0x1D => emit_popscope(lifter),
         0x02 | 0x08 | 0x09 | 0x71 | 0x72 | 0x77 | 0x78 | 0x82 | 0xEF | 0xF0 | 0xF1 | 0xF2
         | 0xF3 => {}
@@ -2164,7 +2451,7 @@ fn emit_setslot(lifter: &mut Lifter<'_>, slot: i64) {
         .push(scope_relative_assign(object, property, value));
 }
 
-fn emit_pushscope(lifter: &mut Lifter<'_>, is_with: bool) {
+fn emit_pushscope(lifter: &mut Lifter<'_>, is_with: bool, offset: usize) {
     let object: Expr = lifter.pop();
     if is_with {
         lifter.with_regions.push(WithRegion {
@@ -2173,7 +2460,11 @@ fn emit_pushscope(lifter: &mut Lifter<'_>, is_with: bool) {
             object: object.clone(),
         });
     }
-    lifter.scope_stack.push(ScopeEntry { object, is_with });
+    lifter.scope_stack.push(ScopeEntry {
+        object,
+        is_with,
+        identity: offset,
+    });
 }
 
 fn emit_popscope(lifter: &mut Lifter<'_>) {
@@ -5886,9 +6177,13 @@ fn lift_raw(
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
         incoming_stacks: BTreeMap::new(),
+        incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
+        untracked_scope_entries: BTreeSet::new(),
         tracked_stack_nodes: 0,
+        tracked_scope_nodes: 0,
         stack_tracking_exhausted: false,
+        scope_tracking_exhausted: false,
         switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
         switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
     };
@@ -5981,9 +6276,13 @@ pub fn lift_body(
         branch_marks: Vec::new(),
         hoisted_temporaries: 0,
         incoming_stacks: BTreeMap::new(),
+        incoming_scopes: BTreeMap::new(),
         untracked_stack_entries: BTreeSet::new(),
+        untracked_scope_entries: BTreeSet::new(),
         tracked_stack_nodes: 0,
+        tracked_scope_nodes: 0,
         stack_tracking_exhausted: false,
+        scope_tracking_exhausted: false,
         switch_direction_refusals: stack_analysis.switch_direction_refusals.clone(),
         switch_budget_refusals: stack_analysis.switch_budget_refusals.clone(),
     };
@@ -7942,9 +8241,13 @@ mod tests {
             branch_marks: Vec::new(),
             hoisted_temporaries: 0,
             incoming_stacks: BTreeMap::new(),
+            incoming_scopes: BTreeMap::new(),
             untracked_stack_entries: BTreeSet::new(),
+            untracked_scope_entries: BTreeSet::new(),
             tracked_stack_nodes: 0,
+            tracked_scope_nodes: 0,
             stack_tracking_exhausted: false,
+            scope_tracking_exhausted: false,
             switch_direction_refusals: BTreeSet::new(),
             switch_budget_refusals: BTreeSet::new(),
         };
@@ -8036,6 +8339,23 @@ mod tests {
             };
         }
         assert_eq!(dup_clone(&big), Expr::Opaque("?"));
+    }
+
+    #[test]
+    fn scope_tracking_refuses_an_oversized_expression_tree() {
+        let mut object: Expr = Expr::IntLit(0);
+        for _index in 0..MAX_DUP_EXPR_NODES {
+            object = Expr::Unary {
+                op: "-",
+                operand: Box::new(object),
+            };
+        }
+        let entries: Vec<ScopeEntry> = vec![ScopeEntry {
+            object,
+            is_with: false,
+            identity: 0,
+        }];
+        assert_eq!(scope_node_count_capped(&entries, 65_536), 65_537);
     }
 
     fn nested_with_chain(levels: usize) -> Vec<Stmt> {

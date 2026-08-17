@@ -212,7 +212,7 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-wasm-deob",
-        36,
+        35,
         "the second-largest group in this sweep: per-obfuscator reverse, detect and lift helpers \
          (wasmixer, wobfuscator, jscrambler, tigress) and per-feature scanners (SIMD, threads, \
          tail calls, GC externals, custom page sizes) each proven by their own oracle but driven \

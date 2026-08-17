@@ -27,15 +27,15 @@ const WHOLE_BODY_POPULATION_PERMILLE: u32 = 1000;
 
 const REAL_APK_METHOD_TOTAL: usize = 89_516;
 
-const SELF_REPORTED_BODIES: usize = 82_906;
+const SELF_REPORTED_BODIES: usize = 82_923;
 
-const CANDIDATE_BODIES: usize = 82_874;
+const CANDIDATE_BODIES: usize = 82_891;
 
-const SAMPLED_BODIES: usize = 8_355;
+const SAMPLED_BODIES: usize = 8_357;
 
-const ATTESTED_PRESENTED: usize = 2_989;
+const ATTESTED_PRESENTED: usize = 2_990;
 
-const ATTESTED_CLEAN: usize = 2_975;
+const ATTESTED_CLEAN: usize = 2_976;
 
 const ATTESTED_REJECTED: usize = 14;
 

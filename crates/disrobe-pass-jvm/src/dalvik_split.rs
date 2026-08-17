@@ -539,7 +539,7 @@ fn def_use(dex: &DexFile, insn: &DalvikInsn) -> DefUse {
     let op: u8 = insn.op;
     let n: usize = insn.regs.len();
     let (def_slot, use_positions): (Option<SplitSlot>, Vec<usize>) = match op {
-        0x00 | 0x0E | 0x1D | 0x1E | 0x26 | 0x28..=0x2A => (None, Vec::new()),
+        0x00 | 0x0E | 0x1D | 0x1E | 0x28..=0x2A => (None, Vec::new()),
         0x01..=0x03 => (Some(SplitSlot::Int), vec![1]),
         0x04..=0x06 => (Some(SplitSlot::Long), vec![1]),
         0x07..=0x09 => (Some(SplitSlot::Ref), vec![1]),
@@ -555,6 +555,7 @@ fn def_use(dex: &DexFile, insn: &DalvikInsn) -> DefUse {
         0x22 => (Some(SplitSlot::Ref), Vec::new()),
         0x23 => (Some(SplitSlot::Ref), vec![1]),
         0x24 | 0x25 => (None, (0..n).collect()),
+        0x26 => (None, vec![0]),
         0x2D..=0x31 => (Some(SplitSlot::Int), (1..n).collect()),
         0x32..=0x37 => (None, vec![0, 1]),
         0x38..=0x3D => (None, vec![0]),

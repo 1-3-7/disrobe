@@ -164,6 +164,10 @@ enum LValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LStmt {
+    Const {
+        name: Vec<u8>,
+        value: LExpr,
+    },
     Assign {
         target: LValue,
         op: AssignOp,
@@ -367,6 +371,16 @@ impl<'a> LoopParser<'a> {
         if self.peek() == Some(b'{') {
             self.pos += 1;
             return Some(LStmt::Block(self.parse_block_body()?));
+        }
+        if self.eat_keyword(b"const") {
+            self.skip_trivia();
+            let name: Vec<u8> = self.parse_ident()?;
+            if is_reserved_word(&name) || !self.eat(b"=") {
+                return None;
+            }
+            let value: LExpr = self.parse_expr()?;
+            self.expect_semicolon();
+            return Some(LStmt::Const { name, value });
         }
         if self.eat_keyword(b"if") {
             return self.parse_if();
@@ -1240,6 +1254,19 @@ impl Interp {
         Ok(())
     }
 
+    fn bind_constant(&mut self, name: Vec<u8>, value: Val) -> Eval<()> {
+        if name.is_empty() || self.constants.contains_key(&name) {
+            return Err(Abstain::Unsupported);
+        }
+        let added: usize = val_size(&value);
+        if self.live_bytes.saturating_add(added) > self.budget.heap_bytes {
+            return Err(Abstain::HeapBudget);
+        }
+        self.live_bytes += added;
+        self.constants.insert(name, value);
+        Ok(())
+    }
+
     pub(crate) fn observe_array(&mut self, name: &[u8], elements: &[Vec<u8>]) {
         let map: BTreeMap<i64, Val> = elements
             .iter()
@@ -1310,13 +1337,18 @@ impl Interp {
         let Some(program): Option<Vec<LStmt>> = parser.parse_program() else {
             return false;
         };
-        let [LStmt::Expr(LExpr::Call { name, args })] = program.as_slice() else {
-            return false;
-        };
-        if name.as_slice() != b"define" {
-            return false;
+        match program.as_slice() {
+            [LStmt::Expr(LExpr::Call { name, args })] if name.as_slice() == b"define" => {
+                self.dispatch_call(name, args, 0).is_ok()
+            }
+            [LStmt::Const { name, value }] if is_constant_expr(value) => {
+                let Ok(evaluated): Eval<Val> = self.eval(value, 0) else {
+                    return false;
+                };
+                self.bind_constant(name.clone(), evaluated).is_ok()
+            }
+            _ => false,
         }
-        self.dispatch_call(name, args, 0).is_ok()
     }
 
     pub(crate) fn run_sink_statement(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
@@ -1407,6 +1439,7 @@ impl Interp {
         self.tick()?;
         match stmt {
             LStmt::Nop => Ok(Flow::Normal),
+            LStmt::Const { .. } => Err(Abstain::Unsupported),
             LStmt::Expr(expr) => {
                 self.eval(expr, 0)?;
                 Ok(Flow::Normal)
@@ -2049,12 +2082,7 @@ impl Interp {
             b"define" => {
                 let key: Vec<u8> = to_bytes(arg0?)?;
                 let value: Val = args.get(1).ok_or(Abstain::Unsupported)?.clone();
-                if key.is_empty() || self.constants.contains_key(&key) {
-                    return Err(Abstain::Unsupported);
-                }
-                self.live_bytes = self.live_bytes.saturating_add(val_size(&value));
-                self.constants.insert(key, value);
-                self.check_heap()?;
+                self.bind_constant(key, value)?;
                 Ok(Val::Int(1))
             }
             b"defined" => {
@@ -2429,6 +2457,24 @@ fn literal_keyword(name: &[u8]) -> Option<LExpr> {
         return Some(LExpr::Str(Vec::new()));
     }
     None
+}
+
+fn is_constant_expr(expr: &LExpr) -> bool {
+    match expr {
+        LExpr::Int(_) | LExpr::Str(_) | LExpr::Const(_) => true,
+        LExpr::Index { base, idx }
+        | LExpr::Bin {
+            lhs: base,
+            rhs: idx,
+            ..
+        } => is_constant_expr(base) && is_constant_expr(idx),
+        LExpr::Unary { operand, .. } => is_constant_expr(operand),
+        LExpr::Ternary { cond, then, other } => {
+            is_constant_expr(cond) && is_constant_expr(then) && is_constant_expr(other)
+        }
+        LExpr::ArrayLit(elements) => elements.iter().all(is_constant_expr),
+        LExpr::Var(_) | LExpr::Assign { .. } | LExpr::Call { .. } | LExpr::DynCall { .. } => false,
+    }
 }
 
 fn is_reserved_word(name: &[u8]) -> bool {
@@ -3465,6 +3511,24 @@ mod tests {
         assert_eq!(
             interp.constants.get(b"OPENSSL_RAW_DATA".as_slice()),
             Some(&Val::Int(OPENSSL_RAW_DATA))
+        );
+    }
+
+    #[test]
+    fn a_file_scope_const_refuses_a_runtime_expression() {
+        let mut interp: Interp = Interp::new(Budget::default());
+        interp.observe_scalar(b"seed", b"runtime");
+        assert!(
+            !interp.declare_constant(b"const K = $seed;"),
+            "a file-scope const expression cannot depend on a runtime variable"
+        );
+        assert!(
+            !interp.declare_constant(b"const K = str_repeat('x', 4);"),
+            "a file-scope const expression cannot call a runtime function"
+        );
+        assert!(
+            !interp.declare_constant(b"const K = \"$seed\";"),
+            "a file-scope const expression cannot interpolate a runtime variable"
         );
     }
 

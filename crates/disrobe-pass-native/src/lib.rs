@@ -103,9 +103,10 @@ pub use crypto_consts::{
 };
 pub use cxx_recovery::{
     CxxAbi, CxxBaseLink, CxxClass, CxxDemangled, CxxHierarchy, CxxInheritance, CxxVtable,
-    CxxVtableSlot, EhEntry, RttiEntry, SehScopeEntry, StlTemplate, demangle_auto, demangle_itanium,
-    demangle_msvc, detect_stl_templates, parse_itanium_lsda, parse_windows_seh_scope_table,
-    recover_cxx_hierarchy, recover_itanium_rtti,
+    CxxVtableSlot, EhAction, EhEntry, ItaniumEhFunction, RttiEntry, SehScopeEntry, StlTemplate,
+    demangle_auto, demangle_itanium, demangle_msvc, detect_stl_templates, parse_itanium_lsda,
+    parse_windows_seh_scope_table, recover_cxx_hierarchy, recover_itanium_exception_regions,
+    recover_itanium_rtti,
 };
 pub use debug_info::{
     DwarfSummary, DwarfVersion, PdbBinaryMatch, PdbRecovery, PdbSummary, PdbSymbolInfo,

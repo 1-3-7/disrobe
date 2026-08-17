@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use disrobe_pass_as3::AbcFile;
-use disrobe_pass_as3::abc::{self, ConstantPool, MethodBody, MethodInfo};
+use disrobe_pass_as3::abc::{self, ConstantPool, ExceptionInfo, MethodBody, MethodInfo};
 use disrobe_pass_as3::lifter::{
-    CaseLabel, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
+    CaseLabel, CatchClause, Expr, LiftedBody, Stmt, SwitchCase, lift_body, lift_body_raw,
 };
 use disrobe_pass_as3::swf::{self, Swf};
 
@@ -672,6 +672,19 @@ fn switch_body(code: Vec<u8>, local_count: u32) -> MethodBody {
     }
 }
 
+fn scope_body(code: Vec<u8>, local_count: u32) -> MethodBody {
+    MethodBody {
+        method: 0,
+        max_stack: 1,
+        local_count,
+        init_scope_depth: 0,
+        max_scope_depth: 1,
+        code,
+        exceptions: Vec::new(),
+        traits: Vec::new(),
+    }
+}
+
 fn push_s24(out: &mut Vec<u8>, value: i32) {
     let raw: u32 = value as u32;
     out.push((raw & 0xFF) as u8);
@@ -694,6 +707,366 @@ fn patch_branch_target(code: &mut [u8], operand: usize, target: usize) {
     code[operand] = (raw & 0xFF) as u8;
     code[operand + 1] = ((raw >> 8) & 0xFF) as u8;
     code[operand + 2] = ((raw >> 16) & 0xFF) as u8;
+}
+
+fn contains_comment(statement: &Stmt, expected: &str) -> bool {
+    match statement {
+        Stmt::Comment(actual) => actual == expected,
+        Stmt::StructuredSwitch { cases, .. } => cases.iter().any(|case: &SwitchCase| {
+            case.body
+                .iter()
+                .any(|nested: &Stmt| contains_comment(nested, expected))
+        }),
+        Stmt::IfBlock { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::ForEach { body, .. }
+        | Stmt::ForIn { body, .. }
+        | Stmt::With { body, .. } => body
+            .iter()
+            .any(|nested: &Stmt| contains_comment(nested, expected)),
+        Stmt::IfElse {
+            then_body,
+            else_body,
+            ..
+        } => then_body
+            .iter()
+            .chain(else_body)
+            .any(|nested: &Stmt| contains_comment(nested, expected)),
+        Stmt::For {
+            init, update, body, ..
+        } => {
+            contains_comment(init, expected)
+                || contains_comment(update, expected)
+                || body
+                    .iter()
+                    .any(|nested: &Stmt| contains_comment(nested, expected))
+        }
+        Stmt::Try { body, catches } => {
+            body.iter()
+                .any(|nested: &Stmt| contains_comment(nested, expected))
+                || catches.iter().any(|catch: &CatchClause| {
+                    catch
+                        .body
+                        .iter()
+                        .any(|nested: &Stmt| contains_comment(nested, expected))
+                })
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn branch_scope_height_conflict_is_local_and_named() {
+    let mut code: Vec<u8> = vec![0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD0, 0x30, 0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 2);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw scope-conflict lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("scope-conflict lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope height")),
+        "the incompatible scope depths must remain a named local refusal: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(
+        successor_map(&raw_flat),
+        successor_map(&structured_flat),
+        "raw: {raw_flat:#?}\nstructured: {structured_flat:#?}"
+    );
+}
+
+#[test]
+fn branch_scope_value_conflict_never_selects_one_predecessor() {
+    let mut code: Vec<u8> = vec![0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD0, 0xD6, 0xD2, 0x30, 0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0xD6, 0xD2, 0x30, 0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw scope-value lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("scope-value lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "different incoming scope objects must not select a predecessor: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn identical_branch_scope_values_reconcile_without_partial_output() {
+    let mut code: Vec<u8> = vec![0xD0, 0x30, 0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 2);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw scope-merge lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("scope-merge lift");
+
+    assert!(lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.fully_structured, "{lifted:#?}");
+    assert_eq!(lifted.opaque_operands, 0, "{lifted:#?}");
+    assert!(
+        !lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| matches!(statement, Stmt::Comment(_))),
+        "an identical scope merge must not emit a refusal: {lifted:#?}"
+    );
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn branch_activation_scopes_never_collapse_distinct_allocations() {
+    let mut code: Vec<u8> = vec![0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x57, 0x30, 0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0x57, 0x30, 0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw activation-scope lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("activation-scope lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "separately allocated activation scopes must not compare equal: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn branch_with_scopes_are_refused_at_merge() {
+    let mut code: Vec<u8> = vec![0xD1, 0x12];
+    let else_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0xD0, 0x1C, 0x24, 0x0A, 0xD6, 0x10]);
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let else_offset: usize = code.len();
+    code.extend_from_slice(&[0xD0, 0x1C, 0x24, 0x14, 0xD6]);
+    let merge_offset: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_branch_target(&mut code, else_operand, else_offset);
+    patch_branch_target(&mut code, merge_operand, merge_offset);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw with-scope lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("with-scope lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "path-specific with regions must remain a named local refusal: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn switch_scope_value_conflict_is_local_and_named() {
+    let mut code: Vec<u8> = vec![0x24, 0x00];
+    let switch: usize = code.len();
+    code.push(0x1B);
+    let default_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.push(1);
+    let case_zero_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let case_one_operand: usize = code.len();
+    push_s24(&mut code, 0);
+
+    let case_zero: usize = code.len();
+    code.extend_from_slice(&[0xD0, 0x30, 0x24, 0x0A, 0xD6, 0x10]);
+    let case_zero_break: usize = code.len();
+    push_s24(&mut code, 0);
+    let case_one: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x30, 0x24, 0x14, 0xD6, 0x10]);
+    let case_one_break: usize = code.len();
+    push_s24(&mut code, 0);
+    let default_case: usize = code.len();
+    code.extend_from_slice(&[0xD0, 0x30, 0x24, 0x1E, 0xD6]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0xD2, 0x48]);
+
+    patch_switch_target(&mut code, default_operand, switch, default_case);
+    patch_switch_target(&mut code, case_zero_operand, switch, case_zero);
+    patch_switch_target(&mut code, case_one_operand, switch, case_one);
+    patch_branch_target(&mut code, case_zero_break, merge);
+    patch_branch_target(&mut code, case_one_break, merge);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw switch-scope lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("switch-scope lift");
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "different switch-arm scopes must remain a named local refusal: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    assert_eq!(classify(&raw, &lifted.statements), Equivalence::Equivalent);
+}
+
+#[test]
+fn backward_scope_value_conflict_is_local_and_named() {
+    let mut code: Vec<u8> = vec![0xD0, 0x30];
+    let loop_header: usize = code.len();
+    code.extend_from_slice(&[0xD1, 0x12]);
+    let exit_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    code.extend_from_slice(&[0x24, 0x01, 0xD6, 0x1D, 0xD2, 0x30, 0x24, 0x02, 0xD6, 0x10]);
+    let loop_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let exit: usize = code.len();
+    code.extend_from_slice(&[0x1D, 0x47]);
+
+    patch_branch_target(&mut code, exit_operand, exit);
+    patch_branch_target(&mut code, loop_operand, loop_header);
+
+    let abc: AbcFile = bare_abc();
+    let body: MethodBody = scope_body(code, 3);
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw loop-scope lift");
+    let lifted: LiftedBody = lift_body(&abc, &body, None).expect("loop-scope lift");
+
+    let refusal: usize = raw
+        .iter()
+        .position(|statement: &Stmt| {
+            matches!(statement, Stmt::Comment(reason) if reason == "unreconciled scope values")
+        })
+        .expect("raw loop scope refusal");
+    let first_assignment: usize = raw
+        .iter()
+        .position(|statement: &Stmt| matches!(statement, Stmt::Assign { .. }))
+        .expect("raw loop assignment");
+    assert!(
+        refusal < first_assignment,
+        "the refusal must precede every statement lifted under the loop-header scope: {raw:#?}"
+    );
+
+    assert!(
+        lifted
+            .statements
+            .iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled scope values")),
+        "a differing back-edge scope must not reuse the entry predecessor: {lifted:#?}"
+    );
+    assert!(!lifted.structurally_recovered, "{lifted:#?}");
+    assert!(lifted.opaque_operands > 0, "{lifted:#?}");
+    let mut raw_flat: Flat = Flat::default();
+    lower_raw(&raw, &mut raw_flat);
+    let mut structured_flat: Flat = Flat::default();
+    lower_structured(&lifted.statements, &mut structured_flat, None);
+    assert_eq!(
+        successor_map(&raw_flat),
+        successor_map(&structured_flat),
+        "raw: {raw_flat:#?}\nstructured: {structured_flat:#?}"
+    );
+}
+
+#[test]
+fn exception_handler_discards_the_linear_operand_stack() {
+    let mut code: Vec<u8> = vec![0x24, 0x07, 0x10];
+    let end_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let handler: usize = code.len();
+    code.extend_from_slice(&[0xD5, 0xD1, 0x48]);
+    let end: usize = code.len();
+    code.push(0x47);
+    patch_branch_target(&mut code, end_operand, end);
+
+    let abc: AbcFile = bare_abc();
+    let mut body: MethodBody = switch_body(code, 2);
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 2,
+        target: handler as u32,
+        exc_type: 0,
+        var_name: 0,
+    });
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("raw handler-stack lift");
+
+    assert!(
+        raw.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Assign {
+                target: Expr::Local(1),
+                value: Expr::CaughtException,
+            }
+        )),
+        "the handler must consume the caught exception, not a stale linear operand: {raw:#?}"
+    );
 }
 
 fn assert_loose_dispatch_tree(statement: &Stmt, expected_comparisons: &[(i64, bool)]) {

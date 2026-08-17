@@ -333,6 +333,7 @@ ATTEST f2.p#a([BI)V
 ATTEST f2.p#j([B)I
 ATTEST f2.p0#g()Z
 ATTEST f2.r0#b(Lf2/s0;Ld1/x;I)V
+ATTEST f2.v0#a(I)[I
 ATTEST f2.y#c(Ld1/x;Lf2/b0;ZLf2/y$a;)Z
 ATTEST f3.a$a#e(Ld1/x;I)V
 ATTEST f4.b#m(Lf4/b$q;Lf4/b$s;ILjava/util/List;I)Z

@@ -2160,7 +2160,37 @@ pub fn recover_program(object: &[u8], functions: &[ProgramFunction], abi: Abi) -
         .collect();
     let mut recovered: Vec<RecoveredFunction> = Vec::with_capacity(functions.len());
     let mut unrecovered: Vec<UnrecoveredFunction> = Vec::new();
+    let exception_regions: Vec<crate::cxx_recovery::ItaniumEhFunction> =
+        match crate::cxx_recovery::recover_itanium_exception_regions(object) {
+            Ok(regions) => regions,
+            Err(error) => {
+                return RecoveredProgram {
+                    recovered,
+                    unrecovered: functions
+                        .iter()
+                        .map(|function: &ProgramFunction| UnrecoveredFunction {
+                            name: function.name.clone(),
+                            address: function.address,
+                            reason: error.to_string(),
+                        })
+                        .collect(),
+                };
+            }
+        };
     for f in functions {
+        let exception: Option<&crate::cxx_recovery::ItaniumEhFunction> = exception_regions
+            .iter()
+            .find(|exception: &&crate::cxx_recovery::ItaniumEhFunction| {
+                exception.function_start == f.address
+            });
+        if let Some(exception) = exception {
+            unrecovered.push(UnrecoveredFunction {
+                name: f.name.clone(),
+                address: f.address,
+                reason: crate::cxx_recovery::itanium_partial_reason(exception),
+            });
+            continue;
+        }
         match recover_program_function(object, f, &by_addr, abi) {
             Ok(rec) => recovered.push(rec),
             Err(reason) => unrecovered.push(UnrecoveredFunction {

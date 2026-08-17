@@ -1,5 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use disrobe_bytes::{ByteReader, Endian};
+use gimli::{
+    BaseAddresses, CieOrFde, CommonInformationEntry, EhFrame, EhFrameOffset, EndianSlice,
+    FrameDescriptionEntry, LittleEndian, Pointer, UnwindSection as _,
+};
 use object::RelocationTarget;
 use object::read::{Object, ObjectSection, ObjectSymbol, ObjectSymbolTable};
 use serde::{Deserialize, Serialize};
@@ -1101,55 +1106,660 @@ pub struct EhEntry {
     pub end: u64,
     pub landing_pad: u64,
     pub action: u32,
+    pub actions: Vec<EhAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum EhAction {
+    Cleanup,
+    CatchAll,
+    Catch { type_index: u64 },
+    ExceptionSpecification { filter: i64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ItaniumEhFunction {
+    pub function_start: u64,
+    pub function_end: u64,
+    pub lsda_address: u64,
+    pub entries: Vec<EhEntry>,
 }
 
 const MAX_ITANIUM_LSDA_ENTRIES: usize = 65_536;
+const MAX_ITANIUM_ACTION_STEPS: usize = 65_536;
+const DW_EH_PE_OMIT: u8 = 0xff;
 
-pub fn parse_itanium_lsda(bytes: &[u8]) -> Result<Vec<EhEntry>> {
-    if bytes.len() < 4 {
-        return Err(Error::Truncated {
-            needed: 4,
-            had: bytes.len(),
-        });
+type EhSlice<'a> = EndianSlice<'a, LittleEndian>;
+
+#[derive(Debug, Clone, Copy)]
+struct ItaniumLsdaContext {
+    function_start: u64,
+    function_end: Option<u64>,
+    input_address: u64,
+    text_base: Option<u64>,
+    data_base: Option<u64>,
+    address_size: usize,
+    endian: Endian,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EncodedPointer {
+    value: u64,
+    indirect: bool,
+    raw_zero: bool,
+}
+
+fn itanium_error(message: impl Into<String>) -> Error {
+    Error::Dwarf(format!("Itanium LSDA: {}", message.into()))
+}
+
+fn byte_error(error: impl std::fmt::Display) -> Error {
+    itanium_error(error.to_string())
+}
+
+fn encoded_value_size(encoding: u8, address_size: usize) -> Result<Option<usize>> {
+    match encoding & 0x0f {
+        0x00 => Ok(Some(address_size)),
+        0x01 | 0x09 => Ok(None),
+        0x02 | 0x0a => Ok(Some(2)),
+        0x03 | 0x0b => Ok(Some(4)),
+        0x04 | 0x0c => Ok(Some(8)),
+        format => Err(itanium_error(format!(
+            "unsupported DW_EH_PE value format 0x{format:02x}"
+        ))),
     }
-    let entry_count: usize = (bytes.len() - 4) / 16;
-    if entry_count > MAX_ITANIUM_LSDA_ENTRIES {
-        return Err(Error::SignatureDb(format!(
-            "Itanium LSDA entry count {entry_count} exceeds {MAX_ITANIUM_LSDA_ENTRIES}"
+}
+
+fn read_encoded_pointer(
+    reader: &mut ByteReader<'_>,
+    encoding: u8,
+    context: ItaniumLsdaContext,
+) -> Result<EncodedPointer> {
+    if encoding == DW_EH_PE_OMIT {
+        return Err(itanium_error("DW_EH_PE_omit has no encoded value"));
+    }
+    let application: u8 = encoding & 0x70;
+    if application == 0x50 {
+        let field_address: u64 = context
+            .input_address
+            .checked_add(u64::try_from(reader.position()).map_err(byte_error)?)
+            .ok_or_else(|| itanium_error("aligned pointer address overflow"))?;
+        let alignment: u64 = u64::try_from(context.address_size).map_err(byte_error)?;
+        let padding: u64 = (alignment - field_address % alignment) % alignment;
+        reader
+            .skip(usize::try_from(padding).map_err(byte_error)?)
+            .map_err(byte_error)?;
+    } else if !matches!(application, 0x00 | 0x10 | 0x20 | 0x30 | 0x40) {
+        return Err(itanium_error(format!(
+            "unsupported DW_EH_PE application 0x{application:02x}"
         )));
     }
-    let mut out: Vec<EhEntry> = Vec::with_capacity(entry_count);
-    let mut idx: usize = 4;
-    while idx + 16 <= bytes.len() {
-        let start: u64 =
-            u32::from_le_bytes([bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3]]) as u64;
-        let end: u64 = u32::from_le_bytes([
-            bytes[idx + 4],
-            bytes[idx + 5],
-            bytes[idx + 6],
-            bytes[idx + 7],
-        ]) as u64;
-        let landing_pad: u64 = u32::from_le_bytes([
-            bytes[idx + 8],
-            bytes[idx + 9],
-            bytes[idx + 10],
-            bytes[idx + 11],
-        ]) as u64;
-        let action: u32 = u32::from_le_bytes([
-            bytes[idx + 12],
-            bytes[idx + 13],
-            bytes[idx + 14],
-            bytes[idx + 15],
-        ]);
-        out.push(EhEntry {
+    let field_address: u64 = context
+        .input_address
+        .checked_add(u64::try_from(reader.position()).map_err(byte_error)?)
+        .ok_or_else(|| itanium_error("pointer field address overflow"))?;
+    let (unsigned, signed, raw_zero): (Option<u64>, Option<i64>, bool) = match encoding & 0x0f {
+        0x00 => match context.address_size {
+            4 => {
+                let value: u64 = u64::from(reader.read_u32(context.endian).map_err(byte_error)?);
+                (Some(value), None, value == 0)
+            }
+            8 => {
+                let value: u64 = reader.read_u64(context.endian).map_err(byte_error)?;
+                (Some(value), None, value == 0)
+            }
+            size => {
+                return Err(itanium_error(format!("unsupported pointer size {size}")));
+            }
+        },
+        0x01 => {
+            let value: u64 = reader.read_uleb128().map_err(byte_error)?;
+            (Some(value), None, value == 0)
+        }
+        0x02 => {
+            let value: u64 = u64::from(reader.read_u16(context.endian).map_err(byte_error)?);
+            (Some(value), None, value == 0)
+        }
+        0x03 => {
+            let value: u64 = u64::from(reader.read_u32(context.endian).map_err(byte_error)?);
+            (Some(value), None, value == 0)
+        }
+        0x04 => {
+            let value: u64 = reader.read_u64(context.endian).map_err(byte_error)?;
+            (Some(value), None, value == 0)
+        }
+        0x09 => {
+            let value: i64 = reader.read_sleb128().map_err(byte_error)?;
+            (None, Some(value), value == 0)
+        }
+        0x0a => {
+            let value: i64 = i64::from(reader.read_i16(context.endian).map_err(byte_error)?);
+            (None, Some(value), value == 0)
+        }
+        0x0b => {
+            let value: i64 = i64::from(reader.read_i32(context.endian).map_err(byte_error)?);
+            (None, Some(value), value == 0)
+        }
+        0x0c => {
+            let value: i64 = reader.read_i64(context.endian).map_err(byte_error)?;
+            (None, Some(value), value == 0)
+        }
+        format => {
+            return Err(itanium_error(format!(
+                "unsupported DW_EH_PE value format 0x{format:02x}"
+            )));
+        }
+    };
+    let base: u64 = match application {
+        0x00 | 0x50 => 0,
+        0x10 => field_address,
+        0x20 => context
+            .text_base
+            .ok_or_else(|| itanium_error("DW_EH_PE_textrel requires a text base"))?,
+        0x30 => context
+            .data_base
+            .ok_or_else(|| itanium_error("DW_EH_PE_datarel requires a data base"))?,
+        0x40 => context.function_start,
+        _ => return Err(itanium_error("invalid pointer application")),
+    };
+    let value: u64 = if raw_zero {
+        0
+    } else if let Some(offset) = signed {
+        base.checked_add_signed(offset)
+            .ok_or_else(|| itanium_error("signed pointer addition overflow"))?
+    } else {
+        base.checked_add(unsigned.ok_or_else(|| itanium_error("encoded pointer has no value"))?)
+            .ok_or_else(|| itanium_error("pointer addition overflow"))?
+    };
+    Ok(EncodedPointer {
+        value,
+        indirect: encoding & 0x80 != 0,
+        raw_zero,
+    })
+}
+
+fn type_entry(
+    bytes: &[u8],
+    type_table: usize,
+    type_encoding: u8,
+    type_index: u64,
+    context: ItaniumLsdaContext,
+) -> Result<EncodedPointer> {
+    if type_encoding == DW_EH_PE_OMIT {
+        return Err(itanium_error("catch action has no type table"));
+    }
+    let Some(width): Option<usize> = encoded_value_size(type_encoding, context.address_size)?
+    else {
+        return Err(itanium_error(format!(
+            "variable-width type-table encoding 0x{type_encoding:02x} cannot be indexed"
+        )));
+    };
+    let index: usize = usize::try_from(type_index).map_err(byte_error)?;
+    let distance: usize = index
+        .checked_mul(width)
+        .ok_or_else(|| itanium_error("type-table index overflow"))?;
+    let offset: usize = type_table
+        .checked_sub(distance)
+        .ok_or_else(|| itanium_error("type-table index is outside the LSDA"))?;
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    reader.seek(offset).map_err(byte_error)?;
+    read_encoded_pointer(&mut reader, type_encoding, context)
+}
+
+fn exception_specification(
+    bytes: &[u8],
+    type_table: usize,
+    filter: i64,
+    type_encoding: u8,
+    context: ItaniumLsdaContext,
+    remaining_steps: &mut usize,
+) -> Result<()> {
+    let magnitude: usize = usize::try_from(filter.unsigned_abs()).map_err(byte_error)?;
+    let distance: usize = magnitude
+        .checked_sub(1)
+        .ok_or_else(|| itanium_error("exception-specification filter is zero"))?;
+    let offset: usize = type_table
+        .checked_add(distance)
+        .ok_or_else(|| itanium_error("exception-specification offset overflow"))?;
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    reader.seek(offset).map_err(byte_error)?;
+    loop {
+        consume_itanium_action_step(remaining_steps)?;
+        let type_index: u64 = reader.read_uleb128().map_err(byte_error)?;
+        if type_index == 0 {
+            return Ok(());
+        }
+        let _: EncodedPointer = type_entry(bytes, type_table, type_encoding, type_index, context)?;
+    }
+}
+
+fn consume_itanium_action_step(remaining_steps: &mut usize) -> Result<()> {
+    *remaining_steps = remaining_steps
+        .checked_sub(1)
+        .ok_or_else(|| itanium_error("decoded action steps exceed the LSDA-wide limit"))?;
+    Ok(())
+}
+
+fn parse_action_chain(
+    bytes: &[u8],
+    action_table: usize,
+    action_offset: u64,
+    type_table: Option<usize>,
+    type_encoding: u8,
+    context: ItaniumLsdaContext,
+    remaining_steps: &mut usize,
+) -> Result<Vec<EhAction>> {
+    let biased: usize = usize::try_from(action_offset).map_err(byte_error)?;
+    let mut cursor: usize = action_table
+        .checked_add(
+            biased
+                .checked_sub(1)
+                .ok_or_else(|| itanium_error("zero action offset has no action record"))?,
+        )
+        .ok_or_else(|| itanium_error("action-table offset overflow"))?;
+    let action_limit: usize = type_table.unwrap_or(bytes.len());
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    let mut actions: Vec<EhAction> = Vec::new();
+    loop {
+        if cursor < action_table {
+            return Err(itanium_error(
+                "action-chain displacement moves before the action table",
+            ));
+        }
+        if cursor >= action_limit {
+            return Err(itanium_error(
+                "action-chain displacement leaves the action table",
+            ));
+        }
+        if !visited.insert(cursor) {
+            return Err(itanium_error("action chain contains a cycle"));
+        }
+        consume_itanium_action_step(remaining_steps)?;
+        let action_bytes: &[u8] = bytes
+            .get(cursor..action_limit)
+            .ok_or_else(|| itanium_error("action record is outside the action table"))?;
+        let mut reader: ByteReader<'_> = ByteReader::new(action_bytes);
+        let filter: i64 = reader.read_sleb128().map_err(byte_error)?;
+        let displacement_base: usize = cursor
+            .checked_add(reader.position())
+            .ok_or_else(|| itanium_error("action displacement base overflow"))?;
+        let displacement: i64 = reader.read_sleb128().map_err(byte_error)?;
+        let action: EhAction = match filter {
+            0 => EhAction::Cleanup,
+            positive if positive > 0 => {
+                let table: usize =
+                    type_table.ok_or_else(|| itanium_error("catch action has no type table"))?;
+                let type_index: u64 = u64::try_from(positive).map_err(byte_error)?;
+                let pointer: EncodedPointer =
+                    type_entry(bytes, table, type_encoding, type_index, context)?;
+                if pointer.raw_zero {
+                    EhAction::CatchAll
+                } else {
+                    EhAction::Catch { type_index }
+                }
+            }
+            negative => {
+                let table: usize = type_table
+                    .ok_or_else(|| itanium_error("exception specification has no type table"))?;
+                exception_specification(
+                    bytes,
+                    table,
+                    negative,
+                    type_encoding,
+                    context,
+                    remaining_steps,
+                )?;
+                EhAction::ExceptionSpecification { filter: negative }
+            }
+        };
+        actions.push(action);
+        if displacement == 0 {
+            return Ok(actions);
+        }
+        cursor = displacement_base
+            .checked_add_signed(isize::try_from(displacement).map_err(byte_error)?)
+            .ok_or_else(|| itanium_error("action-chain displacement leaves the LSDA"))?;
+    }
+}
+
+fn parse_itanium_lsda_with_context(
+    bytes: &[u8],
+    context: ItaniumLsdaContext,
+) -> Result<Vec<EhEntry>> {
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    let lpstart_encoding: u8 = reader.read_u8().map_err(byte_error)?;
+    let lpstart: u64 = if lpstart_encoding == DW_EH_PE_OMIT {
+        context.function_start
+    } else {
+        let pointer: EncodedPointer = read_encoded_pointer(&mut reader, lpstart_encoding, context)?;
+        if pointer.indirect {
+            return Err(itanium_error(
+                "indirect landing-pad bases require an image resolver",
+            ));
+        }
+        pointer.value
+    };
+    let type_encoding: u8 = reader.read_u8().map_err(byte_error)?;
+    let type_table: Option<usize> = if type_encoding == DW_EH_PE_OMIT {
+        None
+    } else {
+        let offset: u64 = reader.read_uleb128().map_err(byte_error)?;
+        let base: usize = reader.position();
+        let offset: usize = usize::try_from(offset).map_err(byte_error)?;
+        let table: usize = base
+            .checked_add(offset)
+            .ok_or_else(|| itanium_error("type-table offset overflow"))?;
+        if table > bytes.len() {
+            return Err(itanium_error("type table is outside the LSDA"));
+        }
+        Some(table)
+    };
+    let call_site_encoding: u8 = reader.read_u8().map_err(byte_error)?;
+    if call_site_encoding == DW_EH_PE_OMIT {
+        return Err(itanium_error("call-site table encoding is omitted"));
+    }
+    let table_length: usize =
+        usize::try_from(reader.read_uleb128().map_err(byte_error)?).map_err(byte_error)?;
+    let table_start: usize = reader.position();
+    let table: &[u8] = reader.read_bytes(table_length).map_err(byte_error)?;
+    let action_table: usize = reader.position();
+    let table_context: ItaniumLsdaContext = ItaniumLsdaContext {
+        input_address: context
+            .input_address
+            .checked_add(u64::try_from(table_start).map_err(byte_error)?)
+            .ok_or_else(|| itanium_error("call-site table address overflow"))?,
+        ..context
+    };
+    let call_site_value_encoding: u8 = call_site_encoding & 0x0f;
+    let mut table_reader: ByteReader<'_> = ByteReader::new(table);
+    let mut entries: Vec<EhEntry> = Vec::new();
+    let mut remaining_action_steps: usize = MAX_ITANIUM_ACTION_STEPS;
+    while !table_reader.is_empty() {
+        if entries.len() >= MAX_ITANIUM_LSDA_ENTRIES {
+            return Err(itanium_error(format!(
+                "entry count exceeds {MAX_ITANIUM_LSDA_ENTRIES}"
+            )));
+        }
+        let start_offset: u64 =
+            read_encoded_pointer(&mut table_reader, call_site_value_encoding, table_context)?.value;
+        let length: u64 =
+            read_encoded_pointer(&mut table_reader, call_site_value_encoding, table_context)?.value;
+        let landing_offset: u64 =
+            read_encoded_pointer(&mut table_reader, call_site_value_encoding, table_context)?.value;
+        let action_offset: u64 = table_reader.read_uleb128().map_err(byte_error)?;
+        let start: u64 = context
+            .function_start
+            .checked_add(start_offset)
+            .ok_or_else(|| itanium_error("call-site start overflow"))?;
+        let end: u64 = start
+            .checked_add(length)
+            .ok_or_else(|| itanium_error("call-site end overflow"))?;
+        if let Some(function_end) = context.function_end
+            && end > function_end
+        {
+            return Err(itanium_error("call-site range leaves its FDE"));
+        }
+        let landing_pad: u64 = if landing_offset == 0 {
+            0
+        } else {
+            lpstart
+                .checked_add(landing_offset)
+                .ok_or_else(|| itanium_error("landing-pad address overflow"))?
+        };
+        let actions: Vec<EhAction> = if action_offset == 0 {
+            if landing_pad == 0 {
+                Vec::new()
+            } else {
+                consume_itanium_action_step(&mut remaining_action_steps)?;
+                vec![EhAction::Cleanup]
+            }
+        } else {
+            parse_action_chain(
+                bytes,
+                action_table,
+                action_offset,
+                type_table,
+                type_encoding,
+                context,
+                &mut remaining_action_steps,
+            )?
+        };
+        entries.push(EhEntry {
             start,
             end,
             landing_pad,
-            action,
+            action: u32::try_from(action_offset).map_err(byte_error)?,
+            actions,
         });
-        idx += 16;
     }
-    Ok(out)
+    Ok(entries)
+}
+
+pub fn parse_itanium_lsda(bytes: &[u8]) -> Result<Vec<EhEntry>> {
+    parse_itanium_lsda_with_context(
+        bytes,
+        ItaniumLsdaContext {
+            function_start: 0,
+            function_end: None,
+            input_address: 0,
+            text_base: Some(0),
+            data_base: Some(0),
+            address_size: 8,
+            endian: Endian::Little,
+        },
+    )
+}
+
+fn parse_eh_cie<'a>(
+    section: &EhFrame<EhSlice<'a>>,
+    bases: &BaseAddresses,
+    offset: EhFrameOffset<usize>,
+) -> gimli::Result<CommonInformationEntry<EhSlice<'a>>> {
+    section.cie_from_offset(bases, offset)
+}
+
+fn image_pointer(file: &object::File<'_>, address: u64) -> Result<u64> {
+    for section in file.sections() {
+        let start: u64 = section.address();
+        let end: u64 = start
+            .checked_add(section.size())
+            .ok_or_else(|| itanium_error("section address overflow"))?;
+        if !(start..end).contains(&address) {
+            continue;
+        }
+        let data: &[u8] = section
+            .data()
+            .map_err(|error: object::Error| Error::ObjectParse(error.to_string()))?;
+        let offset: usize = usize::try_from(address - start).map_err(byte_error)?;
+        let mut reader: ByteReader<'_> = ByteReader::new(data);
+        reader.seek(offset).map_err(byte_error)?;
+        return reader.read_u64_le().map_err(byte_error);
+    }
+    Err(itanium_error(
+        "indirect FDE LSDA pointer is not file-backed",
+    ))
+}
+
+fn symbol_has_name_at(file: &object::File<'_>, address: u64, expected: &str) -> bool {
+    address != 0
+        && file
+            .symbols()
+            .chain(file.dynamic_symbols())
+            .any(|symbol: object::Symbol<'_, '_>| {
+                symbol.address() == address
+                    && symbol.name().is_ok_and(|name: &str| name == expected)
+            })
+}
+
+fn is_gxx_personality(
+    file: &object::File<'_>,
+    pointer_relocations: &BTreeMap<u64, String>,
+    pointer: Pointer,
+) -> bool {
+    const NAME: &str = "__gxx_personality_v0";
+    match pointer {
+        Pointer::Direct(address) => symbol_has_name_at(file, address, NAME),
+        Pointer::Indirect(address) => {
+            pointer_relocations
+                .get(&address)
+                .is_some_and(|name: &String| name == NAME)
+                || image_pointer(file, address)
+                    .is_ok_and(|target: u64| symbol_has_name_at(file, target, NAME))
+        }
+    }
+}
+
+pub fn recover_itanium_exception_regions(object_bytes: &[u8]) -> Result<Vec<ItaniumEhFunction>> {
+    if !object_bytes.starts_with(b"\x7fELF") {
+        return Ok(Vec::new());
+    }
+    let file: object::File<'_> = object::File::parse(object_bytes)
+        .map_err(|error: object::Error| Error::ObjectParse(error.to_string()))?;
+    if !matches!(file.format(), object::BinaryFormat::Elf) {
+        return Ok(Vec::new());
+    }
+    if file.architecture() != object::Architecture::X86_64 || !file.is_little_endian() {
+        return Err(itanium_error(
+            "this recovery slice supports little-endian x86-64 ELF; ARM EHABI and other architectures are excluded",
+        ));
+    }
+    let Some(eh_section): Option<object::Section<'_, '_>> = file.section_by_name(".eh_frame")
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(lsda_section): Option<object::Section<'_, '_>> =
+        file.section_by_name(".gcc_except_table")
+    else {
+        return Ok(Vec::new());
+    };
+    let eh_bytes: &[u8] = eh_section
+        .data()
+        .map_err(|error: object::Error| Error::ObjectParse(error.to_string()))?;
+    let lsda_bytes: &[u8] = lsda_section
+        .data()
+        .map_err(|error: object::Error| Error::ObjectParse(error.to_string()))?;
+    let text_base: Option<u64> = file
+        .section_by_name(".text")
+        .map(|section| section.address());
+    let data_base: Option<u64> = file
+        .section_by_name(".got")
+        .or_else(|| file.section_by_name(".data"))
+        .map(|section| section.address());
+    let mut bases: BaseAddresses = BaseAddresses::default().set_eh_frame(eh_section.address());
+    if let Some(address) = text_base {
+        bases = bases.set_text(address);
+    }
+    if let Some(address) = data_base {
+        bases = bases.set_got(address);
+    }
+    let eh_frame: EhFrame<EhSlice<'_>> = EhFrame::new(eh_bytes, LittleEndian);
+    let pointer_relocations: BTreeMap<u64, String> = collect_pointer_relocations(&file);
+    let mut iterator = eh_frame.entries(&bases);
+    let mut records: Vec<(u64, u64, u64)> = Vec::new();
+    let mut exhausted: bool = false;
+    for _ in 0..MAX_ITANIUM_LSDA_ENTRIES {
+        let entry = iterator
+            .next()
+            .map_err(|error: gimli::Error| Error::Dwarf(error.to_string()))?;
+        let Some(entry) = entry else {
+            exhausted = true;
+            break;
+        };
+        let CieOrFde::Fde(partial) = entry else {
+            continue;
+        };
+        let fde: FrameDescriptionEntry<EhSlice<'_>> = partial
+            .parse(parse_eh_cie)
+            .map_err(|error: gimli::Error| Error::Dwarf(error.to_string()))?;
+        let Some(personality): Option<Pointer> = fde.personality() else {
+            continue;
+        };
+        if !is_gxx_personality(&file, &pointer_relocations, personality) {
+            continue;
+        }
+        let Some(pointer): Option<Pointer> = fde.lsda() else {
+            continue;
+        };
+        let address: u64 = match pointer {
+            Pointer::Direct(address) => address,
+            Pointer::Indirect(address) => image_pointer(&file, address)?,
+        };
+        records.push((fde.initial_address(), fde.end_address(), address));
+    }
+    if !exhausted {
+        return Err(itanium_error(format!(
+            ".eh_frame entry count exceeds {MAX_ITANIUM_LSDA_ENTRIES}"
+        )));
+    }
+    records.sort_unstable_by_key(|record: &(u64, u64, u64)| record.2);
+    let section_start: u64 = lsda_section.address();
+    let section_end: u64 = section_start
+        .checked_add(lsda_section.size())
+        .ok_or_else(|| itanium_error("LSDA section range overflow"))?;
+    let mut functions: Vec<ItaniumEhFunction> = Vec::with_capacity(records.len());
+    for (index, (function_start, function_end, lsda_address)) in records.iter().copied().enumerate()
+    {
+        if !(section_start..section_end).contains(&lsda_address) {
+            return Err(itanium_error(format!(
+                "FDE LSDA pointer 0x{lsda_address:x} is outside .gcc_except_table"
+            )));
+        }
+        let next_address: u64 = records
+            .get(index + 1)
+            .map_or(section_end, |record: &(u64, u64, u64)| record.2);
+        if next_address <= lsda_address || next_address > section_end {
+            return Err(itanium_error("LSDA ranges overlap or are unsorted"));
+        }
+        let offset: usize = usize::try_from(lsda_address - section_start).map_err(byte_error)?;
+        let end: usize = usize::try_from(next_address - section_start).map_err(byte_error)?;
+        let bytes: &[u8] = lsda_bytes
+            .get(offset..end)
+            .ok_or_else(|| itanium_error("LSDA range is not file-backed"))?;
+        let entries: Vec<EhEntry> = parse_itanium_lsda_with_context(
+            bytes,
+            ItaniumLsdaContext {
+                function_start,
+                function_end: Some(function_end),
+                input_address: lsda_address,
+                text_base,
+                data_base,
+                address_size: 8,
+                endian: Endian::Little,
+            },
+        )?;
+        functions.push(ItaniumEhFunction {
+            function_start,
+            function_end,
+            lsda_address,
+            entries,
+        });
+    }
+    functions.sort_unstable_by_key(|function: &ItaniumEhFunction| function.function_start);
+    Ok(functions)
+}
+
+pub(crate) fn itanium_partial_reason(function: &ItaniumEhFunction) -> String {
+    let Some(entry): Option<&EhEntry> = function
+        .entries
+        .iter()
+        .find(|entry: &&EhEntry| entry.landing_pad != 0)
+    else {
+        return "control-flow-partial: Itanium LSDA contains no recoverable landing pad; try/catch emission is withheld until the landing-pad CFG is re-nested".to_owned();
+    };
+    let action: String = match entry.actions.first() {
+        Some(EhAction::Catch { type_index }) => format!("catch type index {type_index}"),
+        Some(EhAction::CatchAll) => "catch-all".to_owned(),
+        Some(EhAction::Cleanup) => "cleanup".to_owned(),
+        Some(EhAction::ExceptionSpecification { filter }) => {
+            format!("exception specification {filter}")
+        }
+        None => "no action".to_owned(),
+    };
+    format!(
+        "control-flow-partial: Itanium LSDA protects 0x{:x}..0x{:x} with landing pad 0x{:x} and {action}; try/catch emission is withheld until the landing-pad CFG is re-nested",
+        entry.start, entry.end, entry.landing_pad
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1263,23 +1873,52 @@ mod tests {
 
     #[test]
     fn itanium_lsda_parses_minimal_entries() {
-        let mut buf: Vec<u8> = vec![0x01, 0x02, 0x03, 0x04];
-        buf.extend_from_slice(&100u32.to_le_bytes());
-        buf.extend_from_slice(&200u32.to_le_bytes());
-        buf.extend_from_slice(&300u32.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
+        let buf: Vec<u8> = vec![0xff, 0xff, 0x01, 0x05, 0x64, 0x64, 0xac, 0x02, 0x00];
         let out: Vec<EhEntry> = parse_itanium_lsda(&buf).expect("lsda");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].start, 100);
+        assert_eq!(out[0].end, 200);
         assert_eq!(out[0].landing_pad, 300);
     }
 
     #[test]
     fn itanium_lsda_rejects_excessive_entries_before_alloc() {
         let entries: usize = MAX_ITANIUM_LSDA_ENTRIES + 1;
-        let buf: Vec<u8> = vec![0u8; 4 + entries * 16];
+        let table_length: usize = entries * 4;
+        let mut buf: Vec<u8> = vec![0xff, 0xff, 0x01];
+        let mut value: usize = table_length;
+        loop {
+            let mut byte: u8 = u8::try_from(value & 0x7f).expect("seven-bit group");
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+        buf.resize(buf.len() + table_length, 0);
         let result: Result<Vec<EhEntry>> = parse_itanium_lsda(&buf);
-        assert!(matches!(result, Err(Error::SignatureDb(_))));
+        assert!(matches!(result, Err(Error::Dwarf(_))));
+    }
+
+    #[test]
+    fn itanium_exception_specification_indexes_forward_from_the_type_base() {
+        let bytes: [u8; 2] = [0xff, 0x00];
+        let context: ItaniumLsdaContext = ItaniumLsdaContext {
+            function_start: 0,
+            function_end: None,
+            input_address: 0,
+            text_base: Some(0),
+            data_base: Some(0),
+            address_size: 8,
+            endian: Endian::Little,
+        };
+        let mut remaining_steps: usize = MAX_ITANIUM_ACTION_STEPS;
+        let result: Result<()> =
+            exception_specification(&bytes, 1, -1, 0x03, context, &mut remaining_steps);
+        assert!(result.is_ok());
     }
 
     #[test]

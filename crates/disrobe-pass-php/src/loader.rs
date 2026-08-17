@@ -86,6 +86,7 @@ struct Parser<'a> {
     buf: &'a [u8],
     pos: usize,
     depth: usize,
+    refused_scope: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +154,7 @@ enum Stmt {
     FunctionDecl {
         raw: Vec<u8>,
     },
+    ConstantDecl,
     Opaque {
         raw: Vec<u8>,
     },
@@ -188,6 +190,7 @@ impl<'a> Parser<'a> {
             buf,
             pos: start,
             depth: 0,
+            refused_scope: false,
         }
     }
 
@@ -234,6 +237,9 @@ impl<'a> Parser<'a> {
             }
             let start: usize = self.pos;
             let Some(stmt): Option<Stmt> = self.parse_statement() else {
+                if self.refused_scope {
+                    break;
+                }
                 if !self.recover_to_semicolon() {
                     break;
                 }
@@ -428,8 +434,15 @@ impl<'a> Parser<'a> {
 
     fn parse_statement(&mut self) -> Option<Stmt> {
         self.skip_trivia();
+        if self.match_keyword(b"namespace") || self.match_keyword(b"class") {
+            self.refused_scope = true;
+            return None;
+        }
         if let Some(raw) = self.capture_function_decl() {
             return Some(Stmt::FunctionDecl { raw });
+        }
+        if self.capture_constant_decl().is_some() {
+            return Some(Stmt::ConstantDecl);
         }
         if let Some(raw) = self.capture_control_block() {
             return Some(Stmt::ControlBlock { raw });
@@ -453,6 +466,19 @@ impl<'a> Parser<'a> {
         let expr: Expr = self.parse_expr()?;
         self.expect_semicolon();
         Some(Stmt::Expression(expr))
+    }
+
+    fn capture_constant_decl(&mut self) -> Option<()> {
+        let start: usize = self.pos;
+        if !self.match_keyword(b"const") || self.consume_to_semicolon().is_none() {
+            self.pos = start;
+            return None;
+        }
+        if self.pos.saturating_sub(start) > crate::decode_loop::DEFAULT_MAX_HEAP_BYTES {
+            self.pos = start;
+            return None;
+        }
+        Some(())
     }
 
     fn expect_semicolon(&mut self) {
@@ -898,6 +924,9 @@ fn open_tag_offset(buf: &[u8]) -> usize {
 pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     let mut parser: Parser<'_> = Parser::new(buf);
     let stmts: Vec<(Stmt, std::ops::Range<usize>)> = parser.parse_statements(4096);
+    if parser.refused_scope {
+        return None;
+    }
     if stmts.is_empty() {
         return None;
     }
@@ -923,6 +952,14 @@ pub fn peel_loader(buf: &[u8], depth: u32) -> Option<LoaderReport> {
     for (stmt, span) in &stmts {
         match stmt {
             Stmt::FunctionDecl { .. } => {}
+            Stmt::ConstantDecl => {
+                if depth > 0
+                    && let Some(raw) = buf.get(span.clone())
+                    && interp.declare_constant(raw)
+                {
+                    bound += 1;
+                }
+            }
             Stmt::Opaque { raw } => {
                 if depth == 0 {
                     continue;
@@ -1856,6 +1893,30 @@ mod tests {
             report.is_none(),
             "single-statement inline eval is the inline peeler's job"
         );
+    }
+
+    #[test]
+    fn constant_declaration_capture_enforces_the_heap_boundary() {
+        let limit: usize = crate::decode_loop::DEFAULT_MAX_HEAP_BYTES;
+        let mut exact: Vec<u8> = b"const K = '".to_vec();
+        exact.resize(limit - 2, b'x');
+        exact.extend_from_slice(b"';");
+        assert_eq!(exact.len(), limit);
+        let mut exact_parser: Parser<'_> = Parser::new(&exact);
+        assert!(
+            exact_parser.capture_constant_decl().is_some(),
+            "a declaration exactly at the documented heap boundary must remain eligible"
+        );
+
+        let mut oversized: Vec<u8> = exact;
+        oversized.insert(oversized.len() - 2, b'x');
+        assert_eq!(oversized.len(), limit + 1);
+        let mut oversized_parser: Parser<'_> = Parser::new(&oversized);
+        assert!(
+            oversized_parser.capture_constant_decl().is_none(),
+            "a declaration exceeding the heap boundary must be refused before materialization"
+        );
+        assert_eq!(oversized_parser.pos, 0);
     }
 
     #[test]

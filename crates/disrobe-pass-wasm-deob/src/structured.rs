@@ -183,6 +183,10 @@ impl ModuleCtx {
         Ok(record)
     }
 
+    pub(crate) fn fixed_shared_memory_is_64(&self) -> Result<bool> {
+        Ok(self.atomic_memory(0)?.memory64)
+    }
+
     fn struct_record(&self, type_index: u32) -> Option<&StructTypeRecord> {
         self.gc.structs.get(&type_index)
     }
@@ -264,6 +268,8 @@ struct Frame {
 
 struct Translator<'a> {
     lang: HighLang,
+    typescript_module: bool,
+    typescript_standalone: bool,
     callees: &'a CalleeNames,
     sig: &'a FunctionSig,
     module: Option<&'a ModuleCtx>,
@@ -287,6 +293,33 @@ pub(crate) fn lift_body_structured(
     callees: &CalleeNames,
     lang: HighLang,
 ) -> Result<(String, usize, LiftCoverage)> {
+    lift_body_structured_inner(body, sig, callees, lang, false, false)
+}
+
+pub(crate) fn lift_body_structured_typescript_module(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+) -> Result<(String, usize, LiftCoverage)> {
+    lift_body_structured_inner(body, sig, callees, HighLang::TypeScript, true, false)
+}
+
+pub(crate) fn lift_body_structured_typescript_standalone(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+) -> Result<(String, usize, LiftCoverage)> {
+    lift_body_structured_inner(body, sig, callees, HighLang::TypeScript, false, true)
+}
+
+fn lift_body_structured_inner(
+    body: &FunctionBody<'_>,
+    sig: &FunctionSig,
+    callees: &CalleeNames,
+    lang: HighLang,
+    typescript_module: bool,
+    typescript_standalone: bool,
+) -> Result<(String, usize, LiftCoverage)> {
     let locals: Vec<ValType> = read_locals(body, &sig.params)?;
 
     let reader: wasmparser::OperatorsReader<'_> = body
@@ -301,6 +334,8 @@ pub(crate) fn lift_body_structured(
 
     let mut t: Translator<'_> = Translator {
         lang,
+        typescript_module,
+        typescript_standalone,
         callees,
         sig,
         module: callees.module_ctx(),
@@ -501,9 +536,13 @@ impl Translator<'_> {
                         s.push_str(", ");
                     }
                     let name: String = self.param_name(i);
-                    push_text!(s, "{name}: {}", ts_ty(*ty));
+                    push_text!(s, "{name}: {}", typescript_type(*ty));
                 }
-                let ret: &str = self.sig.results.first().map_or("void", |t| ts_ty(*t));
+                let ret: &str = self
+                    .sig
+                    .results
+                    .first()
+                    .map_or("void", |t| typescript_type(*t));
                 push_line!(s, "): {ret} {{");
             }
             HighLang::C => {
@@ -543,7 +582,11 @@ impl Translator<'_> {
                     push_line!(self.out, "    let mut {name}: {} = {init};", rust_ty(ty));
                 }
                 HighLang::TypeScript => {
-                    push_line!(self.out, "    let {name}: {} = {init};", ts_ty(ty));
+                    push_line!(
+                        self.out,
+                        "    let {name}: {} = {init};",
+                        typescript_type(ty)
+                    );
                 }
                 HighLang::C => {
                     push_line!(self.out, "    {} {name} = {init};", c_ty(ty));
@@ -602,7 +645,11 @@ impl Translator<'_> {
                 push_line!(self.out, "{pad}let {name}: {} = {expr};", rust_ty(ty));
             }
             HighLang::TypeScript => {
-                push_line!(self.out, "{pad}let {name}: {} = {expr};", ts_ty(ty));
+                push_line!(
+                    self.out,
+                    "{pad}let {name}: {} = {expr};",
+                    typescript_type(ty)
+                );
             }
             HighLang::C => {
                 push_line!(self.out, "{pad}{} {name} = {expr};", c_ty(ty));
@@ -875,6 +922,22 @@ impl Translator<'_> {
         else {
             return Ok(false);
         };
+        if self.typescript_module {
+            let unsupported: Option<&'static str> = match op {
+                Operator::MemoryAtomicWait32 { .. } => Some("memory.atomic.wait32"),
+                Operator::MemoryAtomicWait64 { .. } => Some("memory.atomic.wait64"),
+                Operator::MemoryAtomicNotify { .. } => Some("memory.atomic.notify"),
+                Operator::AtomicFence => Some("atomic.fence"),
+                _ => None,
+            };
+            if let Some(operation) = unsupported {
+                return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
+                    target: "typescript-module",
+                    operation,
+                }
+                .into());
+            }
+        }
         if matches!(desc.shape, crate::op_lift::AtomicShape::Fence) {
             if matches!(self.lang, HighLang::TypeScript) {
                 return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
@@ -887,6 +950,13 @@ impl Translator<'_> {
             self.emit_stmt(&format!("{f}();"));
             self.coverage.record_translated();
             return Ok(true);
+        }
+        if self.typescript_standalone {
+            return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
+                target: "typescript",
+                operation: "instance-owned atomic memory",
+            }
+            .into());
         }
         let memarg: wasmparser::MemArg = crate::op_lift::atomic_memarg(op).ok_or_else(|| {
             Error::Parse("DR-WASMDEOB-ATOMIC: descriptor is missing memory arguments".to_owned())
@@ -907,16 +977,26 @@ impl Translator<'_> {
         match desc.shape {
             crate::op_lift::AtomicShape::Load => {
                 let addr: Operand = self.pop("atomic.load")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 let expr: String = format!("{fname}({addr_text}, {offset_text})");
                 self.spill(&expr, desc.result);
             }
             crate::op_lift::AtomicShape::Store => {
                 let val: Operand = self.pop("atomic.store")?;
                 let addr: Operand = self.pop("atomic.store")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 self.emit_stmt(&format!(
                     "{fname}({addr_text}, {offset_text}, {});",
                     val.text
@@ -925,8 +1005,13 @@ impl Translator<'_> {
             crate::op_lift::AtomicShape::Rmw => {
                 let val: Operand = self.pop("atomic.rmw")?;
                 let addr: Operand = self.pop("atomic.rmw")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 let expr: String = format!("{fname}({addr_text}, {offset_text}, {})", val.text);
                 self.spill(&expr, desc.result);
             }
@@ -934,8 +1019,13 @@ impl Translator<'_> {
                 let replacement: Operand = self.pop("atomic.cmpxchg")?;
                 let expected: Operand = self.pop("atomic.cmpxchg")?;
                 let addr: Operand = self.pop("atomic.cmpxchg")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 let expr: String = format!(
                     "{fname}({addr_text}, {offset_text}, {}, {})",
                     expected.text, replacement.text
@@ -946,8 +1036,13 @@ impl Translator<'_> {
                 let timeout: Operand = self.pop("atomic.wait")?;
                 let expected: Operand = self.pop("atomic.wait")?;
                 let addr: Operand = self.pop("atomic.wait")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 let expr: String = format!(
                     "{fname}({addr_text}, {offset_text}, {}, {})",
                     expected.text, timeout.text
@@ -957,8 +1052,13 @@ impl Translator<'_> {
             crate::op_lift::AtomicShape::Notify => {
                 let count: Operand = self.pop("atomic.notify")?;
                 let addr: Operand = self.pop("atomic.notify")?;
-                let addr_text: String =
-                    self.atomic_addr_operand(&addr, wide, memarg.offset, access_width);
+                let addr_text: String = self.atomic_addr_operand(
+                    &addr,
+                    wide,
+                    memarg.memory,
+                    memarg.offset,
+                    access_width,
+                );
                 let expr: String = format!("{fname}({addr_text}, {offset_text}, {})", count.text);
                 self.spill(&expr, ValType::I32);
             }
@@ -1002,7 +1102,11 @@ impl Translator<'_> {
                 push_line!(self.out, "{pad}let mut {var}: {} = {zero};", rust_ty(ty));
             }
             HighLang::TypeScript => {
-                push_line!(self.out, "{pad}let {var}: {} = {zero};", ts_ty(ty));
+                push_line!(
+                    self.out,
+                    "{pad}let {var}: {} = {zero};",
+                    typescript_type(ty)
+                );
             }
             HighLang::C => {
                 push_line!(self.out, "{pad}{} {var} = {zero};", c_ty(ty));
@@ -1469,17 +1573,26 @@ impl Translator<'_> {
         &self,
         addr: &Operand,
         wide: bool,
+        memory_index: u32,
         offset: u64,
         access_width: u64,
     ) -> String {
-        let helper: String = self.helper(if wide {
+        let helper: String = self.helper(if self.typescript_module && wide {
+            "wasm_atomic_addr_indexed_a64"
+        } else if self.typescript_module {
+            "wasm_atomic_addr_indexed"
+        } else if wide {
             "wasm_atomic_addr_a64"
         } else {
             "wasm_atomic_addr"
         });
         let addr_text: String = self.addr_operand(addr, wide);
         let offset_text: String = self.atomic_guard_offset_literal(offset);
-        format!("{helper}({addr_text}, {offset_text}, {access_width})")
+        if self.typescript_module {
+            format!("{helper}({memory_index}, {addr_text}, {offset_text}, {access_width})")
+        } else {
+            format!("{helper}({addr_text}, {offset_text}, {access_width})")
+        }
     }
 
     fn atomic_guard_offset_literal(&self, offset: u64) -> String {
@@ -2646,7 +2759,11 @@ impl Translator<'_> {
                 push_line!(self.out, "{pad}let {prev}: {} = {target};", rust_ty(ty));
             }
             HighLang::TypeScript => {
-                push_line!(self.out, "{pad}const {prev}: {} = {target};", ts_ty(ty));
+                push_line!(
+                    self.out,
+                    "{pad}const {prev}: {} = {target};",
+                    typescript_type(ty)
+                );
             }
             HighLang::C => {
                 push_line!(self.out, "{pad}{} {prev} = {target};", c_ty(ty));
@@ -2690,7 +2807,11 @@ impl Translator<'_> {
                 push_line!(self.out, "{pad}let {prev}: {} = {target};", rust_ty(ty));
             }
             HighLang::TypeScript => {
-                push_line!(self.out, "{pad}const {prev}: {} = {target};", ts_ty(ty));
+                push_line!(
+                    self.out,
+                    "{pad}const {prev}: {} = {target};",
+                    typescript_type(ty)
+                );
             }
             HighLang::C => {
                 push_line!(self.out, "{pad}{} {prev} = {target};", c_ty(ty));
@@ -2730,7 +2851,11 @@ impl Translator<'_> {
                 );
             }
             HighLang::TypeScript => {
-                push_line!(self.out, "{pad}const {prev}: {} = {target};", ts_ty(ty));
+                push_line!(
+                    self.out,
+                    "{pad}const {prev}: {} = {target};",
+                    typescript_type(ty)
+                );
                 push_line!(
                     self.out,
                     "{pad}if ({prev} === {expected}) {{ {target} = {replacement}; }}"
@@ -3338,7 +3463,7 @@ const fn rust_ty(ty: ValType) -> &'static str {
     }
 }
 
-const fn ts_ty(ty: ValType) -> &'static str {
+pub(crate) const fn typescript_type(ty: ValType) -> &'static str {
     match ty {
         ValType::I64 | ValType::V128 => "bigint",
         ValType::I32 | ValType::F32 | ValType::F64 | ValType::Ref(_) => "number",

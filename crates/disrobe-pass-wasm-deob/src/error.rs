@@ -62,6 +62,31 @@ pub enum AtomicMemoryRefusal {
     #[error("memory.grow may execute for memory {memory_index}")]
     MemoryGrow { memory_index: u32 },
 
+    #[error("module has {actual} functions, exceeding the TypeScript publication limit {limit}")]
+    FunctionCount { actual: usize, limit: usize },
+
+    #[error(
+        "function {function_index} has {actual} results, exceeding the TypeScript publication limit {limit}"
+    )]
+    ResultCount {
+        function_index: usize,
+        actual: usize,
+        limit: usize,
+    },
+
+    #[error("function {function_index} exports the reserved TypeScript instance name memory")]
+    ReservedExportName { function_index: usize },
+
+    #[error(
+        "module has {actual} function exports, exceeding the TypeScript publication limit {limit}"
+    )]
+    ExportCount { actual: usize, limit: usize },
+
+    #[error(
+        "module function export names occupy {actual} bytes, exceeding the TypeScript publication limit {limit}"
+    )]
+    ExportNameBytes { actual: usize, limit: usize },
+
     #[error("target {target} cannot express {operation} with the required semantics")]
     UnsupportedTarget {
         target: &'static str,

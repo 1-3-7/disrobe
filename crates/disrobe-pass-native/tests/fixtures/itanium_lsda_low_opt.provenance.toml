@@ -1,0 +1,7 @@
+source = "itanium_lsda_low_opt.cpp"
+compiler = "clang 19.1.7"
+linker = "LLD 19.1.7"
+target = "x86_64-unknown-linux-gnu"
+language = "C++17"
+optimization = "O0"
+sha256 = "a8fc3d6d6d8d9a93362c7d7ef386e45fd380d0f1e8b82a96ecfea82122d9855f"
