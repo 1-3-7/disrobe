@@ -363,6 +363,7 @@ mod tests {
             operands: vec!["BYTE PTR [RAX]".to_owned()],
             class: InsnClass::Other,
             branch_target: None,
+            effects: disrobe_nir::EffectRow::none(disrobe_nir::SourceLang::Unknown),
             isa: crate::model::IsaView::default(),
             stack_effect: crate::model::StackEffectView::default(),
             segments: crate::model::InsnSegmentsView::default(),

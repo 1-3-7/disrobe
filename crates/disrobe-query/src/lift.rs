@@ -107,7 +107,7 @@ pub fn disasm_to_nir_as(payload: &DisasmPayload, lang: SourceLang) -> NirModule 
     }
 }
 
-fn lift_instruction(insn: &DisasmInstruction, lang: SourceLang) -> NirInstr {
+pub(crate) fn lift_instruction(insn: &DisasmInstruction, lang: SourceLang) -> NirInstr {
     let op: NirOp = lift_op(insn);
     let (reads_memory, writes_memory): (bool, bool) = memory_access(insn);
     NirInstr {

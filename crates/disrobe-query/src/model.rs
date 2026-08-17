@@ -5,7 +5,8 @@ use disrobe_ir::payload::{
     DisasmInstruction, DisasmPayload, DisasmSymbol, DisasmSymbolKind, InsnEncoding, InsnFlow,
 };
 use disrobe_nir::{
-    NirClass, NirFunction, NirInstr, NirModule, NirSymbol, SymbolKind as NirSymbolKind,
+    EffectContext, EffectRow, NirClass, NirFunction, NirInstr, NirModule, NirSymbol, SourceLang,
+    SymbolKind as NirSymbolKind, derive_effect_row,
 };
 use indexmap::IndexMap;
 use serde::Serialize;
@@ -139,6 +140,7 @@ pub struct InsnView {
     pub operands: Vec<String>,
     pub class: InsnClass,
     pub branch_target: Option<u64>,
+    pub effects: EffectRow,
     #[serde(skip_serializing_if = "IsaView::is_empty")]
     pub isa: IsaView,
     #[serde(skip_serializing_if = "StackEffectView::is_neutral")]
@@ -233,26 +235,29 @@ impl InsnSegmentsView {
 }
 
 impl InsnView {
-    fn from_disasm(insn: &DisasmInstruction) -> Self {
+    fn from_disasm(insn: &DisasmInstruction, lang: SourceLang, context: &EffectContext) -> Self {
+        let nir: NirInstr = crate::lift::lift_instruction(insn, lang);
         Self {
             offset: insn.offset,
             mnemonic: insn.mnemonic.clone(),
             operands: insn.operands.clone(),
             class: InsnClass::from_flow(insn.flow),
             branch_target: insn.branch_target,
+            effects: derive_effect_row(&nir, context),
             isa: IsaView::from_disasm(insn),
             stack_effect: StackEffectView::from_disasm(insn),
             segments: InsnSegmentsView::from_disasm(insn),
         }
     }
 
-    fn from_nir(insn: &NirInstr) -> Self {
+    fn from_nir(insn: &NirInstr, context: &EffectContext) -> Self {
         Self {
             offset: insn.address,
             mnemonic: insn.mnemonic.clone(),
             operands: insn.operands.clone(),
             class: InsnClass::from_nir(insn.class()),
             branch_target: insn.direct_target(),
+            effects: derive_effect_row(insn, context),
             isa: IsaView::default(),
             stack_effect: StackEffectView::default(),
             segments: InsnSegmentsView::default(),
@@ -608,6 +613,12 @@ pub struct Module {
 impl Module {
     #[must_use]
     pub fn from_disasm(payload: &DisasmPayload) -> Self {
+        Self::from_disasm_as(payload, SourceLang::Unknown)
+    }
+
+    #[must_use]
+    pub fn from_disasm_as(payload: &DisasmPayload, lang: SourceLang) -> Self {
+        let context: EffectContext = EffectContext::new();
         let function_symbols: Vec<FunctionSymbol<'_>> =
             disasm_function_symbols(&payload.symbol_table);
 
@@ -636,7 +647,7 @@ impl Module {
                     };
                     let instructions: Vec<InsnView> = sorted_insns[lo..hi]
                         .iter()
-                        .map(|i: &&DisasmInstruction| InsnView::from_disasm(i))
+                        .map(|i: &&DisasmInstruction| InsnView::from_disasm(i, lang, &context))
                         .collect();
                     Function {
                         name: sym.name.to_owned(),
@@ -672,6 +683,11 @@ impl Module {
 
     #[must_use]
     pub fn from_nir(module: &NirModule) -> Self {
+        Self::from_nir_with_effect_context(module, &EffectContext::new())
+    }
+
+    #[must_use]
+    pub fn from_nir_with_effect_context(module: &NirModule, context: &EffectContext) -> Self {
         let functions: Vec<Function> = canonicalize_functions(
             module
                 .functions
@@ -681,7 +697,11 @@ impl Module {
                     address: f.address,
                     end: f.end,
                     is_export: f.is_export,
-                    instructions: f.instructions.iter().map(InsnView::from_nir).collect(),
+                    instructions: f
+                        .instructions
+                        .iter()
+                        .map(|instruction: &NirInstr| InsnView::from_nir(instruction, context))
+                        .collect(),
                 })
                 .collect(),
         );
