@@ -1,5 +1,9 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+#[path = "support/object_symbol.rs"]
+#[allow(clippy::redundant_pub_crate)]
+mod object_symbol;
+
 use disrobe_pass_native::{
     Error, LeafRecovery, PseudoAbi, PseudoReg, ResolvedCall, recover_aarch64_function,
     recover_aarch64_function_with_calls, recover_leaf_function_abi,
@@ -35,6 +39,88 @@ fn run_tool(program: &Path, args: Vec<OsString>) -> CapturedOutput {
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn compiled_crc32_fixture() -> Vec<u8> {
+    let clang: PathBuf = find_program("clang").expect("clang is required for the crc32 fixture");
+    let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("aarch64_crc.c");
+    let scratch: tempfile::TempDir = tempfile::tempdir().expect("create crc32 fixture scratch");
+    let object_path: PathBuf = scratch.path().join("aarch64_crc.o");
+    run_tool(
+        &clang,
+        vec![
+            "--target=aarch64-none-elf".into(),
+            "-march=armv8-a+crc".into(),
+            "-O2".into(),
+            "-ffreestanding".into(),
+            "-c".into(),
+            fixture.as_os_str().to_owned(),
+            "-o".into(),
+            object_path.as_os_str().to_owned(),
+        ],
+    );
+    std::fs::read(object_path).expect("read crc32 fixture object")
+}
+
+fn assert_crc_execution(
+    recovered: &LeafRecovery,
+    name: &str,
+    c_call: &str,
+    rust_call: &str,
+    expected: u64,
+    compiler: &Path,
+    rustc: &Path,
+    scratch: &Path,
+) {
+    let c_source: PathBuf = scratch.join(format!("crc32_width_{name}.c"));
+    let c_exe: PathBuf = scratch.join(format!("crc32_width_{name}.exe"));
+    let c_driver: String = format!(
+        "{}\nint main(void) {{ return {c_call} == 0x{expected:016x}ULL ? 0 : 1; }}\n",
+        recovered.source
+    );
+    std::fs::write(&c_source, c_driver).expect("write crc32 width C grade");
+    run_tool(
+        compiler,
+        vec![
+            "-O2".into(),
+            c_source.as_os_str().to_owned(),
+            "-o".into(),
+            c_exe.as_os_str().to_owned(),
+        ],
+    );
+    let no_args: [OsString; 0] = [];
+    let c_result: CapturedOutput = run_captured(&c_exe, &no_args, Duration::from_secs(30), 1 << 20)
+        .expect("spawn crc32 width C grade")
+        .expect("crc32 width C grade timeout");
+    assert_eq!(c_result.exit_code, Some(0), "{name}: {}", recovered.source);
+
+    let rust_source: PathBuf = scratch.join(format!("crc32_width_{name}.rs"));
+    let rust_exe: PathBuf = scratch.join(format!("crc32_width_{name}_rust.exe"));
+    let rust_driver: String = format!(
+        "{}\nfn main() {{ assert_eq!({rust_call}, 0x{expected:016x}u64); }}\n",
+        recovered
+            .rust_source
+            .as_deref()
+            .unwrap_or_else(|| panic!("{name} produced no pseudo-rust"))
+    );
+    std::fs::write(&rust_source, rust_driver).expect("write crc32 width Rust grade");
+    run_tool(
+        rustc,
+        vec![
+            "-O".into(),
+            rust_source.as_os_str().to_owned(),
+            "-o".into(),
+            rust_exe.as_os_str().to_owned(),
+        ],
+    );
+    let rust_result: CapturedOutput =
+        run_captured(&rust_exe, &no_args, Duration::from_secs(30), 1 << 20)
+            .expect("spawn crc32 width Rust grade")
+            .expect("crc32 width Rust grade timeout");
+    assert_eq!(rust_result.exit_code, Some(0), "{name}");
 }
 
 #[test]
@@ -78,6 +164,214 @@ fn clang_o2_madd_and_msub_lift() {
     assert!(subtracted.source.contains(" * ") && subtracted.source.contains(" - "));
     assert_eq!(added.signature.observed_integer_registers().len(), 3);
     assert_eq!(subtracted.signature.observed_integer_registers().len(), 3);
+}
+
+#[test]
+fn clang_crc32_intrinsics_lift_every_scalar_form() {
+    let object_bytes: Vec<u8> = compiled_crc32_fixture();
+    let cases: [(&str, &str); 8] = [
+        ("crc_ieee_b", "disrobe_crc32_ieee"),
+        ("crc_ieee_h", "disrobe_crc32_ieee"),
+        ("crc_ieee_w", "disrobe_crc32_ieee"),
+        ("crc_ieee_x", "disrobe_crc32_ieee"),
+        ("crc_castagnoli_b", "disrobe_crc32_castagnoli"),
+        ("crc_castagnoli_h", "disrobe_crc32_castagnoli"),
+        ("crc_castagnoli_w", "disrobe_crc32_castagnoli"),
+        ("crc_castagnoli_x", "disrobe_crc32_castagnoli"),
+    ];
+    for (symbol, helper) in cases {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(&object_bytes, symbol)
+            .unwrap_or_else(|| panic!("crc32 fixture lacks {symbol}"));
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"));
+        assert!(
+            recovered.source.contains(helper),
+            "{symbol}: {}",
+            recovered.source
+        );
+        let rust: &str = recovered
+            .rust_source
+            .as_deref()
+            .unwrap_or_else(|| panic!("{symbol} produced no pseudo-rust"));
+        assert!(rust.contains(helper), "{symbol}: {rust}");
+        assert_eq!(
+            recovered.signature.observed_integer_registers(),
+            vec![PseudoReg::Rax, PseudoReg::A64X1],
+            "{symbol}"
+        );
+    }
+}
+
+#[test]
+fn crc32_zero_register_operands_recover_without_aliasing_state() {
+    let cases: [[u8; 8]; 3] = [
+        [0x1f, 0x4c, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+        [0xe0, 0x4f, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+        [0x00, 0x4c, 0xdf, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+    ];
+    for bytes in cases {
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+            .unwrap_or_else(|error: Error| panic!("crc32 zero register rejected: {error:?}"));
+        assert!(recovered.source.contains("disrobe_crc32_ieee"));
+        assert!(
+            recovered
+                .rust_source
+                .as_deref()
+                .is_some_and(|source: &str| source.contains("disrobe_crc32_ieee"))
+        );
+    }
+}
+
+#[test]
+fn crc32_width_and_zero_register_vectors_execute_in_c_and_rust() {
+    let object_bytes: Vec<u8> = compiled_crc32_fixture();
+    let compiler: PathBuf = find_program("cc")
+        .or_else(|| find_program("clang"))
+        .expect("a native C compiler is required for the crc32 execution grade");
+    let rustup: PathBuf =
+        find_program("rustup").expect("rustup is required for the crc32 execution grade");
+    let rustc_output: CapturedOutput = run_tool(&rustup, vec!["which".into(), "rustc".into()]);
+    assert_eq!(rustc_output.exit_code, Some(0), "resolve the Rust compiler");
+    let rustc: PathBuf = PathBuf::from(String::from_utf8_lossy(&rustc_output.stdout).trim());
+    assert!(rustc.is_file(), "resolved Rust compiler does not exist");
+    let scratch: tempfile::TempDir = tempfile::tempdir().expect("create crc32 width scratch");
+    let cases: [(&str, u64); 8] = [
+        ("crc_ieee_b", 0x96ac_0dd4),
+        ("crc_ieee_h", 0x49ff_eb40),
+        ("crc_ieee_w", 0xa010_7153),
+        ("crc_ieee_x", 0xd72a_f417),
+        ("crc_castagnoli_b", 0x2a3c_90de),
+        ("crc_castagnoli_h", 0xae59_5b5a),
+        ("crc_castagnoli_w", 0x6b4e_fede),
+        ("crc_castagnoli_x", 0x7242_bacb),
+    ];
+    for (symbol, expected) in cases {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(&object_bytes, symbol)
+            .unwrap_or_else(|| panic!("crc32 fixture lacks {symbol}"));
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{symbol} rejected: {error:?}"));
+        assert_crc_execution(
+            &recovered,
+            symbol,
+            "recovered(0xa5a55a5aULL, 0xfedcba9876543210ULL)",
+            "recovered(0xa5a55a5au64, 0xfedcba9876543210u64)",
+            expected,
+            &compiler,
+            &rustc,
+            scratch.path(),
+        );
+    }
+
+    let zero_cases: [(&str, [u8; 8], &str, &str, u64); 3] = [
+        (
+            "destination_zero",
+            [0x1f, 0x4c, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered(0xa5a55a5aULL, 0xfedcba9876543210ULL)",
+            "recovered(0xa5a55a5au64, 0xfedcba9876543210u64)",
+            0xa5a5_5a5a,
+        ),
+        (
+            "accumulator_zero",
+            [0xe0, 0x4f, 0xc1, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered(0xfedcba9876543210ULL)",
+            "recovered(0xfedcba9876543210u64)",
+            0x657f_3d5b,
+        ),
+        (
+            "value_zero",
+            [0x00, 0x4c, 0xdf, 0x9a, 0xc0, 0x03, 0x5f, 0xd6],
+            "recovered(0xa5a55a5aULL)",
+            "recovered(0xa5a55a5au64)",
+            0xb255_c94c,
+        ),
+    ];
+    for (name, bytes, c_call, rust_call, expected) in zero_cases {
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+            .unwrap_or_else(|error: Error| panic!("{name} rejected: {error:?}"));
+        assert_crc_execution(
+            &recovered,
+            name,
+            c_call,
+            rust_call,
+            expected,
+            &compiler,
+            &rustc,
+            scratch.path(),
+        );
+    }
+}
+
+#[test]
+fn clang_crc32_check_vectors_execute_in_c_and_rust() {
+    let object_bytes: Vec<u8> = compiled_crc32_fixture();
+    let compiler: PathBuf = find_program("cc")
+        .or_else(|| find_program("clang"))
+        .expect("a native C compiler is required for the crc32 execution grade");
+    let rustup: PathBuf =
+        find_program("rustup").expect("rustup is required for the crc32 execution grade");
+    let rustc_output: CapturedOutput = run_tool(&rustup, vec!["which".into(), "rustc".into()]);
+    assert_eq!(rustc_output.exit_code, Some(0), "resolve the Rust compiler");
+    let rustc: PathBuf = PathBuf::from(String::from_utf8_lossy(&rustc_output.stdout).trim());
+    assert!(rustc.is_file(), "resolved Rust compiler does not exist");
+    let scratch: tempfile::TempDir = tempfile::tempdir().expect("create crc32 scratch directory");
+    let cases: [(&str, &str, u32); 2] = [
+        ("ieee", "crc_ieee_check", 0x340b_c6d9),
+        ("castagnoli", "crc_castagnoli_check", 0x1cf9_6d7c),
+    ];
+    for (name, symbol, expected) in cases {
+        let (bytes, address): (Vec<u8>, u64) = object_symbol::function_code(&object_bytes, symbol)
+            .unwrap_or_else(|| panic!("crc32 fixture lacks {symbol}"));
+        let recovered: LeafRecovery = recover_aarch64_function(&bytes, address)
+            .unwrap_or_else(|error: Error| panic!("{name} check rejected: {error:?}"));
+        assert!(recovered.signature.observed_integer_registers().is_empty());
+        let c_source: PathBuf = scratch.path().join(format!("crc32_{name}.c"));
+        let c_exe: PathBuf = scratch.path().join(format!("crc32_{name}.exe"));
+        let c_driver: String = format!(
+            "{}\nint main(void) {{ return recovered() == 0x{expected:08x}u ? 0 : 1; }}\n",
+            recovered.source
+        );
+        std::fs::write(&c_source, c_driver).expect("write crc32 C grade");
+        run_tool(
+            &compiler,
+            vec![
+                "-O2".into(),
+                c_source.as_os_str().to_owned(),
+                "-o".into(),
+                c_exe.as_os_str().to_owned(),
+            ],
+        );
+        let no_args: [OsString; 0] = [];
+        let c_result: CapturedOutput =
+            run_captured(&c_exe, &no_args, Duration::from_secs(30), 1 << 20)
+                .expect("spawn crc32 C grade")
+                .expect("crc32 C grade timeout");
+        assert_eq!(c_result.exit_code, Some(0), "{name}: {}", recovered.source);
+
+        let rust_source: PathBuf = scratch.path().join(format!("crc32_{name}.rs"));
+        let rust_exe: PathBuf = scratch.path().join(format!("crc32_{name}_rust.exe"));
+        let rust_driver: String = format!(
+            "{}\nfn main() {{ assert_eq!(recovered(), 0x{expected:08x}u64); }}\n",
+            recovered
+                .rust_source
+                .as_deref()
+                .unwrap_or_else(|| panic!("{name} check produced no pseudo-rust"))
+        );
+        std::fs::write(&rust_source, rust_driver).expect("write crc32 Rust grade");
+        run_tool(
+            &rustc,
+            vec![
+                "-O".into(),
+                rust_source.as_os_str().to_owned(),
+                "-o".into(),
+                rust_exe.as_os_str().to_owned(),
+            ],
+        );
+        let rust_result: CapturedOutput =
+            run_captured(&rust_exe, &no_args, Duration::from_secs(30), 1 << 20)
+                .expect("spawn crc32 Rust grade")
+                .expect("crc32 Rust grade timeout");
+        assert_eq!(rust_result.exit_code, Some(0), "{name}");
+    }
 }
 
 #[test]

@@ -1,7 +1,15 @@
+use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
+use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+const TOKEN_DIGEST_BYTES: usize = 12;
+const PARTIAL_REVEAL_MIN_CHARS: usize = 16;
+const PARTIAL_REVEAL_CHARS: usize = 2;
+const HEX: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -165,6 +173,120 @@ pub struct SecretScanReport {
 }
 
 pub const SCAN_SCHEMA: &str = "disrobe.scan.secrets/v0";
+
+pub(super) fn redaction_token(secret: &str) -> String {
+    let digest: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
+    let mut token: String = String::with_capacity(11 + TOKEN_DIGEST_BYTES * 2 + 8);
+    token.push_str("[REDACTED:");
+    for byte in digest.iter().take(TOKEN_DIGEST_BYTES) {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    if let Some((head, tail)) = partial_reveal(secret) {
+        token.push(':');
+        token.push_str(&head);
+        token.push('\u{2026}');
+        token.push_str(&tail);
+    }
+    token.push(']');
+    token
+}
+
+fn partial_reveal(secret: &str) -> Option<(String, String)> {
+    if secret.chars().count() < PARTIAL_REVEAL_MIN_CHARS {
+        return None;
+    }
+    let head: String = secret.chars().take(PARTIAL_REVEAL_CHARS).collect();
+    let tail_reversed: String = secret.chars().rev().take(PARTIAL_REVEAL_CHARS).collect();
+    let tail: String = tail_reversed.chars().rev().collect();
+    Some((head, tail))
+}
+
+pub(super) struct SecretScrubber {
+    automaton: Option<AhoCorasick>,
+    patterns: Vec<String>,
+    tokens: Vec<String>,
+}
+
+impl SecretScrubber {
+    pub(super) fn new(secrets: BTreeSet<String>) -> Self {
+        let mut patterns: Vec<String> = secrets
+            .into_iter()
+            .filter(|secret: &String| !secret.is_empty())
+            .collect();
+        patterns.sort_by(|left: &String, right: &String| {
+            right.len().cmp(&left.len()).then_with(|| left.cmp(right))
+        });
+        let tokens: Vec<String> = patterns
+            .iter()
+            .map(|secret: &String| redaction_token(secret))
+            .collect();
+        let automaton: Option<AhoCorasick> = if patterns.is_empty() {
+            None
+        } else {
+            AhoCorasick::builder()
+                .match_kind(MatchKind::LeftmostLongest)
+                .build(&patterns)
+                .ok()
+        };
+        Self {
+            automaton,
+            patterns,
+            tokens,
+        }
+    }
+
+    pub(super) fn scrub(&self, input: &str) -> String {
+        self.automaton.as_ref().map_or_else(
+            || {
+                let mut output: String = input.to_owned();
+                for (pattern, token) in self.patterns.iter().zip(self.tokens.iter()) {
+                    output = output.replace(pattern.as_str(), token.as_str());
+                }
+                output
+            },
+            |automaton: &AhoCorasick| automaton.replace_all(input, &self.tokens),
+        )
+    }
+}
+
+pub fn redact_report(report: &mut SecretScanReport) {
+    let secrets: BTreeSet<String> = report
+        .findings
+        .iter()
+        .map(|finding: &Finding| finding.value.clone())
+        .filter(|value: &String| !value.is_empty())
+        .collect();
+    let scrubber: SecretScrubber = SecretScrubber::new(secrets);
+    for finding in &mut report.findings {
+        redact_finding(finding, &scrubber);
+    }
+    if let Some(uri) = &mut report.uri {
+        *uri = scrubber.scrub(uri.as_str());
+    }
+}
+
+fn redact_finding(finding: &mut Finding, scrubber: &SecretScrubber) {
+    let Finding {
+        code,
+        message,
+        uri,
+        level,
+        kind: _,
+        offset: _,
+        value,
+        preview,
+        validation: _,
+    } = finding;
+    *code = scrubber.scrub(code.as_str());
+    *message = scrubber.scrub(message.as_str());
+    if let Some(uri_value) = uri {
+        *uri_value = scrubber.scrub(uri_value.as_str());
+    }
+    *level = scrubber.scrub(level.as_str());
+    *value = scrubber.scrub(value.as_str());
+    *preview = scrubber.scrub(preview.as_str());
+}
 
 const ENTROPY_THRESHOLD: f64 = 4.5;
 const ENTROPY_MIN_RUN: usize = 20;

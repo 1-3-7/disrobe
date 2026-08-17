@@ -549,6 +549,16 @@ enum BinOp {
     Smull,
     Umulh,
     Smulh,
+    Crc32 {
+        bytes: u8,
+        polynomial: CrcPolynomial,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CrcPolynomial {
+    Ieee,
+    Castagnoli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11128,7 +11138,8 @@ const fn flag_effect_bin(op: BinOp) -> FlagEffect {
         | BinOp::Umull
         | BinOp::Smull
         | BinOp::Umulh
-        | BinOp::Smulh => FlagEffect::Clobber,
+        | BinOp::Smulh
+        | BinOp::Crc32 { .. } => FlagEffect::Clobber,
     }
 }
 
@@ -17954,6 +17965,9 @@ fn emit_c(
     }
     let mut out: String = String::new();
     let _ = writeln!(out, "#include <stdint.h>");
+    if block_uses_crc32(body) {
+        let _ = writeln!(out, "{C_CRC32_HELPERS}");
+    }
     let uses_fp: bool = !signature.fp.is_empty() || matches!(signature.ret, FnReturn::Fp(_)) || {
         let mut probe: Vec<Xmm> = Vec::new();
         collect_block_xmm(body, &mut probe);
@@ -18235,6 +18249,77 @@ fn block_string_ops_present(body: &Block) -> bool {
         | Node::Goto(_) => false,
     })
 }
+
+fn block_uses_crc32(body: &Block) -> bool {
+    body.iter().any(|node: &Node| match node {
+        Node::Stmt(Stmt::BinAssign {
+            op: BinOp::Crc32 { .. },
+            ..
+        }) => true,
+        Node::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            block_uses_crc32(then_body)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|branch: &Block| block_uses_crc32(branch))
+        }
+        Node::DoWhile { body, .. } | Node::While { body, .. } => block_uses_crc32(body),
+        Node::Switch { cases, default, .. } => {
+            cases
+                .iter()
+                .any(|case: &SwitchCase| block_uses_crc32(&case.body))
+                || block_uses_crc32(default)
+        }
+        Node::Stmt(_)
+        | Node::CondSnapshot { .. }
+        | Node::Break
+        | Node::Continue
+        | Node::BreakLoop(_)
+        | Node::ContinueLoop(_)
+        | Node::ResumeAt(_)
+        | Node::OuterResume(_)
+        | Node::Return
+        | Node::Label(_)
+        | Node::Goto(_) => false,
+    })
+}
+
+const C_CRC32_HELPERS: &str = r"static inline uint32_t disrobe_crc32_update(uint32_t crc, uint64_t value, uint32_t bytes, uint32_t polynomial) {
+    while (bytes != 0u) {
+        crc ^= (uint8_t)value;
+        for (uint32_t bit = 0u; bit < 8u; bit++) crc = (crc >> 1u) ^ (polynomial & (uint32_t)-(int32_t)(crc & 1u));
+        value >>= 8u;
+        bytes--;
+    }
+    return crc;
+}
+static inline uint32_t disrobe_crc32_ieee(uint32_t crc, uint64_t value, uint32_t bytes) {
+    return disrobe_crc32_update(crc, value, bytes, 0xedb88320u);
+}
+static inline uint32_t disrobe_crc32_castagnoli(uint32_t crc, uint64_t value, uint32_t bytes) {
+    return disrobe_crc32_update(crc, value, bytes, 0x82f63b78u);
+}";
+
+const RUST_CRC32_HELPERS: &str = r"fn disrobe_crc32_update(mut crc: u32, mut value: u64, mut bytes: u32, polynomial: u32) -> u32 {
+    while bytes != 0 {
+        crc ^= value as u8 as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (polynomial & 0u32.wrapping_sub(crc & 1));
+        }
+        value >>= 8;
+        bytes -= 1;
+    }
+    crc
+}
+fn disrobe_crc32_ieee(crc: u32, value: u64, bytes: u32) -> u32 {
+    disrobe_crc32_update(crc, value, bytes, 0xedb88320)
+}
+fn disrobe_crc32_castagnoli(crc: u32, value: u64, bytes: u32) -> u32 {
+    disrobe_crc32_update(crc, value, bytes, 0x82f63b78)
+}";
 
 fn collect_block_regs(body: &Block, acc: &mut Vec<Reg>) {
     let push = |reg: Reg, acc: &mut Vec<Reg>| {
@@ -20820,6 +20905,13 @@ fn bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
                 "(uint64_t)(int64_t)(((__int128)(int64_t)({lhs}) * (__int128)(int64_t)({rhs})) >> 64)"
             )
         }
+        BinOp::Crc32 { bytes, polynomial } => {
+            let helper: &str = match polynomial {
+                CrcPolynomial::Ieee => "disrobe_crc32_ieee",
+                CrcPolynomial::Castagnoli => "disrobe_crc32_castagnoli",
+            };
+            format!("{helper}((uint32_t)({lhs}), (uint64_t)({rhs}), {bytes}u)")
+        }
     }
 }
 
@@ -21594,6 +21686,9 @@ fn emit_rust(
     }
 
     let mut out: String = String::new();
+    if block_uses_crc32(body) {
+        let _ = writeln!(out, "{RUST_CRC32_HELPERS}");
+    }
     if collected_variables.uses_half
         || signature
             .fp
@@ -23334,6 +23429,13 @@ fn rs_bin_expr(op: BinOp, lhs: &str, rhs: &str, width: Width) -> String {
             format!(
                 "((({lhs}) as i64 as i128).wrapping_mul(({rhs}) as i64 as i128) >> 64) as i64 as u64"
             )
+        }
+        BinOp::Crc32 { bytes, polynomial } => {
+            let helper: &str = match polynomial {
+                CrcPolynomial::Ieee => "disrobe_crc32_ieee",
+                CrcPolynomial::Castagnoli => "disrobe_crc32_castagnoli",
+            };
+            format!("{helper}(({lhs}) as u32, ({rhs}) as u64, {bytes}u32) as u64")
         }
     }
 }

@@ -21,6 +21,7 @@ pub(crate) struct BatchOptions {
     pub(crate) include: Vec<String>,
     pub(crate) exclude: Vec<String>,
     pub(crate) jobs: usize,
+    pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) i_have_authorization: bool,
 }
@@ -194,6 +195,7 @@ fn process_one(path: &Path, relative: &Path, opts: &BatchOptions) -> ManifestEnt
         bytes,
         &out_dir,
         &opts.chain_arg,
+        opts.redact,
         opts.capture_stages,
         opts.i_have_authorization,
     ) {
@@ -273,7 +275,7 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
         entries,
     };
     let manifest_path: PathBuf = opts.out_root.join("manifest.json");
-    let manifest_bytes: Vec<u8> = serde_json::to_vec_pretty(&manifest)
+    let manifest_bytes: Vec<u8> = chain_v1::serialized_report(&manifest, opts.redact)
         .map_err(|e| miette::miette!("DR-CLI-0341: manifest.json serialize: {e}"))?;
     std::fs::write(&manifest_path, &manifest_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0342: cannot write manifest.json: {e}"))?;
@@ -282,21 +284,25 @@ pub(crate) fn compute_manifest(root: &Path, opts: &BatchOptions) -> miette::Resu
 
 pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> miette::Result<()> {
     let manifest: BatchManifest = compute_manifest(&root, &opts)?;
-    let manifest_path_str: String = opts.out_root.join("manifest.json").display().to_string();
-    emit(fmt, &manifest, || {
+    let display_manifest: BatchManifest = chain_v1::redacted_copy(&manifest, opts.redact)?;
+    let manifest_path_str: String = chain_v1::redacted_text(
+        opts.out_root.join("manifest.json").display().to_string(),
+        opts.redact,
+    )?;
+    let rendered = || {
         println!("disrobe auto (batch)");
-        println!("  root:        {}", manifest.root);
-        println!("  out:         {}", manifest.out_root);
-        println!("  chain:       {}", manifest.chain);
-        println!("  jobs:        {}", manifest.jobs);
+        println!("  root:        {}", display_manifest.root);
+        println!("  out:         {}", display_manifest.out_root);
+        println!("  chain:       {}", display_manifest.chain);
+        println!("  jobs:        {}", display_manifest.jobs);
         println!(
             "  files:       {} processed, {} recovered, {} detect-only, {} errors",
-            manifest.summary.processed,
-            manifest.summary.recovered,
-            manifest.summary.detect_only,
-            manifest.summary.errors
+            display_manifest.summary.processed,
+            display_manifest.summary.recovered,
+            display_manifest.summary.detect_only,
+            display_manifest.summary.errors
         );
-        for entry in &manifest.entries {
+        for entry in &display_manifest.entries {
             let status: &str = if entry.error.is_some() {
                 "ERR "
             } else if entry.chain.is_empty() {
@@ -314,7 +320,8 @@ pub(crate) fn run_dir(root: PathBuf, opts: BatchOptions, fmt: OutputFormat) -> m
             );
         }
         println!("  manifest:    {manifest_path_str}");
-    })
+    };
+    emit(fmt, &display_manifest, rendered)
 }
 
 fn run_parallel(
@@ -370,6 +377,7 @@ mod tests {
             include: Vec::new(),
             exclude: Vec::new(),
             jobs: 1,
+            redact: false,
             capture_stages: false,
             i_have_authorization: false,
         }

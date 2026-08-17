@@ -91,6 +91,7 @@ pub(crate) struct OutputConfig {
     pub(crate) progress: Option<ConfigProgress>,
     pub(crate) verbosity: Option<ConfigVerbosity>,
     pub(crate) quiet: Option<bool>,
+    pub(crate) redact: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +221,8 @@ const TEMPLATE: &str = r#"# .disrobe.toml - disrobe project configuration
 # Log verbosity: "warn" | "info" | "debug" | "trace".
 # verbosity = "warn"
 # quiet = false
+# Replace detected secret values with stable SHA-256 sentinels.
+# redact = false
 
 [execution]
 # Worker thread-pool size (defaults to the detected CPU count).
@@ -341,6 +344,7 @@ fn run_show(explicit: Option<&Path>, fmt: OutputFormat) -> miette::Result<()> {
                 .map(|v: ConfigVerbosity| v.label().to_string()),
         );
         print_opt("    quiet", c.output.quiet.map(bool_label));
+        print_opt("    redact", c.output.redact.map(bool_label));
         println!("  [execution]");
         print_opt(
             "    threads",
@@ -453,6 +457,7 @@ mod tests {
             json = true
             color = "never"
             verbosity = "debug"
+            redact = true
 
             [execution]
             threads = 4
@@ -476,6 +481,7 @@ mod tests {
         assert_eq!(cfg.output.json, Some(true));
         assert_eq!(cfg.output.color, Some(ConfigColor::Never));
         assert_eq!(cfg.output.verbosity, Some(ConfigVerbosity::Debug));
+        assert_eq!(cfg.output.redact, Some(true));
         assert_eq!(cfg.execution.threads, Some(4));
         assert_eq!(cfg.execution.force, Some(true));
         assert_eq!(cfg.execution.max_depth, Some(16));

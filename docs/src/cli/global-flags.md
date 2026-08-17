@@ -34,7 +34,7 @@ These flags are accepted on every subcommand (they are declared `global = true` 
 
 Debug tracing is sample-sensitive. Only values emitted through explicitly guarded key/value events pass through the masking guard. After trimming surrounding whitespace, it masks a value only when the value is at least 20 characters, contains only ASCII letters, digits, `_`, `-`, `+`, `/`, or `=`, and mixes at least two of uppercase letters, lowercase letters, and digits. When the guard triggers, it preserves the first four trimmed characters and emits `…<redacted N chars>`, using a single Unicode ellipsis and the full trimmed character count. Ordinary messages, unguarded values, labels, and byte previews do not pass through this guard and may expose sample-derived data in either format. Review debug logs before sharing them.
 
-This does not change scanner output: `scan` and `frisk` report full matched values by default. To mask detected secrets in `frisk`, pass `--redact` or `--redact-key <KEY>`.
+This does not change scanner output: `scan` and `frisk` report full matched values by default. Pass `--redact` to replace detected secrets with stable truncated SHA-256 tokens in shareable output. The same setting can be stored as `output.redact = true` in `.disrobe.toml`.
 
 ## Metadata sidecar flags
 

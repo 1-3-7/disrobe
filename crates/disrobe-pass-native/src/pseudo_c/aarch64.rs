@@ -1,13 +1,14 @@
 use super::return_channel;
 use super::{
-    Abi, AggregatePlan, BinOp, Block, CondKind, Error, ExtSource, FP_ARG_ORDER, Flags, FnReturn,
-    FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpRoundKind, FpRoundRange, FpToIntRound,
-    FpUnaryOp, FpUnorderedModel, FpWidth, FrameShape, IndexExtend, IndexOperand, Item, ItemKind,
-    LeafRecovery, MemRef, Node, RecoveredSignature, ReduceOp, Reg, RegRef, ResolvedCall, Result,
-    RoundMode, ScalarType, Source, SretPlan, SretReturn, StackFrameExtent, Stmt, Structured, UnOp,
-    VecArrangement, VecBinOp, VecElem, VecStmt, Width, Xmm, annotate_calls_block_with_abi,
-    collect_call_targets, condition_is_sound, detect_sret, emit_c, emit_rust, infer_aggregate_plan,
-    infer_fp_params, infer_params, plan_frame, stmt_writes_rax_int, structure_items,
+    Abi, AggregatePlan, BinOp, Block, CondKind, CrcPolynomial, Error, ExtSource, FP_ARG_ORDER,
+    Flags, FnReturn, FnSignature, FpFmaKind, FpMinMaxKind, FpOp, FpOperand, FpRoundKind,
+    FpRoundRange, FpToIntRound, FpUnaryOp, FpUnorderedModel, FpWidth, FrameShape, IndexExtend,
+    IndexOperand, Item, ItemKind, LeafRecovery, MemRef, Node, RecoveredSignature, ReduceOp, Reg,
+    RegRef, ResolvedCall, Result, RoundMode, ScalarType, Source, SretPlan, SretReturn,
+    StackFrameExtent, Stmt, Structured, UnOp, VecArrangement, VecBinOp, VecElem, VecStmt, Width,
+    Xmm, annotate_calls_block_with_abi, collect_call_targets, condition_is_sound, detect_sret,
+    emit_c, emit_rust, infer_aggregate_plan, infer_fp_params, infer_params, plan_frame,
+    stmt_writes_rax_int, structure_items,
 };
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use std::collections::{BTreeMap, BTreeSet};
@@ -749,6 +750,14 @@ fn recover_with_calls_and_image<'image>(
                 }
                 if dest.reg == Reg::Rax {
                     return_width = dest.width;
+                }
+            }
+            "crc32b" | "crc32h" | "crc32w" | "crc32x" | "crc32cb" | "crc32ch" | "crc32cw"
+            | "crc32cx" => {
+                let (dest, stmts): (RegRef, Vec<Stmt>) = lower_crc32(insn)?;
+                push_stmts(&mut items, base, index, stmts)?;
+                if dest.reg == Reg::Rax {
+                    return_width = Width::W32;
                 }
             }
             "madd" | "msub" => {
@@ -3149,6 +3158,69 @@ fn finish(
         }),
         call_site_signature: None,
     })
+}
+
+fn lower_crc32(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    if operands.len() != 3 {
+        return Err(reject_at(insn, "malformed crc32 instruction"));
+    }
+    let (dest_reg, _, dest_width): (Option<Reg>, Source, Width) = select_operand(operands[0])?;
+    let (_, accumulator, accumulator_width): (Option<Reg>, Source, Width) =
+        select_operand(operands[1])?;
+    let (_, mut value, value_width): (Option<Reg>, Source, Width) = select_operand(operands[2])?;
+    if dest_width != Width::W32 || accumulator_width != Width::W32 {
+        return Err(reject_at(
+            insn,
+            "crc32 destination and accumulator must be 32-bit registers",
+        ));
+    }
+    let bytes: u8 = match insn.mnemonic.as_str() {
+        "crc32b" | "crc32cb" => 1,
+        "crc32h" | "crc32ch" => 2,
+        "crc32w" | "crc32cw" => 4,
+        "crc32x" | "crc32cx" => 8,
+        _ => return Err(reject_at(insn, "unsupported crc32 instruction")),
+    };
+    let required_value_width: Width = if bytes == 8 { Width::W64 } else { Width::W32 };
+    if value_width != required_value_width {
+        return Err(reject_at(insn, "crc32 value register has the wrong width"));
+    }
+    let polynomial: CrcPolynomial = if insn.mnemonic.starts_with("crc32c") {
+        CrcPolynomial::Castagnoli
+    } else {
+        CrcPolynomial::Ieee
+    };
+    let dest: RegRef = RegRef {
+        reg: dest_reg.unwrap_or(Reg::A64Tmp2),
+        width: Width::W32,
+    };
+    let mut stmts: Vec<Stmt> = Vec::with_capacity(3);
+    if accumulator != Source::Reg(dest)
+        && matches!(value, Source::Reg(source) if source.reg == dest.reg)
+    {
+        let saved: RegRef = RegRef {
+            reg: Reg::A64Tmp,
+            width: value_width,
+        };
+        stmts.push(Stmt::Assign {
+            dest: saved,
+            src: value,
+        });
+        value = Source::Reg(saved);
+    }
+    if accumulator != Source::Reg(dest) {
+        stmts.push(Stmt::Assign {
+            dest,
+            src: accumulator,
+        });
+    }
+    stmts.push(Stmt::BinAssign {
+        dest,
+        op: BinOp::Crc32 { bytes, polynomial },
+        src: value,
+    });
+    Ok((dest, stmts))
 }
 
 fn lower_alu(insn: &DisasmInsn) -> Result<(RegRef, Vec<Stmt>)> {

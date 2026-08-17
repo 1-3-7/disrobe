@@ -14,9 +14,16 @@ disrobe frisk app/ --suppress example.com           # drop findings whose value 
 disrobe frisk app/ --emit-baseline > baseline.json  # snapshot current findings
 disrobe frisk app/ --baseline baseline.json         # report only new findings
 disrobe frisk app/ --entropy                        # include high-entropy generic-secret findings
+disrobe frisk app/ --redact --format sarif          # replace secret values in shareable output
 ```
 
 `frisk` is offline. Network enrichment is explicit through `prowl`, and schema merging is explicit through `indicators`.
+
+Secret values remain visible by default. Pass `--redact`, or set `output.redact = true`, to replace detected secret values throughout text, JSON, SARIF, and HTML reports. Redaction runs after suppression and baseline filtering. It preserves finding counts, locations, and offsets.
+
+Each token contains the first 96 bits of the unsalted SHA-256 digest. The same secret therefore receives the same token across runs. A 96-bit identifier makes an accidental collision improbable. Redaction returns an error when renamed JSON object keys would collide. Values shorter than 16 characters reveal no source characters. Longer values include only the first two and last two characters. Literal replacement processes longer matches first so an overlapping shorter value cannot expose part of a longer value.
+
+Redaction scrubs finding values, previews, messages, paths, URI user information, and nested serialized fields. Nested JSON traversal stops at 64 levels, 1,048,576 values, or 64 MiB of string data. The command returns an error instead of emitting a partially redacted document when a limit is exceeded or redacted object keys would collide.
 
 ## Decoded string layers
 

@@ -18,7 +18,7 @@ pub mod string_emu;
 
 use self::ioc::IocKind;
 #[cfg(feature = "redact")]
-pub use self::redact::Redactor;
+pub use self::redact::{RedactionError, Redactor};
 use self::secret_scan::Severity;
 use self::string_emu::{DecodedString, RunLimits, StringEncoding};
 

@@ -17,6 +17,7 @@ const SECTION_ALIGN: usize = 4;
 const GUID_DEFINED_FIXED_LEN: usize = 20;
 const COMPRESSION_HEADER_LEN: usize = 5;
 const CRC32_VENDOR_HEADER_LEN: usize = 4;
+const EDK2_BROTLI_HEADER_LEN: usize = 16;
 
 const FFS_FILETYPE_RAW: u8 = 0x01;
 const FFS_FILETYPE_FFS_PAD: u8 = 0xF0;
@@ -401,6 +402,37 @@ fn decompress_lzma_guided(payload: &[u8], budget: &mut FvBudget, entry: &str) ->
     Ok(decoded)
 }
 
+fn decompress_brotli_guided(payload: &[u8], budget: &mut FvBudget, entry: &str) -> Result<Vec<u8>> {
+    let declared_size: u64 =
+        u64_le(payload, 0).ok_or_else(|| fv_err("truncated EDK2 Brotli decoded-size header"))?;
+    let _scratch_size: u64 =
+        u64_le(payload, 8).ok_or_else(|| fv_err("truncated EDK2 Brotli scratch-size header"))?;
+    let compressed: &[u8] = payload
+        .get(EDK2_BROTLI_HEADER_LEN..)
+        .ok_or_else(|| fv_err("truncated EDK2 Brotli payload header"))?;
+    let cap: u64 = budget
+        .decompressed_ceiling
+        .saturating_sub(budget.decompressed_total);
+    if declared_size > cap {
+        return Err(Error::QuotaExceeded {
+            entry: entry.to_owned(),
+            reason: format!(
+                "declared Brotli output {declared_size} exceeds remaining firmware decompression ceiling {cap}"
+            ),
+        });
+    }
+    let decoded: Vec<u8> =
+        crate::containers::bare_stream::decompress_brotli(compressed, declared_size)?;
+    if decoded.len() as u64 != declared_size {
+        return Err(fv_err(format!(
+            "Brotli decoded {} bytes but the EDK2 header declares {declared_size}",
+            decoded.len()
+        )));
+    }
+    budget.admit_decompressed(entry, declared_size)?;
+    Ok(decoded)
+}
+
 fn process_section_stream(
     payload: &[u8],
     depth: usize,
@@ -532,7 +564,15 @@ fn record_section(
             }
         }
         SECTION_GUID_DEFINED => {
-            record_guid_defined_section(body, depth, budget, file, out, &mut codec_outcome)?;
+            record_guid_defined_section(
+                body,
+                header_len,
+                depth,
+                budget,
+                file,
+                out,
+                &mut codec_outcome,
+            )?;
         }
         SECTION_FIRMWARE_VOLUME_IMAGE => {
             walk_volume(body, depth + 1, budget, out)?;
@@ -551,6 +591,7 @@ fn record_section(
 
 fn record_guid_defined_section(
     body: &[u8],
+    common_header_len: usize,
     depth: usize,
     budget: &mut FvBudget,
     file: &mut FvFileRecord,
@@ -564,9 +605,22 @@ fn record_guid_defined_section(
         guid16(body, 0).ok_or_else(|| fv_err("truncated guid-defined section guid"))?;
     let data_offset: u16 =
         u16_le(body, 16).ok_or_else(|| fv_err("truncated guid-defined section data offset"))?;
-    let common_header_len: usize = SECTION_HEADER_LEN;
-    let relative_offset: usize = (data_offset as usize).saturating_sub(common_header_len);
-    let payload: &[u8] = body.get(relative_offset..).unwrap_or(&[]);
+    let minimum_data_offset: usize = common_header_len
+        .checked_add(GUID_DEFINED_FIXED_LEN)
+        .ok_or_else(|| fv_err("guid-defined section header length overflow"))?;
+    let data_offset: usize = data_offset as usize;
+    if data_offset < minimum_data_offset {
+        return Err(fv_err(format!(
+            "guid-defined section data offset {data_offset} precedes the {minimum_data_offset}-byte fixed header"
+        )));
+    }
+    let relative_offset: usize = data_offset - common_header_len;
+    let payload: &[u8] = body.get(relative_offset..).ok_or_else(|| {
+        fv_err(format!(
+            "guid-defined section data offset {data_offset} exceeds its {}-byte declared section",
+            body.len().saturating_add(common_header_len)
+        ))
+    })?;
     let entry: String = guid_to_string(&file.guid);
     if section_guid == GUID_LZMA_CUSTOM_COMPRESS {
         match decompress_lzma_guided(payload, budget, &entry) {
@@ -617,14 +671,47 @@ fn record_guid_defined_section(
             ),
         });
     } else if section_guid == GUID_BROTLI_CUSTOM_COMPRESS {
+        let decoded: Vec<u8> = decompress_brotli_guided(payload, budget, &entry)?;
+        let inner_depth: usize = depth + 1;
+        if inner_depth > MAX_FV_DEPTH {
+            return Err(fv_err(format!(
+                "{entry}: Brotli-decoded stream exceeds max recursion depth {MAX_FV_DEPTH}"
+            )));
+        }
+        let file_sections_before: usize = file.sections.len();
+        let file_name_before: Option<String> = file.name.clone();
+        let volumes_before: usize = out.volumes_walked;
+        let files_before: usize = out.files.len();
+        let images_before: usize = out.pe_images.len();
+        let image_names_before: Vec<Option<String>> = out
+            .pe_images
+            .iter()
+            .map(|image: &FvPeImage| image.name.clone())
+            .collect();
+        let notes_before: usize = out.notes.len();
+        let truncated_before: bool = out.truncated;
+        if let Err(error) = process_section_stream(&decoded, inner_depth, budget, file, out) {
+            file.sections.truncate(file_sections_before);
+            file.name = file_name_before;
+            out.volumes_walked = volumes_before;
+            out.files.truncate(files_before);
+            out.pe_images.truncate(images_before);
+            for (image, name) in out.pe_images.iter_mut().zip(image_names_before) {
+                image.name = name;
+            }
+            out.notes.truncate(notes_before);
+            out.truncated = truncated_before;
+            return Err(error);
+        }
         out.notes.push(format!(
-            "{entry}: brotli custom-compress guided section detected; no verified in-house decoder is wired up yet, payload left compressed"
+            "{entry}: Brotli guided section decoded to {} bytes",
+            decoded.len()
         ));
         *codec_outcome = Some(FvCodecOutcome {
             codec: FvCompressionCodec::Brotli,
-            verified: false,
-            recovered: false,
-            note: "brotli guided section detected but not decoded".to_owned(),
+            verified: true,
+            recovered: true,
+            note: format!("Brotli guided section decoded to {} bytes", decoded.len()),
         });
     } else if section_guid == GUID_TIANO_CUSTOM_COMPRESS {
         out.notes.push(format!(
@@ -1118,6 +1205,298 @@ mod tests {
             out.notes
                 .iter()
                 .any(|n: &String| n.contains("section stream recursion exceeded max depth"))
+        );
+    }
+
+    fn brotli_guid_offset(bytes: &[u8]) -> usize {
+        bytes
+            .windows(GUID_BROTLI_CUSTOM_COMPRESS.len())
+            .position(|window: &[u8]| window == GUID_BROTLI_CUSTOM_COMPRESS)
+            .expect("Brotli guided-section GUID")
+    }
+
+    fn edk2_brotli_payload() -> &'static [u8] {
+        const BROTLI_FV: &[u8] =
+            include_bytes!("../../tests/fixtures/uefi_fv/edk2_brotli_guided.fv");
+        let guid_offset: usize = brotli_guid_offset(BROTLI_FV);
+        let section_offset: usize = guid_offset - SECTION_HEADER_LEN;
+        let section_size: usize = u24_le(BROTLI_FV, section_offset)
+            .and_then(|value: u32| usize::try_from(value).ok())
+            .expect("normal guided section size");
+        &BROTLI_FV[guid_offset + GUID_DEFINED_FIXED_LEN..section_offset + section_size]
+    }
+
+    fn brotli_guided_body(data_offset: u16, payload: &[u8]) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::with_capacity(GUID_DEFINED_FIXED_LEN + payload.len());
+        body.extend_from_slice(&GUID_BROTLI_CUSTOM_COMPRESS);
+        body.extend_from_slice(&data_offset.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(payload);
+        body
+    }
+
+    fn edk2_brotli_encode(payload: &[u8]) -> Vec<u8> {
+        let mut compressed: Vec<u8> = Vec::new();
+        {
+            let mut encoder: brotli::CompressorWriter<&mut Vec<u8>> =
+                brotli::CompressorWriter::new(&mut compressed, 4096, 9, 22);
+            std::io::Write::write_all(&mut encoder, payload).expect("compress section stream");
+        }
+        let mut encoded: Vec<u8> = Vec::with_capacity(EDK2_BROTLI_HEADER_LEN + compressed.len());
+        encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(&0u64.to_le_bytes());
+        encoded.extend_from_slice(&compressed);
+        encoded
+    }
+
+    fn empty_driver_record() -> FvFileRecord {
+        FvFileRecord {
+            guid: [0x42; 16],
+            file_type: FvFileType::Driver,
+            depth: 0,
+            name: Some("BrotliDriver".to_owned()),
+            size: 0,
+            sections: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn extended_brotli_guided_section_uses_its_eight_byte_common_header_for_data_offset() {
+        let payload: &[u8] = edk2_brotli_payload();
+        let body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER2_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("extended guided header fits"),
+            payload,
+        );
+        let section_size: usize = SECTION_HEADER2_LEN + body.len();
+        let mut stream: Vec<u8> = Vec::with_capacity(section_size);
+        stream.extend_from_slice(&[0xff, 0xff, 0xff, SECTION_GUID_DEFINED]);
+        stream.extend_from_slice(
+            &u32::try_from(section_size)
+                .expect("section size fits")
+                .to_le_bytes(),
+        );
+        stream.extend_from_slice(&body);
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), stream.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction::default();
+
+        process_section_stream(&stream, 0, &mut budget, &mut file, &mut extraction)
+            .expect("decode extended Brotli guided section");
+
+        assert_eq!(extraction.pe_images.len(), 1);
+        assert_eq!(extraction.pe_images[0].data, HELLO_A_EFI);
+    }
+
+    #[test]
+    fn brotli_guided_section_rejects_data_offset_before_its_fixed_header() {
+        let body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN - 1)
+                .expect("invalid offset fits"),
+            edk2_brotli_payload(),
+        );
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction::default();
+        let mut outcome: Option<FvCodecOutcome> = None;
+
+        let error: Error = record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect_err("reject guided DataOffset inside the fixed header");
+        assert!(error.to_string().contains("data offset"), "{error}");
+    }
+
+    #[test]
+    fn brotli_guided_section_rejects_truncated_malformed_and_trailing_streams() {
+        let valid: &[u8] = edk2_brotli_payload();
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        cases.push(("truncated", valid[..valid.len() - 1].to_vec()));
+        let mut malformed: Vec<u8> = valid.to_vec();
+        malformed[16..].fill(0xff);
+        cases.push(("malformed", malformed));
+        let mut trailing: Vec<u8> = valid.to_vec();
+        trailing.extend_from_slice(b"trailing");
+        cases.push(("trailing", trailing));
+
+        for (label, payload) in cases {
+            let body: Vec<u8> = brotli_guided_body(
+                u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                    .expect("normal guided header fits"),
+                &payload,
+            );
+            let mut budget: FvBudget =
+                FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+            let mut file: FvFileRecord = empty_driver_record();
+            let mut extraction: FvExtraction = FvExtraction::default();
+            let mut outcome: Option<FvCodecOutcome> = None;
+            let error: Error = record_guid_defined_section(
+                &body,
+                SECTION_HEADER_LEN,
+                0,
+                &mut budget,
+                &mut file,
+                &mut extraction,
+                &mut outcome,
+            )
+            .expect_err("reject incomplete or invalid Brotli stream");
+            assert!(
+                error.to_string().contains(label),
+                "{label} stream returned {error}"
+            );
+            assert!(extraction.pe_images.is_empty());
+        }
+    }
+
+    #[test]
+    fn brotli_guided_output_and_aggregate_decompression_are_bounded_before_recursion() {
+        let payload: &[u8] = edk2_brotli_payload();
+        let body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("normal guided header fits"),
+            payload,
+        );
+        let mut output_budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        output_budget.decompressed_ceiling = HELLO_A_EFI.len() as u64;
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction::default();
+        let mut outcome: Option<FvCodecOutcome> = None;
+        let output_error: Error = record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut output_budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect_err("decoded section stream exceeds output ceiling");
+        assert!(matches!(output_error, Error::QuotaExceeded { .. }));
+        assert!(extraction.pe_images.is_empty());
+
+        let mut aggregate_budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        aggregate_budget.decompressed_ceiling = 1_000;
+        let mut aggregate_file: FvFileRecord = empty_driver_record();
+        let mut aggregate_extraction: FvExtraction = FvExtraction::default();
+        let mut first_outcome: Option<FvCodecOutcome> = None;
+        record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut aggregate_budget,
+            &mut aggregate_file,
+            &mut aggregate_extraction,
+            &mut first_outcome,
+        )
+        .expect("first decoded stream fits aggregate ceiling");
+        let mut second_outcome: Option<FvCodecOutcome> = None;
+        let aggregate_error: Error = record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut aggregate_budget,
+            &mut aggregate_file,
+            &mut aggregate_extraction,
+            &mut second_outcome,
+        )
+        .expect_err("second decoded stream exceeds aggregate ceiling");
+        assert!(matches!(aggregate_error, Error::QuotaExceeded { .. }));
+        assert_eq!(aggregate_extraction.pe_images.len(), 1);
+    }
+
+    #[test]
+    fn unknown_guid_keeps_a_malformed_payload_opaque_without_probing_brotli() {
+        let mut body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("normal guided header fits"),
+            b"not a Brotli stream",
+        );
+        body[0] ^= 0x01;
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction::default();
+        let mut outcome: Option<FvCodecOutcome> = None;
+
+        record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect("unknown GUID remains opaque");
+
+        assert!(extraction.pe_images.is_empty());
+        assert_eq!(budget.decompressed_total, 0);
+        assert!(matches!(
+            outcome,
+            Some(FvCodecOutcome {
+                codec: FvCompressionCodec::Unknown,
+                recovered: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn failed_brotli_recursion_restores_existing_image_names() {
+        let nested_fv: Vec<u8> =
+            hostile_named_image("NestedName", b"nested image").expect("construct nested volume");
+        let mut decoded: Vec<u8> = fv_section(SECTION_FIRMWARE_VOLUME_IMAGE, &nested_fv);
+        decoded.extend_from_slice(&[8, 0, 0, SECTION_PE32]);
+        let encoded: Vec<u8> = edk2_brotli_encode(&decoded);
+        let body: Vec<u8> = brotli_guided_body(
+            u16::try_from(SECTION_HEADER_LEN + GUID_DEFINED_FIXED_LEN)
+                .expect("normal guided header fits"),
+            &encoded,
+        );
+        let nested_guid: [u8; 16] = guid_from_fields(
+            0x1234_5678,
+            0x9abc,
+            0xdef0,
+            [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+        );
+        let mut budget: FvBudget =
+            FvBudget::new(ExtractionQuota::default_safe(), body.len() as u64);
+        let mut file: FvFileRecord = empty_driver_record();
+        let mut extraction: FvExtraction = FvExtraction {
+            pe_images: vec![FvPeImage {
+                file_guid: nested_guid,
+                name: Some("OriginalName".to_owned()),
+                data: b"existing image".to_vec(),
+            }],
+            ..FvExtraction::default()
+        };
+        let mut outcome: Option<FvCodecOutcome> = None;
+
+        record_guid_defined_section(
+            &body,
+            SECTION_HEADER_LEN,
+            0,
+            &mut budget,
+            &mut file,
+            &mut extraction,
+            &mut outcome,
+        )
+        .expect_err("nested parse fails after renaming matching images");
+
+        assert_eq!(extraction.pe_images.len(), 1);
+        assert_eq!(
+            extraction.pe_images[0].name.as_deref(),
+            Some("OriginalName")
         );
     }
 }

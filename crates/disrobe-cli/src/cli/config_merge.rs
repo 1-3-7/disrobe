@@ -42,6 +42,7 @@ pub(crate) struct EffectiveGlobals {
     pub(crate) color_never: bool,
     pub(crate) progress_always: bool,
     pub(crate) progress_never: bool,
+    pub(crate) redact: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +101,7 @@ pub(crate) fn merge_globals(
         color_never,
         progress_always,
         progress_never,
+        redact: cfg.output.redact.unwrap_or(false),
     }
 }
 

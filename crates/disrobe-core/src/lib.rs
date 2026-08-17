@@ -68,6 +68,8 @@ pub use format::{
     TsPrettierFormatter, WatWasmFmtFormatter, current_config, format_or_passthrough, formatter_for,
     set_config,
 };
+#[cfg(feature = "redact")]
+pub use recon::{RedactionError, Redactor};
 pub use recon::{interop, ioc, malware_config, secret_scan};
 
 pub use interop::{

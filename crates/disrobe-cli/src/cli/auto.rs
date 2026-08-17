@@ -18,6 +18,7 @@ pub(crate) struct BatchArgs {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct AutoOptions {
     pub(crate) dry_run: bool,
+    pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) i_have_authorization: bool,
 }
@@ -33,6 +34,7 @@ pub(crate) fn run(
 ) -> miette::Result<()> {
     let AutoOptions {
         dry_run,
+        redact,
         capture_stages,
         i_have_authorization,
     } = options;
@@ -60,6 +62,7 @@ pub(crate) fn run(
             include: batch_args.include,
             exclude: batch_args.exclude,
             jobs: batch_args.jobs.max(1),
+            redact,
             capture_stages,
             i_have_authorization,
         };
@@ -79,6 +82,7 @@ pub(crate) fn run(
         fmt,
         ChainRunOptions {
             write_to_disk: !dry_run,
+            redact,
             capture_stages,
             emit_recovery,
             i_have_authorization,

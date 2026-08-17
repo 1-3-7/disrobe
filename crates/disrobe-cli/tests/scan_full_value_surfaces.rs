@@ -140,10 +140,25 @@ fn the_full_value_reaches_text_json_ndjson_and_sarif_by_default() {
         region["byteOffset"].as_u64().is_some(),
         "the sarif region must exist at all: {aws_result}"
     );
+
+    for flags in [
+        vec!["--redact"],
+        vec!["--json", "--redact"],
+        vec!["--ndjson", "--redact"],
+        vec!["--sarif", "--redact"],
+    ] {
+        let redacted: String = run(&flags, &path);
+        assert!(!redacted.contains(key.as_str()), "flags={flags:?}");
+        assert!(redacted.contains("[REDACTED:"), "flags={flags:?}");
+        if flags.iter().any(|flag: &&str| *flag != "--redact") {
+            serde_json::from_str::<Value>(&redacted)
+                .unwrap_or_else(|error: serde_json::Error| panic!("flags={flags:?}: {error}"));
+        }
+    }
 }
 
 #[test]
-fn frisk_default_shows_the_full_value_and_redaction_flags_still_hide_it() {
+fn frisk_default_shows_the_full_value_and_opt_in_redaction_hides_it() {
     let (_scratch, path, key): (disrobe_core::scratch::ScratchDir, PathBuf, String) = fixture();
     let dir: PathBuf = path.parent().expect("fixture parent").to_path_buf();
 
@@ -169,27 +184,22 @@ fn frisk_default_shows_the_full_value_and_redaction_flags_still_hide_it() {
         "frisk must default to the full value for DR-SEC-* rules"
     );
 
-    for flag in [
-        vec!["--redact".to_owned()],
-        vec!["--redact-key".to_owned(), "pinned".to_owned()],
-    ] {
-        let redacted: std::process::Output = Command::new(cli_binary())
-            .arg("frisk")
-            .arg("--format")
-            .arg("json")
-            .args(&flag)
-            .arg(&dir)
-            .output()
-            .expect("run disrobe frisk");
-        assert!(redacted.status.success(), "redacted frisk must succeed");
-        let body: String = String::from_utf8(redacted.stdout).expect("utf8 stdout");
-        assert!(
-            !body.contains(key.as_str()),
-            "opt-in redaction {flag:?} must still hide the value:\n{body}"
-        );
-        assert!(
-            body.contains("[REDACTED:"),
-            "opt-in redaction {flag:?} must still emit sentinels:\n{body}"
-        );
-    }
+    let redacted: std::process::Output = Command::new(cli_binary())
+        .arg("frisk")
+        .arg("--format")
+        .arg("json")
+        .arg("--redact")
+        .arg(&dir)
+        .output()
+        .expect("run disrobe frisk");
+    assert!(redacted.status.success(), "redacted frisk must succeed");
+    let body: String = String::from_utf8(redacted.stdout).expect("utf8 stdout");
+    assert!(
+        !body.contains(key.as_str()),
+        "opt-in redaction leaked the value:\n{body}"
+    );
+    assert!(
+        body.contains("[REDACTED:"),
+        "opt-in redaction omitted sentinels:\n{body}"
+    );
 }

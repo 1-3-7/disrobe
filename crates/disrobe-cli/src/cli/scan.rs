@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use disrobe_core::recon::redact::Redactor;
 use disrobe_core::{Confidence, SecretScanReport, scan_report};
 
 use crate::cli::output::{self, OutputFormat};
@@ -27,11 +28,14 @@ fn render_text(report: &SecretScanReport) {
     }
 }
 
-pub(crate) fn run(path: PathBuf, fmt: OutputFormat) -> miette::Result<()> {
+pub(crate) fn run(path: PathBuf, fmt: OutputFormat, redact: bool) -> miette::Result<()> {
     let bytes: Vec<u8> = std::fs::read(&path)
         .map_err(|e| miette::miette!("DR-SCAN-0050: cannot read target: {e}"))?;
     let uri: String = path.display().to_string();
-    let report: SecretScanReport = scan_report(&bytes, Some(&uri));
+    let mut report: SecretScanReport = scan_report(&bytes, Some(&uri));
+    if redact {
+        Redactor::new().redact_secret_report(&mut report);
+    }
     output::emit(fmt, &report, || render_text(&report))
 }
 

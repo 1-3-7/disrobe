@@ -147,6 +147,11 @@ def test_strings_ioc_typed() -> None:
     ss = disrobe.secret_scan(blob)
     assert isinstance(ss, disrobe.SecretScanReport)
 
+    secret_blob = b"key = AKIA3KFTG2KQ4WXYZ7AB"
+    redacted = disrobe.secret_scan(secret_blob, redact=True)
+    assert "AKIA3KFTG2KQ4WXYZ7AB" not in redacted.to_json()
+    assert "[REDACTED:" in redacted.to_json()
+
 
 def test_native_typed_returns() -> None:
     sym = disrobe.native_symbols(SAMPLE_ELF)

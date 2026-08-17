@@ -268,20 +268,14 @@ pub(crate) fn run(
     entropy: bool,
     git: bool,
     redact: bool,
-    redact_key: Option<String>,
     fmt: OutputFormat,
 ) -> miette::Result<()> {
-    let redact: bool = redact || redact_key.is_some();
     if emit_baseline && redact {
         return Err(miette::miette!(
             "DR-FRISK-0080: --emit-baseline cannot be combined with --redact: a baseline must record raw values to match findings on a later scan"
         ));
     }
-    let redactor: Option<Redactor> = redact.then(|| {
-        redact_key
-            .as_deref()
-            .map_or_else(Redactor::with_random_key, Redactor::with_key)
-    });
+    let redactor: Option<Redactor> = redact.then(Redactor::new);
 
     let custom: Vec<CustomPattern> = match pattern_file {
         Some(p) => load_patterns(&p)?,

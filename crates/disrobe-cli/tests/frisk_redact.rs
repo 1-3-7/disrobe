@@ -34,6 +34,7 @@ struct Planted {
     discord: String,
     aws: String,
     github: String,
+    pem: String,
 }
 
 impl Planted {
@@ -52,6 +53,10 @@ impl Planted {
             ),
             aws: format!("{}{}", "AKIA", "3KFTG2KQ4WXYZ7AB"),
             github: format!("{}{}", "ghp_", "0123456789abcdefghijklmnopqrstuvwxyz"),
+            pem: format!(
+                "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+                "A".repeat(64)
+            ),
         }
     }
 
@@ -64,7 +69,7 @@ impl Planted {
         ]
     }
 
-    fn all_literals(&self) -> [&str; 6] {
+    fn all_literals(&self) -> [&str; 7] {
         [
             self.slack.as_str(),
             self.sendgrid.as_str(),
@@ -72,6 +77,7 @@ impl Planted {
             self.discord.as_str(),
             self.aws.as_str(),
             self.github.as_str(),
+            self.pem.as_str(),
         ]
     }
 }
@@ -95,6 +101,18 @@ fn corpus() -> (disrobe_core::scratch::ScratchDir, PathBuf, Planted) {
         ),
     )
     .expect("write hooks.env");
+    std::fs::write(dir.join("private.pem"), planted.pem.as_bytes()).expect("write private key");
+    std::fs::write(
+        dir.join("nested.json"),
+        format!(
+            r#"{{"array":["{}"],"object":{{"bare":"{}"}}}}"#,
+            planted.aws, planted.github
+        ),
+    )
+    .expect("write nested JSON");
+    let mut binary: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x80];
+    binary.extend_from_slice(format!("prefix={} suffix", planted.aws).as_bytes());
+    std::fs::write(dir.join("binary.bin"), binary).expect("write binary fixture");
     (scratch, dir, planted)
 }
 
@@ -108,6 +126,21 @@ fn frisk(dir: &PathBuf, args: &[&str]) -> String {
     assert!(
         out.status.success(),
         "non-zero exit for {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf8 stdout")
+}
+
+fn scan(path: &PathBuf, args: &[&str]) -> String {
+    let out: std::process::Output = Command::new(cli_binary())
+        .arg("scan")
+        .args(args)
+        .arg(path)
+        .output()
+        .expect("run disrobe scan");
+    assert!(
+        out.status.success(),
+        "non-zero scan exit for {args:?}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).expect("utf8 stdout")
@@ -144,6 +177,12 @@ fn redact_produces_zero_leak_across_text_json_sarif_with_location_parity() {
     let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
 
     let plain_json: String = frisk(&dir, &["--format", "json"]);
+    let plain_value: Value = serde_json::from_str(&plain_json).expect("plain report JSON");
+    assert!(
+        plain_value["non_utf8_files"]
+            .as_u64()
+            .is_some_and(|count: u64| count >= 1)
+    );
 
     for secret in planted.full_leak() {
         assert!(
@@ -192,23 +231,174 @@ fn redact_produces_zero_leak_across_text_json_sarif_with_location_parity() {
         aws_value.starts_with("[REDACTED:"),
         "the preview of a secret-scan secret must also be replaced by a sentinel: {aws_value}"
     );
+
+    let rescan_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-frisk-redact-rescan")
+            .expect("create rescan scratch directory");
+    let redacted_path: PathBuf = rescan_scratch.path().join("redacted.json");
+    std::fs::write(&redacted_path, redacted_json.as_bytes()).expect("write redacted output");
+    let scan_rescan: Value =
+        serde_json::from_str(&scan(&redacted_path, &["--json"])).expect("scan rescan JSON");
+    assert!(
+        scan_rescan["findings"]
+            .as_array()
+            .is_some_and(
+                |findings: &Vec<Value>| findings.iter().all(|finding: &Value| {
+                    finding["kind"] == Value::String("high_entropy_generic".to_owned())
+                        && planted.all_literals().iter().all(|secret: &&str| {
+                            !finding["value"]
+                                .as_str()
+                                .is_some_and(|value: &str| value.contains(secret))
+                        })
+                })
+            ),
+        "scan found a concrete secret in redacted output: {scan_rescan}"
+    );
+    let frisk_rescan: Value = serde_json::from_str(&frisk(&redacted_path, &["--format", "json"]))
+        .expect("frisk rescan JSON");
+    assert!(
+        frisk_rescan["findings"]
+            .as_array()
+            .is_some_and(
+                |findings: &Vec<Value>| findings.iter().all(|finding: &Value| {
+                    finding["category"] != Value::String("secret".to_owned())
+                })
+            ),
+        "frisk found a secret in redacted output"
+    );
 }
 
 #[test]
-fn keyed_redaction_is_deterministic_across_runs() {
+fn redaction_is_deterministic_across_runs_without_a_key() {
     let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
+    let public_redactor: disrobe_core::Redactor = disrobe_core::Redactor::new();
+    assert_eq!(
+        public_redactor.token("abc"),
+        "[REDACTED:ba7816bf8f01cfea414140de]"
+    );
 
-    let first: String = frisk(&dir, &["--format", "json", "--redact-key", "shared-key"]);
-    let second: String = frisk(&dir, &["--format", "json", "--redact-key", "shared-key"]);
+    let first: String = frisk(&dir, &["--format", "json", "--redact"]);
+    let second: String = frisk(&dir, &["--format", "json", "--redact"]);
 
     for secret in planted.all_literals() {
         assert!(
             !first.contains(secret),
-            "keyed redaction still leaked {secret}"
+            "deterministic redaction still leaked {secret}"
         );
     }
     assert_eq!(
         first, second,
-        "a fixed --redact-key must yield byte-identical redacted output across runs"
+        "unsalted redaction must yield byte-identical output across runs"
     );
+}
+
+#[test]
+fn scan_redaction_is_opt_in_and_preserves_finding_identity() {
+    let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
+    let path: PathBuf = dir.join("keys.txt");
+
+    let plain: String = scan(&path, &["--json"]);
+    let redacted: String = scan(&path, &["--json", "--redact"]);
+
+    assert!(plain.contains(planted.aws.as_str()));
+    assert!(!redacted.contains(planted.aws.as_str()));
+    assert!(redacted.contains("[REDACTED:"));
+
+    let plain_json: Value = serde_json::from_str(&plain).expect("plain json");
+    let redacted_json: Value = serde_json::from_str(&redacted).expect("redacted json");
+    assert_eq!(
+        plain_json["findings"].as_array().map(Vec::len),
+        redacted_json["findings"].as_array().map(Vec::len)
+    );
+    assert_eq!(
+        plain_json["findings"][0]["offset"],
+        redacted_json["findings"][0]["offset"]
+    );
+}
+
+#[test]
+fn suppression_and_baseline_filter_before_redaction() {
+    let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
+    let aws_token: String = disrobe_core::Redactor::new().token(planted.aws.as_str());
+
+    let suppressed: String = frisk(
+        &dir,
+        &[
+            "--format",
+            "json",
+            "--suppress",
+            planted.aws.as_str(),
+            "--redact",
+        ],
+    );
+    assert!(!suppressed.contains(aws_token.as_str()));
+
+    let baseline: String = frisk(&dir, &["--emit-baseline"]);
+    let baseline_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-frisk-redact-baseline")
+            .expect("create baseline scratch directory");
+    let baseline_path: PathBuf = baseline_scratch.path().join("baseline.json");
+    std::fs::write(&baseline_path, baseline).expect("write baseline");
+    let filtered: String = frisk(
+        &dir,
+        &[
+            "--format",
+            "json",
+            "--baseline",
+            baseline_path.to_str().expect("baseline path"),
+            "--redact",
+        ],
+    );
+    let filtered_json: Value = serde_json::from_str(&filtered).expect("filtered report JSON");
+    assert_eq!(filtered_json["total"], 0);
+    assert!(!filtered.contains("[REDACTED:"));
+}
+
+#[test]
+fn configuration_enables_redaction_for_frisk_and_scan() {
+    let (_scratch, dir, planted): (disrobe_core::scratch::ScratchDir, PathBuf, Planted) = corpus();
+    let config_scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-frisk-redact-config")
+            .expect("create config scratch directory");
+    let config_path: PathBuf = config_scratch.path().join("disrobe.toml");
+    std::fs::write(&config_path, "[output]\nredact = true\n").expect("write config");
+    let config: &str = config_path.to_str().expect("config path");
+
+    let frisked: String = frisk(&dir, &["--config", config, "--format", "json"]);
+    let scanned: String = scan(&dir.join("keys.txt"), &["--config", config, "--json"]);
+    for output in [&frisked, &scanned] {
+        assert!(!output.contains(planted.aws.as_str()));
+        assert!(output.contains("[REDACTED:"));
+    }
+}
+
+#[test]
+fn custom_pattern_matches_are_redacted_by_value() {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-frisk-redact-custom")
+            .expect("create custom pattern scratch directory");
+    let dir: PathBuf = scratch.path().to_path_buf();
+    let planted: &str = "client-secret-ABCDEFGHIJKL";
+    let target: PathBuf = dir.join("custom.txt");
+    let patterns: PathBuf = dir.join("patterns.txt");
+    std::fs::write(&target, format!("credential={planted}\n")).expect("write custom target");
+    std::fs::write(&patterns, "client-secret=client-secret-[A-Z]{12}\n")
+        .expect("write custom patterns");
+    let pattern_path: &str = patterns.to_str().expect("pattern path");
+
+    let plain: String = frisk(&target, &["--format", "json", "--pattern", pattern_path]);
+    let redacted: String = frisk(
+        &target,
+        &["--format", "json", "--pattern", pattern_path, "--redact"],
+    );
+
+    assert!(
+        plain.contains(planted),
+        "positive control must expose the custom match"
+    );
+    assert!(
+        !redacted.contains(planted),
+        "custom pattern value leaked: {redacted}"
+    );
+    assert!(redacted.contains("[REDACTED:"));
 }

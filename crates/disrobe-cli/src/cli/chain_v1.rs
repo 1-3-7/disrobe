@@ -4,8 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
-use disrobe_core::Artifact;
-use disrobe_core::Rung;
 use disrobe_core::anti_analysis::{
     AntiAnalysisFinding, AntiAnalysisReport, ChainEvidence, DefeatStatus,
     Technique as AntiTechnique, scan_with_chain as scan_anti_analysis,
@@ -18,6 +16,7 @@ use disrobe_core::chain::{
     ChildArtifact, ChildHandle, DetectorPick, Node, OutputKind, PassRegistry, PassRunOutcome,
 };
 use disrobe_core::pass::PassContext;
+use disrobe_core::{Artifact, Redactor, Rung};
 
 use super::output::{OutputFormat, emit};
 use super::path_ops::{self, LinkKind};
@@ -383,6 +382,7 @@ fn build_registry() -> PassRegistry {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChainRunOptions {
     pub(crate) write_to_disk: bool,
+    pub(crate) redact: bool,
     pub(crate) capture_stages: bool,
     pub(crate) emit_recovery: bool,
     pub(crate) i_have_authorization: bool,
@@ -410,6 +410,7 @@ pub(crate) fn run_with_disk(
 ) -> miette::Result<()> {
     let ChainRunOptions {
         write_to_disk,
+        redact,
         capture_stages,
         emit_recovery,
         ..
@@ -490,18 +491,37 @@ pub(crate) fn run_with_disk(
         Some(input.display().to_string()),
     );
     let py_guidance: Option<String> = maybe_py_deob_guidance(&spec_raw, &plan, &seed_for_scan);
+    let display_anti: AntiAnalysisReport = redacted_copy(&anti, redact)?;
+    let display_delphi: Option<disrobe_pass_native::delphi::DelphiReport> = delphi
+        .as_ref()
+        .map(|report: &disrobe_pass_native::delphi::DelphiReport| redacted_copy(report, redact))
+        .transpose()?;
+    let display_guidance: Option<String> = py_guidance
+        .map(|guidance: String| redacted_text(guidance, redact))
+        .transpose()?;
     if !write_to_disk {
-        emit(fmt, &doc, || {
+        let rendered = || {
             println!("chain.json (dry-run; nothing written to disk)");
-            render_anti_analysis(&anti);
-            render_delphi(delphi.as_ref());
-            if let Some(guidance) = py_guidance.as_ref() {
+            render_anti_analysis(&display_anti);
+            render_delphi(display_delphi.as_ref());
+            if let Some(guidance) = display_guidance.as_ref() {
                 eprintln!();
                 eprint!("{guidance}");
             }
-        })?;
+        };
+        if redact {
+            let value: serde_json::Value = serialized_value(&doc, true)?;
+            emit(fmt, &value, rendered)?;
+        } else {
+            emit(fmt, &doc, rendered)?;
+        }
         if emit_recovery && fmt.is_machine() {
-            emit(fmt, &report, || {})?;
+            if redact {
+                let value: serde_json::Value = serialized_value(&report, true)?;
+                emit(fmt, &value, || {})?;
+            } else {
+                emit(fmt, &report, || {})?;
+            }
         }
         return Ok(());
     }
@@ -515,63 +535,75 @@ pub(crate) fn run_with_disk(
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0293: cannot create chain out dir: {e}"))?;
     let chain_path: PathBuf = out_dir.join("chain.json");
-    let chain_bytes: Vec<u8> = serde_json::to_vec_pretty(&doc)
+    let chain_bytes: Vec<u8> = serialized_report(&doc, redact)
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(&chain_path, &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
     let recovery_path: PathBuf = out_dir.join("recovery.json");
-    let recovery_bytes: Vec<u8> = serde_json::to_vec_pretty(&report)
+    let recovery_bytes: Vec<u8> = serialized_report(&report, redact)
         .map_err(|e| miette::miette!("DR-CLI-0305: recovery.json serialize: {e}"))?;
     std::fs::write(&recovery_path, &recovery_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
-    let recovery_path_str: String = recovery_path.display().to_string();
+    let recovery_path_str: String = redacted_text(recovery_path.display().to_string(), redact)?;
     let anti_path: PathBuf = out_dir.join("anti-analysis.json");
-    let anti_bytes: Vec<u8> = serde_json::to_vec_pretty(&anti)
+    let anti_bytes: Vec<u8> = serialized_report(&anti, redact)
         .map_err(|e| miette::miette!("DR-CLI-0307: anti-analysis.json serialize: {e}"))?;
     std::fs::write(&anti_path, &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
-    let anti_path_str: String = anti_path.display().to_string();
+    let anti_path_str: String = redacted_text(anti_path.display().to_string(), redact)?;
     let delphi_path_str: Option<String> = match delphi.as_ref() {
         None => None,
         Some(report) => {
             let delphi_path: PathBuf = out_dir.join("delphi.json");
-            let delphi_bytes: Vec<u8> = serde_json::to_vec_pretty(report)
+            let delphi_bytes: Vec<u8> = serialized_report(report, redact)
                 .map_err(|e| miette::miette!("DR-CLI-0314: delphi.json serialize: {e}"))?;
             std::fs::write(&delphi_path, &delphi_bytes)
                 .map_err(|e| miette::miette!("DR-CLI-0315: cannot write delphi.json: {e}"))?;
-            Some(delphi_path.display().to_string())
+            Some(redacted_text(delphi_path.display().to_string(), redact)?)
         }
     };
     let mut extracted_written: Vec<String> = streamed;
     extracted_written.extend(write_extracted_children(&out_dir, &plan)?);
-    let extracted_dir_str: String = out_dir.join("extracted").display().to_string();
+    if redact {
+        extracted_written = extracted_written
+            .into_iter()
+            .map(|path: String| redacted_text(path, true))
+            .collect::<miette::Result<Vec<String>>>()?;
+    }
+    let extracted_dir_str: String =
+        redacted_text(out_dir.join("extracted").display().to_string(), redact)?;
     let recovered: bool = !extracted_written.is_empty() || recovered_anything(&plan);
     let advisory: Option<String> = if recovered {
         None
     } else {
-        Some(identify_advisory(&plan))
+        Some(redacted_text(identify_advisory(&plan), redact)?)
     };
     let stage_summary: Option<String> = if capture_stages {
         let mirror: StageMirror = write_stage_mirror(&out_dir, &plan)?;
-        Some(format!(
-            "{} stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under {}; {} terminal stage(s) linked under {}",
-            mirror.steps.len(),
-            out_dir.display(),
-            mirror.finals.len(),
-            out_dir.join("final").display()
-        ))
+        Some(redacted_text(
+            format!(
+                "{} stage artifact(s) mirrored as out/NN-<pass>/ step dir(s) under {}; {} terminal stage(s) linked under {}",
+                mirror.steps.len(),
+                out_dir.display(),
+                mirror.finals.len(),
+                out_dir.join("final").display()
+            ),
+            redact,
+        )?)
     } else {
         None
     };
     let forensic_path: PathBuf = out_dir.join("report.json");
-    let forensic_bytes: Vec<u8> =
-        serde_json::to_vec_pretty(&super::report::build_forensic(&doc, &report, &out_dir))
-            .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
+    let forensic_bytes: Vec<u8> = serialized_report(
+        &super::report::build_forensic(&doc, &report, &out_dir),
+        redact,
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
     std::fs::write(&forensic_path, &forensic_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
-    let forensic_path_str: String = forensic_path.display().to_string();
-    let chain_path_str: String = chain_path.display().to_string();
-    emit(fmt, &doc, || {
+    let forensic_path_str: String = redacted_text(forensic_path.display().to_string(), redact)?;
+    let chain_path_str: String = redacted_text(chain_path.display().to_string(), redact)?;
+    let rendered = || {
         println!("chain.json written: {chain_path_str}");
         println!("recovery.json written: {recovery_path_str}");
         println!("anti-analysis.json written: {anti_path_str}");
@@ -594,9 +626,9 @@ pub(crate) fn run_with_disk(
         if let Some(summary) = stage_summary.as_ref() {
             println!("{summary}");
         }
-        render_anti_analysis(&anti);
-        render_delphi(delphi.as_ref());
-        if let Some(guidance) = py_guidance.as_ref() {
+        render_anti_analysis(&display_anti);
+        render_delphi(display_delphi.as_ref());
+        if let Some(guidance) = display_guidance.as_ref() {
             eprintln!();
             eprint!("{guidance}");
         }
@@ -604,9 +636,20 @@ pub(crate) fn run_with_disk(
             eprintln!();
             eprintln!("{note}");
         }
-    })?;
+    };
+    if redact {
+        let value: serde_json::Value = serialized_value(&doc, true)?;
+        emit(fmt, &value, rendered)?;
+    } else {
+        emit(fmt, &doc, rendered)?;
+    }
     if emit_recovery && fmt.is_machine() {
-        emit(fmt, &report, || {})?;
+        if redact {
+            let value: serde_json::Value = serialized_value(&report, true)?;
+            emit(fmt, &value, || {})?;
+        } else {
+            emit(fmt, &report, || {})?;
+        }
     }
     Ok(())
 }
@@ -737,6 +780,7 @@ pub(crate) fn run_chain_to_dir(
     bytes: Vec<u8>,
     out_dir: &Path,
     chain_arg: &str,
+    redact: bool,
     capture_stages: bool,
     i_have_authorization: bool,
 ) -> miette::Result<ChainOutcome> {
@@ -748,6 +792,7 @@ pub(crate) fn run_chain_to_dir(
     let runner: ChainPassRunner<'_> = ChainPassRunner::new(&progress);
     let config: ChainConfig = ChainRunOptions {
         write_to_disk: true,
+        redact,
         capture_stages,
         emit_recovery: false,
         i_have_authorization,
@@ -772,15 +817,15 @@ pub(crate) fn run_chain_to_dir(
     );
     std::fs::create_dir_all(out_dir)
         .map_err(|e| miette::miette!("DR-CLI-0293: cannot create chain out dir: {e}"))?;
-    let chain_bytes: Vec<u8> = serde_json::to_vec_pretty(&doc)
+    let chain_bytes: Vec<u8> = serialized_report(&doc, redact)
         .map_err(|e| miette::miette!("DR-CLI-0294: chain.json serialize: {e}"))?;
     std::fs::write(out_dir.join("chain.json"), &chain_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0295: cannot write chain.json: {e}"))?;
-    let recovery_bytes: Vec<u8> = serde_json::to_vec_pretty(&report)
+    let recovery_bytes: Vec<u8> = serialized_report(&report, redact)
         .map_err(|e| miette::miette!("DR-CLI-0305: recovery.json serialize: {e}"))?;
     std::fs::write(out_dir.join("recovery.json"), &recovery_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0306: cannot write recovery.json: {e}"))?;
-    let anti_bytes: Vec<u8> = serde_json::to_vec_pretty(&anti)
+    let anti_bytes: Vec<u8> = serialized_report(&anti, redact)
         .map_err(|e| miette::miette!("DR-CLI-0307: anti-analysis.json serialize: {e}"))?;
     std::fs::write(out_dir.join("anti-analysis.json"), &anti_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0308: cannot write anti-analysis.json: {e}"))?;
@@ -788,12 +833,60 @@ pub(crate) fn run_chain_to_dir(
     if capture_stages {
         let _: StageMirror = write_stage_mirror(out_dir, &plan)?;
     }
-    let forensic_bytes: Vec<u8> =
-        serde_json::to_vec_pretty(&super::report::build_forensic(&doc, &report, out_dir))
-            .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
+    let forensic_bytes: Vec<u8> = serialized_report(
+        &super::report::build_forensic(&doc, &report, out_dir),
+        redact,
+    )
+    .map_err(|e| miette::miette!("DR-CLI-0316: report.json serialize: {e}"))?;
     std::fs::write(out_dir.join("report.json"), &forensic_bytes)
         .map_err(|e| miette::miette!("DR-CLI-0317: cannot write report.json: {e}"))?;
     Ok(ChainOutcome { doc, report, anti })
+}
+
+pub(crate) fn serialized_value<T: serde::Serialize>(
+    value: &T,
+    redact: bool,
+) -> miette::Result<serde_json::Value> {
+    let mut serialized: serde_json::Value =
+        serde_json::to_value(value).map_err(|error: serde_json::Error| {
+            miette::miette!("DR-CLI-0362: report serialize: {error}")
+        })?;
+    if redact {
+        Redactor::new()
+            .redact_json_value(&mut serialized)
+            .map_err(|error| miette::miette!("DR-CLI-0363: report redaction: {error}"))?;
+    }
+    Ok(serialized)
+}
+
+pub(crate) fn redacted_copy<T>(value: &T, redact: bool) -> miette::Result<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    serde_json::from_value(serialized_value(value, redact)?).map_err(|error: serde_json::Error| {
+        miette::miette!("DR-CLI-0364: redacted report: {error}")
+    })
+}
+
+pub(crate) fn redacted_text(value: String, redact: bool) -> miette::Result<String> {
+    if !redact {
+        return Ok(value);
+    }
+    Redactor::new()
+        .redact_text(&value)
+        .map_err(|error| miette::miette!("DR-CLI-0365: rendered text redaction: {error}"))
+}
+
+pub(crate) fn serialized_report<T: serde::Serialize>(
+    value: &T,
+    redact: bool,
+) -> miette::Result<Vec<u8>> {
+    if !redact {
+        return serde_json::to_vec_pretty(value)
+            .map_err(|error: serde_json::Error| miette::miette!("{error}"));
+    }
+    serde_json::to_vec_pretty(&serialized_value(value, true)?)
+        .map_err(|error: serde_json::Error| miette::miette!("{error}"))
 }
 
 fn stage_slug(pass_id: Option<&str>) -> String {
@@ -1007,6 +1100,7 @@ mod tests {
     fn options_asserting(i_have_authorization: bool) -> ChainRunOptions {
         ChainRunOptions {
             write_to_disk: true,
+            redact: false,
             capture_stages: false,
             emit_recovery: false,
             i_have_authorization,

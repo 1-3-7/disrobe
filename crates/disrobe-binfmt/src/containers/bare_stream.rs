@@ -733,17 +733,62 @@ fn is_mostly_printable(out: &[u8]) -> bool {
 }
 
 pub fn decompress_brotli(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
-    let limit: u64 = cap.saturating_add(1);
+    let mut available_in: usize = bytes.len();
+    let mut input_offset: usize = 0;
+    let mut state: brotli::BrotliState<
+        brotli::HeapAlloc<u8>,
+        brotli::HeapAlloc<u32>,
+        brotli::HeapAlloc<brotli::HuffmanCode>,
+    > = brotli::BrotliState::new(
+        brotli::HeapAlloc::new(0u8),
+        brotli::HeapAlloc::new(0u32),
+        brotli::HeapAlloc::new(brotli::HuffmanCode::default()),
+    );
+    let mut buffer: [u8; BROTLI_READER_BUFFER] = [0u8; BROTLI_READER_BUFFER];
     let mut out: Vec<u8> = Vec::new();
-    let mut decoder: brotli::Decompressor<&[u8]> =
-        brotli::Decompressor::new(bytes, BROTLI_READER_BUFFER);
-    let read: u64 = std::io::copy(&mut (&mut decoder).take(limit), &mut out)
-        .map_err(|e: std::io::Error| Error::Decompression(format!("brotli: decode failed: {e}")))?;
-    if read > cap {
-        return Err(Error::QuotaExceeded {
-            entry: "stream.br".to_owned(),
-            reason: format!("decompressed stream exceeds bomb cap {cap}"),
-        });
+    loop {
+        let mut available_out: usize = buffer.len();
+        let mut output_offset: usize = 0;
+        let mut written: usize = 0;
+        let result: brotli::BrotliResult = brotli::BrotliDecompressStream(
+            &mut available_in,
+            &mut input_offset,
+            bytes,
+            &mut available_out,
+            &mut output_offset,
+            &mut buffer,
+            &mut written,
+            &mut state,
+        );
+        let new_len: u64 = (out.len() as u64).saturating_add(output_offset as u64);
+        if new_len > cap {
+            return Err(Error::QuotaExceeded {
+                entry: "stream.br".to_owned(),
+                reason: format!("decompressed stream exceeds bomb cap {cap}"),
+            });
+        }
+        out.extend_from_slice(&buffer[..output_offset]);
+        match result {
+            brotli::BrotliResult::ResultSuccess => {
+                if available_in != 0 || input_offset != bytes.len() {
+                    return Err(Error::Decompression(format!(
+                        "brotli: trailing input after complete stream at byte {input_offset}"
+                    )));
+                }
+                break;
+            }
+            brotli::BrotliResult::NeedsMoreOutput => {}
+            brotli::BrotliResult::NeedsMoreInput => {
+                return Err(Error::Decompression(
+                    "brotli: truncated stream requires more input".to_owned(),
+                ));
+            }
+            brotli::BrotliResult::ResultFailure => {
+                return Err(Error::Decompression(
+                    "brotli: malformed stream failed to decode".to_owned(),
+                ));
+            }
+        }
     }
     if out.is_empty() {
         return Err(Error::Decompression(
@@ -1099,6 +1144,16 @@ mod tests {
             .collect();
         assert!(!detect_brotli(&garbage));
         assert!(try_decompress_brotli_oracle(&garbage, 1 << 20).is_none());
+    }
+
+    #[test]
+    fn brotli_rejects_bytes_after_the_complete_stream() {
+        let payload: Vec<u8> = b"complete brotli stream".repeat(32);
+        let mut compressed: Vec<u8> = brotli_compress(&payload);
+        compressed.extend_from_slice(b"trailing");
+        let error: Error =
+            decompress_brotli(&compressed, 1 << 20).expect_err("reject trailing bytes");
+        assert!(error.to_string().contains("trailing"), "{error}");
     }
 
     fn lznt1_uncompressed_chunk(payload: &[u8]) -> Vec<u8> {

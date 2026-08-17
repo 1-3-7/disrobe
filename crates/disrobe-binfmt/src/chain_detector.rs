@@ -126,6 +126,7 @@ const TAG_INNOSETUP: &str = "inno-setup";
 const TAG_ISO: &str = "iso";
 const TAG_SQUASHFS: &str = "squashfs";
 const TAG_DOTNET_SINGLE_FILE: &str = "dotnet-single-file";
+const TAG_UEFI_FV: &str = "uefi-fv";
 
 #[derive(Debug)]
 pub struct ContainerDetector;
@@ -160,7 +161,10 @@ const SPECIFICITY_PREFIX_MAGIC: u16 = 50;
 const SPECIFICITY_VERIFIED_SIGNATURE: u16 = 20;
 
 const fn tag_specificity(tag: &str) -> u16 {
-    if matches!(tag.as_bytes(), b"dotnet-single-file" | b"inno-setup") {
+    if matches!(
+        tag.as_bytes(),
+        b"dotnet-single-file" | b"inno-setup" | b"uefi-fv"
+    ) {
         SPECIFICITY_VERIFIED_SIGNATURE
     } else {
         SPECIFICITY_PREFIX_MAGIC
@@ -171,6 +175,7 @@ const fn tag_marker(tag: &str) -> &'static str {
     match tag.as_bytes() {
         b"dotnet-single-file" => "bundle-signature+header",
         b"inno-setup" => "pe-resource+setup-data-header",
+        b"uefi-fv" => "fv-header+checksum",
         _ => "container-magic",
     }
 }
@@ -405,8 +410,43 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_LZH => extract_lzh_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
+        TAG_UEFI_FV => extract_uefi_fv_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_uefi_fv_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+        max_entries: MAX_MEMBER_COUNT,
+        max_total_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    };
+    let extraction: crate::containers::FvExtraction =
+        crate::containers::extract_uefi_fv(bytes, quota)
+            .map_err(|error: crate::error::Error| fail(format!("uefi-fv payload: {error}")))?;
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(extraction.pe_images.len());
+    for image in extraction.pe_images {
+        let guid: String = crate::containers::guid_to_string(&image.file_guid);
+        let preferred: String = image.name.unwrap_or_else(|| format!("{guid}.efi"));
+        let safe: String = crate::quota::sanitize_entry_path(&preferred)
+            .map_err(|error: crate::error::Error| fail(format!("uefi-fv member path: {error}")))?;
+        let name: String = if names.insert(safe.clone()) {
+            safe
+        } else {
+            let disambiguated: String = format!("{guid}.{safe}");
+            if !names.insert(disambiguated.clone()) {
+                return Err(fail(format!(
+                    "uefi-fv duplicate member path `{disambiguated}`"
+                )));
+            }
+            disambiguated
+        };
+        members.push((name, image.data));
+    }
+    Ok(members)
 }
 
 fn extract_arc_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -842,6 +882,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if crate::containers::detect_innosetup(bytes).is_some() {
         return Some(TAG_INNOSETUP);
     }
+    if crate::containers::detect_uefi_fv(bytes) {
+        return Some(TAG_UEFI_FV);
+    }
     if bytes.len() >= 0x8006 && &bytes[0x8001..0x8006] == b"CD001" {
         return Some(TAG_ISO);
     }
@@ -1033,6 +1076,23 @@ mod tests {
             .expect("compiler member");
         assert_eq!(compiler.1.len(), 3_940_272);
         assert!(compiler.1.starts_with(b"MZ"));
+    }
+
+    #[test]
+    fn uefi_brotli_guided_firmware_reaches_the_chain_with_exact_driver_bytes() {
+        const FIRMWARE: &[u8] = include_bytes!("../tests/fixtures/uefi_fv/edk2_brotli_guided.fv");
+        const DRIVER: &[u8] = include_bytes!("../tests/fixtures/uefi_fv/hello_a.efi");
+        assert_eq!(sniff_container_tag(FIRMWARE), Some("uefi-fv"));
+
+        let artifact: Artifact = Artifact::new(Rung::Raw, FIRMWARE.to_vec(), [0u8; 32]);
+        let children: Vec<ChildArtifact> = CONTAINER_PASS
+            .extract_children(&artifact)
+            .expect("extract UEFI firmware children");
+        let driver: &ChildArtifact = children
+            .iter()
+            .find(|child: &&ChildArtifact| child.handle.relative_path == "BrotliDriver")
+            .expect("BrotliDriver chain child");
+        assert_eq!(driver.bytes, DRIVER);
     }
 
     #[test]

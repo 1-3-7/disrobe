@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use disrobe_core::Redactor;
 use disrobe_core::chain::{ChainDocument, ChainRecoveryReport, NodeDoc, VerdictDoc};
 use disrobe_core::recovery::ConfidenceTier;
 use serde::Serialize;
@@ -879,7 +880,11 @@ fn derived_batch_dir(input: &Path, base: Option<&Path>) -> PathBuf {
     )
 }
 
-fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<ReportDocument> {
+fn resolve_document(
+    target: &Path,
+    base: Option<&Path>,
+    redact: bool,
+) -> miette::Result<ReportDocument> {
     if target.is_dir() {
         if target.join("manifest.json").is_file() {
             let manifest: BatchManifest = read_manifest(target)?;
@@ -905,6 +910,7 @@ fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<Report
             include: Vec::new(),
             exclude: Vec::new(),
             jobs: 1,
+            redact,
             capture_stages: false,
             i_have_authorization: false,
         };
@@ -926,6 +932,7 @@ fn resolve_document(target: &Path, base: Option<&Path>) -> miette::Result<Report
             bytes,
             &out_dir,
             "auto:8",
+            redact,
             false,
             false,
         )?;
@@ -1247,8 +1254,9 @@ pub(crate) fn run(
     format: ReportFormat,
     fmt: OutputFormat,
     out: Option<PathBuf>,
+    redact: bool,
 ) -> miette::Result<()> {
-    let document: ReportDocument = resolve_document(&target, out.as_deref())?;
+    let document: ReportDocument = resolve_document(&target, out.as_deref(), redact)?;
     let effective: ReportFormat = if fmt.is_machine() && format != ReportFormat::Sarif {
         ReportFormat::Json
     } else {
@@ -1256,13 +1264,27 @@ pub(crate) fn run(
     };
     match effective {
         ReportFormat::Sarif => {
-            let log: String = super::report_forensic::render_sarif(&document)?;
+            let log: String = redact_json(
+                super::report_forensic::render_sarif(&document)?,
+                redact,
+                "DR-CLI-0361",
+            )?;
             println!("{log}");
             Ok(())
         }
         ReportFormat::Json => {
-            let s: String = serde_json::to_string_pretty(&document)
-                .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
+            let s: String = if redact {
+                let mut value: serde_json::Value = serde_json::to_value(&document)
+                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?;
+                Redactor::new()
+                    .redact_json_value(&mut value)
+                    .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))?;
+                serde_json::to_string_pretty(&value)
+                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?
+            } else {
+                serde_json::to_string_pretty(&document)
+                    .map_err(|e| miette::miette!("DR-CLI-0357: report serialize: {e}"))?
+            };
             println!("{s}");
             Ok(())
         }
@@ -1272,7 +1294,7 @@ pub(crate) fn run(
                 ReportDocument::Single(s) => render_text_single(s, &mut buf),
                 ReportDocument::Batch(b) => render_text_batch(b, &mut buf),
             }
-            print!("{buf}");
+            print!("{}", redact_rendered(buf, redact)?);
             Ok(())
         }
         ReportFormat::Markdown => {
@@ -1281,7 +1303,7 @@ pub(crate) fn run(
                 ReportDocument::Single(s) => render_markdown_single(s, &mut buf),
                 ReportDocument::Batch(b) => render_markdown_batch(b, &mut buf),
             }
-            print!("{buf}");
+            print!("{}", redact_rendered(buf, redact)?);
             Ok(())
         }
         ReportFormat::Html => {
@@ -1293,10 +1315,32 @@ pub(crate) fn run(
                 }
                 ReportDocument::Batch(b) => super::report_html::render_batch_html(b),
             };
-            print!("{html}");
+            print!("{}", redact_rendered(html, redact)?);
             Ok(())
         }
     }
+}
+
+fn redact_rendered(rendered: String, redact: bool) -> miette::Result<String> {
+    if !redact {
+        return Ok(rendered);
+    }
+    Redactor::new()
+        .redact_text(&rendered)
+        .map_err(|e| miette::miette!("DR-CLI-0361: report redaction: {e}"))
+}
+
+fn redact_json(rendered: String, redact: bool, code: &'static str) -> miette::Result<String> {
+    if !redact {
+        return Ok(rendered);
+    }
+    let mut value: serde_json::Value = serde_json::from_str(&rendered)
+        .map_err(|e| miette::miette!("{code}: report parse for redaction: {e}"))?;
+    Redactor::new()
+        .redact_json_value(&mut value)
+        .map_err(|e| miette::miette!("{code}: report redaction: {e}"))?;
+    serde_json::to_string_pretty(&value)
+        .map_err(|e| miette::miette!("{code}: report serialize after redaction: {e}"))
 }
 
 #[cfg(test)]
@@ -1538,7 +1582,7 @@ mod tests {
     }
 
     fn single_of(dir: &Path) -> Box<SingleReport> {
-        match resolve_document(dir, None).expect("resolve") {
+        match resolve_document(dir, None, false).expect("resolve") {
             ReportDocument::Single(s) => s,
             ReportDocument::Batch(_) => panic!("expected single report"),
         }
@@ -1680,7 +1724,7 @@ mod tests {
     #[test]
     fn resolves_single_out_dir() {
         let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("single");
-        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve single");
+        let doc: ReportDocument = resolve_document(&dir, None, false).expect("resolve single");
         match doc {
             ReportDocument::Single(s) => {
                 assert_eq!(s.input.path.as_deref(), Some("app.pyc"));
@@ -1698,7 +1742,7 @@ mod tests {
     #[test]
     fn text_render_contains_key_fields() {
         let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("text");
-        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None, false).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
         };
@@ -1712,7 +1756,7 @@ mod tests {
     #[test]
     fn markdown_render_is_tabular() {
         let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("md");
-        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None, false).expect("resolve");
         let ReportDocument::Single(s) = doc else {
             panic!("single");
         };
@@ -1726,7 +1770,7 @@ mod tests {
     #[test]
     fn json_document_round_trips_as_value() {
         let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("json");
-        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve");
+        let doc: ReportDocument = resolve_document(&dir, None, false).expect("resolve");
         let value: serde_json::Value = serde_json::to_value(&doc).expect("to value");
         assert_eq!(value["report_kind"], serde_json::json!("single"));
         assert_eq!(value["input"]["size"], serde_json::json!(128));
@@ -1760,7 +1804,7 @@ mod tests {
           ]
         }"#;
         std::fs::write(dir.join("manifest.json"), manifest).expect("w manifest");
-        let doc: ReportDocument = resolve_document(&dir, None).expect("resolve batch");
+        let doc: ReportDocument = resolve_document(&dir, None, false).expect("resolve batch");
         let ReportDocument::Batch(b) = doc else {
             panic!("expected batch report");
         };
@@ -1778,7 +1822,7 @@ mod tests {
     fn a_truncated_run_document_is_a_typed_error_not_a_panic() {
         let (_scratch, dir): (ScratchDir, PathBuf) = seed_single_dir("truncated-recovery");
         std::fs::write(dir.join("recovery.json"), &RECOVERY_JSON[..40]).expect("truncate recovery");
-        let err: miette::Report = resolve_document(&dir, None).expect_err("must error");
+        let err: miette::Report = resolve_document(&dir, None, false).expect_err("must error");
         assert!(
             format!("{err}").contains("DR-CLI-0354"),
             "a truncated recovery.json must stay a typed error: {err}"
@@ -1786,7 +1830,8 @@ mod tests {
 
         let (_second, other): (ScratchDir, PathBuf) = seed_single_dir("truncated-chain");
         std::fs::write(other.join("chain.json"), &CHAIN_JSON[..64]).expect("truncate chain");
-        let chain_err: miette::Report = resolve_document(&other, None).expect_err("must error");
+        let chain_err: miette::Report =
+            resolve_document(&other, None, false).expect_err("must error");
         assert!(
             format!("{chain_err}").contains("DR-CLI-0352"),
             "a truncated chain.json must stay a typed error: {chain_err}"
@@ -1794,7 +1839,8 @@ mod tests {
 
         let (_third, missing): (ScratchDir, PathBuf) = seed_single_dir("absent-recovery");
         std::fs::remove_file(missing.join("recovery.json")).expect("remove recovery");
-        let absent: miette::Report = resolve_document(&missing, None).expect_err("must error");
+        let absent: miette::Report =
+            resolve_document(&missing, None, false).expect_err("must error");
         assert!(
             format!("{absent}").contains("DR-CLI-0353"),
             "an absent recovery.json must stay a typed error: {absent}"
@@ -1805,7 +1851,7 @@ mod tests {
     fn missing_target_is_error() {
         let scratch: ScratchDir = tmp_dir("missing");
         let missing: PathBuf = scratch.path().join("nope");
-        let err: miette::Report = resolve_document(&missing, None).expect_err("must error");
+        let err: miette::Report = resolve_document(&missing, None, false).expect_err("must error");
         assert!(format!("{err}").contains("DR-CLI-0350"));
     }
 

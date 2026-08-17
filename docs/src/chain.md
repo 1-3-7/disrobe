@@ -6,9 +6,12 @@ The chain runner is what turns a pile of single-purpose passes into a one-comman
 
 ```sh
 disrobe auto suspect.exe --out recovered/
+disrobe auto suspect.exe --out shareable/ --redact
 ```
 
 `disrobe auto` fingerprints the input, picks the highest-confidence pass, runs it, then re-fingerprints the output and repeats until no further pass clears the confidence threshold or the depth cap is hit. `disrobe passes` prints the auto-chain pass IDs compiled into the current binary, with each pass ecosystem and support tier. Use that output instead of a copied count. Direct commands such as `scan`, `frisk`, `taint`, and `webview` are separate surfaces and do not become auto-chain passes merely because the CLI can run them. See [Pass selection](./passes.md#pass-selection) for exactly how the next pass is chosen.
+
+`--redact` replaces detected secret values in machine output and the generated JSON reports. It does not alter recovered source or extracted binary artifacts. Raw report values remain the default.
 
 Representative chains:
 

@@ -17,6 +17,10 @@ use disrobe_binfmt::{ByteCoverage, CoverageRegion, file_byte_coverage};
 use disrobe_core::chain::{ChainPassRecovery, ChainRecoveryReport};
 use disrobe_core::provenance_map::{LineProvenance, ProvenanceMap};
 use disrobe_core::recovery::ConfidenceTier;
+use disrobe_core::secret_scan::{
+    Confidence as SecretConfidence, Finding as SecretFinding, SecretScanReport,
+    redact_report as redact_secret_report, scan_report as scan_secret_report,
+};
 use disrobe_core::{
     BehaviorReport, IocReport, StringsOptions, StringsReport, analyze_behavior, ioc_report,
     strings_report,
@@ -217,6 +221,74 @@ pub struct DecompileOut {
 #[schemars(crate = "rmcp::schemars")]
 pub struct IocParams {
     pub bytes_b64: String,
+}
+
+#[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SecretScanParams {
+    pub bytes_b64: String,
+    #[serde(default)]
+    pub redact: bool,
+}
+
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SecretFindingOut {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    pub level: String,
+    pub kind: String,
+    pub offset: usize,
+    pub value: String,
+    pub preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<String>,
+}
+
+impl From<SecretFinding> for SecretFindingOut {
+    fn from(finding: SecretFinding) -> Self {
+        Self {
+            code: finding.code,
+            message: finding.message,
+            uri: finding.uri,
+            level: finding.level,
+            kind: finding.kind.describe().to_owned(),
+            offset: finding.offset,
+            value: finding.value,
+            preview: finding.preview,
+            validation: finding
+                .validation
+                .map(|confidence: SecretConfidence| confidence.label().to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SecretScanOut {
+    pub schema: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    pub byte_len: usize,
+    pub findings: Vec<SecretFindingOut>,
+}
+
+impl From<SecretScanReport> for SecretScanOut {
+    fn from(report: SecretScanReport) -> Self {
+        Self {
+            schema: report.schema.to_owned(),
+            uri: report.uri,
+            byte_len: report.byte_len,
+            findings: report
+                .findings
+                .into_iter()
+                .map(SecretFindingOut::from)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
@@ -698,6 +770,22 @@ impl DisrobeMcp {
     fn ioc(&self, Parameters(p): Parameters<IocParams>) -> Result<Json<IocOut>, ErrorData> {
         let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
         Ok(Json(IocOut::from(ioc_report(&bytes, None))))
+    }
+
+    #[rmcp::tool(
+        name = "secret_scan",
+        description = "Detect secrets in inline base64 bytes and optionally replace matched values in the response with stable redaction tokens. Never reads disk."
+    )]
+    fn secret_scan(
+        &self,
+        Parameters(p): Parameters<SecretScanParams>,
+    ) -> Result<Json<SecretScanOut>, ErrorData> {
+        let bytes: Vec<u8> = decode_inline_bytes(&p.bytes_b64)?;
+        let mut report: SecretScanReport = scan_secret_report(&bytes, None);
+        if p.redact {
+            redact_secret_report(&mut report);
+        }
+        Ok(Json(SecretScanOut::from(report)))
     }
 
     #[rmcp::tool(
@@ -1277,6 +1365,7 @@ mod tests {
             "annot",
             "provenance_lookup",
             "ioc",
+            "secret_scan",
             "behavior",
             "coverage",
             "strings",
@@ -1291,7 +1380,7 @@ mod tests {
         for expected in ["auto", "decompile"] {
             assert!(names.contains(&expected), "missing chain tool {expected}");
         }
-        let expected_count: usize = if cfg!(feature = "chain") { 14 } else { 12 };
+        let expected_count: usize = if cfg!(feature = "chain") { 15 } else { 13 };
         assert_eq!(tools.len(), expected_count);
         for t in &tools {
             let schema: &serde_json::Map<String, serde_json::Value> = t.input_schema.as_ref();
@@ -1548,6 +1637,47 @@ mod tests {
             bytes_b64: "!!!".to_owned(),
         })));
         assert!(garbage.message.contains("DR-MCP-0181"));
+    }
+
+    #[test]
+    fn secret_scan_redaction_is_opt_in_and_preserves_offsets() {
+        let mcp: DisrobeMcp = DisrobeMcp::new();
+        let secret: &str = "AKIA3KFTG2KQ4WXYZ7AB";
+        let payload: Vec<u8> = format!("prefix key={secret} suffix").into_bytes();
+        let Json(plain): Json<SecretScanOut> = mcp
+            .secret_scan(Parameters(SecretScanParams {
+                bytes_b64: b64(&payload),
+                redact: false,
+            }))
+            .expect("plain secret scan");
+        let Json(redacted): Json<SecretScanOut> = mcp
+            .secret_scan(Parameters(SecretScanParams {
+                bytes_b64: b64(&payload),
+                redact: true,
+            }))
+            .expect("redacted secret scan");
+
+        assert!(
+            plain.findings.iter().any(|finding: &SecretFindingOut| {
+                finding.value == secret && finding.offset == 11
+            })
+        );
+        assert_eq!(plain.findings.len(), redacted.findings.len());
+        assert_eq!(
+            plain
+                .findings
+                .iter()
+                .map(|finding: &SecretFindingOut| finding.offset)
+                .collect::<Vec<usize>>(),
+            redacted
+                .findings
+                .iter()
+                .map(|finding: &SecretFindingOut| finding.offset)
+                .collect::<Vec<usize>>()
+        );
+        let serialized: String = serde_json::to_string(&redacted).expect("serialize result");
+        assert!(!serialized.contains(secret));
+        assert!(serialized.contains("[REDACTED:"));
     }
 
     #[test]

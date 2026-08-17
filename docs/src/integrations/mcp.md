@@ -43,6 +43,7 @@ Most clients accept a JSON server entry. Point `command` at `disrobe` (or `disro
 | Tool | Input | Output |
 |---|---|---|
 | `auto` | `bytes_b64`, optional `max_depth` | Chain verdict, detected formats, and per-pass recovery summary. Auto-detects and chains `disrobe`'s Python + native-packer passes. |
+| `secret_scan` | `bytes_b64`, optional `redact` | Secret findings with byte offsets. `redact: true` replaces detected values throughout the response. Raw values remain the default. |
 | `decompile` | `bytes_b64`, optional `max_depth` | Every terminal recovered-source artifact (language-keyed text), for example a `.pyc` decompiled to Python. |
 | `ioc` | `bytes_b64` | Indicators of compromise: URLs, domains, IPs, emails, paths, registry keys, wallet addresses, crypto constants (one decode layer of base64/hex). |
 | `behavior` | `bytes_b64`, optional `imports` | Static capability summary across network, filesystem, process-exec, registry-persistence, crypto, anti-analysis, and dynamic-code categories, with MITRE ATT&CK ids. |

@@ -7,7 +7,9 @@ use disrobe_binfmt::{
 use disrobe_capabilities::CapabilitiesReport;
 use disrobe_core::behavior::{self, BehaviorReport};
 use disrobe_core::ioc::{self, IocReport};
-use disrobe_core::secret_scan::{SecretScanReport, scan_report};
+use disrobe_core::secret_scan::{
+    SecretScanReport, redact_report as redact_secret_report, scan_report,
+};
 use disrobe_core::strings::{self, Options, StringsReport};
 use disrobe_core::yara::{self, YaraRuleset};
 use disrobe_core::yara_gen::{self, GenerateOptions, GeneratedRule};
@@ -69,9 +71,12 @@ fn identify_binary(data: &[u8]) -> PyResult<PyIdentifyReport> {
 }
 
 #[pyfunction]
-#[pyo3(name = "secret_scan", text_signature = "(data)")]
-fn secret_scan_fn(data: &[u8]) -> PyResult<PySecretScanReport> {
-    let report: SecretScanReport = scan_report(data, None);
+#[pyo3(name = "secret_scan", signature = (data, *, redact = false), text_signature = "(data, *, redact=False)")]
+fn secret_scan_fn(data: &[u8], redact: bool) -> PyResult<PySecretScanReport> {
+    let mut report: SecretScanReport = scan_report(data, None);
+    if redact {
+        redact_secret_report(&mut report);
+    }
     PySecretScanReport::from_serialize(&report)
 }
 

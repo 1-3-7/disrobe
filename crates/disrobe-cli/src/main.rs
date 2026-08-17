@@ -225,6 +225,11 @@ enum Cmd {
     Scan {
         #[arg(value_name = "PATH")]
         path: PathBuf,
+        #[arg(
+            long,
+            help = "replace every detected secret with a stable truncated SHA-256 token"
+        )]
+        redact: bool,
     },
     #[command(
         about = "extract indicators of compromise (URLs, IPs, domains, emails, paths, registry keys, wallets, crypto constants) from raw bytes & recovered strings, decoding one base64/hex layer"
@@ -312,15 +317,9 @@ enum Cmd {
         git: bool,
         #[arg(
             long,
-            help = "replace every detected secret with a non-reversible sentinel in every output format"
+            help = "replace every detected secret with a stable truncated SHA-256 token in every output format"
         )]
         redact: bool,
-        #[arg(
-            long,
-            value_name = "KEY",
-            help = "derive redaction sentinels from this key so they are stable across runs (default: per-run random salt); implies --redact"
-        )]
-        redact_key: Option<String>,
     },
     #[command(
         about = "harvest URLs and IoCs for a target from public web archives and threat-intel feeds (Wayback, Common Crawl, OTX, urlscan, crt.sh, URLhaus, ThreatFox, VirusTotal) with async fan-out, per-host rate limiting, backoff, API-key auth, filtering & dedup; `prowl keyring set|get|rm|list <provider>` manages stored keys"
@@ -887,6 +886,11 @@ enum Cmd {
         dry_run: bool,
         #[arg(
             long,
+            help = "replace detected secret values in reports with stable redaction tokens"
+        )]
+        redact: bool,
+        #[arg(
+            long,
             help = "mirror each executed pass's byte-exact output under <out>/NN-<pass>/ (1-based) and link terminal stage(s) (symlink->junction->copy) under <out>/final/NN-<pass>/"
         )]
         capture_stages: bool,
@@ -1145,6 +1149,11 @@ enum Cmd {
             help = "directory to hold the run this report derives from; defaults to ./out under the working directory"
         )]
         out: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "replace every detected secret with a stable truncated SHA-256 token"
+        )]
+        redact: bool,
     },
     #[command(about = "rebuild a `.disrobe/annotations/<stem>.annot.json` symbol annotation file")]
     Annot {
@@ -1694,7 +1703,7 @@ fn main() -> miette::Result<()> {
         Cmd::Pyfreeze { action } => pyfreeze::run(action),
         Cmd::Nuitka { action } => nuitka::run(action),
         Cmd::Py { action } => py::run(action, &llm_flags),
-        Cmd::Scan { path } => scan::run(path, fmt),
+        Cmd::Scan { path, redact } => scan::run(path, fmt, redact || eff.redact),
         Cmd::Ioc {
             path,
             format,
@@ -1715,7 +1724,6 @@ fn main() -> miette::Result<()> {
             entropy,
             git,
             redact,
-            redact_key,
         } => frisk::run(
             path,
             format,
@@ -1725,8 +1733,7 @@ fn main() -> miette::Result<()> {
             emit_baseline,
             entropy,
             git,
-            redact,
-            redact_key,
+            redact || eff.redact,
             fmt,
         ),
         Cmd::Prowl {
@@ -1961,6 +1968,7 @@ fn main() -> miette::Result<()> {
             max_depth,
             emit,
             dry_run,
+            redact,
             capture_stages,
             batch_max_depth,
             include,
@@ -2004,6 +2012,7 @@ fn main() -> miette::Result<()> {
                 fmt,
                 auto::AutoOptions {
                     dry_run: dry_run || global_dry_run,
+                    redact: redact || eff.redact,
                     capture_stages,
                     i_have_authorization: llm_flags.i_have_authorization,
                 },
@@ -2030,6 +2039,7 @@ fn main() -> miette::Result<()> {
             fmt,
             chain_v1::ChainRunOptions {
                 write_to_disk: true,
+                redact: false,
                 capture_stages,
                 emit_recovery: false,
                 i_have_authorization: llm_flags.i_have_authorization,
@@ -2121,7 +2131,8 @@ fn main() -> miette::Result<()> {
             target,
             format,
             out,
-        } => report::run(target, format, fmt, out),
+            redact,
+        } => report::run(target, format, fmt, out, redact || eff.redact),
         Cmd::Annot { action } => annot::run(action, fmt),
         Cmd::Rename { old, new, note } => rename::run(old, new, note, fmt),
         Cmd::BugReport { out } => bug_report::run(out),

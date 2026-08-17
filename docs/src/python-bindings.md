@@ -132,7 +132,7 @@ bundle: LlmBundle = {
 | | `ioc_extract(data)` | `IocReport` |
 | | `behavior_analyze(data)` | `BehaviorReport` |
 | | `identify(data)` | `IdentifyReport` |
-| | `secret_scan(data)` | `SecretScanReport` |
+| | `secret_scan(data, *, redact=False)` | `SecretScanReport` |
 | | `capabilities(binary_bytes)` | `Capabilities` |
 | | `extract(data, out_dir)` | `ExtractionResult` |
 | | `extract_recursive(data, *, source_label='inline', max_depth=8)` | `OverlayReport` |
@@ -428,8 +428,10 @@ Compiler/linker/packer/protector/installer fingerprint.
 ### `secret_scan`
 
 ```python
-def secret_scan(data: bytes) -> SecretScanReport: ...
+def secret_scan(data: bytes, *, redact: bool = False) -> SecretScanReport: ...
 ```
+
+Set `redact=True` to replace detected values, previews, messages, and URI credentials with stable redaction tokens. The default report retains the matched values. Redaction preserves the finding count and byte offsets.
 
 Leaked-credential scan over raw bytes.
 
