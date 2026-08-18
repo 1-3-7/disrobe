@@ -637,9 +637,9 @@ fn validate_source_set_with_limits(
     for (source, text) in sources {
         let path: &Path = Path::new(source);
         if source.is_empty()
-            || source
-                .split(['/', '\\'])
-                .any(|component: &str| component.is_empty() || matches!(component, "." | ".."))
+            || source.split(['/', '\\']).any(|component: &str| {
+                component.is_empty() || matches!(component, "." | "..") || component.contains(':')
+            })
             || path
                 .components()
                 .any(|component: std::path::Component<'_>| {
@@ -3036,7 +3036,17 @@ mod tests {
         assert!(validate_source_set_with_limits(&sources, 2, 3, 8).is_err());
         assert!(validate_source_set_with_limits(&sources, 2, 4, 7).is_err());
 
-        for unsafe_path in ["../A.java", "/A.java", "C:/A.java", "nested/./A.java"] {
+        for unsafe_path in [
+            "../A.java",
+            "/A.java",
+            "\\A.java",
+            "C:/A.java",
+            "C:\\A.java",
+            "C:A.java",
+            "A.java:stream",
+            "nested/./A.java",
+            "nested/../A.java",
+        ] {
             let unsafe_sources: BTreeMap<String, String> =
                 BTreeMap::from([(unsafe_path.to_owned(), String::new())]);
             assert!(validate_source_set_with_limits(&unsafe_sources, 1, 1, 1).is_err());

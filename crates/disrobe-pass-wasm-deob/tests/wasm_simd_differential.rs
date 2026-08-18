@@ -23,6 +23,7 @@ fn lifted_targets_execute_simd_equivalently_to_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 17,
         ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }
@@ -36,6 +37,7 @@ fn lifted_targets_execute_every_deterministic_lane_op_equivalently_to_wasmtime()
         langs: &ALL_LANGS,
         min_exports: 221,
         ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }

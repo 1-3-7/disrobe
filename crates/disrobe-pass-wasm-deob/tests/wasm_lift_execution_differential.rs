@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 mod exec_diff;
 
 use exec_diff::{
-    ALL_LANGS, BATTERY, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade, grade_against_reference,
-    grade_traps,
+    ALL_LANGS, BATTERY, Lang, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade,
+    grade_against_reference, grade_traps,
 };
 use wasmtime::{Config, Trap};
 
@@ -62,6 +62,7 @@ fn lifted_targets_execute_atomics_equivalently_to_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 28,
         ungraded: &[],
+        refused: &[(Lang::TypeScript, "at_fence_then_load")],
         battery: &BATTERY,
     });
 }
@@ -76,6 +77,7 @@ fn lifted_targets_trap_misaligned_atomics_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-unaligned",
@@ -93,6 +95,7 @@ fn lifted_targets_trap_aligned_atomic_oob_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-oob",
@@ -110,6 +113,7 @@ fn lifted_targets_trap_atomic_effective_address_overflow_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-oob",
@@ -127,6 +131,7 @@ fn lifted_targets_trap_memory64_overflowing_misalignment_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-unaligned",
@@ -144,6 +149,7 @@ fn lifted_targets_trap_aligned_memory64_2pow53_offset_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-oob",
@@ -161,6 +167,7 @@ fn lifted_targets_trap_memory64_uint64_max_offset_like_wasmtime() {
             langs: &ALL_LANGS,
             min_exports: 1,
             ungraded: &[],
+            refused: &[],
             battery: &[],
         },
         "DR-WASMDEOB-TRAP/1:atomic-oob",
@@ -214,6 +221,7 @@ fn lifted_targets_execute_narrow_atomic_cmpxchg_like_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 5,
         ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }
@@ -227,6 +235,7 @@ fn lifted_targets_execute_wide_arithmetic_equivalently_to_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 10,
         ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }
@@ -240,6 +249,7 @@ fn lifted_targets_execute_reference_and_table_equivalently_to_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 12,
         ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }
@@ -253,6 +263,7 @@ fn lifted_targets_execute_shared_everything_like_its_non_atomic_equivalent() {
         configure: reftable_config,
         langs: &ALL_LANGS,
         min_exports: 16,
+        refused: &[(Lang::TypeScript, "s_fence")],
     });
 }
 
@@ -265,6 +276,7 @@ fn lifted_targets_execute_divide_remainder_and_truncation_on_non_trapping_inputs
         langs: &ALL_LANGS,
         min_exports: 16,
         ungraded: &[],
+        refused: &[],
         battery: &NON_TRAPPING_BATTERY,
     });
 }

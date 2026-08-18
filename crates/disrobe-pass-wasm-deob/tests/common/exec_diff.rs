@@ -7,7 +7,7 @@
     clippy::missing_panics_doc
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -16,6 +16,8 @@ use disrobe_pass_wasm_deob::{
     CalleeNames, FunctionSig, LiftResult, LiftTarget, ModuleSignatures, c_runtime_prelude,
     extract_signatures, lift_function_body, rust_runtime_prelude, typescript_runtime_prelude,
 };
+
+const REFUSAL_CODE: &str = "DR-WASMDEOB-0003";
 use wasmparser::{FunctionBody, Parser, Payload, ValType};
 use wasmtime::{Config, Engine, Linker, Module, Store, Trap, Val};
 
@@ -573,7 +575,84 @@ pub struct Spec<'a> {
     pub langs: &'a [Lang],
     pub min_exports: usize,
     pub ungraded: &'a [&'a str],
+    pub refused: &'a [(Lang, &'a str)],
     pub battery: &'a [i32],
+}
+
+impl Spec<'_> {
+    fn pinned_refusals(&self, lang: Lang) -> BTreeSet<String> {
+        self.refused
+            .iter()
+            .filter(|(target, _): &&(Lang, &str)| *target == lang)
+            .map(|(_, name): &(Lang, &str)| (*name).to_owned())
+            .collect()
+    }
+}
+
+pub fn statically_refused(
+    bytes: &[u8],
+    sigs: &ModuleSignatures,
+    exps: &[Export],
+    lang: Lang,
+) -> BTreeSet<String> {
+    let defined: &[FunctionSig] = sigs.defined();
+    let cs: CalleeNames = callees(bytes, sigs);
+    let mut refused: BTreeSet<String> = BTreeSet::new();
+    for (index, body) in defined_bodies(bytes).iter().enumerate() {
+        let Some(sig): Option<&FunctionSig> = defined.get(index) else {
+            continue;
+        };
+        if !exps.iter().any(|e: &Export| e.name == sig.name) {
+            continue;
+        }
+        let lifted: LiftResult = lift_function_body(body, sig, &cs, lang.target());
+        if lifted.pseudo_source.contains(REFUSAL_CODE) {
+            refused.insert(sig.name.clone());
+        }
+    }
+    refused
+}
+
+fn assert_refusal_is_what_runs(
+    label: &str,
+    lang: Lang,
+    bytes: &[u8],
+    sigs: &ModuleSignatures,
+    refused: &BTreeSet<String>,
+    battery: &[i32],
+    tool: &PathBuf,
+) {
+    for name in refused {
+        let only: Vec<Export> = sigs
+            .defined()
+            .iter()
+            .filter(|s: &&FunctionSig| s.name == *name)
+            .map(|s: &FunctionSig| Export {
+                name: s.name.clone(),
+                arity: s.params.len(),
+            })
+            .collect();
+        let src: String = lifted_source(bytes, sigs, &only, lang, battery);
+        assert!(
+            src.contains(REFUSAL_CODE),
+            "{label}/{}/{name}: a refused export must carry its typed refusal in the emitted \
+             source, so the refusal is what a reader sees rather than silence",
+            lang.label()
+        );
+        let run: Output = execute_process(label, lang, &src, tool);
+        assert!(
+            !run.status.success(),
+            "{label}/{}/{name}: the emitted program must refuse at run time rather than produce a \
+             value the reference cannot be compared against",
+            lang.label()
+        );
+        let stderr: String = String::from_utf8_lossy(&run.stderr).into_owned();
+        assert!(
+            stderr.contains(REFUSAL_CODE),
+            "{label}/{}/{name}: the refusal must name {REFUSAL_CODE}; got: {stderr}",
+            lang.label()
+        );
+    }
 }
 
 pub fn grade(spec: &Spec<'_>) {
@@ -603,6 +682,7 @@ pub fn grade(spec: &Spec<'_>) {
     );
 
     let mut graded_langs: Vec<&'static str> = Vec::new();
+    let mut refusal_notes: Vec<String> = Vec::new();
     for lang in spec.langs {
         let Some(tool): Option<PathBuf> = toolchain(*lang) else {
             panic!(
@@ -611,19 +691,61 @@ pub fn grade(spec: &Spec<'_>) {
                 lang.label()
             );
         };
-        let src: String = lifted_source(&bytes, &sigs, &exps, *lang, spec.battery);
+        let refused: BTreeSet<String> = statically_refused(&bytes, &sigs, &exps, *lang);
+        let pinned: BTreeSet<String> = spec.pinned_refusals(*lang);
+        assert_eq!(
+            refused,
+            pinned,
+            "{}/{}: the set of exports this target refuses to lift changed; a new refusal removes \
+             a case from the value comparison and must be acknowledged in Spec::refused before it \
+             stops being graded",
+            spec.label,
+            lang.label()
+        );
+        assert_refusal_is_what_runs(
+            spec.label,
+            *lang,
+            &bytes,
+            &sigs,
+            &refused,
+            spec.battery,
+            &tool,
+        );
+
+        let comparable: Vec<Export> = exps
+            .iter()
+            .filter(|e: &&Export| !refused.contains(&e.name))
+            .cloned()
+            .collect();
+        let expected: Vec<(String, Option<i32>)> = want
+            .iter()
+            .filter(|(key, _): &&(String, Option<i32>)| {
+                comparable
+                    .iter()
+                    .any(|e: &Export| key.split_once(' ').is_some_and(|(n, _)| n == e.name))
+            })
+            .cloned()
+            .collect();
+        let src: String = lifted_source(&bytes, &sigs, &comparable, *lang, spec.battery);
         let run: Run = execute(spec.label, *lang, &src, &tool);
-        let diverged: Vec<String> = output_divergences(&want, &run.values, "wasmtime");
+        let diverged: Vec<String> = output_divergences(&expected, &run.values, "wasmtime");
         assert!(
             diverged.is_empty(),
             "{}/{}: lifted output diverged from wasmtime on {} of {} case(s):\n{}",
             spec.label,
             lang.label(),
             diverged.len(),
-            want.len(),
+            expected.len(),
             diverged.join("\n")
         );
         graded_langs.push(lang.label());
+        if !refused.is_empty() {
+            refusal_notes.push(format!(
+                "{} refused {:?} and graded each as a typed refusal",
+                lang.label(),
+                refused
+            ));
+        }
     }
 
     eprintln!(
@@ -642,6 +764,9 @@ pub fn grade(spec: &Spec<'_>) {
             format!(" (ungraded exports: {:?})", spec.ungraded)
         }
     );
+    for note in &refusal_notes {
+        eprintln!("{} execution differential: {note}", spec.label);
+    }
 }
 
 pub fn grade_traps(spec: &Spec<'_>, marker: &str, expected_trap: Trap) {
@@ -717,6 +842,17 @@ pub struct ReferenceSpec<'a> {
     pub configure: fn(&mut Config),
     pub langs: &'a [Lang],
     pub min_exports: usize,
+    pub refused: &'a [(Lang, &'a str)],
+}
+
+impl ReferenceSpec<'_> {
+    fn pinned_refusals(&self, lang: Lang) -> BTreeSet<String> {
+        self.refused
+            .iter()
+            .filter(|(target, _): &&(Lang, &str)| *target == lang)
+            .map(|(_, name): &(Lang, &str)| (*name).to_owned())
+            .collect()
+    }
 }
 
 pub fn grade_against_reference(spec: &ReferenceSpec<'_>) {
@@ -766,19 +902,56 @@ pub fn grade_against_reference(spec: &ReferenceSpec<'_>) {
                 lang.label()
             );
         };
-        let src: String = lifted_source(&bytes, &sigs, &exps, *lang, &BATTERY);
+        let refused: BTreeSet<String> = statically_refused(&bytes, &sigs, &exps, *lang);
+        let pinned: BTreeSet<String> = spec.pinned_refusals(*lang);
+        assert_eq!(
+            refused,
+            pinned,
+            "{}/{}: the set of exports this target refuses to lift changed; a new refusal removes \
+             a case from the value comparison and must be acknowledged in ReferenceSpec::refused \
+             before it stops being graded",
+            spec.label,
+            lang.label()
+        );
+        assert_refusal_is_what_runs(spec.label, *lang, &bytes, &sigs, &refused, &BATTERY, &tool);
+
+        let comparable: Vec<Export> = exps
+            .iter()
+            .filter(|e: &&Export| !refused.contains(&e.name))
+            .cloned()
+            .collect();
+        let expected: Vec<(String, Option<i32>)> = want
+            .iter()
+            .filter(|(key, _): &&(String, Option<i32>)| {
+                comparable
+                    .iter()
+                    .any(|e: &Export| key.split_once(' ').is_some_and(|(n, _)| n == e.name))
+            })
+            .cloned()
+            .collect();
+        let src: String = lifted_source(&bytes, &sigs, &comparable, *lang, &BATTERY);
         let run: Run = execute(spec.label, *lang, &src, &tool);
-        let diverged: Vec<String> = output_divergences(&want, &run.values, "reference-wasmtime");
+        let diverged: Vec<String> =
+            output_divergences(&expected, &run.values, "reference-wasmtime");
         assert!(
             diverged.is_empty(),
             "{}/{}: lifted output diverged from the reference module on {} of {} case(s):\n{}",
             spec.label,
             lang.label(),
             diverged.len(),
-            want.len(),
+            expected.len(),
             diverged.join("\n")
         );
         graded_langs.push(lang.label());
+        if !refused.is_empty() {
+            eprintln!(
+                "{} reference-module differential: {} refused {:?} and graded each as a typed \
+                 refusal",
+                spec.label,
+                lang.label(),
+                refused
+            );
+        }
     }
 
     eprintln!(
