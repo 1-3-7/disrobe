@@ -75,7 +75,27 @@ pub(crate) fn manifest_dir() -> PathBuf {
 
 #[must_use]
 pub(crate) fn workspace_target() -> PathBuf {
-    manifest_dir().join("../../target")
+    let exe: PathBuf = std::env::current_exe().expect("current exe");
+    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
+    while dir
+        .file_name()
+        .and_then(|part: &std::ffi::OsStr| part.to_str())
+        != Some("debug")
+        && dir
+            .file_name()
+            .and_then(|part: &std::ffi::OsStr| part.to_str())
+            != Some("release")
+    {
+        assert!(
+            dir.pop(),
+            "walking up from {} never reached a debug or release directory, so the target \
+             directory cannot be located; a manifest-relative path would be wrong under any \
+             custom CARGO_TARGET_DIR",
+            exe.display()
+        );
+    }
+    dir.pop();
+    dir
 }
 
 #[must_use]

@@ -2958,16 +2958,12 @@ pub(super) fn try_enclosed_by_leading_guard(
     hi: usize,
     region: &TryRegion,
 ) -> bool {
-    if region.is_finally {
-        return false;
-    }
     let _ = hi;
     let encloses = |target: usize| -> bool {
-        if region.is_with {
-            target > region.try_end && target <= region.handler_start
-        } else {
-            target >= region.region_end && target > region.handler_start
+        if target >= region.region_end && target > region.handler_start {
+            return true;
         }
+        region.is_with && target > region.try_end && target <= region.handler_start
     };
     for k in lo..region.try_start {
         if !is_forward_cond_jump(&stream.ops[k]) || is_chain_cond_jump(&stream.ops, k) {

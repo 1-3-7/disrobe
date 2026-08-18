@@ -27,12 +27,13 @@ use super::loops::{
 use super::try_with::{
     LoopKind, LoopRegion, TryRegion, extend_window_over_split_handler, find_try_region,
     guard_test_expr_start, is_back_edge, is_forward_cond_jump, is_shortcircuit_cleanup_pop,
-    is_value_boundary, is_value_form_shortcircuit, loop_inside_unpeeled_pre311_try,
-    recover_return_at, region_is_linear, skip_await_poll, structure_try,
-    trim_trailing_comp_cleanup, try_enclosed_by_leading_guard, try_structure_cold_sibling_try,
-    try_structure_else_try, try_structure_empty_body_try, try_structure_guarded_try,
-    try_structure_loop_continue_guard_over_try, try_structure_loop_else_nested_try,
-    try_structure_loop_then_nested_try, try_structure_multibranch_guarded_try,
+    is_value_boundary, is_value_form_shortcircuit, leading_guard_prelude_split,
+    loop_inside_unpeeled_pre311_try, recover_return_at, region_is_linear, skip_await_poll,
+    structure_try, trim_trailing_comp_cleanup, try_enclosed_by_leading_guard,
+    try_structure_cold_sibling_try, try_structure_else_try, try_structure_empty_body_try,
+    try_structure_guarded_try, try_structure_loop_continue_guard_over_try,
+    try_structure_loop_else_nested_try, try_structure_loop_then_nested_try,
+    try_structure_multibranch_guarded_try,
 };
 use super::{
     ActiveRegionGuard, DecodedStream, FrameDispatch, ScDesc, StructureDepthGuard, WIDE_STEP,
@@ -947,47 +948,96 @@ fn is_legacy_with_exit_triple(stream: &DecodedStream, start: usize, hi: usize) -
     matches!(stream.ops[call], CanonicalOp::CallFunction(3))
 }
 
-fn legacy_with_post_cleanup_return(
-    code: &CodeObject,
+fn legacy_with_region_exit(
+    stream: &DecodedStream,
+    body_end: usize,
+    cleanup_idx: usize,
+    hi: usize,
+) -> Option<usize> {
+    (body_end..cleanup_idx)
+        .rev()
+        .find(|&k: &usize| {
+            matches!(
+                stream.ops[k],
+                CanonicalOp::JumpForward(_) | CanonicalOp::JumpAbsolute(_)
+            )
+        })
+        .and_then(|jump: usize| resolve_jump_target(stream, jump, &stream.ops[jump]))
+        .filter(|&target: &usize| target > cleanup_idx && target < hi)
+}
+
+fn legacy_with_post_cleanup_return_span(
     stream: &DecodedStream,
     body_end: usize,
     region_end: usize,
-) -> Result<Option<Stmt>> {
+) -> Option<(usize, usize)> {
     if !is_legacy_with_exit_triple(stream, body_end, region_end) {
-        return Ok(None);
+        return None;
     }
-    let Some(call): Option<usize> = (body_end..region_end).find(|&k: &usize| {
+    let call: usize = (body_end..region_end).find(|&k: &usize| {
         matches!(
             stream.ops[k],
             CanonicalOp::CallFunction(_) | CanonicalOp::CallFunctionKw(_)
         )
-    }) else {
-        return Ok(None);
-    };
-    let Some(pop): Option<usize> = first_significant(stream, call + 1, region_end) else {
-        return Ok(None);
-    };
+    })?;
+    let pop: usize = first_significant(stream, call + 1, region_end)?;
     if !matches!(stream.ops[pop], CanonicalOp::Pop) {
-        return Ok(None);
+        return None;
     }
     let ret_start: usize = pop + 1;
-    let Some(ret_idx): Option<usize> = (ret_start..region_end).find(|&k: &usize| {
+    let ret_idx: usize = (ret_start..region_end).find(|&k: &usize| {
         matches!(
             stream.ops[k],
             CanonicalOp::Return | CanonicalOp::ReturnConst(_)
         )
-    }) else {
-        return Ok(None);
-    };
+    })?;
     let guarded: bool = (ret_start..ret_idx).any(|k: usize| {
         matches!(
             stream.ops[k],
             CanonicalOp::PushExcInfo | CanonicalOp::WithExceptStart
         ) || is_forward_cond_jump(&stream.ops[k])
     });
-    if guarded {
-        return Ok(None);
+    (!guarded).then_some((ret_start, ret_idx))
+}
+
+fn legacy_with_exit_return_duplicates_continuation(
+    stream: &DecodedStream,
+    body_end: usize,
+    region_end: usize,
+    cleanup_idx: usize,
+    hi: usize,
+) -> bool {
+    let Some((ret_start, ret_idx)): Option<(usize, usize)> =
+        legacy_with_post_cleanup_return_span(stream, body_end, region_end)
+    else {
+        return false;
+    };
+    if (cleanup_idx..hi).any(|k: usize| {
+        matches!(
+            stream.ops[k],
+            CanonicalOp::Return | CanonicalOp::ReturnConst(_)
+        )
+    }) {
+        return false;
     }
+    let exit_return: &[CanonicalOp] = &stream.ops[ret_start..=ret_idx];
+    stream
+        .ops
+        .get(hi..hi.saturating_add(exit_return.len()))
+        .is_some_and(|continuation: &[CanonicalOp]| continuation == exit_return)
+}
+
+fn legacy_with_post_cleanup_return(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    body_end: usize,
+    region_end: usize,
+) -> Result<Option<Stmt>> {
+    let Some((ret_start, _ret_idx)): Option<(usize, usize)> =
+        legacy_with_post_cleanup_return_span(stream, body_end, region_end)
+    else {
+        return Ok(None);
+    };
     recover_return_at(code, stream, ret_start, region_end)
 }
 
@@ -1127,6 +1177,11 @@ fn structure_legacy_with(
     let CanonicalOp::SetupWith(rel): CanonicalOp = stream.ops[setup_idx] else {
         return Ok(None);
     };
+    let cleanup_idx: usize =
+        legacy_with_cleanup_idx(stream, setup_idx, rel).map_or(hi, |idx: usize| idx.min(hi));
+    if legacy_with_is_enclosed_by_guard(stream, lo, hi, setup_idx, cleanup_idx) {
+        return Ok(None);
+    }
     let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
         structure_legacy_with_head(code, stream, lo, setup_idx)?;
     let context_expr: Expr = head_residual
@@ -1159,17 +1214,22 @@ fn structure_legacy_with(
         }
         _ => {}
     }
-    let cleanup_idx: usize =
-        legacy_with_cleanup_idx(stream, setup_idx, rel).map_or(hi, |idx: usize| idx.min(hi));
     let region_end: usize = cleanup_idx.min(hi).max(body_start);
     let (body_end, is_return): (usize, bool) =
         legacy_with_body_bound(stream, body_start, region_end);
-    let trailing_return: Option<Stmt> =
-        if is_return || region_contains_setup_with(stream, body_start, body_end) {
-            None
-        } else {
-            legacy_with_post_cleanup_return(code, stream, body_end, region_end)?
-        };
+    let trailing_return: Option<Stmt> = if is_return
+        || region_contains_setup_with(stream, body_start, body_end)
+        || legacy_with_exit_return_duplicates_continuation(
+            stream,
+            body_end,
+            region_end,
+            cleanup_idx,
+            hi,
+        ) {
+        None
+    } else {
+        legacy_with_post_cleanup_return(code, stream, body_end, region_end)?
+    };
     let body: Vec<Stmt> = if is_return && !region_contains_setup_with(stream, body_start, body_end)
     {
         legacy_with_return_body(code, stream, body_start, body_end)?
@@ -1189,8 +1249,106 @@ fn structure_legacy_with(
     out.push(with_stmt);
     if let Some(ret) = trailing_return {
         out.push(ret);
+    } else if let Some(exit) = legacy_with_region_exit(stream, body_end, cleanup_idx, hi) {
+        out.extend(structure_stmts(code, stream, exit, hi)?);
     }
     Ok(Some((out, hi)))
+}
+
+fn legacy_with_is_enclosed_by_guard(
+    stream: &DecodedStream,
+    lo: usize,
+    hi: usize,
+    setup_idx: usize,
+    cleanup_idx: usize,
+) -> bool {
+    for k in lo..setup_idx {
+        if !is_forward_cond_jump(&stream.ops[k])
+            || is_chain_cond_jump(&stream.ops, k)
+            || is_value_form_shortcircuit(&stream.ops, k)
+        {
+            continue;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, k, &stream.ops[k]) else {
+            return false;
+        };
+        if target <= k {
+            continue;
+        }
+        if target > cleanup_idx && target <= hi {
+            return true;
+        }
+        if target > setup_idx {
+            return false;
+        }
+    }
+    false
+}
+
+struct LegacyWithHeadGuard {
+    prelude: Vec<Stmt>,
+    test: Expr,
+    then_body: Vec<Stmt>,
+    resume: usize,
+}
+
+fn legacy_with_head_guard(
+    code: &CodeObject,
+    stream: &DecodedStream,
+    lo: usize,
+    setup_idx: usize,
+) -> Result<Option<LegacyWithHeadGuard>> {
+    for guard in lo..setup_idx {
+        if !is_forward_cond_jump(&stream.ops[guard])
+            || is_chain_cond_jump(&stream.ops, guard)
+            || is_value_form_shortcircuit(&stream.ops, guard)
+        {
+            continue;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
+            .filter(|&target: &usize| target > guard && target <= setup_idx)
+        else {
+            return Ok(None);
+        };
+        if !region_ends_in_hard_terminator(stream, guard + 1, target) {
+            continue;
+        }
+        let Some(split): Option<usize> = leading_guard_prelude_split(stream, lo, guard) else {
+            return Ok(None);
+        };
+        let (test_head, mut test_residual): (Vec<Stmt>, Vec<Expr>) =
+            build_linear_stmts_sim(code, &stream.ops[split..guard])?;
+        if !test_head.is_empty() || test_residual.len() != 1 {
+            return Ok(None);
+        }
+        let Some(raw_test): Option<Expr> = test_residual.pop() else {
+            return Ok(None);
+        };
+        let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, target)?;
+        if then_body.is_empty() {
+            return Ok(None);
+        }
+        let prelude: Vec<Stmt> = structure_stmts(code, stream, lo, split)?;
+        let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
+        let test: Expr = if matches!(
+            stream.ops[guard],
+            CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
+        ) {
+            Expr::UnaryOp {
+                op: crate::bytecode::opcode::UnaryOp::Not,
+                operand: Box::new(test),
+            }
+        } else {
+            test
+        };
+        return Ok(Some(LegacyWithHeadGuard {
+            prelude,
+            test,
+            then_body,
+            resume: target,
+        }));
+    }
+    Ok(None)
 }
 
 fn structure_legacy_with_head(
@@ -1199,57 +1357,22 @@ fn structure_legacy_with_head(
     lo: usize,
     setup_idx: usize,
 ) -> Result<(Vec<Stmt>, Vec<Expr>)> {
-    let (head_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..setup_idx])?;
-    let Some(guard): Option<usize> = (lo..setup_idx).find(|&k: &usize| {
-        is_forward_cond_jump(&stream.ops[k])
-            && !is_chain_cond_jump(&stream.ops, k)
-            && !is_value_form_shortcircuit(&stream.ops, k)
-    }) else {
-        return Ok((head_stmts, head_residual));
-    };
-    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard])
-        .filter(|&target: &usize| target > guard && target <= setup_idx)
-    else {
-        return Ok((head_stmts, head_residual));
-    };
-    if !region_ends_in_hard_terminator(stream, guard + 1, target) {
-        return Ok((head_stmts, head_residual));
+    let mut head_stmts: Vec<Stmt> = Vec::new();
+    let mut start: usize = lo;
+    while let Some(guarded) = legacy_with_head_guard(code, stream, start, setup_idx)? {
+        head_stmts.extend(guarded.prelude);
+        head_stmts.push(Stmt::If {
+            test: guarded.test,
+            body: non_empty(guarded.then_body),
+            orelse: Vec::new(),
+            line: None,
+        });
+        start = guarded.resume;
     }
-    let (test_head, mut test_residual): (Vec<Stmt>, Vec<Expr>) =
-        build_linear_stmts_sim(code, &stream.ops[lo..guard])?;
-    let Some(raw_test): Option<Expr> = test_residual.pop() else {
-        return Ok((head_stmts, head_residual));
-    };
-    if !test_head.is_empty() || !test_residual.is_empty() {
-        return Ok((head_stmts, head_residual));
-    }
-    let then_body: Vec<Stmt> = structure_stmts(code, stream, guard + 1, target)?;
-    if then_body.is_empty() || !head_stmts.starts_with(&then_body) {
-        return Ok((head_stmts, head_residual));
-    }
-    let test: Expr = none_jump_test(stream, guard, raw_test.clone()).unwrap_or(raw_test);
-    let test: Expr = if matches!(
-        stream.ops[guard],
-        CanonicalOp::PopJumpIfTrue(_) | CanonicalOp::PopJumpIfTrueRel(_)
-    ) {
-        Expr::UnaryOp {
-            op: crate::bytecode::opcode::UnaryOp::Not,
-            operand: Box::new(test),
-        }
-    } else {
-        test
-    };
-    let then_body_len: usize = then_body.len();
-    let mut structured_head: Vec<Stmt> = Vec::with_capacity(head_stmts.len() + 1);
-    structured_head.push(Stmt::If {
-        test,
-        body: non_empty(then_body),
-        orelse: Vec::new(),
-        line: None,
-    });
-    structured_head.extend(head_stmts.into_iter().skip(then_body_len));
-    Ok((structured_head, head_residual))
+    let (tail_stmts, head_residual): (Vec<Stmt>, Vec<Expr>) =
+        build_linear_stmts_sim(code, &stream.ops[start..setup_idx])?;
+    head_stmts.extend(tail_stmts);
+    Ok((head_stmts, head_residual))
 }
 
 fn legacy_with_return_body(
