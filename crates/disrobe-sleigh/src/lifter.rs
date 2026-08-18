@@ -237,7 +237,7 @@ fn lift_match(
     let word: u32 = read_word(bytes).unwrap_or(0);
     let constructor: Option<&Constructor> =
         compiled.source().constructors.get(matched.constructor_id);
-    let mnemonic: String = canonical_mnemonic(&matched.mnemonic, word);
+    let mnemonic: String = matched.mnemonic.clone();
     let lifted: Option<Lifted> = constructor.and_then(|selected: &Constructor| {
         lift_supported(
             compiled.source(),
@@ -326,18 +326,28 @@ fn lift_supported(
     {
         return Some(value);
     }
-    if matches!(mnemonic, "ldr" | "str")
+    if matches!(mnemonic, "ldr" | "str" | "ldur" | "stur")
         && let Some(value) = lift_load_store(spec, mnemonic, word, allocator)
     {
         return Some(value);
     }
-    if matches!(mnemonic, "ldr" | "str")
+    if matches!(mnemonic, "ldr" | "str" | "ldur" | "stur")
         && let Some(value) = lift_scalar_fp_load_store(spec, mnemonic, word, allocator)
+    {
+        return Some(value);
+    }
+    if mnemonic == "ldr"
+        && let Some(value) = lift_scalar_fp_literal(spec, word, address, allocator)
     {
         return Some(value);
     }
     if matches!(mnemonic, "ldp" | "stp")
         && let Some(value) = lift_pair(spec, mnemonic, word, allocator)
+    {
+        return Some(value);
+    }
+    if matches!(mnemonic, "ldp" | "stp")
+        && let Some(value) = lift_scalar_fp_pair(spec, mnemonic, word, allocator)
     {
         return Some(value);
     }
@@ -624,7 +634,7 @@ fn lift_load_store(
     word: u32,
     allocator: &mut UniqueAllocator,
 ) -> Option<Lifted> {
-    if word & 0x3b00_0000 != 0x3900_0000 || bit(word, 26) {
+    if word & 0x3a00_0000 != 0x3800_0000 || bit(word, 26) {
         return None;
     }
     let size_code: u32 = bits(word, 30, 2);
@@ -632,18 +642,45 @@ fn lift_load_store(
     if !matches!(width, 4 | 8) {
         return None;
     }
+    let unsigned_offset: bool = bit(word, 24);
+    let index_mode: u32 = bits(word, 10, 2);
+    let unscaled: bool = !unsigned_offset && index_mode == 0b00;
+    if !unsigned_offset && (bit(word, 21) || matches!(index_mode, 0b10)) {
+        return None;
+    }
     let opcode: u32 = bits(word, 22, 2);
-    let is_load: bool = mnemonic == "ldr" && opcode == 1;
-    let is_store: bool = mnemonic == "str" && opcode == 0;
+    let is_load: bool = mnemonic == if unscaled { "ldur" } else { "ldr" } && opcode == 1;
+    let is_store: bool = mnemonic == if unscaled { "stur" } else { "str" } && opcode == 0;
     if !is_load && !is_store {
         return None;
     }
     let rn: u32 = bits(word, 5, 5);
     let rt: u32 = bits(word, 0, 5);
-    let offset: i64 = i64::from(bits(word, 10, 12)).checked_mul(i64::from(width))?;
     let base: Varnode = gpr_input(spec, rn, 8, true)?;
     let mut ops: Vec<PcodeOp> = Vec::new();
-    let pointer: Varnode = add_signed_offset(base, offset, allocator, &mut ops)?;
+    let mut post_index_offset: Option<i64> = None;
+    let pointer: Varnode = if unsigned_offset {
+        let scaled: i64 = i64::from(bits(word, 10, 12)).checked_mul(i64::from(width))?;
+        add_signed_offset(base, scaled, allocator, &mut ops)?
+    } else {
+        let displacement: i64 = signed_bits(word, 12, 9);
+        match index_mode {
+            0b00 => add_signed_offset(base, displacement, allocator, &mut ops)?,
+            0b01 => {
+                post_index_offset = Some(displacement);
+                base
+            }
+            _ => {
+                let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+                let writeback: Varnode = register_output(spec, rn, 8, true)?;
+                ops.push(PcodeOp::Copy {
+                    output: writeback,
+                    input: updated,
+                });
+                updated
+            }
+        }
+    };
     if is_load {
         let destination: Destination = destination(spec, rt, width, false, allocator)?;
         ops.push(PcodeOp::Load {
@@ -658,6 +695,14 @@ fn lift_load_store(
             space: Space::Ram,
             pointer,
             value,
+        });
+    }
+    if let Some(displacement) = post_index_offset {
+        let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+        let writeback: Varnode = register_output(spec, rn, 8, true)?;
+        ops.push(PcodeOp::Copy {
+            output: writeback,
+            input: updated,
         });
     }
     Some(Lifted {
@@ -709,13 +754,19 @@ fn lift_scalar_fp_load_store(
     allocator: &mut UniqueAllocator,
 ) -> Option<Lifted> {
     let class: u32 = bits(word, 24, 6);
-    let unsigned_offset: bool = match class {
-        0b111_100 => false,
-        0b111_101 => true,
-        _ => return None,
-    };
+    if !matches!(class, 0b111_100 | 0b111_101) {
+        return None;
+    }
     let (width, is_load): (u32, bool) = scalar_fp_transfer(bits(word, 30, 2), bits(word, 22, 2))?;
-    if mnemonic != if is_load { "ldr" } else { "str" } {
+    let index_mode: u32 = bits(word, 10, 2);
+    let unscaled: bool = class == 0b111_100 && !bit(word, 21) && index_mode == 0b00;
+    let expected: &str = match (is_load, unscaled) {
+        (true, false) => "ldr",
+        (true, true) => "ldur",
+        (false, false) => "str",
+        (false, true) => "stur",
+    };
+    if mnemonic != expected {
         return None;
     }
     let rn: u32 = bits(word, 5, 5);
@@ -723,25 +774,39 @@ fn lift_scalar_fp_load_store(
     let base: Varnode = gpr_input(spec, rn, 8, true)?;
     let mut ops: Vec<PcodeOp> = Vec::new();
     let mut post_index_offset: Option<i64> = None;
-    let pointer: Varnode = if unsigned_offset {
+    let pointer: Varnode = if class == 0b111_101 {
         let scaled: i64 = i64::from(bits(word, 10, 12)).checked_mul(i64::from(width))?;
         add_signed_offset(base, scaled, allocator, &mut ops)?
-    } else {
-        if bit(word, 21) || !bit(word, 10) {
+    } else if bit(word, 21) {
+        if index_mode != 0b10 {
             return None;
         }
+        let offset: Varnode = extended_register_offset(spec, word, width, allocator, &mut ops)?;
+        let output: Varnode = allocator.allocate(8)?;
+        ops.push(PcodeOp::IntAdd {
+            output,
+            left: base,
+            right: offset,
+        });
+        output
+    } else {
         let displacement: i64 = signed_bits(word, 12, 9);
-        if bit(word, 11) {
-            let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
-            let writeback: Varnode = register_output(spec, rn, 8, true)?;
-            ops.push(PcodeOp::Copy {
-                output: writeback,
-                input: updated,
-            });
-            updated
-        } else {
-            post_index_offset = Some(displacement);
-            base
+        match index_mode {
+            0b00 => add_signed_offset(base, displacement, allocator, &mut ops)?,
+            0b01 => {
+                post_index_offset = Some(displacement);
+                base
+            }
+            0b11 => {
+                let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+                let writeback: Varnode = register_output(spec, rn, 8, true)?;
+                ops.push(PcodeOp::Copy {
+                    output: writeback,
+                    input: updated,
+                });
+                updated
+            }
+            _ => return None,
         }
     };
     if is_load {
@@ -838,6 +903,137 @@ fn lift_scalar_fp_store(
         value: scalar_fp_register(spec, index, width)?,
     });
     Some(())
+}
+
+fn extended_register_offset(
+    spec: &SleighSpec,
+    word: u32,
+    width: u32,
+    allocator: &mut UniqueAllocator,
+    ops: &mut Vec<PcodeOp>,
+) -> Option<Varnode> {
+    if !bit(word, 14) {
+        return None;
+    }
+    let option: u32 = bits(word, 13, 3);
+    let rm: u32 = bits(word, 16, 5);
+    let extended: Varnode = match option {
+        0b011 | 0b111 => gpr_input(spec, rm, 8, false)?,
+        0b010 | 0b110 => {
+            let narrow: Varnode = gpr_input(spec, rm, 4, false)?;
+            let output: Varnode = allocator.allocate(8)?;
+            ops.push(if option == 0b010 {
+                PcodeOp::IntZext {
+                    output,
+                    input: narrow,
+                }
+            } else {
+                PcodeOp::IntSext {
+                    output,
+                    input: narrow,
+                }
+            });
+            output
+        }
+        _ => return None,
+    };
+    let amount: u32 = if bit(word, 12) {
+        width.trailing_zeros()
+    } else {
+        0
+    };
+    shift_operand(extended, 0, amount, allocator, ops)
+}
+
+fn lift_scalar_fp_literal(
+    spec: &SleighSpec,
+    word: u32,
+    address: u64,
+    allocator: &mut UniqueAllocator,
+) -> Option<Lifted> {
+    if bits(word, 24, 6) != 0b011_100 {
+        return None;
+    }
+    let width: u32 = match bits(word, 30, 2) {
+        0 => 4,
+        1 => 8,
+        2 => 16,
+        _ => return None,
+    };
+    let rt: u32 = bits(word, 0, 5);
+    let displacement: i64 = signed_bits(word, 5, 19).checked_mul(4)?;
+    let target: u64 = address.wrapping_add(u64::from_ne_bytes(displacement.to_ne_bytes()));
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    lift_scalar_fp_load(spec, rt, width, constant(target, 8), allocator, &mut ops)?;
+    Some(Lifted {
+        operands: String::new(),
+        ops,
+    })
+}
+
+fn lift_scalar_fp_pair(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<Lifted> {
+    if bits(word, 27, 3) != 0b101 || !bit(word, 26) {
+        return None;
+    }
+    let width: u32 = match bits(word, 30, 2) {
+        0 => 4,
+        1 => 8,
+        2 => 16,
+        _ => return None,
+    };
+    let is_load: bool = bit(word, 22);
+    if mnemonic != if is_load { "ldp" } else { "stp" } {
+        return None;
+    }
+    let rn: u32 = bits(word, 5, 5);
+    let rt: u32 = bits(word, 0, 5);
+    let rt2: u32 = bits(word, 10, 5);
+    let displacement: i64 = signed_bits(word, 15, 7).checked_mul(i64::from(width))?;
+    let base: Varnode = gpr_input(spec, rn, 8, true)?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let mut post_index_offset: Option<i64> = None;
+    let pointer: Varnode = match bits(word, 23, 2) {
+        0b01 => {
+            post_index_offset = Some(displacement);
+            base
+        }
+        0b10 => add_signed_offset(base, displacement, allocator, &mut ops)?,
+        0b11 => {
+            let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+            let writeback: Varnode = register_output(spec, rn, 8, true)?;
+            ops.push(PcodeOp::Copy {
+                output: writeback,
+                input: updated,
+            });
+            updated
+        }
+        _ => return None,
+    };
+    let second: Varnode = add_signed_offset(pointer, i64::from(width), allocator, &mut ops)?;
+    if is_load {
+        lift_scalar_fp_load(spec, rt, width, pointer, allocator, &mut ops)?;
+        lift_scalar_fp_load(spec, rt2, width, second, allocator, &mut ops)?;
+    } else {
+        lift_scalar_fp_store(spec, rt, width, pointer, allocator, &mut ops)?;
+        lift_scalar_fp_store(spec, rt2, width, second, allocator, &mut ops)?;
+    }
+    if let Some(displacement) = post_index_offset {
+        let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+        let writeback: Varnode = register_output(spec, rn, 8, true)?;
+        ops.push(PcodeOp::Copy {
+            output: writeback,
+            input: updated,
+        });
+    }
+    Some(Lifted {
+        operands: String::new(),
+        ops,
+    })
 }
 
 fn lift_pair(
@@ -1553,41 +1749,6 @@ fn sign_extend_u64(value: u64, width: u32) -> i64 {
 fn read_word(bytes: &[u8]) -> Option<u32> {
     let array: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
     Some(u32::from_le_bytes(array))
-}
-
-fn canonical_mnemonic(base: &str, word: u32) -> String {
-    if matches!(base, "add" | "sub") && bit(word, 29) {
-        return format!("{base}s");
-    }
-    if base == "cb" && word & 0x7e00_0000 == 0x3400_0000 {
-        return if bit(word, 24) {
-            "cbnz".to_owned()
-        } else {
-            "cbz".to_owned()
-        };
-    }
-    if base == "b" && word & 0xff00_0010 == 0x5400_0000 {
-        let suffix: &str = match bits(word, 0, 4) {
-            0 => "eq",
-            1 => "ne",
-            2 => "cs",
-            3 => "cc",
-            4 => "mi",
-            5 => "pl",
-            6 => "vs",
-            7 => "vc",
-            8 => "hi",
-            9 => "ls",
-            10 => "ge",
-            11 => "lt",
-            12 => "gt",
-            13 => "le",
-            14 => "al",
-            _ => "nv",
-        };
-        return format!("b.{suffix}");
-    }
-    base.to_owned()
 }
 
 fn seed_instruction_context(word: u32, context: &mut ContextState) {

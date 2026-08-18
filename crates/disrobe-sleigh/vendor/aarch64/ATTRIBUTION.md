@@ -9,9 +9,9 @@ These processor specification files are derived from the [National Security Agen
 - `Ghidra/Processors/AARCH64/data/languages/AARCH64base.sinc`
 - `Ghidra/Processors/AARCH64/data/languages/AARCH64ldst.sinc`
 
-The vendored `AARCH64instructions.sinc` omits the include directive for `AARCH64sve.sinc` and keeps the one for `AARCH64neon.sinc` at its upstream position.
+The vendored `AARCH64instructions.sinc` omits the include directive for `AARCH64sve.sinc` and keeps the one for `AARCH64neon.sinc` at its upstream position. `AARCH64neon.sinc` is vendored whole, so its 1816 SIMD and floating-point constructors compile and the SVE constructors do not. No other Ghidra processor files are vendored.
 
-The vendored `AARCH64neon.sinc` is not the whole upstream file. It holds the LDR and STR (immediate, SIMD&FP) constructors copied verbatim from upstream lines 11329 to 11472 and 23207 to 23340, separated by one blank line. Those 20 constructors cover the scalar floating-point post-index, pre-index, and unsigned-offset transfers at the 8, 16, 32, 64, and 128 bit register widths. No other SIMD, floating-point, or SVE constructor is compiled. No other Ghidra processor files are vendored.
+The normalization below is the identity for `AARCH64neon.sinc`, so its vendored hash equals its upstream blob hash. Compiling it takes the `instruction` table to 2801 constructors, which is why `MAX_TABLE_CONSTRUCTORS` in `crates/disrobe-sleigh/src/compiler.rs` is 4096.
 
 The upstream Git blob bytes have these SHA-256 values:
 
@@ -24,12 +24,12 @@ a02ec3681ebb32fe13c294ed146407a0017d4b1f5dcad25b170da92eb76bc39b  AARCH64base.si
 bc2a55815b9368a0a8d1a14e165e32e39cce54337575c7eae287e4e008ec6aa8  AARCH64ldst.sinc
 ```
 
-The vendored text uses LF line endings, removes trailing horizontal whitespace, and ends with one newline. After that normalization, the one include removal, and the `AARCH64neon.sinc` extraction, the vendored specification files have these SHA-256 values:
+The vendored text uses LF line endings, removes trailing horizontal whitespace, and ends with one newline. After that normalization and the one include removal, the vendored specification files have these SHA-256 values:
 
 ```text
 8f70a0948ed6c9eecf7f220e22628472b220c047c5aae5f29e8ccd2a426e4535  AARCH64.slaspec
 88388e03dd5cc0110479e50f915648d7054429e8be9f795cfb5254cd87094760  AARCH64instructions.sinc
-168c248a313dc5950ef2bb96e5982dfc2511ac1a8135c4aa7ccf8b54bf746de4  AARCH64neon.sinc
+9bedaa46f0b312debd7a48d43942a7f77d4f14122e9a22e8d63c1fbc9ed693ef  AARCH64neon.sinc
 772bbb09f019fede150d421104720f6ccad76b616988ed8914b0fdbbb59f2de2  AARCH64_base_PACoptions.sinc
 b55c9d631592f1ab0620eb52390aceae433cd98c6f66c5f94eec0b388761e44b  AARCH64base.sinc
 bc2a55815b9368a0a8d1a14e165e32e39cce54337575c7eae287e4e008ec6aa8  AARCH64ldst.sinc

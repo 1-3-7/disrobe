@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::SleighError;
 use crate::syntax::{
-    CompareOp, Constructor, Endian, PatternAtom, PatternExpr, PatternValue, SleighSpec, TokenDef,
+    CompareOp, Constructor, DisplayToken, Endian, PatternAtom, PatternExpr, PatternValue,
+    SleighSpec, TokenDef,
 };
 
 const MAX_EVALUATION_DEPTH: usize = 128;
 const MAX_PATTERN_CLAUSES: usize = 4_096;
-const MAX_TABLE_CONSTRUCTORS: usize = 2_048;
+pub const MAX_TABLE_CONSTRUCTORS: usize = 4_096;
 const MAX_DECODE_CONSTRUCTOR_ATTEMPTS: usize = 65_536;
 const MAX_TABLE_CLAUSE_MEMO_ENTRIES: usize = 65_536;
 const MAX_TABLE_CLAUSE_MEMO_CLAUSES: usize = 4_194_304;
@@ -933,12 +934,34 @@ impl CompiledSpec {
         let Some(constructor) = self.spec.constructors.get(constructor_id) else {
             return DecodeOutcome::NoMatch;
         };
+        let mnemonic: String = self
+            .resolved_mnemonic(constructor_id, bytes, context)
+            .unwrap_or_else(|| constructor.mnemonic.clone());
         DecodeOutcome::Matched(DecodeMatch {
             address,
             constructor_id,
             length: result.consumed.max(1),
-            mnemonic: constructor.mnemonic.clone(),
+            mnemonic,
         })
+    }
+
+    fn resolved_mnemonic(
+        &self,
+        constructor_id: usize,
+        bytes: &[u8],
+        context: &ContextState,
+    ) -> Option<String> {
+        let mut budget: EvaluationBudget = EvaluationBudget::new();
+        let mut evaluator: Evaluator<'_> = Evaluator {
+            budget: &mut budget,
+            bytes,
+            compiled: self,
+            context,
+            needed: 0,
+            table_stack: vec!["instruction".to_owned()],
+        };
+        let rendered: String = evaluator.display_run(constructor_id, 0)?;
+        (!rendered.is_empty()).then_some(rendered)
     }
 
     fn select_match(&self, matches: &[(usize, MatchResult)]) -> Option<usize> {
@@ -1235,7 +1258,12 @@ impl Evaluator<'_> {
             })
     }
 
-    fn match_table(&mut self, table: &str, cursor: usize, depth: usize) -> Option<MatchResult> {
+    fn table_matches(
+        &mut self,
+        table: &str,
+        cursor: usize,
+        depth: usize,
+    ) -> Option<Vec<(usize, MatchResult)>> {
         if depth >= MAX_EVALUATION_DEPTH {
             return None;
         }
@@ -1258,16 +1286,74 @@ impl Evaluator<'_> {
                 matches.push((constructor_id, result));
             }
         }
-        if self.budget.exceeded {
-            let removed: Option<String> = self.table_stack.pop();
-            drop(removed);
-            return None;
-        }
+        let exceeded: bool = self.budget.exceeded;
         let removed: Option<String> = self.table_stack.pop();
         drop(removed);
-        if truncated_needed > self.bytes.len() {
+        if exceeded || truncated_needed > self.bytes.len() {
             return None;
         }
+        Some(matches)
+    }
+
+    fn select_table_constructor(
+        &mut self,
+        table: &str,
+        cursor: usize,
+        depth: usize,
+    ) -> Option<usize> {
+        let matches: Vec<(usize, MatchResult)> = self.table_matches(table, cursor, depth)?;
+        let selected_index: usize = self.compiled.select_match(&matches)?;
+        matches
+            .get(selected_index)
+            .map(|(constructor_id, _): &(usize, MatchResult)| *constructor_id)
+    }
+
+    fn display_run(&mut self, constructor_id: usize, depth: usize) -> Option<String> {
+        if depth >= MAX_EVALUATION_DEPTH {
+            return None;
+        }
+        let tokens: Vec<DisplayToken> = self
+            .compiled
+            .spec
+            .constructors
+            .get(constructor_id)?
+            .display_tokens
+            .clone();
+        if tokens.is_empty() {
+            return Some(String::new());
+        }
+        let leading: bool = matches!(tokens.first(), Some(&DisplayToken::Concatenate));
+        let mut rendered: String = if leading {
+            String::new()
+        } else {
+            self.display_piece(tokens.first()?, depth)?
+        };
+        let mut index: usize = usize::from(!leading);
+        while matches!(tokens.get(index), Some(&DisplayToken::Concatenate)) {
+            let piece: &DisplayToken = tokens.get(index.saturating_add(1))?;
+            rendered.push_str(&self.display_piece(piece, depth)?);
+            index = index.saturating_add(2);
+        }
+        Some(rendered)
+    }
+
+    fn display_piece(&mut self, token: &DisplayToken, depth: usize) -> Option<String> {
+        match *token {
+            DisplayToken::Concatenate => Some(String::new()),
+            DisplayToken::Literal(ref text) => Some(text.clone()),
+            DisplayToken::Symbol(ref name) => {
+                if !self.compiled.tables.contains_key(name.as_str()) {
+                    return Some(name.clone());
+                }
+                let selected: usize =
+                    self.select_table_constructor(name, 0, depth.saturating_add(1))?;
+                self.display_run(selected, depth.saturating_add(1))
+            }
+        }
+    }
+
+    fn match_table(&mut self, table: &str, cursor: usize, depth: usize) -> Option<MatchResult> {
+        let matches: Vec<(usize, MatchResult)> = self.table_matches(table, cursor, depth)?;
         if let Some(selected_index) = self.compiled.select_match(&matches) {
             return matches
                 .get(selected_index)

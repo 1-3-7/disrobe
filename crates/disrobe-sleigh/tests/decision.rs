@@ -3,8 +3,8 @@ use std::fmt::{self, Write};
 
 use disrobe_sleigh::SleighError;
 use disrobe_sleigh::compiler::{
-    CompiledSpec, ConflictPolicy, ContextState, DecodeMatch, DecodeOutcome, compile_spec,
-    compile_spec_with_policy,
+    CompiledSpec, ConflictPolicy, ContextState, DecodeMatch, DecodeOutcome, MAX_TABLE_CONSTRUCTORS,
+    compile_spec, compile_spec_with_policy,
 };
 use disrobe_sleigh::syntax::{PatternExpr, SleighSpec, parse_spec};
 use disrobe_sleigh::vendor::preprocessed_aarch64_source;
@@ -422,7 +422,7 @@ define token instruction(8)
 ;
 "
     .to_owned();
-    for index in 0_usize..2049 {
+    for index in 0_usize..MAX_TABLE_CONSTRUCTORS.saturating_add(1) {
         let write_result: fmt::Result = writeln!(source, ":op{index} is opcode=0 {{}}");
         assert!(write_result.is_ok(), "{write_result:?}");
     }
@@ -437,6 +437,46 @@ define token instruction(8)
         compiled,
         Err(SleighError::Parse { message, .. }) if message.contains("constructor count")
     ));
+}
+
+#[test]
+fn the_constructor_bound_is_raised_only_as_far_as_the_vendored_specification_needs() {
+    let source: Result<String, SleighError> = preprocessed_aarch64_source();
+    assert!(source.is_ok(), "{source:?}");
+    let Ok(source) = source else {
+        return;
+    };
+    let parsed: Result<SleighSpec, SleighError> = parse_spec(&source);
+    assert!(parsed.is_ok(), "{parsed:?}");
+    let Ok(spec) = parsed else {
+        return;
+    };
+    let mut sizes: BTreeMap<&str, usize> = BTreeMap::new();
+    for constructor in &spec.constructors {
+        let slot: &mut usize = sizes.entry(constructor.table.as_str()).or_default();
+        *slot = slot.saturating_add(1);
+    }
+    let largest: usize = sizes.values().copied().max().unwrap_or_default();
+    assert_eq!(
+        largest, 2_801,
+        "the vendored aarch64 instruction table is the reason the bound moved; if this count          changes, re-measure the bound rather than widening it to fit"
+    );
+    assert!(
+        largest > 2_048,
+        "the bound was raised past 2048 for a reason; with a largest vendored table of {largest} \
+         the raise is no longer justified and belongs back at its previous value"
+    );
+    assert!(
+        largest <= MAX_TABLE_CONSTRUCTORS,
+        "the vendored specification must fit the bound it compiles under; largest table {largest} \
+         against {MAX_TABLE_CONSTRUCTORS}"
+    );
+    let headroom: usize = MAX_TABLE_CONSTRUCTORS.saturating_sub(largest);
+    assert!(
+        headroom < largest,
+        "a bound more than twice the largest real table has stopped bounding anything; largest \
+         {largest} headroom {headroom}"
+    );
 }
 
 #[test]

@@ -119,9 +119,16 @@ pub enum PatternExpr {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisplayToken {
+    Concatenate,
+    Literal(String),
+    Symbol(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Constructor {
     pub context_tokens: Vec<String>,
-    pub display_tokens: Vec<String>,
+    pub display_tokens: Vec<DisplayToken>,
     pub mnemonic: String,
     pub pattern: PatternExpr,
     pub semantic_tokens: Vec<String>,
@@ -684,7 +691,7 @@ impl Parser {
                 "constructor semantic section is malformed",
             );
         }
-        let display_tokens: Vec<String> = token_texts(&display);
+        let display_tokens: Vec<DisplayToken> = display.iter().map(display_token).collect();
         let mnemonic: String = display
             .first()
             .map_or_else(String::new, |token: &Lexeme| token.text.clone());
@@ -1205,6 +1212,16 @@ fn combine_patterns(inherited: Option<PatternExpr>, local: PatternExpr) -> Patte
         PatternExpr::All(vec![parent, local])
     } else {
         local
+    }
+}
+
+fn display_token(token: &Lexeme) -> DisplayToken {
+    match token.kind {
+        LexemeKind::Identifier => DisplayToken::Symbol(token.text.clone()),
+        LexemeKind::Symbol if token.text == "^" => DisplayToken::Concatenate,
+        LexemeKind::Number | LexemeKind::String | LexemeKind::Symbol => {
+            DisplayToken::Literal(token.text.clone())
+        }
     }
 }
 

@@ -24,8 +24,8 @@ const TOOL_CAPTURE_LIMIT: usize = 32 * 1024 * 1024;
 const REFERENCE_FILE: &str = "aarch64_word_sweep.llvm";
 const UNKNOWN: &str = "<unknown>";
 const SWEEP_WORDS: usize = 2830;
-const ACCEPTED_WORDS: usize = 1331;
-const AGREEING_WORDS: usize = 1288;
+const ACCEPTED_WORDS: usize = 1381;
+const AGREEING_WORDS: usize = 1372;
 const TARGET_COMPARISONS: usize = 206;
 const CORPUS_MNEMONIC_COMPARISONS: usize = 203;
 const CORPUS_NAMES: [&str; 3] = ["aarch64_forms", "aarch64_oracle_o0", "aarch64_oracle_o2"];
@@ -66,67 +66,17 @@ const ALIAS_EQUIVALENCES: [AliasEquivalence; 1] = [AliasEquivalence {
     reason: "BFI is the preferred disassembly of BFM when imms is below immr and Rn is not the zero register",
 }];
 
-const MNEMONIC_DIVERGENCES: [(&str, &str, usize, &str); 9] = [
-    (
-        "bc",
-        "bc.mi",
-        1,
-        "the decoder keeps the BC constructor stem and drops the condition suffix",
-    ),
-    (
-        "bc",
-        "bc.nv",
-        2,
-        "the decoder keeps the BC constructor stem and drops the condition suffix",
-    ),
-    (
-        "ld",
-        "ldtrsb",
-        1,
-        "the decoder keeps the unprivileged load stem and drops the size and signedness suffix",
-    ),
-    (
-        "ld",
-        "ldursw",
-        1,
-        "the decoder keeps the unscaled load stem and drops the size and signedness suffix",
-    ),
-    (
-        "mov",
-        "orr",
-        5,
-        "the decoder applies the MOV alias to ORR with a shifted or rotated second source, where the alias needs LSL #0; the emitted P-code still applies the shift",
-    ),
-    (
-        "st",
-        "stur",
-        1,
-        "the decoder keeps the unscaled store stem and drops the size suffix",
-    ),
-    (
-        "st",
-        "sturh",
-        1,
-        "the decoder keeps the unscaled store stem and drops the size suffix",
-    ),
-    (
-        "tb",
-        "tbnz",
-        13,
-        "the decoder keeps the TB constructor stem and drops the zero or nonzero suffix",
-    ),
-    (
-        "tb",
-        "tbz",
-        14,
-        "the decoder keeps the TB constructor stem and drops the zero or nonzero suffix",
-    ),
-];
+const MNEMONIC_DIVERGENCES: [(&str, &str, usize, &str); 1] = [(
+    "mov",
+    "orr",
+    5,
+    "the decoder applies the MOV alias to ORR with a shifted or rotated second source, where the alias needs LSL #0; the emitted P-code still applies the shift",
+)];
 
 const OVER_ACCEPTED_WORDS: [(u32, &str, &str); 4] = [
     (
         0x5d93_4e86,
-        "cpy",
+        "cpyewtwn",
         "memory-copy encoding that LLVM 19.1.7 leaves unallocated",
     ),
     (
@@ -136,12 +86,12 @@ const OVER_ACCEPTED_WORDS: [(u32, &str, &str); 4] = [
     ),
     (
         0x9d54_84fb,
-        "cpy",
+        "cpymrn",
         "memory-copy encoding that LLVM 19.1.7 leaves unallocated",
     ),
     (
         0xdd10_8e68,
-        "cpy",
+        "cpypwtrn",
         "memory-copy encoding that LLVM 19.1.7 leaves unallocated",
     ),
 ];
@@ -152,8 +102,8 @@ const GROUP_EXPECTATION: [(&str, GroupCounts); 9] = [
         GroupCounts {
             seen: 307,
             accepted: 193,
-            agreeing: 163,
-            disagreeing: 30,
+            agreeing: 193,
+            disagreeing: 0,
             accepted_reference_rejects: 0,
             declined_reference_accepts: 1,
             both_reject: 113,
@@ -187,11 +137,11 @@ const GROUP_EXPECTATION: [(&str, GroupCounts); 9] = [
         "dp_simd_fp",
         GroupCounts {
             seen: 192,
-            accepted: 0,
-            agreeing: 0,
+            accepted: 18,
+            agreeing: 18,
             disagreeing: 0,
             accepted_reference_rejects: 0,
-            declined_reference_accepts: 20,
+            declined_reference_accepts: 2,
             both_reject: 172,
         },
     ),
@@ -199,11 +149,11 @@ const GROUP_EXPECTATION: [(&str, GroupCounts); 9] = [
         "load_store",
         GroupCounts {
             seen: 467,
-            accepted: 337,
-            agreeing: 330,
-            disagreeing: 4,
+            accepted: 369,
+            agreeing: 366,
+            disagreeing: 0,
             accepted_reference_rejects: 3,
-            declined_reference_accepts: 33,
+            declined_reference_accepts: 1,
             both_reject: 97,
         },
     ),

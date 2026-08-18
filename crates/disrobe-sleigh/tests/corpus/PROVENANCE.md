@@ -164,7 +164,9 @@ llvm-objdump decodes the extension spaces by default for this container. `190104
 
 Every corpus word is graded as an instruction by two independent disassemblers. The committed GNU objdump 2.45.1 listings and LLVM 19.1.7 agree on all 203 corpus mnemonics, so the committed `.text` files hold no literal pool or jump table that the sweep would count as a decode failure.
 
-At this base the decoder matched a constructor for 1331 of the 2830 words. 1288 of those 1331 mnemonics agree with LLVM 19.1.7 after one declared alias equivalence, 39 disagree in nine recorded classes, and 4 are encodings that LLVM rejects. A further 219 words that the decoder declines are accepted by LLVM, counted separately from agreement. All 206 comparable branch and address targets match exactly.
+At this base the decoder matched a constructor for 1381 of the 2830 words. 1372 of those 1381 mnemonics agree with LLVM 19.1.7 after one declared alias equivalence, 5 disagree in one recorded class, and 4 are encodings that LLVM rejects. A further 169 words that the decoder declines are accepted by LLVM, counted separately from agreement.
+
+Eight of the nine divergence classes recorded before this base were the decoder reporting a constructor's literal display stem where the mnemonic is built by concatenation, for example `tb` for `tbz` and `ld` for `ldursw`. The compiler now resolves the whole concatenated run, including a leading run that names a display subtable, so those classes are gone and the remaining one is a real alias preference. All 206 comparable branch and address targets match exactly.
 
 - `generate_aarch64_word_sweep.py`: `5C00AB9817897E18B72D2EB1C0C37953DE545E1EF42D8C3D99ABDBBAA266376B`
 - `aarch64_word_sweep.llvm`: `7FBB4EE6092B7B3A054E003E9CB03963E89B71D92E7312CB7D36A7A09AED721D`
@@ -193,3 +195,20 @@ The generator is reproducible from the crate directory:
 ```text
 python tests/fixtures/generate_aarch64_scalar_fp_matrix.py
 ```
+
+# AArch64 memory form matrix
+
+`aarch64_memory_matrix.llvm` records the LLVM 19.1.7 disassembly of 206 words covering the memory families that are neither the scalar immediate transfers nor the general-register unsigned offset. The same clang 19.1.7 and llvm-objdump 19.1.7 executables recorded in the word sweep section produced it by the same `.inst` route. LLVM accepts all 206 words.
+
+The families are the unscaled `ldur` and `stur` scalar transfers at five widths with positive, negative and zero immediates; the register-offset scalar transfers at five widths across the `uxtw`, `lsl`, `sxtw` and `sxtx` options with the scale bit both clear and set; the PC-relative literal loads at the 32, 64 and 128 bit widths with positive and negative displacements; the `ldp` and `stp` scalar pairs at three widths across post-index, offset and pre-index with positive, negative and zero immediates; and the general-register indexed loads and stores at 32 and 64 bits across the unscaled, post-index and pre-index forms. Some cases carry the stack pointer as a base and the zero register as a transfer.
+
+`tests/memory_matrix.rs` parses every reference line into its transfer registers, base register, index mode, immediate, extension and shift, then grades the emitted P-code against those facts. Word `i` sits at offset `4 * i`, so a literal load is decoded at the same address the reference resolved and its pointer constant is compared directly. The grade requires the bytes moved to equal the widths the reference register letters imply, each transfer register to be the one the reference names, a load into the zero register to write no architectural register, a store from it to store zero, an offset form to leave the base register alone, a post-index form to access before it writes the base, a pre-index form to write the base first, a `uxtw` index to be zero extended and an `sxtw` index sign extended while `lsl` and `sxtx` take the 64-bit register unchanged, and the index shift to appear exactly when the reference prints a nonzero amount.
+
+The generator is reproducible from the crate directory:
+
+```text
+python tests/fixtures/generate_aarch64_memory_matrix.py
+```
+
+- `generate_aarch64_memory_matrix.py`: `A2A1F27DBBDEE393D5D6784367ECD6FE3347D6AECAC32CF4736CA5AEEA7FD45F`
+- `aarch64_memory_matrix.llvm`: `BAD887E50893CFFEDF9A528EEE86D5CFD303388735EC0F008749BE7AF5D351A0`
