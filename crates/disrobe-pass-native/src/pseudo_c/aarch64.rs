@@ -4915,6 +4915,7 @@ fn try_lower_scalar_fp(
             }
             Ok(None)
         }
+        "fmov" if d_transfer_class == Some(DTransferClass::Vector) => Ok(None),
         "fmov" => lower_fp_fmov(insn, &operands).map(Some),
         "ldr" | "str" | "ldur" | "stur" => {
             let Some(token): Option<&&str> = operands.first() else {
@@ -6187,7 +6188,9 @@ fn parse_scalar_simd(token: &str) -> Result<(u8, VecElem)> {
     if token.contains('.') || token.contains('[') {
         return Err(reject("operand is not a plain scalar SIMD register"));
     }
-    let (letter, digits): (&str, &str) = token.split_at(1);
+    let (letter, digits): (&str, &str) = token
+        .split_at_checked(1)
+        .ok_or_else(|| reject("operand is not a scalar SIMD register"))?;
     let elem: VecElem = match letter {
         "b" => VecElem::I8,
         "h" => VecElem::I16,
@@ -6203,10 +6206,27 @@ fn parse_scalar_simd(token: &str) -> Result<(u8, VecElem)> {
     Ok((index, elem))
 }
 
+fn is_simd_reduce(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "addv" | "smaxv" | "sminv" | "umaxv" | "uminv" | "saddlv" | "uaddlv" | "addp"
+    )
+}
+
+fn simd_reduce_destination(insn: &DisasmInsn) -> Option<u8> {
+    if !is_simd_reduce(insn.mnemonic.as_str()) {
+        return None;
+    }
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    parse_scalar_simd(operands.first()?)
+        .ok()
+        .map(|(register, _): (u8, VecElem)| register)
+}
+
 fn try_lower_scalar_simd(insn: &DisasmInsn) -> Result<Option<Vec<Stmt>>> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
-        "addv" | "smaxv" | "sminv" | "umaxv" | "uminv" | "saddlv" | "uaddlv" | "addp" => {
+        mnemonic if is_simd_reduce(mnemonic) => {
             let Some(first): Option<&&str> = operands.first() else {
                 return Ok(None);
             };
@@ -6283,23 +6303,32 @@ fn lower_reduce(insn: &DisasmInsn, operands: &[&str]) -> Result<Vec<Stmt>> {
     })])
 }
 
-fn lower_scalar_fmov(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
+fn scalar_fmov_extract(operands: &[&str]) -> Option<(RegRef, u8, VecElem)> {
     if operands.len() != 2 {
-        return Ok(None);
+        return None;
     }
-    let Ok(dest): Result<RegRef> = parse_reg(operands[0]) else {
-        return Ok(None);
-    };
-    let Ok((src, elem)): Result<(u8, VecElem)> = parse_scalar_simd(operands[1]) else {
-        return Ok(None);
-    };
-    let matched: bool = matches!(
+    let dest: RegRef = parse_reg(operands[0]).ok()?;
+    let (src, elem): (u8, VecElem) = parse_scalar_simd(operands[1]).ok()?;
+    matches!(
         (dest.width, elem),
         (Width::W32, VecElem::I32) | (Width::W64, VecElem::I64)
-    );
-    if !matched {
-        return Ok(None);
+    )
+    .then_some((dest, src, elem))
+}
+
+fn scalar_fmov_source(insn: &DisasmInsn) -> Option<u8> {
+    if insn.mnemonic != "fmov" {
+        return None;
     }
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    scalar_fmov_extract(&operands).map(|(_, register, _): (RegRef, u8, VecElem)| register)
+}
+
+fn lower_scalar_fmov(operands: &[&str]) -> Result<Option<Vec<Stmt>>> {
+    let Some((dest, src, elem)): Option<(RegRef, u8, VecElem)> = scalar_fmov_extract(operands)
+    else {
+        return Ok(None);
+    };
     Ok(Some(vec![Stmt::Vector(VecStmt::ExtractToGpr {
         dest,
         src,
@@ -6784,6 +6813,25 @@ enum DTransferClass {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+struct DCrossingRecord {
+    scalar: bool,
+    vector: bool,
+}
+
+impl DCrossingRecord {
+    fn record(&mut self, class: DTransferClass) {
+        match class {
+            DTransferClass::Scalar => self.scalar = true,
+            DTransferClass::Vector => self.vector = true,
+        }
+    }
+
+    const fn disagrees(self) -> bool {
+        self.scalar && self.vector
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 struct DRegisterState {
     origin: Option<usize>,
     class: Option<DTransferClass>,
@@ -6852,12 +6900,17 @@ fn constrain_d_register(
     register: u8,
     class: DTransferClass,
     insn: &DisasmInsn,
+    crossings: Option<&[DCrossingRecord; 32]>,
 ) -> Result<()> {
     let state: &mut DRegisterState = &mut states[usize::from(register)];
-    if state.crossed_block {
+    if state.crossed_block
+        && crossings.is_some_and(|records: &[DCrossingRecord; 32]| {
+            records[usize::from(register)].disagrees()
+        })
+    {
         return Err(reject_at(
             insn,
-            "a d-register transfer value crosses a basic-block boundary",
+            "d-register values reaching one use disagree on scalar and vector class",
         ));
     }
     if state
@@ -6885,6 +6938,19 @@ fn constrain_d_register(
     Ok(())
 }
 
+fn adopt_d_register_class(
+    states: &mut [DRegisterState; 32],
+    classes: &mut BTreeMap<usize, DTransferClass>,
+    register: u8,
+    insn: &DisasmInsn,
+) -> Result<DTransferClass> {
+    let class: DTransferClass = states[usize::from(register)]
+        .class
+        .unwrap_or(DTransferClass::Scalar);
+    constrain_d_register(states, classes, register, class, insn, None)?;
+    Ok(class)
+}
+
 fn replace_d_register_value(
     states: &mut [DRegisterState; 32],
     classes: &mut BTreeMap<usize, DTransferClass>,
@@ -6901,6 +6967,9 @@ fn replace_d_register_value(
 }
 
 fn d_value_definition(insn: &DisasmInsn) -> Option<(u8, DTransferClass)> {
+    if let Some(register) = simd_reduce_destination(insn) {
+        return Some((register, DTransferClass::Vector));
+    }
     let operands: Vec<&str> = split_operands(&insn.operands);
     let destination: &&str = operands.first()?;
     if let Some(register) = explicit_vector_register(destination) {
@@ -6920,6 +6989,7 @@ fn constrain_d_value_uses(
     classes: &mut BTreeMap<usize, DTransferClass>,
     insn: &DisasmInsn,
     has_destination: bool,
+    crossings: Option<&[DCrossingRecord; 32]>,
 ) -> Result<bool> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     let mut transfer_dependent: bool = false;
@@ -6933,17 +7003,38 @@ fn constrain_d_value_uses(
     {
         let state: DRegisterState = states[usize::from(register)];
         transfer_dependent |= state.transfer_dependent || state.origin.is_some();
-        constrain_d_register(states, classes, register, DTransferClass::Vector, insn)?;
+        constrain_d_register(
+            states,
+            classes,
+            register,
+            DTransferClass::Vector,
+            insn,
+            crossings,
+        )?;
     }
     for operand in operands.iter().skip(usize::from(has_destination)) {
         if let Some(register) = explicit_vector_register(operand) {
             let state: DRegisterState = states[usize::from(register)];
             transfer_dependent |= state.transfer_dependent || state.origin.is_some();
-            constrain_d_register(states, classes, register, DTransferClass::Vector, insn)?;
+            constrain_d_register(
+                states,
+                classes,
+                register,
+                DTransferClass::Vector,
+                insn,
+                crossings,
+            )?;
         } else if let Some(register) = parse_dreg(operand) {
             let state: DRegisterState = states[usize::from(register)];
             transfer_dependent |= state.transfer_dependent || state.origin.is_some();
-            constrain_d_register(states, classes, register, DTransferClass::Scalar, insn)?;
+            constrain_d_register(
+                states,
+                classes,
+                register,
+                DTransferClass::Scalar,
+                insn,
+                crossings,
+            )?;
         }
     }
     Ok(transfer_dependent)
@@ -6952,6 +7043,7 @@ fn constrain_d_value_uses(
 fn finalize_d_block(
     states: &mut [DRegisterState; 32],
     classes: &mut BTreeMap<usize, DTransferClass>,
+    crossings: &mut [DCrossingRecord; 32],
     allow_scalar_return: bool,
     insn: &DisasmInsn,
 ) -> Result<()> {
@@ -6975,6 +7067,9 @@ fn finalize_d_block(
         };
         let transfer_dependent: bool = state.transfer_dependent || origin.is_some();
         *state = if transfer_dependent {
+            if let Some(class) = resolved_class {
+                crossings[register].record(class);
+            }
             DRegisterState {
                 origin: None,
                 class: resolved_class,
@@ -7003,6 +7098,17 @@ fn d_classification_target(insn: &DisasmInsn) -> Result<Option<u64>> {
 }
 
 fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransferClass>> {
+    let mut reaching: [DCrossingRecord; 32] = [DCrossingRecord::default(); 32];
+    scan_d_transfers(insns, &mut reaching, None)?;
+    let mut enforced: [DCrossingRecord; 32] = [DCrossingRecord::default(); 32];
+    scan_d_transfers(insns, &mut enforced, Some(&reaching))
+}
+
+fn scan_d_transfers(
+    insns: &[DisasmInsn],
+    crossings: &mut [DCrossingRecord; 32],
+    reaching: Option<&[DCrossingRecord; 32]>,
+) -> Result<BTreeMap<usize, DTransferClass>> {
     let mut classes: BTreeMap<usize, DTransferClass> = BTreeMap::new();
     let mut states: [DRegisterState; 32] = [DRegisterState::default(); 32];
     let mut branch_targets: BTreeSet<u64> = BTreeSet::new();
@@ -7013,7 +7119,7 @@ fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransfe
     }
     for (index, insn) in insns.iter().enumerate() {
         if branch_targets.contains(&insn.address) {
-            finalize_d_block(&mut states, &mut classes, false, insn)?;
+            finalize_d_block(&mut states, &mut classes, crossings, false, insn)?;
         }
         if let Some((is_load, registers)) = d_transfer_registers(insn) {
             if is_load {
@@ -7052,7 +7158,14 @@ fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransfe
                         ));
                     }
                     transfer_class = Some(class);
-                    constrain_d_register(&mut states, &mut classes, register, class, insn)?;
+                    constrain_d_register(
+                        &mut states,
+                        &mut classes,
+                        register,
+                        class,
+                        insn,
+                        reaching,
+                    )?;
                 }
                 if let Some(class) = transfer_class {
                     classes.insert(index, class);
@@ -7081,13 +7194,23 @@ fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransfe
                         register,
                         DTransferClass::Vector,
                         insn,
+                        reaching,
                     )?;
                 }
             }
+        } else if let Some(register) = scalar_fmov_source(insn) {
+            let class: DTransferClass =
+                adopt_d_register_class(&mut states, &mut classes, register, insn)?;
+            classes.insert(index, class);
         } else {
             let definition: Option<(u8, DTransferClass)> = d_value_definition(insn);
-            let transfer_dependent: bool =
-                constrain_d_value_uses(&mut states, &mut classes, insn, definition.is_some())?;
+            let transfer_dependent: bool = constrain_d_value_uses(
+                &mut states,
+                &mut classes,
+                insn,
+                definition.is_some(),
+                reaching,
+            )?;
             if let Some((register, class)) = definition {
                 replace_d_register_value(
                     &mut states,
@@ -7103,11 +7226,17 @@ fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransfe
             }
         }
         if is_control_flow(insn) {
-            finalize_d_block(&mut states, &mut classes, insn.mnemonic == "ret", insn)?;
+            finalize_d_block(
+                &mut states,
+                &mut classes,
+                crossings,
+                insn.mnemonic == "ret",
+                insn,
+            )?;
         }
     }
     if let Some(last) = insns.last() {
-        finalize_d_block(&mut states, &mut classes, true, last)?;
+        finalize_d_block(&mut states, &mut classes, crossings, true, last)?;
     }
     Ok(classes)
 }

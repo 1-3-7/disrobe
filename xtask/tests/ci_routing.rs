@@ -69,7 +69,12 @@ fn ci_routes_full_coverage_to_scheduled_and_tag_runs() {
     );
     assert_eq!(schedule.len(), 1);
     let jobs: &Value = ci.get("jobs").expect("ci.yml jobs");
-    let full_route: &str = "github.event_name == 'schedule' || github.ref_type == 'tag'";
+    let full_route: &str = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'";
+    assert!(
+        !full_route.contains("push"),
+        "the full route must never admit a push to main; that is what keeps the main-push \
+         legs fast and is the reason these jobs are gated at all"
+    );
     for job in [
         "test",
         "beam-otp28-long-atu8",

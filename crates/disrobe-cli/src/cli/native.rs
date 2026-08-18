@@ -561,8 +561,19 @@ impl PcodeRecovery {
     }
 
     pub(crate) fn coverage_json(&self) -> serde_json::Value {
-        serde_json::to_value(self.coverage_report()).unwrap_or(serde_json::Value::Null)
+        coverage_value(&self.coverage_report())
     }
+}
+
+#[cfg(feature = "nir-lift")]
+fn coverage_value(report: &DecodeCoverageReport) -> serde_json::Value {
+    serde_json::to_value(report).unwrap_or_else(|error: serde_json::Error| {
+        serde_json::json!({
+            "schema": "disrobe.native.decode-coverage/v1",
+            "run": false,
+            "reason": format!("the decode coverage block could not be serialized: {error}"),
+        })
+    })
 }
 
 #[cfg(feature = "nir-lift")]
@@ -1163,8 +1174,7 @@ fn decompile_native_pcode<'data>(
         "functions_unrecovered": unrecovered.len(),
         "source": src_path.display().to_string(),
         "devirt": devirt_summary,
-        "decode_coverage": serde_json::to_value(coverage_totals.report())
-            .unwrap_or(serde_json::Value::Null),
+        "decode_coverage": coverage_value(&coverage_totals.report()),
         "recovered": recovered,
         "unrecovered": unrecovered,
     });

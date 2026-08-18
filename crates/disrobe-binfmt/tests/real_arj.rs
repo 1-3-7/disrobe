@@ -355,7 +355,38 @@ fn real_arj_split_member_names_the_missing_volume() {
 }
 
 #[test]
-fn real_arj_expansion_ratio_and_entry_caps_are_enforced() {
+fn real_arj_member_count_over_the_entry_cap_is_refused() {
+    let bytes: Vec<u8> = fixture("method1.arj");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe-arj-entry-cap")
+            .expect("create scratch directory");
+    let refusal: Result<ExtractionResult, disrobe_binfmt::Error> = extract_to_with_quota(
+        ContainerKind::Arj,
+        &bytes,
+        scratch.path(),
+        ExtractionQuota {
+            max_entries: 2,
+            max_total_uncompressed: 1 << 20,
+            max_per_entry_uncompressed: 1 << 20,
+            max_per_entry_ratio: 1 << 10,
+            max_aggregate_ratio: 1 << 10,
+        },
+    );
+    let message: String = match refusal {
+        Ok(result) => panic!(
+            "a five-member archive must not extract under a two-entry cap: {:?}",
+            result.integrity_violations
+        ),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        message.contains("entry") && message.contains('2'),
+        "the refusal must name the entry cap it enforced: {message}"
+    );
+}
+
+#[test]
+fn real_arj_expansion_ratio_is_enforced() {
     let bytes: Vec<u8> = fixture("method1.arj");
     let scratch: disrobe_core::scratch::ScratchDir =
         disrobe_core::scratch::ScratchDir::create("disrobe-arj-ratio")

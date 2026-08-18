@@ -24,6 +24,9 @@ docs/theme/*.hbs text eol=lf
 *.dex binary
 *.idsig binary
 crates/disrobe-pass-scriptlang/tests/fixtures/** -text
+crates/disrobe-pass-dotnet/tests/fixtures/native_aot/*.txt text eol=lf
+crates/disrobe-pass-dotnet/tests/fixtures/native_aot/*.cs text eol=lf
+crates/disrobe-pass-dotnet/tests/fixtures/native_aot/*.exe -text
 crates/disrobe-binfmt/tests/fixtures/** -text
 crates/disrobe-pass-php/tests/fixtures/** -text
 crates/disrobe-pass-scriptlang/tests/fixtures/*.js binary

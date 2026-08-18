@@ -1792,19 +1792,32 @@ fn untyped_d_value_crossing_a_basic_block_is_refused() {
 }
 
 #[test]
-fn classified_d_transfer_value_crossing_a_basic_block_is_refused() {
+fn classified_d_transfer_value_crossing_a_basic_block_keeps_the_agreed_class() {
     let bytes: [u8; 24] = [
         0x00, 0x00, 0x40, 0xfd, 0x00, 0x84, 0xe0, 0x4e, 0x02, 0x00, 0x00, 0x14, 0x1f, 0x20, 0x03,
         0xd5, 0x20, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f, 0xd6,
     ];
-    let error: Error = recover_aarch64_function(&bytes, 0)
-        .expect_err("classified d-register transfer provenance must not cross blocks");
+    let recovered: LeafRecovery = recover_aarch64_function(&bytes, 0)
+        .expect("both blocks read the d-register transfer as vector data");
 
     assert!(
-        error
-            .to_string()
-            .contains("a d-register transfer value crosses a basic-block boundary"),
-        "{error:?}"
+        recovered.source.contains(
+            "v0 = (__typeof__(v0)){0};\n        *(uint64_t *)(&v0) = *(recovered_u64_mem *)(r_rax);"
+        ),
+        "a 64-bit vector load clears the upper doubleword before writing the lower one: {}",
+        recovered.source
+    );
+    assert!(
+        recovered.source.contains("v0 = v0 + v0;"),
+        "{}",
+        recovered.source
+    );
+    assert!(
+        recovered
+            .source
+            .contains("*(recovered_u64_mem *)(r_a64_x1) = *(uint64_t *)(&v0);"),
+        "a 64-bit vector store writes only the lower doubleword: {}",
+        recovered.source
     );
 }
 

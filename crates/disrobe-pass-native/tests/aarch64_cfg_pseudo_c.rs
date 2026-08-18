@@ -967,6 +967,111 @@ fn aarch64_returns_that_disagree_on_the_result_class_still_reject() {
     );
 }
 
+const D_REGISTER_FORWARD_ARMS_DISAGREE: [u8; 32] = [
+    0x81, 0x00, 0x00, 0x34, 0x00, 0x00, 0x40, 0xfd, 0x00, 0x28, 0x60, 0x1e, 0x03, 0x00, 0x00, 0x14,
+    0x40, 0x00, 0x40, 0xfd, 0x00, 0x84, 0x20, 0x0e, 0x60, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const D_REGISTER_BACKWARD_ARM_DISAGREES: [u8; 28] = [
+    0x00, 0x00, 0x40, 0xfd, 0x00, 0x28, 0x60, 0x1e, 0x60, 0x00, 0x00, 0xfd, 0x40, 0x00, 0x40, 0xfd,
+    0x00, 0x84, 0x20, 0x0e, 0xa1, 0xff, 0xff, 0x35, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const D_REGISTER_BACKWARD_ARM_AGREES: [u8; 28] = [
+    0x00, 0x00, 0x40, 0xfd, 0x00, 0x28, 0x60, 0x1e, 0x60, 0x00, 0x00, 0xfd, 0x40, 0x00, 0x40, 0xfd,
+    0x00, 0x28, 0x60, 0x1e, 0xa1, 0xff, 0xff, 0x35, 0xc0, 0x03, 0x5f, 0xd6,
+];
+
+fn assert_decodes_as(bytes: &[u8], expected: &[(&str, &str)]) {
+    let rendered: Vec<(String, String)> = disassemble(Arch::Aarch64, 0, bytes)
+        .expect("aarch64 decode")
+        .iter()
+        .map(|insn: &DisasmInsn| (insn.mnemonic.clone(), insn.operands.trim().to_owned()))
+        .collect();
+    let observed: Vec<(&str, &str)> = rendered
+        .iter()
+        .map(|(mnemonic, operands): &(String, String)| (mnemonic.as_str(), operands.as_str()))
+        .collect();
+    assert_eq!(observed, expected, "decoded instruction stream");
+}
+
+#[test]
+fn aarch64_d_register_forward_arms_that_disagree_on_the_value_class_reject() {
+    assert_decodes_as(
+        &D_REGISTER_FORWARD_ARMS_DISAGREE,
+        &[
+            ("cbz", "w1, $+0x10"),
+            ("ldr", "d0, [x0]"),
+            ("fadd", "d0, d0, d0"),
+            ("b", "$+0xc"),
+            ("ldr", "d0, [x2]"),
+            ("add", "v0.8b, v0.8b, v0.8b"),
+            ("str", "d0, [x3]"),
+            ("ret", ""),
+        ],
+    );
+    let error: Error = recover_aarch64_function(&D_REGISTER_FORWARD_ARMS_DISAGREE, 0)
+        .expect_err("a scalar arm and a vector arm cannot both reach one d-register store");
+    assert!(
+        format!("{error:?}")
+            .contains("d-register values reaching one use disagree on scalar and vector class"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn aarch64_d_register_backward_arm_that_disagrees_on_the_value_class_rejects() {
+    assert_decodes_as(
+        &D_REGISTER_BACKWARD_ARM_DISAGREES,
+        &[
+            ("ldr", "d0, [x0]"),
+            ("fadd", "d0, d0, d0"),
+            ("str", "d0, [x3]"),
+            ("ldr", "d0, [x2]"),
+            ("add", "v0.8b, v0.8b, v0.8b"),
+            ("cbnz", "w1, $-0xc"),
+            ("ret", ""),
+        ],
+    );
+    let error: Error = recover_aarch64_function(&D_REGISTER_BACKWARD_ARM_DISAGREES, 0)
+        .expect_err("the vector arm on the back edge still reaches the store at the loop head");
+    assert!(
+        format!("{error:?}")
+            .contains("d-register values reaching one use disagree on scalar and vector class"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn aarch64_d_register_backward_arm_that_agrees_on_the_value_class_recovers() {
+    assert_decodes_as(
+        &D_REGISTER_BACKWARD_ARM_AGREES,
+        &[
+            ("ldr", "d0, [x0]"),
+            ("fadd", "d0, d0, d0"),
+            ("str", "d0, [x3]"),
+            ("ldr", "d0, [x2]"),
+            ("fadd", "d0, d0, d0"),
+            ("cbnz", "w1, $-0xc"),
+            ("ret", ""),
+        ],
+    );
+    let r: LeafRecovery = recover_aarch64_function(&D_REGISTER_BACKWARD_ARM_AGREES, 0)
+        .expect("arms that agree on the d-register class stay recoverable across the loop edge");
+    assert!(
+        r.source
+            .contains("(*(uint64_t*)(uintptr_t)(r_a64_x3)) = x_xmm0;"),
+        "{}",
+        r.source
+    );
+    assert!(
+        r.source
+            .contains("x_xmm0 = fp_d_to_bits((double)((*(double*)(uintptr_t)(r_a64_x2))));"),
+        "{}",
+        r.source
+    );
+    assert!(!r.source.contains("recovered_i8x16"), "{}", r.source);
+    assert!(r.source.contains("do {"), "{}", r.source);
+}
+
 #[test]
 fn aarch64_vector_memory_access_never_asserts_pointer_alignment() {
     let stp_q_pair: [u8; 8] = [0x00, 0x00, 0x00, 0xad, 0xc0, 0x03, 0x5f, 0xd6];

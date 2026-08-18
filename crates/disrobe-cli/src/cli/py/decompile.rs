@@ -122,7 +122,7 @@ pub(super) fn decompile(
         roundtrip_label.as_deref(),
     )?;
 
-    println!("py decompile: OK");
+    println!("{}", decompile_headline(outcome.roundtrip.as_ref()));
     println!("  input:        {}", input.display());
     println!("  backend:      {}", outcome.backend_label);
     println!(
@@ -215,6 +215,26 @@ fn write_deobfuscated_decompile(
         println!("{line}");
     }
     Ok(())
+}
+
+fn decompile_headline(roundtrip: Option<&RoundtripOutcome>) -> &'static str {
+    match roundtrip.map(|rt: &RoundtripOutcome| &rt.status) {
+        Some(RoundtripStatus::CodeDiff { .. }) => {
+            "py decompile: recovered, but the recompiled bytecode does not match the original, so \
+             the source below is not equivalent to the input"
+        }
+        Some(RoundtripStatus::RecompileFailed { .. }) => {
+            "py decompile: recovered, but the recovered source does not compile, so it cannot be \
+             equivalent to the input"
+        }
+        Some(RoundtripStatus::NoInterpreter { .. }) => {
+            "py decompile: recovered, not verified: no interpreter was available to recompile with"
+        }
+        None
+        | Some(RoundtripStatus::Perfect | RoundtripStatus::Semantic | RoundtripStatus::Skipped) => {
+            "py decompile: OK"
+        }
+    }
 }
 
 #[derive(Debug)]

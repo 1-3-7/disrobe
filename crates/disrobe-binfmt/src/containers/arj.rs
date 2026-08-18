@@ -34,7 +34,6 @@ const METHOD_STORED: u8 = 0;
 const METHOD_FASTEST: u8 = 4;
 
 const F_THRESHOLD: usize = 3;
-const F_MAX_DISTANCE: usize = 15_872;
 const F_LEN_STOP_WIDTH: u32 = 7;
 const F_PTR_START_WIDTH: u32 = 9;
 const F_PTR_STOP_WIDTH: u32 = 13;
@@ -286,7 +285,7 @@ pub const fn entry_is_stored(entry: &ArjEntry) -> bool {
 }
 
 pub(crate) fn admit_output_path(paths: &mut BTreeSet<String>, name: &str) -> Result<()> {
-    let key: String = name.to_ascii_lowercase();
+    let key: String = name.to_lowercase();
     if !paths.insert(key) {
         return Err(Error::Arj(format!(
             "arj: normalized output path collision at `{name}`"
@@ -412,9 +411,9 @@ impl<'a> BitReader<'a> {
             .src
             .get(self.bit >> 3)
             .ok_or_else(|| Error::Arj("bitstream underrun".to_owned()))?;
-        let shift: u32 = 7 - u32::try_from(self.bit & 7).unwrap_or(0);
+        let mask: u8 = 0b1000_0000 >> (self.bit & 7);
         self.bit += 1;
-        Ok(u32::from((byte >> shift) & 1))
+        Ok(u32::from(byte & mask != 0))
     }
 
     fn read_bits(&mut self, count: u32) -> Result<u32> {
@@ -479,11 +478,6 @@ fn decode_fastest_observed<O: FnMut(usize, usize)>(
             1 << F_PTR_START_WIDTH,
         )?;
         let distance: usize = pointer as usize + 1;
-        if distance > F_MAX_DISTANCE {
-            return Err(Error::Arj(format!(
-                "match distance {distance} exceeds the {F_MAX_DISTANCE}-byte window"
-            )));
-        }
         if distance > out.len() {
             return Err(Error::Arj(format!(
                 "match distance {distance} reaches before the {} bytes produced so far",
@@ -631,6 +625,7 @@ mod tests {
 
     const REAL_METHOD4: &[u8] = include_bytes!("../../../../corpus/binfmt/arj/method4.arj");
 
+    const F_MAX_DISTANCE: usize = 15_872;
     const POINTER_TIER_BASE: [usize; 5] = [0, 512, 1536, 3584, 7680];
 
     fn length_tier(length: usize) -> usize {
@@ -694,8 +689,63 @@ mod tests {
         assert_eq!(shortest, F_THRESHOLD, "shortest match must be 3 bytes");
         assert_eq!(longest, 256, "longest match must reach 256 bytes");
         assert!(
-            farthest > POINTER_TIER_BASE[4] && farthest <= F_MAX_DISTANCE,
+            farthest > POINTER_TIER_BASE[4],
             "farthest distance {farthest} must land in the widest tier"
+        );
+    }
+
+    #[test]
+    fn two_names_that_differ_only_by_case_are_refused_whatever_the_alphabet() {
+        for (first, second) in [
+            ("README.txt", "readme.txt"),
+            ("\u{c4}.txt", "\u{e4}.txt"),
+            ("STRASSE\u{c9}.dat", "strasse\u{e9}.dat"),
+        ] {
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            admit_output_path(&mut seen, first).expect("the first name must be admitted");
+            let clash: Result<()> = admit_output_path(&mut seen, second);
+            assert!(
+                clash.is_err(),
+                "`{first}` and `{second}` fold to one name on a case-insensitive filesystem, so \
+                 the second must be refused rather than silently overwriting the first"
+            );
+        }
+    }
+
+    #[test]
+    fn two_names_that_differ_by_more_than_case_are_both_admitted() {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        admit_output_path(&mut seen, "readme.txt").expect("the first name must be admitted");
+        admit_output_path(&mut seen, "readme2.txt")
+            .expect("a distinct name must not be refused as a collision");
+        admit_output_path(&mut seen, "\u{e4}.txt")
+            .expect("a name that folds to nothing already seen must be admitted");
+        admit_output_path(&mut seen, "\u{130}\u{131}.txt")
+            .expect("a dotted capital I must be admitted beside a plain one");
+        admit_output_path(&mut seen, "i\u{131}.txt").expect(
+            "the dotted capital I lowercases to i followed by a combining dot above, not to a \
+             plain i, so these two names do not fold together and neither may be refused as a \
+             collision",
+        );
+    }
+
+    #[test]
+    fn the_pointer_encoding_cannot_reach_past_the_declared_window() {
+        let tier_total: usize = (F_PTR_START_WIDTH..F_PTR_STOP_WIDTH)
+            .map(|width: u32| 1usize << width)
+            .sum();
+        let widest_field: usize = (1usize << F_PTR_STOP_WIDTH) - 1;
+        assert_eq!(
+            tier_total + widest_field + 1,
+            F_MAX_DISTANCE,
+            "the widest distance the tiered pointer encoding can express must be exactly the \
+             declared window, so no runtime guard is needed and none is written; a change to any \
+             of the three width constants must break this rather than silently widen the window"
+        );
+        assert_eq!(
+            POINTER_TIER_BASE[4] + widest_field + 1,
+            F_MAX_DISTANCE,
+            "the widest tier must start where the four narrower tiers end"
         );
     }
 
