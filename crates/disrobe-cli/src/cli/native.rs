@@ -4629,6 +4629,123 @@ mod tests {
         include_bytes!("../../../disrobe-sleigh/tests/corpus/arm32_thumb_oracle_o2.text");
 
     #[cfg(feature = "nir-lift")]
+    const THUMB_FORMS_ELF: &[u8] = include_bytes!("../../../../corpus/native/arch/thumb_forms.elf");
+    #[cfg(feature = "nir-lift")]
+    const THUMB_FORMS_OBJDUMP: &str =
+        include_str!("../../../../corpus/native/arch/thumb_forms.objdump");
+    #[cfg(feature = "nir-lift")]
+    const MIXED_MODES_ELF: &[u8] =
+        include_bytes!("../../../../corpus/native/arch/arm32_mixed_modes.elf");
+    #[cfg(feature = "nir-lift")]
+    const MIXED_MODES_OBJDUMP: &str =
+        include_str!("../../../../corpus/native/arch/arm32_mixed_modes.objdump");
+
+    #[cfg(feature = "nir-lift")]
+    const FUNCTIONS_IN_THE_MODE_FIXTURES: usize = 7;
+    #[cfg(feature = "nir-lift")]
+    const FUNCTIONS_LIFTED_WHEN_EVERY_RANGE_IS_READ_AS_A32: usize = 3;
+
+    #[cfg(feature = "nir-lift")]
+    fn reference_addresses(listing: &str, start: u64, end: u64) -> std::collections::BTreeSet<u64> {
+        listing
+            .lines()
+            .filter_map(|line: &str| {
+                let (address, rest): (&str, &str) = line.trim_start().split_once(':')?;
+                (!rest.trim().is_empty()).then_some(())?;
+                u64::from_str_radix(address, 16).ok()
+            })
+            .filter(|address: &u64| *address >= start && *address < end)
+            .collect()
+    }
+
+    #[cfg(feature = "nir-lift")]
+    fn lifted_addresses(
+        arch: disrobe_nir_lift::PcodeArch,
+        code: &[u8],
+        entry: u64,
+    ) -> Option<std::collections::BTreeSet<u64>> {
+        use disrobe_nir_lift::{ArchLift, LiftGap, lower_arch};
+
+        let lift: ArchLift = lower_arch(arch, code, entry, "f").ok()?;
+        let mut found: std::collections::BTreeSet<u64> = lift
+            .function
+            .instructions
+            .iter()
+            .map(|instruction: &disrobe_nir::NirInstr| instruction.address)
+            .collect();
+        found.extend(lift.gaps.reported().iter().map(|gap: &LiftGap| gap.address));
+        Some(found)
+    }
+
+    #[cfg(feature = "nir-lift")]
+    #[test]
+    fn selecting_the_mode_lifts_every_arm_function_at_the_reference_boundaries() {
+        use disrobe_nir_lift::PcodeArch;
+        use disrobe_pass_native::arch::ArmMappingSymbols;
+        use object::{Object as _, ObjectSymbol as _};
+        use std::collections::BTreeSet;
+
+        let mut functions: usize = 0;
+        let mut lifted_as_a32: usize = 0;
+        let mut lifted_with_selection: usize = 0;
+        for (label, image, listing) in [
+            ("thumb_forms", THUMB_FORMS_ELF, THUMB_FORMS_OBJDUMP),
+            ("arm32_mixed_modes", MIXED_MODES_ELF, MIXED_MODES_OBJDUMP),
+        ] {
+            let obj: object::File<'_> =
+                object::File::parse(image).expect("the committed arm fixture parses");
+            let mapping: ArmMappingSymbols = ArmMappingSymbols::of(&obj);
+            for symbol in obj.symbols() {
+                if symbol.kind() != object::SymbolKind::Text || symbol.size() == 0 {
+                    continue;
+                }
+                let name: String = symbol.name().unwrap_or("?").to_owned();
+                let entry: u64 = symbol.address() & !1_u64;
+                let end: u64 = entry.saturating_add(symbol.size());
+                let expected: BTreeSet<u64> = reference_addresses(listing, entry, end);
+                assert!(
+                    !expected.is_empty(),
+                    "{label}:{name} has no reference instruction in {entry:#x}..{end:#x}"
+                );
+                let code: Vec<u8> = bytes_for_va_range(&obj, entry, end)
+                    .unwrap_or_else(|| panic!("{label}:{name} has mapped bytes"));
+                functions += 1;
+
+                if lifted_addresses(PcodeArch::Arm32A32, &code, entry)
+                    .is_some_and(|addresses: BTreeSet<u64>| addresses == expected)
+                {
+                    lifted_as_a32 += 1;
+                }
+
+                let chosen: PcodeArch = match mapping.select(entry, end) {
+                    ArmSelection::Decodable(ArmMode::Thumb) => PcodeArch::Arm32Thumb,
+                    ArmSelection::Decodable(ArmMode::A32) => PcodeArch::Arm32A32,
+                    ArmSelection::Undecodable(reason) => {
+                        panic!("{label}:{name} is a whole-mode function: {reason}")
+                    }
+                };
+                let addresses: BTreeSet<u64> = lifted_addresses(chosen, &code, entry)
+                    .unwrap_or_else(|| panic!("{label}:{name} must lift as {chosen:?}"));
+                assert_eq!(
+                    addresses, expected,
+                    "{label}:{name} lifted at boundaries llvm-objdump does not report"
+                );
+                lifted_with_selection += 1;
+            }
+        }
+        assert_eq!(functions, FUNCTIONS_IN_THE_MODE_FIXTURES);
+        assert_eq!(
+            lifted_with_selection, FUNCTIONS_IN_THE_MODE_FIXTURES,
+            "every function must lift at the reference boundaries once its mode is selected"
+        );
+        assert_eq!(
+            lifted_as_a32, FUNCTIONS_LIFTED_WHEN_EVERY_RANGE_IS_READ_AS_A32,
+            "reading every range as a32 matched a different number of functions than the recorded \
+             figure; remeasure and republish before changing this constant"
+        );
+    }
+
+    #[cfg(feature = "nir-lift")]
     #[test]
     fn the_selected_region_decides_which_pcode_architecture_lifts_the_function() {
         use disrobe_nir_lift::PcodeArch;
