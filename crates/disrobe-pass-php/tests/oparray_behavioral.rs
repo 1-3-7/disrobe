@@ -35,7 +35,7 @@ use std::process::Command;
 
 const GRADED: &str = "the op_array decompile differential over the committed oparray samples";
 
-const PINNED_SAMPLES: [&str; 12] = [
+const PINNED_SAMPLES: [&str; 13] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -43,6 +43,7 @@ const PINNED_SAMPLES: [&str; 12] = [
     "functions",
     "generators",
     "keyed_foreach",
+    "match_optimized",
     "objects",
     "switch_linear",
     "switch_optimized",
@@ -50,20 +51,21 @@ const PINNED_SAMPLES: [&str; 12] = [
     "versioned",
 ];
 
-const BEHAVIORALLY_GRADED_SAMPLES: [&str; 10] = [
+const BEHAVIORALLY_GRADED_SAMPLES: [&str; 11] = [
     "arithmetic",
     "control_flow",
     "do_while",
     "functions",
     "generators",
     "keyed_foreach",
+    "match_optimized",
     "objects",
     "switch_linear",
     "switch_optimized",
     "variable_variable",
 ];
 
-const OPCODE_NAMING_SAMPLES: [&str; 12] = [
+const OPCODE_NAMING_SAMPLES: [&str; 13] = [
     "arithmetic",
     "closures",
     "control_flow",
@@ -71,6 +73,7 @@ const OPCODE_NAMING_SAMPLES: [&str; 12] = [
     "functions",
     "generators",
     "keyed_foreach",
+    "match_optimized",
     "objects",
     "switch_linear",
     "switch_optimized",
@@ -471,6 +474,11 @@ fn php_84_optimized_switch_oparray_roundtrips_behaviorally() {
 }
 
 #[test]
+fn php_84_optimized_match_oparray_roundtrips_behaviorally() {
+    behavioral_roundtrip("match_optimized");
+}
+
+#[test]
 fn optimized_switch_emitter_refuses_schemas_without_table_payloads() {
     let graded: &str = "the PHP 8.4 optimized switch DZOA schema boundary";
     let Some(php): Option<PathBuf> = find_php(graded) else {
@@ -487,6 +495,36 @@ fn optimized_switch_emitter_refuses_schemas_without_table_payloads() {
         let output: PathBuf = scratch.path().join(format!("switch-v{version}.dzoa"));
         let error: String = emit_dzoa_versioned(&php, &dll, &source, &output, Some(version), None)
             .expect_err("schemas without typed switch literals must be refused");
+        if error.contains("no opcache configuration produced") {
+            unmeasured(&PHP_OPCACHE, graded, &error);
+            return;
+        }
+        assert!(
+            error.contains(&format!(
+                "DZOA schema version {version} cannot encode SWITCH_"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn optimized_match_emitter_refuses_schemas_without_table_payloads() {
+    let graded: &str = "the PHP 8.4 optimized match DZOA schema boundary";
+    let Some(php): Option<PathBuf> = find_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<String> = find_opcache(&php, graded) else {
+        return;
+    };
+    let source: PathBuf = required_sample("match_optimized");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_match_schema")
+            .expect("create match schema scratch directory");
+    for version in [1u8, 2u8] {
+        let output: PathBuf = scratch.path().join(format!("match-v{version}.dzoa"));
+        let error: String = emit_dzoa_versioned(&php, &dll, &source, &output, Some(version), None)
+            .expect_err("schemas without typed match literals must be refused");
         if error.contains("no opcache configuration produced") {
             unmeasured(&PHP_OPCACHE, graded, &error);
             return;

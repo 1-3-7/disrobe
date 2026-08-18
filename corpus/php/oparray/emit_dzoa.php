@@ -533,6 +533,7 @@ function build_switch_op(
     $entries = [];
     $seen = [];
     $default = null;
+    $tableKind = null;
     $keyBytes = 0;
     while ($tokens !== []) {
         $keyToken = array_shift($tokens);
@@ -552,17 +553,21 @@ function build_switch_op(
             $default = $target;
             continue;
         }
-        if ($mnemonic === 'SWITCH_LONG') {
-            if (!preg_match('/^(-?\d+):$/', $keyToken, $match)) {
+        $longKey = preg_match('/^(-?\d+):$/', $keyToken, $match) === 1;
+        $stringKey = preg_match('/^"((?:[^"\\\\]|\\\\.)*)":$/s', $keyToken, $stringMatch) === 1;
+        if ($mnemonic === 'SWITCH_LONG' || ($mnemonic === 'MATCH' && $longKey)) {
+            if (!$longKey || $tableKind === 'switch-string') {
                 fail("$mnemonic at line $address has a non-integer key '$keyToken'");
             }
+            $tableKind = 'switch-long';
             $key = (int) $match[1];
             $identity = 'i:' . $match[1];
         } else {
-            if (!preg_match('/^"((?:[^"\\\\]|\\\\.)*)":$/s', $keyToken, $match)) {
+            if (!$stringKey || $tableKind === 'switch-long') {
                 fail("$mnemonic at line $address has a non-string key '$keyToken'");
             }
-            $key = stripcslashes($match[1]);
+            $tableKind = 'switch-string';
+            $key = stripcslashes($stringMatch[1]);
             $keyBytes += strlen($key) + 1;
             if ($keyBytes > SWITCH_KEY_BYTES_CAP) {
                 fail("$mnemonic at line $address exceeds string-key byte cap " . SWITCH_KEY_BYTES_CAP);
@@ -583,7 +588,7 @@ function build_switch_op(
     $op->op1Type = $subjectType;
     $op->op1 = $subjectValue;
     $op->line = $address + 1;
-    $op->switchKind = $mnemonic === 'SWITCH_LONG' ? 'switch-long' : 'switch-string';
+    $op->switchKind = $tableKind;
     $op->switchEntries = $entries;
     $op->switchDefault = $default;
 
@@ -692,7 +697,7 @@ function parse_dump(string $text): array
 
         $tokens = tokenize_operands($rest);
 
-        if ($mnemonic === 'SWITCH_LONG' || $mnemonic === 'SWITCH_STRING') {
+        if ($mnemonic === 'SWITCH_LONG' || $mnemonic === 'SWITCH_STRING' || $mnemonic === 'MATCH') {
             $op = build_switch_op($mnemonic, $tokens, $current['oa'], $addr);
             $current['oa']->ops[] = $op;
             $current['index'][$addr] = count($current['oa']->ops) - 1;
@@ -947,6 +952,9 @@ function run_opcache_dump(string $dll, array $iniOverrides, string $srcPath): ar
         $cmd[] = '-d';
         $cmd[] = "$name=$value";
     }
+    $cmd[] = '-r';
+    $cmd[] = 'opcache_compile_file($argv[1]);';
+    $cmd[] = '--';
     $cmd[] = $srcPath;
 
     $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];

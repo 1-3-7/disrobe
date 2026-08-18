@@ -167,7 +167,7 @@ fn net7_auto_emits_the_compiler_method_and_unknown_minor_refuses() -> Result<(),
     assert_eq!(method["body"]["status"], "recovered");
     assert_eq!(
         method["body"]["pseudo_c"],
-        "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n"
+        "#include <stdint.h>\nint32_t recovered(int32_t a0, int32_t a1) {\n    uint64_t r_rcx = (uint32_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n"
     );
 
     let header: disrobe_pass_dotnet::aot::ReadyToRunHeader = detect(IMAGE)

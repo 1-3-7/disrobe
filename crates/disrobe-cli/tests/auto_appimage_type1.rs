@@ -22,10 +22,18 @@ enum MaterializedKind {
     Symlink,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaterializedMode {
+    #[cfg(unix)]
+    Unix(u32),
+    #[cfg(not(unix))]
+    Unavailable,
+}
+
 #[derive(Debug)]
 struct MaterializedEntry {
     kind: MaterializedKind,
-    mode: Option<u32>,
+    mode: MaterializedMode,
     bytes: Vec<u8>,
 }
 
@@ -49,14 +57,31 @@ fn run_disrobe(args: &[OsString]) -> CapturedOutput {
 }
 
 #[cfg(unix)]
-fn observed_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+fn observed_mode(metadata: &std::fs::Metadata) -> MaterializedMode {
     use std::os::unix::fs::PermissionsExt as _;
-    Some(metadata.permissions().mode())
+    MaterializedMode::Unix(metadata.permissions().mode())
 }
 
 #[cfg(not(unix))]
-const fn observed_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
-    None
+const fn observed_mode(_metadata: &std::fs::Metadata) -> MaterializedMode {
+    MaterializedMode::Unavailable
+}
+
+#[cfg(unix)]
+fn checked_mode(metadata: &std::fs::Metadata, expected: u32, name: &str) -> MaterializedMode {
+    use std::os::unix::fs::PermissionsExt as _;
+    let value: u32 = metadata.permissions().mode() & 0o7777;
+    assert_eq!(value, expected, "mode for {name}");
+    MaterializedMode::Unix(value)
+}
+
+#[cfg(not(unix))]
+const fn checked_mode(
+    _metadata: &std::fs::Metadata,
+    _expected: u32,
+    _name: &str,
+) -> MaterializedMode {
+    MaterializedMode::Unavailable
 }
 
 fn collect_tree(root: &Path, current: &Path, entries: &mut MaterializedTree) {
@@ -167,10 +192,7 @@ fn materialized_member_tree(root: &Path) -> MaterializedTree {
             other => panic!("unsupported manifest kind: {other}"),
         };
         assert_eq!(kind, expected_materialized_kind, "kind for {name}");
-        let mode: Option<u32> = observed_mode(&metadata).map(|value: u32| value & 0o7777);
-        if let Some(mode) = mode {
-            assert_eq!(mode, expected_mode, "mode for {name}");
-        }
+        let mode: MaterializedMode = checked_mode(&metadata, expected_mode, &name);
         assert!(
             entries
                 .insert(name, MaterializedEntry { kind, mode, bytes })

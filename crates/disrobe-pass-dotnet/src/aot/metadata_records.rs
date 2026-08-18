@@ -2160,7 +2160,7 @@ pub fn recover_metadata_attribution(
         parse_metadata_records(bytes, profile)?;
     attach_invoke_map_entrypoints(image, header, &mut methods)?;
     if let Some(pe) = attach_method_boundaries(image, &mut methods)? {
-        attach_method_bodies(image, &pe, &mut methods)?;
+        attach_method_bodies(image, &pe, &types, &mut methods)?;
     }
     Ok(AotMetadataAttribution {
         status: AotMetadataStatus::Recovered,

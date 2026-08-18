@@ -284,6 +284,23 @@ pub fn decompress_compress(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
     lzw_unix_decompress(&bytes[3..], max_bits, block_mode, cap)
 }
 
+pub(crate) fn decompress_stuffit_compress14(payload: &[u8], cap: u64) -> Result<Vec<u8>> {
+    let (output, last_output_bit): (Vec<u8>, usize) =
+        lzw_unix_decompress_positioned(payload, 14, true, cap)?;
+    let total_bits: usize = payload.len().checked_mul(8).ok_or_else(|| {
+        Error::Decompression("compress(.Z): input bit length overflows".to_owned())
+    })?;
+    let trailing_bits: usize = total_bits.checked_sub(last_output_bit).ok_or_else(|| {
+        Error::Decompression("compress(.Z): consumed bit position exceeds input".to_owned())
+    })?;
+    if trailing_bits >= 8 {
+        return Err(Error::Decompression(
+            "compress(.Z): stream has trailing bytes".to_owned(),
+        ));
+    }
+    Ok(output)
+}
+
 const COMPRESS_CLEAR_CODE: u32 = 256;
 const COMPRESS_FIRST_FREE: u32 = 257;
 
@@ -293,6 +310,16 @@ fn lzw_unix_decompress(
     block_mode: bool,
     cap: u64,
 ) -> Result<Vec<u8>> {
+    lzw_unix_decompress_positioned(payload, max_bits, block_mode, cap)
+        .map(|(output, _consumed_bits): (Vec<u8>, usize)| output)
+}
+
+fn lzw_unix_decompress_positioned(
+    payload: &[u8],
+    max_bits: u32,
+    block_mode: bool,
+    cap: u64,
+) -> Result<(Vec<u8>, usize)> {
     let mut out: Vec<u8> = Vec::new();
     let max_entries: u32 = 1u32 << max_bits;
     let first_free: u32 = if block_mode {
@@ -310,8 +337,11 @@ fn lzw_unix_decompress(
     let mut next_code: u32 = first_free;
     let mut previous: Option<u32> = None;
     let mut bit_pos: usize = 0;
+    let mut last_output_bit: usize = 0;
     let mut region_start: usize = 0;
-    let total_bits: usize = payload.len() * 8;
+    let total_bits: usize = payload.len().checked_mul(8).ok_or_else(|| {
+        Error::Decompression("compress(.Z): input bit length overflows".to_owned())
+    })?;
 
     loop {
         if next_code > max_code_for(code_size) && code_size < max_bits {
@@ -360,6 +390,7 @@ fn lzw_unix_decompress(
         if deferred_first {
             out.push(first_byte);
         }
+        last_output_bit = bit_pos;
         if out.len() as u64 > cap {
             return Err(Error::QuotaExceeded {
                 entry: "stream.Z".to_owned(),
@@ -376,7 +407,7 @@ fn lzw_unix_decompress(
         }
         previous = Some(code);
     }
-    Ok(out)
+    Ok((out, last_output_bit))
 }
 
 const fn max_code_for(code_size: u32) -> u32 {

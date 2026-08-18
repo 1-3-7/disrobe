@@ -248,6 +248,19 @@ impl StateCell {
             }
         }
     }
+
+    fn write_matches(self, instr: &Instr) -> bool {
+        match self {
+            Self::Local(local) => {
+                matches!(instr, Instr::LocalSet(set) if set.local == local)
+                    || matches!(instr, Instr::LocalTee(tee) if tee.local == local)
+            }
+            Self::Global(global) => matches!(instr, Instr::GlobalSet(set) if set.global == global),
+            Self::MemorySlot { memory, offset, .. } => {
+                matches!(instr, Instr::Store(store) if store.memory == memory && store.arg.offset == offset)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,13 +278,81 @@ struct Dispatcher {
     entry_state: i32,
     cell: StateCell,
     local_address_in_bounds: bool,
+    transition_cell: StateCell,
+    latch_work: Body,
+    branch_transitions: BTreeMap<InstrSeqId, (i32, Body)>,
     case_count: u32,
     default_state: i32,
     state_to_body: BTreeMap<i32, Body>,
 }
 
 fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &ElidableCells) -> bool {
-    let owned_by_dispatcher: bool = match disp.cell {
+    if disp.transition_cell != disp.cell {
+        return spilled_cells_are_owned(func, disp, elidable);
+    }
+    state_cell_is_elidable(
+        func,
+        disp,
+        elidable,
+        disp.cell,
+        disp.local_address_in_bounds,
+    )
+}
+
+fn spilled_cells_are_owned(
+    func: &LocalFunction,
+    disp: &Dispatcher,
+    elidable: &ElidableCells,
+) -> bool {
+    let owned_by_dispatcher: bool = match (disp.cell, disp.transition_cell) {
+        (
+            StateCell::MemorySlot {
+                address: MemoryAddress::Local(left),
+                memory: left_memory,
+                ..
+            },
+            StateCell::MemorySlot {
+                address: MemoryAddress::Local(right),
+                memory: right_memory,
+                ..
+            },
+        ) if left == right && left_memory == right_memory => {
+            elidable.memories.contains(&left_memory)
+                && stable_local_address(func, &disp.preamble, left, &elidable.globals)
+        }
+        (
+            StateCell::MemorySlot {
+                address: MemoryAddress::Fixed(left),
+                memory: left_memory,
+                ..
+            },
+            StateCell::MemorySlot {
+                address: MemoryAddress::Fixed(right),
+                memory: right_memory,
+                ..
+            },
+        ) if left == right && left_memory == right_memory => {
+            elidable.fixed_memories.contains(&left_memory)
+        }
+        _ => false,
+    };
+    owned_by_dispatcher
+        && !accesses_cell(func, &disp.suffix, disp.cell)
+        && !accesses_cell(func, &disp.suffix, disp.transition_cell)
+        && !accesses_cell_outside_root(func, disp.root, disp.cell)
+        && !accesses_cell_outside_root(func, disp.root, disp.transition_cell)
+        && cell_access_count(func, disp.cell, StateCell::read_matches) == Some(1)
+        && cell_access_count(func, disp.transition_cell, StateCell::read_matches) == Some(1)
+}
+
+fn state_cell_is_elidable(
+    func: &LocalFunction,
+    disp: &Dispatcher,
+    elidable: &ElidableCells,
+    cell: StateCell,
+    local_address_in_bounds: bool,
+) -> bool {
+    let owned_by_dispatcher: bool = match cell {
         StateCell::Local(_) => true,
         StateCell::Global(global) => elidable.globals.contains(&global),
         StateCell::MemorySlot {
@@ -284,7 +365,7 @@ fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &Elidable
                 elidable.memories.contains(&memory)
                     && stable_local_address(func, &disp.preamble, local, &elidable.globals)
                     && resolved_local_address(&disp.preamble, local).map_or_else(
-                        || disp.local_address_in_bounds,
+                        || local_address_in_bounds,
                         |value: i32| {
                             memory_address_is_in_bounds(
                                 value,
@@ -307,11 +388,11 @@ fn cell_is_elidable(func: &LocalFunction, disp: &Dispatcher, elidable: &Elidable
         },
     };
     owned_by_dispatcher
-        && !reads_cell(func, &disp.suffix, disp.cell)
-        && !reads_cell_outside_root(func, disp.root, disp.cell)
+        && !accesses_cell(func, &disp.suffix, cell)
+        && !accesses_cell_outside_root(func, disp.root, cell)
 }
 
-fn reads_cell_outside_root(func: &LocalFunction, root: InstrSeqId, cell: StateCell) -> bool {
+fn accesses_cell_outside_root(func: &LocalFunction, root: InstrSeqId, cell: StateCell) -> bool {
     let mut pending: Vec<InstrSeqId> = vec![func.entry_block()];
     let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
     let mut remaining: usize = RENDER_GUARD;
@@ -320,7 +401,7 @@ fn reads_cell_outside_root(func: &LocalFunction, root: InstrSeqId, cell: StateCe
             continue;
         }
         if seen.len() > NODE_LIMIT
-            || body_reads_cell(
+            || body_accesses_cell(
                 &func.block(sequence).instrs,
                 cell,
                 &mut pending,
@@ -563,6 +644,30 @@ fn reads_cell(
     false
 }
 
+fn accesses_cell(
+    func: &LocalFunction,
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+) -> bool {
+    let mut pending: Vec<InstrSeqId> = Vec::new();
+    let mut remaining: usize = RENDER_GUARD;
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    if body_accesses_cell(instrs, cell, &mut pending, &mut remaining) {
+        return true;
+    }
+    while let Some(seq) = pending.pop() {
+        if !seen.insert(seq) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT
+            || body_accesses_cell(&func.block(seq).instrs, cell, &mut pending, &mut remaining)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn body_reads_cell(
     instrs: &[(Instr, walrus::ir::InstrLocId)],
     cell: StateCell,
@@ -582,6 +687,97 @@ fn body_reads_cell(
         }
     }
     false
+}
+
+fn body_accesses_cell(
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+    pending: &mut Vec<InstrSeqId>,
+    remaining: &mut usize,
+) -> bool {
+    for (instr, _) in instrs {
+        let Some(next_remaining): Option<usize> = remaining.checked_sub(1) else {
+            return true;
+        };
+        *remaining = next_remaining;
+        if !push_nested_sequences(instr, pending, NODE_LIMIT) {
+            return true;
+        }
+        if cell.read_matches(instr) || cell.write_matches(instr) {
+            return true;
+        }
+    }
+    false
+}
+
+fn cell_access_count(
+    func: &LocalFunction,
+    cell: StateCell,
+    matches_access: fn(StateCell, &Instr) -> bool,
+) -> Option<usize> {
+    cell_access_count_in_body(
+        func,
+        &func.block(func.entry_block()).instrs,
+        cell,
+        matches_access,
+    )
+}
+
+fn cell_access_count_in_body(
+    func: &LocalFunction,
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+    matches_access: fn(StateCell, &Instr) -> bool,
+) -> Option<usize> {
+    let mut pending: Vec<InstrSeqId> = Vec::new();
+    let mut seen: BTreeSet<InstrSeqId> = BTreeSet::new();
+    let mut remaining: usize = RENDER_GUARD;
+    let mut count: usize = 0;
+    count_cell_accesses(
+        instrs,
+        cell,
+        matches_access,
+        &mut pending,
+        &mut remaining,
+        &mut count,
+    )?;
+    while let Some(sequence) = pending.pop() {
+        if !seen.insert(sequence) {
+            continue;
+        }
+        if seen.len() > NODE_LIMIT {
+            return None;
+        }
+        count_cell_accesses(
+            &func.block(sequence).instrs,
+            cell,
+            matches_access,
+            &mut pending,
+            &mut remaining,
+            &mut count,
+        )?;
+    }
+    Some(count)
+}
+
+fn count_cell_accesses(
+    instrs: &[(Instr, walrus::ir::InstrLocId)],
+    cell: StateCell,
+    matches_access: fn(StateCell, &Instr) -> bool,
+    pending: &mut Vec<InstrSeqId>,
+    remaining: &mut usize,
+    count: &mut usize,
+) -> Option<()> {
+    for (instr, _) in instrs {
+        *remaining = remaining.checked_sub(1)?;
+        if !push_nested_sequences(instr, pending, NODE_LIMIT) {
+            return None;
+        }
+        if matches_access(cell, instr) {
+            *count = count.checked_add(1)?;
+        }
+    }
+    Some(())
 }
 
 fn push_nested_sequences(instr: &Instr, pending: &mut Vec<InstrSeqId>, capacity: usize) -> bool {
@@ -649,6 +845,13 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
     let (targets, default, selector): (Vec<InstrSeqId>, InstrSeqId, Selector) =
         find_switch(func, wrapper)?;
     let cell: StateCell = resolve_state_cell(loop_body, selector)?;
+    let (transition_cell, latch_work): (StateCell, Body) =
+        latch_transition_cell(loop_body, cell).unwrap_or((cell, Vec::new()));
+    let branch_transitions: BTreeMap<InstrSeqId, (i32, Body)> = if transition_cell == cell {
+        BTreeMap::new()
+    } else {
+        collect_branch_transitions(func, &parents, transition_cell)
+    };
 
     let case_count: u32 = u32::try_from(targets.len()).ok()?;
     let mut state_to_body: BTreeMap<i32, Body> = BTreeMap::new();
@@ -685,7 +888,9 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
         )
         | (StateCell::MemorySlot { .. }, None) => false,
     };
-    if let Some(span) = entry_write {
+    if transition_cell == cell
+        && let Some(span) = entry_write
+    {
         drop(preamble.drain(span));
     }
 
@@ -697,10 +902,79 @@ fn detect(func: &LocalFunction, root: RootCandidate) -> Option<Dispatcher> {
         entry_state,
         cell,
         local_address_in_bounds,
+        transition_cell,
+        latch_work,
+        branch_transitions,
         case_count,
         default_state,
         state_to_body,
     })
+}
+
+fn collect_branch_transitions(
+    func: &LocalFunction,
+    parents: &BTreeMap<InstrSeqId, (InstrSeqId, usize)>,
+    cell: StateCell,
+) -> BTreeMap<InstrSeqId, (i32, Body)> {
+    parents
+        .keys()
+        .filter_map(|target: &InstrSeqId| {
+            let body: Body = case_body(func, *target, parents)?;
+            let transition: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(&body);
+            let state: i32 = state_write_full_expression(transition, cell)?;
+            Some((*target, (state, transition.to_vec())))
+        })
+        .take(NODE_LIMIT)
+        .collect()
+}
+
+fn latch_transition_cell(loop_body: &Body, destination: StateCell) -> Option<(StateCell, Body)> {
+    let StateCell::MemorySlot {
+        address: destination_address,
+        memory: destination_memory,
+        offset: destination_offset,
+    } = destination
+    else {
+        return None;
+    };
+    let stripped: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(loop_body);
+    let (commit, prefix): (
+        &(Instr, walrus::ir::InstrLocId),
+        &[(Instr, walrus::ir::InstrLocId)],
+    ) = stripped.split_last()?;
+    if !destination.commit_matches(&commit.0) {
+        return None;
+    }
+    let load_index: usize = prefix.len().checked_sub(1)?;
+    let Instr::Load(load): &Instr = &prefix.get(load_index)?.0 else {
+        return None;
+    };
+    if load.memory != destination_memory
+        || !matches!(load.kind, LoadKind::I32 { atomic: false })
+        || !i32_offsets_are_disjoint(destination_offset, load.arg.offset)
+    {
+        return None;
+    }
+    let (source_address, source_start): (MemoryAddress, usize) =
+        MemoryAddress::expression_suffix(prefix, load_index)?;
+    if source_address != destination_address {
+        return None;
+    }
+    let destination_start: usize =
+        destination_address.matching_expression_start(prefix, source_start)?;
+    Some((
+        StateCell::MemorySlot {
+            address: source_address,
+            memory: load.memory,
+            offset: load.arg.offset,
+        },
+        stripped.get(destination_start..)?.to_vec(),
+    ))
+}
+
+fn i32_offsets_are_disjoint(left: u32, right: u32) -> bool {
+    left.checked_add(4).is_some_and(|end: u32| end <= right)
+        || right.checked_add(4).is_some_and(|end: u32| end <= left)
 }
 
 fn resolve_state_cell(loop_body: &Body, selector: Selector) -> Option<StateCell> {
@@ -978,7 +1252,15 @@ enum Trans {
 struct Node {
     work: Body,
     cond: Body,
+    edge_work: EdgeWork,
     trans: Trans,
+}
+
+#[derive(Debug, Clone)]
+enum EdgeWork {
+    None,
+    Goto(Body),
+    Cond { then_work: Body, else_work: Body },
 }
 
 #[derive(Debug)]
@@ -999,7 +1281,7 @@ fn build_graph(func: &LocalFunction, disp: &Dispatcher) -> Option<Graph> {
             return None;
         }
         let body: &Body = disp.state_to_body.get(&state)?;
-        let mut node: Node = classify_case(func, body, disp)?;
+        let mut node: Node = classify_case(func, body, disp, disp.transition_cell)?;
         canonicalize_transition(&mut node.trans, disp);
         match &node.trans {
             Trans::Exit => {}
@@ -1040,15 +1322,81 @@ const fn canonicalize_transition(trans: &mut Trans, disp: &Dispatcher) {
     }
 }
 
-fn classify_case(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> Option<Node> {
-    let node: Node = classify_case_shape(func, body, disp)?;
-    if reads_cell(func, &node.work, disp.cell) || reads_cell(func, &node.cond, disp.cell) {
+fn classify_case(
+    func: &LocalFunction,
+    body: &Body,
+    disp: &Dispatcher,
+    transition_cell: StateCell,
+) -> Option<Node> {
+    let spill: bool = transition_cell != disp.cell;
+    let empty_latch: Body = Vec::new();
+    let (node, direct_transition): (Node, bool) = if spill {
+        if let Some(node) =
+            classify_case_shape(func, body, disp, disp.cell, true, false, &empty_latch)
+        {
+            (node, true)
+        } else {
+            (
+                classify_case_shape(
+                    func,
+                    body,
+                    disp,
+                    transition_cell,
+                    true,
+                    true,
+                    &disp.latch_work,
+                )?,
+                false,
+            )
+        }
+    } else {
+        (
+            classify_case_shape(
+                func,
+                body,
+                disp,
+                transition_cell,
+                false,
+                false,
+                &empty_latch,
+            )?,
+            false,
+        )
+    };
+    if accesses_cell(func, &node.work, transition_cell)
+        || accesses_cell(func, &node.cond, transition_cell)
+        || (direct_transition
+            && edge_work_accesses(func, &node.edge_work, disp.cell)
+            && edge_work_accesses(func, &node.edge_work, transition_cell))
+        || (transition_cell != disp.cell
+            && (accesses_cell(func, &node.work, disp.cell)
+                || accesses_cell(func, &node.cond, disp.cell)))
+    {
         return None;
     }
     Some(node)
 }
 
-fn classify_case_shape(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> Option<Node> {
+fn edge_work_accesses(func: &LocalFunction, edge_work: &EdgeWork, cell: StateCell) -> bool {
+    match edge_work {
+        EdgeWork::None => false,
+        EdgeWork::Goto(work) => accesses_cell(func, work, cell),
+        EdgeWork::Cond {
+            then_work,
+            else_work,
+        } => accesses_cell(func, then_work, cell) || accesses_cell(func, else_work, cell),
+    }
+}
+
+fn classify_case_shape(
+    func: &LocalFunction,
+    body: &Body,
+    disp: &Dispatcher,
+    transition_cell: StateCell,
+    preserve_transition_writes: bool,
+    allow_branch_transitions: bool,
+    latch_work: &Body,
+) -> Option<Node> {
     let return_pos: Option<usize> = body
         .iter()
         .position(|(instr, _)| matches!(instr, Instr::Return(_)));
@@ -1060,6 +1408,7 @@ fn classify_case_shape(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> 
         return Some(Node {
             work,
             cond: Vec::new(),
+            edge_work: EdgeWork::None,
             trans: Trans::Exit,
         });
     }
@@ -1072,12 +1421,20 @@ fn classify_case_shape(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> 
         return Some(Node {
             work: work.to_vec(),
             cond: Vec::new(),
+            edge_work: EdgeWork::None,
             trans: Trans::Exit,
         });
     }
 
+    if allow_branch_transitions
+        && let Some(node) = classify_direct_branch_conditional(func, body, disp)
+    {
+        return Some(node);
+    }
     let stripped: &[(Instr, walrus::ir::InstrLocId)] = strip_trailing_branch(body);
-    if let Some(node) = classify_select_conditional(func, stripped, disp.cell) {
+    if !preserve_transition_writes
+        && let Some(node) = classify_select_conditional(func, stripped, transition_cell)
+    {
         return Some(node);
     }
     let (last, head): (
@@ -1086,9 +1443,69 @@ fn classify_case_shape(func: &LocalFunction, body: &Body, disp: &Dispatcher) -> 
     ) = stripped.split_last()?;
 
     if let Instr::Block(_) = &last.0 {
-        return classify_conditional(func, head, last, disp.cell);
+        return classify_conditional(
+            func,
+            head,
+            last,
+            transition_cell,
+            preserve_transition_writes,
+            latch_work,
+        );
     }
-    classify_goto(func, stripped, disp.cell)
+    classify_goto(
+        func,
+        stripped,
+        transition_cell,
+        preserve_transition_writes,
+        latch_work,
+    )
+}
+
+fn classify_direct_branch_conditional(
+    func: &LocalFunction,
+    stripped: &[(Instr, walrus::ir::InstrLocId)],
+    disp: &Dispatcher,
+) -> Option<Node> {
+    let (else_branch, prefix): (
+        &(Instr, walrus::ir::InstrLocId),
+        &[(Instr, walrus::ir::InstrLocId)],
+    ) = stripped.split_last()?;
+    let (then_branch, head): (
+        &(Instr, walrus::ir::InstrLocId),
+        &[(Instr, walrus::ir::InstrLocId)],
+    ) = prefix.split_last()?;
+    let Instr::BrIf(then_branch): &Instr = &then_branch.0 else {
+        return None;
+    };
+    let Instr::Br(else_branch): &Instr = &else_branch.0 else {
+        return None;
+    };
+    let (then_state, then_write): &(i32, Body) = disp.branch_transitions.get(&then_branch.block)?;
+    let (else_state, else_write): &(i32, Body) = disp.branch_transitions.get(&else_branch.block)?;
+    let condition_start: usize = (0..head.len()).rev().find(|start: &usize| {
+        condition_has_isolated_value_stack(head.get(*start..).unwrap_or_default())
+    })?;
+    let work: Body = head.get(..condition_start)?.to_vec();
+    let cond: Body = head.get(condition_start..)?.to_vec();
+    if !structured_work_is_bounded(func, &work) || !is_flat(&cond) {
+        return None;
+    }
+    let mut then_work: Body = then_write.clone();
+    then_work.extend(disp.latch_work.clone());
+    let mut else_work: Body = else_write.clone();
+    else_work.extend(disp.latch_work.clone());
+    Some(Node {
+        work,
+        cond,
+        edge_work: EdgeWork::Cond {
+            then_work,
+            else_work,
+        },
+        trans: Trans::Cond {
+            then_state: *then_state,
+            else_state: *else_state,
+        },
+    })
 }
 
 fn strip_trailing_branch(body: &Body) -> &[(Instr, walrus::ir::InstrLocId)] {
@@ -1102,6 +1519,8 @@ fn classify_goto(
     func: &LocalFunction,
     stripped: &[(Instr, walrus::ir::InstrLocId)],
     cell: StateCell,
+    preserve_transition_write: bool,
+    latch_work: &Body,
 ) -> Option<Node> {
     let (next, head_len): (i32, usize) = state_write_expression(stripped, cell)?;
     let work: Body = stripped.get(..head_len)?.to_vec();
@@ -1111,6 +1530,13 @@ fn classify_goto(
     Some(Node {
         work,
         cond: Vec::new(),
+        edge_work: if preserve_transition_write {
+            let mut edge_work: Body = stripped.get(head_len..)?.to_vec();
+            edge_work.extend(latch_work.clone());
+            EdgeWork::Goto(edge_work)
+        } else {
+            EdgeWork::None
+        },
         trans: Trans::Goto(next),
     })
 }
@@ -1145,6 +1571,7 @@ fn classify_select_conditional(
     Some(Node {
         work,
         cond,
+        edge_work: EdgeWork::None,
         trans: Trans::Cond {
             then_state: candidate.then_state,
             else_state: candidate.else_state,
@@ -1235,6 +1662,8 @@ fn classify_conditional(
     head: &[(Instr, walrus::ir::InstrLocId)],
     outer_instr: &(Instr, walrus::ir::InstrLocId),
     cell: StateCell,
+    preserve_transition_writes: bool,
+    latch_work: &Body,
 ) -> Option<Node> {
     let work: Body = head.to_vec();
     if !structured_work_is_bounded(func, &work) {
@@ -1247,6 +1676,18 @@ fn classify_conditional(
     Some(Node {
         work,
         cond: idiom.cond,
+        edge_work: if preserve_transition_writes {
+            let mut then_work: Body = idiom.then_work;
+            then_work.extend(latch_work.clone());
+            let mut else_work: Body = idiom.else_work;
+            else_work.extend(latch_work.clone());
+            EdgeWork::Cond {
+                then_work,
+                else_work,
+            }
+        } else {
+            EdgeWork::None
+        },
         trans: Trans::Cond {
             then_state: idiom.then_state,
             else_state: idiom.else_state,
@@ -1258,6 +1699,8 @@ struct Conditional {
     cond: Body,
     then_state: i32,
     else_state: i32,
+    then_work: Body,
+    else_work: Body,
 }
 
 fn condition_from_blocks(
@@ -1297,6 +1740,8 @@ fn condition_from_blocks(
         cond,
         then_state: guard_nonzero_state,
         else_state: guard_zero_state,
+        then_work: sb_store.to_vec(),
+        else_work: sa_store.to_vec(),
     })
 }
 
@@ -1690,23 +2135,33 @@ fn emit_snode(
             }
             out
         }
-        SNode::Work(state) => graph
-            .nodes
-            .get(state)
-            .map(|n| n.work.clone())
-            .unwrap_or_default(),
+        SNode::Work(state) => graph.nodes.get(state).map_or_else(Vec::new, |node: &Node| {
+            let mut out: Body = node.work.clone();
+            if let EdgeWork::Goto(edge_work) = &node.edge_work {
+                out.extend(edge_work.clone());
+            }
+            out
+        }),
         SNode::If {
             state,
             then_branch,
             else_branch,
         } => {
             let mut out: Body = Vec::new();
-            if let Some(n) = graph.nodes.get(state) {
-                out.extend(n.work.clone());
-                out.extend(n.cond.clone());
+            let mut then_body: Body = emit_snode(func, then_branch, graph, loop_labels);
+            let mut else_body: Body = emit_snode(func, else_branch, graph, loop_labels);
+            if let Some(current) = graph.nodes.get(state) {
+                out.extend(current.work.clone());
+                out.extend(current.cond.clone());
+                if let EdgeWork::Cond {
+                    then_work,
+                    else_work,
+                } = &current.edge_work
+                {
+                    then_body.splice(..0, then_work.clone());
+                    else_body.splice(..0, else_work.clone());
+                }
             }
-            let then_body: Body = emit_snode(func, then_branch, graph, loop_labels);
-            let else_body: Body = emit_snode(func, else_branch, graph, loop_labels);
             let consequent: InstrSeqId = new_seq(func, then_body);
             let alternative: InstrSeqId = new_seq(func, else_body);
             out.push((
@@ -1917,6 +2372,7 @@ mod tests {
             work: Vec::new(),
             cond: Vec::new(),
             trans,
+            edge_work: EdgeWork::None,
         }
     }
 

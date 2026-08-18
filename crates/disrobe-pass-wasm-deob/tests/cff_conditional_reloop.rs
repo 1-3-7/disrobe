@@ -1274,28 +1274,218 @@ fn every_wall_names_the_reason_it_refused() {
 }
 
 #[test]
-fn a_real_rustc_next_state_temporary_is_walled_not_mis_structured() {
+#[cfg(feature = "chain")]
+fn a_real_rustc_next_state_temporary_reloops_through_the_registered_pass() {
     let bytes: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
     let recovered: RecoveredModule =
         recover_module(bytes).expect("recover rustc next-state-temporary module");
     assert_eq!(
-        recovered.report.flattened_conditional_restructured, 0,
-        "the rustc next-state-temporary lowering is not a supported shape: {:?}",
+        recovered.report.flattened_conditional_restructured, 1,
+        "the real rustc next-state-temporary lowering must reloop: {:?}",
         recovered.report
     );
     assert_eq!(
-        recovered.report.flattened_dispatchers_walled, 1,
-        "an unsupported real lowering must be walled, never silently skipped: {:?}",
+        recovered.report.flattened_dispatchers_walled, 0,
+        "the admitted rustc lowering must not retain a wall: {:?}",
         recovered.report
     );
     assert!(
         wasmparser::validate(&recovered.bytes).is_ok(),
-        "the walled module must still validate"
+        "the recovered module must validate"
+    );
+    assert!(
+        !contains_br_table(&recovered.bytes),
+        "the recovered module must remove the dispatcher"
     );
     let eng: Engine = engine();
     let mut original: Inst = instantiate(&eng, bytes);
     let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
     assert_equivalent(&mut original, &mut candidate, "classify_local");
+
+    let input: Artifact = Artifact::new(Rung::Raw, bytes.to_vec(), [0x25; 32]);
+    let surfaced: Artifact = WASM_DEOB_PASS
+        .run(&input)
+        .expect("registered wasm pass must surface rustc temporary-state recovery");
+    assert_eq!(surfaced.rung, Rung::Surface);
+    let source: &str = std::str::from_utf8(&surfaced.envelope).expect("surface WAT is UTF-8");
+    assert!(source.contains("(module"));
+    assert!(!source.contains("br_table"));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryMutation {
+    Load,
+    Store,
+}
+
+fn mutate_first_memory_offset(
+    bytes: &[u8],
+    mutation: MemoryMutation,
+    from: u32,
+    to: u32,
+) -> Vec<u8> {
+    let mut module: walrus::Module = walrus::Module::from_buffer(bytes).expect("parse mutation");
+    let mut changed: usize = 0;
+    for (_function_id, function) in module.funcs.iter_local_mut() {
+        let sequences: Vec<walrus::ir::InstrSeqId> = func_seq_ids(function);
+        for sequence in sequences {
+            for (instruction, _location) in &mut function.block_mut(sequence).instrs {
+                let offset: Option<&mut u32> = match (mutation, instruction) {
+                    (MemoryMutation::Load, walrus::ir::Instr::Load(load))
+                        if load.arg.offset == from =>
+                    {
+                        Some(&mut load.arg.offset)
+                    }
+                    (MemoryMutation::Store, walrus::ir::Instr::Store(store))
+                        if store.arg.offset == from =>
+                    {
+                        Some(&mut store.arg.offset)
+                    }
+                    _ => None,
+                };
+                if changed == 0
+                    && let Some(offset) = offset
+                {
+                    *offset = to;
+                    changed = 1;
+                }
+            }
+        }
+    }
+    assert_eq!(changed, 1, "memory mutation must change one instruction");
+    module.emit_wasm()
+}
+
+fn add_temporary_read(bytes: &[u8]) -> Vec<u8> {
+    let mut module: walrus::Module = walrus::Module::from_buffer(bytes).expect("parse read escape");
+    let mut changed: usize = 0;
+    for (_function_id, function) in module.funcs.iter_local_mut() {
+        let sequences: Vec<walrus::ir::InstrSeqId> = func_seq_ids(function);
+        for sequence in sequences {
+            let body: &mut Vec<(walrus::ir::Instr, walrus::ir::InstrLocId)> =
+                &mut function.block_mut(sequence).instrs;
+            let Some(load_index): Option<usize> = body.iter().position(|(instruction, _location)| {
+                matches!(instruction, walrus::ir::Instr::Load(load) if load.arg.offset == 12)
+            }) else {
+                continue;
+            };
+            let address_index: usize = load_index
+                .checked_sub(1)
+                .expect("load must have an address");
+            assert!(matches!(
+                body.get(address_index),
+                Some((walrus::ir::Instr::LocalGet(_), _))
+            ));
+            let address: (walrus::ir::Instr, walrus::ir::InstrLocId) = body[address_index].clone();
+            let load: (walrus::ir::Instr, walrus::ir::InstrLocId) = body[load_index].clone();
+            let location: walrus::ir::InstrLocId = load.1;
+            body.splice(
+                address_index..address_index,
+                [
+                    address,
+                    load,
+                    (walrus::ir::Instr::Drop(walrus::ir::Drop {}), location),
+                ],
+            );
+            changed = changed.checked_add(1).expect("read mutation count");
+            if changed == 1 {
+                break;
+            }
+        }
+    }
+    assert_eq!(changed, 1, "read mutation must add one escaped read");
+    module.emit_wasm()
+}
+
+fn mutate_first_successor(bytes: &[u8], offset: u32, from: i32, to: i32) -> Vec<u8> {
+    let mut module: walrus::Module =
+        walrus::Module::from_buffer(bytes).expect("parse successor mutation");
+    let mut changed: usize = 0;
+    for (_function_id, function) in module.funcs.iter_local_mut() {
+        let sequences: Vec<walrus::ir::InstrSeqId> = func_seq_ids(function);
+        for sequence in sequences {
+            let body: &mut Vec<(walrus::ir::Instr, walrus::ir::InstrLocId)> =
+                &mut function.block_mut(sequence).instrs;
+            for index in 1..body.len() {
+                let [(_, _), (store_instruction, _)] = &mut body[index - 1..=index] else {
+                    unreachable!()
+                };
+                let walrus::ir::Instr::Store(store) = store_instruction else {
+                    continue;
+                };
+                if store.arg.offset != offset {
+                    continue;
+                }
+                let walrus::ir::Instr::Const(constant) = &mut body[index - 1].0 else {
+                    continue;
+                };
+                if matches!(constant.value, walrus::ir::Value::I32(value) if value == from) {
+                    constant.value = walrus::ir::Value::I32(to);
+                    changed = changed.checked_add(1).expect("successor mutation count");
+                    break;
+                }
+            }
+            if changed == 1 {
+                break;
+            }
+        }
+    }
+    assert_eq!(changed, 1, "successor mutation must change one mapping");
+    module.emit_wasm()
+}
+
+#[test]
+fn rustc_temporary_state_runtime_evidence_rejects_a_successor_mutation() {
+    let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    let mutant: Vec<u8> = mutate_first_successor(original, 12, 2, 1);
+    let recovered: RecoveredModule =
+        recover_module(&mutant).expect("recover mutated successor mapping");
+    assert_eq!(recovered.report.flattened_conditional_restructured, 1);
+    let eng: Engine = engine();
+    let mut reference: Inst = instantiate(&eng, original);
+    let mut candidate: Inst = instantiate(&eng, &recovered.bytes);
+    assert_distinguished(&mut reference, &mut candidate, "classify_local");
+    let mut mutant_runtime: Inst = instantiate(&eng, &mutant);
+    let mut recovered_runtime: Inst = instantiate(&eng, &recovered.bytes);
+    assert_equivalent(
+        &mut mutant_runtime,
+        &mut recovered_runtime,
+        "classify_local",
+    );
+}
+
+#[test]
+fn rustc_temporary_state_escape_and_partial_transfer_remain_walled() {
+    let original: &[u8] = include_bytes!("fixtures/cff_rustc_temp_state.obf.wasm");
+    for (name, mutant) in [
+        ("extra temporary read", add_temporary_read(original)),
+        (
+            "mixed dispatcher assignment",
+            mutate_first_memory_offset(original, MemoryMutation::Store, 12, 4),
+        ),
+        (
+            "partial temporary assignment",
+            mutate_first_memory_offset(original, MemoryMutation::Store, 12, 16),
+        ),
+        (
+            "mismatched latch source",
+            mutate_first_memory_offset(original, MemoryMutation::Load, 12, 16),
+        ),
+    ] {
+        let recovered: RecoveredModule =
+            recover_module(&mutant).unwrap_or_else(|error| panic!("recover {name}: {error}"));
+        assert_eq!(
+            recovered.report.flattened_conditional_restructured, 0,
+            "{name} must not be admitted: {:?}",
+            recovered.report
+        );
+        assert_eq!(
+            recovered.report.flattened_dispatchers_walled, 1,
+            "{name} must retain the named wall: {:?}",
+            recovered.report
+        );
+        assert!(contains_br_table(&recovered.bytes), "{name}");
+    }
 }
 
 #[test]

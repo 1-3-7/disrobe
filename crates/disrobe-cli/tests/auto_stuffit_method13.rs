@@ -12,6 +12,9 @@ use sha2::{Digest as _, Sha256};
 const FIXTURE: &[u8] =
     include_bytes!("../../disrobe-binfmt/tests/fixtures/stuffit/stuffit45-method13.sit");
 const MANIFEST: &str = include_str!("../../disrobe-binfmt/tests/fixtures/stuffit/MANIFEST.tsv");
+const METHOD2_FIXTURE: &[u8] =
+    include_bytes!("../../disrobe-binfmt/tests/fixtures/stuffit/stuffit-method2.sit");
+const METHOD2_SHA256: &str = "0da63e2bd4778b7180e2bed8b80c300ebea7d044c248e1025bd6b369acbf18a2";
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 const CLI_CAPTURE: usize = 1usize << 20;
 
@@ -111,4 +114,24 @@ fn auto_recovers_stuffit_method13_identically_at_jobs_one_and_four() {
         recovered_members(recover(4, input.path(), output.path()), &expected_hashes);
     assert_eq!(serial, parallel);
     assert_eq!(serial.len(), expected_hashes.len());
+}
+
+#[test]
+fn auto_recovers_stuffit_method2_identically_at_jobs_one_and_four() {
+    let input: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("auto-stuffit-method2-input")
+            .expect("create method 2 input directory");
+    std::fs::write(input.path().join("fixture.sit"), METHOD2_FIXTURE)
+        .expect("stage StuffIt method 2 fixture");
+    let output: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("auto-stuffit-method2-output")
+            .expect("create method 2 output directory");
+    let expected_hashes: BTreeSet<&str> = BTreeSet::from([METHOD2_SHA256]);
+    let serial: OutputTree =
+        recovered_members(recover(1, input.path(), output.path()), &expected_hashes);
+    clear_output(output.path());
+    let parallel: OutputTree =
+        recovered_members(recover(4, input.path(), output.path()), &expected_hashes);
+    assert_eq!(serial, parallel);
+    assert_eq!(serial.len(), 1);
 }

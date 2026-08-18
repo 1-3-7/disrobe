@@ -1,6 +1,9 @@
 use disrobe_pass_native::{PseudoAbi, recover_leaf_function_abi};
 
-use super::{AotCodeRange, AotMethod, AotMethodBody};
+use super::{
+    AotCodeRange, AotMethod, AotMethodBody, AotMethodSignature, AotType, AotTypeSignature,
+    AotTypeSignatureKind,
+};
 use crate::pe::PeImage;
 
 const MAX_METHOD_BODY_INPUT_BYTES: usize = 1024 * 1024;
@@ -191,9 +194,88 @@ const fn outcome_bytes(outcome: &AotMethodBody) -> usize {
     }
 }
 
+fn is_system_int32(signature: AotTypeSignature, types: &[AotType]) -> bool {
+    signature.kind == AotTypeSignatureKind::Definition
+        && types.iter().any(|candidate: &AotType| {
+            candidate.record_offset == signature.record_offset
+                && candidate.namespace.as_deref() == Some("System")
+                && candidate.name == "Int32"
+        })
+}
+
+fn int32_signature(signature: &AotMethodSignature, types: &[AotType]) -> bool {
+    matches!(signature.calling_convention, 0 | 1)
+        && signature.generic_parameter_count == 0
+        && signature.vararg_parameter_types.is_empty()
+        && signature.parameter_types.len() == 2
+        && is_system_int32(signature.return_type, types)
+        && signature
+            .parameter_types
+            .iter()
+            .copied()
+            .all(|parameter: AotTypeSignature| is_system_int32(parameter, types))
+}
+
+fn reassociate_int32_source(source: &str) -> Option<String> {
+    const HEADER: &str = "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n";
+    const MANAGED_HEADER: &str =
+        "#include <stdint.h>\nint32_t recovered(int32_t a0, int32_t a1) {\n";
+    const FIRST_ARGUMENT: &str = "    uint64_t r_rcx = a0;\n";
+    const MANAGED_FIRST_ARGUMENT: &str = "    uint64_t r_rcx = (uint32_t)a0;\n";
+    const SECOND_ARGUMENT: &str = "    uint64_t r_rdx = a1;\n";
+    const MANAGED_SECOND_ARGUMENT: &str = "    uint64_t r_rdx = (uint32_t)a1;\n";
+    const RETURN_PREFIX: &str = "\n    return ";
+    const FUNCTION_SUFFIX: &str = ";\n}\n";
+
+    if !source.starts_with(HEADER)
+        || source.matches(FIRST_ARGUMENT).count() != 1
+        || source.matches(SECOND_ARGUMENT).count() != 1
+        || source.matches(RETURN_PREFIX).count() != 1
+        || !source.ends_with(FUNCTION_SUFFIX)
+    {
+        return None;
+    }
+    let body: &str = source.strip_prefix(HEADER)?;
+    let body: String = body.replacen(FIRST_ARGUMENT, MANAGED_FIRST_ARGUMENT, 1);
+    let body: String = body.replacen(SECOND_ARGUMENT, MANAGED_SECOND_ARGUMENT, 1);
+    let return_at: usize = body.rfind(RETURN_PREFIX)?;
+    let expression_start: usize = return_at.checked_add(RETURN_PREFIX.len())?;
+    let expression_end: usize = body.len().checked_sub(FUNCTION_SUFFIX.len())?;
+    if expression_start > expression_end {
+        return None;
+    }
+    let expression: &str = body.get(expression_start..expression_end)?;
+    let prefix: &str = body.get(..return_at)?;
+    Some(format!(
+        "{MANAGED_HEADER}{prefix}{RETURN_PREFIX}(int32_t)(uint32_t)({expression}){FUNCTION_SUFFIX}"
+    ))
+}
+
+fn reassociate_body(
+    outcome: AotMethodBody,
+    method: &AotMethod,
+    types: &[AotType],
+) -> AotMethodBody {
+    let Some(signature): Option<&AotMethodSignature> = method.signature.as_ref() else {
+        return outcome;
+    };
+    if !int32_signature(signature, types) {
+        return outcome;
+    }
+    let AotMethodBody::Recovered { pseudo_c } = outcome else {
+        return outcome;
+    };
+    let reassociated: String =
+        reassociate_int32_source(&pseudo_c).map_or(pseudo_c, |source: String| source);
+    AotMethodBody::Recovered {
+        pseudo_c: reassociated,
+    }
+}
+
 pub(super) fn attach_method_bodies(
     image: &[u8],
     pe: &PeImage,
+    types: &[AotType],
     methods: &mut [AotMethod],
 ) -> crate::error::Result<()> {
     let method_count: usize = methods
@@ -251,6 +333,18 @@ pub(super) fn attach_method_bodies(
             .checked_sub(cursor)
             .ok_or_else(|| invalid(range, "method body group size underflowed"))?;
         let recovered: AotMethodBody = recover_body(image, pe, range, &mut budget)?;
+        let recovered: AotMethodBody = if group_size == 1 {
+            let method_index: usize = ranges
+                .get(cursor)
+                .map(|(method_index, _range): &(usize, AotCodeRange)| *method_index)
+                .ok_or_else(|| invalid(range, "method body signature index is absent"))?;
+            let method: &AotMethod = methods
+                .get(method_index)
+                .ok_or_else(|| invalid(range, "method body signature method is absent"))?;
+            reassociate_body(recovered, method, types)
+        } else {
+            recovered
+        };
         let outcome: AotMethodBody = budget.assign_outcome(range, recovered, group_size)?;
         while cursor < group_end {
             let method_index: usize = ranges
@@ -280,8 +374,10 @@ pub(super) fn attach_method_bodies(
 #[cfg(test)]
 mod tests {
     use super::{
-        AotCodeRange, AotMethod, AotMethodBody, BodyBudget, MAX_METHOD_BODY_OUTPUT_BYTES,
-        MAX_TOTAL_BODY_OUTPUT_BYTES, PeImage, attach_method_bodies, outcome_bytes, refused,
+        AotCodeRange, AotMethod, AotMethodBody, AotMethodSignature, AotType, AotTypeSignature,
+        AotTypeSignatureKind, BodyBudget, MAX_METHOD_BODY_OUTPUT_BYTES,
+        MAX_TOTAL_BODY_OUTPUT_BYTES, PeImage, attach_method_bodies, outcome_bytes,
+        reassociate_body, refused,
     };
     use crate::pe::{PeBitness, SectionHeader};
 
@@ -323,7 +419,7 @@ mod tests {
             })
             .collect();
 
-        attach_method_bodies(&image, &pe, &mut methods)?;
+        attach_method_bodies(&image, &pe, &[], &mut methods)?;
 
         assert_eq!(methods.len(), 5_000);
         assert!(methods.iter().all(|method: &AotMethod| matches!(
@@ -407,5 +503,87 @@ mod tests {
         assert_eq!(budget.output_bytes, expected_output_bytes);
         assert!(expected_output_bytes <= MAX_TOTAL_BODY_OUTPUT_BYTES);
         Ok(())
+    }
+
+    fn generic_add_body() -> AotMethodBody {
+        AotMethodBody::Recovered {
+            pseudo_c: "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n".to_owned(),
+        }
+    }
+
+    fn int32_type() -> AotType {
+        AotType {
+            record_offset: 7,
+            namespace: Some("System".to_owned()),
+            name: "Int32".to_owned(),
+            enclosing_type_record_offset: None,
+            method_record_offsets: Vec::new(),
+        }
+    }
+
+    fn int32_method(signature: AotMethodSignature) -> AotMethod {
+        AotMethod {
+            record_offset: 11,
+            name: "Add".to_owned(),
+            signature: Some(signature),
+            entrypoint_rva: Some(0x1000),
+            code_range: Some(AotCodeRange {
+                start_rva: 0x1000,
+                end_rva: 0x1004,
+            }),
+            body: None,
+        }
+    }
+
+    fn int32_signature() -> AotMethodSignature {
+        let int32: AotTypeSignature = AotTypeSignature {
+            kind: AotTypeSignatureKind::Definition,
+            record_offset: 7,
+        };
+        AotMethodSignature {
+            record_offset: 13,
+            calling_convention: 0,
+            generic_parameter_count: 0,
+            return_type: int32,
+            parameter_types: vec![int32, int32],
+            vararg_parameter_types: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn managed_int32_signature_requires_every_shape_predicate() {
+        let types: [AotType; 1] = [int32_type()];
+        let accepted: AotMethodBody =
+            reassociate_body(generic_add_body(), &int32_method(int32_signature()), &types);
+        assert!(matches!(accepted, AotMethodBody::Recovered { .. }));
+        let pseudo_c: String = match accepted {
+            AotMethodBody::Recovered { pseudo_c } => pseudo_c,
+            AotMethodBody::Refused { .. } => String::new(),
+        };
+        assert!(pseudo_c.contains("int32_t recovered(int32_t a0, int32_t a1)"));
+
+        let mut instance: AotMethodSignature = int32_signature();
+        instance.calling_convention = 0x20;
+        let mut generic: AotMethodSignature = int32_signature();
+        generic.generic_parameter_count = 1;
+        let mut wrong_arity: AotMethodSignature = int32_signature();
+        wrong_arity.parameter_types.pop();
+        let mut vararg: AotMethodSignature = int32_signature();
+        vararg.vararg_parameter_types.push(AotTypeSignature {
+            kind: AotTypeSignatureKind::Definition,
+            record_offset: 7,
+        });
+        let mut wrong_kind: AotMethodSignature = int32_signature();
+        wrong_kind.return_type.kind = AotTypeSignatureKind::Reference;
+        for excluded in [instance, generic, wrong_arity, vararg, wrong_kind] {
+            assert_eq!(
+                reassociate_body(generic_add_body(), &int32_method(excluded), &types),
+                generic_add_body()
+            );
+        }
+        assert_eq!(
+            reassociate_body(generic_add_body(), &int32_method(int32_signature()), &[]),
+            generic_add_body()
+        );
     }
 }

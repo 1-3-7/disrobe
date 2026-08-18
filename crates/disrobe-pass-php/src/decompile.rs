@@ -1231,6 +1231,11 @@ struct SwitchDispatch {
     dispatch_end: u32,
 }
 
+struct DispatchLabels {
+    by_target: BTreeMap<u32, Vec<Option<String>>>,
+    work: usize,
+}
+
 struct Lifter<'a> {
     ops: &'a [Op],
     literals: &'a [Literal],
@@ -1352,6 +1357,9 @@ impl<'a> Lifter<'a> {
             op::CASE | op::IS_EQUAL | op::SWITCH_LONG | op::SWITCH_STRING => {
                 self.structure_switch(i, end, depth)
             }
+            op::MATCH => self
+                .structure_optimized_match(i, end)
+                .or_else(|| self.refuse_optimized_match_region(i, end)),
             o if o == op::ROPE_INIT => self.fold_rope(i, end),
             o if o == op::FE_RESET_R || o == op::FE_RESET_RW => {
                 self.structure_foreach(i, end, depth)
@@ -1495,12 +1503,37 @@ impl<'a> Lifter<'a> {
         }
         let subject_key: (OperandType, u32) = (first.op1_type, first.op1);
         let subject: String = self.defined_operand_expr(first.op1_type, first.op1)?.text;
+        let DispatchLabels {
+            by_target: labels_by_target,
+            work: _,
+        }: DispatchLabels = self.optimized_dispatch_labels(first.opcode, first.op2, i, end)?;
+        let default_target: u32 = first.extended_value;
+        if default_target <= i || default_target >= end {
+            return None;
+        }
+        Some(SwitchDispatch {
+            subject_key,
+            subject,
+            labels_by_target,
+            result_keys: BTreeSet::new(),
+            default_target,
+            dispatch_end: i.checked_add(1)?,
+        })
+    }
+
+    fn optimized_dispatch_labels(
+        &self,
+        opcode: u8,
+        literal: u32,
+        i: u32,
+        end: u32,
+    ) -> Option<DispatchLabels> {
         let mut labels_by_target: BTreeMap<u32, Vec<Option<String>>> = BTreeMap::new();
         let mut seen_long: BTreeSet<i64> = BTreeSet::new();
         let mut seen_string: BTreeSet<&str> = BTreeSet::new();
         let mut work: usize = 0;
-        match (first.opcode, self.literals.get(first.op2 as usize)?) {
-            (op::SWITCH_LONG, Literal::SwitchLong(entries)) => {
+        match (opcode, self.literals.get(literal as usize)?) {
+            (op::SWITCH_LONG | op::MATCH, Literal::SwitchLong(entries)) => {
                 if entries.is_empty() || entries.len() > SANE_SWITCH_ARM_CAP {
                     return None;
                 }
@@ -1516,7 +1549,7 @@ impl<'a> Lifter<'a> {
                         .push(Some(label));
                 }
             }
-            (op::SWITCH_STRING, Literal::SwitchString(entries)) => {
+            (op::SWITCH_STRING | op::MATCH, Literal::SwitchString(entries)) => {
                 if entries.is_empty() || entries.len() > SANE_SWITCH_ARM_CAP {
                     return None;
                 }
@@ -1534,18 +1567,163 @@ impl<'a> Lifter<'a> {
             }
             _ => return None,
         }
-        let default_target: u32 = first.extended_value;
-        if default_target <= i || default_target >= end {
+        Some(DispatchLabels {
+            by_target: labels_by_target,
+            work,
+        })
+    }
+
+    fn structure_optimized_match(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        if !self.call_stack.is_empty() {
             return None;
         }
-        Some(SwitchDispatch {
-            subject_key,
-            subject,
-            labels_by_target,
-            result_keys: BTreeSet::new(),
-            default_target,
-            dispatch_end: i.checked_add(1)?,
-        })
+        let dispatch: &Op = self.ops.get(i as usize)?;
+        if !matches!(
+            dispatch.op1_type,
+            OperandType::Const | OperandType::Cv | OperandType::TmpVar | OperandType::Var
+        ) || dispatch.op2_type != OperandType::Const
+            || dispatch.result_type != OperandType::Unused
+        {
+            return None;
+        }
+        let subject_key: (OperandType, u32) = (dispatch.op1_type, dispatch.op1);
+        let subject: Expr = self.defined_operand_expr(dispatch.op1_type, dispatch.op1)?;
+        let DispatchLabels {
+            by_target: mut labels_by_target,
+            work: label_work,
+        }: DispatchLabels =
+            self.optimized_dispatch_labels(dispatch.opcode, dispatch.op2, i, end)?;
+        let label_count: usize = labels_by_target.values().map(Vec::len).sum();
+        let label_separator_work: usize = label_count.checked_mul(2)?;
+        let mut work: usize = switch_label_work_after(label_work, label_separator_work)?;
+        work = switch_label_work_after(work, subject.text.len().checked_add(12)?)?;
+        let default_target: u32 = dispatch.extended_value;
+        if default_target <= i
+            || default_target >= end
+            || labels_by_target.contains_key(&default_target)
+        {
+            return None;
+        }
+        labels_by_target.insert(default_target, vec![None]);
+        let targets: Vec<u32> = labels_by_target.keys().copied().collect();
+        if targets.first().copied()? != i.checked_add(1)? {
+            return None;
+        }
+        for pair in targets.windows(2) {
+            let left: u32 = *pair.first()?;
+            let right: u32 = *pair.get(1)?;
+            if left.checked_add(2)? != right {
+                return None;
+            }
+        }
+        let mut arms: Vec<(Vec<Option<String>>, Expr)> = Vec::with_capacity(targets.len());
+        let mut result_key: Option<(OperandType, u32)> = None;
+        let mut join: Option<u32> = None;
+        for target in targets {
+            let producer: &Op = self.ops.get(target as usize)?;
+            if producer.opcode != op::QM_ASSIGN
+                || !matches!(producer.op1_type, OperandType::Const | OperandType::Cv)
+                || producer.op2_type != OperandType::Unused
+                || producer.result_type != OperandType::TmpVar
+            {
+                return None;
+            }
+            let candidate_result: (OperandType, u32) = (producer.result_type, producer.result);
+            if candidate_result == subject_key
+                || result_key
+                    .is_some_and(|expected: (OperandType, u32)| expected != candidate_result)
+            {
+                return None;
+            }
+            result_key = Some(candidate_result);
+            let expression: Expr =
+                self.switch_operand_expr(producer.op1_type, producer.op1, &self.slots)?;
+            work = switch_label_work_after(work, expression.text.len().checked_add(7)?)?;
+            let jump_index: u32 = target.checked_add(1)?;
+            let jump: &Op = self.ops.get(jump_index as usize)?;
+            if jump.opcode != op::JMP
+                || jump.op1_type != OperandType::Unused
+                || jump.op2_type != OperandType::Unused
+                || jump.result_type != OperandType::Unused
+                || jump.op1 <= jump_index
+                || jump.op1 >= end
+                || join.is_some_and(|expected: u32| expected != jump.op1)
+            {
+                return None;
+            }
+            join = Some(jump.op1);
+            arms.push((labels_by_target.remove(&target)?, expression));
+        }
+        let join: u32 = join?;
+        if join
+            != i.checked_add(1)?
+                .checked_add(u32::try_from(arms.len()).ok()?.checked_mul(2)?)?
+        {
+            return None;
+        }
+        let mut rendered_arms: Vec<String> = Vec::with_capacity(arms.len());
+        for (labels, expression) in arms {
+            let label: String = if labels == [None] {
+                "default".to_owned()
+            } else {
+                labels
+                    .into_iter()
+                    .collect::<Option<Vec<String>>>()?
+                    .join(", ")
+            };
+            rendered_arms.push(format!("{label} => {}", expression.text));
+        }
+        let expression: Expr = Expr::atom(format!(
+            "match ({}) {{ {} }}",
+            subject.text,
+            rendered_arms.join(", ")
+        ));
+        let result_key: (OperandType, u32) = result_key?;
+        self.slots.insert(result_key, expression);
+        if matches!(subject_key.0, OperandType::TmpVar | OperandType::Var) {
+            self.slots.remove(&subject_key);
+            self.writable_slots.remove(&subject_key);
+        }
+        Some((Vec::new(), join))
+    }
+
+    fn refuse_optimized_match_region(&mut self, i: u32, end: u32) -> Option<(Vec<Stmt>, u32)> {
+        let dispatch: &Op = self.ops.get(i as usize)?;
+        if dispatch.opcode != op::MATCH {
+            return None;
+        }
+        let mut cursor: u32 = i.checked_add(1)?;
+        let mut count: usize = 0;
+        let mut jump_targets: Vec<u32> = Vec::new();
+        while count < SANE_SWITCH_ARM_CAP {
+            let Some(producer): Option<&Op> = self.ops.get(cursor as usize) else {
+                break;
+            };
+            if producer.opcode != op::QM_ASSIGN {
+                break;
+            }
+            let jump_index: u32 = cursor.checked_add(1)?;
+            let jump: &Op = self.ops.get(jump_index as usize)?;
+            if jump.opcode != op::JMP {
+                break;
+            }
+            count = count.checked_add(1)?;
+            jump_targets.push(jump.op1);
+            cursor = cursor.checked_add(2)?;
+        }
+        let forward_join_count: usize = jump_targets
+            .iter()
+            .filter(|target: &&u32| **target == cursor)
+            .count();
+        if count == 0
+            || cursor > end
+            || forward_join_count <= count.checked_div(2)?
+            || self.ops.get(cursor as usize).is_none()
+        {
+            return None;
+        }
+        let refusal: String = self.refuse(i, dispatch.opcode, REASON_OPTIMIZED_MATCH);
+        Some((vec![Stmt::Line(refusal)], cursor))
     }
 
     fn structure_switch_dispatch(
@@ -2770,14 +2948,16 @@ impl<'a> Lifter<'a> {
                 Some(format!("{} {};", include_kind(op.extended_value), arg.text))
             }
             other => {
-                let reason: &'static str = if matches!(other, op::SWITCH_LONG | op::SWITCH_STRING)
-                    && matches!(
-                        self.literals.get(op.op2 as usize),
-                        Some(Literal::SwitchLong(_) | Literal::SwitchString(_))
-                    ) {
-                    REASON_OPTIMIZED_SWITCH
-                } else {
-                    refusal_reason(other)
+                let typed_dispatch: bool = matches!(
+                    self.literals.get(op.op2 as usize),
+                    Some(Literal::SwitchLong(_) | Literal::SwitchString(_))
+                );
+                let reason: &'static str = match other {
+                    op::SWITCH_LONG | op::SWITCH_STRING if typed_dispatch => {
+                        REASON_OPTIMIZED_SWITCH
+                    }
+                    op::MATCH if typed_dispatch => REASON_OPTIMIZED_MATCH,
+                    _ => refusal_reason(other),
                 };
                 Some(self.refuse(idx, other, reason))
             }
@@ -3241,6 +3421,8 @@ const REASON_ROPE_BUDGET: &str = "the rope exceeds the bounded php 8 rope foldin
 const REASON_DISPATCH: &str = "switch and match dispatch is not reconstructed";
 const REASON_OPTIMIZED_SWITCH: &str =
     "the optimized switch table or its control-flow region is structurally ambiguous";
+const REASON_OPTIMIZED_MATCH: &str =
+    "the optimized match table or its result region is structurally ambiguous";
 const REASON_EXCEPTION: &str = "try, catch and finally regions are not reconstructed";
 const REASON_DECLARATION: &str = "the declared body is not carried in this op array";
 const REASON_UNMODELLED: &str = "the expression lifter does not model this opcode";

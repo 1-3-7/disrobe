@@ -27,6 +27,7 @@ const GENERATOR_DZOA: &[u8] = include_bytes!("fixtures/oparray_generator/generat
 
 const T_UNUSED: u8 = 0;
 const T_CONST: u8 = 1;
+const T_TMP: u8 = 2;
 const T_CV: u8 = 8;
 
 enum TableKey<'a> {
@@ -198,6 +199,130 @@ fn optimized_switch_oparray(subject: TableKey<'_>, string_table: bool) -> Vec<u8
     wire.extend_from_slice(&15u32.to_le_bytes());
     wire.extend_from_slice(&ops);
     wire.extend_from_slice(&0u32.to_le_bytes());
+    wire
+}
+
+fn optimized_match_oparray(subject: i64) -> Vec<u8> {
+    let mut literals: Vec<u8> = Vec::new();
+    literals.push(2);
+    literals.extend_from_slice(&subject.to_le_bytes());
+    for value in ["low", "seven", "nine", "other"] {
+        literals.push(4);
+        push_string(&mut literals, value);
+    }
+    literals.push(6);
+    literals.extend_from_slice(&4u32.to_le_bytes());
+    for (key, target) in [(1i64, 2u32), (2, 2), (7, 4), (9, 6)] {
+        literals.extend_from_slice(&key.to_le_bytes());
+        literals.extend_from_slice(&target.to_le_bytes());
+    }
+
+    let mut ops: Vec<u8> = Vec::new();
+    push_op(&mut ops, op::ASSIGN, T_CV, T_CONST, T_UNUSED, 0, 0, 0, 0, 1);
+    push_op(&mut ops, op::MATCH, T_CV, T_CONST, T_UNUSED, 0, 5, 0, 8, 2);
+    for (target, literal) in [(2u32, 1u32), (4, 2), (6, 3), (8, 4)] {
+        assert_eq!(ops.len() / 24, target as usize);
+        push_op(
+            &mut ops,
+            op::QM_ASSIGN,
+            T_CONST,
+            T_UNUSED,
+            T_TMP,
+            literal,
+            0,
+            0,
+            0,
+            target,
+        );
+        push_op(
+            &mut ops,
+            op::JMP,
+            T_UNUSED,
+            T_UNUSED,
+            T_UNUSED,
+            10,
+            0,
+            0,
+            0,
+            target,
+        );
+    }
+    push_op(
+        &mut ops,
+        op::ECHO,
+        T_TMP,
+        T_UNUSED,
+        T_UNUSED,
+        0,
+        0,
+        0,
+        0,
+        10,
+    );
+    push_op(
+        &mut ops,
+        op::RETURN,
+        T_CONST,
+        T_UNUSED,
+        T_UNUSED,
+        0,
+        0,
+        0,
+        0,
+        11,
+    );
+
+    let mut wire: Vec<u8> = b"DZOA\x03".to_vec();
+    wire.extend_from_slice(&[0, 0, 0]);
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&1u32.to_le_bytes());
+    wire.push(1);
+    push_string(&mut wire, "value");
+    wire.extend_from_slice(&6u32.to_le_bytes());
+    wire.extend_from_slice(&literals);
+    wire.extend_from_slice(&12u32.to_le_bytes());
+    wire.extend_from_slice(&ops);
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire
+}
+
+fn rewrite_nth_match_arm_result(mut wire: Vec<u8>, nth: usize, result: u32) -> Vec<u8> {
+    let marker: [u8; 4] = [op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP];
+    let positions: Vec<usize> = wire
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, candidate): (usize, &[u8])| (candidate == marker).then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 4);
+    let start: usize = positions[nth] + 12;
+    let end: usize = start + size_of::<u32>();
+    wire[start..end].copy_from_slice(&result.to_le_bytes());
+    wire
+}
+
+fn rewrite_nth_match_jump_target(mut wire: Vec<u8>, nth: usize, target: u32) -> Vec<u8> {
+    let marker: [u8; 4] = [op::JMP, T_UNUSED, T_UNUSED, T_UNUSED];
+    let positions: Vec<usize> = wire
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, candidate): (usize, &[u8])| (candidate == marker).then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 4);
+    let start: usize = positions[nth] + 4;
+    let end: usize = start + size_of::<u32>();
+    wire[start..end].copy_from_slice(&target.to_le_bytes());
+    wire
+}
+
+fn rewrite_nth_match_arm_operand_type(mut wire: Vec<u8>, nth: usize, operand_type: u8) -> Vec<u8> {
+    let marker: [u8; 4] = [op::QM_ASSIGN, T_CONST, T_UNUSED, T_TMP];
+    let positions: Vec<usize> = wire
+        .windows(marker.len())
+        .enumerate()
+        .filter_map(|(index, candidate): (usize, &[u8])| (candidate == marker).then_some(index))
+        .collect();
+    assert_eq!(positions.len(), 4);
+    wire[positions[nth] + 1] = operand_type;
     wire
 }
 
@@ -480,6 +605,149 @@ fn registered_pass_recovers_case_and_default_at_the_same_target() {
         source.contains("case 1:\n    case 2:\n    default:"),
         "{source}"
     );
+}
+
+#[test]
+fn registered_pass_recovers_php_84_optimized_match_expression() {
+    let Some(php): Option<PhpRuntime> =
+        require_php("PHP 8.4 optimized MATCH registered-pass runtime equivalence")
+    else {
+        return;
+    };
+    assert!(php.banner.starts_with("PHP 8.4."), "{}", php.banner);
+
+    let input: Artifact = Artifact::new(Rung::Raw, optimized_match_oparray(7), [0x37; 32]);
+    let output: Artifact = PHP_PASS
+        .run(&input)
+        .expect("the registered pass must recover the optimized match");
+    let source: String =
+        String::from_utf8(output.envelope).expect("the registered pass must emit UTF-8 PHP source");
+    let original: &str =
+        "<?php $value=7;echo match($value){1,2=>'low',7=>'seven',9=>'nine',default=>'other'};";
+    let original_stdout: Vec<u8> = php.stdout_of("optimized match original", original.as_bytes());
+    let recovered_stdout: Vec<u8> = php.stdout_of("optimized match recovered", source.as_bytes());
+    assert_eq!(original_stdout, b"seven");
+    assert_eq!(recovered_stdout, original_stdout, "{source}");
+    assert!(source.contains("match ($value)"), "{source}");
+    assert!(source.contains("1, 2 => 'low'"), "{source}");
+    assert!(source.contains("default => 'other'"), "{source}");
+    assert!(!source.contains("unrecovered ZEND_MATCH"), "{source}");
+
+    let mutated_input: Artifact = Artifact::new(Rung::Raw, optimized_match_oparray(9), [0x38; 32]);
+    let mutated_output: Artifact = PHP_PASS
+        .run(&mutated_input)
+        .expect("the registered pass must recover the mutated optimized match");
+    let mutated_source: String = String::from_utf8(mutated_output.envelope)
+        .expect("the mutated registered pass output must be UTF-8");
+    let mutated_stdout: Vec<u8> = php.stdout_of(
+        "mutated optimized match recovered",
+        mutated_source.as_bytes(),
+    );
+    assert_eq!(mutated_stdout, b"nine");
+    assert_ne!(mutated_source, source);
+}
+
+#[test]
+fn real_php_emitter_reaches_registered_pass_for_optimized_match() {
+    let graded: &str = "PHP 8.4 optimized MATCH emitter to registered-pass runtime equivalence";
+    let Some(php): Option<PhpRuntime> = require_php(graded) else {
+        return;
+    };
+    let Some(dll): Option<PathBuf> = opcache_dll(&php) else {
+        unmeasured(
+            &PHP_OPCACHE,
+            graded,
+            "the opcache extension was not found beside the PHP 8.4 binary",
+        );
+        return;
+    };
+    let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let source_path: PathBuf = root
+        .join("corpus")
+        .join("php")
+        .join("oparray")
+        .join("src")
+        .join("match_optimized.php");
+    let emitter: PathBuf = root
+        .join("corpus")
+        .join("php")
+        .join("oparray")
+        .join("emit_dzoa.php");
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_php_match_registered")
+            .expect("create registered match scratch directory");
+    let dzoa_path: PathBuf = scratch.path().join("match.dzoa");
+    let dump_path: PathBuf = scratch.path().join("match.dump");
+    let emitted: Output = Command::new(&php.binary)
+        .env("DZOA_OPCACHE_DLL", &dll)
+        .arg(&emitter)
+        .arg(&source_path)
+        .arg(&dzoa_path)
+        .arg(&dump_path)
+        .output()
+        .expect("run PHP 8.4 MATCH emitter");
+    assert!(
+        emitted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let wire: Vec<u8> = std::fs::read(&dzoa_path).expect("read compiler-produced MATCH DZOA");
+    let dump: String = std::fs::read_to_string(&dump_path).expect("read MATCH compiler dump");
+    assert!(dump.contains("MATCH CV0($value) 1:"), "{dump}");
+    assert!(dump.contains("MATCH CV0($value) \"red\":"), "{dump}");
+    let input: Artifact = Artifact::new(Rung::Raw, wire, [0x3a; 32]);
+    let output: Artifact = PHP_PASS
+        .run(&input)
+        .expect("the registered pass must recover compiler-produced MATCH DZOA");
+    let recovered: String =
+        String::from_utf8(output.envelope).expect("registered MATCH output must be UTF-8");
+    let original: Vec<u8> =
+        std::fs::read(&source_path).expect("read the tracked optimized MATCH source");
+    assert_eq!(
+        php.stdout_of("compiler MATCH original", &original),
+        php.stdout_of("compiler MATCH recovered", recovered.as_bytes()),
+        "{recovered}"
+    );
+    assert!(recovered.matches("match (").count() >= 2, "{recovered}");
+    assert!(!recovered.contains("unrecovered ZEND_MATCH"), "{recovered}");
+}
+
+#[test]
+fn registered_pass_refuses_ambiguous_optimized_match_results_and_joins() {
+    for (index, wire) in [
+        rewrite_nth_match_arm_result(optimized_match_oparray(7), 1, 1),
+        rewrite_nth_match_jump_target(optimized_match_oparray(7), 2, 3),
+        rewrite_nth_match_arm_operand_type(optimized_match_oparray(7), 0, T_TMP),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input: Artifact = Artifact::new(Rung::Raw, wire, [0x39; 32]);
+        let output: Artifact = PHP_PASS
+            .run(&input)
+            .expect("an ambiguous optimized match must produce marked partial source");
+        let source: &str =
+            std::str::from_utf8(&output.envelope).expect("partial source must remain UTF-8");
+        assert!(
+            source.contains("unrecovered ZEND_MATCH at op 1"),
+            "{source}"
+        );
+        assert!(
+            source.contains("result region is structurally ambiguous"),
+            "{source}"
+        );
+        assert!(!source.contains("match ($value)"), "{source}");
+        assert!(
+            !source.contains("echo 'seven'"),
+            "mutation {index}\n{source}"
+        );
+        assert!(
+            !source.contains("echo 'other'"),
+            "mutation {index}\n{source}"
+        );
+    }
 }
 
 #[test]

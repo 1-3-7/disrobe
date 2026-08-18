@@ -11,6 +11,7 @@ const MAX_RECORDS: usize = 65_535;
 const MAX_FOLDER_DEPTH: usize = 256;
 const MAX_PATH_BYTES: usize = 4096;
 const METHOD_STORED: u8 = 0;
+const METHOD_COMPRESS_14: u8 = 2;
 const METHOD_13: u8 = 13;
 const FLAG_ENCRYPTED: u8 = 0x80;
 const FLAG_FOLDER_CONTAINS_ENCRYPTED: u8 = 0x10;
@@ -21,6 +22,7 @@ const STREAM_BUFFER_LEN: usize = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SitCompression {
     Stored,
+    Compress14,
     Method13,
 }
 
@@ -111,6 +113,7 @@ fn compression(method: u8) -> Result<SitCompression> {
     }
     match method {
         METHOD_STORED => Ok(SitCompression::Stored),
+        METHOD_COMPRESS_14 => Ok(SitCompression::Compress14),
         METHOD_13 => Ok(SitCompression::Method13),
         other => Err(stuffit_error(format!(
             "stuffit: unsupported compression method {other}"
@@ -333,6 +336,26 @@ pub fn fork_bytes_bounded(bytes: &[u8], fork: &SitFork, max_output: usize) -> Re
                 return Err(stuffit_error("stuffit: stored fork exceeds output cap"));
             }
             raw.to_vec()
+        }
+        SitCompression::Compress14 => {
+            if expected_len > max_output {
+                return Err(stuffit_error(format!(
+                    "stuffit: decoded fork length {expected_len} exceeds cap {max_output}"
+                )));
+            }
+            let cap: u64 = u64::try_from(max_output)
+                .map_err(|_| stuffit_error("stuffit: output cap exceeds u64"))?;
+            let decoded: Vec<u8> = super::bare_stream::decompress_stuffit_compress14(raw, cap)
+                .map_err(|error: Error| {
+                    stuffit_error(format!("stuffit: method 2 decode failed: {error}"))
+                })?;
+            if decoded.len() != expected_len {
+                return Err(stuffit_error(format!(
+                    "stuffit: method 2 produced {} bytes, expected {expected_len}",
+                    decoded.len()
+                )));
+            }
+            decoded
         }
         SitCompression::Method13 => decode_method13(raw, expected_len, max_output)?,
     };
@@ -649,6 +672,52 @@ mod tests {
                 "expected {expected:?}, got {error}"
             );
         }
+    }
+
+    #[test]
+    fn method2_truncation_trailing_bytes_quota_and_crc_fail_closed() {
+        let fixture: &[u8] = include_bytes!("../../tests/fixtures/stuffit/stuffit-method2.sit");
+        let parsed: SitArchive = parse_classic(fixture).expect("parse method 2 fixture");
+        let data: &SitFork = &parsed.entries[0].data;
+        let expected_len: usize =
+            usize::try_from(data.uncompressed_len).expect("method 2 output length");
+        assert!(fork_bytes_bounded(fixture, data, expected_len - 1).is_err());
+
+        let raw_end: usize = data.data_offset + data.compressed_len as usize;
+        let raw: &[u8] = &fixture[data.data_offset..raw_end];
+        let mut truncated: SitFork = data.clone();
+        truncated.data_offset = 0;
+        truncated.compressed_len -= 1;
+        assert!(fork_bytes_bounded(&raw[..raw.len() - 1], &truncated, expected_len).is_err());
+
+        let mut with_trailing: Vec<u8> = raw.to_vec();
+        with_trailing.push(0);
+        let mut trailing: SitFork = data.clone();
+        trailing.data_offset = 0;
+        trailing.compressed_len += 1;
+        assert!(fork_bytes_bounded(&with_trailing, &trailing, expected_len).is_err());
+
+        let mut wrong_crc: SitFork = data.clone();
+        wrong_crc.expected_crc ^= 1;
+        assert!(fork_bytes_bounded(fixture, &wrong_crc, expected_len).is_err());
+
+        let invalid_forward_code: SitFork = SitFork {
+            compression: SitCompression::Compress14,
+            uncompressed_len: 1,
+            compressed_len: 2,
+            expected_crc: 0,
+            data_offset: 0,
+        };
+        assert!(fork_bytes_bounded(&[1, 1], &invalid_forward_code, 1).is_err());
+
+        let trailing_clear: SitFork = SitFork {
+            compression: SitCompression::Compress14,
+            uncompressed_len: 1,
+            compressed_len: 3,
+            expected_crc: crc16_ibm(b"A"),
+            data_offset: 0,
+        };
+        assert!(fork_bytes_bounded(&[0x41, 0x00, 0x02], &trailing_clear, 1).is_err());
     }
 
     #[test]

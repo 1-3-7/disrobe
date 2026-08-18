@@ -1,7 +1,12 @@
 #![cfg(feature = "chain")]
 #![allow(clippy::panic)]
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use disrobe_core::chain::Pass;
+use disrobe_core::subprocess::{CapturedOutput, run_captured};
 use disrobe_core::{Artifact, Rung};
 use disrobe_pass_dotnet::aot::{AotMetadataStatus, AotReport, AotRuntime, detect};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
@@ -17,6 +22,8 @@ const SOURCE: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.c
 const PROJECT: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.csproj.txt");
 const BUILD: &str = include_str!("fixtures/native_aot/invoke_map_net10_x86_64.build.txt");
 const AMD64_MACHINE: u16 = 0x8664;
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
+const TOOL_CAPTURE_BYTES: usize = 1024 * 1024;
 
 fn evidence_address(text: &str, prefix: &str) -> Result<u64, &'static str> {
     let value: &str = text
@@ -138,6 +145,57 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn checked_tool(
+    program: &Path,
+    arguments: &[OsString],
+    label: &str,
+) -> Result<CapturedOutput, String> {
+    let output: CapturedOutput = run_captured(program, arguments, TOOL_TIMEOUT, TOOL_CAPTURE_BYTES)
+        .map_err(|error: std::io::Error| format!("{label} could not start: {error}"))?
+        .ok_or_else(|| format!("{label} exceeded {} seconds", TOOL_TIMEOUT.as_secs()))?;
+    if output.exit_code == Some(0) {
+        return Ok(output);
+    }
+    Err(format!(
+        "{label} exited {:?}; stdout: {}; stderr: {}",
+        output.exit_code,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+fn assert_managed_int32_runtime(pseudo_c: &str) -> Result<(), String> {
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("native_aot_managed_int32")
+            .map_err(|error: std::io::Error| format!("scratch directory failed: {error}"))?;
+    let source_path: PathBuf = scratch.path().join("managed.c");
+    let executable_path: PathBuf = scratch.path().join("managed.exe");
+    let harness: &str = "\nint main(void) {\n    struct Case { int32_t left; int32_t right; int32_t expected; };\n    const struct Case cases[] = {\n        {0, 0, 0},\n        {-1, 1, 0},\n        {INT32_MAX, 1, INT32_MIN},\n        {INT32_MIN, -1, INT32_MAX},\n        {INT32_MIN, INT32_MIN, 0}\n    };\n    for (uint32_t index = 0; index < sizeof(cases) / sizeof(cases[0]); ++index) {\n        if (recovered(cases[index].left, cases[index].right) != cases[index].expected) {\n            return (int)index + 1;\n        }\n    }\n    return 0;\n}\n";
+    std::fs::write(&source_path, format!("{pseudo_c}{harness}"))
+        .map_err(|error: std::io::Error| format!("managed C source write failed: {error}"))?;
+    let compile_arguments: Vec<OsString> = vec![
+        OsString::from("-std=c17"),
+        OsString::from("-O2"),
+        OsString::from("-Wall"),
+        OsString::from("-Wextra"),
+        OsString::from("-Werror"),
+        source_path.as_os_str().to_owned(),
+        OsString::from("-o"),
+        executable_path.as_os_str().to_owned(),
+    ];
+    drop(checked_tool(
+        Path::new("clang"),
+        &compile_arguments,
+        "clang managed pseudo-C compile",
+    )?);
+    drop(checked_tool(
+        &executable_path,
+        &[],
+        "managed pseudo-C boundary runtime",
+    )?);
+    Ok(())
+}
+
 #[test]
 fn fixture_provenance_pins_source_project_compiler_and_runtime() {
     assert_eq!(
@@ -160,7 +218,7 @@ fn fixture_provenance_pins_source_project_compiler_and_runtime() {
 }
 
 #[test]
-fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), &'static str> {
+fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), String> {
     let expected_range: (u32, u32) = compiler_method_range()?;
     assert_eq!(expected_range, (0x0008_2520, 0x0008_2524));
     let pe: PeImage = parse(IMAGE)
@@ -207,10 +265,14 @@ fn net10_auto_emits_compiler_name_signature_range_and_body() -> Result<(), &'sta
     assert_eq!(recovered["code_range"]["start_rva"], expected_range.0);
     assert_eq!(recovered["code_range"]["end_rva"], expected_range.1);
     assert_eq!(recovered["body"]["status"], "recovered");
+    let pseudo_c: &str = recovered["body"]["pseudo_c"]
+        .as_str()
+        .ok_or_else(|| "managed pseudo-C is absent".to_owned())?;
     assert_eq!(
-        recovered["body"]["pseudo_c"],
-        "#include <stdint.h>\nuint64_t recovered(uint64_t a0, uint64_t a1) {\n    uint64_t r_rcx = a0;\n    uint64_t r_rdx = a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (r_rax) & 0xffffffffULL;\n}\n"
+        pseudo_c,
+        "#include <stdint.h>\nint32_t recovered(int32_t a0, int32_t a1) {\n    uint64_t r_rcx = (uint32_t)a0;\n    uint64_t r_rdx = (uint32_t)a1;\n    uint64_t r_rax = 0;\n    r_rax = (r_rcx + r_rdx * 1ULL) & 0xffffffffULL;\n    return (int32_t)(uint32_t)((r_rax) & 0xffffffffULL);\n}\n"
     );
+    assert_managed_int32_runtime(pseudo_c)?;
     let signature: &serde_json::Value = &recovered["signature"];
     assert_eq!(signature["calling_convention"], 0);
     assert_eq!(signature["generic_parameter_count"], 0);
