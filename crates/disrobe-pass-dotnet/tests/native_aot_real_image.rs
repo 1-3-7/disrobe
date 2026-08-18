@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use disrobe_pass_dotnet::Error;
 use disrobe_pass_dotnet::aot::{
@@ -13,14 +14,20 @@ const TRACKED_NATIVE_AOT_IMAGE: &[u8] =
     include_bytes!("../../../corpus/dotnet/megafile/EdgeCases.nativeaot.exe");
 
 fn probe_app_image() -> Vec<u8> {
-    panic!(
-        "no committed fixture declares the names this grade compares against; see the ignore \
-         reason on the calling test for the artifact it needs"
+    let path: PathBuf = std::env::var_os(SAMPLE_ENV).map(PathBuf::from).expect(
+        "set DISROBE_AOT_SAMPLE to the probe app named in this test's ignore reason; no committed \
+         artifact declares the names this grade compares against",
     );
+    std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
 
-fn tracked_image() -> Vec<u8> {
-    TRACKED_NATIVE_AOT_IMAGE.to_vec()
+const SAMPLE_ENV: &str = "DISROBE_AOT_SAMPLE";
+
+fn any_native_aot_image() -> Vec<u8> {
+    let Some(path): Option<PathBuf> = std::env::var_os(SAMPLE_ENV).map(PathBuf::from) else {
+        return TRACKED_NATIVE_AOT_IMAGE.to_vec();
+    };
+    std::fs::read(path).expect("the image named by DISROBE_AOT_SAMPLE must be readable")
 }
 
 fn section_file_offset(image: &[u8], section: &AotSection) -> Result<usize, &'static str> {
@@ -58,7 +65,7 @@ fn section_file_offset(image: &[u8], section: &AotSection) -> Result<usize, &'st
 
 #[test]
 fn a_real_native_aot_image_is_recognized_by_its_ready_to_run_header() {
-    let image: Vec<u8> = tracked_image();
+    let image: Vec<u8> = any_native_aot_image();
     let report: AotReport = detect(&image);
     let header: &ReadyToRunHeader = report
         .ready_to_run
@@ -117,7 +124,7 @@ fn a_real_native_aot_image_is_recognized_by_its_ready_to_run_header() {
 
 #[test]
 fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
-    let image: Vec<u8> = tracked_image();
+    let image: Vec<u8> = any_native_aot_image();
     match disrobe_pass_dotnet::pass::analyze(&image) {
         Ok(summary) => println!("pass reached a verdict: native_aot={}", summary.native_aot),
         Err(error) => panic!(
@@ -128,7 +135,7 @@ fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe; no such image is committed, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its source is not committed, so nothing states which names it should yield"]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source lives at the untracked .developer/dotnet-samples/EdgeCasesAot/Program.cs, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_yields_type_names_the_source_declared() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
@@ -157,7 +164,7 @@ fn a_real_native_aot_image_yields_type_names_the_source_declared() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe; no such image is committed, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its source is not committed, so nothing states which names it should yield"]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source lives at the untracked .developer/dotnet-samples/EdgeCasesAot/Program.cs, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
@@ -318,7 +325,7 @@ fn tracked_native_aot_image_decodes_a_complete_attribution_graph() {
 
 #[test]
 fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
-    let image: Vec<u8> = tracked_image();
+    let image: Vec<u8> = any_native_aot_image();
     let report: AotReport = detect(&image);
     let mut header: ReadyToRunHeader = report
         .ready_to_run
@@ -341,7 +348,7 @@ fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
 
 #[test]
 fn metadata_attribution_rejects_bad_magic_and_hostile_counts_transactionally() {
-    let image: Vec<u8> = tracked_image();
+    let image: Vec<u8> = any_native_aot_image();
     let report: AotReport = detect(&image);
     let header: ReadyToRunHeader = report
         .ready_to_run
@@ -417,7 +424,7 @@ fn the_metadata_length_prefix_decodes_the_documented_widths() {
 
 #[test]
 fn the_name_needles_alone_do_not_recognize_a_real_image() {
-    let image: Vec<u8> = tracked_image();
+    let image: Vec<u8> = any_native_aot_image();
     let report: AotReport = detect(&image);
     assert!(
         report.recovered_symbols.is_empty(),
