@@ -611,7 +611,8 @@ fn recover_with_calls_and_image<'image>(
     let mut flag_definitions: BTreeMap<usize, TrackedFlags> = BTreeMap::new();
     let frame: FrameAnalysis = aarch64_frame::analyze(&insns, &switches)?;
     let outgoing: BTreeMap<usize, Vec<OutgoingSlot>> = outgoing_stores(&insns, calls)?;
-    let d_transfer_classes: BTreeMap<usize, DTransferClass> = classify_d_transfers(&insns)?;
+    let d_transfer_classes: BTreeMap<usize, DTransferClass> =
+        classify_d_transfers(&insns, &frame.management)?;
     for (index, insn) in insns.iter().enumerate() {
         let address: u64 = item_address(base, index, 0)?;
         if let Some(dispatch) = switches.get(&index) {
@@ -6891,6 +6892,30 @@ fn d_transfer_registers(insn: &DisasmInsn) -> Option<(bool, Vec<u8>)> {
     Some((is_load, registers))
 }
 
+fn narrow_scalar_simd_load_registers(insn: &DisasmInsn) -> Option<Vec<u8>> {
+    let operands: Vec<&str> = split_operands(&insn.operands);
+    let (register_count, memory_index): (usize, usize) = match insn.mnemonic.as_str() {
+        "ldr" | "ldur" => (1, 1),
+        "ldp" => (2, 2),
+        _ => return None,
+    };
+    if !operands.get(memory_index)?.trim().starts_with('[') {
+        return None;
+    }
+    operands
+        .iter()
+        .take(register_count)
+        .map(|token: &&str| {
+            if parse_dreg(token).is_some() {
+                return None;
+            }
+            parse_scalar_simd(token)
+                .ok()
+                .map(|(register, _): (u8, VecElem)| register)
+        })
+        .collect::<Option<Vec<u8>>>()
+}
+
 fn vector_memory_registers(insn: &DisasmInsn) -> Option<(bool, Vec<u8>)> {
     let operands: Vec<&str> = split_operands(&insn.operands);
     let (is_load, register_count, memory_index): (bool, usize, usize) = match insn.mnemonic.as_str()
@@ -6968,16 +6993,17 @@ fn constrain_d_register(
     Ok(())
 }
 
-fn adopt_d_register_class(
+fn resolve_d_register_class(
     states: &mut [DRegisterState; 32],
     classes: &mut BTreeMap<usize, DTransferClass>,
     register: u8,
     insn: &DisasmInsn,
+    reaching: Option<&[DCrossingRecord; 32]>,
 ) -> Result<DTransferClass> {
     let class: DTransferClass = states[usize::from(register)]
         .class
         .unwrap_or(DTransferClass::Scalar);
-    constrain_d_register(states, classes, register, class, insn, None)?;
+    constrain_d_register(states, classes, register, class, insn, reaching)?;
     Ok(class)
 }
 
@@ -7082,6 +7108,8 @@ fn finalize_d_block(
         let resolved_class: Option<DTransferClass> = if let Some(origin) = origin {
             let class: DTransferClass = if let Some(class) = state.class {
                 class
+            } else if let Some(decided) = classes.get(&origin).copied() {
+                decided
             } else if allow_scalar_return && register == 0 {
                 DTransferClass::Scalar
             } else {
@@ -7127,15 +7155,19 @@ fn d_classification_target(insn: &DisasmInsn) -> Result<Option<u64>> {
     })
 }
 
-fn classify_d_transfers(insns: &[DisasmInsn]) -> Result<BTreeMap<usize, DTransferClass>> {
+fn classify_d_transfers(
+    insns: &[DisasmInsn],
+    frame_management: &BTreeSet<usize>,
+) -> Result<BTreeMap<usize, DTransferClass>> {
     let mut reaching: [DCrossingRecord; 32] = [DCrossingRecord::default(); 32];
-    scan_d_transfers(insns, &mut reaching, None)?;
+    scan_d_transfers(insns, frame_management, &mut reaching, None)?;
     let mut enforced: [DCrossingRecord; 32] = [DCrossingRecord::default(); 32];
-    scan_d_transfers(insns, &mut enforced, Some(&reaching))
+    scan_d_transfers(insns, frame_management, &mut enforced, Some(&reaching))
 }
 
 fn scan_d_transfers(
     insns: &[DisasmInsn],
+    frame_management: &BTreeSet<usize>,
     crossings: &mut [DCrossingRecord; 32],
     reaching: Option<&[DCrossingRecord; 32]>,
 ) -> Result<BTreeMap<usize, DTransferClass>> {
@@ -7150,6 +7182,9 @@ fn scan_d_transfers(
     for (index, insn) in insns.iter().enumerate() {
         if branch_targets.contains(&insn.address) {
             finalize_d_block(&mut states, &mut classes, crossings, false, insn)?;
+        }
+        if frame_management.contains(&index) {
+            continue;
         }
         if let Some((is_load, registers)) = d_transfer_registers(insn) {
             if is_load {
@@ -7228,9 +7263,18 @@ fn scan_d_transfers(
                     )?;
                 }
             }
+        } else if let Some(registers) = narrow_scalar_simd_load_registers(insn) {
+            for register in registers {
+                replace_d_register_value(
+                    &mut states,
+                    &mut classes,
+                    register,
+                    DRegisterState::default(),
+                );
+            }
         } else if let Some(register) = scalar_fmov_source(insn) {
             let class: DTransferClass =
-                adopt_d_register_class(&mut states, &mut classes, register, insn)?;
+                resolve_d_register_class(&mut states, &mut classes, register, insn, reaching)?;
             classes.insert(index, class);
         } else {
             let definition: Option<(u8, DTransferClass)> = d_value_definition(insn);

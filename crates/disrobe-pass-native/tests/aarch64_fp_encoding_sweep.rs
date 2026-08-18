@@ -47,7 +47,7 @@ const EXPECTED_ABSTENTIONS: &[(&str, &str)] = &[
     ),
 ];
 
-const PSEUDO_RUST_GAPS: &[&str] = &["i_ldr_post_d"];
+const PSEUDO_RUST_GAPS: &[&str] = &[];
 
 const GATED_ENCODINGS: &[&str] = &[
     "fjcvtzs",
@@ -184,5 +184,37 @@ fn recovered_scalar_forms_reach_both_emitted_backends() {
     assert!(
         scalar_with_rust >= 80,
         "only {scalar_with_rust} scalar forms reached pseudo-rust; the second backend regressed"
+    );
+}
+
+const UNTYPED_CALLEE_SAVED_STORE: [u8; 8] = [0x08, 0x00, 0x00, 0xfd, 0xc0, 0x03, 0x5f, 0xd6];
+const FRAMED_VECTOR_STACK_ARGUMENT: [u8; 20] = [
+    0xff, 0x43, 0x00, 0xd1, 0xe0, 0x07, 0xc0, 0x3d, 0x00, 0x84, 0xa0, 0x4e, 0xff, 0x43, 0x00, 0x91,
+    0xc0, 0x03, 0x5f, 0xd6,
+];
+
+#[test]
+fn a_callee_saved_store_outside_a_prologue_still_refuses() {
+    let Err(error) = recover_aarch64_function(&UNTYPED_CALLEE_SAVED_STORE, 0) else {
+        panic!("an untyped d8 store through a pointer is not a frame spill");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("an untyped d-register store is outside the scalar argument registers"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn an_incoming_stack_argument_read_as_a_vector_refuses_rather_than_inventing_a_signature() {
+    let Err(error) = recover_aarch64_function(&FRAMED_VECTOR_STACK_ARGUMENT, 0) else {
+        panic!("the vector path does not model an incoming stack argument");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("outside the [0, 16) bytes this frame owns"),
+        "{error:?}"
     );
 }
