@@ -273,8 +273,9 @@ pub use provenance_header::{
     render_rust_with_header, rust_lifted_header,
 };
 pub use pseudo_c::{
-    Abi as PseudoAbi, CallSiteReturnProof, CallSiteSignatureProof, FpConstant, JumpTable,
-    LeafRecovery, ParameterBinding as PseudoParameterBinding, ProgramFunction, RecoveredFunction,
+    AARCH64_SCALAR_FP_LOWERED_MNEMONICS, Abi as PseudoAbi, CallSiteReturnProof,
+    CallSiteSignatureProof, FpConstant, JumpTable, LeafRecovery,
+    ParameterBinding as PseudoParameterBinding, ProgramFunction, RecoveredFunction,
     RecoveredProgram, RecoveredSignature, Reg as PseudoReg, ResolvedCall,
     ScalarType as PseudoScalarType, SretReturn, UnrecoveredFunction, callee_int_arity,
     recover_aarch64_function, recover_aarch64_function_with_calls,

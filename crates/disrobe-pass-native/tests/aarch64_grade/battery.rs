@@ -415,6 +415,28 @@ float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, f
     if (a < b && c < d && e < f) r = x;
     return r;
 }
+float fp_ninth_f(float a, float b, float c, float d, float e, float f, float g, float h, float i) {
+  return a + b + c + d + e + f + g + h + i;
+}
+double fp_ninth_d(double a, double b, double c, double d, double e, double f, double g, double h, double i) {
+  return a + b + c + d + e + f + g + h + i;
+}
+float fp_mixed_i_then_f(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h, u64 i,
+                        float p, float q, float r, float s, float t, float u, float v, float w, float x) {
+  return (float)(a + b + c + d + e + f + g + h + i) + p + q + r + s + t + u + v + w + x;
+}
+double fp_mixed_i_then_d(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h, u64 i,
+                         double p, double q, double r, double s, double t, double u, double v, double w, double x) {
+  return (double)(a + b + c + d + e + f + g + h + i) + p + q + r + s + t + u + v + w + x;
+}
+float fp_mixed_f_then_i(float a, float b, float c, float d, float e, float f, float g, float h, float i,
+                        u64 p, u64 q, u64 r, u64 s, u64 t, u64 u, u64 v, u64 w, u64 x) {
+  return a + b + c + d + e + f + g + h + i + (float)(p + q + r + s + t + u + v + w + x);
+}
+double fp_mixed_d_then_i(double a, double b, double c, double d, double e, double f, double g, double h, double i,
+                         u64 p, u64 q, u64 r, u64 s, u64 t, u64 u, u64 v, u64 w, u64 x) {
+  return a + b + c + d + e + f + g + h + i + (double)(p + q + r + s + t + u + v + w + x);
+}
 unsigned rev16_w(unsigned x) { return ((x & 0xff00ff00u) >> 8) | ((x & 0x00ff00ffu) << 8); }
 u64 rev16_x(u64 x) { return ((x & 0xff00ff00ff00ff00ull) >> 8) | ((x & 0x00ff00ff00ff00ffull) << 8); }
 u64 rev32_x(u64 x) { return ((u64)__builtin_bswap32((unsigned)(x >> 32)) << 32) | (u64)__builtin_bswap32((unsigned)x); }
@@ -675,6 +697,12 @@ extern float fc_selor3_f(float a, float b, float c, float d, float e, float f, f
 extern float fc_seland3_f(float a, float b, float c, float d, float e, float f, float x, float y);
 extern float fc_seland3_mix_f(float a, float b, float c, float d, float e, float f, float x, float y);
 extern float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, float y);
+extern float fp_ninth_f(float a, float b, float c, float d, float e, float f, float g, float h, float i);
+extern double fp_ninth_d(double a, double b, double c, double d, double e, double f, double g, double h, double i);
+extern float fp_mixed_i_then_f(unsigned long long a, unsigned long long b, unsigned long long c, unsigned long long d, unsigned long long e, unsigned long long f, unsigned long long g, unsigned long long h, unsigned long long i, float p, float q, float r, float s, float t, float u, float v, float w, float x);
+extern double fp_mixed_i_then_d(unsigned long long a, unsigned long long b, unsigned long long c, unsigned long long d, unsigned long long e, unsigned long long f, unsigned long long g, unsigned long long h, unsigned long long i, double p, double q, double r, double s, double t, double u, double v, double w, double x);
+extern float fp_mixed_f_then_i(float a, float b, float c, float d, float e, float f, float g, float h, float i, unsigned long long p, unsigned long long q, unsigned long long r, unsigned long long s, unsigned long long t, unsigned long long u, unsigned long long v, unsigned long long w, unsigned long long x);
+extern double fp_mixed_d_then_i(double a, double b, double c, double d, double e, double f, double g, double h, double i, unsigned long long p, unsigned long long q, unsigned long long r, unsigned long long s, unsigned long long t, unsigned long long u, unsigned long long v, unsigned long long w, unsigned long long x);
 extern unsigned rev16_w(unsigned x);
 extern unsigned long long rev16_x(unsigned long long x);
 extern unsigned long long rev32_x(unsigned long long x);
@@ -945,6 +973,112 @@ pub(crate) fn fp_expectation(name: &str) -> Option<FpExpectation> {
             returns: Some(ScalarType::Float),
             return_width_bits: 32,
         },
+        "fp_ninth_f" => FpExpectation {
+            params: &[ScalarType::Float; 9],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fp_ninth_d" => FpExpectation {
+            params: &[ScalarType::Double; 9],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fp_mixed_i_then_f" => FpExpectation {
+            params: &[
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+            ],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fp_mixed_i_then_d" => FpExpectation {
+            params: &[
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+            ],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
+        "fp_mixed_f_then_i" => FpExpectation {
+            params: &[
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Float,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+            ],
+            returns: Some(ScalarType::Float),
+            return_width_bits: 32,
+        },
+        "fp_mixed_d_then_i" => FpExpectation {
+            params: &[
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Double,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+                ScalarType::Int,
+            ],
+            returns: Some(ScalarType::Double),
+            return_width_bits: 64,
+        },
         "fx_fcvtzs_x_f" | "fx_fcvtzu_x_f" => FpExpectation {
             params: &[ScalarType::Float],
             returns: None,
@@ -1206,11 +1340,24 @@ pub(crate) const LONG_FILL: &str = "(long long)((int)(xs(&s) % 200001) - 100000)
 pub(crate) const CHAR_FILL: &str = "(char)(xs(&s) & 0xff)";
 pub(crate) const U64_FILL: &str = "(unsigned long long)xs(&s)";
 
-pub(crate) const FP_DRIVER_HELPERS: &str = r"
+pub(crate) const FP_DRIVER_HELPERS: &str = r#"
+#include <stdarg.h>
+#include <stddef.h>
+#include <string.h>
 static inline double fp_d_from_bits(uint64_t b) { double v; __builtin_memcpy(&v, &b, 8); return v; }
 static inline uint64_t fp_d_to_bits(double v) { uint64_t b; __builtin_memcpy(&b, &v, 8); return b; }
 static inline float fp_f_from_bits(uint32_t b) { float v; __builtin_memcpy(&v, &b, 4); return v; }
 static inline uint32_t fp_f_to_bits(float v) { uint32_t b; __builtin_memcpy(&b, &v, 4); return b; }
+static inline int fp_d_bits_equal(uint64_t a, uint64_t b) {
+    uint64_t a_abs = a & 0x7fffffffffffffffULL;
+    uint64_t b_abs = b & 0x7fffffffffffffffULL;
+    return a == b || (a_abs > 0x7ff0000000000000ULL && b_abs > 0x7ff0000000000000ULL);
+}
+static inline int fp_f_bits_equal(uint32_t a, uint32_t b) {
+    uint32_t a_abs = a & 0x7fffffffU;
+    uint32_t b_abs = b & 0x7fffffffU;
+    return a == b || (a_abs > 0x7f800000U && b_abs > 0x7f800000U);
+}
 static inline _Float16 fp_h_from_bits(uint16_t b) { _Float16 v; __builtin_memcpy(&v, &b, 2); return v; }
 static inline uint16_t fp_h_to_bits(_Float16 v) { uint16_t b; __builtin_memcpy(&b, &v, 2); return b; }
 static const uint32_t fp32_specials[] = {
@@ -1290,14 +1437,47 @@ static const uint64_t fp64_pairs[][2] = {
     {0xfff0000000000000ULL, 0x7ff0000000000000ULL},
     {0x3ff0000000000000ULL, 0x7ff0000000000000ULL}, {0x0000000000000001ULL, 0x8000000000000001ULL}
 };
-";
+static uint64_t grade_seed;
+static int grade_seed_valid;
+static int grade_printf(const char *format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    if (strncmp(format, "FAIL ", 5) == 0 && grade_seed_valid) {
+        char line[4096];
+        int written = vsnprintf(line, sizeof(line), format, arguments);
+        va_end(arguments);
+        if (written < 0) return written;
+        size_t length = (size_t)written;
+        if (length >= sizeof(line)) length = sizeof(line) - 1;
+        if (length > 0 && line[length - 1] == '\n') length--;
+        return fprintf(stdout, "%.*s seed=0x%llx\n", (int)length, line, (unsigned long long)grade_seed);
+    }
+    int result = vfprintf(stdout, format, arguments);
+    va_end(arguments);
+    return result;
+}
+#define printf grade_printf
+"#;
+
+pub(crate) const HOST_FP_PRECHECK: &str = r#"
+    volatile float fp32_min_normal = fp_f_from_bits(0x00800000U);
+    volatile double fp64_min_normal = fp_d_from_bits(0x0010000000000000ULL);
+    volatile float fp32_half = 0.5f;
+    volatile double fp64_half = 0.5;
+    uint32_t fp32_subnormal = fp_f_to_bits(fp32_min_normal * fp32_half);
+    uint64_t fp64_subnormal = fp_d_to_bits(fp64_min_normal * fp64_half);
+    if (fp32_subnormal != 0x00400000U || fp64_subnormal != 0x0008000000000000ULL) {
+        printf("HOSTFP flush-to-zero detected f32=%08x f64=%016llx\n", fp32_subnormal, (unsigned long long)fp64_subnormal);
+        return 97;
+    }
+"#;
 
 pub(crate) const FP_ID_F_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           uint32_t bits = fp32_input(&s, it, 0); float x = fp_f_from_bits(bits);\n\
      \x20           uint32_t w = fp_f_to_bits(fp_id_f(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1307,7 +1487,7 @@ pub(crate) const FP_ID_D_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           uint64_t bits = fp64_input(&s, it, 0); double x = fp_d_from_bits(bits);\n\
      \x20           uint64_t w = fp_d_to_bits(fp_id_d(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1317,7 +1497,7 @@ pub(crate) const FP_UNARY_D_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           uint64_t bits = fp64_input(&s, it, 0); double x = fp_d_from_bits(bits);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1327,7 +1507,7 @@ pub(crate) const FP_UNARY_F_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           uint32_t bits = fp32_input(&s, it, 0); float x = fp_f_from_bits(bits);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1337,7 +1517,7 @@ pub(crate) const FP_SECOND_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
      \x20           uint64_t w = fp_d_to_bits(fp_second(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1347,7 +1527,7 @@ pub(crate) const FP_PICK3_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5)); double c = fp_d_from_bits(fp64_input(&s, it, 9));\n\
      \x20           uint64_t w = fp_d_to_bits(fp_pick3(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1359,7 +1539,7 @@ pub(crate) const FP_GET_F_TMPL: &str = "    {\n\
      \x20           for (int b = 0; b < BUFN; b++) { uint32_t bits = fp32_input(&s, it, b); __builtin_memcpy(&buf[b], &bits, 4); }\n\
      \x20           int i = (int)(xs(&s) % BUFN);\n\
      \x20           uint32_t w = fp_f_to_bits(fp_get(buf, i)); uint32_t g = fp_f_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)i));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%08x g=%08x\\n\", it, i, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%08x g=%08x\\n\", it, i, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1371,7 +1551,7 @@ pub(crate) const FP_GET_D_TMPL: &str = "    {\n\
      \x20           for (int b = 0; b < BUFN; b++) { uint64_t bits = fp64_input(&s, it, b); __builtin_memcpy(&buf[b], &bits, 8); }\n\
      \x20           int i = (int)(xs(&s) % BUFN);\n\
      \x20           uint64_t w = fp_d_to_bits(fp_get_d(buf, i)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)i));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%llx g=%llx\\n\", it, i, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d i=%d w=%llx g=%llx\\n\", it, i, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1393,7 +1573,7 @@ pub(crate) const FP_BITS_GPR_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           uint32_t bits = fp32_input(&s, it, 0);\n\
      \x20           uint32_t w = fp_f_to_bits(fp_bits_gpr(bits)); uint32_t g = fp_f_to_bits($REC((uint64_t)bits));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1406,7 +1586,7 @@ pub(crate) const FP_BIN_F_TMPL: &str = "    {\n\
      \x20           if (nn > 1) continue;\n\
      \x20           float a = fp_f_from_bits(ba); float b = fp_f_from_bits(bb);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1419,7 +1599,7 @@ pub(crate) const FP_BIN_D_TMPL: &str = "    {\n\
      \x20           if (nn > 1) continue;\n\
      \x20           double a = fp_d_from_bits(ba); double b = fp_d_from_bits(bb);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1429,7 +1609,7 @@ pub(crate) const FP_AXPY_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float x = fp_f_from_bits(fp32_input(&s, it, 5)); float y = fp_f_from_bits(fp32_input(&s, it, 9));\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, x, y)); uint32_t g = fp_f_to_bits($REC(a, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1450,7 +1630,7 @@ pub(crate) const FP_FMA_F_TMPL: &str = "    {\n\
      \x20       for (int t = 0; t < ntf; t++) {\n\
      \x20           float a = fp_f_from_bits(fma_f_triples[t][0]); float b = fp_f_from_bits(fma_f_triples[t][1]); float c = fp_f_from_bits(fma_f_triples[t][2]);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c)); uint32_t g = fp_f_to_bits($REC(a, b, c));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME triple=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME triple=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           uint32_t ba = fp32_input(&s, it, 0); uint32_t bb = fp32_input(&s, it, 5); uint32_t bc = fp32_input(&s, it, 9);\n\
@@ -1458,7 +1638,7 @@ pub(crate) const FP_FMA_F_TMPL: &str = "    {\n\
      \x20           if (nn > 1) continue;\n\
      \x20           float a = fp_f_from_bits(ba); float b = fp_f_from_bits(bb); float c = fp_f_from_bits(bc);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c)); uint32_t g = fp_f_to_bits($REC(a, b, c));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1479,7 +1659,7 @@ pub(crate) const FP_FMA_D_TMPL: &str = "    {\n\
      \x20       for (int t = 0; t < ntd; t++) {\n\
      \x20           double a = fp_d_from_bits(fma_d_triples[t][0]); double b = fp_d_from_bits(fma_d_triples[t][1]); double c = fp_d_from_bits(fma_d_triples[t][2]);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME triple=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME triple=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           uint64_t ba = fp64_input(&s, it, 0); uint64_t bb = fp64_input(&s, it, 5); uint64_t bc = fp64_input(&s, it, 9);\n\
@@ -1487,7 +1667,7 @@ pub(crate) const FP_FMA_D_TMPL: &str = "    {\n\
      \x20           if (nn > 1) continue;\n\
      \x20           double a = fp_d_from_bits(ba); double b = fp_d_from_bits(bb); double c = fp_d_from_bits(bc);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c)); uint64_t g = fp_d_to_bits($REC(a, b, c));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1550,12 +1730,12 @@ pub(crate) const FP_SEL2_F_TMPL: &str = "    {\n\
      \x20       for (int t = 0; t < np; t++) {\n\
      \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b)); uint32_t g = fp_f_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1566,12 +1746,12 @@ pub(crate) const FP_SEL2_D_TMPL: &str = "    {\n\
      \x20       for (int t = 0; t < np; t++) {\n\
      \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b)); uint64_t g = fp_d_to_bits($REC(a, b));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1583,13 +1763,13 @@ pub(crate) const FP_SEL4_F_TMPL: &str = "    {\n\
      \x20           float a = fp_f_from_bits(fp32_pairs[t][0]); float b = fp_f_from_bits(fp32_pairs[t][1]);\n\
      \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
      \x20           float x = fp_f_from_bits(fp32_input(&s, it, 9)); float y = fp_f_from_bits(fp32_input(&s, it, 2));\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1601,13 +1781,13 @@ pub(crate) const FP_SEL4_D_TMPL: &str = "    {\n\
      \x20           double a = fp_d_from_bits(fp64_pairs[t][0]); double b = fp_d_from_bits(fp64_pairs[t][1]);\n\
      \x20           double x = fp_d_from_bits(0x0000000000000000ULL); double y = fp_d_from_bits(0x8000000000000000ULL);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
      \x20           double x = fp_d_from_bits(fp64_input(&s, it, 9)); double y = fp_d_from_bits(fp64_input(&s, it, 2));\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1620,14 +1800,14 @@ pub(crate) const FP_SEL6_F_TMPL: &str = "    {\n\
      \x20           float c = fp_f_from_bits(fp32_pairs[(t + 3) % np][0]); float d = fp_f_from_bits(fp32_pairs[(t + 3) % np][1]);\n\
      \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
      \x20           float c = fp_f_from_bits(fp32_input(&s, it, 9)); float d = fp_f_from_bits(fp32_input(&s, it, 2));\n\
      \x20           float x = fp_f_from_bits(fp32_input(&s, it, 7)); float y = fp_f_from_bits(fp32_input(&s, it, 11));\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1640,14 +1820,14 @@ pub(crate) const FP_SEL6_D_TMPL: &str = "    {\n\
      \x20           double c = fp_d_from_bits(fp64_pairs[(t + 3) % np][0]); double d = fp_d_from_bits(fp64_pairs[(t + 3) % np][1]);\n\
      \x20           double x = fp_d_from_bits(0x0000000000000000ULL); double y = fp_d_from_bits(0x8000000000000000ULL);\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c, d, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, c, d, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%llx g=%llx\\n\", t, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 5));\n\
      \x20           double c = fp_d_from_bits(fp64_input(&s, it, 9)); double d = fp_d_from_bits(fp64_input(&s, it, 2));\n\
      \x20           double x = fp_d_from_bits(fp64_input(&s, it, 7)); double y = fp_d_from_bits(fp64_input(&s, it, 11));\n\
      \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c, d, x, y)); uint64_t g = fp_d_to_bits($REC(a, b, c, d, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1661,7 +1841,7 @@ pub(crate) const FP_SEL8_F_TMPL: &str = "    {\n\
      \x20           float e = fp_f_from_bits(fp32_pairs[(t + 5) % np][0]); float f = fp_f_from_bits(fp32_pairs[(t + 5) % np][1]);\n\
      \x20           float x = fp_f_from_bits(0x00000000U); float y = fp_f_from_bits(0x80000000U);\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, e, f, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, e, f, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME pair=%d w=%08x g=%08x\\n\", t, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       for (int it = 0; ok && it < ITER; it++) {\n\
      \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 5));\n\
@@ -1669,10 +1849,126 @@ pub(crate) const FP_SEL8_F_TMPL: &str = "    {\n\
      \x20           float e = fp_f_from_bits(fp32_input(&s, it, 7)); float f = fp_f_from_bits(fp32_input(&s, it, 11));\n\
      \x20           float x = fp_f_from_bits(fp32_input(&s, it, 13)); float y = fp_f_from_bits(fp32_input(&s, it, 3));\n\
      \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, e, f, x, y)); uint32_t g = fp_f_to_bits($REC(a, b, c, d, e, f, x, y));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
+
+pub(crate) const FP_NINTH_F_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           float a = fp_f_from_bits(fp32_input(&s, it, 0)); float b = fp_f_from_bits(fp32_input(&s, it, 1));\n\
+     \x20           float c = fp_f_from_bits(fp32_input(&s, it, 2)); float d = fp_f_from_bits(fp32_input(&s, it, 3));\n\
+     \x20           float e = fp_f_from_bits(fp32_input(&s, it, 4)); float f = fp_f_from_bits(fp32_input(&s, it, 5));\n\
+     \x20           float g = fp_f_from_bits(fp32_input(&s, it, 6)); float h = fp_f_from_bits(fp32_input(&s, it, 7));\n\
+     \x20           float i = fp_f_from_bits(fp32_input(&s, it, 8));\n\
+     \x20           uint32_t w = fp_f_to_bits($NAME(a, b, c, d, e, f, g, h, i)); uint32_t got = fp_f_to_bits($REC(a, b, c, d, e, f, g, h, i));\n\
+     \x20           if (!fp_f_bits_equal(w, got)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, got); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+pub(crate) const FP_NINTH_D_TMPL: &str = "    {\n\
+     \x20       uint64_t s = $SEED; int ok = 1;\n\
+     \x20       for (int it = 0; it < ITER; it++) {\n\
+     \x20           double a = fp_d_from_bits(fp64_input(&s, it, 0)); double b = fp_d_from_bits(fp64_input(&s, it, 1));\n\
+     \x20           double c = fp_d_from_bits(fp64_input(&s, it, 2)); double d = fp_d_from_bits(fp64_input(&s, it, 3));\n\
+     \x20           double e = fp_d_from_bits(fp64_input(&s, it, 4)); double f = fp_d_from_bits(fp64_input(&s, it, 5));\n\
+     \x20           double g = fp_d_from_bits(fp64_input(&s, it, 6)); double h = fp_d_from_bits(fp64_input(&s, it, 7));\n\
+     \x20           double i = fp_d_from_bits(fp64_input(&s, it, 8));\n\
+     \x20           uint64_t w = fp_d_to_bits($NAME(a, b, c, d, e, f, g, h, i)); uint64_t got = fp_d_to_bits($REC(a, b, c, d, e, f, g, h, i));\n\
+     \x20           if (!fp_d_bits_equal(w, got)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)got); ok = 0; break; }\n\
+     \x20       }\n\
+     \x20       if (ok) passed++; else fails++;\n\
+     \x20   }\n";
+
+pub(crate) const FP_MIXED_I_THEN_F_TMPL: &str = r#"    {
+        uint64_t s = $SEED; int ok = 1;
+        for (int it = 0; it < ITER; it++) {
+            uint64_t a = xs(&s), b = xs(&s), c = xs(&s), d = xs(&s), e = xs(&s), f = xs(&s), g = xs(&s), h = xs(&s);
+            uint64_t i = 0x100000000ULL | (xs(&s) & 0xffffULL);
+            float p = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float q = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float r = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float s_arg = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float t = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float u = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float v = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float w = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float x = 1.0f + (float)(xs(&s) % 1000) * 0.25f;
+            uint32_t expected = fp_f_to_bits($NAME(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            uint32_t recovered = fp_f_to_bits($REC(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            if (!fp_f_bits_equal(expected, recovered)) { printf("FAIL $OPT $NAME it=%d stack_i=%llx stack_f=%08x w=%08x g=%08x\n", it, (unsigned long long)i, fp_f_to_bits(x), expected, recovered); ok = 0; break; }
+        }
+        if (ok) passed++; else fails++;
+    }
+"#;
+
+pub(crate) const FP_MIXED_I_THEN_D_TMPL: &str = r#"    {
+        uint64_t s = $SEED; int ok = 1;
+        for (int it = 0; it < ITER; it++) {
+            uint64_t a = xs(&s), b = xs(&s), c = xs(&s), d = xs(&s), e = xs(&s), f = xs(&s), g = xs(&s), h = xs(&s);
+            uint64_t i = 0x100000000ULL | (xs(&s) & 0xffffULL);
+            double p = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double q = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double r = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double s_arg = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double t = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double u = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double v = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double w = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double x = 1.0 + (double)(xs(&s) % 1000) * 0.25;
+            uint64_t expected = fp_d_to_bits($NAME(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            uint64_t recovered = fp_d_to_bits($REC(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            if (!fp_d_bits_equal(expected, recovered)) { printf("FAIL $OPT $NAME it=%d stack_i=%llx stack_d=%llx w=%llx g=%llx\n", it, (unsigned long long)i, (unsigned long long)fp_d_to_bits(x), (unsigned long long)expected, (unsigned long long)recovered); ok = 0; break; }
+        }
+        if (ok) passed++; else fails++;
+    }
+"#;
+
+pub(crate) const FP_MIXED_F_THEN_I_TMPL: &str = r#"    {
+        uint64_t s = $SEED; int ok = 1;
+        for (int it = 0; it < ITER; it++) {
+            float a = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float b = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float c = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float d = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float e = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float f = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float g = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float h = (float)((int)(xs(&s) % 2001) - 1000) * 0.25f;
+            float i = 1.0f + (float)(xs(&s) % 1000) * 0.25f;
+            uint64_t p = xs(&s), q = xs(&s), r = xs(&s), s_arg = xs(&s), t = xs(&s), u = xs(&s), v = xs(&s), w = xs(&s);
+            uint64_t x = 0x100000000ULL | (xs(&s) & 0xffffULL);
+            uint32_t expected = fp_f_to_bits($NAME(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            uint32_t recovered = fp_f_to_bits($REC(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            if (!fp_f_bits_equal(expected, recovered)) { printf("FAIL $OPT $NAME it=%d stack_f=%08x stack_i=%llx w=%08x g=%08x\n", it, fp_f_to_bits(i), (unsigned long long)x, expected, recovered); ok = 0; break; }
+        }
+        if (ok) passed++; else fails++;
+    }
+"#;
+
+pub(crate) const FP_MIXED_D_THEN_I_TMPL: &str = r#"    {
+        uint64_t s = $SEED; int ok = 1;
+        for (int it = 0; it < ITER; it++) {
+            double a = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double b = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double c = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double d = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double e = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double f = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double g = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double h = (double)((int)(xs(&s) % 2001) - 1000) * 0.25;
+            double i = 1.0 + (double)(xs(&s) % 1000) * 0.25;
+            uint64_t p = xs(&s), q = xs(&s), r = xs(&s), s_arg = xs(&s), t = xs(&s), u = xs(&s), v = xs(&s), w = xs(&s);
+            uint64_t x = 0x100000000ULL | (xs(&s) & 0xffffULL);
+            uint64_t expected = fp_d_to_bits($NAME(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            uint64_t recovered = fp_d_to_bits($REC(a, b, c, d, e, f, g, h, i, p, q, r, s_arg, t, u, v, w, x));
+            if (!fp_d_bits_equal(expected, recovered)) { printf("FAIL $OPT $NAME it=%d stack_d=%llx stack_i=%llx w=%llx g=%llx\n", it, (unsigned long long)fp_d_to_bits(i), (unsigned long long)x, (unsigned long long)expected, (unsigned long long)recovered); ok = 0; break; }
+        }
+        if (ok) passed++; else fails++;
+    }
+"#;
 
 pub(crate) const FP_TO_I32_F_TMPL: &str = "    {\n\
      \x20       uint64_t s = $SEED; int ok = 1;\n\
@@ -1696,12 +1992,12 @@ pub(crate) const FP_TO_U64_D_TMPL: &str = "    {\n\
 
 pub(crate) const FP_CONST_F_TMPL: &str = "    {\n\
      \x20       uint32_t w = fp_f_to_bits($NAME()); uint32_t g = fp_f_to_bits($REC());\n\
-     \x20       if (w != g) { printf(\"FAIL $OPT $NAME w=%08x g=%08x\\n\", w, g); fails++; } else { passed++; }\n\
+     \x20       if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME w=%08x g=%08x\\n\", w, g); fails++; } else { passed++; }\n\
      \x20   }\n";
 
 pub(crate) const FP_CONST_D_TMPL: &str = "    {\n\
      \x20       uint64_t w = fp_d_to_bits($NAME()); uint64_t g = fp_d_to_bits($REC());\n\
-     \x20       if (w != g) { printf(\"FAIL $OPT $NAME w=%llx g=%llx\\n\", (unsigned long long)w, (unsigned long long)g); fails++; } else { passed++; }\n\
+     \x20       if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME w=%llx g=%llx\\n\", (unsigned long long)w, (unsigned long long)g); fails++; } else { passed++; }\n\
      \x20   }\n";
 
 pub(crate) const FP_FROM_I32_D_TMPL: &str = "    {\n\
@@ -1710,7 +2006,7 @@ pub(crate) const FP_FROM_I32_D_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           int count = (int)(sizeof(directed) / sizeof(directed[0])); int x = it < count ? directed[it] : (int)(uint32_t)xs(&s);\n\
      \x20           uint64_t w = fp_d_to_bits(fp_from_int(x)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uint32_t)x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d x=%d w=%llx g=%llx\\n\", it, x, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d x=%d w=%llx g=%llx\\n\", it, x, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1721,7 +2017,7 @@ pub(crate) const FP_FROM_U32_F_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           int count = (int)(sizeof(directed) / sizeof(directed[0])); uint32_t x = it < count ? directed[it] : (uint32_t)xs(&s);\n\
      \x20           uint32_t w = fp_f_to_bits(fp_from_uint(x)); uint32_t g = fp_f_to_bits($REC((uint64_t)x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d x=%u w=%08x g=%08x\\n\", it, x, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d x=%u w=%08x g=%08x\\n\", it, x, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1731,7 +2027,7 @@ pub(crate) const FP_WIDEN_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           float x = fp_f_from_bits(fp32_input(&s, it, 0));\n\
      \x20           uint64_t w = fp_d_to_bits(fp_widen(x)); uint64_t g = fp_d_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%llx g=%llx\\n\", it, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1741,7 +2037,7 @@ pub(crate) const FP_NARROW_TMPL: &str = "    {\n\
      \x20       for (int it = 0; it < ITER; it++) {\n\
      \x20           double x = fp_d_from_bits(fp64_narrow_input(&s, it));\n\
      \x20           uint32_t w = fp_f_to_bits(fp_narrow(x)); uint32_t g = fp_f_to_bits($REC(x));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
+     \x20           if (!fp_f_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d w=%08x g=%08x\\n\", it, w, g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1753,7 +2049,7 @@ pub(crate) const FP_IAVG_TMPL: &str = "    {\n\
      \x20           for (int b = 0; b < BUFN; b++) buf[b] = (int)(uint32_t)xs(&s);\n\
      \x20           int n = it <= BUFN ? it : (int)(xs(&s) % (BUFN + 1));\n\
      \x20           uint64_t w = fp_d_to_bits(fp_iavg(buf, n)); uint64_t g = fp_d_to_bits($REC((uint64_t)(uintptr_t)buf, (uint64_t)(uint32_t)n));\n\
-     \x20           if (w != g) { printf(\"FAIL $OPT $NAME it=%d n=%d w=%llx g=%llx\\n\", it, n, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
+     \x20           if (!fp_d_bits_equal(w, g)) { printf(\"FAIL $OPT $NAME it=%d n=%d w=%llx g=%llx\\n\", it, n, (unsigned long long)w, (unsigned long long)g); ok = 0; break; }\n\
      \x20       }\n\
      \x20       if (ok) passed++; else fails++;\n\
      \x20   }\n";
@@ -1961,6 +2257,12 @@ pub(crate) fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Opti
         "fc_selor3_f" | "fc_seland3_f" | "fc_seland3_mix_f" | "fb_and3_f" => {
             fill_template(FP_SEL8_F_TMPL, opt, name, rec, seed)
         }
+        "fp_ninth_f" => fill_template(FP_NINTH_F_TMPL, opt, name, rec, seed),
+        "fp_ninth_d" => fill_template(FP_NINTH_D_TMPL, opt, name, rec, seed),
+        "fp_mixed_i_then_f" => fill_template(FP_MIXED_I_THEN_F_TMPL, opt, name, rec, seed),
+        "fp_mixed_i_then_d" => fill_template(FP_MIXED_I_THEN_D_TMPL, opt, name, rec, seed),
+        "fp_mixed_f_then_i" => fill_template(FP_MIXED_F_THEN_I_TMPL, opt, name, rec, seed),
+        "fp_mixed_d_then_i" => fill_template(FP_MIXED_D_THEN_I_TMPL, opt, name, rec, seed),
         "fc_tmin_f" | "fc_tmax_f" | "fc_pickeq_f" => {
             fill_template(FP_SEL2_F_TMPL, opt, name, rec, seed)
         }
@@ -2437,7 +2739,16 @@ pub(crate) fn compare_block(opt: &str, name: &str, rec: &str, seed: u64) -> Opti
         ),
         _ => return None,
     };
-    Some(block)
+    let seeded: bool = block.contains("uint64_t s =");
+    let block: String = block.replace(
+        "; int ok = 1;",
+        "; grade_seed = s; grade_seed_valid = 1; int ok = 1;",
+    );
+    if seeded {
+        Some(block)
+    } else {
+        Some(format!("    grade_seed_valid = 0;\n{block}"))
+    }
 }
 
 pub(crate) fn ground_truth_source() -> String {

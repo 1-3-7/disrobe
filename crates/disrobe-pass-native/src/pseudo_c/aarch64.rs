@@ -27,6 +27,17 @@ const MAX_SWITCH_CASES: usize = 4096;
 const MAX_SWITCH_TABLE_BYTES: usize = MAX_SWITCH_CASES * 8;
 const MAX_SWITCH_SLICE_INSTRUCTIONS: usize = 16;
 
+pub const SCALAR_FP_LOWERED_MNEMONICS: &[&str] = &[
+    "fadd", "fsub", "fmul", "fdiv", "fmaxnm", "fminnm", "fmax", "fmin", "fmadd", "fmsub", "fnmadd",
+    "fnmsub", "fneg", "fabs", "fsqrt", "fabd", "fnmul", "scvtf", "ucvtf", "fcvtzs", "fcvtzu",
+    "fcvtns", "fcvtnu", "fcvtms", "fcvtmu", "fcvtps", "fcvtpu", "fcvtas", "fcvtau", "fcvt",
+    "frintm", "frintp", "frintz", "frintn", "frinta", "frintx", "frinti", "movi", "fmov", "ldr",
+    "str", "ldur", "stur", "ldp", "stp", "fcmp", "fcmpe", "fccmp", "fccmpe", "fcsel",
+];
+
+const SCALAR_FP_REJECTED_MNEMONICS: &[&str] =
+    &["frint32z", "frint32x", "frint64z", "frint64x", "fjcvtzs"];
+
 const CALL_ARG_ORDER: [Reg; 16] = [
     Reg::Rax,
     Reg::A64X1,
@@ -3013,29 +3024,6 @@ fn block_contains_switch(body: &[Node]) -> bool {
     })
 }
 
-fn is_incoming_stack_slot(reg: Reg) -> bool {
-    matches!(
-        reg,
-        Reg::A64Stack0
-            | Reg::A64Stack1
-            | Reg::A64Stack2
-            | Reg::A64Stack3
-            | Reg::A64Stack4
-            | Reg::A64Stack5
-            | Reg::A64Stack6
-            | Reg::A64Stack7
-    )
-}
-
-fn reads_incoming_stack_floating_argument(items: &[Item]) -> bool {
-    items.iter().any(|item: &Item| {
-        matches!(
-            &item.kind,
-            ItemKind::Stmt(Stmt::GprToXmm { src, .. }) if is_incoming_stack_slot(src.reg)
-        )
-    })
-}
-
 fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body, Abi::Aapcs64)?;
     let Some(highest): Option<usize> = inferred
@@ -3069,7 +3057,6 @@ fn finish(
     let has_scalar_fp: bool = items
         .iter()
         .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));
-    let reads_stack_floating_argument: bool = reads_incoming_stack_floating_argument(items);
     let mut structured: Structured =
         match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
@@ -3093,11 +3080,6 @@ fn finish(
     } else {
         Vec::new()
     };
-    if reads_stack_floating_argument && fp_args.len() < FP_ARG_ORDER.len() {
-        return Err(reject(
-            "aapcs64 stack floating parameters require a complete v0-v7 argument prefix",
-        ));
-    }
     let ret: FnReturn = if has_scalar_fp {
         return_channel::infer_scalar_return(&structured.body)?
     } else {
@@ -3112,11 +3094,25 @@ fn finish(
         FnReturn::Fp(_) | FnReturn::Void | FnReturn::Vec(_) => None,
     };
     let mut params: Vec<Reg> = infer_params(&structured.body, Abi::Aapcs64)?;
+    let stack_fp_args: Vec<(u8, Reg, FpWidth)> =
+        super::infer_stack_fp_params(&structured.body, Abi::Aapcs64)?;
+    if !stack_fp_args.is_empty() && !context.vec_abi.params.is_empty() {
+        return Err(reject(
+            "aapcs64 stack floating parameters conflict with recovered vector parameters",
+        ));
+    }
+    params.retain(|reg: &Reg| {
+        !stack_fp_args
+            .iter()
+            .any(|(_, stack_reg, _): &(u8, Reg, FpWidth)| stack_reg == reg)
+    });
+    super::validate_aapcs64_stack_fp_prefix(&fp_args, &params, &stack_fp_args)?;
     if let Some(plan) = &sret_plan {
         params.retain(|reg: &Reg| *reg != plan.ptr);
     }
     let signature: FnSignature = FnSignature {
         fp: fp_args,
+        stack_fp: stack_fp_args,
         int: super::wide_int_signature(&params),
         vec: context.vec_abi.params.clone(),
         ret,
@@ -4849,6 +4845,11 @@ fn try_lower_scalar_fp(
     image: &ImageContext<'_, '_>,
     javascript_flags_dead: bool,
 ) -> Result<Option<Vec<Stmt>>> {
+    if !SCALAR_FP_LOWERED_MNEMONICS.contains(&insn.mnemonic.as_str())
+        && !SCALAR_FP_REJECTED_MNEMONICS.contains(&insn.mnemonic.as_str())
+    {
+        return Ok(None);
+    }
     let operands: Vec<&str> = split_operands(&insn.operands);
     match insn.mnemonic.as_str() {
         "fadd" | "fsub" | "fmul" | "fdiv" if has_scalar_fp_destination(&operands) => {

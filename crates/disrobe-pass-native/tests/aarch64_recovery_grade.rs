@@ -7,12 +7,15 @@
     clippy::too_many_lines
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use disrobe_pass_native::{LeafRecovery, recover_aarch64_function};
+use disrobe_pass_native::{
+    AARCH64_SCALAR_FP_LOWERED_MNEMONICS, Arch, DisasmInsn, LeafRecovery,
+    PseudoScalarType as ScalarType, disassemble, recover_aarch64_function,
+};
 
 #[path = "support/aarch64_callsite_cases.rs"]
 mod aarch64_callsite_cases;
@@ -20,9 +23,9 @@ mod aarch64_callsite_cases;
 mod battery;
 
 use battery::{
-    CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, ORACLE_FLAGS, build_ground_truth_object, cc,
-    compare_block, expected_arity, fp_expectation, rename_recovered, run_with_watchdog,
-    shared_prelude,
+    CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, HOST_FP_PRECHECK, ORACLE_FLAGS,
+    build_ground_truth_object, cc, compare_block, expected_arity, fp_expectation, rename_recovered,
+    run_with_watchdog, shared_prelude,
 };
 
 const INCREMENT_TWO_FP_FUNCTIONS: &[&str] = &[
@@ -45,6 +48,61 @@ const CORPUS_OPTIMIZATION_LEVELS: &[&str] = &["O0", "O1", "O2", "O3", "Os"];
 const INCREMENT_TWO_EXPECTED_CASES: usize = 70;
 const INCREMENT_ONE_EXPECTED_FP_CASES: usize = 32;
 const EXPECTED_INTEGER_CASES: usize = 295;
+const STACK_FP_FUNCTIONS: &[&str] = &[
+    "fp_ninth_f",
+    "fp_ninth_d",
+    "fp_mixed_i_then_f",
+    "fp_mixed_i_then_d",
+    "fp_mixed_f_then_i",
+    "fp_mixed_d_then_i",
+];
+const STACK_FP_EXPECTED_CASES: usize = 30;
+const UNGRADED_SCALAR_FP_MNEMONICS: &[(&str, &str)] = &[
+    (
+        "fmax",
+        "portable C maximum follows fmaxnm semantics and cannot force fmax without target assembly",
+    ),
+    (
+        "fmin",
+        "portable C minimum follows fminnm semantics and cannot force fmin without target assembly",
+    ),
+    (
+        "fcvtns",
+        "portable C has no nearest-even saturating signed conversion",
+    ),
+    (
+        "fcvtnu",
+        "portable C has no nearest-even saturating unsigned conversion",
+    ),
+    (
+        "frintn",
+        "the corpus compiler selects an equivalent rounding instruction for portable nearest-even source",
+    ),
+    (
+        "frinti",
+        "frinti depends on runtime FPCR rounding state outside the default-mode grade",
+    ),
+    (
+        "ldur",
+        "portable C does not distinguish scaled and unscaled load encodings",
+    ),
+    (
+        "stur",
+        "portable C does not distinguish scaled and unscaled store encodings",
+    ),
+    (
+        "fcmpe",
+        "fcmpe differs from fcmp only through floating exception state outside the grade",
+    ),
+    (
+        "fccmpe",
+        "fccmpe differs from fccmp only through floating exception state outside the grade",
+    ),
+];
+
+fn is_stack_fp(name: &str) -> bool {
+    STACK_FP_FUNCTIONS.contains(&name)
+}
 
 fn is_increment_two_fp(name: &str) -> bool {
     INCREMENT_TWO_FP_FUNCTIONS.contains(&name)
@@ -420,6 +478,22 @@ fn corpus_grade_report() {
             );
         }
     }
+
+    let stack_fp_corpus_cases: usize = CASES
+        .iter()
+        .filter(|(_, name, _): &&(&str, &str, &[u8])| is_stack_fp(name))
+        .count();
+    assert_eq!(stack_fp_corpus_cases, STACK_FP_EXPECTED_CASES);
+    for required_opt in CORPUS_OPTIMIZATION_LEVELS {
+        for required_name in STACK_FP_FUNCTIONS {
+            assert!(
+                CASES.iter().any(|(opt, name, _): &(&str, &str, &[u8])| {
+                    opt == required_opt && name == required_name
+                }),
+                "required stack floating case `{required_opt} {required_name}` is absent from the generated corpus"
+            );
+        }
+    }
     let increment_four_corpus_cases: usize = CASES
         .iter()
         .filter(|(_, name, _): &&(&str, &str, &[u8])| is_increment_four_fp(name))
@@ -776,6 +850,9 @@ fn corpus_grade_report() {
     let mut increment_nineteen_driven: usize = 0;
     let mut increment_twenty_recovered: usize = 0;
     let mut increment_twenty_driven: usize = 0;
+    let mut stack_fp_recovered: usize = 0;
+    let mut stack_fp_driven: usize = 0;
+    let mut rejections: Vec<(String, String, String)> = Vec::new();
     let mut skips: Vec<(String, String, String)> = Vec::new();
     let mut decls: String = String::new();
     let mut blocks: String = String::new();
@@ -801,9 +878,11 @@ fn corpus_grade_report() {
         let required_increment_eighteen: bool = is_increment_eighteen(name);
         let required_increment_nineteen: bool = is_increment_nineteen_fp(name);
         let required_increment_twenty: bool = is_increment_twenty(name);
+        let required_stack_fp: bool = is_stack_fp(name);
         let recovery: LeafRecovery = match recover_aarch64_function(bytes, 0) {
             Ok(value) => value,
             Err(error) => {
+                rejections.push(((*opt).to_owned(), (*name).to_owned(), error.to_string()));
                 if required_increment_two {
                     skips.push((
                         (*opt).to_owned(),
@@ -872,6 +951,9 @@ fn corpus_grade_report() {
         if required_increment_twenty {
             increment_twenty_recovered += 1;
         }
+        if required_stack_fp {
+            stack_fp_recovered += 1;
+        }
 
         let expected_fp: Option<FpExpectation> = fp_expectation(name);
         if let Some(expectation) = expected_fp {
@@ -909,10 +991,12 @@ fn corpus_grade_report() {
                 ));
                 continue;
             };
-            if !required_increment_twenty
-                && (recovery.returns_fp.is_some()
-                    || !recovery.signature.parameter_types().is_empty())
-            {
+            let has_fp_parameter: bool = recovery
+                .signature
+                .parameter_types()
+                .iter()
+                .any(|parameter: &ScalarType| *parameter != ScalarType::Int);
+            if !required_increment_twenty && (recovery.returns_fp.is_some() || has_fp_parameter) {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
@@ -1021,6 +1105,9 @@ fn corpus_grade_report() {
         if required_increment_twenty {
             increment_twenty_driven += 1;
         }
+        if required_stack_fp {
+            stack_fp_driven += 1;
+        }
     }
 
     assert!(
@@ -1040,6 +1127,7 @@ fn corpus_grade_report() {
          static long long fails = 0;\n\
          {decls}\n\
          int main(void) {{\n\
+         {HOST_FP_PRECHECK}\
          {blocks}\
          \x20   printf(\"GRADEDONE passed=%lld fails=%lld\\n\", passed, fails);\n\
          \x20   return 0;\n\
@@ -1122,6 +1210,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_sixteen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_seventeen_recovered))
         .and_then(|value: usize| value.checked_sub(increment_nineteen_recovered))
+        .and_then(|value: usize| value.checked_sub(stack_fp_recovered))
         .expect("later-increment fp recovery counts cannot exceed the fp total");
     let increment_one_fp_driven: usize = fp_driven
         .checked_sub(increment_two_driven)
@@ -1141,6 +1230,7 @@ fn corpus_grade_report() {
         .and_then(|value: usize| value.checked_sub(increment_sixteen_driven))
         .and_then(|value: usize| value.checked_sub(increment_seventeen_driven))
         .and_then(|value: usize| value.checked_sub(increment_nineteen_driven))
+        .and_then(|value: usize| value.checked_sub(stack_fp_driven))
         .expect("later-increment fp driven counts cannot exceed the fp total");
     let integer_recovered: usize = recovered
         .checked_sub(fp_recovered)
@@ -1164,6 +1254,8 @@ fn corpus_grade_report() {
     eprintln!("increment-1 fp graded    {increment_one_fp_driven}");
     eprintln!("integer recovered    {integer_recovered}");
     eprintln!("integer graded       {integer_driven}");
+    eprintln!("stack fp recovered  {stack_fp_recovered}/{STACK_FP_EXPECTED_CASES}");
+    eprintln!("stack fp graded     {stack_fp_driven}/{STACK_FP_EXPECTED_CASES}");
     eprintln!("increment-2 recovered {increment_two_recovered}/{INCREMENT_TWO_EXPECTED_CASES}");
     eprintln!("increment-2 graded    {increment_two_driven}/{INCREMENT_TWO_EXPECTED_CASES}");
     eprintln!("increment-3 recovered {increment_three_recovered}/{INCREMENT_THREE_EXPECTED_CASES}");
@@ -1244,6 +1336,13 @@ fn corpus_grade_report() {
     );
     eprintln!("skipped-from-grading {}", skips.len());
 
+    if !rejections.is_empty() {
+        eprintln!("---- rejected before grading ----");
+        for (opt, name, reason) in &rejections {
+            eprintln!("  REJECT {opt} {name}: {reason}");
+        }
+    }
+
     if !wrong.is_empty() {
         eprintln!("---- recovered-but-wrong (CORRECTNESS BUGS) ----");
         for (opt, name, detail) in &wrong {
@@ -1286,6 +1385,8 @@ fn corpus_grade_report() {
         increment_one_fp_driven, INCREMENT_ONE_EXPECTED_FP_CASES,
         "all increment-1 fp cases must remain graded"
     );
+    assert_eq!(stack_fp_recovered, STACK_FP_EXPECTED_CASES);
+    assert_eq!(stack_fp_driven, STACK_FP_EXPECTED_CASES);
     assert_eq!(
         previous_integer_recovered, EXPECTED_INTEGER_CASES,
         "all previously recovered integer cases must remain recovered"
@@ -1450,6 +1551,179 @@ fn corpus_grade_report() {
         skips.is_empty(),
         "every recovered case must have a runnable, signature-matched driver"
     );
+}
+
+fn corrupt_recovered_fp_body(source: &str, symbol: &str, mask: u32) -> String {
+    let function_start: usize = source
+        .find(&format!("{symbol}("))
+        .expect("recovered production function name");
+    let return_start: usize = function_start
+        .checked_add(
+            source[function_start..]
+                .find("return ")
+                .expect("recovered production return")
+                .checked_add("return ".len())
+                .expect("recovered return offset"),
+        )
+        .expect("recovered return position");
+    let expression_end: usize = return_start
+        .checked_add(
+            source[return_start..]
+                .find(';')
+                .expect("recovered production return terminator"),
+        )
+        .expect("recovered expression offset");
+    let expression: &str = &source[return_start..expression_end];
+    let replacement: String =
+        format!("fp_f_from_bits(fp_f_to_bits(({expression})) ^ 0x{mask:08x}U)");
+    let mut corrupted: String = source.to_owned();
+    corrupted.replace_range(return_start..expression_end, &replacement);
+    corrupted
+}
+
+#[test]
+fn floating_grade_rejects_corrupted_production_bodies_and_canonicalizes_only_nan_results() {
+    let compiler: String = cc().expect("floating comparison test requires a host C compiler");
+    let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
+    let source_path: PathBuf = dir.path().join("fp_compare.c");
+    let executable_path: PathBuf = dir.path().join("fp_compare.exe");
+    let (_, _, bytes): &(&str, &str, &[u8]) = CASES
+        .iter()
+        .find(|(optimization, name, _)| *optimization == "O0" && *name == "fp_id_f")
+        .expect("committed fp_id_f production corpus case");
+    let recovery: LeafRecovery =
+        recover_aarch64_function(bytes, 0).expect("recover production fp_id_f corpus case");
+    let recovered_sign: String = corrupt_recovered_fp_body(
+        &rename_recovered(&recovery.source, "corrupt_sign"),
+        "corrupt_sign",
+        0x8000_0000,
+    );
+    let recovered_mantissa: String = corrupt_recovered_fp_body(
+        &rename_recovered(&recovery.source, "corrupt_mantissa"),
+        "corrupt_mantissa",
+        0x0000_0001,
+    );
+    let recovered_exponent: String = corrupt_recovered_fp_body(
+        &rename_recovered(&recovery.source, "corrupt_exponent"),
+        "corrupt_exponent",
+        0x0080_0000,
+    );
+    let sign_block: String = compare_block("O0", "fp_id_f", "corrupt_sign", 1)
+        .expect("production sign corruption driver");
+    let mantissa_block: String = compare_block("O0", "fp_id_f", "corrupt_mantissa", 2)
+        .expect("production mantissa corruption driver");
+    let exponent_block: String = compare_block("O0", "fp_id_f", "corrupt_exponent", 3)
+        .expect("production exponent corruption driver");
+    let source: String = format!(
+        "#include <stdint.h>\n#include <stdio.h>\n\
+         #define ITER 400\n\
+         static uint64_t xs(uint64_t *state) {{ *state ^= *state << 13; *state ^= *state >> 7; *state ^= *state << 17; return *state; }}\n\
+         {FP_DRIVER_HELPERS}\n\
+         {ground_truth}\n\
+         {recovered_sign}\n\
+         {recovered_mantissa}\n\
+         {recovered_exponent}\n\
+         static long long passed = 0;\n\
+         static long long fails = 0;\n\
+         int main(void) {{\n\
+         {HOST_FP_PRECHECK}\
+             if (!fp_f_bits_equal(0x7fc00001U, 0xff800001U)) return 1;\n\
+             if (!fp_d_bits_equal(0x7ff8000000000001ULL, 0xfff0000000000001ULL)) return 2;\n\
+             if (!fp_f_bits_equal(0x3f800000U, 0x3f800000U)) return 3;\n\
+             if (!fp_d_bits_equal(0x3ff0000000000000ULL, 0x3ff0000000000000ULL)) return 4;\n\
+             if (fp_f_bits_equal(0x00000000U, 0x80000000U)) return 5;\n\
+             if (fp_f_bits_equal(0x3f800000U, 0x3f800001U)) return 6;\n\
+             if (fp_f_bits_equal(0x3f800000U, 0x40000000U)) return 7;\n\
+             if (fp_f_bits_equal(0x7f800000U, 0x7fc00000U)) return 8;\n\
+             if (fp_d_bits_equal(0x0000000000000000ULL, 0x8000000000000000ULL)) return 9;\n\
+             if (fp_d_bits_equal(0x3ff0000000000000ULL, 0x3ff0000000000001ULL)) return 10;\n\
+             if (fp_d_bits_equal(0x3ff0000000000000ULL, 0x4000000000000000ULL)) return 11;\n\
+             if (fp_d_bits_equal(0x7ff0000000000000ULL, 0x7ff8000000000000ULL)) return 12;\n\
+             {sign_block}\n\
+             {mantissa_block}\n\
+             {exponent_block}\n\
+             return fails == 3 && passed == 0 ? 0 : 13;\n\
+         }}\n",
+        ground_truth = battery::ground_truth_source(),
+    );
+    std::fs::write(&source_path, source.as_bytes()).expect("write floating comparison probe");
+    let compiled: std::process::Output = Command::new(&compiler)
+        .args(["-std=c11", "-O2", "-o"])
+        .arg(&executable_path)
+        .arg(&source_path)
+        .output()
+        .expect("compile floating comparison probe");
+    assert!(
+        compiled.status.success(),
+        "floating comparison probe failed to compile:\n{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed: std::process::Output = Command::new(&executable_path)
+        .output()
+        .expect("execute floating comparison probe");
+    assert_eq!(
+        executed.status.code(),
+        Some(0),
+        "floating comparison probe rejected a required equality boundary"
+    );
+}
+
+#[test]
+fn every_lowered_scalar_fp_mnemonic_has_a_corpus_case() {
+    let mut observed: BTreeSet<String> = BTreeSet::new();
+    for (_, _, bytes) in CASES {
+        let instructions: Vec<DisasmInsn> =
+            disassemble(Arch::Aarch64, 0, bytes).expect("committed aarch64 corpus disassembly");
+        observed.extend(
+            instructions
+                .into_iter()
+                .map(|instruction: DisasmInsn| instruction.mnemonic),
+        );
+    }
+    let missing: BTreeSet<&str> = AARCH64_SCALAR_FP_LOWERED_MNEMONICS
+        .iter()
+        .copied()
+        .filter(|mnemonic: &&str| !observed.contains(*mnemonic))
+        .collect();
+    let excluded: BTreeSet<&str> = UNGRADED_SCALAR_FP_MNEMONICS
+        .iter()
+        .map(|(mnemonic, _): &(&str, &str)| *mnemonic)
+        .collect();
+    assert_eq!(
+        missing, excluded,
+        "the declared ungraded mnemonic set must exactly match the lowered mnemonics absent from the corpus"
+    );
+    assert!(
+        UNGRADED_SCALAR_FP_MNEMONICS
+            .iter()
+            .all(|(_, reason): &(&str, &str)| !reason.trim().is_empty()),
+        "every ungraded scalar floating mnemonic needs a reason"
+    );
+}
+
+#[test]
+fn nested_sum_optimized_loops_reach_the_complete_cfg_fallback() {
+    for (optimization, _, bytes) in
+        CASES
+            .iter()
+            .filter(|(optimization, name, _): &&(&str, &str, &[u8])| {
+                *name == "nested_sum" && matches!(*optimization, "O2" | "O3")
+            })
+    {
+        let recovery: LeafRecovery = recover_aarch64_function(bytes, 0).unwrap_or_else(
+            |error: disrobe_pass_native::Error| {
+                panic!("{optimization} nested_sum rejected: {error}")
+            },
+        );
+        assert!(
+            recovery.lifted_loop,
+            "{optimization} lost its loop structure"
+        );
+        assert!(
+            recovery.source.contains("while"),
+            "{optimization} emitted no structured loop"
+        );
+    }
 }
 
 #[test]

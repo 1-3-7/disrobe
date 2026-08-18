@@ -456,6 +456,28 @@ float fb_and3_f(float a, float b, float c, float d, float e, float f, float x, f
     if (a < b && c < d && e < f) r = x;
     return r;
 }
+float fp_ninth_f(float a, float b, float c, float d, float e, float f, float g, float h, float i) {
+    return a + b + c + d + e + f + g + h + i;
+}
+double fp_ninth_d(double a, double b, double c, double d, double e, double f, double g, double h, double i) {
+    return a + b + c + d + e + f + g + h + i;
+}
+float fp_mixed_i_then_f(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h, u64 i,
+                        float p, float q, float r, float s, float t, float u, float v, float w, float x) {
+    return (float)(a + b + c + d + e + f + g + h + i) + p + q + r + s + t + u + v + w + x;
+}
+double fp_mixed_i_then_d(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h, u64 i,
+                         double p, double q, double r, double s, double t, double u, double v, double w, double x) {
+    return (double)(a + b + c + d + e + f + g + h + i) + p + q + r + s + t + u + v + w + x;
+}
+float fp_mixed_f_then_i(float a, float b, float c, float d, float e, float f, float g, float h, float i,
+                        u64 p, u64 q, u64 r, u64 s, u64 t, u64 u, u64 v, u64 w, u64 x) {
+    return a + b + c + d + e + f + g + h + i + (float)(p + q + r + s + t + u + v + w + x);
+}
+double fp_mixed_d_then_i(double a, double b, double c, double d, double e, double f, double g, double h, double i,
+                         u64 p, u64 q, u64 r, u64 s, u64 t, u64 u, u64 v, u64 w, u64 x) {
+    return a + b + c + d + e + f + g + h + i + (double)(p + q + r + s + t + u + v + w + x);
+}
 int vol_four_slots(int a) {
     volatile int p = a;
     volatile int q = a + 1;

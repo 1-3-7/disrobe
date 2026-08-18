@@ -22,6 +22,7 @@ use crate::structuring;
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) mod aarch64;
 mod aarch64_callsite;
+pub use aarch64::SCALAR_FP_LOWERED_MNEMONICS as AARCH64_SCALAR_FP_LOWERED_MNEMONICS;
 pub mod fp_semantics;
 mod idiom;
 mod return_channel;
@@ -531,6 +532,20 @@ impl Abi {
     }
 }
 
+const fn a64_stack_slot(reg: Reg) -> Option<u8> {
+    match reg {
+        Reg::A64Stack0 => Some(0),
+        Reg::A64Stack1 => Some(1),
+        Reg::A64Stack2 => Some(2),
+        Reg::A64Stack3 => Some(3),
+        Reg::A64Stack4 => Some(4),
+        Reg::A64Stack5 => Some(5),
+        Reg::A64Stack6 => Some(6),
+        Reg::A64Stack7 => Some(7),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BinOp {
     Add,
@@ -743,14 +758,14 @@ enum DividendHigh {
     Zeroed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IndexExtend {
     Full,
     SignExtendWord,
     ZeroExtendWord,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct IndexOperand {
     reg: Reg,
     scale: u8,
@@ -769,7 +784,7 @@ impl IndexOperand {
 
 type AddrTerms = (Option<Reg>, Option<IndexOperand>, i64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct MemRef {
     base: Option<Reg>,
     index: Option<IndexOperand>,
@@ -1331,6 +1346,10 @@ pub enum ParameterBinding {
         register_index: u8,
         scalar_type: ScalarType,
     },
+    StackFloatingPoint {
+        slot: u8,
+        scalar_type: ScalarType,
+    },
     Vector {
         register_index: u8,
         width_bits: u32,
@@ -1430,6 +1449,7 @@ impl RecoveredSignature {
             .filter_map(|binding: &ParameterBinding| match binding {
                 ParameterBinding::Integer { register, .. } => Some(*register),
                 ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::StackFloatingPoint { .. }
                 | ParameterBinding::Vector { .. }
                 | ParameterBinding::UnobservedMsX64 { .. } => None,
             })
@@ -1442,6 +1462,7 @@ impl RecoveredSignature {
             .filter_map(|binding: &ParameterBinding| match binding {
                 ParameterBinding::Integer { width_bits, .. } => Some(*width_bits),
                 ParameterBinding::FloatingPoint { .. }
+                | ParameterBinding::StackFloatingPoint { .. }
                 | ParameterBinding::Vector { .. }
                 | ParameterBinding::UnobservedMsX64 { .. } => None,
             })
@@ -1455,7 +1476,8 @@ impl RecoveredSignature {
                 ParameterBinding::Integer { .. } | ParameterBinding::UnobservedMsX64 { .. } => {
                     Some(ScalarType::Int)
                 }
-                ParameterBinding::FloatingPoint { scalar_type, .. } => Some(*scalar_type),
+                ParameterBinding::FloatingPoint { scalar_type, .. }
+                | ParameterBinding::StackFloatingPoint { scalar_type, .. } => Some(*scalar_type),
                 ParameterBinding::Vector { .. } => None,
             })
             .collect()
@@ -1464,6 +1486,158 @@ impl RecoveredSignature {
     pub fn callable_arity(&self) -> usize {
         self.parameter_bindings.len()
     }
+}
+
+fn validate_aapcs64_parameter_bindings(bindings: &[ParameterBinding]) -> Result<()> {
+    let integer_order: &[Reg] = Abi::Aapcs64.arg_order();
+    let mut integer_registers: Vec<ParameterBinding> = Vec::new();
+    let mut floating_registers: Vec<ParameterBinding> = Vec::new();
+    let mut stack: Vec<(u8, bool, ParameterBinding)> = Vec::new();
+    let mut vectors: Vec<ParameterBinding> = Vec::new();
+    let mut prior_integer: Option<usize> = None;
+    let mut prior_fp: Option<u8> = None;
+    let mut prior_vector: Option<u8> = None;
+    for binding in bindings {
+        match binding {
+            ParameterBinding::Integer {
+                register,
+                width_bits,
+            } => {
+                let Some(position): Option<usize> = integer_order
+                    .iter()
+                    .position(|candidate: &Reg| candidate == register)
+                else {
+                    return Err(Error::LlvmIr(
+                        "integer parameter register is outside the aapcs64 argument order"
+                            .to_owned(),
+                    ));
+                };
+                if *width_bits == 0 {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 integer parameter width is zero".to_owned(),
+                    ));
+                }
+                if let Some(slot) = a64_stack_slot(*register) {
+                    stack.push((slot, false, *binding));
+                } else {
+                    if prior_integer.is_some_and(|prior: usize| prior >= position) {
+                        return Err(Error::LlvmIr(
+                            "aapcs64 integer register parameters are not canonical".to_owned(),
+                        ));
+                    }
+                    prior_integer = Some(position);
+                    integer_registers.push(*binding);
+                }
+            }
+            ParameterBinding::FloatingPoint {
+                register_index,
+                scalar_type,
+            } => {
+                if *scalar_type == ScalarType::Int
+                    || usize::from(*register_index) >= FP_ARG_ORDER.len()
+                    || prior_fp.is_some_and(|prior: u8| prior >= *register_index)
+                {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 floating-point register parameters are not canonical".to_owned(),
+                    ));
+                }
+                prior_fp = Some(*register_index);
+                floating_registers.push(*binding);
+            }
+            ParameterBinding::StackFloatingPoint { slot, scalar_type } => {
+                if *scalar_type == ScalarType::Int || usize::from(*slot) >= 8 {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 stack floating-point parameter is invalid".to_owned(),
+                    ));
+                }
+                stack.push((*slot, true, *binding));
+            }
+            ParameterBinding::Vector {
+                register_index,
+                width_bits,
+            } => {
+                if *width_bits == 0
+                    || usize::from(*register_index) >= FP_ARG_ORDER.len()
+                    || prior_vector.is_some_and(|prior: u8| prior >= *register_index)
+                    || floating_registers
+                        .iter()
+                        .any(|candidate: &ParameterBinding| {
+                            matches!(
+                                candidate,
+                                ParameterBinding::FloatingPoint {
+                                    register_index: candidate_index,
+                                    ..
+                                } if candidate_index == register_index
+                            )
+                        })
+                {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 vector parameter bindings are not canonical".to_owned(),
+                    ));
+                }
+                prior_vector = Some(*register_index);
+                vectors.push(*binding);
+            }
+            ParameterBinding::UnobservedMsX64 { .. } => {
+                return Err(Error::LlvmIr(
+                    "microsoft x64 placeholder is not valid under aapcs64".to_owned(),
+                ));
+            }
+        }
+    }
+    stack.sort_by_key(|(slot, _, _): &(u8, bool, ParameterBinding)| *slot);
+    if stack.iter().enumerate().any(
+        |(expected, (slot, _, _)): (usize, &(u8, bool, ParameterBinding))| {
+            usize::from(*slot) != expected
+        },
+    ) {
+        return Err(Error::LlvmIr(
+            "aapcs64 stack parameter slots are duplicated or not contiguous".to_owned(),
+        ));
+    }
+    let has_fp_stack: bool = stack.iter().any(|(_, is_fp, _)| *is_fp);
+    if has_fp_stack
+        && (floating_registers.len() != 8
+            || floating_registers.iter().enumerate().any(
+                |(index, binding): (usize, &ParameterBinding)| {
+                    !matches!(
+                        binding,
+                        ParameterBinding::FloatingPoint { register_index, .. }
+                            if usize::from(*register_index) == index
+                    )
+                },
+            ))
+    {
+        return Err(Error::LlvmIr(
+            "aapcs64 stack floating parameters require a complete v0-v7 prefix".to_owned(),
+        ));
+    }
+    let mut canonical: Vec<ParameterBinding> = Vec::with_capacity(bindings.len());
+    let mut emitted_integer: bool = false;
+    let mut emitted_fp: bool = false;
+    for (_, is_fp, binding) in stack {
+        if is_fp && !emitted_fp {
+            canonical.extend(floating_registers.iter().copied());
+            emitted_fp = true;
+        } else if !is_fp && !emitted_integer {
+            canonical.extend(integer_registers.iter().copied());
+            emitted_integer = true;
+        }
+        canonical.push(binding);
+    }
+    if !emitted_fp {
+        canonical.extend(floating_registers);
+    }
+    if !emitted_integer {
+        canonical.extend(integer_registers);
+    }
+    canonical.extend(vectors);
+    if canonical != bindings {
+        return Err(Error::LlvmIr(
+            "aapcs64 parameter bindings are not in physical argument order".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_parameter_bindings(
@@ -1495,8 +1669,12 @@ fn validate_parameter_bindings(
                         ));
                     }
                 }
-                ParameterBinding::FloatingPoint { register_index, .. } => {
-                    if usize::from(*register_index) != physical_slot
+                ParameterBinding::FloatingPoint {
+                    register_index,
+                    scalar_type,
+                } => {
+                    if *scalar_type == ScalarType::Int
+                        || usize::from(*register_index) != physical_slot
                         || physical_slot >= fp_arg_order(abi).len()
                     {
                         return Err(Error::LlvmIr(
@@ -1504,6 +1682,12 @@ fn validate_parameter_bindings(
                                 .to_owned(),
                         ));
                     }
+                }
+                ParameterBinding::StackFloatingPoint { .. } => {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 stack floating parameter bindings are not valid under microsoft x64"
+                            .to_owned(),
+                    ));
                 }
                 ParameterBinding::Vector {
                     register_index,
@@ -1529,15 +1713,24 @@ fn validate_parameter_bindings(
         }
         return Ok(());
     }
+    if abi == Abi::Aapcs64 {
+        return validate_aapcs64_parameter_bindings(bindings);
+    }
 
     let integer_order: &[Reg] = abi.integer_parameter_order();
     let mut stage: u8 = 0;
     let mut prior_vector_register: Option<u8> = None;
+    let mut floating_register_count: u8 = 0;
+    let mut prior_stack_fp_slot: Option<u8> = None;
     let mut prior_integer: Option<usize> = None;
     for binding in bindings {
         match binding {
-            ParameterBinding::FloatingPoint { register_index, .. } => {
+            ParameterBinding::FloatingPoint {
+                register_index,
+                scalar_type,
+            } => {
                 if stage != 0
+                    || *scalar_type == ScalarType::Int
                     || usize::from(*register_index) >= fp_arg_order(abi).len()
                     || prior_vector_register.is_some_and(|prior: u8| prior >= *register_index)
                 {
@@ -1546,6 +1739,25 @@ fn validate_parameter_bindings(
                     ));
                 }
                 prior_vector_register = Some(*register_index);
+                floating_register_count += 1;
+            }
+            ParameterBinding::StackFloatingPoint { slot, scalar_type } => {
+                if abi != Abi::Aapcs64
+                    || stage != 0
+                    || *scalar_type == ScalarType::Int
+                    || (*slot == 0
+                        && (prior_stack_fp_slot.is_some()
+                            || prior_vector_register != Some(7)
+                            || usize::from(floating_register_count) != FP_ARG_ORDER.len()))
+                    || (*slot > 0 && prior_stack_fp_slot != Some(*slot - 1))
+                    || *slot >= 8
+                {
+                    return Err(Error::LlvmIr(
+                        "aapcs64 stack floating-point parameter bindings are not canonical"
+                            .to_owned(),
+                    ));
+                }
+                prior_stack_fp_slot = Some(*slot);
             }
             ParameterBinding::Integer {
                 register,
@@ -1575,7 +1787,8 @@ fn validate_parameter_bindings(
                 width_bits,
             } => {
                 stage = 2;
-                if *width_bits == 0
+                if prior_stack_fp_slot.is_some()
+                    || *width_bits == 0
                     || usize::from(*register_index) >= fp_arg_order(abi).len()
                     || prior_vector_register.is_some_and(|prior: u8| prior >= *register_index)
                 {
@@ -3146,6 +3359,13 @@ fn recover_leaf_function_calls_with_tail_proofs(
         MsX64ParameterOrigin::for_signature(abi, sret_plan.is_some());
     let mut params: Vec<Reg> = infer_params(&structured.body, abi)?;
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&structured.body, abi)?;
+    let stack_fp_args: Vec<(u8, Reg, FpWidth)> = infer_stack_fp_params(&structured.body, abi)?;
+    params.retain(|reg: &Reg| {
+        !stack_fp_args
+            .iter()
+            .any(|(_, stack_reg, _): &(u8, Reg, FpWidth)| stack_reg == reg)
+    });
+    validate_aapcs64_stack_fp_prefix(&fp_args, &params, &stack_fp_args)?;
     validate_ms_x64_shared_argument_index(abi, &params, &fp_args, sret_plan.is_some())?;
     if let Some(plan) = &sret_plan {
         params.retain(|r: &Reg| *r != plan.ptr);
@@ -3154,6 +3374,7 @@ fn recover_leaf_function_calls_with_tail_proofs(
     let ret: FnReturn = fp_return.map_or(FnReturn::Int(return_width), FnReturn::Fp);
     let signature: FnSignature = FnSignature {
         fp: fp_args,
+        stack_fp: stack_fp_args,
         int: wide_int_signature(&params),
         vec: Vec::new(),
         ret,
@@ -3254,6 +3475,7 @@ enum FnReturn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FnSignature {
     fp: Vec<(Xmm, FpWidth)>,
+    stack_fp: Vec<(u8, Reg, FpWidth)>,
     int: Vec<(Reg, Width)>,
     vec: Vec<(u8, VecArrangement)>,
     ret: FnReturn,
@@ -3265,6 +3487,7 @@ struct FnSignature {
 enum ScalarParam {
     Integer { reg: Reg, width: Width },
     FloatingPoint { xmm: Xmm, width: FpWidth },
+    StackFloatingPoint { reg: Reg, slot: u8, width: FpWidth },
     UnobservedMsX64 { slot: u8 },
 }
 
@@ -3277,6 +3500,10 @@ impl ScalarParam {
             },
             Self::FloatingPoint { xmm, width } => ParameterBinding::FloatingPoint {
                 register_index: xmm.index(),
+                scalar_type: scalar_of_fp(width),
+            },
+            Self::StackFloatingPoint { slot, width, .. } => ParameterBinding::StackFloatingPoint {
+                slot,
                 scalar_type: scalar_of_fp(width),
             },
             Self::UnobservedMsX64 { slot } => ParameterBinding::UnobservedMsX64 { slot },
@@ -3317,7 +3544,8 @@ impl FnSignature {
     ) -> Vec<ScalarParam> {
         match self.abi {
             Abi::MsX64 => self.ms_x64_ordered_params(ms_x64_parameter_origin),
-            Abi::SysV | Abi::Aapcs64 => {
+            Abi::Aapcs64 => self.aapcs64_ordered_params(),
+            Abi::SysV => {
                 let mut out: Vec<ScalarParam> = self
                     .fp
                     .iter()
@@ -3326,6 +3554,17 @@ impl FnSignature {
                         width: *width,
                     })
                     .collect();
+                out.extend(
+                    self.stack_fp
+                        .iter()
+                        .map(|(slot, reg, width): &(u8, Reg, FpWidth)| {
+                            ScalarParam::StackFloatingPoint {
+                                reg: *reg,
+                                slot: *slot,
+                                width: *width,
+                            }
+                        }),
+                );
                 out.extend(self.int.iter().map(|(reg, width): &(Reg, Width)| {
                     ScalarParam::Integer {
                         reg: *reg,
@@ -3335,6 +3574,82 @@ impl FnSignature {
                 out
             }
         }
+    }
+
+    fn aapcs64_ordered_params(&self) -> Vec<ScalarParam> {
+        let fp_registers: Vec<ScalarParam> = self
+            .fp
+            .iter()
+            .map(|(xmm, width): &(Xmm, FpWidth)| ScalarParam::FloatingPoint {
+                xmm: *xmm,
+                width: *width,
+            })
+            .collect();
+        let integer_registers: Vec<ScalarParam> = self
+            .int
+            .iter()
+            .filter(|(reg, _): &&(Reg, Width)| a64_stack_slot(*reg).is_none())
+            .map(|(reg, width): &(Reg, Width)| ScalarParam::Integer {
+                reg: *reg,
+                width: *width,
+            })
+            .collect();
+        let mut stack: Vec<(u8, bool, ScalarParam)> = self
+            .int
+            .iter()
+            .filter_map(|(reg, width): &(Reg, Width)| {
+                a64_stack_slot(*reg).map(|slot: u8| {
+                    (
+                        slot,
+                        false,
+                        ScalarParam::Integer {
+                            reg: *reg,
+                            width: *width,
+                        },
+                    )
+                })
+            })
+            .chain(
+                self.stack_fp
+                    .iter()
+                    .map(|(slot, reg, width): &(u8, Reg, FpWidth)| {
+                        (
+                            *slot,
+                            true,
+                            ScalarParam::StackFloatingPoint {
+                                reg: *reg,
+                                slot: *slot,
+                                width: *width,
+                            },
+                        )
+                    }),
+            )
+            .collect();
+        if stack.is_empty() {
+            return fp_registers.into_iter().chain(integer_registers).collect();
+        }
+        stack.sort_by_key(|(slot, _, _): &(u8, bool, ScalarParam)| *slot);
+        let mut out: Vec<ScalarParam> =
+            Vec::with_capacity(fp_registers.len() + integer_registers.len() + stack.len());
+        let mut emitted_fp: bool = false;
+        let mut emitted_integer: bool = false;
+        for (_, is_fp, parameter) in stack {
+            if is_fp && !emitted_fp {
+                out.extend(fp_registers.iter().copied());
+                emitted_fp = true;
+            } else if !is_fp && !emitted_integer {
+                out.extend(integer_registers.iter().copied());
+                emitted_integer = true;
+            }
+            out.push(parameter);
+        }
+        if !emitted_fp {
+            out.extend(fp_registers);
+        }
+        if !emitted_integer {
+            out.extend(integer_registers);
+        }
+        out
     }
 
     fn ms_x64_ordered_params(
@@ -3546,6 +3861,7 @@ fn recover_call_site_identity(
     };
     let signature: FnSignature = FnSignature {
         fp,
+        stack_fp: Vec::new(),
         int,
         vec: Vec::new(),
         ret,
@@ -3824,11 +4140,19 @@ fn build_switch_recovery(
     rewrite_incoming_stack_arguments(&mut body, frame_shape)?;
     let mut call_targets: Vec<u64> = Vec::new();
     collect_call_targets(&body, &mut call_targets);
-    let params: Vec<Reg> = infer_params(&body, abi)?;
+    let mut params: Vec<Reg> = infer_params(&body, abi)?;
     let fp_args: Vec<(Xmm, FpWidth)> = infer_fp_params(&body, abi)?;
+    let stack_fp_args: Vec<(u8, Reg, FpWidth)> = infer_stack_fp_params(&body, abi)?;
+    params.retain(|reg: &Reg| {
+        !stack_fp_args
+            .iter()
+            .any(|(_, stack_reg, _): &(u8, Reg, FpWidth)| stack_reg == reg)
+    });
+    validate_aapcs64_stack_fp_prefix(&fp_args, &params, &stack_fp_args)?;
     validate_ms_x64_shared_argument_index(abi, &params, &fp_args, false)?;
     let signature: FnSignature = FnSignature {
         fp: fp_args,
+        stack_fp: stack_fp_args,
         int: wide_int_signature(&params),
         vec: Vec::new(),
         ret,
@@ -4060,6 +4384,7 @@ fn build_value_switch_recovery(
     validate_ms_x64_shared_argument_index(abi, &params, &[], false)?;
     let signature: FnSignature = FnSignature {
         fp: Vec::new(),
+        stack_fp: Vec::new(),
         int: wide_int_signature(&params),
         vec: Vec::new(),
         ret: FnReturn::Int(return_width),
@@ -6028,7 +6353,9 @@ fn resolved_call_integer_registers(signature: &RecoveredSignature) -> Result<Vec
                 };
                 registers.push(*register);
             }
-            ParameterBinding::FloatingPoint { .. } | ParameterBinding::Vector { .. } => {
+            ParameterBinding::FloatingPoint { .. }
+            | ParameterBinding::StackFloatingPoint { .. }
+            | ParameterBinding::Vector { .. } => {
                 return Err(Error::LlvmIr(
                     "resolved call has a non-integer parameter binding that the call IR cannot carry"
                         .to_owned(),
@@ -7472,15 +7799,7 @@ impl RegionRenderer<'_> {
             Some((_, resume)) => {
                 render_cfg_blocks_nested(&sub_blocks, &sub_labels, true, &sub_targets, resume)
             }
-            None => render_cfg_blocks_once(
-                &sub_blocks,
-                &sub_labels,
-                true,
-                &sub_targets,
-                ResumeProof::Absent {
-                    source: &sub_blocks,
-                },
-            ),
+            None => render_cfg_blocks(&sub_blocks, &sub_labels, true, &sub_targets),
         };
         let Some(loop_body): Option<Block> = loop_body else {
             return false;
@@ -12144,6 +12463,275 @@ fn infer_fp_params(body: &Block, abi: Abi) -> Result<Vec<(Xmm, FpWidth)>> {
     scan_fp_params(body, &mut written, &mut read_before_write, abi)?;
     read_before_write.sort_by_key(|(x, _): &(Xmm, FpWidth)| x.index());
     Ok(read_before_write)
+}
+
+fn infer_stack_fp_params(body: &Block, abi: Abi) -> Result<Vec<(u8, Reg, FpWidth)>> {
+    if abi != Abi::Aapcs64 {
+        return Ok(Vec::new());
+    }
+    let mut slots: BTreeMap<u8, (Reg, FpWidth)> = BTreeMap::new();
+    let mut provenance: StackFpProvenance = StackFpProvenance::default();
+    scan_stack_fp_params(body, &mut provenance, &mut slots)?;
+    Ok(slots
+        .into_iter()
+        .map(|(slot, (reg, width)): (u8, (Reg, FpWidth))| (slot, reg, width))
+        .collect())
+}
+
+fn validate_aapcs64_stack_fp_prefix(
+    fp: &[(Xmm, FpWidth)],
+    int: &[Reg],
+    stack_fp: &[(u8, Reg, FpWidth)],
+) -> Result<()> {
+    if stack_fp.is_empty() {
+        return Ok(());
+    }
+    if fp.len() != FP_ARG_ORDER.len()
+        || fp
+            .iter()
+            .zip(FP_ARG_ORDER)
+            .any(|((actual, _), expected): (&(Xmm, FpWidth), Xmm)| *actual != expected)
+    {
+        return Err(Error::LlvmIr(
+            "aapcs64 stack floating parameters require a complete v0-v7 argument prefix".to_owned(),
+        ));
+    }
+    let mut slots: Vec<u8> = int
+        .iter()
+        .filter_map(|reg: &Reg| a64_stack_slot(*reg))
+        .chain(
+            stack_fp
+                .iter()
+                .map(|(slot, _, _): &(u8, Reg, FpWidth)| *slot),
+        )
+        .collect();
+    slots.sort_unstable();
+    if slots
+        .iter()
+        .enumerate()
+        .any(|(expected, actual): (usize, &u8)| usize::from(*actual) != expected)
+    {
+        return Err(Error::LlvmIr(
+            "aapcs64 mixed stack parameter slots are duplicated or not contiguous".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+const AARCH64_STACK_FP_ALIAS_LIMIT: usize = 64;
+
+#[derive(Debug, Clone, Default)]
+struct StackFpProvenance {
+    registers: BTreeMap<Reg, u8>,
+    memory: BTreeMap<MemRef, u8>,
+}
+
+impl StackFpProvenance {
+    fn intersection(states: &[Self]) -> Self {
+        let Some(first): Option<&Self> = states.first() else {
+            return Self::default();
+        };
+        let registers: BTreeMap<Reg, u8> = first
+            .registers
+            .iter()
+            .filter(|(reg, slot): &(&Reg, &u8)| {
+                states
+                    .iter()
+                    .all(|state: &Self| state.registers.get(reg) == Some(slot))
+            })
+            .map(|(reg, slot): (&Reg, &u8)| (*reg, *slot))
+            .collect();
+        let memory: BTreeMap<MemRef, u8> = first
+            .memory
+            .iter()
+            .filter(|(address, slot): &(&MemRef, &u8)| {
+                states
+                    .iter()
+                    .all(|state: &Self| state.memory.get(address) == Some(slot))
+            })
+            .map(|(address, slot): (&MemRef, &u8)| (*address, *slot))
+            .collect();
+        Self { registers, memory }
+    }
+
+    fn source_slot(&self, source: &Source) -> Option<u8> {
+        match source {
+            Source::Reg(reg) => {
+                a64_stack_slot(reg.reg).or_else(|| self.registers.get(&reg.reg).copied())
+            }
+            Source::Mem(mem) => self.memory.get(mem).copied(),
+            Source::Imm(_) | Source::Lea { .. } => None,
+        }
+    }
+
+    fn assign(&mut self, dest: Reg, source: &Source) {
+        if let Some(slot) = self.source_slot(source) {
+            self.registers.insert(dest, slot);
+        } else {
+            self.registers.remove(&dest);
+        }
+    }
+
+    fn invalidate_memory(&mut self, address: MemRef) {
+        self.invalidate_memory_span(address, address.width.bits() / 8);
+    }
+
+    fn invalidate_memory_span(&mut self, address: MemRef, bytes: u32) {
+        let start: i128 = i128::from(address.disp);
+        let end: i128 = start + i128::from(bytes);
+        self.memory.retain(|candidate: &MemRef, _slot: &mut u8| {
+            if candidate.base != address.base || candidate.index != address.index {
+                return true;
+            }
+            let candidate_start: i128 = i128::from(candidate.disp);
+            let candidate_end: i128 = candidate_start + i128::from(candidate.width.bits() / 8);
+            end <= candidate_start || candidate_end <= start
+        });
+    }
+
+    fn store(&mut self, address: MemRef, source: &Source) -> Result<()> {
+        self.invalidate_memory(address);
+        if let Some(slot) = self.source_slot(source) {
+            if self.memory.len() >= AARCH64_STACK_FP_ALIAS_LIMIT {
+                return Err(Error::LlvmIr(format!(
+                    "aapcs64 stack floating provenance exceeds {AARCH64_STACK_FP_ALIAS_LIMIT} memory aliases"
+                )));
+            }
+            self.memory.insert(address, slot);
+        }
+        Ok(())
+    }
+}
+
+fn note_stack_fp_slot(
+    slots: &mut BTreeMap<u8, (Reg, FpWidth)>,
+    slot: u8,
+    width: FpWidth,
+) -> Result<()> {
+    let reg: Reg = Abi::Aapcs64.arg_order()[8 + usize::from(slot)];
+    if let Some((_, prior_width)) = slots.get(&slot) {
+        if *prior_width != width {
+            return Err(Error::LlvmIr(format!(
+                "aapcs64 stack floating parameter {slot} is read at conflicting widths"
+            )));
+        }
+    } else {
+        slots.insert(slot, (reg, width));
+    }
+    Ok(())
+}
+
+fn note_stack_fp_operand(
+    operand: &FpOperand,
+    width: FpWidth,
+    provenance: &StackFpProvenance,
+    slots: &mut BTreeMap<u8, (Reg, FpWidth)>,
+) -> Result<()> {
+    if let FpOperand::Mem(memory) = operand
+        && let Some(slot) = provenance.memory.get(memory)
+    {
+        note_stack_fp_slot(slots, *slot, width)?;
+    }
+    Ok(())
+}
+
+fn scan_stack_fp_params(
+    body: &Block,
+    provenance: &mut StackFpProvenance,
+    slots: &mut BTreeMap<u8, (Reg, FpWidth)>,
+) -> Result<()> {
+    for node in body {
+        match node {
+            Node::Stmt(Stmt::GprToXmm { src, width, .. }) => {
+                if let Some(slot) =
+                    a64_stack_slot(src.reg).or_else(|| provenance.registers.get(&src.reg).copied())
+                {
+                    note_stack_fp_slot(slots, slot, *width)?;
+                }
+            }
+            Node::Stmt(Stmt::Assign { dest, src }) => provenance.assign(dest.reg, src),
+            Node::Stmt(Stmt::Store { addr, src }) => provenance.store(*addr, src)?,
+            Node::Stmt(Stmt::MemRmw { addr, .. } | Stmt::FpStore { addr, .. }) => {
+                provenance.invalidate_memory(*addr);
+            }
+            Node::Stmt(Stmt::Vector(VecStmt::Store { addr, arr, .. })) => {
+                let bytes: u32 = arr.map_or(16, |arrangement: VecArrangement| {
+                    arrangement.total_bits() / 8
+                });
+                provenance.invalidate_memory_span(*addr, bytes);
+            }
+            Node::Stmt(
+                Stmt::FpMov { src, width, .. }
+                | Stmt::FpSqrt { src, width, .. }
+                | Stmt::FpUnary { src, width, .. }
+                | Stmt::FpRound { src, width, .. },
+            ) => {
+                note_stack_fp_operand(src, *width, provenance, slots)?;
+            }
+            Node::Stmt(
+                Stmt::FpBin {
+                    lhs, rhs, width, ..
+                }
+                | Stmt::FpMinMax {
+                    lhs, rhs, width, ..
+                },
+            ) => {
+                note_stack_fp_operand(lhs, *width, provenance, slots)?;
+                note_stack_fp_operand(rhs, *width, provenance, slots)?;
+            }
+            Node::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let mut then_provenance: StackFpProvenance = provenance.clone();
+                scan_stack_fp_params(then_body, &mut then_provenance, slots)?;
+                let mut branches: Vec<StackFpProvenance> = vec![then_provenance];
+                if let Some(else_body) = else_body {
+                    let mut else_provenance: StackFpProvenance = provenance.clone();
+                    scan_stack_fp_params(else_body, &mut else_provenance, slots)?;
+                    branches.push(else_provenance);
+                } else {
+                    branches.push(provenance.clone());
+                }
+                *provenance = StackFpProvenance::intersection(&branches);
+            }
+            Node::While { body, .. } | Node::DoWhile { body, .. } => {
+                let entry_provenance: StackFpProvenance = provenance.clone();
+                let mut loop_provenance: StackFpProvenance = provenance.clone();
+                scan_stack_fp_params(body, &mut loop_provenance, slots)?;
+                *provenance = StackFpProvenance::intersection(&[entry_provenance, loop_provenance]);
+            }
+            Node::Switch { cases, default, .. } => {
+                let mut branches: Vec<StackFpProvenance> = Vec::with_capacity(cases.len() + 1);
+                for case in cases {
+                    let mut case_provenance: StackFpProvenance = provenance.clone();
+                    scan_stack_fp_params(&case.body, &mut case_provenance, slots)?;
+                    branches.push(case_provenance);
+                }
+                let mut default_provenance: StackFpProvenance = provenance.clone();
+                scan_stack_fp_params(default, &mut default_provenance, slots)?;
+                branches.push(default_provenance);
+                *provenance = StackFpProvenance::intersection(&branches);
+            }
+            Node::Stmt(stmt) => {
+                for dest in stmt_dest_regs(stmt) {
+                    provenance.registers.remove(&dest);
+                }
+            }
+            Node::CondSnapshot { .. }
+            | Node::OuterResume(_)
+            | Node::Break
+            | Node::Continue
+            | Node::BreakLoop(_)
+            | Node::ContinueLoop(_)
+            | Node::ResumeAt(_)
+            | Node::Return
+            | Node::Label(_)
+            | Node::Goto(_) => {}
+        }
+    }
+    Ok(())
 }
 
 fn note_fp_read(
@@ -18008,17 +18596,24 @@ fn emit_c(
     if block_uses_crc32(body) {
         let _ = writeln!(out, "{C_CRC32_HELPERS}");
     }
-    let uses_fp: bool = !signature.fp.is_empty() || matches!(signature.ret, FnReturn::Fp(_)) || {
-        let mut probe: Vec<Xmm> = Vec::new();
-        collect_block_xmm(body, &mut probe);
-        !probe.is_empty()
-    };
+    let uses_fp: bool = !signature.fp.is_empty()
+        || !signature.stack_fp.is_empty()
+        || matches!(signature.ret, FnReturn::Fp(_))
+        || {
+            let mut probe: Vec<Xmm> = Vec::new();
+            collect_block_xmm(body, &mut probe);
+            !probe.is_empty()
+        };
     if uses_fp {
         let uses_half: bool = collected_variables.uses_half
             || signature
                 .fp
                 .iter()
                 .any(|(_, width): &(Xmm, FpWidth)| *width == FpWidth::F16)
+            || signature
+                .stack_fp
+                .iter()
+                .any(|(_, _, width): &(u8, Reg, FpWidth)| *width == FpWidth::F16)
             || matches!(signature.ret, FnReturn::Fp(FpWidth::F16));
         emit_fp_helpers(&mut out, uses_half);
         let mut requested: BTreeSet<&'static str> = BTreeSet::new();
@@ -18065,6 +18660,18 @@ fn emit_c(
                 ..
             } => format!("double a{i}"),
             ScalarParam::FloatingPoint {
+                width: FpWidth::F32,
+                ..
+            } => format!("float a{i}"),
+            ScalarParam::StackFloatingPoint {
+                width: FpWidth::F16,
+                ..
+            } => format!("_Float16 a{i}"),
+            ScalarParam::StackFloatingPoint {
+                width: FpWidth::F64,
+                ..
+            } => format!("double a{i}"),
+            ScalarParam::StackFloatingPoint {
                 width: FpWidth::F32,
                 ..
             } => format!("float a{i}"),
@@ -18168,6 +18775,15 @@ fn emit_c(
                     fp_store_expr(&format!("a{i}"), *width)
                 );
                 declared_xmm.push(*xmm);
+            }
+            ScalarParam::StackFloatingPoint { reg, width, .. } => {
+                let _ = writeln!(
+                    out,
+                    "    uint64_t {} = {};",
+                    reg_var(*reg),
+                    fp_store_expr(&format!("a{i}"), *width)
+                );
+                declared_gp.push(*reg);
             }
             ScalarParam::UnobservedMsX64 { .. } => {}
         }
@@ -21786,6 +22402,10 @@ fn emit_rust(
             .fp
             .iter()
             .any(|(_, width): &(Xmm, FpWidth)| *width == FpWidth::F16)
+        || signature
+            .stack_fp
+            .iter()
+            .any(|(_, _, width): &(u8, Reg, FpWidth)| *width == FpWidth::F16)
         || matches!(signature.ret, FnReturn::Fp(FpWidth::F16))
     {
         let _ = writeln!(out, "{RUST_HALF_HELPERS}");
@@ -21832,6 +22452,18 @@ fn emit_rust(
                 ..
             } => format!("a{i}: f64"),
             ScalarParam::FloatingPoint {
+                width: FpWidth::F32,
+                ..
+            } => format!("a{i}: f32"),
+            ScalarParam::StackFloatingPoint {
+                width: FpWidth::F16,
+                ..
+            } => format!("a{i}: u16"),
+            ScalarParam::StackFloatingPoint {
+                width: FpWidth::F64,
+                ..
+            } => format!("a{i}: f64"),
+            ScalarParam::StackFloatingPoint {
                 width: FpWidth::F32,
                 ..
             } => format!("a{i}: f32"),
@@ -21897,6 +22529,15 @@ fn emit_rust(
                 };
                 let _ = writeln!(out, "    let mut {}: u64 = {};", xmm_var(*xmm), init);
                 declared_xmm.push(*xmm);
+            }
+            ScalarParam::StackFloatingPoint { reg, width, .. } => {
+                let init: String = if *width == FpWidth::F16 {
+                    format!("u64::from(a{i})")
+                } else {
+                    rs_fp_store_expr(&format!("a{i}"), *width)
+                };
+                let _ = writeln!(out, "    let mut {}: u64 = {init};", reg_var(*reg));
+                declared_gp.push(*reg);
             }
             ScalarParam::UnobservedMsX64 { .. } => {}
         }
@@ -24012,6 +24653,7 @@ mod tests {
     fn empty_signature() -> FnSignature {
         FnSignature {
             fp: Vec::new(),
+            stack_fp: Vec::new(),
             int: Vec::new(),
             vec: Vec::new(),
             ret: FnReturn::Void,
@@ -26684,6 +27326,343 @@ mod tests {
     }
 
     #[test]
+    fn aapcs64_stack_floating_bindings_require_the_complete_register_prefix() {
+        let mut canonical: Vec<ParameterBinding> = (0u8..8)
+            .map(|register_index: u8| ParameterBinding::FloatingPoint {
+                register_index,
+                scalar_type: ScalarType::Double,
+            })
+            .collect();
+        canonical.push(ParameterBinding::StackFloatingPoint {
+            slot: 0,
+            scalar_type: ScalarType::Double,
+        });
+        let signature: RecoveredSignature =
+            RecoveredSignature::from_bindings(Abi::Aapcs64, canonical)
+                .expect("complete aapcs64 floating register prefix and first stack slot");
+        assert_eq!(signature.parameter_types(), vec![ScalarType::Double; 9]);
+
+        let missing_prefix: Result<RecoveredSignature> = RecoveredSignature::from_bindings(
+            Abi::Aapcs64,
+            vec![ParameterBinding::StackFloatingPoint {
+                slot: 0,
+                scalar_type: ScalarType::Double,
+            }],
+        );
+        let incomplete_prefix: Result<RecoveredSignature> = RecoveredSignature::from_bindings(
+            Abi::Aapcs64,
+            vec![
+                ParameterBinding::FloatingPoint {
+                    register_index: 7,
+                    scalar_type: ScalarType::Double,
+                },
+                ParameterBinding::StackFloatingPoint {
+                    slot: 0,
+                    scalar_type: ScalarType::Double,
+                },
+            ],
+        );
+        let foreign_abi: Result<RecoveredSignature> = RecoveredSignature::from_bindings(
+            Abi::SysV,
+            vec![ParameterBinding::StackFloatingPoint {
+                slot: 0,
+                scalar_type: ScalarType::Double,
+            }],
+        );
+        assert!(missing_prefix.is_err());
+        assert!(incomplete_prefix.is_err());
+        assert!(foreign_abi.is_err());
+
+        let duplicate_slot: Result<RecoveredSignature> = RecoveredSignature::from_bindings(
+            Abi::Aapcs64,
+            (0u8..8)
+                .map(|register_index: u8| ParameterBinding::FloatingPoint {
+                    register_index,
+                    scalar_type: ScalarType::Double,
+                })
+                .chain([
+                    ParameterBinding::StackFloatingPoint {
+                        slot: 0,
+                        scalar_type: ScalarType::Double,
+                    },
+                    ParameterBinding::StackFloatingPoint {
+                        slot: 0,
+                        scalar_type: ScalarType::Double,
+                    },
+                ])
+                .collect(),
+        );
+        let integer_typed_fp: Result<RecoveredSignature> = RecoveredSignature::from_bindings(
+            Abi::Aapcs64,
+            vec![ParameterBinding::FloatingPoint {
+                register_index: 0,
+                scalar_type: ScalarType::Int,
+            }],
+        );
+        assert!(duplicate_slot.is_err());
+        assert!(integer_typed_fp.is_err());
+    }
+
+    #[test]
+    fn aapcs64_mixed_stack_parameters_follow_the_shared_physical_slot_order() {
+        let fp: Vec<(Xmm, FpWidth)> = FP_ARG_ORDER
+            .iter()
+            .copied()
+            .map(|xmm: Xmm| (xmm, FpWidth::F64))
+            .collect();
+        let integer_registers: Vec<(Reg, Width)> = Abi::Aapcs64.arg_order()[..8]
+            .iter()
+            .copied()
+            .map(|reg: Reg| (reg, Width::W64))
+            .collect();
+        let mut integer_first: FnSignature = FnSignature {
+            fp: fp.clone(),
+            stack_fp: vec![(1, Reg::A64Stack1, FpWidth::F64)],
+            int: integer_registers.clone(),
+            vec: Vec::new(),
+            ret: FnReturn::Void,
+            exact_integer_types: false,
+            abi: Abi::Aapcs64,
+        };
+        integer_first.int.push((Reg::A64Stack0, Width::W64));
+        let integer_first_bindings: Vec<ParameterBinding> = integer_first.parameter_bindings();
+        assert!(matches!(
+            integer_first_bindings.get(8),
+            Some(ParameterBinding::Integer {
+                register: Reg::A64Stack0,
+                ..
+            })
+        ));
+        assert!(matches!(
+            integer_first_bindings.last(),
+            Some(ParameterBinding::StackFloatingPoint { slot: 1, .. })
+        ));
+        RecoveredSignature::from_bindings(Abi::Aapcs64, integer_first_bindings)
+            .expect("public signature accepts canonical integer-first mixed stack order");
+
+        let mut floating_first: FnSignature = FnSignature {
+            fp,
+            stack_fp: vec![(0, Reg::A64Stack0, FpWidth::F64)],
+            int: integer_registers,
+            vec: Vec::new(),
+            ret: FnReturn::Void,
+            exact_integer_types: false,
+            abi: Abi::Aapcs64,
+        };
+        floating_first.int.push((Reg::A64Stack1, Width::W64));
+        let floating_first_bindings: Vec<ParameterBinding> = floating_first.parameter_bindings();
+        assert!(matches!(
+            floating_first_bindings.get(8),
+            Some(ParameterBinding::StackFloatingPoint { slot: 0, .. })
+        ));
+        assert!(matches!(
+            floating_first_bindings.last(),
+            Some(ParameterBinding::Integer {
+                register: Reg::A64Stack1,
+                ..
+            })
+        ));
+        RecoveredSignature::from_bindings(Abi::Aapcs64, floating_first_bindings)
+            .expect("public signature accepts canonical floating-first mixed stack order");
+
+        assert!(
+            validate_aapcs64_stack_fp_prefix(
+                &floating_first.fp,
+                &[Reg::A64Stack0],
+                &[(0, Reg::A64Stack0, FpWidth::F64)],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_aapcs64_stack_fp_prefix(
+                &floating_first.fp,
+                &[],
+                &[(1, Reg::A64Stack1, FpWidth::F64)],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn aapcs64_stack_floating_provenance_is_bounded_and_width_consistent() {
+        let stack: RegRef = RegRef {
+            reg: Reg::A64Stack0,
+            width: Width::W64,
+        };
+        let carrier: RegRef = RegRef {
+            reg: Reg::A64X8,
+            width: Width::W64,
+        };
+        let spill: MemRef = MemRef {
+            base: Some(Reg::Rsp),
+            index: None,
+            disp: 8,
+            width: Width::W64,
+        };
+        let prefix: Block = vec![
+            Node::Stmt(Stmt::Assign {
+                dest: carrier,
+                src: Source::Reg(stack),
+            }),
+            Node::Stmt(Stmt::Store {
+                addr: spill,
+                src: Source::Reg(carrier),
+            }),
+        ];
+        let mut recovered: Block = prefix.clone();
+        recovered.push(Node::Stmt(Stmt::FpMov {
+            dest: Xmm::Xmm0,
+            src: FpOperand::Mem(spill),
+            width: FpWidth::F64,
+        }));
+        assert_eq!(
+            infer_stack_fp_params(&recovered, Abi::Aapcs64).expect("single typed stack spill"),
+            vec![(0, Reg::A64Stack0, FpWidth::F64)]
+        );
+
+        let mut conflicting: Block = recovered;
+        conflicting.push(Node::Stmt(Stmt::FpMov {
+            dest: Xmm::Xmm1,
+            src: FpOperand::Mem(spill),
+            width: FpWidth::F32,
+        }));
+        assert!(infer_stack_fp_params(&conflicting, Abi::Aapcs64).is_err());
+
+        let mut overwritten: Block = prefix.clone();
+        overwritten.push(Node::Stmt(Stmt::Store {
+            addr: spill,
+            src: Source::Imm(0),
+        }));
+        overwritten.push(Node::Stmt(Stmt::FpMov {
+            dest: Xmm::Xmm0,
+            src: FpOperand::Mem(spill),
+            width: FpWidth::F64,
+        }));
+        assert!(
+            infer_stack_fp_params(&overwritten, Abi::Aapcs64)
+                .expect("overwritten spill")
+                .is_empty()
+        );
+
+        let mut aliases: Block = vec![Node::Stmt(Stmt::Assign {
+            dest: carrier,
+            src: Source::Reg(stack),
+        })];
+        aliases.extend((0..=AARCH64_STACK_FP_ALIAS_LIMIT).map(|index: usize| {
+            Node::Stmt(Stmt::Store {
+                addr: MemRef {
+                    base: Some(Reg::Rsp),
+                    index: None,
+                    disp: i64::try_from(index).expect("bounded alias index") * 8,
+                    width: Width::W64,
+                },
+                src: Source::Reg(carrier),
+            })
+        }));
+        assert!(infer_stack_fp_params(&aliases, Abi::Aapcs64).is_err());
+
+        let overlapping: Block = vec![
+            Node::Stmt(Stmt::Assign {
+                dest: carrier,
+                src: Source::Reg(stack),
+            }),
+            Node::Stmt(Stmt::Store {
+                addr: spill,
+                src: Source::Reg(carrier),
+            }),
+            Node::Stmt(Stmt::FpStore {
+                addr: MemRef {
+                    disp: 12,
+                    width: Width::W32,
+                    ..spill
+                },
+                src: Xmm::Xmm1,
+                width: FpWidth::F32,
+            }),
+            Node::Stmt(Stmt::FpMov {
+                dest: Xmm::Xmm0,
+                src: FpOperand::Mem(spill),
+                width: FpWidth::F64,
+            }),
+        ];
+        assert!(
+            infer_stack_fp_params(&overlapping, Abi::Aapcs64)
+                .expect("overlapping floating store invalidates provenance")
+                .is_empty()
+        );
+
+        let conditional_overwrite: Block = vec![
+            Node::Stmt(Stmt::Assign {
+                dest: carrier,
+                src: Source::Reg(stack),
+            }),
+            Node::Stmt(Stmt::Store {
+                addr: spill,
+                src: Source::Reg(carrier),
+            }),
+            Node::If {
+                cond: Cond::leaf(CondKind::E, Flags::Test { operand: carrier }),
+                then_body: vec![Node::Stmt(Stmt::FpStore {
+                    addr: MemRef {
+                        disp: 12,
+                        width: Width::W32,
+                        ..spill
+                    },
+                    src: Xmm::Xmm1,
+                    width: FpWidth::F32,
+                })],
+                else_body: Some(vec![Node::Stmt(Stmt::FpStore {
+                    addr: MemRef {
+                        width: Width::W32,
+                        ..spill
+                    },
+                    src: Xmm::Xmm1,
+                    width: FpWidth::F32,
+                })]),
+            },
+            Node::Stmt(Stmt::FpMov {
+                dest: Xmm::Xmm0,
+                src: FpOperand::Mem(spill),
+                width: FpWidth::F64,
+            }),
+        ];
+        assert!(
+            infer_stack_fp_params(&conditional_overwrite, Abi::Aapcs64)
+                .expect("every conditional path overwrites the incoming stack value")
+                .is_empty()
+        );
+
+        let invalidating_writes: [Stmt; 2] = [
+            Stmt::MemRmw {
+                addr: MemRef {
+                    width: Width::W32,
+                    ..spill
+                },
+                op: MemRmwOp::Un(UnOp::Not),
+            },
+            Stmt::Vector(VecStmt::Store {
+                src: 1,
+                arr: None,
+                addr: MemRef { disp: 0, ..spill },
+            }),
+        ];
+        for invalidating_write in invalidating_writes {
+            let mut overwritten: Block = prefix.clone();
+            overwritten.push(Node::Stmt(invalidating_write));
+            overwritten.push(Node::Stmt(Stmt::FpMov {
+                dest: Xmm::Xmm0,
+                src: FpOperand::Mem(spill),
+                width: FpWidth::F64,
+            }));
+            assert!(
+                infer_stack_fp_params(&overwritten, Abi::Aapcs64)
+                    .expect("memory-writing statement invalidates overlapping provenance")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
     fn recovered_signature_refuses_noncanonical_public_bindings() {
         let unordered: super::Result<super::RecoveredSignature> =
             super::RecoveredSignature::from_bindings(
@@ -26745,12 +27724,30 @@ mod tests {
                     width_bits: 128,
                 }],
             );
+        let integer_typed_floating: Vec<super::Result<super::RecoveredSignature>> =
+            [super::Abi::MsX64, super::Abi::SysV, super::Abi::Aapcs64]
+                .into_iter()
+                .map(|abi: super::Abi| {
+                    super::RecoveredSignature::from_bindings(
+                        abi,
+                        vec![super::ParameterBinding::FloatingPoint {
+                            register_index: 0,
+                            scalar_type: super::ScalarType::Int,
+                        }],
+                    )
+                })
+                .collect();
         assert!(unordered.is_err());
         assert!(duplicate.is_err());
         assert!(zero_width.is_err());
         assert!(duplicate_fp_vector.is_err());
         assert!(out_of_range_fp.is_err());
         assert!(out_of_range_ms_vector.is_err());
+        assert!(
+            integer_typed_floating
+                .iter()
+                .all(|result: &super::Result<super::RecoveredSignature>| result.is_err())
+        );
     }
 
     #[test]
@@ -26832,6 +27829,7 @@ mod tests {
     fn ms_x64_ordered_param_types_interleaves_by_shared_slot_not_by_register_class() {
         let signature: FnSignature = FnSignature {
             fp: vec![(Xmm::Xmm1, FpWidth::F64)],
+            stack_fp: Vec::new(),
             int: vec![(Reg::Rcx, Width::W64)],
             vec: Vec::new(),
             ret: FnReturn::Void,
@@ -26850,6 +27848,7 @@ mod tests {
     fn sysv_ordered_param_types_still_groups_floating_point_before_integer() {
         let signature: FnSignature = FnSignature {
             fp: vec![(Xmm::Xmm0, FpWidth::F64)],
+            stack_fp: Vec::new(),
             int: vec![(Reg::Rdi, Width::W64)],
             vec: Vec::new(),
             ret: FnReturn::Void,
@@ -29721,6 +30720,7 @@ mod tests {
                 (Reg::R9, Width::W64),
                 (Reg::X86Stack0, Width::W64),
             ],
+            stack_fp: Vec::new(),
             vec: Vec::new(),
             ret: FnReturn::Int(Width::W64),
             exact_integer_types: false,

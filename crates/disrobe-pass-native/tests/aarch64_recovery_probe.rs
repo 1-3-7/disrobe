@@ -11,7 +11,7 @@ use std::process::Command;
 
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 
-const RECOVERY_FLOOR: usize = 1217;
+const RECOVERY_FLOOR: usize = 1247;
 
 type ConversionCase = (
     u32,

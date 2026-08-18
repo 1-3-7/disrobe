@@ -13,7 +13,7 @@ use disrobe_pass_native::{LeafRecovery, recover_aarch64_function};
 const CASES: &[(&str, &str, &[u8])] = &include!("aarch64_recovery_corpus.inc");
 const EARLY_EXIT_REJECT: &str = "multiple/early returns not in forward-skip class";
 const EARLY_EXIT_REJECT_CEILING: usize = 2;
-const RECOVERED_FLOOR: usize = 1215;
+const RECOVERED_FLOOR: usize = 1247;
 
 fn corpus_fingerprint(digests: &BTreeMap<String, String>) -> String {
     let mut hasher: blake3::Hasher = blake3::Hasher::new();
@@ -119,9 +119,22 @@ fn aarch64_corpus_recovered_source_is_deterministic() {
         first, second,
         "aarch64 recovered source must be byte-identical across repeated runs"
     );
+    let recovered_now: usize = CASES
+        .iter()
+        .filter(|(_opt, _name, bytes): &&(&str, &str, &[u8])| {
+            recover_aarch64_function(bytes, 0).is_ok()
+        })
+        .count();
     assert_eq!(
         first.len(),
-        RECOVERED_FLOOR,
-        "the determinism sweep must cover every recovered corpus case"
+        recovered_now,
+        "the determinism sweep must cover every recovered corpus case, not a count pinned \
+         separately: the sweep digested {} of the {recovered_now} cases that recover today",
+        first.len()
+    );
+    assert!(
+        recovered_now >= RECOVERED_FLOOR,
+        "the determinism sweep covers {recovered_now} recovered case(s), below the floor \
+         {RECOVERED_FLOOR} the census enforces"
     );
 }

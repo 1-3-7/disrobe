@@ -16,14 +16,18 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use disrobe_pass_native::{Arch, DisasmInsn, LeafRecovery, disassemble, recover_aarch64_function};
+use disrobe_pass_native::{
+    Arch, DisasmInsn, LeafRecovery, PseudoScalarType as ScalarType, disassemble,
+    recover_aarch64_function,
+};
 
 #[path = "aarch64_grade/battery.rs"]
 mod battery;
 
 use battery::{
-    CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, ORACLE_FLAGS, build_ground_truth_object, cc,
-    compare_block, expected_arity, fp_expectation, run_with_watchdog,
+    CASES, EXTERNS, FP_DRIVER_HELPERS, FpExpectation, HOST_FP_PRECHECK, ORACLE_FLAGS,
+    build_ground_truth_object, cc, compare_block, expected_arity, fp_expectation,
+    run_with_watchdog,
 };
 
 const RUST_EDITION: &str = "2021";
@@ -330,6 +334,7 @@ fn build_driver(cases: &[Driven]) -> String {
          static long long fails = 0;\n\
          {decls}\n\
          int main(void) {{\n\
+         {HOST_FP_PRECHECK}\
          {HOST_REFERENCE_PROBES}\
          {blocks}\
          \x20   printf(\"GRADEDONE passed=%lld fails=%lld\\n\", passed, fails);\n\
@@ -407,7 +412,12 @@ fn corpus_rust_grade_report() {
                 ));
                 continue;
             };
-            if recovery.returns_fp.is_some() || !recovery.signature.parameter_types().is_empty() {
+            let has_fp_parameter: bool = recovery
+                .signature
+                .parameter_types()
+                .iter()
+                .any(|parameter: &ScalarType| *parameter != ScalarType::Int);
+            if recovery.returns_fp.is_some() || has_fp_parameter {
                 skips.push((
                     (*opt).to_owned(),
                     (*name).to_owned(),
@@ -624,6 +634,13 @@ fn corpus_rust_grade_report() {
             String::from_utf8_lossy(&out.stderr).into_owned()
         });
 
+        assert!(
+            !stdout
+                .lines()
+                .any(|line: &str| line.starts_with("HOSTFP flush-to-zero detected")),
+            "rust grade requires host gradual underflow for f32 and f64:\n{stdout}"
+        );
+
         let mut last_case: Option<(String, String)> = None;
         let mut round_fails: Vec<(String, String, String)> = Vec::new();
         let mut graded_done: Option<(i64, i64)> = None;
@@ -732,7 +749,8 @@ fn corpus_rust_grade_report() {
     if !skips.is_empty() {
         eprintln!("---- skipped-from-grading (with reason) ----");
         let mut reason_counts: BTreeMap<String, usize> = BTreeMap::new();
-        for (_, _, reason) in &skips {
+        for (optimization, name, reason) in &skips {
+            eprintln!("  SKIP {optimization} {name}: {reason}");
             *reason_counts.entry(reason.clone()).or_default() += 1;
         }
         eprintln!("  reason tally:");
@@ -754,98 +772,24 @@ fn corpus_rust_grade_report() {
         i64::try_from(attempted).unwrap_or(-1),
         "graded, wrong and skipped counts must partition the corpus"
     );
-    let mut numeric_divergences: Vec<&(String, String, String)> = Vec::new();
-    let mut nan_payload_divergences: Vec<&(String, String, String)> = Vec::new();
-    for entry in &wrong {
-        if both_sides_are_nan(&entry.2) {
-            nan_payload_divergences.push(entry);
-        } else {
-            numeric_divergences.push(entry);
-        }
-    }
-
-    eprintln!(
-        "---- divergences split: {} numeric, {} nan-payload-only ----",
-        numeric_divergences.len(),
-        nan_payload_divergences.len()
-    );
-    for entry in &nan_payload_divergences {
-        eprintln!("  nan-payload-only  {} {}  {}", entry.0, entry.1, entry.2);
-    }
-
     assert!(
-        numeric_divergences.is_empty(),
-        "every driven aarch64 rust rendering must agree numerically with the reference; these did not: {numeric_divergences:?}"
+        wrong.is_empty(),
+        "every driven aarch64 rust rendering must agree with the reference after NaN canonicalization: {wrong:?}"
     );
-    let mut nan_payload_members: Vec<(&str, &str)> = nan_payload_divergences
+    let descriptor_skips: Vec<&(String, String, String)> = skips
         .iter()
-        .map(|entry: &&(String, String, String)| (entry.0.as_str(), entry.1.as_str()))
+        .filter(|(_, _, reason): &&(String, String, String)| {
+            matches!(
+                reason.as_str(),
+                "fp signature mismatch"
+                    | "unexpected floating-point signature"
+                    | "no driver descriptor"
+                    | "arity mismatch"
+            )
+        })
         .collect();
-    nan_payload_members.sort_unstable();
-    nan_payload_members.dedup();
-    assert_eq!(
-        nan_payload_members.as_slice(),
-        NAN_PAYLOAD_DIVERGENCES,
-        "the only tolerated divergence class is one where BOTH sides are nan and they differ solely in sign and payload, which ieee 754 leaves implementation defined and where the rust rendering follows the aarch64 rule while the reference inherits the host's choice; that class is pinned by case identity so a new member fails here rather than joining a tolerated bucket"
+    assert!(
+        descriptor_skips.is_empty(),
+        "every recovered corpus case must have a total, matching driver descriptor: {descriptor_skips:?}"
     );
-    assert_eq!(
-        nan_payload_divergences.len(),
-        NAN_PAYLOAD_DIVERGENCES.len(),
-        "a pinned nan-payload case must diverge exactly once; a second divergence inside one of them is a new finding"
-    );
-}
-
-const NAN_PAYLOAD_DIVERGENCES: &[(&str, &str)] = &[
-    ("O0", "fs_sqrt_sum_d"),
-    ("O1", "fs_sqrt_scaled_f"),
-    ("O1", "fs_sqrt_sum_d"),
-    ("O2", "fs_sqrt_sum_d"),
-    ("O3", "fs_sqrt_scaled_f"),
-    ("O3", "fs_sqrt_sum_d"),
-    ("Os", "fs_sqrt_scaled_f"),
-    ("Os", "fs_sqrt_sum_d"),
-];
-
-fn both_sides_are_nan(detail: &str) -> bool {
-    let expected: Option<u64> = hex_field(detail, "w=");
-    let got: Option<u64> = hex_field(detail, "g=");
-    match (
-        expected,
-        got,
-        hex_width(detail, "w="),
-        hex_width(detail, "g="),
-    ) {
-        (Some(w), Some(g), Some(ww), Some(gw)) if ww == gw => {
-            is_nan_pattern(w, ww) && is_nan_pattern(g, gw)
-        }
-        _ => false,
-    }
-}
-
-fn hex_token<'detail>(detail: &'detail str, key: &str) -> Option<&'detail str> {
-    detail
-        .split_whitespace()
-        .find_map(|token: &str| token.strip_prefix(key))
-}
-
-fn hex_field(detail: &str, key: &str) -> Option<u64> {
-    u64::from_str_radix(hex_token(detail, key)?, 16).ok()
-}
-
-fn hex_width(detail: &str, key: &str) -> Option<usize> {
-    Some(hex_token(detail, key)?.len())
-}
-
-fn is_nan_pattern(bits: u64, hex_digits: usize) -> bool {
-    match hex_digits {
-        8 => {
-            let value: u32 = u32::try_from(bits).unwrap_or(0);
-            value & 0x7f80_0000 == 0x7f80_0000 && value & 0x007f_ffff != 0
-        }
-        16 => {
-            bits & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000
-                && bits & 0x000f_ffff_ffff_ffff != 0
-        }
-        _ => false,
-    }
 }
