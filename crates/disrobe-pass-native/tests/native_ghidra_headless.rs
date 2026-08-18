@@ -15,5 +15,5 @@ fn ghidra_probe_resolves_to_missing_when_path_lacks_analyzeheadless() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: Ghidra installation + real PE to exercise headless decompile"]
+#[ignore = "toolchain: needs a Ghidra install on PATH, which no runner provisions"]
 fn real_ghidra_headless_decompile_on_pe_fixture() {}

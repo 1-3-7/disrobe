@@ -15,5 +15,5 @@ fn retdec_probe_returns_backend_identifier() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: retdec installation + ELF/PE sample required"]
+#[ignore = "toolchain: needs a retdec install on PATH, which no runner provisions"]
 fn real_retdec_decompile_to_c() {}

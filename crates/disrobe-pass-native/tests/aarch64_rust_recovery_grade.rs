@@ -7,6 +7,9 @@
     clippy::too_many_lines
 )]
 
+#[path = "support/oracle_demand.rs"]
+mod oracle_demand;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -337,24 +340,29 @@ fn build_driver(cases: &[Driven]) -> String {
 }
 
 #[test]
-#[ignore = "recompile-differential over the whole corpus; needs a host c compiler and rustc and is codegen-sensitive, so it is opt-in via --ignored until the ci platform matrix is verified green"]
+#[ignore = "toolchain: needs a host c compiler and rustc to recompile and run the corpus; the ubuntu leg provisions clang-18 and runs it by name with DISROBE_REQUIRE_AARCH64_ORACLES set"]
 fn corpus_rust_grade_report() {
     let Some(compiler): Option<String> = cc() else {
-        eprintln!(
-            "SKIP aarch64 rust grade: no host C compiler (gcc/clang/cc) on PATH; cannot recompile-differential"
+        oracle_demand::unmeasured(
+            "the aarch64 rust recompile differential",
+            "no host C compiler (gcc, clang or cc) is on PATH",
         );
         return;
     };
     let Some(rust_compiler): Option<String> = rustc() else {
-        eprintln!("SKIP aarch64 rust grade: rustc not on PATH; cannot compile the rust rendering");
+        oracle_demand::unmeasured(
+            "the aarch64 rust recompile differential",
+            "rustc is not on PATH, so the rust rendering cannot be compiled",
+        );
         return;
     };
 
     let dir: tempfile::TempDir = tempfile::tempdir().expect("scratch dir");
     let Ok(battery_o): Result<PathBuf, String> = build_ground_truth_object(&compiler, dir.path())
     else {
-        eprintln!(
-            "SKIP aarch64 rust grade: host compiler could not build the ground-truth battery"
+        oracle_demand::unmeasured(
+            "the aarch64 rust recompile differential",
+            "the host compiler could not build the ground-truth battery",
         );
         return;
     };

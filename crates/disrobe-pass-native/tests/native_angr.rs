@@ -15,5 +15,5 @@ fn angr_probe_returns_backend_identifier() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: angr Python env + sample ELF required"]
+#[ignore = "toolchain: needs an angr python environment on PATH, which no runner provisions"]
 fn real_angr_cfg_recovery() {}

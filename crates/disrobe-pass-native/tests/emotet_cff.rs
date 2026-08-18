@@ -17,5 +17,5 @@ fn emotet_cff_marker_detected() {
 }
 
 #[test]
-#[ignore = "Emotet is a live malware family; no sample is committed and samples are never executed. Emotet's x86 control-flow flattening is defeated by the same cmp-chain unflattener validated in ollvm_passes.rs."]
+#[ignore = "fixture: no Emotet sample is committed, because it is a live malware family and this project never executes one; the same cmp-chain unflattener is graded on committed input in ollvm_passes.rs"]
 fn real_emotet_sample_strip() {}

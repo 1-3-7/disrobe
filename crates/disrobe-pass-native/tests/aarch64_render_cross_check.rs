@@ -7,6 +7,9 @@
     clippy::too_many_lines
 )]
 
+#[path = "support/oracle_demand.rs"]
+mod oracle_demand;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -336,14 +339,20 @@ fn rustc() -> Option<String> {
 }
 
 #[test]
-#[ignore = "cross-checks the c rendering against the rust rendering; needs a host c compiler and rustc, so it is opt-in via --ignored"]
+#[ignore = "toolchain: needs a host c compiler and rustc to build both renderings; the ubuntu leg provisions clang-18 and runs it by name with DISROBE_REQUIRE_AARCH64_ORACLES set"]
 fn c_and_rust_renderings_agree_bit_for_bit() {
     let Some(compiler): Option<String> = cc() else {
-        eprintln!("SKIP cross-check: no host C compiler on PATH");
+        oracle_demand::unmeasured(
+            "the aarch64 c against rust rendering cross-check",
+            "no host C compiler is on PATH",
+        );
         return;
     };
     let Some(rust_compiler): Option<String> = rustc() else {
-        eprintln!("SKIP cross-check: rustc not on PATH");
+        oracle_demand::unmeasured(
+            "the aarch64 c against rust rendering cross-check",
+            "rustc is not on PATH",
+        );
         return;
     };
 

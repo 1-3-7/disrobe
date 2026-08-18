@@ -15,5 +15,5 @@ fn rizin_probe_returns_backend_identifier() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: rizin installation + sample ELF needed for pdc round trip"]
+#[ignore = "toolchain: needs a rizin install on PATH, which no runner provisions"]
 fn real_rizin_pdc_round_trip() {}

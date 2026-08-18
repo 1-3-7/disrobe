@@ -21,5 +21,5 @@ fn ida_without_override_returns_license_required() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: IDA Pro headless license required"]
+#[ignore = "toolchain: needs a licensed IDA Pro headless install, which no runner provisions"]
 fn real_ida_headless_decompile() {}

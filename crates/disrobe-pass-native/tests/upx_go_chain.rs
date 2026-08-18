@@ -117,7 +117,7 @@ fn synthetic_go_runtime_markers_classify_as_go() {
 }
 
 #[test]
-#[ignore = "CORPUS GAP: no UPX-packed Go binary in corpus/native/packers/upx (and rg/git UPX \
+#[ignore = "fixture: no UPX-packed Go binary in corpus/native/packers/upx (and rg/git UPX \
             fixtures use a relocated-magic UPX variant the in-house packheader parser does not \
             key on); a UPX-packed+unpacked Go fixture pair is required to witness the positive \
             end-to-end Go classification path. Do not download samples."]

@@ -7,6 +7,9 @@
     clippy::too_many_lines
 )]
 
+#[path = "support/oracle_demand.rs"]
+mod oracle_demand;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -1075,10 +1078,13 @@ fn a_ninth_float_argument_spilled_to_the_stack_is_attributed() {
 }
 
 #[test]
-#[ignore = "needs a host c compiler; grades the emitter helpers against the independent integer model on directed corner vectors plus random bit patterns"]
+#[ignore = "toolchain: needs a host c compiler to grade the emitter helpers against the independent integer model; the ubuntu leg provisions clang-18 and runs it by name with DISROBE_REQUIRE_AARCH64_ORACLES set"]
 fn helpers_agree_with_the_integer_model_on_directed_vectors() {
     let Some(compiler): Option<String> = cc() else {
-        eprintln!("SKIP fp semantics sweep: no host C compiler on PATH");
+        oracle_demand::unmeasured(
+            "the aarch64 floating-point helper sweep",
+            "no host C compiler is on PATH",
+        );
         return;
     };
     assert!(
@@ -1112,7 +1118,7 @@ fn helpers_agree_with_the_integer_model_on_directed_vectors() {
 }
 
 #[test]
-#[ignore = "exhaustive 2^32 sweep over every f32 bit pattern; minutes of compute, opt-in"]
+#[ignore = "cost: an exhaustive sweep over all 2^32 f32 bit patterns, minutes of compute on any runner; the directed-vector case above grades the same helpers in seconds"]
 fn helpers_agree_with_the_integer_model_on_every_f32_pattern() {
     let Some(compiler): Option<String> = cc() else {
         eprintln!("SKIP exhaustive f32 sweep: no host C compiler on PATH");

@@ -17,5 +17,5 @@ fn alcatraz_runtime_marker_detected() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: real ALCATRAZ-protected Elastic Labs 2024 sample required"]
+#[ignore = "fixture: no ALCATRAZ-protected sample is committed; the Elastic Labs 2024 sample is not redistributable"]
 fn real_alcatraz_sample_strip() {}

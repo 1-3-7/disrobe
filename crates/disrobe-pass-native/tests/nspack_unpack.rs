@@ -268,7 +268,7 @@ fn test_nspack_hash_content_byte_recovery() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: ftp.packed.nspack.exe (NSPack-packed Microsoft ftp.exe) is flagged as a virus by Windows Defender and quarantined on read; re-stage from github.com/chesvectain/PackingData PackingData/NSPack/nspack_ftp.exe with a Defender exclusion on corpus/native/packers/nspack (requires admin). See MANIFEST.toml NSPack ftp row."]
+#[ignore = "environment: ftp.packed.nspack.exe (NSPack-packed Microsoft ftp.exe) is flagged as a virus by Windows Defender and quarantined on read; re-stage from github.com/chesvectain/PackingData PackingData/NSPack/nspack_ftp.exe with a Defender exclusion on corpus/native/packers/nspack (requires admin). See MANIFEST.toml NSPack ftp row."]
 fn test_nspack_ftp_content_byte_recovery() {
     assert_content_recovery("ftp", "ftp.packed.nspack.exe", "ftp.original.exe", 90.0);
 }

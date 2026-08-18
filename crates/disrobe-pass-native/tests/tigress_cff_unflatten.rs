@@ -64,5 +64,5 @@ fn tigress_unflatten_recovers_self_authored_register_state_dispatch() {
 }
 
 #[test]
-#[ignore = "no real Tigress-flattened binary is committed; the cmp-chain shape is validated on self-authored bytes above"]
+#[ignore = "fixture: no Tigress-flattened binary is committed; the cmp-chain shape is graded on self-authored bytes above"]
 fn real_tigress_sample_unflatten() {}

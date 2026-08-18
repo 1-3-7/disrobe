@@ -388,7 +388,7 @@ fn recorded_extended_register_increment_recovers_every_compiler_row() {
 }
 
 #[test]
-#[ignore = "recompile-differential over the whole corpus; needs a host c compiler and is codegen-sensitive, so it is opt-in via --ignored until the ci platform matrix is verified green"]
+#[ignore = "toolchain: needs a host c compiler to recompile and run the corpus; the ubuntu leg provisions clang-18 and runs it by name with DISROBE_REQUIRE_AARCH64_ORACLES set"]
 fn corpus_grade_report() {
     let compiler: String =
         cc().unwrap_or_else(|| panic!("corpus grade requires a host C compiler on PATH"));

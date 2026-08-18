@@ -376,7 +376,7 @@ fn compile_single_asm(source: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn linked_elf_hidden_address_matches_the_symbol_layout() {
     let source: &str = r#"
 __attribute__((visibility("hidden"))) const unsigned long long local_value = 0x1234ULL;
@@ -396,7 +396,7 @@ const unsigned long long *direct_address(void) { return &local_value; }
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn linked_elf_got_address_remains_an_indirect_load() {
     let definition: &str = "unsigned long long external_value = 0x123456789abcdef0ULL;\n";
     let caller: &str = r"
@@ -464,7 +464,7 @@ unsigned long long read_external(void) { return external_value; }
 }
 
 #[test]
-#[ignore = "requires clang"]
+#[ignore = "toolchain: needs clang on PATH to build the relocatable object this case grades"]
 fn relocatable_elf_tls_address_forms_remain_unresolved() {
     let source: &str = r#"
 extern __thread unsigned long long tls_dynamic __attribute__((tls_model("global-dynamic")));
@@ -505,7 +505,7 @@ unsigned long long read_tls_initial(void) { return tls_initial; }
 }
 
 #[test]
-#[ignore = "requires clang and ld64.lld"]
+#[ignore = "toolchain: needs clang and ld64.lld on PATH to build the linked Mach-O this case grades"]
 fn linked_macho_page_address_matches_the_symbol_layout() {
     let source: &str = r"
 static const unsigned long long local_value = 0x1234ULL;
@@ -544,7 +544,7 @@ const unsigned long long *direct_address(void) { return &local_value; }
 }
 
 #[test]
-#[ignore = "requires clang and ld64.lld"]
+#[ignore = "toolchain: needs clang and ld64.lld on PATH to build the linked Mach-O this case grades"]
 fn linked_macho_got_address_remains_an_indirect_load() {
     let source: &str = r"
 extern unsigned long long external_value;
@@ -819,7 +819,7 @@ fn assert_int_signature(function: &RecoveredFunction, width: u32, rule: CallSite
 }
 
 #[test]
-#[ignore = "requires clang, ld.lld, and a host C compiler"]
+#[ignore = "toolchain: needs clang, ld.lld and a host C compiler on PATH to build and run this case"]
 fn call_site_signature_matrix_recompiles_equivalently() {
     let mut graded: usize = 0;
     for optimization in OPTIMIZATION_LEVELS {
@@ -855,7 +855,7 @@ fn call_site_signature_matrix_recompiles_equivalently() {
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn bare_call_does_not_prove_a_floating_point_return() {
     for optimization in ["O1", "O2", "O3", "Os"] {
         let returning_object: Vec<u8> =
@@ -887,7 +887,7 @@ fn bare_call_does_not_prove_a_floating_point_return() {
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn relocation_symbols_keep_aliased_signatures_separate() {
     let callee: &str = r"
 .text
@@ -942,7 +942,7 @@ call_alias_d:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn half_precision_call_site_evidence_reaches_the_public_signature_proof() {
     let callee: &str = r"
 .text
@@ -975,7 +975,7 @@ half_caller:
 }
 
 #[test]
-#[ignore = "requires clang"]
+#[ignore = "toolchain: needs clang on PATH to build the relocatable object this case grades"]
 fn unique_direct_branch_without_relocation_is_attributed() {
     let source: &str = r"
 .text
@@ -1003,7 +1003,7 @@ direct_caller:
 }
 
 #[test]
-#[ignore = "requires clang"]
+#[ignore = "toolchain: needs clang on PATH to build the relocatable object this case grades"]
 fn direct_branch_to_aliased_address_is_not_attributed() {
     let source: &str = r"
 .text
@@ -1034,7 +1034,7 @@ direct_alias_caller:
 }
 
 #[test]
-#[ignore = "requires clang"]
+#[ignore = "toolchain: needs clang on PATH to build the relocatable object this case grades"]
 fn zero_sized_alias_blocks_direct_address_attribution() {
     let source: &str = r"
 .text
@@ -1065,7 +1065,7 @@ zero_alias_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn tail_jump_contributes_argument_evidence() {
     let normal_caller: &str = r"
 .text
@@ -1101,7 +1101,7 @@ tail_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn stale_pre_call_s0_does_not_prove_a_return() {
     let caller: &str = r"
 .text
@@ -1121,7 +1121,7 @@ stale_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn disagreeing_attributed_sites_refuse() {
     let float_caller: &str = r"
 .text
@@ -1158,7 +1158,7 @@ double_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn argument_arity_conflict_refuses() {
     let unary_caller: &str = r"
 .text
@@ -1195,7 +1195,7 @@ binary_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn return_width_conflict_refuses() {
     let float_caller: &str = r"
 .text
@@ -1229,7 +1229,7 @@ double_width_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn contradictory_attributed_site_is_not_ignored() {
     let valid_caller: &str = r"
 .text
@@ -1267,7 +1267,7 @@ contradictory_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn unsupported_result_access_invalidates_the_site() {
     let caller: &str = r"
 .text
@@ -1293,7 +1293,7 @@ unsupported_result_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn unresolved_post_call_edge_invalidates_the_site() {
     let caller: &str = r"
 .text
@@ -1322,7 +1322,7 @@ external_result_consumer:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn result_register_width_must_match_the_proven_argument() {
     let caller: &str = r"
 .text
@@ -1341,7 +1341,7 @@ mismatched_width_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn nonprefix_register_evidence_refuses() {
     let caller: &str = r"
 .text
@@ -1364,7 +1364,7 @@ nonprefix_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn universally_ignored_result_refuses() {
     let caller: &str = r"
 .text
@@ -1383,7 +1383,7 @@ ignored_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn post_call_redefinition_blocks_a_stale_read() {
     let caller: &str = r"
 .text
@@ -1406,7 +1406,7 @@ redefined_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x_read_dominates_compatible_w_reads() {
     let word_caller: &str = r"
 .text
@@ -1443,7 +1443,7 @@ extended_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn indirect_composite_without_layout_refuses() {
     let caller: &str = r"
 .text
@@ -1467,7 +1467,7 @@ composite_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn discarded_argument_site_contributes_no_composite_evidence() {
     let composite_caller: &str = r"
 .text
@@ -1509,7 +1509,7 @@ scalar_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_setup_without_a_buffer_read_proves_nothing() {
     let caller: &str = r"
 .text
@@ -1533,7 +1533,7 @@ unused_composite_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_nonbuffer_definition_proves_nothing() {
     let caller: &str = r"
 .text
@@ -1557,7 +1557,7 @@ nonbuffer_composite_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_buffer_base_change_proves_nothing() {
     let caller: &str = r"
 .text
@@ -1582,7 +1582,7 @@ moving_buffer_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_buffer_store_before_read_proves_nothing() {
     let caller: &str = r"
 .text
@@ -1607,7 +1607,7 @@ overwritten_buffer_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_buffer_alias_store_before_read_proves_nothing() {
     let caller: &str = r"
 .text
@@ -1633,7 +1633,7 @@ alias_overwrite_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn x8_system_memory_effect_before_read_proves_nothing() {
     let caller: &str = r"
 .arch armv8.5-a+memtag
@@ -1660,7 +1660,7 @@ system_overwrite_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn call_relocation_requires_a_matching_branch_opcode() {
     let caller: &str = r"
 .text
@@ -1684,7 +1684,7 @@ mismatched_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn nonzero_call_relocation_addend_is_not_attributed() {
     let callee: &str = r"
 .text
@@ -1715,7 +1715,7 @@ addend_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn mixed_register_classes_preserve_the_recovered_interface() {
     let callee: &str = r"
 .text
@@ -1752,7 +1752,7 @@ mixed_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn intervening_parameter_use_refuses() {
     let caller: &str = r"
 .text
@@ -1772,7 +1772,7 @@ used_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn read_modify_write_parameter_definition_refuses() {
     let caller: &str = r"
 .text
@@ -1792,7 +1792,7 @@ read_modify_write_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn alternate_parameter_consumer_refuses() {
     let caller: &str = r"
 .text
@@ -1815,7 +1815,7 @@ alternate_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn out_of_body_branch_target_blocks_argument_exclusivity() {
     let caller: &str = r"
 .text
@@ -1841,7 +1841,7 @@ alternate_consumer:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn store_exclusive_status_write_does_not_read_a_result() {
     let caller: &str = r"
 .text
@@ -1864,7 +1864,7 @@ exclusive_store_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn indirect_call_is_not_attributed() {
     let caller: &str = r"
 .text
@@ -1885,7 +1885,7 @@ indirect_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn authenticated_indirect_calls_are_dataflow_barriers() {
     let callees: &str = r"
 .text
@@ -1963,7 +1963,7 @@ caller_blrabz:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn authenticated_returns_and_branches_end_dataflow_paths() {
     let callees: &str = r"
 .text
@@ -2091,7 +2091,7 @@ caller_brabz:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn compatible_word_and_doubleword_reads_within_one_site_prove_x_width() {
     let caller: &str = r"
 .text
@@ -2117,7 +2117,7 @@ mixed_width_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn malformed_caller_body_is_not_evidence() {
     let caller: &str = r"
 .text
@@ -2140,7 +2140,7 @@ malformed_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn malformed_result_free_body_is_not_recovered() {
     let callee: &str = r"
 .text
@@ -2168,7 +2168,7 @@ malformed_target_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn oversized_result_free_body_is_not_recovered() {
     let callee: &str = r"
 .text
@@ -2197,7 +2197,7 @@ oversized_target_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn unresolved_predecessor_blocks_argument_proof() {
     let caller: &str = r"
 .text
@@ -2219,7 +2219,7 @@ unresolved_join:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn unresolved_predecessor_blocks_indirect_composite_proof() {
     let caller: &str = r"
 .text
@@ -2244,7 +2244,7 @@ unresolved_composite_join:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn nonterminating_symbol_end_invalidates_result_proof() {
     let caller: &str = r"
 .text
@@ -2269,7 +2269,7 @@ unterminated_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn conditional_symbol_end_fallthrough_invalidates_result_proof() {
     let caller: &str = r"
 .text
@@ -2294,7 +2294,7 @@ unterminated_conditional_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn nonprefix_site_discards_unsupported_result_evidence() {
     let noisy_caller: &str = r"
 .text
@@ -2333,7 +2333,7 @@ scalar_caller:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn exception_calls_are_result_dataflow_barriers() {
     let callees: &str = r"
 .text
@@ -2394,7 +2394,7 @@ caller_smc:
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn exception_returns_end_result_dataflow_paths() {
     let callees: &str = r"
 .text
@@ -2887,7 +2887,7 @@ fn dense_switch_grade(mutated: Option<&str>) -> DenseSwitchTally {
 }
 
 #[test]
-#[ignore = "requires clang, ld.lld, and a host C compiler"]
+#[ignore = "toolchain: needs clang, ld.lld and a host C compiler on PATH to build and run this case"]
 fn dense_jump_table_switches_recompile_equivalently() {
     let tally: DenseSwitchTally = dense_switch_grade(None);
     let expected_functions: usize = DENSE_SWITCH_LEVELS.len() * DENSE_SWITCH_CASES.len();
@@ -2923,7 +2923,7 @@ fn dense_jump_table_switches_recompile_equivalently() {
 }
 
 #[test]
-#[ignore = "requires clang, ld.lld, and a host C compiler"]
+#[ignore = "toolchain: needs clang, ld.lld and a host C compiler on PATH to build and run this case"]
 fn dense_jump_table_grade_rejects_a_mislabelled_case() {
     let tally: DenseSwitchTally = dense_switch_grade(Some(DENSE_SWITCH_MUTATED_FUNCTION));
     eprintln!(
@@ -2940,7 +2940,7 @@ fn dense_jump_table_grade_rejects_a_mislabelled_case() {
 }
 
 #[test]
-#[ignore = "requires clang and ld.lld"]
+#[ignore = "toolchain: needs clang and ld.lld on PATH to build the linked ELF this case grades"]
 fn dense_jump_table_switch_population_at_o0_is_reported() {
     let image: Vec<u8> = dense_switch_object(DENSE_SWITCH_UNOPTIMIZED_LEVEL);
     let program: RecoveredProgram = recover_aarch64_program(&image);

@@ -511,6 +511,23 @@ jobs:
       - name: aarch64 decompiler recompile-execution differential (one leg only)
         if: matrix.os == 'ubuntu-latest'
         run: cargo test -p disrobe-pass-native --test aarch64_recovery_grade -- --ignored --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 rust recompile-execution differential (one leg only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p disrobe-pass-native --test aarch64_rust_recovery_grade -- --ignored corpus_rust_grade_report --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 c against rust rendering cross-check (one leg only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p disrobe-pass-native --test aarch64_render_cross_check -- --ignored c_and_rust_renderings_agree_bit_for_bit --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
+      - name: aarch64 floating-point helper semantics on directed vectors (one leg only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p disrobe-pass-native --test aarch64_fp_semantics -- --ignored helpers_agree_with_the_integer_model_on_directed_vectors --nocapture
+        env:
+          DISROBE_REQUIRE_AARCH64_ORACLES: 1
       - name: aarch64 dense-switch CLI differential (one explicitly provisioned leg)
         if: matrix.os == 'ubuntu-latest'
         shell: bash

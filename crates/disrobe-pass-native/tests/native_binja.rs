@@ -21,5 +21,5 @@ fn binary_ninja_without_override_returns_license_required() {
 }
 
 #[test]
-#[ignore = "FIXTURE PENDING: Binary Ninja headless license required"]
+#[ignore = "toolchain: needs a licensed Binary Ninja headless install, which no runner provisions"]
 fn real_binja_headless_decompile() {}
