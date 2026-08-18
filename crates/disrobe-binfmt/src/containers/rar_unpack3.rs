@@ -1,3 +1,5 @@
+use crate::containers::rar_filters::FilterSet;
+use crate::containers::rar_ppmd::{DecodeCtx, Ppmd7};
 use crate::error::{Error, Result};
 
 const NC30: usize = 299;
@@ -8,6 +10,11 @@ const BC30: usize = 20;
 const HUFF_TABLE_SIZE30: usize = NC30 + DC30 + LDC30 + RC30;
 const MAX_LENGTH: usize = 15;
 const LOW_DIST_REP_COUNT: u32 = 16;
+const DECODE_WORK_PER_BYTE: u64 = 4;
+const DECODE_WORK_BASE: u64 = 65_536;
+const MAX_BLOCKS_PER_MEMBER: u32 = 8_192;
+const MAX_FILTER_RECORD: usize = 0xffff;
+const PPM_MEMORY_CEILING: u32 = 256 * 1024 * 1024;
 
 const LDECODE: [u32; 28] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 96, 112, 128,
@@ -122,6 +129,25 @@ impl<'a> BitInput<'a> {
     const fn exhausted(&self) -> bool {
         self.bit_pos >= self.total_bits()
     }
+
+    const fn byte_pos(&self) -> usize {
+        (self.bit_pos / 8) as usize
+    }
+
+    const fn set_byte_pos(&mut self, pos: usize) {
+        self.bit_pos = (pos as u64) * 8;
+    }
+
+    fn get_byte(&mut self) -> Result<u8> {
+        if self.bit_pos + 8 > self.total_bits() {
+            return Err(Error::Decompression(
+                "rar 2.9/3.x stream ended inside a byte-aligned field".to_owned(),
+            ));
+        }
+        let value: u8 = (self.peek16() >> 8) as u8;
+        self.addbits(8);
+        Ok(value)
+    }
 }
 
 fn make_decode_table(length_table: &[u8], table: &mut DecodeTable, size: usize) {
@@ -180,14 +206,10 @@ fn decode_number(inp: &mut BitInput<'_>, table: &DecodeTable) -> u16 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
     Lz,
-    Unsupported,
+    Ppm,
 }
 
-fn read_tables(
-    inp: &mut BitInput<'_>,
-    tables: &mut BlockTables,
-    old_table: &mut [u8; HUFF_TABLE_SIZE30],
-) -> Result<BlockKind> {
+fn read_tables(inp: &mut BitInput<'_>, lz: &mut LzState) -> Result<BlockKind> {
     inp.align_byte();
     if inp.bit_pos + 16 > inp.total_bits() {
         return Err(Error::Decompression(
@@ -196,8 +218,12 @@ fn read_tables(
     }
     let bit_field: u32 = inp.peek16();
     if bit_field & 0x8000 != 0 {
-        return Ok(BlockKind::Unsupported);
+        return Ok(BlockKind::Ppm);
     }
+    lz.low.prev_low_dist = 0;
+    lz.low.low_dist_rep_count = 0;
+    let tables: &mut BlockTables = &mut lz.tables;
+    let old_table: &mut [u8; HUFF_TABLE_SIZE30] = &mut lz.old_table;
     let keep_old: bool = bit_field & 0x4000 != 0;
     if !keep_old {
         *old_table = [0u8; HUFF_TABLE_SIZE30];
@@ -293,147 +319,205 @@ fn read_tables(
     Ok(BlockKind::Lz)
 }
 
-fn read_end_of_block(
-    inp: &mut BitInput<'_>,
-    tables: &mut BlockTables,
-    old_table: &mut [u8; HUFF_TABLE_SIZE30],
-) -> Result<bool> {
-    let bit_field: u32 = inp.peek16();
-    let new_table: bool;
-    let new_file: bool;
-    if bit_field & 0x8000 != 0 {
-        new_table = true;
-        new_file = false;
-        inp.addbits(1);
-    } else {
-        new_file = true;
-        new_table = bit_field & 0x4000 != 0;
-        inp.addbits(2);
-    }
-    if new_file {
-        return Ok(false);
-    }
-    if new_table {
-        match read_tables(inp, tables, old_table)? {
-            BlockKind::Lz => Ok(true),
-            BlockKind::Unsupported => Err(Error::Decompression(
-                "rar 2.9/3.x ppmii (ppmd) compressed block is not decoded in-tree; only the standard lz method is".to_owned(),
-            )),
-        }
-    } else {
-        Ok(true)
-    }
-}
-
 struct LowDistState {
     prev_low_dist: u32,
     low_dist_rep_count: u32,
 }
 
-pub fn unpack3(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
-    if unpacked_size > cap {
-        return Err(Error::Decompression(format!(
-            "rar 2.9/3.x unpacked size {unpacked_size} exceeds cap {cap}"
-        )));
+struct LzState {
+    tables: BlockTables,
+    old_table: [u8; HUFF_TABLE_SIZE30],
+    old_dist: [u32; 4],
+    last_length: u32,
+    low: LowDistState,
+    dist_tables: DistTables,
+}
+
+impl LzState {
+    fn new() -> Self {
+        Self {
+            tables: BlockTables::default(),
+            old_table: [0u8; HUFF_TABLE_SIZE30],
+            old_dist: [0u32; 4],
+            last_length: 0,
+            low: LowDistState {
+                prev_low_dist: 0,
+                low_dist_rep_count: 0,
+            },
+            dist_tables: DistTables::build(),
+        }
     }
-    if packed.first().is_some_and(|&b: &u8| b & 0x80 != 0) {
-        return crate::containers::rar_ppmd::unpack3_ppmd(packed, unpacked_size, cap);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockExit {
+    Filled,
+    EndOfData,
+    ReadTables,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct BlockProfile {
+    pub(crate) lz_blocks: u32,
+    pub(crate) ppm_blocks: u32,
+    pub(crate) lz_to_ppm: u32,
+    pub(crate) ppm_to_lz: u32,
+    pub(crate) filter_invocations: usize,
+    pub(crate) filter_kinds: [usize; 5],
+}
+
+struct Member<'a> {
+    packed: &'a [u8],
+    window: Vec<u8>,
+    want: usize,
+    filters: FilterSet,
+    budget: u64,
+    profile: BlockProfile,
+}
+
+impl Member<'_> {
+    fn spend(&mut self, work: u64) -> Result<()> {
+        self.budget = self.budget.checked_sub(work).ok_or_else(|| {
+            Error::Decompression(
+                "rar 2.9/3.x decode exceeded the work budget derived from the declared output size"
+                    .to_owned(),
+            )
+        })?;
+        Ok(())
     }
-    let want: usize = usize::try_from(unpacked_size).map_err(|_e: std::num::TryFromIntError| {
-        Error::Decompression("rar 2.9/3.x size overflow".to_owned())
-    })?;
-    let dist_tables: DistTables = DistTables::build();
-    let mut out: Vec<u8> = Vec::with_capacity(want);
-    let mut inp: BitInput<'_> = BitInput::new(packed);
-    let mut tables: BlockTables = BlockTables::default();
-    let mut old_table: [u8; HUFF_TABLE_SIZE30] = [0u8; HUFF_TABLE_SIZE30];
-    let mut old_dist: [u32; 4] = [0u32; 4];
-    let mut last_length: u32 = 0;
-    let mut low: LowDistState = LowDistState {
-        prev_low_dist: 0,
-        low_dist_rep_count: 0,
+}
+
+fn record_length_from_flags(flags: u8) -> Option<usize> {
+    match (flags & 0x07) + 1 {
+        7 | 8 => None,
+        other => Some(usize::from(other)),
+    }
+}
+
+fn read_filter_record_lz(inp: &mut BitInput<'_>) -> Result<(u8, Vec<u8>)> {
+    let flags: u8 = inp.get_byte()?;
+    let length: usize = match record_length_from_flags(flags) {
+        Some(direct) => direct,
+        None if (flags & 0x07) + 1 == 7 => usize::from(inp.get_byte()?) + 7,
+        None => {
+            let high: u8 = inp.get_byte()?;
+            let low: u8 = inp.get_byte()?;
+            (usize::from(high) << 8) | usize::from(low)
+        }
     };
-
-    match read_tables(&mut inp, &mut tables, &mut old_table)? {
-        BlockKind::Lz => {}
-        BlockKind::Unsupported => {
-            return Err(Error::Decompression(
-                "rar 2.9/3.x ppmii (ppmd) compressed block is not decoded in-tree; only the standard lz method is".to_owned(),
-            ));
-        }
+    let mut code: Vec<u8> = Vec::with_capacity(length.min(MAX_FILTER_RECORD));
+    for _ in 0..length {
+        code.push(inp.get_byte()?);
     }
+    Ok((flags, code))
+}
 
-    let mut guard: usize = 0;
-    let max_iters: usize = want.saturating_mul(4).saturating_add(4096);
-    while out.len() < want {
-        guard += 1;
-        if guard > max_iters {
+fn read_filter_record_ppm(ctx: &mut DecodeCtx<'_, '_>) -> Result<(u8, Vec<u8>)> {
+    let byte = |ctx: &mut DecodeCtx<'_, '_>| -> Result<u8> {
+        let value: i32 = ctx.decode_char();
+        if value < 0 {
             return Err(Error::Decompression(
-                "rar 2.9/3.x decode exceeded iteration budget".to_owned(),
+                "rar 2.9/3.x ppmd filter record ended inside the model stream".to_owned(),
             ));
         }
-        if inp.bit_pos >= inp.total_bits() {
-            break;
+        Ok(value as u8)
+    };
+    let flags: u8 = byte(ctx)?;
+    let length: usize = match record_length_from_flags(flags) {
+        Some(direct) => direct,
+        None if (flags & 0x07) + 1 == 7 => usize::from(byte(ctx)?) + 7,
+        None => {
+            let high: u8 = byte(ctx)?;
+            let low: u8 = byte(ctx)?;
+            (usize::from(high) << 8) | usize::from(low)
         }
-        let number: u16 = decode_number(&mut inp, &tables.ld);
+    };
+    let mut code: Vec<u8> = Vec::with_capacity(length.min(MAX_FILTER_RECORD));
+    for _ in 0..length {
+        code.push(byte(ctx)?);
+    }
+    Ok((flags, code))
+}
+
+fn decode_lz_block(
+    inp: &mut BitInput<'_>,
+    lz: &mut LzState,
+    member: &mut Member<'_>,
+) -> Result<BlockExit> {
+    loop {
+        if member.window.len() >= member.want {
+            return Ok(BlockExit::Filled);
+        }
+        member.spend(1)?;
+        if inp.bit_pos >= inp.total_bits() {
+            return Ok(BlockExit::EndOfData);
+        }
+        let number: u16 = decode_number(inp, &lz.tables.ld);
         if number < 256 {
-            out.push(number as u8);
+            member.window.push(number as u8);
             continue;
         }
         if number == 256 {
-            if !read_end_of_block(&mut inp, &mut tables, &mut old_table)? {
-                break;
+            let bit_field: u32 = inp.peek16();
+            if bit_field & 0x8000 == 0 {
+                inp.addbits(2);
+                return Ok(BlockExit::EndOfData);
             }
-            continue;
+            inp.addbits(1);
+            return Ok(BlockExit::ReadTables);
         }
         if number == 257 {
-            return Err(Error::Decompression(
-                "rar 2.9/3.x member carries a rarvm filter program (the executable e8/e8e9, delta, rgb and audio transforms run as rarvm bytecode here, not as fixed filter ids); the standard lz method is decoded in-tree but the rarvm interpreter is not".to_owned(),
-            ));
+            let (flags, code): (u8, Vec<u8>) = read_filter_record_lz(inp)?;
+            member.spend(code.len() as u64 + 8)?;
+            let position: u64 = member.window.len() as u64;
+            member.filters.record(flags, &code, position)?;
+            continue;
         }
         if number == 258 {
-            if last_length != 0 {
-                copy_string(&mut out, last_length, old_dist[0], want)?;
+            if lz.last_length != 0 {
+                let length: u32 = lz.last_length;
+                let distance: u32 = lz.old_dist[0];
+                copy_string(&mut member.window, length, distance, member.want)?;
             }
             continue;
         }
         if number < 263 {
             let dist_num: usize = (number - 259) as usize;
-            let distance: u32 = old_dist[dist_num];
+            let distance: u32 = lz.old_dist[dist_num];
             for n in (1..=dist_num).rev() {
-                old_dist[n] = old_dist[n - 1];
+                lz.old_dist[n] = lz.old_dist[n - 1];
             }
-            old_dist[0] = distance;
-            let length_number: u16 = decode_number(&mut inp, &tables.rd);
-            let length: u32 = read_length(&mut inp, length_number, 2);
-            last_length = length;
-            copy_string(&mut out, length, distance, want)?;
+            lz.old_dist[0] = distance;
+            let length_number: u16 = decode_number(inp, &lz.tables.rd);
+            let length: u32 = read_length(inp, length_number, 2);
+            lz.last_length = length;
+            copy_string(&mut member.window, length, distance, member.want)?;
             continue;
         }
         if number >= 271 {
             let length_index: usize = (number - 271) as usize;
-            let mut length: u32 = read_length(&mut inp, length_index as u16, 3);
-            let dist_number: u16 = decode_number(&mut inp, &tables.dd);
+            let mut length: u32 = read_length(inp, length_index as u16, 3);
+            let dist_number: u16 = decode_number(inp, &lz.tables.dd);
             let dist_index: usize = dist_number as usize;
-            let mut distance: u32 = dist_tables.ddecode[dist_index.min(DC30 - 1)] + 1;
-            let bits: u32 = dist_tables.dbits[dist_index.min(DC30 - 1)];
+            let mut distance: u32 = lz.dist_tables.ddecode[dist_index.min(DC30 - 1)] + 1;
+            let bits: u32 = lz.dist_tables.dbits[dist_index.min(DC30 - 1)];
             if bits > 0 {
                 if dist_index > 9 {
                     if bits > 4 {
                         distance += (inp.peek16() >> (20 - bits)) << 4;
                         inp.addbits(bits - 4);
                     }
-                    if low.low_dist_rep_count > 0 {
-                        low.low_dist_rep_count -= 1;
-                        distance += low.prev_low_dist;
+                    if lz.low.low_dist_rep_count > 0 {
+                        lz.low.low_dist_rep_count -= 1;
+                        distance += lz.low.prev_low_dist;
                     } else {
-                        let low_dist: u16 = decode_number(&mut inp, &tables.ldd);
+                        let low_dist: u16 = decode_number(inp, &lz.tables.ldd);
                         if low_dist == 16 {
-                            low.low_dist_rep_count = LOW_DIST_REP_COUNT - 1;
-                            distance += low.prev_low_dist;
+                            lz.low.low_dist_rep_count = LOW_DIST_REP_COUNT - 1;
+                            distance += lz.low.prev_low_dist;
                         } else {
                             distance += u32::from(low_dist);
-                            low.prev_low_dist = u32::from(low_dist);
+                            lz.low.prev_low_dist = u32::from(low_dist);
                         }
                     }
                 } else {
@@ -447,9 +531,9 @@ pub fn unpack3(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
                     length += 1;
                 }
             }
-            insert_old_dist(&mut old_dist, distance);
-            last_length = length;
-            copy_string(&mut out, length, distance, want)?;
+            insert_old_dist(&mut lz.old_dist, distance);
+            lz.last_length = length;
+            copy_string(&mut member.window, length, distance, member.want)?;
             continue;
         }
         let short_index: usize = (number - 263) as usize;
@@ -459,19 +543,262 @@ pub fn unpack3(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
             distance += inp.peek16() >> (16 - bits);
             inp.addbits(bits);
         }
-        insert_old_dist(&mut old_dist, distance);
-        last_length = 2;
-        copy_string(&mut out, 2, distance, want)?;
+        insert_old_dist(&mut lz.old_dist, distance);
+        lz.last_length = 2;
+        copy_string(&mut member.window, 2, distance, member.want)?;
     }
+}
 
-    out.truncate(want);
-    if out.len() != want {
+fn read_ppm_header(
+    inp: &mut BitInput<'_>,
+    model: &mut Option<Ppmd7>,
+    esc_char: &mut u8,
+) -> Result<()> {
+    let max_order_raw: u8 = inp.get_byte()?;
+    let reset: bool = max_order_raw & 0x20 != 0;
+    let max_mb: u8 = if reset { inp.get_byte()? } else { 0 };
+    if max_order_raw & 0x40 != 0 {
+        *esc_char = inp.get_byte()?;
+    }
+    if !reset {
+        if model.is_none() {
+            return Err(Error::Decompression(
+                "rar 2.9/3.x ppmd block continues a model that this member never started; solid state carried across archive entries is not decoded".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    let mut max_order: u32 = u32::from(max_order_raw & 0x1f) + 1;
+    if max_order > 16 {
+        max_order = 16 + (max_order - 16) * 3;
+    }
+    if max_order == 1 {
+        return Err(Error::Decompression(
+            "rar 2.9/3.x ppmd model order resolves to 1 (invalid)".to_owned(),
+        ));
+    }
+    let mem_bytes: u32 = (u32::from(max_mb) + 1)
+        .checked_shl(20)
+        .filter(|size: &u32| *size <= PPM_MEMORY_CEILING)
+        .ok_or_else(|| {
+            Error::Decompression(format!(
+                "rar 2.9/3.x ppmd model requests more than {PPM_MEMORY_CEILING} bytes"
+            ))
+        })?;
+    let mut fresh: Ppmd7 = Ppmd7::new(max_order, mem_bytes);
+    fresh.restart_model();
+    *model = Some(fresh);
+    Ok(())
+}
+
+fn decode_ppm_block(
+    inp: &mut BitInput<'_>,
+    model: &mut Option<Ppmd7>,
+    esc_char: &mut u8,
+    member: &mut Member<'_>,
+) -> Result<BlockExit> {
+    read_ppm_header(inp, model, esc_char)?;
+    let start: usize = inp.byte_pos();
+    let stream: &[u8] = member.packed.get(start..).ok_or_else(|| {
+        Error::Decompression("rar 2.9/3.x ppmd stream truncated after its header".to_owned())
+    })?;
+    let Some(active) = model.as_mut() else {
+        return Err(Error::Decompression(
+            "rar 2.9/3.x ppmd block reached decoding without a model".to_owned(),
+        ));
+    };
+    let escape: u8 = *esc_char;
+    let mut ctx: DecodeCtx<'_, '_> = DecodeCtx::new(active, stream);
+    let mut window: Vec<u8> = std::mem::take(&mut member.window);
+    let mut filters: FilterSet = std::mem::take(&mut member.filters);
+    let want: usize = member.want;
+
+    let outcome: Result<BlockExit> = loop {
+        if window.len() >= want {
+            break Ok(BlockExit::Filled);
+        }
+        if let Err(e) = member.spend(1) {
+            break Err(e);
+        }
+        let symbol: i32 = ctx.decode_char();
+        if symbol < 0 {
+            break Err(Error::Decompression(format!(
+                "rar 2.9/3.x ppmd decode produced {} of {want} bytes before a model error",
+                window.len()
+            )));
+        }
+        if symbol != i32::from(escape) {
+            window.push(symbol as u8);
+            continue;
+        }
+        let next: i32 = ctx.decode_char();
+        match next {
+            -1 => {
+                break Err(Error::Decompression(
+                    "rar 2.9/3.x ppmd escape sequence hit a model error".to_owned(),
+                ));
+            }
+            0 => break Ok(BlockExit::ReadTables),
+            2 => break Ok(BlockExit::EndOfData),
+            3 => {
+                let record: Result<(u8, Vec<u8>)> = read_filter_record_ppm(&mut ctx);
+                let (flags, code): (u8, Vec<u8>) = match record {
+                    Ok(pair) => pair,
+                    Err(e) => break Err(e),
+                };
+                if let Err(e) = member.spend(code.len() as u64 + 8) {
+                    break Err(e);
+                }
+                if let Err(e) = filters.record(flags, &code, window.len() as u64) {
+                    break Err(e);
+                }
+            }
+            4 => {
+                let mut distance: u32 = 0;
+                let mut length: u32 = 0;
+                let mut failed: bool = false;
+                for index in 0..4 {
+                    let byte: i32 = ctx.decode_char();
+                    if byte < 0 {
+                        failed = true;
+                        break;
+                    }
+                    if index == 3 {
+                        length = byte as u32;
+                    } else {
+                        distance = (distance << 8) + byte as u32;
+                    }
+                }
+                if failed {
+                    break Err(Error::Decompression(
+                        "rar 2.9/3.x ppmd lz-in-ppm escape truncated".to_owned(),
+                    ));
+                }
+                if let Err(e) = copy_string(&mut window, length + 32, distance + 2, want) {
+                    break Err(e);
+                }
+            }
+            5 => {
+                let length: i32 = ctx.decode_char();
+                if length < 0 {
+                    break Err(Error::Decompression(
+                        "rar 2.9/3.x ppmd rle-in-ppm escape truncated".to_owned(),
+                    ));
+                }
+                if let Err(e) = copy_string(&mut window, length as u32 + 4, 1, want) {
+                    break Err(e);
+                }
+            }
+            _ => window.push(escape),
+        }
+    };
+
+    let consumed: usize = ctx.consumed();
+    let overread: usize = ctx.overread();
+    member.window = window;
+    member.filters = filters;
+    let exit: BlockExit = outcome?;
+    if exit == BlockExit::ReadTables {
+        if overread != 0 {
+            return Err(Error::Decompression(format!(
+                "rar 2.9/3.x ppmd block ended {overread} bytes past the packed stream, so the following block has no input"
+            )));
+        }
+        inp.set_byte_pos(consumed.saturating_add(start));
+    }
+    Ok(exit)
+}
+
+fn drive(packed: &[u8], want: usize, unpacked_size: u64) -> Result<Member<'_>> {
+    let mut member: Member<'_> = Member {
+        packed,
+        window: Vec::with_capacity(crate::quota::bounded_prealloc(unpacked_size)),
+        want,
+        filters: FilterSet::default(),
+        budget: (want as u64)
+            .saturating_mul(DECODE_WORK_PER_BYTE)
+            .saturating_add(DECODE_WORK_BASE),
+        profile: BlockProfile::default(),
+    };
+    let mut inp: BitInput<'_> = BitInput::new(packed);
+    let mut lz: LzState = LzState::new();
+    let mut model: Option<Ppmd7> = None;
+    let mut esc_char: u8 = 2;
+    let mut kind: BlockKind = read_tables(&mut inp, &mut lz)?;
+
+    loop {
+        if member.window.len() >= want {
+            break;
+        }
+        if member.profile.lz_blocks + member.profile.ppm_blocks >= MAX_BLOCKS_PER_MEMBER {
+            return Err(Error::Decompression(format!(
+                "rar 2.9/3.x member declares more than {MAX_BLOCKS_PER_MEMBER} compression blocks"
+            )));
+        }
+        let exit: BlockExit = match kind {
+            BlockKind::Lz => {
+                member.profile.lz_blocks += 1;
+                decode_lz_block(&mut inp, &mut lz, &mut member)?
+            }
+            BlockKind::Ppm => {
+                member.profile.ppm_blocks += 1;
+                decode_ppm_block(&mut inp, &mut model, &mut esc_char, &mut member)?
+            }
+        };
+        match exit {
+            BlockExit::Filled | BlockExit::EndOfData => break,
+            BlockExit::ReadTables => {
+                let next: BlockKind = read_tables(&mut inp, &mut lz)?;
+                match (kind, next) {
+                    (BlockKind::Lz, BlockKind::Ppm) => member.profile.lz_to_ppm += 1,
+                    (BlockKind::Ppm, BlockKind::Lz) => member.profile.ppm_to_lz += 1,
+                    _ => {}
+                }
+                kind = next;
+            }
+        }
+    }
+    Ok(member)
+}
+
+pub(crate) fn unpack3_profiled(
+    packed: &[u8],
+    unpacked_size: u64,
+    cap: u64,
+) -> Result<(Vec<u8>, BlockProfile)> {
+    if unpacked_size > cap {
         return Err(Error::Decompression(format!(
-            "rar 2.9/3.x produced {} of {want} bytes",
-            out.len()
+            "rar 2.9/3.x unpacked size {unpacked_size} exceeds cap {cap}"
         )));
     }
-    Ok(out)
+    let want: usize = usize::try_from(unpacked_size).map_err(|_e: std::num::TryFromIntError| {
+        Error::Decompression("rar 2.9/3.x size overflow".to_owned())
+    })?;
+    let member: Member<'_> = drive(packed, want, unpacked_size)?;
+    if member.window.len() != want {
+        return Err(Error::Decompression(format!(
+            "rar 2.9/3.x produced {} of {want} bytes",
+            member.window.len()
+        )));
+    }
+    let mut profile: BlockProfile = member.profile;
+    profile.filter_invocations = member.filters.len();
+    profile.filter_kinds = member.filters.invocation_counts();
+    if member.filters.is_empty() {
+        return Ok((member.window, profile));
+    }
+    let filtered: Vec<u8> = member.filters.emit(&member.window, want)?;
+    if filtered.len() != want {
+        return Err(Error::Decompression(format!(
+            "rar 2.9/3.x filters produced {} of {want} bytes",
+            filtered.len()
+        )));
+    }
+    Ok((filtered, profile))
+}
+
+pub fn unpack3(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
+    unpack3_profiled(packed, unpacked_size, cap).map(|(bytes, _profile)| bytes)
 }
 
 fn read_length(inp: &mut BitInput<'_>, length_number: u16, base: u32) -> u32 {
@@ -515,6 +842,100 @@ fn copy_string(out: &mut Vec<u8>, length: u32, distance: u32, want: usize) -> Re
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn fixture(name: &str) -> Vec<u8> {
+        let mut path: std::path::PathBuf = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path.push("corpus");
+        path.push("binfmt");
+        path.push("rar");
+        path.push(name);
+        std::fs::read(&path).unwrap_or_else(|_e: std::io::Error| {
+            panic!("missing committed fixture corpus/binfmt/rar/{name}")
+        })
+    }
+
+    fn profile_of(name: &str, member: &str) -> BlockProfile {
+        let bytes: Vec<u8> = fixture(name);
+        let archive: crate::containers::RarArchive =
+            crate::containers::rar::parse_rar(&bytes).expect("parse rar");
+        let entry: &crate::containers::RarEntry = archive
+            .entries
+            .iter()
+            .find(|candidate: &&crate::containers::RarEntry| candidate.name == member)
+            .expect("member present");
+        let start: usize = entry.data_offset as usize;
+        let end: usize = start + entry.packed_size as usize;
+        let packed: &[u8] = &bytes[start..end];
+        unpack3_profiled(packed, entry.unpacked_size, 512 * 1024 * 1024)
+            .expect("decode member")
+            .1
+    }
+
+    #[test]
+    fn the_mixed_member_crosses_both_block_boundaries_in_both_directions() {
+        let profile: BlockProfile =
+            profile_of("mixed-ppmd-lz-rar3.rar", "ppmd_lzss_conversion_test.txt");
+        assert!(
+            profile.lz_blocks > 0 && profile.ppm_blocks > 0,
+            "the fixture must carry both block kinds: {profile:?}"
+        );
+        assert!(
+            profile.ppm_to_lz > 0,
+            "the fixture must switch from ppm to lz at least once: {profile:?}"
+        );
+        assert!(
+            profile.lz_to_ppm > 0,
+            "the fixture must switch from lz back to ppm at least once: {profile:?}"
+        );
+    }
+
+    #[test]
+    fn the_filter_member_applies_the_delta_and_x86_programs_its_records_name() {
+        let profile: BlockProfile = profile_of("filter-e8-rar3.rar", "bsdcat.exe");
+        assert_eq!(
+            profile.filter_kinds,
+            [6, 0, 1, 0, 0],
+            "bsdcat.exe carries six delta invocations and one x86 e8/e9 invocation: {profile:?}"
+        );
+        assert_eq!(
+            profile.filter_invocations,
+            profile.filter_kinds.iter().sum::<usize>(),
+            "every queued invocation must map to a canonical program: {profile:?}"
+        );
+        assert_eq!(profile.ppm_blocks, 0, "{profile:?}");
+    }
+
+    #[test]
+    fn the_multiblock_member_reads_several_lz_tables_without_any_ppm_block() {
+        let profile: BlockProfile =
+            profile_of("multiblock-lz-rar3.rar", "multi_lzss_blocks_test.txt");
+        assert!(
+            profile.lz_blocks > 1,
+            "the fixture must span several lz blocks: {profile:?}"
+        );
+        assert_eq!(profile.ppm_blocks, 0, "{profile:?}");
+        assert_eq!(profile.filter_invocations, 0, "{profile:?}");
+    }
+
+    #[test]
+    fn a_member_whose_declared_size_outruns_its_packed_stream_is_refused() {
+        let bytes: Vec<u8> = fixture("lowdist-reset-rar3.rar");
+        let archive: crate::containers::RarArchive =
+            crate::containers::rar::parse_rar(&bytes).expect("parse rar");
+        let entry: &crate::containers::RarEntry =
+            archive.entries.first().expect("one member present");
+        let start: usize = entry.data_offset as usize;
+        let end: usize = start + entry.packed_size as usize;
+        let error: Error = unpack3(&bytes[start..end], 1 << 20, 1 << 30)
+            .expect_err("a size far past the packed stream must be refused");
+        let text: String = error.to_string();
+        assert!(
+            text.contains("produced") || text.contains("truncated") || text.contains("budget"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn dist_table_first_entries_match_spec() {

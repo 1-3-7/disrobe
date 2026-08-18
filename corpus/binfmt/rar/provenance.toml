@@ -1,0 +1,56 @@
+schema = "disrobe.fixture-provenance/v1"
+format = "RAR 4 container, RAR 2.9/3.x compression (unpack version 29)"
+source_repository = "https://github.com/libarchive/libarchive.git"
+source_commit = "34c4a536a88d5114cfab7ca9bff48c0d235fd53a"
+source_directory = "libarchive/test"
+retrieved = "2026-08-18"
+licence = "BSD-2-Clause"
+licence_file = "COPYING"
+preparation = "Upstream stores each archive uuencoded as a .rar.uu file. Each fixture here is the uudecoded payload, byte for byte, renamed to describe what it exercises. No other change was made."
+independent_reference = "7-Zip 25.01 (C:/Program Files/7-Zip/7z.exe)"
+independent_reference_method = "7z x extracted every member; the recorded member_sha256 and member CRC-32 are 7-Zip output, not disrobe output. 7-Zip also reports the same CRC-32 the archive header declares."
+algorithm_reference = "The RAR 2.9/3.x filter architecture was implemented from libarchive's BSD-2-Clause archive_read_support_format_rar.c at the same commit, which identifies filter programs by exact length and CRC-32 and runs native transforms instead of a RARVM interpreter. No UnRAR source was copied into this repository."
+
+[[artifacts]]
+path = "filter-e8-rar3.rar"
+upstream_path = "test_read_format_rar_filter.rar.uu"
+sha256 = "b058412adcd3329a868cb66561a224eb0acf22ad2d380ef5d9e17e432a47d6a8"
+size_bytes = 94_301
+exercises = "LZ-carried filter records. The member queues seven filter invocations: six canonical delta programs and one canonical x86 e8/e9 program, each identified by exact length and CRC-32."
+member = "bsdcat.exe"
+member_size_bytes = 204_288
+member_sha256 = "a961532b3a196e0b2c0126ad6f35d511c9fdfeadacbe78a1b15dc221251ad9a2"
+member_crc32 = "0x4db10349"
+
+[[artifacts]]
+path = "mixed-ppmd-lz-rar3.rar"
+upstream_path = "test_read_format_rar_ppmd_lzss_conversion.rar.uu"
+sha256 = "1c75b4b35d0f381b46918b4ff26b6579cbfc18b8e3c78d39ce3b5a97af606183"
+size_bytes = 176_700
+exercises = "PPMd and LZ blocks inside one member, crossing in both directions. The PPMd escape 0 hands control back to the table reader and a later table sets the PPMd bit again, so both transitions are proved by the same member."
+member = "ppmd_lzss_conversion_test.txt"
+member_size_bytes = 241_647_978
+member_sha256 = "a0b8a5130c56577e61620f3f51ae29478a4c5251f1ed575cec73455fc9b485ea"
+member_crc32 = "0xf72b4477"
+
+[[artifacts]]
+path = "multiblock-lz-rar3.rar"
+upstream_path = "test_read_format_rar_multi_lzss_blocks.rar.uu"
+sha256 = "232593586009149311a21c2a3e509ce32c726322a9d971aee6f55676a4caebf1"
+size_bytes = 19_842
+exercises = "Several LZ tables in one member with no PPMd block and no filter record."
+member = "multi_lzss_blocks_test.txt"
+member_size_bytes = 20_131_111
+member_sha256 = "49a84a381599f749f93beaf486f3d661883d45659d9f46bfde9d34f72644f208"
+member_crc32 = "0x6ba21570"
+
+[[artifacts]]
+path = "lowdist-reset-rar3.rar"
+upstream_path = "test_read_format_rar3_lowdist_reset.rar.uu"
+sha256 = "45ca17d52b91a6f24c48fe5d79b04cb26052f7e1d732d8bf8e459c433540f916"
+size_bytes = 566
+exercises = "Low-distance repeat state that must be cleared when a new LZ table is read. Carrying the state across the table boundary produces 64 bytes with CRC-32 0x05d56889 instead of the declared 0x6ff838dc."
+member = "lowdist-reset.bin"
+member_size_bytes = 64
+member_sha256 = "353d5f7a0789034186922e5834f666f36fa1f98e18f53fb4140b336ba090a923"
+member_crc32 = "0x6ff838dc"

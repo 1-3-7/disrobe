@@ -20,6 +20,8 @@ const RAR4_FILE_HEAD: u8 = 0x74;
 const RAR4_ENDARC_HEAD: u8 = 0x7b;
 const RAR4_FLAG_ADD_SIZE: u16 = 0x8000;
 const RAR4_FLAG_DIRECTORY: u16 = 0xe0;
+const RAR4_LHD_SOLID: u16 = 0x0010;
+const RAR5_SOLID_FLAG: u64 = 0x0040;
 const RAR4_LHD_LARGE: u16 = 0x0100;
 const RAR4_LHD_UNICODE: u16 = 0x0200;
 
@@ -40,6 +42,8 @@ pub struct RarEntry {
     pub method_byte: u8,
     pub compression_version: u8,
     pub is_dir: bool,
+    pub is_solid: bool,
+    pub crc32: Option<u32>,
 }
 
 impl RarEntry {
@@ -172,9 +176,11 @@ fn parse_rar5_file_block(
     if file_flags & 0x0002 != 0 {
         let _mtime: u32 = cur.read_u32_le().ok()?;
     }
-    if file_flags & 0x0004 != 0 {
-        let _data_crc: u32 = cur.read_u32_le().ok()?;
-    }
+    let data_crc: Option<u32> = if file_flags & 0x0004 == 0 {
+        None
+    } else {
+        Some(cur.read_u32_le().ok()?)
+    };
     let compression_info: u64 = read_rar5_vint(cur)?;
     let _host_os: u64 = read_rar5_vint(cur)?;
     let name_length: u64 = read_rar5_vint(cur)?;
@@ -182,6 +188,7 @@ fn parse_rar5_file_block(
     let name: String = String::from_utf8_lossy(name_bytes).replace('\\', "/");
 
     let is_dir: bool = file_flags & FILE_FLAG_DIRECTORY != 0;
+    let is_solid: bool = compression_info & RAR5_SOLID_FLAG != 0;
     let method_bits: u64 = (compression_info & RAR5_METHOD_MASK) >> RAR5_METHOD_SHIFT;
     let raw_version: u8 = (compression_info & RAR5_VERSION_MASK) as u8;
     let compression_version: u8 = 50 + raw_version;
@@ -201,6 +208,8 @@ fn parse_rar5_file_block(
         method_byte,
         compression_version,
         is_dir,
+        is_solid,
+        crc32: data_crc,
     })
 }
 
@@ -280,7 +289,7 @@ fn parse_rar4_file_block(
         *bytes.get(block_start + 14)?,
     ]);
     let _host_os: u8 = *bytes.get(block_start + 15)?;
-    let _file_crc: u32 = u32::from_le_bytes([
+    let file_crc: u32 = u32::from_le_bytes([
         *bytes.get(block_start + 16)?,
         *bytes.get(block_start + 17)?,
         *bytes.get(block_start + 18)?,
@@ -330,6 +339,7 @@ fn parse_rar4_file_block(
     let name: String = decode_rar4_name(name_bytes, head_flags & RAR4_LHD_UNICODE != 0);
 
     let is_dir: bool = (head_flags & RAR4_FLAG_DIRECTORY) == RAR4_FLAG_DIRECTORY;
+    let is_solid: bool = head_flags & RAR4_LHD_SOLID != 0;
     let method: RarMethod = if method_byte == 0x30 {
         RarMethod::Store
     } else {
@@ -345,6 +355,8 @@ fn parse_rar4_file_block(
         method_byte,
         compression_version: unp_version,
         is_dir,
+        is_solid,
+        crc32: Some(file_crc),
     })
 }
 
@@ -454,20 +466,45 @@ fn packed_slice<'a>(bytes: &'a [u8], entry: &RarEntry) -> Result<&'a [u8]> {
 
 pub fn entry_bytes(bytes: &[u8], entry: &RarEntry, cap: u64) -> Result<Vec<u8>> {
     let packed: &[u8] = packed_slice(bytes, entry)?;
-    if entry.method == RarMethod::Store {
-        return Ok(packed.to_vec());
+    if entry.is_solid && entry.method != RarMethod::Store {
+        return Err(Error::Decompression(format!(
+            "rar entry `{}` is a solid member that continues the dictionary state of the entry before it; disrobe decodes each member on its own, so solid continuation is not recovered",
+            entry.name
+        )));
     }
-    if entry.compression_version >= 50 {
-        return crate::containers::rar_unpack5::unpack5(packed, entry.unpacked_size, cap);
+    let recovered: Vec<u8> = if entry.method == RarMethod::Store {
+        packed.to_vec()
+    } else if entry.compression_version >= 50 {
+        crate::containers::rar_unpack5::unpack5(packed, entry.unpacked_size, cap)?
+    } else if entry.compression_version >= 29 {
+        crate::containers::rar_unpack3::unpack3(packed, entry.unpacked_size, cap)?
+    } else {
+        return Err(Error::Decompression(format!(
+            "rar entry `{}` uses rar {} lz (method `{}`); only rar 2.9/3.x and rar 5.0 lz are decoded in-tree",
+            entry.name,
+            entry.compression_version,
+            entry.method_label()
+        )));
+    };
+    verify_entry_crc(entry, &recovered)?;
+    Ok(recovered)
+}
+
+fn verify_entry_crc(entry: &RarEntry, recovered: &[u8]) -> Result<()> {
+    let Some(declared) = entry.crc32 else {
+        return Ok(());
+    };
+    if entry.is_dir || recovered.len() as u64 != entry.unpacked_size {
+        return Ok(());
     }
-    if entry.compression_version >= 29 {
-        return crate::containers::rar_unpack3::unpack3(packed, entry.unpacked_size, cap);
+    let computed: u32 = crc32fast::hash(recovered);
+    if computed == declared {
+        return Ok(());
     }
     Err(Error::Decompression(format!(
-        "rar entry `{}` uses rar {} lz (method `{}`); only rar 2.9/3.x and rar 5.0 lz are decoded in-tree",
+        "rar entry `{}` recovered {} bytes with crc32 {computed:#010x}, but the archive header declares {declared:#010x}",
         entry.name,
-        entry.compression_version,
-        entry.method_label()
+        recovered.len()
     )))
 }
 
@@ -613,6 +650,27 @@ mod tests {
     }
 
     #[test]
+    fn a_solid_member_is_refused_by_name_rather_than_decoded_on_its_own() {
+        let entry: RarEntry = RarEntry {
+            name: "second.bin".to_owned(),
+            data_offset: 0,
+            packed_size: 4,
+            unpacked_size: 16,
+            method: RarMethod::Compressed,
+            method_byte: 0x33,
+            compression_version: 29,
+            is_dir: false,
+            is_solid: true,
+            crc32: None,
+        };
+        let error: Error = entry_bytes(&[0u8; 8], &entry, 1 << 20)
+            .expect_err("a solid member must not be decoded on its own");
+        let text: String = error.to_string();
+        assert!(text.contains("solid member"), "{text}");
+        assert!(text.contains("second.bin"), "{text}");
+    }
+
+    #[test]
     fn compressed_entry_reports_named_method_gap() {
         let entry: RarEntry = RarEntry {
             name: "x".to_owned(),
@@ -623,6 +681,8 @@ mod tests {
             method_byte: 0x33,
             compression_version: 29,
             is_dir: false,
+            is_solid: false,
+            crc32: None,
         };
         let err: Error = file_data(&[0u8; 8], &entry).unwrap_err();
         let msg: String = format!("{err}");

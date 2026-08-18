@@ -49,6 +49,7 @@ pub mod partition;
 pub mod pmarc;
 pub mod qnx;
 pub mod rar;
+pub(crate) mod rar_filters;
 pub mod rar_ppmd;
 pub mod rar_unpack3;
 pub mod rar_unpack5;

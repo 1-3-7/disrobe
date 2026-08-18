@@ -3,7 +3,7 @@ use disrobe_binfmt::containers::lha_dyn::{self, DynMethod};
 use disrobe_binfmt::containers::wim::WimCompression;
 use disrobe_binfmt::containers::{
     arc, arc_codec, arj, bare_stream, firmware, lha_huff, lz4_block, lzh, lzms, lzop, par2, pmarc,
-    rar_ppmd, rar_unpack3, rar_unpack5, stuffit, ucl, uzip, wim_codec, xalz,
+    rar_unpack3, rar_unpack5, stuffit, ucl, uzip, wim_codec, xalz,
 };
 use disrobe_binfmt::quota::ExtractionQuota;
 
@@ -233,7 +233,11 @@ fn rar_and_arc_hand_decoders_do_not_panic() {
                 let _ = rar_unpack5::unpack5(&body, size, CAP);
             }
             2 => {
-                let _ = rar_ppmd::unpack3_ppmd(&body, size, CAP);
+                let mut ppm_body: Vec<u8> = body.clone();
+                if let Some(first) = ppm_body.first_mut() {
+                    *first |= 0x80;
+                }
+                let _ = rar_unpack3::unpack3(&ppm_body, size, CAP);
             }
             3 => {
                 let _ = arc_codec::un_rle(&body, cap_u);

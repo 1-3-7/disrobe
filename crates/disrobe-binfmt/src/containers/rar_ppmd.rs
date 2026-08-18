@@ -1,5 +1,3 @@
-use crate::error::{Error, Result};
-
 const PPMD_NUM_INDEXES: usize = 38;
 const UNIT_SIZE: u32 = 12;
 const MAX_FREQ: u8 = 124;
@@ -306,7 +304,7 @@ struct See {
     count: u8,
 }
 
-struct Ppmd7 {
+pub(crate) struct Ppmd7 {
     sa: Suballoc,
     min_context: u32,
     max_context: u32,
@@ -327,7 +325,7 @@ struct Ppmd7 {
 }
 
 impl Ppmd7 {
-    fn new(max_order: u32, mem_size: u32) -> Self {
+    pub(crate) fn new(max_order: u32, mem_size: u32) -> Self {
         let mut ns2indx: [u8; 256] = [0u8; 256];
         let mut ns2bsindx: [u8; 256] = [0u8; 256];
         let mut hb2flag: [u8; 256] = [0u8; 256];
@@ -468,7 +466,7 @@ impl Ppmd7 {
         self.sa.base.copy_within(s..s + STATE_SIZE as usize, d);
     }
 
-    fn restart_model(&mut self) {
+    pub(crate) fn restart_model(&mut self) {
         self.sa.free_list = [0u32; PPMD_NUM_INDEXES];
         self.sa.text = self.sa.align_offset();
         self.sa.hi_unit = self.sa.text + self.sa.size;
@@ -960,6 +958,7 @@ struct RangeDec<'a> {
     low: u32,
     code: u32,
     range: u32,
+    exhausted: bool,
 }
 
 impl<'a> RangeDec<'a> {
@@ -970,6 +969,7 @@ impl<'a> RangeDec<'a> {
             low: 0,
             code: 0,
             range: 0xFFFF_FFFF,
+            exhausted: false,
         };
         for _ in 0..4 {
             rd.code = (rd.code << 8) | u32::from(rd.next_byte());
@@ -978,13 +978,12 @@ impl<'a> RangeDec<'a> {
     }
 
     fn next_byte(&mut self) -> u8 {
-        let b: u8 = self
-            .data
-            .get(self.pos)
-            .copied()
-            .map_or(0, |value: u8| value);
+        let Some(&byte) = self.data.get(self.pos) else {
+            self.exhausted = true;
+            return 0;
+        };
         self.pos += 1;
-        b
+        byte
     }
 
     const fn get_current_count(&mut self, scale: u32) -> u32 {
@@ -1027,15 +1026,33 @@ impl<'a> RangeDec<'a> {
     }
 }
 
-struct DecodeCtx<'a> {
-    model: Ppmd7,
+pub(crate) struct DecodeCtx<'m, 'a> {
+    model: &'m mut Ppmd7,
     rc: RangeDec<'a>,
     char_mask: [u8; 256],
     esc_count: u8,
     num_masked: u32,
 }
 
-impl DecodeCtx<'_> {
+impl<'m, 'a> DecodeCtx<'m, 'a> {
+    pub(crate) fn new(model: &'m mut Ppmd7, stream: &'a [u8]) -> Self {
+        Self {
+            model,
+            rc: RangeDec::new(stream),
+            char_mask: [0u8; 256],
+            esc_count: 1,
+            num_masked: 0,
+        }
+    }
+
+    pub(crate) const fn consumed(&self) -> usize {
+        self.rc.pos
+    }
+
+    pub(crate) const fn overread(&self) -> usize {
+        self.rc.pos.saturating_sub(self.rc.data.len())
+    }
+
     fn decode_bin_symbol(&mut self) -> i32 {
         let one: u32 = Ppmd7::one_state(self.model.min_context);
         self.model.hi_bits_flag =
@@ -1175,7 +1192,7 @@ impl DecodeCtx<'_> {
         }
     }
 
-    fn decode_char(&mut self) -> i32 {
+    pub(crate) fn decode_char(&mut self) -> i32 {
         if self.model.min_context <= self.model.sa.text {
             return -1;
         }
@@ -1215,164 +1232,6 @@ impl DecodeCtx<'_> {
             }
         }
     }
-}
-
-fn copy_string(out: &mut Vec<u8>, length: u32, distance: u32, want: usize) -> Result<()> {
-    let dist: usize = distance as usize;
-    if dist == 0 || dist > out.len() {
-        return Err(Error::Decompression(format!(
-            "rar 2.9/3.x ppmd match distance {dist} out of range (have {} bytes)",
-            out.len()
-        )));
-    }
-    let mut remaining: usize = length as usize;
-    let mut src: usize = out.len() - dist;
-    while remaining > 0 && out.len() < want {
-        let byte: u8 = out[src];
-        out.push(byte);
-        src += 1;
-        remaining -= 1;
-    }
-    Ok(())
-}
-
-pub fn unpack3_ppmd(packed: &[u8], unpacked_size: u64, cap: u64) -> Result<Vec<u8>> {
-    if unpacked_size > cap {
-        return Err(Error::Decompression(format!(
-            "rar 2.9/3.x ppmd unpacked size {unpacked_size} exceeds cap {cap}"
-        )));
-    }
-    let want: usize = usize::try_from(unpacked_size).map_err(|_e: std::num::TryFromIntError| {
-        Error::Decompression("rar 2.9/3.x ppmd size overflow".to_owned())
-    })?;
-
-    let mut hdr_pos: usize = 0;
-    let read_byte = |pos: &mut usize| -> Result<u8> {
-        let b: u8 = *packed
-            .get(*pos)
-            .ok_or_else(|| Error::Decompression("rar 2.9/3.x ppmd header truncated".to_owned()))?;
-        *pos += 1;
-        Ok(b)
-    };
-
-    let max_order_raw: u8 = read_byte(&mut hdr_pos)?;
-    let reset: bool = (max_order_raw & 0x20) != 0;
-    if !reset {
-        return Err(Error::Decompression(
-            "rar 2.9/3.x ppmd member continues a prior solid model (no in-stream reset); only self-contained ppmd members are decoded".to_owned(),
-        ));
-    }
-    let max_mb: u8 = read_byte(&mut hdr_pos)?;
-    let esc_char: u8 = if max_order_raw & 0x40 != 0 {
-        read_byte(&mut hdr_pos)?
-    } else {
-        2
-    };
-
-    let mut max_order: u32 = u32::from(max_order_raw & 0x1f) + 1;
-    if max_order > 16 {
-        max_order = 16 + (max_order - 16) * 3;
-    }
-    if max_order == 1 {
-        return Err(Error::Decompression(
-            "rar 2.9/3.x ppmd model order resolves to 1 (invalid)".to_owned(),
-        ));
-    }
-
-    let mem_bytes: u32 = (u32::from(max_mb) + 1)
-        .checked_shl(20)
-        .ok_or_else(|| Error::Decompression("rar 2.9/3.x ppmd memory size overflow".to_owned()))?;
-
-    let coder_stream: &[u8] = packed.get(hdr_pos..).ok_or_else(|| {
-        Error::Decompression("rar 2.9/3.x ppmd stream truncated after header".to_owned())
-    })?;
-
-    let mut model: Ppmd7 = Ppmd7::new(max_order, mem_bytes);
-    model.restart_model();
-    let rc: RangeDec<'_> = RangeDec::new(coder_stream);
-
-    let mut ctx: DecodeCtx<'_> = DecodeCtx {
-        model,
-        rc,
-        char_mask: [0u8; 256],
-        esc_count: 1,
-        num_masked: 0,
-    };
-
-    let mut out: Vec<u8> = Vec::with_capacity(want);
-    let mut guard: usize = 0;
-    let max_iters: usize = want.saturating_mul(4).saturating_add(4096);
-    while out.len() < want {
-        guard += 1;
-        if guard > max_iters {
-            return Err(Error::Decompression(
-                "rar 2.9/3.x ppmd decode exceeded iteration budget".to_owned(),
-            ));
-        }
-        let ch: i32 = ctx.decode_char();
-        if ch < 0 {
-            return Err(Error::Decompression(format!(
-                "rar 2.9/3.x ppmd decode produced {} of {want} bytes before a model error",
-                out.len()
-            )));
-        }
-        if ch == i32::from(esc_char) {
-            let next: i32 = ctx.decode_char();
-            match next {
-                0 => {
-                    return Err(Error::Decompression(
-                        "rar 2.9/3.x ppmd member ends one block but declares more output; multi-block ppmd members are not decoded in-tree".to_owned(),
-                    ));
-                }
-                -1 => {
-                    return Err(Error::Decompression(
-                        "rar 2.9/3.x ppmd escape sequence hit a model error".to_owned(),
-                    ));
-                }
-                2 => break,
-                3 => {
-                    return Err(Error::Decompression(
-                        "rar 2.9/3.x ppmd member carries a rarvm filter program (run as rarvm bytecode); the ppmd model is decoded in-tree but the rarvm interpreter is not".to_owned(),
-                    ));
-                }
-                4 => {
-                    let mut distance: u32 = 0;
-                    let mut length: u32 = 0;
-                    for i in 0..4 {
-                        let b: i32 = ctx.decode_char();
-                        if b < 0 {
-                            return Err(Error::Decompression(
-                                "rar 2.9/3.x ppmd lz-in-ppm escape truncated".to_owned(),
-                            ));
-                        }
-                        if i == 3 {
-                            length = b as u32;
-                        } else {
-                            distance = (distance << 8) + b as u32;
-                        }
-                    }
-                    copy_string(&mut out, length + 32, distance + 2, want)?;
-                    continue;
-                }
-                5 => {
-                    let length: i32 = ctx.decode_char();
-                    if length < 0 {
-                        return Err(Error::Decompression(
-                            "rar 2.9/3.x ppmd rle-in-ppm escape truncated".to_owned(),
-                        ));
-                    }
-                    copy_string(&mut out, length as u32 + 4, 1, want)?;
-                    continue;
-                }
-                _ => {
-                    out.push(esc_char);
-                    continue;
-                }
-            }
-        }
-        out.push(ch as u8);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -1424,6 +1283,6 @@ mod tests {
             90, 44, 84, 184, 35, 245, 208, 191, 90, 210, 125, 169, 120, 46, 78, 92, 42, 18, 144,
             237, 116,
         ];
-        let _ = unpack3_ppmd(&body, 4096, 4 * 1024 * 1024);
+        let _ = crate::containers::rar_unpack3::unpack3(&body, 4096, 4 * 1024 * 1024);
     }
 }

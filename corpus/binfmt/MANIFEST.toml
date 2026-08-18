@@ -143,7 +143,7 @@ sha256 = "12a4d3bc6d2d7534791fc6312dce438637711f7914f15648ddc27df99a2bd4f9"
 note = "37 MB is the diskpart floor for a default 32 MiB-block VHDX (one fully-allocated payload block); the file is all zeros past offset ~4.3 MB"
 
 [rar_payload]
-description = "RAR archives store hello.txt, lorem.txt and docs/notes.txt. expected/ holds the verbatim source files used as the ground truth for byte-exact member extraction. lorem.txt is 32800 bytes of repeated text so normal-mode compression actually shrinks it. The two filter-* RAR5 archives each hold one member chosen to trigger a post-LZ filter: x86code.bin is a self-authored compiled x86-64 PE (fibonacci/collatz/ackermann, no I/O) whose dense E8/E9 call/jmp opcodes make the RAR5 analyzer apply the x86 (E8E9) filter; delta.bin is interleaved 3-channel byte ramps that trigger the delta filter. expected/x86code.bin and expected/delta.bin are the verbatim originals. RAR 2.9/3.x applies its e8e9/delta/audio transforms through the rarvm bytecode rather than fixed filter ids, so the rar4 fixtures use plain-text members that exercise the standard (non-vm) lz path."
+description = "RAR archives store hello.txt, lorem.txt and docs/notes.txt. expected/ holds the verbatim source files used as the ground truth for byte-exact member extraction. lorem.txt is 32800 bytes of repeated text so normal-mode compression actually shrinks it. The two filter-* RAR5 archives each hold one member chosen to trigger a post-LZ filter: x86code.bin is a self-authored compiled x86-64 PE (fibonacci/collatz/ackermann, no I/O) whose dense E8/E9 call/jmp opcodes make the RAR5 analyzer apply the x86 (E8E9) filter; delta.bin is interleaved 3-channel byte ramps that trigger the delta filter. expected/x86code.bin and expected/delta.bin are the verbatim originals. RAR 2.9/3.x carries its delta, e8, e8e9, rgb and audio transforms as rarvm programs rather than fixed filter ids, so those members are recovered by identifying each program by exact length and CRC-32 and running a native transform. The four *-rar3 fixtures come from the libarchive test corpus and cover filter records, mixed PPMd and LZ blocks in one member, multiple LZ tables, and low-distance repeat state crossing a table boundary."
 
 [[fixtures]]
 path = "rar/store-rar4.rar"
@@ -217,6 +217,50 @@ sha256 = "89afb6fccfa9404b8f3bd2f25f4e5e656b57545268afcfa29c4ceecc6260a759"
 member = "multiblock.bin"
 member_size_bytes = 280_000
 member_sha256 = "17f2c40e3ad2ca3d453d7c433c5c5c83b9c51bb46517b7267530ff6c5149f058"
+
+[[fixtures]]
+path = "rar/filter-e8-rar3.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x33 normal (rar 2.9/3.x LZ) with canonical delta and x86 e8/e9 filter records"
+tool = "libarchive test corpus, commit 34c4a536a88d5114cfab7ca9bff48c0d235fd53a, BSD-2-Clause"
+provenance = "uudecoded from libarchive/test/test_read_format_rar_filter.rar.uu, retrieved 2026-08-18. See corpus/binfmt/rar/provenance.toml. 7-Zip 25.01 extracted bsdcat.exe to the recorded size and hash, and reports the same CRC-32 the archive header declares"
+size_bytes = 94_301
+sha256 = "b058412adcd3329a868cb66561a224eb0acf22ad2d380ef5d9e17e432a47d6a8"
+member = "bsdcat.exe"
+member_size_bytes = 204_288
+member_sha256 = "a961532b3a196e0b2c0126ad6f35d511c9fdfeadacbe78a1b15dc221251ad9a2"
+
+[[fixtures]]
+path = "rar/mixed-ppmd-lz-rar3.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x35 best, one member carrying both rar 2.9/3.x PPMd and LZ blocks"
+tool = "libarchive test corpus, commit 34c4a536a88d5114cfab7ca9bff48c0d235fd53a, BSD-2-Clause"
+provenance = "uudecoded from libarchive/test/test_read_format_rar_ppmd_lzss_conversion.rar.uu, retrieved 2026-08-18. See corpus/binfmt/rar/provenance.toml. 7-Zip 25.01 extracted the member to the recorded size and hash"
+size_bytes = 176_700
+sha256 = "1c75b4b35d0f381b46918b4ff26b6579cbfc18b8e3c78d39ce3b5a97af606183"
+member = "ppmd_lzss_conversion_test.txt"
+member_size_bytes = 241_647_978
+member_sha256 = "a0b8a5130c56577e61620f3f51ae29478a4c5251f1ed575cec73455fc9b485ea"
+
+[[fixtures]]
+path = "rar/multiblock-lz-rar3.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x33 normal, one member spanning several rar 2.9/3.x LZ tables"
+tool = "libarchive test corpus, commit 34c4a536a88d5114cfab7ca9bff48c0d235fd53a, BSD-2-Clause"
+provenance = "uudecoded from libarchive/test/test_read_format_rar_multi_lzss_blocks.rar.uu, retrieved 2026-08-18. See corpus/binfmt/rar/provenance.toml. 7-Zip 25.01 extracted the member to the recorded size and hash"
+size_bytes = 19_842
+sha256 = "232593586009149311a21c2a3e509ce32c726322a9d971aee6f55676a4caebf1"
+member = "multi_lzss_blocks_test.txt"
+member_size_bytes = 20_131_111
+member_sha256 = "49a84a381599f749f93beaf486f3d661883d45659d9f46bfde9d34f72644f208"
+
+[[fixtures]]
+path = "rar/lowdist-reset-rar3.rar"
+format = "RAR 4 (Rar!\\x1a\\x07\\x00), method 0x35 best, low-distance repeat state crossing an LZ table boundary"
+tool = "libarchive test corpus, commit 34c4a536a88d5114cfab7ca9bff48c0d235fd53a, BSD-2-Clause"
+provenance = "uudecoded from libarchive/test/test_read_format_rar3_lowdist_reset.rar.uu, retrieved 2026-08-18. See corpus/binfmt/rar/provenance.toml. 7-Zip 25.01 extracted the member to the recorded size and hash"
+size_bytes = 566
+sha256 = "45ca17d52b91a6f24c48fe5d79b04cb26052f7e1d732d8bf8e459c433540f916"
+member = "lowdist-reset.bin"
+member_size_bytes = 64
+member_sha256 = "353d5f7a0789034186922e5834f666f36fa1f98e18f53fb4140b336ba090a923"
 
 [[fixtures]]
 path = "iso/joliet-rockridge.iso"
