@@ -4357,7 +4357,7 @@ fn render_delphi_sidecar(sidecar: &DelphiSidecar) {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
