@@ -21,9 +21,9 @@ mod method_bodies;
 mod method_boundaries;
 
 pub use metadata_records::{
-    AotCodeRange, AotMetadataAttribution, AotMetadataStatus, AotMethod, AotMethodBody,
-    AotMethodSignature, AotType, AotTypeSignature, AotTypeSignatureKind,
-    recover_metadata_attribution,
+    AOT_SIGNATURE_ABSTENTIONS, AotCodeRange, AotMetadataAttribution, AotMetadataStatus, AotMethod,
+    AotMethodBody, AotMethodSignature, AotSignatureAbstention, AotSignatureProvenance, AotType,
+    AotTypeSignature, AotTypeSignatureKind, recover_metadata_attribution,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

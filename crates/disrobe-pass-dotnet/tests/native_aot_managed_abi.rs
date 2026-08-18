@@ -2,7 +2,10 @@
 
 use disrobe_core::chain::Pass;
 use disrobe_core::{Artifact, Rung};
-use disrobe_pass_dotnet::aot::{AotReport, AotRuntime, ReadyToRunHeader, detect};
+use disrobe_pass_dotnet::aot::{
+    AOT_SIGNATURE_ABSTENTIONS, AotReport, AotRuntime, AotSignatureAbstention, ReadyToRunHeader,
+    detect,
+};
 use disrobe_pass_dotnet::chain_detector::DOTNET_PASS;
 use disrobe_pass_dotnet::pe::{PeBitness, PeImage, parse};
 
@@ -22,6 +25,8 @@ const FP_LINK_MAP: &str =
     include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.link.map.txt");
 const FP_UNWIND: &str = include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.unwind.txt");
 const FP_DISASM: &str = include_str!("fixtures/native_aot/managed_abi_fp_net9_x86_64.disasm.txt");
+const PUBLISHED_SCHEMA: &str =
+    include_str!("../../../schemas/v0/json/native-aot-symbols.schema.json");
 
 const AMD64_MACHINE: u16 = 0x8664;
 const MS_X64_INTEGER_REGISTERS: [&str; 4] = ["rcx", "rdx", "r8", "r9"];
@@ -70,6 +75,7 @@ const MANAGED_SIGN_REINTERPRETED: [&str; 6] = [
     "System.IntPtr",
 ];
 const MANAGED_FLOATING_POINT: [&str; 2] = ["System.Single", "System.Double"];
+const COINCIDENT_FLOATING_POINT_METHODS: [&str; 3] = ["AddDouble", "ScaleFloat", "Promote"];
 
 struct Evidence {
     image: &'static [u8],
@@ -796,5 +802,234 @@ fn the_runtime_label_comes_from_the_metadata_version_not_a_build_path() -> Resul
         Some(11)
     );
     assert_eq!(unlisted_report.runtime_label, AotRuntime::Unknown);
+    Ok(())
+}
+
+fn recovered_body<'document>(
+    document: &'document serde_json::Value,
+    declaring_type: &str,
+    name: &str,
+) -> Result<&'document serde_json::Value, &'static str> {
+    let body: &serde_json::Value = &method_record(document, declaring_type, name)?["body"];
+    if body["status"] != "recovered" {
+        return Err("the method does not carry a recovered body");
+    }
+    Ok(body)
+}
+
+fn signature_source<'document>(
+    document: &'document serde_json::Value,
+    declaring_type: &str,
+    name: &str,
+) -> Result<(&'document str, Option<&'document str>), &'static str> {
+    let body: &serde_json::Value = recovered_body(document, declaring_type, name)?;
+    let source: &str = body["signature_source"]
+        .as_str()
+        .ok_or("the recovered body records no signature source")?;
+    let abstention: Option<&str> = body
+        .get("signature_abstention")
+        .and_then(serde_json::Value::as_str);
+    Ok((source, abstention))
+}
+
+fn recorded_source_counts(document: &serde_json::Value) -> Result<(u64, u64), &'static str> {
+    let counts: &serde_json::Value = &document["signature_source_counts"];
+    let managed: u64 = counts["managed"]
+        .as_u64()
+        .ok_or("the artifact records no managed signature count")?;
+    let registers: u64 = counts["registers"]
+        .as_u64()
+        .ok_or("the artifact records no register signature count")?;
+    Ok((managed, registers))
+}
+
+fn counted_sources(document: &serde_json::Value) -> Result<(u64, u64), &'static str> {
+    let mut managed: u64 = 0;
+    let mut registers: u64 = 0;
+    for method in document["methods"]
+        .as_array()
+        .ok_or("the artifact carries no method array")?
+    {
+        let body: &serde_json::Value = &method["body"];
+        if body["status"] != "recovered" {
+            continue;
+        }
+        match body["signature_source"].as_str() {
+            Some("managed") => managed = managed.saturating_add(1),
+            Some("registers") => registers = registers.saturating_add(1),
+            _other => return Err("a recovered body records an unknown signature source"),
+        }
+    }
+    Ok((managed, registers))
+}
+
+#[test]
+fn a_reattachment_whose_text_matches_the_lifted_text_is_still_recorded_as_managed()
+-> Result<(), &'static str> {
+    let document: serde_json::Value = FLOATING_POINT.document()?;
+
+    for method in COINCIDENT_FLOATING_POINT_METHODS {
+        let slots: Vec<Option<&'static str>> = FLOATING_POINT.declared_slots(method)?;
+        assert!(
+            slots
+                .iter()
+                .copied()
+                .all(|slot: Option<&str>| slot.is_some_and(is_floating_point)),
+            "{method} must declare only floating-point arguments for this case to be coincident"
+        );
+        let prototype: String = FLOATING_POINT.expected_prototype_line(method)?;
+        let pseudo_c: &str = recovered_pseudo_c(&document, FLOATING_POINT.declaring_type, method)?;
+        assert!(
+            pseudo_c.contains(prototype.as_str()),
+            "{method}: {pseudo_c}"
+        );
+        assert_eq!(
+            signature_source(&document, FLOATING_POINT.declaring_type, method)?,
+            ("managed", None),
+            "{method} reattaches to text the lifter would have produced anyway, so only the \
+             recorded source can tell the two apart"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn every_declined_reattachment_names_the_rule_that_declined_it() -> Result<(), &'static str> {
+    let document: serde_json::Value = FLOATING_POINT.document()?;
+
+    assert_eq!(
+        signature_source(&document, FLOATING_POINT.declaring_type, "Split")?,
+        ("registers", Some("hidden-struct-return")),
+        "a return larger than eight bytes travels through a caller-supplied pointer"
+    );
+    assert_eq!(
+        signature_source(&document, "System.Object", "ReferenceEquals")?,
+        ("registers", Some("type-outside-primitive-table")),
+        "System.Object is a System type with no scalar C99 equivalent"
+    );
+    assert_eq!(
+        signature_source(
+            &document,
+            "System.Runtime.InteropServices.DefaultDllImportSearchPathsAttribute",
+            ".ctor"
+        )?,
+        ("registers", Some("type-namespace-not-system")),
+        "an argument declared outside the System namespace is not a primitive"
+    );
+    assert_eq!(
+        signature_source(
+            &document,
+            "System.Runtime.CompilerServices.NullableAttribute",
+            ".ctor"
+        )?,
+        ("registers", Some("type-signature-kind-unsupported")),
+        "only a type definition handle resolves to a primitive"
+    );
+    for (key, name) in FP_REATTACHED_METHODS {
+        assert_eq!(
+            signature_source(&document, FLOATING_POINT.declaring_type, name)?,
+            ("managed", None),
+            "{key}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_artifact_carries_the_reattachment_rate_it_achieved() -> Result<(), &'static str> {
+    for evidence in [&BASELINE, &FLOATING_POINT] {
+        let document: serde_json::Value = evidence.document()?;
+        let recorded: (u64, u64) = recorded_source_counts(&document)?;
+        let counted: (u64, u64) = counted_sources(&document)?;
+
+        assert_eq!(
+            recorded, counted,
+            "the document-level counts must equal the per-method records"
+        );
+        assert!(
+            recorded.0 > 0 && recorded.1 > 0,
+            "both signature sources occur on this fixture: {recorded:?}"
+        );
+    }
+    let baseline: serde_json::Value = BASELINE.document()?;
+    let floating_point: serde_json::Value = FLOATING_POINT.document()?;
+
+    assert_eq!(recorded_source_counts(&baseline)?, (15, 28));
+    assert_eq!(recorded_source_counts(&floating_point)?, (19, 29));
+    Ok(())
+}
+
+fn published_abstention_enum() -> Result<Vec<String>, &'static str> {
+    let schema: serde_json::Value = serde_json::from_str(PUBLISHED_SCHEMA)
+        .map_err(|_error: serde_json::Error| "the published schema is not JSON")?;
+    schema["$defs"]["RegisterSignatureBody"]["properties"]["signature_abstention"]["enum"]
+        .as_array()
+        .ok_or("the published schema declares no abstention enum")?
+        .iter()
+        .map(|value: &serde_json::Value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or("the published abstention enum holds a non-string")
+        })
+        .collect()
+}
+
+#[test]
+fn the_published_schema_declares_exactly_the_rules_the_pass_emits() -> Result<(), &'static str> {
+    let published: Vec<String> = published_abstention_enum()?;
+    let emitted: Vec<String> = AOT_SIGNATURE_ABSTENTIONS
+        .iter()
+        .map(|abstention: &AotSignatureAbstention| abstention.wire().to_owned())
+        .collect();
+
+    assert_eq!(
+        published, emitted,
+        "the published contract and the declining rules must not drift apart"
+    );
+    let schema: serde_json::Value = serde_json::from_str(PUBLISHED_SCHEMA)
+        .map_err(|_error: serde_json::Error| "the published schema is not JSON")?;
+    assert_eq!(
+        schema["$defs"]["ManagedSignatureBody"]["properties"]["signature_abstention"],
+        serde_json::Value::Null,
+        "a reattached signature has no declining rule to record"
+    );
+    assert_eq!(
+        schema["$defs"]["ManagedSignatureBody"]["additionalProperties"],
+        serde_json::Value::Bool(false),
+        "the managed body shape is closed, so the invariant is structural"
+    );
+    Ok(())
+}
+
+#[test]
+fn every_emitted_artifact_matches_the_published_body_contract() -> Result<(), &'static str> {
+    let published: Vec<String> = published_abstention_enum()?;
+    for evidence in [&BASELINE, &FLOATING_POINT] {
+        let document: serde_json::Value = evidence.document()?;
+        for method in document["methods"]
+            .as_array()
+            .ok_or("the artifact carries no method array")?
+        {
+            let body: &serde_json::Value = &method["body"];
+            if body["status"] != "recovered" {
+                continue;
+            }
+            let source: &str = body["signature_source"]
+                .as_str()
+                .ok_or("a recovered body records no signature source")?;
+            let abstention: Option<&str> = body
+                .get("signature_abstention")
+                .and_then(serde_json::Value::as_str);
+            match (source, abstention) {
+                ("managed", None) => {}
+                ("registers", Some(rule)) => assert!(
+                    published.iter().any(|candidate: &String| candidate == rule),
+                    "{rule} is emitted but not published"
+                ),
+                _other => return Err("a recovered body breaks the published body contract"),
+            }
+        }
+    }
     Ok(())
 }

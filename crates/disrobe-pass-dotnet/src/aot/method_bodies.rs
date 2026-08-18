@@ -1,7 +1,9 @@
 use disrobe_pass_native::{LeafRecovery, PseudoAbi, recover_leaf_function_abi};
 
 use super::managed_abi;
-use super::{AotCodeRange, AotMethod, AotMethodBody, AotType};
+use super::{
+    AotCodeRange, AotMethod, AotMethodBody, AotSignatureAbstention, AotSignatureProvenance, AotType,
+};
 use crate::pe::PeImage;
 
 const MAX_METHOD_BODY_INPUT_BYTES: usize = 1024 * 1024;
@@ -189,7 +191,7 @@ fn recover_body(
 
 const fn outcome_bytes(outcome: &AotMethodBody) -> usize {
     match outcome {
-        AotMethodBody::Recovered { pseudo_c } => pseudo_c.len(),
+        AotMethodBody::Recovered { pseudo_c, .. } => pseudo_c.len(),
         AotMethodBody::Refused { reason } => reason.len(),
     }
 }
@@ -258,7 +260,7 @@ pub(super) fn attach_method_bodies(
             BodyOutcome::Refused(body) => body,
             BodyOutcome::Lifted(lifted) => {
                 let recovery: LeafRecovery = *lifted;
-                let reassociated: Option<String> = if group_size == 1 {
+                let reassociated: Result<String, AotSignatureAbstention> = if group_size == 1 {
                     let method_index: usize = ranges
                         .get(cursor)
                         .map(|(method_index, _range): &(usize, AotCodeRange)| *method_index)
@@ -268,10 +270,19 @@ pub(super) fn attach_method_bodies(
                         .ok_or_else(|| invalid(range, "method body signature method is absent"))?;
                     managed_abi::reassociate(&recovery, method, types)
                 } else {
-                    None
+                    Err(AotSignatureAbstention::SharedCodeRange)
                 };
-                AotMethodBody::Recovered {
-                    pseudo_c: reassociated.unwrap_or(recovery.source),
+                match reassociated {
+                    Ok(pseudo_c) => AotMethodBody::Recovered {
+                        pseudo_c,
+                        signature: AotSignatureProvenance::Managed,
+                    },
+                    Err(signature_abstention) => AotMethodBody::Recovered {
+                        pseudo_c: recovery.source,
+                        signature: AotSignatureProvenance::Registers {
+                            signature_abstention,
+                        },
+                    },
                 }
             }
         };
@@ -304,8 +315,9 @@ pub(super) fn attach_method_bodies(
 #[cfg(test)]
 mod tests {
     use super::{
-        AotCodeRange, AotMethod, AotMethodBody, BodyBudget, MAX_METHOD_BODY_OUTPUT_BYTES,
-        MAX_TOTAL_BODY_OUTPUT_BYTES, PeImage, attach_method_bodies, outcome_bytes, refused,
+        AotCodeRange, AotMethod, AotMethodBody, AotSignatureAbstention, AotSignatureProvenance,
+        BodyBudget, MAX_METHOD_BODY_OUTPUT_BYTES, MAX_TOTAL_BODY_OUTPUT_BYTES, PeImage,
+        attach_method_bodies, outcome_bytes, refused,
     };
     use crate::pe::{PeBitness, SectionHeader};
 
@@ -352,7 +364,12 @@ mod tests {
         assert_eq!(methods.len(), 5_000);
         assert!(methods.iter().all(|method: &AotMethod| matches!(
             method.body,
-            Some(AotMethodBody::Recovered { .. })
+            Some(AotMethodBody::Recovered {
+                signature: AotSignatureProvenance::Registers {
+                    signature_abstention: AotSignatureAbstention::SharedCodeRange,
+                },
+                ..
+            })
         )));
         Ok(())
     }
@@ -408,6 +425,7 @@ mod tests {
             fallback_range,
             AotMethodBody::Recovered {
                 pseudo_c: "x".repeat(MAX_METHOD_BODY_OUTPUT_BYTES),
+                signature: AotSignatureProvenance::Managed,
             },
             FALLBACK_GROUP_SIZE,
         )?;

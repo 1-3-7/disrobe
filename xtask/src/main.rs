@@ -301,11 +301,13 @@ pub(crate) fn run_schemas(check: bool) -> Result<()> {
     let manifest: Value = freezer_manifest_schema();
     let extraction: Value = extraction_result_schema();
     let detection: Value = pyarmor_detection_schema();
-    let rendered: [(&str, &Value); 4] = [
+    let native_aot: Value = native_aot_symbols_schema();
+    let rendered: [(&str, &Value); 5] = [
         ("dr-envelope.schema.json", &envelope),
         ("freezer-manifest.schema.json", &manifest),
         ("extraction-result.schema.json", &extraction),
         ("pyarmor-detection.schema.json", &detection),
+        ("native-aot-symbols.schema.json", &native_aot),
     ];
 
     if check {
@@ -767,6 +769,264 @@ fn extraction_result_schema() -> Value {
                 }
             }
         }
+    })
+}
+
+const NATIVE_AOT_SIGNATURE_ABSTENTIONS: [&str; 23] = [
+    "absent-managed-signature",
+    "unsupported-calling-convention",
+    "explicit-this",
+    "generic-signature",
+    "vararg-signature",
+    "argument-positions-exceeded",
+    "type-signature-kind-unsupported",
+    "type-record-absent",
+    "type-namespace-not-system",
+    "type-outside-primitive-table",
+    "non-microsoft-x64-recovery",
+    "hidden-struct-return",
+    "return-class-disagreement",
+    "argument-count-disagreement",
+    "argument-register-disagreement",
+    "floating-point-register-disagreement",
+    "unobserved-argument-position",
+    "vector-argument-binding",
+    "prototype-not-isolated",
+    "argument-binding-not-isolated",
+    "return-statement-not-isolated",
+    "shared-code-range",
+    "allocation-failed",
+];
+
+fn native_aot_metadata_status_defs() -> Vec<(&'static str, Value)> {
+    let unsupported: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["UnsupportedVersion"],
+        "properties": {
+            "UnsupportedVersion": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["major_version", "minor_version"],
+                "properties": {
+                    "major_version": {"type": "integer", "minimum": 0, "maximum": 65535},
+                    "minor_version": {"type": "integer", "minimum": 0, "maximum": 65535}
+                }
+            }
+        }
+    });
+    let rejected: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["Rejected"],
+        "properties": {
+            "Rejected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["section_offset", "reason"],
+                "properties": {
+                    "section_offset": {"type": ["integer", "null"], "minimum": 0},
+                    "reason": {"type": "string"}
+                }
+            }
+        }
+    });
+    let status: Value = json!({
+        "description": "Recovered and NotPresent are bare strings; the other states carry their detail in a single-key object.",
+        "oneOf": [
+            {"type": "string", "enum": ["NotPresent", "Recovered"]},
+            {"$ref": "#/$defs/UnsupportedVersionStatus"},
+            {"$ref": "#/$defs/RejectedStatus"}
+        ]
+    });
+    vec![
+        ("MetadataStatus", status),
+        ("UnsupportedVersionStatus", unsupported),
+        ("RejectedStatus", rejected),
+    ]
+}
+
+fn native_aot_signature_defs() -> Vec<(&'static str, Value)> {
+    let type_signature: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "record_offset"],
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["definition", "reference", "specification", "modified"]
+            },
+            "record_offset": {"type": "integer", "minimum": 0}
+        }
+    });
+    let method_signature: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "record_offset",
+            "calling_convention",
+            "generic_parameter_count",
+            "return_type",
+            "parameter_types",
+            "vararg_parameter_types"
+        ],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "calling_convention": {"type": "integer", "minimum": 0},
+            "generic_parameter_count": {"type": "integer", "minimum": 0},
+            "return_type": {"$ref": "#/$defs/TypeSignature"},
+            "parameter_types": {"type": "array", "items": {"$ref": "#/$defs/TypeSignature"}},
+            "vararg_parameter_types": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/TypeSignature"}
+            }
+        }
+    });
+    vec![
+        ("TypeSignature", type_signature),
+        ("MethodSignature", method_signature),
+    ]
+}
+
+fn native_aot_body_defs() -> Vec<(&'static str, Value)> {
+    let body: Value = json!({
+        "description": "A recovered body records how its signature was determined; a refused body records why no body was produced.",
+        "oneOf": [
+            {"$ref": "#/$defs/ManagedSignatureBody"},
+            {"$ref": "#/$defs/RegisterSignatureBody"},
+            {"$ref": "#/$defs/RefusedBody"}
+        ]
+    });
+    let managed: Value = json!({
+        "description": "The declared managed signature was proven to agree with the lifted register bindings and was reattached.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "pseudo_c", "signature_source"],
+        "properties": {
+            "status": {"type": "string", "const": "recovered"},
+            "pseudo_c": {"type": "string"},
+            "signature_source": {"type": "string", "const": "managed"}
+        }
+    });
+    let registers: Value = json!({
+        "description": "Reattachment was declined, so the body keeps the register-typed signature the lifter inferred, and signature_abstention names the rule that declined it.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "pseudo_c", "signature_source", "signature_abstention"],
+        "properties": {
+            "status": {"type": "string", "const": "recovered"},
+            "pseudo_c": {"type": "string"},
+            "signature_source": {"type": "string", "const": "registers"},
+            "signature_abstention": {
+                "type": "string",
+                "enum": NATIVE_AOT_SIGNATURE_ABSTENTIONS
+            }
+        }
+    });
+    let refused: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "reason"],
+        "properties": {
+            "status": {"type": "string", "const": "refused"},
+            "reason": {"type": "string"}
+        }
+    });
+    vec![
+        ("MethodBody", body),
+        ("ManagedSignatureBody", managed),
+        ("RegisterSignatureBody", registers),
+        ("RefusedBody", refused),
+    ]
+}
+
+fn native_aot_entry_defs() -> Vec<(&'static str, Value)> {
+    let counts: Value = json!({
+        "description": "How many recovered bodies carry a reattached managed signature and how many kept the lifted register-typed one. A numerator and a denominator, never a rate.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["managed", "registers"],
+        "properties": {
+            "managed": {"type": "integer", "minimum": 0},
+            "registers": {"type": "integer", "minimum": 0}
+        }
+    });
+    let type_entry: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_offset", "qualified_name", "method_record_offsets"],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "qualified_name": {"type": "string"},
+            "method_record_offsets": {"type": "array", "items": {"type": "integer", "minimum": 0}}
+        }
+    });
+    let code_range: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_rva", "end_rva"],
+        "properties": {
+            "start_rva": {"type": "integer", "minimum": 0},
+            "end_rva": {"type": "integer", "minimum": 0}
+        }
+    });
+    let method_entry: Value = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["record_offset", "declaring_type", "declaring_types", "name", "signature"],
+        "properties": {
+            "record_offset": {"type": "integer", "minimum": 0},
+            "declaring_type": {"type": ["string", "null"]},
+            "declaring_types": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "signature": {"oneOf": [{"$ref": "#/$defs/MethodSignature"}, {"type": "null"}]},
+            "entrypoint_rva": {"type": "integer", "minimum": 0},
+            "code_range": {"$ref": "#/$defs/CodeRange"},
+            "body": {"$ref": "#/$defs/MethodBody"}
+        }
+    });
+    vec![
+        ("SignatureSourceCounts", counts),
+        ("TypeEntry", type_entry),
+        ("CodeRange", code_range),
+        ("MethodEntry", method_entry),
+    ]
+}
+
+fn native_aot_symbols_schema() -> Value {
+    let mut defs: Map<String, Value> = Map::new();
+    for (name, value) in native_aot_metadata_status_defs()
+        .into_iter()
+        .chain(native_aot_signature_defs())
+        .chain(native_aot_body_defs())
+        .chain(native_aot_entry_defs())
+    {
+        defs.insert(name.to_owned(), value);
+    }
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://disrobe.dev/schemas/v0/native-aot-symbols.schema.json",
+        "title": "NativeAotSymbols",
+        "description": "Names, signatures, code ranges and recovered bodies emitted for a .NET NativeAOT image by disrobe-pass-dotnet.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "schema",
+            "runtime",
+            "metadata_status",
+            "signature_source_counts",
+            "types",
+            "methods"
+        ],
+        "properties": {
+            "schema": {"type": "string", "const": "disrobe.dotnet.native-aot-symbols/v1"},
+            "runtime": {"type": "string", "enum": ["net7", "net8", "net9", "net10", "unknown"]},
+            "metadata_status": {"$ref": "#/$defs/MetadataStatus"},
+            "signature_source_counts": {"$ref": "#/$defs/SignatureSourceCounts"},
+            "types": {"type": "array", "items": {"$ref": "#/$defs/TypeEntry"}},
+            "methods": {"type": "array", "items": {"$ref": "#/$defs/MethodEntry"}}
+        },
+        "$defs": Value::Object(defs)
     })
 }
 

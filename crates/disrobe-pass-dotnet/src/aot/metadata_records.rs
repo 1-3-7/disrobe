@@ -174,11 +174,128 @@ pub struct AotCodeRange {
     pub end_rva: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AotSignatureAbstention {
+    AbsentManagedSignature,
+    UnsupportedCallingConvention,
+    ExplicitThis,
+    GenericSignature,
+    VarargSignature,
+    ArgumentPositionsExceeded,
+    TypeSignatureKindUnsupported,
+    TypeRecordAbsent,
+    TypeNamespaceNotSystem,
+    TypeOutsidePrimitiveTable,
+    NonMicrosoftX64Recovery,
+    HiddenStructReturn,
+    ReturnClassDisagreement,
+    ArgumentCountDisagreement,
+    ArgumentRegisterDisagreement,
+    FloatingPointRegisterDisagreement,
+    UnobservedArgumentPosition,
+    VectorArgumentBinding,
+    PrototypeNotIsolated,
+    ArgumentBindingNotIsolated,
+    ReturnStatementNotIsolated,
+    SharedCodeRange,
+    AllocationFailed,
+}
+
+pub const AOT_SIGNATURE_ABSTENTIONS: [AotSignatureAbstention; 23] = [
+    AotSignatureAbstention::AbsentManagedSignature,
+    AotSignatureAbstention::UnsupportedCallingConvention,
+    AotSignatureAbstention::ExplicitThis,
+    AotSignatureAbstention::GenericSignature,
+    AotSignatureAbstention::VarargSignature,
+    AotSignatureAbstention::ArgumentPositionsExceeded,
+    AotSignatureAbstention::TypeSignatureKindUnsupported,
+    AotSignatureAbstention::TypeRecordAbsent,
+    AotSignatureAbstention::TypeNamespaceNotSystem,
+    AotSignatureAbstention::TypeOutsidePrimitiveTable,
+    AotSignatureAbstention::NonMicrosoftX64Recovery,
+    AotSignatureAbstention::HiddenStructReturn,
+    AotSignatureAbstention::ReturnClassDisagreement,
+    AotSignatureAbstention::ArgumentCountDisagreement,
+    AotSignatureAbstention::ArgumentRegisterDisagreement,
+    AotSignatureAbstention::FloatingPointRegisterDisagreement,
+    AotSignatureAbstention::UnobservedArgumentPosition,
+    AotSignatureAbstention::VectorArgumentBinding,
+    AotSignatureAbstention::PrototypeNotIsolated,
+    AotSignatureAbstention::ArgumentBindingNotIsolated,
+    AotSignatureAbstention::ReturnStatementNotIsolated,
+    AotSignatureAbstention::SharedCodeRange,
+    AotSignatureAbstention::AllocationFailed,
+];
+
+impl AotSignatureAbstention {
+    #[must_use]
+    pub const fn wire(self) -> &'static str {
+        match self {
+            Self::AbsentManagedSignature => "absent-managed-signature",
+            Self::UnsupportedCallingConvention => "unsupported-calling-convention",
+            Self::ExplicitThis => "explicit-this",
+            Self::GenericSignature => "generic-signature",
+            Self::VarargSignature => "vararg-signature",
+            Self::ArgumentPositionsExceeded => "argument-positions-exceeded",
+            Self::TypeSignatureKindUnsupported => "type-signature-kind-unsupported",
+            Self::TypeRecordAbsent => "type-record-absent",
+            Self::TypeNamespaceNotSystem => "type-namespace-not-system",
+            Self::TypeOutsidePrimitiveTable => "type-outside-primitive-table",
+            Self::NonMicrosoftX64Recovery => "non-microsoft-x64-recovery",
+            Self::HiddenStructReturn => "hidden-struct-return",
+            Self::ReturnClassDisagreement => "return-class-disagreement",
+            Self::ArgumentCountDisagreement => "argument-count-disagreement",
+            Self::ArgumentRegisterDisagreement => "argument-register-disagreement",
+            Self::FloatingPointRegisterDisagreement => "floating-point-register-disagreement",
+            Self::UnobservedArgumentPosition => "unobserved-argument-position",
+            Self::VectorArgumentBinding => "vector-argument-binding",
+            Self::PrototypeNotIsolated => "prototype-not-isolated",
+            Self::ArgumentBindingNotIsolated => "argument-binding-not-isolated",
+            Self::ReturnStatementNotIsolated => "return-statement-not-isolated",
+            Self::SharedCodeRange => "shared-code-range",
+            Self::AllocationFailed => "allocation-failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "signature_source", rename_all = "snake_case")]
+pub enum AotSignatureProvenance {
+    Managed,
+    Registers {
+        signature_abstention: AotSignatureAbstention,
+    },
+}
+
+impl AotSignatureProvenance {
+    #[must_use]
+    pub const fn is_managed(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub const fn abstention(self) -> Option<AotSignatureAbstention> {
+        match self {
+            Self::Managed => None,
+            Self::Registers {
+                signature_abstention,
+            } => Some(signature_abstention),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AotMethodBody {
-    Recovered { pseudo_c: String },
-    Refused { reason: String },
+    Recovered {
+        pseudo_c: String,
+        #[serde(flatten)]
+        signature: AotSignatureProvenance,
+    },
+    Refused {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2174,6 +2291,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
+        AOT_SIGNATURE_ABSTENTIONS, AotMethodBody, AotSignatureAbstention, AotSignatureProvenance,
         HANDLE_SZ_ARRAY_SIGNATURE, HANDLE_TYPE_SPECIFICATION, MetadataBudget, MetadataCursor,
         MetadataStrings, MethodRecord, MethodSignatureRecord, NamespaceRecord, RawHandle,
         ScopeRecord, SerializedHandleEncoding, TypeRecord, TypeSignatureValidator,
@@ -2343,5 +2461,67 @@ mod tests {
             result,
             Err(crate::error::Error::InvalidAotMetadata { .. })
         ));
+    }
+
+    #[test]
+    fn a_recovered_body_round_trips_its_signature_provenance_on_one_flat_object() {
+        let managed: AotMethodBody = AotMethodBody::Recovered {
+            pseudo_c: "int32_t recovered(void) {\n}\n".to_owned(),
+            signature: AotSignatureProvenance::Managed,
+        };
+        let declined: AotMethodBody = AotMethodBody::Recovered {
+            pseudo_c: "uint64_t recovered(void) {\n}\n".to_owned(),
+            signature: AotSignatureProvenance::Registers {
+                signature_abstention: AotSignatureAbstention::HiddenStructReturn,
+            },
+        };
+        let refused: AotMethodBody = AotMethodBody::Refused {
+            reason: "DR-DOTNET-0039: RVA 0x1000: unsupported".to_owned(),
+        };
+
+        for body in [&managed, &declined, &refused] {
+            let text: String = serde_json::to_string(body).unwrap_or_default();
+            let restored: AotMethodBody =
+                serde_json::from_str(text.as_str()).unwrap_or_else(|_error: serde_json::Error| {
+                    AotMethodBody::Refused {
+                        reason: String::new(),
+                    }
+                });
+            assert_eq!(&restored, body, "{text}");
+        }
+        let managed_text: String = serde_json::to_string(&managed).unwrap_or_default();
+        let declined_text: String = serde_json::to_string(&declined).unwrap_or_default();
+
+        assert!(
+            managed_text.contains("\"signature_source\":\"managed\""),
+            "{managed_text}"
+        );
+        assert!(
+            !managed_text.contains("signature_abstention"),
+            "a reattached signature carries no declining rule: {managed_text}"
+        );
+        assert!(
+            declined_text.contains("\"signature_source\":\"registers\""),
+            "{declined_text}"
+        );
+        assert!(
+            declined_text.contains("\"signature_abstention\":\"hidden-struct-return\""),
+            "{declined_text}"
+        );
+        for abstention in AOT_SIGNATURE_ABSTENTIONS {
+            let body: AotMethodBody = AotMethodBody::Recovered {
+                pseudo_c: String::new(),
+                signature: AotSignatureProvenance::Registers {
+                    signature_abstention: abstention,
+                },
+            };
+            let text: String = serde_json::to_string(&body).unwrap_or_default();
+            assert!(
+                text.contains(
+                    format!("\"signature_abstention\":\"{}\"", abstention.wire()).as_str()
+                ),
+                "{abstention:?}: {text}"
+            );
+        }
     }
 }

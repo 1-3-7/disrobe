@@ -715,10 +715,35 @@ struct NativeAotOutputMethod<'a> {
 }
 
 #[derive(Serialize)]
+struct NativeAotSignatureSourceCounts {
+    managed: usize,
+    registers: usize,
+}
+
+impl NativeAotSignatureSourceCounts {
+    fn of(methods: &[NativeAotOutputMethod<'_>]) -> Self {
+        let mut managed: usize = 0;
+        let mut registers: usize = 0;
+        for method in methods {
+            let Some(crate::aot::AotMethodBody::Recovered { signature, .. }) = method.body else {
+                continue;
+            };
+            if signature.is_managed() {
+                managed = managed.saturating_add(1);
+            } else {
+                registers = registers.saturating_add(1);
+            }
+        }
+        Self { managed, registers }
+    }
+}
+
+#[derive(Serialize)]
 struct NativeAotSymbolsDocument<'a> {
     schema: &'static str,
     runtime: &'static str,
     metadata_status: &'a AotMetadataStatus,
+    signature_source_counts: NativeAotSignatureSourceCounts,
     types: Vec<NativeAotOutputType<'a>>,
     methods: Vec<NativeAotOutputMethod<'a>>,
 }
@@ -854,10 +879,13 @@ fn native_aot_symbols_document<'a>(
             body: method.body.as_ref(),
         });
     }
+    let signature_source_counts: NativeAotSignatureSourceCounts =
+        NativeAotSignatureSourceCounts::of(&methods);
     Ok(NativeAotSymbolsDocument {
         schema: NATIVE_AOT_SYMBOLS_SCHEMA,
         runtime: aot_runtime_label(report.runtime_label),
         metadata_status: &attribution.status,
+        signature_source_counts,
         types,
         methods,
     })
