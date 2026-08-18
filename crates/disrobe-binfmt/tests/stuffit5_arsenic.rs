@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use disrobe_binfmt::container::{ContainerKind, detect_container};
 use disrobe_binfmt::containers::{
-    Sit5Archive, Sit5Compression, Sit5Entry, Sit5Fork, detect_stuffit, parse_sit5,
+    Sit5Archive, Sit5Compression, Sit5Entry, Sit5Fork, Sit5Metadata, detect_stuffit, parse_sit5,
     sit5_fork_bytes_bounded,
 };
 use sha2::{Digest as _, Sha256};
@@ -166,6 +166,70 @@ fn extract_to_publishes_every_stuffit5_fork() {
     assert!(
         !scratch.path().join("archive.sit").exists(),
         "a parsed StuffIt 5 archive must not also be carved verbatim"
+    );
+}
+
+#[test]
+fn stuffit5_entry_metadata_matches_the_unar_reference() {
+    const METADATA: &str = include_str!("fixtures/stuffit/MANIFEST_SIT5_METADATA.tsv");
+
+    let expected: BTreeMap<String, Sit5Metadata> = METADATA
+        .lines()
+        .skip(1)
+        .filter(|line: &&str| !line.trim().is_empty())
+        .map(|line: &str| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields.len(), 6, "metadata row must carry six fields");
+            (
+                fields[0].to_owned(),
+                Sit5Metadata {
+                    created_mac_epoch: fields[1].parse::<u32>().expect("created"),
+                    modified_mac_epoch: fields[2].parse::<u32>().expect("modified"),
+                    file_type: fields[3].parse::<u32>().expect("file type"),
+                    file_creator: fields[4].parse::<u32>().expect("file creator"),
+                    finder_flags: fields[5].parse::<u16>().expect("finder flags"),
+                },
+            )
+        })
+        .collect();
+    assert_eq!(expected.len(), 6, "the pinned archive carries six members");
+
+    let archive: Sit5Archive = parse_sit5(FIXTURE).expect("parse StuffIt 5 fixture");
+    assert_eq!(archive.entries.len(), expected.len());
+    for entry in &archive.entries {
+        let reference: &Sit5Metadata = expected
+            .get(&entry.path)
+            .expect("recovered a member the reference does not list");
+        assert_eq!(
+            entry.metadata, *reference,
+            "{}: recovered metadata must equal what unar reports",
+            entry.path
+        );
+    }
+
+    let text: &Sit5Metadata = expected
+        .get("testfile.txt")
+        .expect("the differing-timestamp member");
+    assert_ne!(
+        text.created_mac_epoch, text.modified_mac_epoch,
+        "this member must keep distinct timestamps, otherwise swapping the two date fields \
+         would pass every assertion above"
+    );
+    assert_eq!(
+        u64::from(text.modified_mac_epoch) - u64::from(text.created_mac_epoch),
+        697_156_646,
+        "the gap between this member's two timestamps must equal the gap unar reports between \
+         the same two dates; a gap is invariant under the timezone unar renders through, so it \
+         grades the date fields against unar without pinning either side to a machine's zone"
+    );
+    let image: &Sit5Metadata = expected.get("Test Image").expect("the picture member");
+    assert_ne!(
+        image.file_type, expected["Test Text"].file_type,
+        "two members must differ in file type, otherwise reading a constant would pass"
+    );
+    assert_ne!(
+        image.finder_flags, expected["Test Text"].finder_flags,
+        "two members must differ in Finder flags, otherwise reading a constant would pass"
     );
 }
 

@@ -248,7 +248,7 @@ pub use stuffit::{
     fork_is_stored as sit_fork_is_stored, parse_classic as parse_sit_classic,
 };
 pub use stuffit5::{
-    Sit5Archive, Sit5Compression, Sit5Entry, Sit5Fork,
+    Sit5Archive, Sit5Compression, Sit5Entry, Sit5Fork, Sit5Metadata,
     fork_bytes_bounded as sit5_fork_bytes_bounded, parse_sit5,
 };
 pub use ubifs::{UbiVolume, UbifsFile, UbifsWalk, detect_ubi, detect_ubifs, walk_ubifs};

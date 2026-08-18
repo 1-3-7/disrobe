@@ -103,6 +103,13 @@ compressed_size = 12
 crc16 = 46785
 sha256 = "b645efee0ed710034959eae942277a750d08687c30bcf0e9ec6ea7641527462f"
 
+[metadata]
+manifest = "MANIFEST_SIT5_METADATA.tsv"
+fields = "Creation and modification dates as raw Mac-epoch seconds counted from 1904-01-01, HFS file type, HFS creator, and Finder flags, one row per member."
+type_creator_flags = "File type, creator and Finder flags are graded against what lsar reports, and they match exactly for all six members."
+dates_note = "The two date columns hold the raw values in the file, read by a reader independent of the Rust parser, not lsar's rendered dates. lsar's rendering sat a constant 14400 seconds above the stored value on every one of the twelve timestamps. A single constant across every field is a timezone conversion in the renderer, not a parse disagreement: StuffIt 5 stores Mac local time and lsar converts it through a zone that depends on the machine it runs on. Pinning lsar's rendered integer would therefore have committed one machine's timezone into the test."
+dates_grading = "The date fields are still graded against lsar without pinning a zone. The gap between testfile.txt's creation and modification timestamps is 697156646 seconds in both the raw values and lsar's rendering, because a constant offset cancels in a difference. That member is the only one whose two timestamps differ, so it is also what catches the two date fields being read from each other's offset."
+
 [coverage_gaps]
 directories = "Every archive in the pinned corpus is flat. The directory entry path, including the 0xffffffff sentinel record that follows a directory, is implemented from the format description but no pinned fixture exercises it."
 method_14 = "No archive in any corpus swept for this work contains method 14. The Unarchiver flags method 14 with its reportInterestingFileWithReason hook, which its authors use to ask users to send samples of methods they rarely see, so this is a scarce format rather than a gap in the sweep."

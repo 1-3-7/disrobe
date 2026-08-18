@@ -36,9 +36,19 @@ pub struct Sit5Fork {
     pub data_offset: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sit5Metadata {
+    pub created_mac_epoch: u32,
+    pub modified_mac_epoch: u32,
+    pub file_type: u32,
+    pub file_creator: u32,
+    pub finder_flags: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct Sit5Entry {
     pub path: String,
+    pub metadata: Sit5Metadata,
     pub resource: Option<Sit5Fork>,
     pub data: Option<Sit5Fork>,
 }
@@ -109,6 +119,7 @@ fn join_path(parent: Option<&String>, name: &str) -> Result<String> {
 
 struct EntryHeader {
     entry_flags: u8,
+    metadata: Sit5Metadata,
     header_size: usize,
     data_offset_in_header: u32,
     name: String,
@@ -146,6 +157,8 @@ fn parse_entry_header(bytes: &[u8], pos: usize) -> Result<EntryHeader> {
         return Err(sit5_error("stuffit 5: entry header runs past the archive"));
     }
     let entry_flags: u8 = rd_u8(bytes, pos + 9)?;
+    let created_mac_epoch: u32 = rd_u32(bytes, pos + 10)?;
+    let modified_mac_epoch: u32 = rd_u32(bytes, pos + 14)?;
     let data_offset_in_header: u32 = rd_u32(bytes, pos + 26)?;
     let name_length: usize = usize::from(rd_u16(bytes, pos + 30)?);
     let stored_header_crc: u16 = rd_u16(bytes, pos + 32)?;
@@ -204,6 +217,13 @@ fn parse_entry_header(bytes: &[u8], pos: usize) -> Result<EntryHeader> {
     }
 
     let fork_flags: u16 = rd_u16(bytes, cursor)?;
+    let metadata: Sit5Metadata = Sit5Metadata {
+        created_mac_epoch,
+        modified_mac_epoch,
+        file_type: rd_u32(bytes, cursor + 4)?,
+        file_creator: rd_u32(bytes, cursor + 8)?,
+        finder_flags: rd_u16(bytes, cursor + 12)?,
+    };
     cursor = cursor
         .checked_add(if entry_version == 1 { 36 } else { 32 })
         .ok_or_else(|| sit5_error("stuffit 5: entry metadata range overflow"))?;
@@ -237,6 +257,7 @@ fn parse_entry_header(bytes: &[u8], pos: usize) -> Result<EntryHeader> {
 
     Ok(EntryHeader {
         entry_flags,
+        metadata,
         header_size,
         data_offset_in_header,
         name,
@@ -367,6 +388,7 @@ pub fn parse_sit5(bytes: &[u8]) -> Result<Sit5Archive> {
 
         entries.push(Sit5Entry {
             path,
+            metadata: entry.metadata,
             resource: resource_fork,
             data: data_fork,
         });
