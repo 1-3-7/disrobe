@@ -7,7 +7,7 @@ const TAG_FALSE: u8 = 2 << 4;
 const TAG_NUMBER: u8 = 3 << 4;
 const TAG_LONG_STRING: u8 = 4 << 4;
 const TAG_SHORT_STRING: u8 = 5 << 4;
-const TAG_UNDEFINED: u8 = 6 << 4;
+const TAG_BYTE_STRING: u8 = 6 << 4;
 const TAG_INTEGER: u8 = 7 << 4;
 
 const MAX_DECODED_LITERALS: usize = 1 << 20;
@@ -17,7 +17,6 @@ const MAX_DECODED_LITERALS: usize = 1 << 20;
 pub enum LiteralValue {
     Null,
     PrivateName,
-    Undefined,
     Bool(bool),
     Number(f64),
     Integer(i32),
@@ -84,7 +83,10 @@ fn decode_element(
         }),
         TAG_TRUE => Some(LiteralValue::Bool(true)),
         TAG_FALSE => Some(LiteralValue::Bool(false)),
-        TAG_UNDEFINED => Some(LiteralValue::Undefined),
+        TAG_BYTE_STRING => {
+            let raw: [u8; 1] = read_n::<1>(buffer, idx)?;
+            Some(LiteralValue::StringId(u32::from(raw[0])))
+        }
         TAG_NUMBER => {
             let raw: [u8; 8] = read_n::<8>(buffer, idx)?;
             Some(LiteralValue::Number(f64::from_le_bytes(raw)))
@@ -125,7 +127,6 @@ where
     match value {
         LiteralValue::Null => "null".to_owned(),
         LiteralValue::PrivateName => "#private".to_owned(),
-        LiteralValue::Undefined => "undefined".to_owned(),
         LiteralValue::Bool(b) => b.to_string(),
         LiteralValue::Number(n) => render_number(*n),
         LiteralValue::Integer(i) => i.to_string(),
@@ -144,7 +145,6 @@ where
         LiteralValue::Number(n) => render_number(*n),
         LiteralValue::PrivateName | LiteralValue::Null => "#private".to_owned(),
         LiteralValue::Bool(b) => b.to_string(),
-        LiteralValue::Undefined => "undefined".to_owned(),
     }
 }
 
@@ -213,6 +213,23 @@ mod tests {
                 LiteralValue::Bool(true),
                 LiteralValue::Null,
             ]
+        );
+    }
+
+    #[test]
+    fn byte_string_tag_reads_a_one_byte_string_index() {
+        let buf: Vec<u8> = vec![TAG_BYTE_STRING | 3, 24, 25, 26];
+        let out: Vec<LiteralValue> = decode_literals(&buf, 0, 3, BufferKind::Key);
+        assert_eq!(
+            out,
+            vec![
+                LiteralValue::StringId(24),
+                LiteralValue::StringId(25),
+                LiteralValue::StringId(26)
+            ],
+            "the Hermes serialized literal format spends tag 6 on a one-byte string index, so a \
+             reader that treats it as a valueless tag names every short key of a real object \
+             literal wrongly while still producing text that parses"
         );
     }
 

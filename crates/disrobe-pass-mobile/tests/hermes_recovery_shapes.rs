@@ -203,12 +203,14 @@ const SHAPES: &[(&str, Coverage)] = &[
     ),
     (
         "control flow: labelled break and continue",
-        Coverage::Uncovered(
-            "a labelled break and a labelled continue over a plain reducible nested loop are \
-             compiled into crates/disrobe-pass-mobile/tests/fixtures/hermes/longtail.hbc and the \
-             structurer refuses that function by name, because its break and continue sinks carry \
-             no label and an unlabelled break would leave the wrong loop",
-        ),
+        Coverage::Corpus(|e: &Evidence| {
+            Evidence::recovered(&e.longtail, "firstPair").is_some_and(|f: &DecompiledFunction| {
+                f.structured
+                    && f.structure_decline.is_none()
+                    && !f.source.contains("goto ")
+                    && f.source.contains("break $loop")
+            })
+        }),
     ),
     (
         "value shape: BigInt literal",

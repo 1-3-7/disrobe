@@ -10,6 +10,8 @@ const CAUGHT_EXCEPTION_BINDING: &str = "$exc";
 
 const MAX_STRUCTURE_BLOCKS: usize = 4096;
 const MAX_REGION_DEPTH: usize = 64;
+const MAX_LOOP_EXTENSION_ROUNDS: usize = 64;
+const MAX_LOWERED_LOOPS: usize = 4096;
 const MAX_STRUCTURE_STATEMENTS: usize = 1 << 16;
 const INDENT_STEP: &str = "  ";
 
@@ -78,8 +80,8 @@ struct SBlock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sink {
     Exit,
-    Break,
-    Continue,
+    Break(usize),
+    Continue(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -87,8 +89,12 @@ enum JsStmt {
     Raw(String),
     Return(String),
     Throw(String),
-    Break,
-    Continue,
+    Break(Option<usize>),
+    Continue(Option<usize>),
+    Labeled {
+        label: usize,
+        body: Box<Self>,
+    },
     If {
         cond: String,
         then: Vec<Self>,
@@ -137,8 +143,9 @@ pub(crate) fn structure_function(
         .iter()
         .filter_map(|group: &ExceptionGroup| resolve_target_block(cfg, group.target))
         .collect();
+    let mut labels: usize = 0;
     let (blocks, absorbed_catch_blocks): (Vec<SBlock>, BTreeSet<usize>) =
-        splice_try_catch_regions(blocks, cfg, exceptions, 0)?;
+        splice_try_catch_regions(blocks, cfg, exceptions, 0, &mut labels)?;
     if known_catch_blocks
         .difference(&absorbed_catch_blocks)
         .next()
@@ -147,7 +154,7 @@ pub(crate) fn structure_function(
         return Err(StructureDecline::UnreachableExceptionHandler);
     }
     let sinks: BTreeMap<usize, Sink> = BTreeMap::new();
-    let program: Vec<JsStmt> = structure_program(&blocks, &sinks, 0)?;
+    let program: Vec<JsStmt> = structure_program(&blocks, &sinks, 0, None, &mut labels)?;
     let mut out: String = String::new();
     let mut budget: usize = MAX_STRUCTURE_STATEMENTS;
     render_stmts(&program, INDENT_STEP, &mut out, &mut budget)?;
@@ -447,6 +454,7 @@ fn structure_subregion(
     entry: usize,
     follow: Option<usize>,
     depth: usize,
+    labels: &mut usize,
 ) -> Result<Vec<JsStmt>, StructureDecline> {
     let mut order: Vec<usize> = vec![entry];
     order.extend(region.iter().copied().filter(|node: &usize| *node != entry));
@@ -484,7 +492,7 @@ fn structure_subregion(
         term: Term::Exit,
     });
     let sub_sinks: BTreeMap<usize, Sink> = BTreeMap::new();
-    structure_program(&sub_blocks, &sub_sinks, depth + 1)
+    structure_program(&sub_blocks, &sub_sinks, depth + 1, None, labels)
 }
 
 fn assemble_spliced_blocks(
@@ -555,6 +563,7 @@ fn splice_try_catch_regions(
     cfg: &Cfg,
     exceptions: &[HermesExceptionEntry],
     depth: usize,
+    labels: &mut usize,
 ) -> Result<(Vec<SBlock>, BTreeSet<usize>), StructureDecline> {
     let groups: Vec<ExceptionGroup> = group_exceptions(exceptions);
     if groups.is_empty() {
@@ -601,6 +610,7 @@ fn splice_try_catch_regions(
             splice.entry,
             splice.follow,
             depth,
+            labels,
         );
         let catch_body: Result<Vec<JsStmt>, StructureDecline> = structure_subregion(
             &blocks,
@@ -608,6 +618,7 @@ fn splice_try_catch_regions(
             splice.catch_entry,
             splice.follow,
             depth,
+            labels,
         );
         if let (Ok(try_body), Ok(catch_body)) = (try_body, catch_body) {
             structured.push((splice, try_body, catch_body));
@@ -723,10 +734,33 @@ fn structure_program(
     blocks: &[SBlock],
     sinks: &BTreeMap<usize, Sink>,
     depth: usize,
+    current_loop: Option<usize>,
+    labels: &mut usize,
 ) -> Result<Vec<JsStmt>, StructureDecline> {
     if depth >= MAX_REGION_DEPTH {
         return Err(StructureDecline::DepthExceeded);
     }
+    let direct: Result<Vec<JsStmt>, StructureDecline> =
+        render_regions(blocks, sinks, depth, current_loop, labels);
+    let Err(first): Result<Vec<JsStmt>, StructureDecline> = direct else {
+        return direct;
+    };
+    let Some((collapsed, collapsed_sinks)): Option<(Vec<SBlock>, BTreeMap<usize, Sink>)> =
+        collapse_loops(blocks, sinks, depth, labels)
+    else {
+        return Err(first);
+    };
+    render_regions(&collapsed, &collapsed_sinks, depth, current_loop, labels)
+        .map_err(|_: StructureDecline| first)
+}
+
+fn render_regions(
+    blocks: &[SBlock],
+    sinks: &BTreeMap<usize, Sink>,
+    depth: usize,
+    current_loop: Option<usize>,
+    labels: &mut usize,
+) -> Result<Vec<JsStmt>, StructureDecline> {
     let Some(cfg): Option<structuring::Cfg> = cfg_from(blocks) else {
         return Err(StructureDecline::GraphRejected);
     };
@@ -745,6 +779,8 @@ fn structure_program(
         sinks,
         consumed: BTreeSet::new(),
         depth,
+        current_loop,
+        labels,
         failure: None,
     };
     let mut out: Vec<JsStmt> = Vec::new();
@@ -766,6 +802,8 @@ struct Renderer<'a> {
     sinks: &'a BTreeMap<usize, Sink>,
     consumed: BTreeSet<usize>,
     depth: usize,
+    current_loop: Option<usize>,
+    labels: &'a mut usize,
     failure: Option<StructureDecline>,
 }
 
@@ -805,10 +843,14 @@ impl Renderer<'_> {
         }
     }
 
+    fn relative_label(&self, label: usize) -> Option<usize> {
+        (Some(label) != self.current_loop).then_some(label)
+    }
+
     fn render_sink(&self, entry: usize, out: &mut Vec<JsStmt>) {
         match self.sinks.get(&entry).copied().unwrap_or(Sink::Exit) {
-            Sink::Break => out.push(JsStmt::Break),
-            Sink::Continue => out.push(JsStmt::Continue),
+            Sink::Break(label) => out.push(JsStmt::Break(self.relative_label(label))),
+            Sink::Continue(label) => out.push(JsStmt::Continue(self.relative_label(label))),
             Sink::Exit => match &self.blocks[entry].term {
                 Term::Return(value) => out.push(JsStmt::Return(value.clone())),
                 Term::Throw(value) => out.push(JsStmt::Throw(value.clone())),
@@ -916,109 +958,24 @@ impl Renderer<'_> {
     }
 
     fn render_loop(&mut self, header: usize, out: &mut Vec<JsStmt>) -> bool {
-        let Some(natural): Option<&structuring::NaturalLoop> =
-            self.forest
-                .loops
-                .iter()
-                .find(|candidate: &&structuring::NaturalLoop| {
-                    usize::try_from(candidate.header).ok() == Some(header)
-                })
-        else {
-            return self.fail(StructureDecline::UnsupportedRegion);
-        };
-        let mut body: BTreeSet<usize> = BTreeSet::new();
-        for node in &natural.body {
-            let Some(index): Option<usize> = usize::try_from(*node).ok() else {
-                return self.fail(StructureDecline::UnsupportedRegion);
-            };
-            body.insert(index);
-        }
-        let mut follow: Option<usize> = None;
-        for node in &body {
-            let Some(block): Option<&SBlock> = self.blocks.get(*node) else {
-                return self.fail(StructureDecline::UnsupportedRegion);
-            };
-            for successor in successors_of(block) {
-                if body.contains(&successor) {
-                    continue;
+        match lower_loop(
+            self.blocks,
+            self.forest,
+            self.sinks,
+            self.depth,
+            &mut *self.labels,
+            header,
+            false,
+        ) {
+            Ok(lowered) => {
+                out.push(lowered.stmt);
+                for node in lowered.body {
+                    self.consumed.insert(node);
                 }
-                match follow {
-                    None => follow = Some(successor),
-                    Some(existing) if existing == successor => {}
-                    Some(_) => return self.fail(StructureDecline::LoopHasManyExits),
-                }
+                true
             }
+            Err(reason) => self.fail(reason),
         }
-
-        let mut order: Vec<usize> = vec![header];
-        order.extend(body.iter().copied().filter(|node: &usize| *node != header));
-        let index_of: BTreeMap<usize, usize> = order
-            .iter()
-            .enumerate()
-            .map(|(position, node): (usize, &usize)| (*node, position))
-            .collect();
-        let continue_index: usize = order.len();
-        let break_index: usize = order.len() + 1;
-        let remap = |target: usize| -> Option<usize> {
-            if target == header {
-                return Some(continue_index);
-            }
-            if let Some(position) = index_of.get(&target) {
-                return Some(*position);
-            }
-            if Some(target) == follow {
-                return Some(break_index);
-            }
-            None
-        };
-
-        let mut sub_blocks: Vec<SBlock> = Vec::with_capacity(order.len() + 2);
-        for node in &order {
-            let source: &SBlock = &self.blocks[*node];
-            let Some(term): Option<Term> = remap_term(&source.term, &remap) else {
-                return self.fail(StructureDecline::LoopHasManyExits);
-            };
-            sub_blocks.push(SBlock {
-                prelude: source.prelude.clone(),
-                body: source.body.clone(),
-                term,
-            });
-        }
-        sub_blocks.push(SBlock {
-            prelude: Vec::new(),
-            body: Vec::new(),
-            term: Term::Exit,
-        });
-        sub_blocks.push(SBlock {
-            prelude: Vec::new(),
-            body: Vec::new(),
-            term: Term::Exit,
-        });
-
-        let mut sub_sinks: BTreeMap<usize, Sink> = BTreeMap::new();
-        sub_sinks.insert(continue_index, Sink::Continue);
-        sub_sinks.insert(break_index, Sink::Break);
-        for node in &order {
-            if let Some(existing) = self.sinks.get(node)
-                && matches!(
-                    self.blocks[*node].term,
-                    Term::Exit | Term::Return(_) | Term::Throw(_)
-                )
-                && let Some(position) = index_of.get(node)
-            {
-                sub_sinks.insert(*position, *existing);
-            }
-        }
-
-        let inner: Vec<JsStmt> = match structure_program(&sub_blocks, &sub_sinks, self.depth + 1) {
-            Ok(inner) => inner,
-            Err(reason) => return self.fail(reason),
-        };
-        out.push(resugar_loop(inner));
-        for node in body {
-            self.consumed.insert(node);
-        }
-        true
     }
 
     fn render(&mut self, id: structuring::RegionId, out: &mut Vec<JsStmt>) -> bool {
@@ -1112,14 +1069,353 @@ impl Renderer<'_> {
     }
 }
 
+struct LoweredLoop {
+    stmt: JsStmt,
+    body: BTreeSet<usize>,
+    follow: Option<usize>,
+}
+
+fn exit_targets(blocks: &[SBlock], body: &BTreeSet<usize>) -> BTreeSet<usize> {
+    let mut targets: BTreeSet<usize> = BTreeSet::new();
+    for node in body {
+        let Some(block): Option<&SBlock> = blocks.get(*node) else {
+            continue;
+        };
+        for successor in successors_of(block) {
+            if !body.contains(&successor) {
+                targets.insert(successor);
+            }
+        }
+    }
+    targets
+}
+
+fn nodes_reaching(preds: &[BTreeSet<usize>], target: usize) -> BTreeSet<usize> {
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let mut stack: Vec<usize> = vec![target];
+    seen.insert(target);
+    while let Some(node) = stack.pop() {
+        let Some(entering): Option<&BTreeSet<usize>> = preds.get(node) else {
+            continue;
+        };
+        for from in entering {
+            if seen.insert(*from) {
+                stack.push(*from);
+            }
+        }
+    }
+    seen
+}
+
+fn labelled_sink(sinks: &BTreeMap<usize, Sink>, target: usize) -> Option<Sink> {
+    match sinks.get(&target).copied() {
+        Some(Sink::Break(label)) => Some(Sink::Break(label)),
+        Some(Sink::Continue(label)) => Some(Sink::Continue(label)),
+        Some(Sink::Exit) | None => None,
+    }
+}
+
+fn extend_loop_body(
+    blocks: &[SBlock],
+    sinks: &BTreeMap<usize, Sink>,
+    preds: &[BTreeSet<usize>],
+    header: usize,
+    body: &mut BTreeSet<usize>,
+) {
+    let feeding_header: BTreeSet<usize> = nodes_reaching(preds, header);
+    for _ in 0..MAX_LOOP_EXTENSION_ROUNDS {
+        let targets: BTreeSet<usize> = exit_targets(blocks, body);
+        let open: usize = targets
+            .iter()
+            .filter(|target: &&usize| labelled_sink(sinks, **target).is_none())
+            .count();
+        if open <= 1 {
+            return;
+        }
+        let mut grew: bool = false;
+        for target in &targets {
+            if *target == header || *target == 0 || feeding_header.contains(target) {
+                continue;
+            }
+            if labelled_sink(sinks, *target).is_some() {
+                continue;
+            }
+            let Some(entering): Option<&BTreeSet<usize>> = preds.get(*target) else {
+                continue;
+            };
+            if !entering.iter().all(|node: &usize| body.contains(node)) {
+                continue;
+            }
+            body.insert(*target);
+            grew = true;
+        }
+        if !grew {
+            return;
+        }
+    }
+}
+
+fn lower_loop(
+    blocks: &[SBlock],
+    forest: &structuring::LoopForest,
+    sinks: &BTreeMap<usize, Sink>,
+    depth: usize,
+    labels: &mut usize,
+    header: usize,
+    extended: bool,
+) -> Result<LoweredLoop, StructureDecline> {
+    let Some(natural): Option<&structuring::NaturalLoop> =
+        forest
+            .loops
+            .iter()
+            .find(|candidate: &&structuring::NaturalLoop| {
+                usize::try_from(candidate.header).ok() == Some(header)
+            })
+    else {
+        return Err(StructureDecline::UnsupportedRegion);
+    };
+    let mut body: BTreeSet<usize> = BTreeSet::new();
+    for node in &natural.body {
+        let Some(index): Option<usize> = usize::try_from(*node).ok() else {
+            return Err(StructureDecline::UnsupportedRegion);
+        };
+        if index >= blocks.len() {
+            return Err(StructureDecline::UnsupportedRegion);
+        }
+        body.insert(index);
+    }
+    if extended {
+        let preds: Vec<BTreeSet<usize>> = predecessors_of(blocks);
+        extend_loop_body(blocks, sinks, &preds, header, &mut body);
+        for node in &body {
+            if *node == header {
+                continue;
+            }
+            let Some(entering): Option<&BTreeSet<usize>> = preds.get(*node) else {
+                return Err(StructureDecline::UnsupportedRegion);
+            };
+            if !entering.iter().all(|from: &usize| body.contains(from)) {
+                return Err(StructureDecline::UnsupportedRegion);
+            }
+        }
+    }
+
+    let mut follow: Option<usize> = None;
+    let mut extras: Vec<(usize, Sink)> = Vec::new();
+    for target in exit_targets(blocks, &body) {
+        if extended && let Some(sink) = labelled_sink(sinks, target) {
+            extras.push((target, sink));
+            continue;
+        }
+        match follow {
+            None => follow = Some(target),
+            Some(existing) if existing == target => {}
+            Some(_) => return Err(StructureDecline::LoopHasManyExits),
+        }
+    }
+
+    let mut order: Vec<usize> = vec![header];
+    order.extend(body.iter().copied().filter(|node: &usize| *node != header));
+    let index_of: BTreeMap<usize, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(position, node): (usize, &usize)| (*node, position))
+        .collect();
+    let continue_index: usize = order.len();
+    let break_index: usize = order.len() + 1;
+    let extra_index: BTreeMap<usize, usize> = extras
+        .iter()
+        .enumerate()
+        .map(|(position, (target, _)): (usize, &(usize, Sink))| {
+            (*target, break_index + 1 + position)
+        })
+        .collect();
+    let remap = |target: usize| -> Option<usize> {
+        if target == header {
+            return Some(continue_index);
+        }
+        if let Some(position) = index_of.get(&target) {
+            return Some(*position);
+        }
+        if Some(target) == follow {
+            return Some(break_index);
+        }
+        extra_index.get(&target).copied()
+    };
+
+    let mut sub_blocks: Vec<SBlock> = Vec::with_capacity(order.len() + 2 + extras.len());
+    for node in &order {
+        let Some(source): Option<&SBlock> = blocks.get(*node) else {
+            return Err(StructureDecline::UnsupportedRegion);
+        };
+        let Some(term): Option<Term> = remap_term(&source.term, &remap) else {
+            return Err(StructureDecline::LoopHasManyExits);
+        };
+        sub_blocks.push(SBlock {
+            prelude: source.prelude.clone(),
+            body: source.body.clone(),
+            term,
+        });
+    }
+    for _ in 0..(2 + extras.len()) {
+        sub_blocks.push(SBlock {
+            prelude: Vec::new(),
+            body: Vec::new(),
+            term: Term::Exit,
+        });
+    }
+
+    if *labels >= MAX_LOWERED_LOOPS {
+        return Err(StructureDecline::BlockBudgetExceeded);
+    }
+    *labels += 1;
+    let label: usize = *labels;
+    let mut sub_sinks: BTreeMap<usize, Sink> = BTreeMap::new();
+    sub_sinks.insert(continue_index, Sink::Continue(label));
+    sub_sinks.insert(break_index, Sink::Break(label));
+    for (target, sink) in &extras {
+        if let Some(position) = extra_index.get(target) {
+            sub_sinks.insert(*position, *sink);
+        }
+    }
+    for node in &order {
+        if let Some(existing) = sinks.get(node)
+            && let Some(block) = blocks.get(*node)
+            && matches!(block.term, Term::Exit | Term::Return(_) | Term::Throw(_))
+            && let Some(position) = index_of.get(node)
+        {
+            sub_sinks.insert(*position, *existing);
+        }
+    }
+
+    let inner: Vec<JsStmt> =
+        structure_program(&sub_blocks, &sub_sinks, depth + 1, Some(label), labels)?;
+    Ok(LoweredLoop {
+        stmt: resugar_loop(inner, label),
+        body,
+        follow,
+    })
+}
+
+fn collapse_loops(
+    blocks: &[SBlock],
+    sinks: &BTreeMap<usize, Sink>,
+    depth: usize,
+    labels: &mut usize,
+) -> Option<(Vec<SBlock>, BTreeMap<usize, Sink>)> {
+    let cfg: structuring::Cfg = cfg_from(blocks)?;
+    let forest: structuring::LoopForest = structuring::loop_forest(&cfg);
+    if forest.loops.is_empty() {
+        return None;
+    }
+
+    let mut lowered: BTreeMap<usize, LoweredLoop> = BTreeMap::new();
+    let mut covered: BTreeSet<usize> = BTreeSet::new();
+    for natural in &forest.loops {
+        if natural.parent.is_some() {
+            continue;
+        }
+        let Some(header): Option<usize> = usize::try_from(natural.header).ok() else {
+            continue;
+        };
+        let Ok(candidate): Result<LoweredLoop, StructureDecline> =
+            lower_loop(blocks, &forest, sinks, depth, labels, header, true)
+        else {
+            continue;
+        };
+        if candidate
+            .body
+            .iter()
+            .any(|node: &usize| covered.contains(node))
+        {
+            return None;
+        }
+        covered.extend(candidate.body.iter().copied());
+        lowered.insert(header, candidate);
+    }
+    if lowered.is_empty() {
+        return None;
+    }
+
+    let mut kept: BTreeMap<usize, usize> = BTreeMap::new();
+    for index in 0..blocks.len() {
+        if covered.contains(&index) && !lowered.contains_key(&index) {
+            continue;
+        }
+        let next: usize = kept.len();
+        kept.insert(index, next);
+    }
+    if kept.get(&0) != Some(&0) {
+        return None;
+    }
+    let remap = |target: usize| -> Option<usize> { kept.get(&target).copied() };
+
+    let mut collapsed: Vec<SBlock> = Vec::with_capacity(kept.len());
+    for (index, source) in blocks.iter().enumerate() {
+        if !kept.contains_key(&index) {
+            continue;
+        }
+        if let Some(loop_body) = lowered.get(&index) {
+            let term: Term = match loop_body.follow {
+                Some(follow) => Term::Goto(remap(follow)?),
+                None => Term::Exit,
+            };
+            collapsed.push(SBlock {
+                prelude: vec![loop_body.stmt.clone()],
+                body: Vec::new(),
+                term,
+            });
+            continue;
+        }
+        collapsed.push(SBlock {
+            prelude: source.prelude.clone(),
+            body: source.body.clone(),
+            term: remap_term(&source.term, &remap)?,
+        });
+    }
+
+    let mut collapsed_sinks: BTreeMap<usize, Sink> = BTreeMap::new();
+    for (node, sink) in sinks {
+        if let Some(position) = kept.get(node) {
+            collapsed_sinks.insert(*position, *sink);
+        }
+    }
+    Some((collapsed, collapsed_sinks))
+}
+
+fn references_label(stmts: &[JsStmt], label: usize) -> bool {
+    stmts.iter().any(|stmt: &JsStmt| match stmt {
+        JsStmt::Break(Some(target)) | JsStmt::Continue(Some(target)) => *target == label,
+        JsStmt::Labeled { body, .. } => references_label(std::slice::from_ref(body), label),
+        JsStmt::If { then, els, .. } => {
+            references_label(then, label) || references_label(els, label)
+        }
+        JsStmt::Forever(body) | JsStmt::While { body, .. } | JsStmt::DoWhile { body, .. } => {
+            references_label(body, label)
+        }
+        JsStmt::Switch { arms, .. } => arms
+            .iter()
+            .any(|arm: &SwitchArm| references_label(&arm.body, label)),
+        JsStmt::Try {
+            body, catch_body, ..
+        } => references_label(body, label) || references_label(catch_body, label),
+        JsStmt::Break(None)
+        | JsStmt::Continue(None)
+        | JsStmt::Raw(_)
+        | JsStmt::Return(_)
+        | JsStmt::Throw(_) => false,
+    })
+}
+
 fn binds_break(stmts: &[JsStmt]) -> bool {
     stmts.iter().any(|stmt: &JsStmt| match stmt {
-        JsStmt::Break => true,
+        JsStmt::Break(_) => true,
         JsStmt::If { then, els, .. } => binds_break(then) || binds_break(els),
+        JsStmt::Labeled { body, .. } => binds_break(std::slice::from_ref(body)),
         JsStmt::Try {
             body, catch_body, ..
         } => binds_break(body) || binds_break(catch_body),
-        JsStmt::Continue
+        JsStmt::Continue(_)
         | JsStmt::Raw(_)
         | JsStmt::Return(_)
         | JsStmt::Throw(_)
@@ -1132,13 +1428,14 @@ fn binds_break(stmts: &[JsStmt]) -> bool {
 
 fn binds_continue(stmts: &[JsStmt]) -> bool {
     stmts.iter().any(|stmt: &JsStmt| match stmt {
-        JsStmt::Continue => true,
+        JsStmt::Continue(_) => true,
         JsStmt::If { then, els, .. } => binds_continue(then) || binds_continue(els),
+        JsStmt::Labeled { body, .. } => binds_continue(std::slice::from_ref(body)),
         JsStmt::Switch { arms, .. } => arms.iter().any(|arm: &SwitchArm| binds_continue(&arm.body)),
         JsStmt::Try {
             body, catch_body, ..
         } => binds_continue(body) || binds_continue(catch_body),
-        JsStmt::Break
+        JsStmt::Break(_)
         | JsStmt::Raw(_)
         | JsStmt::Return(_)
         | JsStmt::Throw(_)
@@ -1149,7 +1446,7 @@ fn binds_continue(stmts: &[JsStmt]) -> bool {
 }
 
 fn strip_trailing_continues(mut body: Vec<JsStmt>) -> Vec<JsStmt> {
-    while matches!(body.last(), Some(JsStmt::Continue)) {
+    while matches!(body.last(), Some(JsStmt::Continue(None))) {
         body.pop();
     }
     body
@@ -1160,10 +1457,10 @@ fn as_while_loop(body: &[JsStmt]) -> Option<JsStmt> {
         return None;
     };
     let (guard, inner): (String, Vec<JsStmt>) = match (then.as_slice(), els.as_slice()) {
-        ([JsStmt::Break], []) => (negate_cond(cond), rest.to_vec()),
-        ([], [JsStmt::Break]) => (cond.clone(), rest.to_vec()),
-        ([JsStmt::Break], taken) if rest.is_empty() => (negate_cond(cond), taken.to_vec()),
-        (taken, [JsStmt::Break]) if rest.is_empty() => (cond.clone(), taken.to_vec()),
+        ([JsStmt::Break(None)], []) => (negate_cond(cond), rest.to_vec()),
+        ([], [JsStmt::Break(None)]) => (cond.clone(), rest.to_vec()),
+        ([JsStmt::Break(None)], taken) if rest.is_empty() => (negate_cond(cond), taken.to_vec()),
+        (taken, [JsStmt::Break(None)]) if rest.is_empty() => (cond.clone(), taken.to_vec()),
         _ => return None,
     };
     Some(JsStmt::While {
@@ -1172,15 +1469,27 @@ fn as_while_loop(body: &[JsStmt]) -> Option<JsStmt> {
     })
 }
 
-fn resugar_loop(body: Vec<JsStmt>) -> JsStmt {
+fn resugar_loop(body: Vec<JsStmt>, label: usize) -> JsStmt {
+    let referenced: bool = references_label(&body, label);
+    let shaped: JsStmt = shape_loop(body, referenced);
+    if referenced {
+        return JsStmt::Labeled {
+            label,
+            body: Box::new(shaped),
+        };
+    }
+    shaped
+}
+
+fn shape_loop(body: Vec<JsStmt>, referenced: bool) -> JsStmt {
     let body: Vec<JsStmt> = strip_trailing_continues(body);
     if let Some(guarded) = as_while_loop(&body) {
         return guarded;
     }
-    if let Some(JsStmt::If { cond, then, els }) = body.last() {
+    if !referenced && let Some(JsStmt::If { cond, then, els }) = body.last() {
         let repeat: Option<String> = match (then.as_slice(), els.as_slice()) {
-            ([JsStmt::Continue], [] | [JsStmt::Break]) => Some(cond.clone()),
-            ([JsStmt::Break], [] | [JsStmt::Continue]) => Some(negate_cond(cond)),
+            ([JsStmt::Continue(None)], [] | [JsStmt::Break(None)]) => Some(cond.clone()),
+            ([JsStmt::Break(None)], [] | [JsStmt::Continue(None)]) => Some(negate_cond(cond)),
             _ => None,
         };
         if let Some(repeat) = repeat {
@@ -1199,8 +1508,12 @@ fn resugar_loop(body: Vec<JsStmt>) -> JsStmt {
 fn terminates(stmts: &[JsStmt]) -> bool {
     matches!(
         stmts.last(),
-        Some(JsStmt::Return(_) | JsStmt::Throw(_) | JsStmt::Break | JsStmt::Continue)
+        Some(JsStmt::Return(_) | JsStmt::Throw(_) | JsStmt::Break(_) | JsStmt::Continue(_))
     )
+}
+
+fn label_text(label: usize) -> String {
+    format!("$loop{label}")
 }
 
 fn render_stmts(
@@ -1209,76 +1522,103 @@ fn render_stmts(
     out: &mut String,
     budget: &mut usize,
 ) -> Result<(), StructureDecline> {
-    let nested: String = format!("{indent}{INDENT_STEP}");
     for stmt in stmts {
-        if *budget == 0 {
-            return Err(StructureDecline::StatementBudgetExceeded);
+        render_stmt(stmt, "", indent, out, budget)?;
+    }
+    Ok(())
+}
+
+fn render_stmt(
+    stmt: &JsStmt,
+    prefix: &str,
+    indent: &str,
+    out: &mut String,
+    budget: &mut usize,
+) -> Result<(), StructureDecline> {
+    if *budget == 0 {
+        return Err(StructureDecline::StatementBudgetExceeded);
+    }
+    *budget -= 1;
+    let nested: String = format!("{indent}{INDENT_STEP}");
+    match stmt {
+        JsStmt::Raw(text) => push_line(out, indent, &format!("{prefix}{text}")),
+        JsStmt::Return(value) => {
+            if value == "undefined" {
+                push_line(out, indent, &format!("{prefix}return;"));
+            } else {
+                push_line(out, indent, &format!("{prefix}return {value};"));
+            }
         }
-        *budget -= 1;
-        match stmt {
-            JsStmt::Raw(text) => push_line(out, indent, text),
-            JsStmt::Return(value) => {
-                if value == "undefined" {
-                    push_line(out, indent, "return;");
-                } else {
-                    push_line(out, indent, &format!("return {value};"));
+        JsStmt::Throw(value) => push_line(out, indent, &format!("{prefix}throw {value};")),
+        JsStmt::Break(None) => push_line(out, indent, &format!("{prefix}break;")),
+        JsStmt::Break(Some(label)) => {
+            push_line(
+                out,
+                indent,
+                &format!("{prefix}break {};", label_text(*label)),
+            );
+        }
+        JsStmt::Continue(None) => push_line(out, indent, &format!("{prefix}continue;")),
+        JsStmt::Continue(Some(label)) => push_line(
+            out,
+            indent,
+            &format!("{prefix}continue {};", label_text(*label)),
+        ),
+        JsStmt::Labeled { label, body } => {
+            let head: String = format!("{prefix}{}: ", label_text(*label));
+            render_stmt(body, &head, indent, out, budget)?;
+        }
+        JsStmt::If { cond, then, els } => {
+            push_line(out, indent, &format!("{prefix}if ({cond}) {{"));
+            render_stmts(then, &nested, out, budget)?;
+            if !els.is_empty() {
+                push_line(out, indent, "} else {");
+                render_stmts(els, &nested, out, budget)?;
+            }
+            push_line(out, indent, "}");
+        }
+        JsStmt::Forever(body) => {
+            push_line(out, indent, &format!("{prefix}for (;;) {{"));
+            render_stmts(body, &nested, out, budget)?;
+            push_line(out, indent, "}");
+        }
+        JsStmt::While { cond, body } => {
+            push_line(out, indent, &format!("{prefix}while ({cond}) {{"));
+            render_stmts(body, &nested, out, budget)?;
+            push_line(out, indent, "}");
+        }
+        JsStmt::DoWhile { body, cond } => {
+            push_line(out, indent, &format!("{prefix}do {{"));
+            render_stmts(body, &nested, out, budget)?;
+            push_line(out, indent, &format!("}} while ({cond});"));
+        }
+        JsStmt::Try {
+            body,
+            catch_var,
+            catch_body,
+        } => {
+            push_line(out, indent, &format!("{prefix}try {{"));
+            render_stmts(body, &nested, out, budget)?;
+            push_line(out, indent, &format!("}} catch ({catch_var}) {{"));
+            render_stmts(catch_body, &nested, out, budget)?;
+            push_line(out, indent, "}");
+        }
+        JsStmt::Switch { scrutinee, arms } => {
+            let arm_indent: String = format!("{nested}{INDENT_STEP}");
+            push_line(out, indent, &format!("{prefix}switch ({scrutinee}) {{"));
+            for arm in arms {
+                for label in &arm.labels {
+                    push_line(out, &nested, &format!("case {label}:"));
+                }
+                if arm.is_default {
+                    push_line(out, &nested, "default:");
+                }
+                render_stmts(&arm.body, &arm_indent, out, budget)?;
+                if !terminates(&arm.body) {
+                    push_line(out, &arm_indent, "break;");
                 }
             }
-            JsStmt::Throw(value) => push_line(out, indent, &format!("throw {value};")),
-            JsStmt::Break => push_line(out, indent, "break;"),
-            JsStmt::Continue => push_line(out, indent, "continue;"),
-            JsStmt::If { cond, then, els } => {
-                push_line(out, indent, &format!("if ({cond}) {{"));
-                render_stmts(then, &nested, out, budget)?;
-                if !els.is_empty() {
-                    push_line(out, indent, "} else {");
-                    render_stmts(els, &nested, out, budget)?;
-                }
-                push_line(out, indent, "}");
-            }
-            JsStmt::Forever(body) => {
-                push_line(out, indent, "for (;;) {");
-                render_stmts(body, &nested, out, budget)?;
-                push_line(out, indent, "}");
-            }
-            JsStmt::While { cond, body } => {
-                push_line(out, indent, &format!("while ({cond}) {{"));
-                render_stmts(body, &nested, out, budget)?;
-                push_line(out, indent, "}");
-            }
-            JsStmt::DoWhile { body, cond } => {
-                push_line(out, indent, "do {");
-                render_stmts(body, &nested, out, budget)?;
-                push_line(out, indent, &format!("}} while ({cond});"));
-            }
-            JsStmt::Try {
-                body,
-                catch_var,
-                catch_body,
-            } => {
-                push_line(out, indent, "try {");
-                render_stmts(body, &nested, out, budget)?;
-                push_line(out, indent, &format!("}} catch ({catch_var}) {{"));
-                render_stmts(catch_body, &nested, out, budget)?;
-                push_line(out, indent, "}");
-            }
-            JsStmt::Switch { scrutinee, arms } => {
-                let arm_indent: String = format!("{nested}{INDENT_STEP}");
-                push_line(out, indent, &format!("switch ({scrutinee}) {{"));
-                for arm in arms {
-                    for label in &arm.labels {
-                        push_line(out, &nested, &format!("case {label}:"));
-                    }
-                    if arm.is_default {
-                        push_line(out, &nested, "default:");
-                    }
-                    render_stmts(&arm.body, &arm_indent, out, budget)?;
-                    if !terminates(&arm.body) {
-                        push_line(out, &arm_indent, "break;");
-                    }
-                }
-                push_line(out, indent, "}");
-            }
+            push_line(out, indent, "}");
         }
     }
     Ok(())

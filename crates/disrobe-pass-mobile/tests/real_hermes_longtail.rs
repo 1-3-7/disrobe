@@ -483,7 +483,7 @@ const LONGTAIL_PINNED: Pinned = Pinned {
     declined_ops: 0,
     unaccounted_ops: 0,
     structured_before: 10,
-    structured_after: 10,
+    structured_after: 12,
 };
 
 const SHAPES_PINNED: Pinned = Pinned {
@@ -500,32 +500,7 @@ const SHAPES_PINNED: Pinned = Pinned {
 const SWITCH_IMM_ARMS_BEFORE: usize = 1;
 const SWITCH_IMM_ARMS_AFTER: usize = 17;
 
-struct Declined {
-    bundle: &'static str,
-    function: &'static str,
-    reason: StructureDecline,
-    note: &'static str,
-}
-
-const DECLINED: &[Declined] = &[
-    Declined {
-        bundle: "longtail.hbc",
-        function: "firstPair",
-        reason: StructureDecline::UnsupportedRegion,
-        note: "a labelled break and a labelled continue leave the inner loop of a reducible nested \
-               loop. The region structurer has no label on its break and continue sinks, so it \
-               refuses the region by name rather than emitting a body that leaves the wrong loop",
-    },
-    Declined {
-        bundle: "longtail.hbc",
-        function: "global",
-        reason: StructureDecline::IncompleteCover,
-        note: "the top-level graph is one basic block and structures on its own. It is refused \
-               only because the recovered text of firstPair is inlined into it and that text is \
-               in goto form, so the whole body is held back rather than published as JavaScript \
-               that does not parse",
-    },
-];
+const RAISED_BY_LABELLED_EXITS: &[&str] = &["firstPair", "global"];
 
 fn pinned_for(bundle: &Bundle) -> &'static Pinned {
     match bundle.label {
@@ -621,10 +596,10 @@ fn the_recovery_table_over_both_bundles_is_pinned_by_equality() {
 }
 
 #[test]
-fn the_functions_that_decline_are_exactly_the_ones_this_ledger_names() {
+fn no_function_in_either_bundle_declines_and_any_that_did_would_be_named() {
     for bundle in BUNDLES {
         let report: DecompileReport = report_of(bundle);
-        let mut observed: Vec<(&str, StructureDecline)> = report
+        let observed: Vec<(&str, StructureDecline)> = report
             .functions
             .iter()
             .filter_map(|f: &DecompiledFunction| {
@@ -632,49 +607,40 @@ fn the_functions_that_decline_are_exactly_the_ones_this_ledger_names() {
                     .map(|reason: StructureDecline| (f.name.as_str(), reason))
             })
             .collect();
-        observed.sort_unstable_by_key(|(name, _): &(&str, StructureDecline)| *name);
-
-        let mut expected: Vec<(&str, StructureDecline)> = DECLINED
-            .iter()
-            .filter(|row: &&Declined| row.bundle == bundle.label)
-            .map(|row: &Declined| (row.function, row.reason))
-            .collect();
-        expected.sort_unstable_by_key(|(name, _): &(&str, StructureDecline)| *name);
-
-        assert_eq!(
-            observed, expected,
-            "{}: the declined set is pinned by equality. A function that starts declining must \
-             gain a row here with the reason, and a function that stops declining must lose its \
-             row rather than leave this ledger claiming a refusal that no longer happens",
+        assert!(
+            observed.is_empty(),
+            "{}: every function of this bundle reaches structured control flow, so a refusal here \
+             is a regression and must be named rather than absent from the report: {observed:?}",
             bundle.label
         );
-
-        for row in DECLINED
-            .iter()
-            .filter(|r: &&Declined| r.bundle == bundle.label)
-        {
-            assert!(
-                row.note.len() > 60,
-                "{}: {} declines, so this ledger must say why in words a reader can act on",
-                bundle.label,
-                row.function
-            );
-            let declining: &DecompiledFunction = report
-                .functions
-                .iter()
-                .find(|f: &&DecompiledFunction| f.name == row.function)
-                .unwrap_or_else(|| panic!("{}: no function {}", bundle.label, row.function));
-            assert!(
-                !declining.structured,
-                "{}: {} is listed as declined but the report calls it structured",
-                bundle.label, row.function
-            );
-            eprintln!(
-                "declined[{} {}]: {:?} -- {}",
-                bundle.label, row.function, row.reason, row.note
-            );
-        }
+        assert!(
+            report.functions_with_body > 0,
+            "{}: a report with no bodied function would make the empty decline set free",
+            bundle.label
+        );
     }
+
+    let longtail: DecompileReport = report_of(&LONGTAIL);
+    for name in RAISED_BY_LABELLED_EXITS {
+        let raised: &DecompiledFunction = longtail
+            .functions
+            .iter()
+            .find(|f: &&DecompiledFunction| f.name == *name)
+            .unwrap_or_else(|| panic!("longtail.hbc recovers no function named {name}"));
+        assert!(
+            raised.structured && raised.structure_decline.is_none(),
+            "{name} carried the refusal this change removes, so it must now structure; decline \
+             {:?}",
+            raised.structure_decline
+        );
+    }
+    eprintln!(
+        "longtail.hbc structured {}/{} functions, raised from {} by lowering the nested loop that \
+         leaves through a labelled exit: {RAISED_BY_LABELLED_EXITS:?}",
+        longtail.structured_functions,
+        longtail.functions_with_body,
+        LONGTAIL_PINNED.structured_before
+    );
 }
 
 #[test]
@@ -760,6 +726,11 @@ const LONGTAIL_PROBES: &[Probe] = &[
         vm_line: 3,
     },
     Probe {
+        function: "firstPair",
+        call: "globalThis.firstPair(9)",
+        vm_line: 4,
+    },
+    Probe {
         function: "countDown",
         call: "globalThis.countDown(5)",
         vm_line: 5,
@@ -801,10 +772,12 @@ const LONGTAIL_PROBES: &[Probe] = &[
     },
 ];
 
-const PINNED_EXECUTION_PROBES: usize = 12;
-const PINNED_EXECUTION_EQUIVALENT: usize = 12;
-const PINNED_EXECUTION_GRADED_FUNCTIONS: usize = 8;
-const PINNED_UNGRADED_FUNCTIONS: usize = 2;
+const PINNED_EXECUTION_PROBES: usize = 13;
+const PINNED_EXECUTION_EQUIVALENT: usize = 13;
+const PINNED_PROBE_GRADED_FUNCTIONS: usize = 9;
+const PINNED_EXECUTION_GRADED_FUNCTIONS: usize = 10;
+const PINNED_UNGRADED_FUNCTIONS: usize = 0;
+const MODULE_ENTRYPOINT: &str = "global";
 
 const PARSE_GRADED_ONLY: &[(&str, &str)] = &[
     (
@@ -909,8 +882,8 @@ fn each_recovered_function_reproduces_the_line_the_hermes_interpreter_printed() 
     );
     assert_eq!(
         graded_names.len(),
-        PINNED_EXECUTION_GRADED_FUNCTIONS,
-        "the execution-graded function population is pinned by equality: {graded_names:?}"
+        PINNED_PROBE_GRADED_FUNCTIONS,
+        "the probe-graded function population is pinned by equality: {graded_names:?}"
     );
     eprintln!(
         "longtail.hbc execution-equivalent: {equivalent}/{PINNED_EXECUTION_PROBES} calls across \
@@ -920,14 +893,183 @@ fn each_recovered_function_reproduces_the_line_the_hermes_interpreter_printed() 
     );
 }
 
+const LABELLED_EXIT_FUNCTION: &str = "firstPair";
+const LABELLED_EXIT_INPUTS: &[i64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 25, 40];
+const LABELLED_EXIT_ANCHORS: &[&str] = &["break outer;", "continue outer;"];
+
+fn original_function(source: &str, name: &str) -> String {
+    let head: String = format!("function {name}(");
+    let Some(start): Option<usize> = source.find(&head) else {
+        panic!(
+            "the committed original declares no function {name}, so the differential below would \
+             grade the recovery against text that lives only in this file"
+        )
+    };
+    let rest: &str = &source[start..];
+    let Some(end): Option<usize> = rest.find("\n}\n") else {
+        panic!("the committed original never closes function {name} at column zero")
+    };
+    rest[..end + 2].to_owned()
+}
+
+fn calls_over(callee: &str) -> String {
+    use std::fmt::Write as _;
+
+    LABELLED_EXIT_INPUTS
+        .iter()
+        .fold(String::new(), |mut calls: String, input: &i64| {
+            let _ = writeln!(calls, "print({callee}({input}));");
+            calls
+        })
+}
+
+#[test]
+fn the_labelled_nested_loop_reproduces_the_committed_original_over_every_probed_input() {
+    let report: DecompileReport = report_of(&LONGTAIL);
+    let original: String = original_function(LONGTAIL.source, LABELLED_EXIT_FUNCTION);
+    for anchor in LABELLED_EXIT_ANCHORS {
+        assert!(
+            original.contains(anchor),
+            "the committed original of {LABELLED_EXIT_FUNCTION} no longer holds `{anchor}`, so \
+             this differential no longer grades the labelled-exit shape it names"
+        );
+    }
+    assert!(
+        !LABELLED_EXIT_INPUTS.is_empty(),
+        "an empty input set would make the comparison below free"
+    );
+
+    let recovered: String = installed(&report, LABELLED_EXIT_FUNCTION);
+    assert!(
+        recovered.contains("break $loop"),
+        "the recovered body must leave the inner loop through a labelled break, or the comparison \
+         below is not measuring the shape this test names\n{recovered}"
+    );
+
+    let want: String = eval_capture(&format!(
+        "{original}\n{}",
+        calls_over(LABELLED_EXIT_FUNCTION)
+    ))
+    .expect("the committed original must evaluate");
+    let got: String = eval_capture(&format!(
+        "{recovered}\n{}",
+        calls_over(&format!("globalThis.{LABELLED_EXIT_FUNCTION}"))
+    ))
+    .unwrap_or_else(|| {
+        panic!(
+            "{LABELLED_EXIT_FUNCTION}: the recovered body must run, and a body that throws on \
+             entry is a failure and never a skip\n{recovered}"
+        )
+    });
+    assert_eq!(
+        want,
+        got,
+        "{LABELLED_EXIT_FUNCTION}: the recovered body diverged from the committed original over \
+         {} inputs\n--want--\n{want}\n--got--\n{got}\n--recovered--\n{recovered}",
+        LABELLED_EXIT_INPUTS.len()
+    );
+    eprintln!(
+        "longtail.hbc {LABELLED_EXIT_FUNCTION}: {}/{} inputs reproduce the committed original \
+         through a real JavaScript engine",
+        LABELLED_EXIT_INPUTS.len(),
+        LABELLED_EXIT_INPUTS.len()
+    );
+}
+
+#[test]
+fn dropping_the_label_from_the_recovered_break_stops_reproducing_the_original() {
+    let report: DecompileReport = report_of(&LONGTAIL);
+    let original: String = original_function(LONGTAIL.source, LABELLED_EXIT_FUNCTION);
+    let recovered: String = installed(&report, LABELLED_EXIT_FUNCTION);
+    let unlabelled: String = recovered
+        .split_inclusive('\n')
+        .map(|line: &str| {
+            if line.trim_start().starts_with("break $loop") {
+                line.replace("break $loop1;", "break;")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    assert_ne!(
+        unlabelled, recovered,
+        "the perturbation replaced nothing, so it proves nothing about the label"
+    );
+    assert!(
+        parses_as_javascript(&unlabelled),
+        "the perturbed body still parses, so parse validity alone is no evidence that the label \
+         carries the recovery\n{unlabelled}"
+    );
+
+    let want: String = eval_capture(&format!(
+        "{original}\n{}",
+        calls_over(LABELLED_EXIT_FUNCTION)
+    ))
+    .expect("the committed original must evaluate");
+    let got: String = eval_capture(&format!(
+        "{unlabelled}\n{}",
+        calls_over(&format!("globalThis.{LABELLED_EXIT_FUNCTION}"))
+    ))
+    .expect("the perturbed body must evaluate");
+    assert_ne!(
+        want, got,
+        "a break that leaves the inner loop instead of the labelled outer loop must NOT reproduce \
+         the original, or the differential above would pass over the exact recovery it exists to \
+         catch"
+    );
+}
+
+#[test]
+fn the_recovered_module_entrypoint_reproduces_every_line_the_hermes_interpreter_printed() {
+    let report: DecompileReport = report_of(&LONGTAIL);
+    let expected: Vec<&str> = vm_lines(&LONGTAIL);
+    let entry: &DecompiledFunction = report
+        .functions
+        .iter()
+        .find(|f: &&DecompiledFunction| f.name == MODULE_ENTRYPOINT)
+        .unwrap_or_else(|| panic!("longtail.hbc recovers no function named {MODULE_ENTRYPOINT}"));
+    assert!(
+        entry.structured && entry.structure_decline.is_none(),
+        "{MODULE_ENTRYPOINT}: the module body must structure before it can be run; decline {:?}",
+        entry.structure_decline
+    );
+    assert!(
+        parses_as_javascript(&entry.source),
+        "{MODULE_ENTRYPOINT}: the module body must parse before it can be run\n{}",
+        entry.source
+    );
+
+    let driver: String = format!("({})();", entry.source);
+    let got: String = eval_capture(&driver).unwrap_or_else(|| {
+        panic!(
+            "{MODULE_ENTRYPOINT}: the recovered module body must run in a JavaScript engine, and \
+             a body that throws on entry is a failure and never a skip\n{driver}"
+        )
+    });
+    assert_eq!(
+        got,
+        expected.join("\n"),
+        "{MODULE_ENTRYPOINT}: running the recovered module body must print exactly what the \
+         Hermes interpreter printed for the committed source. Reference produced by {TOOLCHAIN}"
+    );
+    eprintln!(
+        "longtail.hbc module entrypoint: {}/{} interpreter lines reproduced by running the \
+         recovered top-level body",
+        expected.len(),
+        expected.len()
+    );
+}
+
 #[test]
 fn every_function_lands_in_exactly_one_grading_population() {
     let report: DecompileReport = report_of(&LONGTAIL);
-    let executed: BTreeSet<&str> = LONGTAIL_PROBES.iter().map(|p: &Probe| p.function).collect();
-    let declined: BTreeSet<&str> = DECLINED
+    let mut executed: BTreeSet<&str> = LONGTAIL_PROBES.iter().map(|p: &Probe| p.function).collect();
+    executed.insert(MODULE_ENTRYPOINT);
+    let declined: BTreeSet<&str> = report
+        .functions
         .iter()
-        .filter(|row: &&Declined| row.bundle == LONGTAIL.label)
-        .map(|row: &Declined| row.function)
+        .filter(|f: &&DecompiledFunction| f.structure_decline.is_some())
+        .map(|f: &DecompiledFunction| f.name.as_str())
         .collect();
 
     let parse_only: BTreeSet<&str> = PARSE_GRADED_ONLY
