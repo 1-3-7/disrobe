@@ -427,6 +427,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_XZ => extract_single_stream(bytes, "xz", decode_xz),
         TAG_ZSTD => extract_single_stream(bytes, "zstd", decode_zstd),
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
+        TAG_RAR => extract_rar_members(bytes),
         TAG_RPM => extract_rpm_members(bytes),
         TAG_ARC => extract_arc_members(bytes),
         TAG_ARJ => extract_arj_members(bytes),
@@ -729,6 +730,43 @@ fn extract_arc_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
     }
     if members.is_empty() && !archive.entries.is_empty() {
         return Err(fail("arc payload contains no verified members".to_owned()));
+    }
+    Ok(members)
+}
+
+fn extract_rar_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+        max_entries: MAX_MEMBER_COUNT,
+        max_total_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    };
+    let archive: crate::containers::RarArchive = crate::containers::rar::parse_rar(bytes)
+        .map_err(|error: crate::error::Error| fail(format!("rar payload: {error}")))?;
+    if archive.entries.len() > MAX_MEMBER_COUNT {
+        return Err(fail(format!(
+            "rar member count {} exceeds cap {MAX_MEMBER_COUNT}",
+            archive.entries.len()
+        )));
+    }
+    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
+    let mut members: Vec<(String, Vec<u8>)> = Vec::new();
+    for entry in &archive.entries {
+        if entry.is_dir {
+            continue;
+        }
+        let name: String = crate::quota::sanitize_entry_path(&entry.name)
+            .map_err(|error: crate::error::Error| fail(format!("rar member path: {error}")))?;
+        let data: Vec<u8> =
+            crate::containers::rar_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
+                .map_err(|error: crate::error::Error| {
+                    fail(format!("rar member `{name}`: {error}"))
+                })?;
+        guard
+            .admit_entry(&name, data.len() as u64, entry.packed_size)
+            .map_err(|error: crate::error::Error| fail(format!("rar quota: {error}")))?;
+        members.push((name, data));
     }
     Ok(members)
 }
@@ -1201,6 +1239,7 @@ mod tests {
     const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
     const REAL_LZH_LEVEL3: &[u8] = include_bytes!("../tests/fixtures/lzh/level3/h3_subdir.lzh");
+    const REAL_RAR3_FILTER: &[u8] = include_bytes!("../../../corpus/binfmt/rar/filter-e8-rar3.rar");
     const REAL_STUFFIT: &[u8] = include_bytes!("../tests/fixtures/stuffit/stuffit45-method13.sit");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
     const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
@@ -1212,6 +1251,49 @@ mod tests {
             parent_hint: None,
             depth: 0,
         }
+    }
+
+    #[test]
+    fn a_filtered_rar3_member_reaches_the_container_chain() {
+        assert_eq!(sniff_container_tag(REAL_RAR3_FILTER), Some(TAG_RAR));
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_RAR, REAL_RAR3_FILTER).expect("extract rar3 filter members");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, "bsdcat.exe");
+        assert_eq!(members[0].1.len(), 204_288);
+        assert_eq!(
+            crc32fast::hash(&members[0].1),
+            0x4db1_0349,
+            "the chain must publish the bytes the archive header declares"
+        );
+    }
+
+    #[test]
+    fn the_container_chain_publishes_the_bytes_direct_extraction_publishes() {
+        let archive: crate::containers::RarArchive =
+            crate::containers::rar::parse_rar(REAL_RAR3_FILTER).expect("parse rar");
+        let entry: &crate::containers::RarEntry = archive
+            .entries
+            .iter()
+            .find(|candidate: &&crate::containers::RarEntry| !candidate.is_dir)
+            .expect("one file member");
+        let direct: Vec<u8> = crate::containers::rar_entry_bytes(REAL_RAR3_FILTER, entry, 1 << 30)
+            .expect("direct extraction");
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_RAR, REAL_RAR3_FILTER).expect("chain extraction");
+        assert_eq!(members[0].1, direct);
+    }
+
+    #[test]
+    fn the_container_pass_emits_the_rar_member_as_a_child_artifact() {
+        let artifact: Artifact = Artifact::new(Rung::Raw, REAL_RAR3_FILTER.to_vec(), [0u8; 32]);
+        let children: Vec<ChildArtifact> = CONTAINER_PASS
+            .extract_children(&artifact)
+            .expect("rar child artifacts");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].handle.relative_path, "bsdcat.exe");
+        assert_eq!(children[0].handle.hint.as_deref(), Some(TAG_RAR));
+        assert_eq!(children[0].bytes.len(), 204_288);
     }
 
     #[test]
