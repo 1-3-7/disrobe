@@ -885,11 +885,18 @@ fn lower_callother(
     lowerer: &mut VarnodeLowerer<'_>,
     instructions: &mut Vec<NirInstr>,
 ) -> Result<()> {
-    if name.len() > MAX_CALLOTHER_NAME_BYTES || !valid_identifier(name) {
+    if name.len() > MAX_CALLOTHER_NAME_BYTES {
         return Err(invalid(
             instruction.address,
             "CALLOTHER",
-            "effect name is outside limits",
+            "effect name is longer than the limit",
+        ));
+    }
+    if !valid_identifier(name) {
+        return Err(invalid(
+            instruction.address,
+            "CALLOTHER",
+            "effect name is not an identifier",
         ));
     }
     if inputs.len() > MAX_CALLOTHER_INPUTS {

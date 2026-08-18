@@ -262,6 +262,19 @@ fn lift_match(
     unsupported_constructor(compiled, matched, bytes, mnemonic)
 }
 
+fn identifier_from_mnemonic(mnemonic: &str) -> String {
+    mnemonic
+        .chars()
+        .map(|character: char| {
+            if character == '_' || character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn unsupported_constructor(
     compiled: &CompiledSpec,
     matched: DecodeMatch,
@@ -278,7 +291,12 @@ fn unsupported_constructor(
             .cloned()
     });
     let (name, status): (String, DecodeStatus) = pcodeop.map_or_else(
-        || (format!("unsupported_{mnemonic}"), DecodeStatus::Unsupported),
+        || {
+            (
+                format!("unsupported_{}", identifier_from_mnemonic(&mnemonic)),
+                DecodeStatus::Unsupported,
+            )
+        },
         |operation: String| (operation, DecodeStatus::CallOther),
     );
     PcodeInstr {

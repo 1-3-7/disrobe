@@ -494,3 +494,29 @@ fn a_thumb_block_past_its_configured_ceiling_returns_a_typed_refusal() {
         "the refusal must name the operation ceiling, got {refusal}"
     );
 }
+
+#[test]
+fn a_wide_thumb_mnemonic_without_semantics_becomes_a_gap_instead_of_discarding_the_function() {
+    const LDRB_W_THEN_BX: &[u8] = &[0x92, 0xF8, 0x00, 0x30, 0x70, 0x47];
+    let lifted: ArchLift = bounded_lift("thumb-wide-gap", LDRB_W_THEN_BX, PcodeArch::Arm32Thumb);
+    assert_eq!(
+        lifted.consumed,
+        LDRB_W_THEN_BX.len(),
+        "a wide form the lifter cannot model must cost its own instruction and nothing else"
+    );
+    assert_eq!(
+        lifted.gaps.mnemonics(),
+        ["ldrb.w"],
+        "the gap must carry the qualified mnemonic the reference disassembler prints, not a stem"
+    );
+    assert!(
+        lifted
+            .function
+            .instructions
+            .iter()
+            .any(|instruction: &NirInstr| matches!(instruction.op, NirOp::Return)),
+        "the instruction after a wide-form gap must still recover; a mnemonic carrying a dot once \
+         made the effect name an invalid identifier and cost the whole function: {:?}",
+        lifted.function.instructions
+    );
+}
