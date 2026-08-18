@@ -36,8 +36,11 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
         valid: BTreeSet::new(),
     };
     helper_collector.visit_program(&parsed.program);
+    let mut string_subjects: StringSubjectCollector = StringSubjectCollector::default();
+    string_subjects.visit_program(&parsed.program);
     let mut collector: Collector = Collector {
         source,
+        string_subjects: &string_subjects.evidence,
         edits: Vec::new(),
         helper_loops_converted: 0,
         loose_helpers: helper_collector.valid,
@@ -63,6 +66,7 @@ pub(super) fn recover(source: &str) -> (RuleOutcome, ForOfStats) {
 
 struct Collector<'s> {
     source: &'s str,
+    string_subjects: &'s BTreeMap<String, StringEvidence>,
     edits: Vec<Edit>,
     helper_loops_converted: usize,
     loose_helpers: BTreeSet<String>,
@@ -104,6 +108,155 @@ impl<'a> Visit<'a> for LooseHelperCollector<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum StringEvidence {
+    #[default]
+    None,
+    BasicPlane,
+    Opaque,
+}
+
+impl StringEvidence {
+    const fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::None, value) | (value, Self::None) => value,
+            (Self::BasicPlane, Self::BasicPlane) => Self::BasicPlane,
+            _ => Self::Opaque,
+        }
+    }
+
+    const fn blocks_index_resugar(self) -> bool {
+        matches!(self, Self::Opaque)
+    }
+}
+
+fn literal_string_evidence(value: &str) -> StringEvidence {
+    if value.chars().any(|unit: char| unit as u32 > 0xffff) {
+        StringEvidence::Opaque
+    } else {
+        StringEvidence::BasicPlane
+    }
+}
+
+fn is_string_only_method(name: &str) -> bool {
+    matches!(
+        name,
+        "toString"
+            | "join"
+            | "charAt"
+            | "substring"
+            | "substr"
+            | "toUpperCase"
+            | "toLowerCase"
+            | "toLocaleUpperCase"
+            | "toLocaleLowerCase"
+            | "trim"
+            | "trimStart"
+            | "trimEnd"
+            | "padStart"
+            | "padEnd"
+            | "normalize"
+            | "replace"
+            | "replaceAll"
+            | "repeat"
+    )
+}
+
+fn string_evidence(
+    expr: &Expression<'_>,
+    bindings: &BTreeMap<String, StringEvidence>,
+) -> StringEvidence {
+    match expr.get_inner_expression() {
+        Expression::StringLiteral(literal) => literal_string_evidence(literal.value.as_str()),
+        Expression::TemplateLiteral(template) => {
+            if !template.expressions.is_empty() || template.quasis.len() != 1 {
+                return StringEvidence::Opaque;
+            }
+            template.quasis.first().map_or(
+                StringEvidence::Opaque,
+                |quasi: &oxc_ast::ast::TemplateElement<'_>| {
+                    quasi
+                        .value
+                        .cooked
+                        .as_ref()
+                        .map_or(StringEvidence::Opaque, |cooked: &oxc_span::Atom<'_>| {
+                            literal_string_evidence(cooked.as_str())
+                        })
+                },
+            )
+        }
+        Expression::Identifier(identifier) => bindings
+            .get(identifier.name.as_str())
+            .copied()
+            .unwrap_or_default(),
+        Expression::BinaryExpression(binary) if binary.operator == BinaryOperator::Addition => {
+            let left: StringEvidence = string_evidence(&binary.left, bindings);
+            let right: StringEvidence = string_evidence(&binary.right, bindings);
+            if left == StringEvidence::None && right == StringEvidence::None {
+                StringEvidence::None
+            } else {
+                StringEvidence::Opaque
+            }
+        }
+        Expression::CallExpression(call) => match call.callee.get_inner_expression() {
+            Expression::Identifier(identifier) if identifier.name.as_str() == "String" => {
+                StringEvidence::Opaque
+            }
+            Expression::StaticMemberExpression(member)
+                if is_string_only_method(member.property.name.as_str()) =>
+            {
+                StringEvidence::Opaque
+            }
+            _ => StringEvidence::None,
+        },
+        _ => StringEvidence::None,
+    }
+}
+
+fn subject_blocks_index_resugar(
+    iterable: &Expression<'_>,
+    bindings: &BTreeMap<String, StringEvidence>,
+) -> bool {
+    string_evidence(iterable, bindings).blocks_index_resugar()
+}
+
+#[derive(Debug, Default)]
+struct StringSubjectCollector {
+    evidence: BTreeMap<String, StringEvidence>,
+}
+
+impl StringSubjectCollector {
+    fn record(&mut self, name: &str, evidence: StringEvidence) {
+        let slot: &mut StringEvidence = self.evidence.entry(name.to_owned()).or_default();
+        *slot = slot.join(evidence);
+    }
+}
+
+impl<'a> Visit<'a> for StringSubjectCollector {
+    fn visit_variable_declarator(&mut self, declarator: &oxc_ast::ast::VariableDeclarator<'a>) {
+        if let BindingPatternKind::BindingIdentifier(binding) = &declarator.id.kind
+            && let Some(init) = &declarator.init
+        {
+            let evidence: StringEvidence = string_evidence(init, &BTreeMap::new());
+            if evidence != StringEvidence::None {
+                self.record(binding.name.as_str(), evidence);
+            }
+        }
+        oxc_ast::visit::walk::walk_variable_declarator(self, declarator);
+    }
+
+    fn visit_assignment_expression(&mut self, assignment: &oxc_ast::ast::AssignmentExpression<'a>) {
+        if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(target) = &assignment.left
+        {
+            let evidence: StringEvidence = string_evidence(&assignment.right, &BTreeMap::new());
+            if evidence != StringEvidence::None {
+                self.record(target.name.as_str(), evidence);
+            }
+        }
+        oxc_ast::visit::walk::walk_assignment_expression(self, assignment);
+    }
+}
+
 fn is_loose_helper_name(name: &str) -> bool {
     matches!(
         name,
@@ -124,13 +277,13 @@ fn is_babel_loose_helper(source: &str, name: &str) -> bool {
 
 impl<'a> Visit<'a> for Collector<'_> {
     fn visit_for_statement(&mut self, for_stmt: &ForStatement<'a>) {
-        if let Some(edit) = try_convert(for_stmt, self.source) {
+        if let Some(edit) = try_convert(for_stmt, self.source, self.string_subjects) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
             }
             return;
         }
-        if let Some(edit) = try_convert_direct(for_stmt, self.source) {
+        if let Some(edit) = try_convert_direct(for_stmt, self.source, self.string_subjects) {
             if !edit_overlaps_comments(&edit, self.comments) {
                 self.edits.push(edit);
             }
@@ -322,8 +475,15 @@ struct Match<'a> {
     array_name: &'a str,
 }
 
-fn try_convert(for_stmt: &ForStatement<'_>, source: &str) -> Option<Edit> {
+fn try_convert(
+    for_stmt: &ForStatement<'_>,
+    source: &str,
+    string_subjects: &BTreeMap<String, StringEvidence>,
+) -> Option<Edit> {
     let m: Match<'_> = match_loop(for_stmt, source)?;
+    if subject_blocks_index_resugar(m.iterable, string_subjects) {
+        return None;
+    }
     if body_uses(m.remaining, m.index_name)
         || body_uses(m.remaining, m.array_name)
         || m.element.binds_name(m.index_name)
@@ -356,8 +516,15 @@ struct DirectMatch<'a> {
     length_cache_name: Option<&'a str>,
 }
 
-fn try_convert_direct(for_stmt: &ForStatement<'_>, source: &str) -> Option<Edit> {
+fn try_convert_direct(
+    for_stmt: &ForStatement<'_>,
+    source: &str,
+    string_subjects: &BTreeMap<String, StringEvidence>,
+) -> Option<Edit> {
     let m: DirectMatch<'_> = match_direct_loop(for_stmt, source)?;
+    if subject_blocks_index_resugar(m.iterable, string_subjects) {
+        return None;
+    }
     if body_uses(m.remaining, m.index_name)
         || m.element.binds_name(m.index_name)
         || m.element.references_name(m.index_name)
