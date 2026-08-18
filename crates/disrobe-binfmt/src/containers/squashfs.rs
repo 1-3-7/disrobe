@@ -990,6 +990,9 @@ pub(crate) fn build_real_squashfs(file_name: &str, file_body: &[u8]) -> Vec<u8> 
 mod tests {
     use super::*;
 
+    const APPIMAGE_TYPE2_HOST: &[u8] =
+        include_bytes!("../../tests/fixtures/appimage/host-type2.elf");
+
     fn synth_superblock_le() -> Vec<u8> {
         let mut out: Vec<u8> = vec![0u8; SUPERBLOCK_MIN_BYTES];
         out[0..4].copy_from_slice(&SQUASHFS_MAGIC_LE.to_le_bytes());
@@ -1380,16 +1383,8 @@ mod tests {
     fn extract_to_writes_appimage_squashfs_payload() {
         let body: &[u8] = b"appimage embedded squashfs payload 0987654321 zyxwvut";
         let mut sqfs: Vec<u8> = build_real_squashfs("AppRun", body);
-        let offset: usize = 0x10_000;
-        let mut image: Vec<u8> = vec![0u8; offset];
-        image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        image[4] = 2;
-        image[5] = 1;
-        image[6] = 1;
-        image[16..18].copy_from_slice(&2u16.to_le_bytes());
-        image[18..20].copy_from_slice(&62u16.to_le_bytes());
-        image[52..54].copy_from_slice(&64u16.to_le_bytes());
-        image[8..11].copy_from_slice(&[b'A', b'I', 0x02]);
+        let mut image: Vec<u8> = APPIMAGE_TYPE2_HOST.to_vec();
+        assert_eq!(image.len(), 0x10_000);
         image.append(&mut sqfs);
         let dir: disrobe_core::scratch::ScratchDir =
             disrobe_core::scratch::ScratchDir::create("binfmt-appimage-e2e")
@@ -1406,6 +1401,43 @@ mod tests {
             body
         );
         assert!(dir.path().join(".disrobe-appimage-layout.json").is_file());
+    }
+
+    #[test]
+    fn an_image_that_only_resembles_an_elf_is_refused_before_any_payload_is_read() {
+        let body: &[u8] = b"appimage embedded squashfs payload 0987654321 zyxwvut";
+        let mut sqfs: Vec<u8> = build_real_squashfs("AppRun", body);
+        let mut image: Vec<u8> = vec![0u8; 0x10_000];
+        image[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        image[4] = 2;
+        image[5] = 1;
+        image[6] = 1;
+        image[16..18].copy_from_slice(&2u16.to_le_bytes());
+        image[18..20].copy_from_slice(&62u16.to_le_bytes());
+        image[52..54].copy_from_slice(&64u16.to_le_bytes());
+        image[8..11].copy_from_slice(&[b'A', b'I', 0x02]);
+        image.append(&mut sqfs);
+
+        let dir: disrobe_core::scratch::ScratchDir =
+            disrobe_core::scratch::ScratchDir::create("binfmt-appimage-near-elf")
+                .expect("create scratch dir");
+        let error: crate::error::Error = crate::extract::extract_to(
+            crate::container::ContainerKind::AppImage,
+            &image,
+            dir.path(),
+        )
+        .expect_err("an image with no version, entry or program header must be refused");
+        assert!(
+            error.to_string().contains("ELF header is malformed"),
+            "expected the ELF header refusal, got {error}"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .expect("read refusal output directory")
+                .count(),
+            0,
+            "a refused image must publish nothing, including its squashfs payload"
+        );
     }
 
     #[test]
