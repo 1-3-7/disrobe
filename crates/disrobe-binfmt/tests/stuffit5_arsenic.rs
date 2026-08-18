@@ -134,6 +134,42 @@ fn stuffit5_forks_match_the_unar_manifest() {
 }
 
 #[test]
+fn extract_to_publishes_every_stuffit5_fork() {
+    let expected: BTreeMap<(String, String), Row> = manifest();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-stuffit5-extract-to")
+            .expect("create scratch directory");
+    let result: disrobe_binfmt::ExtractionResult =
+        disrobe_binfmt::extract_to(ContainerKind::StuffIt, FIXTURE, scratch.path())
+            .expect("extract StuffIt 5 fixture through the container route");
+    assert!(result.integrity_violations.is_empty());
+    assert_eq!(
+        result.entries.len(),
+        expected.len(),
+        "extract_to must publish one member per reference fork, not a single carved archive"
+    );
+
+    for ((path, fork), row) in &expected {
+        let on_disk: String = match fork.as_str() {
+            "rsrc" => format!("{path}.rsrc"),
+            _ => path.clone(),
+        };
+        let recovered: Vec<u8> =
+            std::fs::read(scratch.path().join(&on_disk)).expect("read published fork");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&recovered)),
+            row.sha256,
+            "{on_disk}: published bytes must equal the unar reference bytes"
+        );
+    }
+
+    assert!(
+        !scratch.path().join("archive.sit").exists(),
+        "a parsed StuffIt 5 archive must not also be carved verbatim"
+    );
+}
+
+#[test]
 fn stuffit5_rejects_malformed_containers() {
     assert!(parse_sit5(b"not a stuffit 5 archive at all").is_err());
     assert!(parse_sit5(&FIXTURE[..FIXTURE.len() / 2]).is_err());

@@ -88,11 +88,6 @@ fn decode_name(raw: &[u8]) -> Result<String> {
     if decoded.contains('\0') {
         return Err(sit5_error("stuffit 5: entry name contains a null byte"));
     }
-    if decoded.contains('/') || decoded.contains('\\') {
-        return Err(sit5_error(format!(
-            "stuffit 5: entry name `{decoded}` contains a path separator"
-        )));
-    }
     if decoded == "." || decoded == ".." {
         return Err(sit5_error(format!(
             "stuffit 5: entry name `{decoded}` traverses the output root"
@@ -392,6 +387,61 @@ pub fn parse_sit5(bytes: &[u8]) -> Result<Sit5Archive> {
     }
     let _ = declared_entries;
     Ok(Sit5Archive { entries })
+}
+
+#[cfg(test)]
+pub(crate) fn build_test_sit5(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+    let encoded: &[u8] = name.as_bytes();
+    if encoded.is_empty() || encoded.len() > u16::MAX as usize || encoded.contains(&0) {
+        return None;
+    }
+
+    let name_len: usize = encoded.len();
+    let header_size: usize = 48 + name_len;
+    let metadata_len: usize = 32;
+    let entry_offset: usize = ARCHIVE_HEADER_LEN;
+    let total: usize = entry_offset + header_size + metadata_len + body.len();
+
+    let mut out: Vec<u8> = Vec::with_capacity(total);
+    out.extend_from_slice(SIT5_SIGNATURE);
+    out.resize(82, b' ');
+    out.push(SIT5_ARCHIVE_VERSION);
+    out.push(0);
+    out.extend_from_slice(&u32::try_from(total).ok()?.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&u32::try_from(entry_offset).ok()?.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+
+    let mut entry: Vec<u8> = Vec::with_capacity(header_size);
+    entry.extend_from_slice(&SIT5_ENTRY_ID.to_be_bytes());
+    entry.push(2);
+    entry.push(0);
+    entry.extend_from_slice(&u16::try_from(header_size).ok()?.to_be_bytes());
+    entry.push(0);
+    entry.push(0);
+    entry.extend_from_slice(&0u32.to_be_bytes());
+    entry.extend_from_slice(&0u32.to_be_bytes());
+    entry.extend_from_slice(&0u32.to_be_bytes());
+    entry.extend_from_slice(&0u32.to_be_bytes());
+    entry.extend_from_slice(&0u32.to_be_bytes());
+    entry.extend_from_slice(&u16::try_from(name_len).ok()?.to_be_bytes());
+    entry.extend_from_slice(&0u16.to_be_bytes());
+    entry.extend_from_slice(&u32::try_from(body.len()).ok()?.to_be_bytes());
+    entry.extend_from_slice(&u32::try_from(body.len()).ok()?.to_be_bytes());
+    entry.extend_from_slice(&crc16_ibm(body).to_be_bytes());
+    entry.extend_from_slice(&0u16.to_be_bytes());
+    entry.push(METHOD_STORED);
+    entry.push(0);
+    entry.extend_from_slice(encoded);
+    let header_crc: u16 = crc16_ibm(&entry);
+    entry[32..34].copy_from_slice(&header_crc.to_be_bytes());
+
+    out.extend_from_slice(&entry);
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.resize(entry_offset + header_size + metadata_len, 0);
+    out.extend_from_slice(body);
+    Some(out)
 }
 
 pub fn fork_bytes_bounded(bytes: &[u8], fork: &Sit5Fork, max_output: usize) -> Result<Vec<u8>> {

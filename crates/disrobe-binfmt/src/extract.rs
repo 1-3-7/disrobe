@@ -4494,6 +4494,9 @@ fn extract_stuffit(
 ) -> Result<ExtractionResult> {
     let kind: crate::containers::StuffItKind = crate::containers::detect_stuffit(bytes)
         .ok_or_else(|| Error::StuffIt("stuffit: signature not recognized".to_owned()))?;
+    if kind == crate::containers::StuffItKind::Version5 {
+        return extract_stuffit5(bytes, out_dir, quota);
+    }
     if kind != crate::containers::StuffItKind::Classic {
         return carve_only_payload(
             ContainerKind::StuffIt,
@@ -4502,7 +4505,7 @@ fn extract_stuffit(
             quota,
             "archive.sit",
             format!(
-                "stuffit {kind:?} archive carved verbatim: only the classic SIT! container directory is parsed in tree"
+                "stuffit {kind:?} archive carved verbatim: only the classic SIT! and StuffIt 5 container directories are parsed in tree"
             ),
         );
     }
@@ -4568,6 +4571,85 @@ fn extract_stuffit(
         } else {
             EntryCompression::Other
         };
+        encoding.insert(safe_name.clone(), compression);
+        entries_out.push(ExtractedEntry {
+            name: safe_name,
+            disk_path: Some(disk_path),
+            uncompressed_size: u64::from(fork.uncompressed_len),
+            compressed_size: u64::from(fork.compressed_len),
+            compression,
+            is_executable: false,
+        });
+    }
+    Ok(ExtractionResult {
+        kind: ContainerKind::StuffIt,
+        entries: entries_out,
+        encoding,
+        integrity_violations: Vec::new(),
+        quota: QuotaSummary::from(guard.report()),
+    })
+}
+
+fn extract_stuffit5(
+    bytes: &[u8],
+    out_dir: &Path,
+    quota: ExtractionQuota,
+) -> Result<ExtractionResult> {
+    let archive: crate::containers::Sit5Archive = crate::containers::parse_sit5(bytes)?;
+    let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
+        max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
+        max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
+        ..quota
+    });
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    let mut forks: Vec<(String, &crate::containers::Sit5Fork)> = Vec::new();
+    for entry in &archive.entries {
+        for (suffix, fork) in [
+            ("", entry.data.as_ref()),
+            (".rsrc", entry.resource.as_ref()),
+        ] {
+            let Some(fork) = fork else {
+                continue;
+            };
+            let raw_name: String = format!("{}{suffix}", entry.path);
+            let safe_name: String = sanitize_entry_path(&raw_name).map_err(|error: Error| {
+                Error::StuffIt(format!(
+                    "stuffit 5: unsafe entry path `{raw_name}`: {error}"
+                ))
+            })?;
+            preflight_stuffit_path(&paths, &safe_name)?;
+            paths.insert(safe_name.to_ascii_lowercase());
+            guard.admit_entry(
+                &safe_name,
+                u64::from(fork.uncompressed_len),
+                u64::from(fork.compressed_len),
+            )?;
+            forks.push((safe_name, fork));
+        }
+    }
+
+    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
+        .map_or(usize::MAX, |value: usize| value);
+    let staging: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-stuffit5-extract")?;
+    for (safe_name, fork) in &forks {
+        let data: Vec<u8> = crate::containers::sit5_fork_bytes_bounded(bytes, fork, max_output)?;
+        let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
+        std::fs::write(staged_path, data)?;
+    }
+
+    std::fs::create_dir_all(out_dir)?;
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(forks.len());
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    for (safe_name, fork) in forks {
+        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+        std::fs::copy(staging.path().join(&safe_name), &disk_path)?;
+        let compression: EntryCompression =
+            if fork.compression == crate::containers::Sit5Compression::Stored {
+                EntryCompression::Stored
+            } else {
+                EntryCompression::Other
+            };
         encoding.insert(safe_name.clone(), compression);
         entries_out.push(ExtractedEntry {
             name: safe_name,
@@ -6806,6 +6888,7 @@ mod tests {
         row("extract_sevenz", NameOrigin::ArchiveSupplied, DRIVEN),
         row("squashfs_walk_to_disk", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_stuffit", NameOrigin::ArchiveSupplied, DRIVEN),
+        row("extract_stuffit5", NameOrigin::ArchiveSupplied, DRIVEN),
         row("extract_ubifs", NameOrigin::ArchiveSupplied, DRIVEN),
         row(
             "extract_uefi_firmware_volume",
@@ -6982,6 +7065,14 @@ mod tests {
             minimum_exercised: 40,
             minimum_refused_as_a_slip: 34,
             build: build_hostile_stuffit,
+        },
+        DrivenWritePath {
+            function: "extract_stuffit5",
+            kind: ContainerKind::StuffIt,
+            slip_tag: "stuffit5-slip",
+            minimum_exercised: 40,
+            minimum_refused_as_a_slip: 34,
+            build: build_hostile_stuffit5,
         },
         DrivenWritePath {
             function: "extract_rar",
@@ -7313,6 +7404,13 @@ mod tests {
         Some(crate::containers::stuffit::build_archive(&[(name, body)]))
     }
 
+    fn build_hostile_stuffit5(name: &str, body: &[u8]) -> Option<Vec<u8>> {
+        if name.len() > 63 {
+            return None;
+        }
+        crate::containers::stuffit5::build_test_sit5(name, body)
+    }
+
     fn build_hostile_rar(name: &str, body: &[u8]) -> Option<Vec<u8>> {
         if name.contains('\u{0}') {
             return None;
@@ -7447,7 +7545,10 @@ mod tests {
                         "{name:?} must stay extractable by {function}: {e}"
                     );
                     assert_no_escape_around(&out);
-                    if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
+                    if matches!(
+                        function,
+                        "extract_rpm" | "extract_iso" | "extract_stuffit" | "extract_stuffit5"
+                    ) {
                         match (function, &e) {
                             ("extract_rpm", Error::UnsafeEntryPath(rejected_name)) => {
                                 assert_eq!(rejected_name, name, "RPM rejected the wrong path");
@@ -7458,9 +7559,11 @@ mod tests {
                                     "{name:?} reached an unrelated ISO refusal before writing: {e:?}"
                                 );
                             }
-                            ("extract_stuffit", Error::StuffIt(message)) => {
+                            ("extract_stuffit" | "extract_stuffit5", Error::StuffIt(message)) => {
                                 assert!(
-                                    message.contains("unsafe entry path"),
+                                    message.contains("unsafe entry path")
+                                        || message.contains("traverses the output root")
+                                        || message.contains("contains a null byte"),
                                     "{name:?} reached an unrelated StuffIt refusal before writing: {e:?}"
                                 );
                             }
@@ -7496,7 +7599,10 @@ mod tests {
                         result.entries
                     );
                     refused_through_the_tag += usize::from(tagged);
-                    if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
+                    if matches!(
+                        function,
+                        "extract_rpm" | "extract_iso" | "extract_stuffit" | "extract_stuffit5"
+                    ) {
                         refused_before_write += usize::from(tagged);
                     }
                 }
@@ -7515,7 +7621,10 @@ mod tests {
             "{function} exercised only {exercised} hostile names, expected at least {}",
             path.minimum_exercised
         );
-        if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
+        if matches!(
+            function,
+            "extract_rpm" | "extract_iso" | "extract_stuffit" | "extract_stuffit5"
+        ) {
             assert!(
                 refused_before_write >= path.minimum_refused_as_a_slip,
                 "{function} refused only {refused_before_write} hostile names before writing, expected at least {}",
@@ -7608,6 +7717,11 @@ mod tests {
     #[test]
     fn hostile_names_reach_the_stuffit_write_path_guard() {
         drive_write_path("extract_stuffit");
+    }
+
+    #[test]
+    fn hostile_names_reach_the_stuffit5_write_path_guard() {
+        drive_write_path("extract_stuffit5");
     }
 
     #[test]

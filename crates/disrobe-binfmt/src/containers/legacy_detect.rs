@@ -2,7 +2,9 @@ pub const PARTCLONE_MAGIC: &[u8; 15] = b"partclone-image";
 const PARTCLONE_VERSION_OFFSET: usize = 30;
 
 pub const STUFFIT_CLASSIC: &[u8; 4] = b"SIT!";
-pub const STUFFIT_5: &[u8; 4] = b"rLau";
+pub const STUFFIT_CLASSIC_SECONDARY: &[u8; 4] = b"rLau";
+pub const STUFFIT_CLASSIC_SECONDARY_OFFSET: usize = 10;
+pub const STUFFIT_5: &[u8; 16] = b"StuffIt (c)1997-";
 pub const STUFFIT_X: &[u8; 7] = b"StuffIt";
 
 const QNX6_SUPERBLOCK_MAGIC: u32 = 0x6819_1122;
@@ -47,6 +49,13 @@ pub fn detect_stuffit(bytes: &[u8]) -> Option<StuffItKind> {
     if bytes.starts_with(STUFFIT_X) {
         return Some(StuffItKind::SitX);
     }
+    if bytes.get(
+        STUFFIT_CLASSIC_SECONDARY_OFFSET
+            ..STUFFIT_CLASSIC_SECONDARY_OFFSET + STUFFIT_CLASSIC_SECONDARY.len(),
+    ) == Some(STUFFIT_CLASSIC_SECONDARY.as_slice())
+    {
+        return Some(StuffItKind::Classic);
+    }
     None
 }
 
@@ -88,10 +97,38 @@ mod tests {
 
     #[test]
     fn detect_stuffit_variants() {
+        const CLASSIC: &[u8] =
+            include_bytes!("../../tests/fixtures/stuffit/stuffit45-method13.sit");
+        const VERSION5: &[u8] = include_bytes!("../../tests/fixtures/stuffit/stuffit5-651.sit");
+
+        assert_eq!(detect_stuffit(CLASSIC), Some(StuffItKind::Classic));
+        assert_eq!(detect_stuffit(VERSION5), Some(StuffItKind::Version5));
         assert_eq!(detect_stuffit(b"SIT!rest"), Some(StuffItKind::Classic));
-        assert_eq!(detect_stuffit(b"rLau...."), Some(StuffItKind::Version5));
-        assert_eq!(detect_stuffit(b"StuffIt (c)"), Some(StuffItKind::SitX));
+        assert_eq!(detect_stuffit(b"StuffIt!\x00\x00"), Some(StuffItKind::SitX));
         assert!(detect_stuffit(b"PK\x03\x04").is_none());
+    }
+
+    #[test]
+    fn the_classic_secondary_signature_is_only_read_at_offset_ten() {
+        assert!(detect_stuffit(b"rLau....").is_none());
+        assert!(detect_stuffit(b"rLau0123456789abcdef").is_none());
+
+        let mut installer: Vec<u8> = vec![b'S', b'T'];
+        installer.resize(STUFFIT_CLASSIC_SECONDARY_OFFSET, 0);
+        installer.extend_from_slice(STUFFIT_CLASSIC_SECONDARY);
+        assert_eq!(detect_stuffit(&installer), Some(StuffItKind::Classic));
+    }
+
+    #[test]
+    fn the_stuffit_5_signature_is_the_full_aladdin_banner() {
+        const VERSION5: &[u8] = include_bytes!("../../tests/fixtures/stuffit/stuffit5-651.sit");
+        assert!(VERSION5.starts_with(STUFFIT_5));
+        assert_eq!(STUFFIT_5.len(), 16);
+        assert!(
+            STUFFIT_5.starts_with(STUFFIT_X),
+            "the StuffIt 5 banner begins with the same bytes as the StuffIt X prefix, so \
+             detect_stuffit must test version 5 first"
+        );
     }
 
     #[test]

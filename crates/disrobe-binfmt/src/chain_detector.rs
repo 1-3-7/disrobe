@@ -443,6 +443,9 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
 }
 
 fn extract_stuffit_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    if crate::containers::detect_stuffit(bytes) == Some(crate::containers::StuffItKind::Version5) {
+        return extract_stuffit5_members(bytes);
+    }
     let archive: crate::containers::SitArchive = crate::containers::parse_sit_classic(bytes)
         .map_err(|error: crate::error::Error| fail(format!("stuffit payload: {error}")))?;
     let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -492,6 +495,52 @@ fn extract_stuffit_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
             let data: Vec<u8> = crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output)
                 .map_err(|error: crate::error::Error| {
                     fail(format!("stuffit member `{name}`: {error}"))
+                })?;
+            Ok((name, data))
+        })
+        .collect()
+}
+
+fn extract_stuffit5_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let archive: crate::containers::Sit5Archive = crate::containers::parse_sit5(bytes)
+        .map_err(|error: crate::error::Error| fail(format!("stuffit 5 payload: {error}")))?;
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut forks: Vec<(String, &crate::containers::Sit5Fork)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in &archive.entries {
+        for (suffix, fork) in [
+            ("", entry.data.as_ref()),
+            (".rsrc", entry.resource.as_ref()),
+        ] {
+            let Some(fork) = fork else {
+                continue;
+            };
+            if forks.len() >= MAX_MEMBER_COUNT {
+                return Err(fail(format!(
+                    "stuffit 5 member count exceeds {MAX_MEMBER_COUNT}"
+                )));
+            }
+            total = total
+                .checked_add(u64::from(fork.uncompressed_len))
+                .ok_or_else(|| fail("stuffit 5 aggregate member size overflows".to_owned()))?;
+            if total > MAX_MEMBER_BYTES {
+                return Err(fail(
+                    "stuffit 5 aggregate member size exceeds limit".to_owned(),
+                ));
+            }
+            let raw_name: String = format!("{}{suffix}", entry.path);
+            let name: String = preflight_chain_path(&mut keys, &raw_name, "stuffit 5")?;
+            forks.push((name, fork));
+        }
+    }
+    let max_output: usize =
+        usize::try_from(MAX_MEMBER_BYTES).map_or(usize::MAX, |value: usize| value);
+    forks
+        .into_iter()
+        .map(|(name, fork): (String, &crate::containers::Sit5Fork)| {
+            let data: Vec<u8> = crate::containers::sit5_fork_bytes_bounded(bytes, fork, max_output)
+                .map_err(|error: crate::error::Error| {
+                    fail(format!("stuffit 5 member `{name}`: {error}"))
                 })?;
             Ok((name, data))
         })
