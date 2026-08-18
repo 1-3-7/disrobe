@@ -1782,6 +1782,197 @@ struct PdbCxxDeferred {
 }
 
 #[derive(Debug, Serialize)]
+struct PdbCompilerRow {
+    module_index: u32,
+    module_name: String,
+    source: String,
+    language: String,
+    machine: String,
+    frontend_version: String,
+    backend_version: String,
+    version_string: Option<String>,
+    security_checks: bool,
+    hot_patch: bool,
+    profile_guided_optimization: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PdbObservationRow {
+    module_index: u32,
+    source: String,
+    field: String,
+    key: Option<String>,
+    value: Option<String>,
+    value_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PdbSummaryReport {
+    schema: &'static str,
+    input: String,
+    report_path: String,
+    machine: Option<String>,
+    module_count: u32,
+    symbol_count: u32,
+    named_symbol_count: usize,
+    type_count: usize,
+    age: u32,
+    guid: String,
+    guid_hex: String,
+    dbi_version: String,
+    modules_with_compiler_records: usize,
+    compilers: Vec<PdbCompilerRow>,
+    observations: Vec<PdbObservationRow>,
+}
+
+pub(crate) fn pdb(input: PathBuf, out: Option<PathBuf>, fmt: OutputFormat) -> miette::Result<()> {
+    use disrobe_pass_native::debug_info::{
+        PdbCompilerRecord, PdbModuleProvenance, PdbProvenanceObservation,
+    };
+    use disrobe_pass_native::{PdbRecovery, recover_pdb};
+
+    let bytes: Vec<u8> = std::fs::read(&input)
+        .map_err(|e| miette::miette!("DR-NATIVE-0214: cannot read input: {e}"))?;
+    let spinner: StageSpinner = StageSpinner::start("native pdb", "reading DBI and symbol streams");
+    let recovery: PdbRecovery = recover_pdb(&bytes)
+        .map_err(|e| miette::miette!("DR-NATIVE-0215: pdb recovery failed: {e}"))?;
+    let compilers: Vec<PdbCompilerRow> = recovery
+        .provenance
+        .modules
+        .iter()
+        .flat_map(|module: &PdbModuleProvenance| {
+            module
+                .compilers
+                .iter()
+                .map(move |record: &PdbCompilerRecord| PdbCompilerRow {
+                    module_index: module.module_index,
+                    module_name: module.module_name.clone(),
+                    source: format!("{:?}", record.source),
+                    language: record.language.clone(),
+                    machine: record.machine.clone(),
+                    frontend_version: record.frontend_version.to_string(),
+                    backend_version: record.backend_version.to_string(),
+                    version_string: record.version_string.utf8.clone(),
+                    security_checks: record.flags.security_checks,
+                    hot_patch: record.flags.hot_patch,
+                    profile_guided_optimization: record.flags.profile_guided_optimization,
+                })
+        })
+        .collect();
+    let observations: Vec<PdbObservationRow> = recovery
+        .provenance
+        .modules
+        .iter()
+        .flat_map(|module: &PdbModuleProvenance| {
+            module
+                .observations
+                .iter()
+                .map(
+                    move |observation: &PdbProvenanceObservation| PdbObservationRow {
+                        module_index: module.module_index,
+                        source: format!("{:?}", observation.source),
+                        field: format!("{:?}", observation.field),
+                        key: observation.key.as_ref().and_then(|key| key.utf8.clone()),
+                        value: observation.value.utf8.clone(),
+                        value_hex: observation.value.bytes_hex.clone(),
+                    },
+                )
+        })
+        .collect();
+    spinner.finish(&format!(
+        "{} module(s), {} compiler record(s), {} observation(s)",
+        recovery.summary.module_count,
+        compilers.len(),
+        observations.len()
+    ));
+
+    let stem: String = input
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("pdb")
+        .to_owned();
+    let out_dir: PathBuf = out.unwrap_or_else(|| PathBuf::from(format!("./out/{stem}-pdb")));
+    std::fs::create_dir_all(&out_dir).map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0216: cannot create out dir {}: {e}",
+            out_dir.display()
+        )
+    })?;
+    let report_path: PathBuf = out_dir.join(format!("{stem}.pdb.json"));
+    let modules_with_compiler_records: usize = recovery
+        .provenance
+        .modules
+        .iter()
+        .filter(|module: &&PdbModuleProvenance| !module.compilers.is_empty())
+        .count();
+    let report: PdbSummaryReport = PdbSummaryReport {
+        schema: "disrobe.native.pdb/v1",
+        input: input.display().to_string(),
+        report_path: report_path.display().to_string(),
+        machine: recovery.summary.machine.clone(),
+        module_count: recovery.summary.module_count,
+        symbol_count: recovery.summary.symbol_count,
+        named_symbol_count: recovery.named_symbol_count(),
+        type_count: recovery.types.len(),
+        age: recovery.summary.age,
+        guid: recovery.summary.guid.clone(),
+        guid_hex: recovery.provenance.guid_hex.clone(),
+        dbi_version: recovery.provenance.dbi_version.to_string(),
+        modules_with_compiler_records,
+        compilers,
+        observations,
+    };
+    let report_bytes: Vec<u8> = serde_json::to_vec_pretty(&report)
+        .map_err(|e| miette::miette!("DR-NATIVE-0217: serialize report: {e}"))?;
+    std::fs::write(&report_path, &report_bytes).map_err(|e| {
+        miette::miette!(
+            "DR-NATIVE-0218: cannot write report {}: {e}",
+            report_path.display()
+        )
+    })?;
+
+    output::emit(fmt, &report, || render_pdb(&report))
+}
+
+fn render_pdb(report: &PdbSummaryReport) {
+    println!("native pdb: OK");
+    println!("  input:        {}", report.input);
+    println!(
+        "  machine:      {}",
+        report.machine.as_deref().unwrap_or("unknown")
+    );
+    println!("  guid:         {}", report.guid_hex);
+    println!("  age:          {}", report.age);
+    println!("  dbi version:  {}", report.dbi_version);
+    println!("  modules:      {}", report.module_count);
+    println!(
+        "  symbols:      {} ({} named)",
+        report.symbol_count, report.named_symbol_count
+    );
+    println!("  types:        {}", report.type_count);
+    println!(
+        "  compilers:    {} record(s) across {} module(s)",
+        report.compilers.len(),
+        report.modules_with_compiler_records
+    );
+    for row in &report.compilers {
+        println!(
+            "    [{}] {} {} frontend {} backend {}{}",
+            row.module_index,
+            row.language,
+            row.machine,
+            row.frontend_version,
+            row.backend_version,
+            row.version_string
+                .as_deref()
+                .map_or_else(String::new, |value: &str| format!(" ({value})"))
+        );
+    }
+    println!("  observations: {}", report.observations.len());
+    println!("  report:       {}", report.report_path);
+}
+
+#[derive(Debug, Serialize)]
 struct PdbCxxSummary {
     schema: &'static str,
     input: String,

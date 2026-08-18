@@ -1400,6 +1400,19 @@ enum NativeCmd {
         timestamp: Option<String>,
     },
     #[command(
+        about = "recover build provenance from a Windows PDB: DBI version, per-module compiler and linker records, and recorded tool, source and environment strings"
+    )]
+    Pdb {
+        #[arg(help = "input Windows PDB (.pdb)")]
+        input: PathBuf,
+        #[arg(
+            short,
+            long,
+            help = "output directory for the provenance report (default: ./out/<stem>-pdb)"
+        )]
+        out: Option<PathBuf>,
+    },
+    #[command(
         about = "reconstruct compilable C++ headers from a Windows PDB's TPI/IPI type streams (UDTs, enums, typedefs, globals, functions)"
     )]
     PdbCxx {
@@ -1853,6 +1866,7 @@ fn main() -> miette::Result<()> {
                 format,
                 timestamp,
             } => native::sbom(input, out, format, timestamp),
+            NativeCmd::Pdb { input, out } => native::pdb(input, out, fmt),
             NativeCmd::PdbCxx { input, out } => native::pdb_cxx(input, out, fmt),
             NativeCmd::Graph { input, out } => native::graph(input, out),
             NativeCmd::Disasm {

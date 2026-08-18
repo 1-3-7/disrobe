@@ -113,4 +113,7 @@ pub enum Error {
         rva: u32,
         cause: AddressError,
     },
+
+    #[error("DR-NATIVE-0028: PDB build provenance failure: {0}")]
+    PdbProvenance(#[from] crate::debug_info::PdbProvenanceError),
 }

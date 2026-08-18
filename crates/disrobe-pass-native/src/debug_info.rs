@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+mod pdb_provenance;
+
+pub use pdb_provenance::{
+    PdbBuildProvenance, PdbByteString, PdbCompileFlags, PdbCompilerRecord, PdbDbiVersion,
+    PdbModuleProvenance, PdbProvenanceError, PdbProvenanceField, PdbProvenanceObservation,
+    PdbProvenanceSource, PdbVersion,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DwarfVersion {
@@ -91,6 +99,18 @@ pub fn summarize_pdb(bytes: &[u8]) -> Result<PdbSummary> {
     let cursor: Cursor<&[u8]> = Cursor::new(bytes);
     let mut pdb: pdb::PDB<'_, Cursor<&[u8]>> =
         pdb::PDB::open(cursor).map_err(|e: pdb::Error| Error::Pdb(e.to_string()))?;
+    let session_summary: PdbSessionSummary = summarize_pdb_session(&mut pdb)?;
+    Ok(session_summary.summary)
+}
+
+struct PdbSessionSummary {
+    summary: PdbSummary,
+    guid_hex: String,
+}
+
+fn summarize_pdb_session<'s>(
+    pdb: &mut pdb::PDB<'s, Cursor<&'s [u8]>>,
+) -> Result<PdbSessionSummary> {
     let info: pdb::PDBInformation<'_> = pdb
         .pdb_information()
         .map_err(|e: pdb::Error| Error::Pdb(e.to_string()))?;
@@ -122,12 +142,16 @@ pub fn summarize_pdb(bytes: &[u8]) -> Result<PdbSummary> {
     {
         symbol_count = symbol_count.saturating_add(1);
     }
-    Ok(PdbSummary {
-        machine,
-        module_count,
-        symbol_count,
-        age: info.age,
-        guid: format!("{:?}", info.guid),
+    let guid_hex: String = info.guid.simple().to_string();
+    Ok(PdbSessionSummary {
+        summary: PdbSummary {
+            machine,
+            module_count,
+            symbol_count,
+            age: info.age,
+            guid: format!("{:?}", info.guid),
+        },
+        guid_hex,
     })
 }
 
@@ -185,6 +209,7 @@ pub struct PdbRecovery {
     pub summary: PdbSummary,
     pub symbols: Vec<PdbSymbolInfo>,
     pub types: Vec<PdbTypeInfo>,
+    pub provenance: PdbBuildProvenance,
 }
 
 impl PdbRecovery {
@@ -207,17 +232,23 @@ impl PdbRecovery {
 }
 
 pub fn recover_pdb(bytes: &[u8]) -> Result<PdbRecovery> {
-    let summary: PdbSummary = summarize_pdb(bytes)?;
     let cursor: Cursor<&[u8]> = Cursor::new(bytes);
     let mut pdb: pdb::PDB<'_, Cursor<&[u8]>> =
         pdb::PDB::open(cursor).map_err(|e: pdb::Error| Error::Pdb(e.to_string()))?;
+    let session_summary: PdbSessionSummary = summarize_pdb_session(&mut pdb)?;
     let address_map: Option<pdb::AddressMap<'_>> = pdb.address_map().ok();
     let types: Vec<PdbTypeInfo> = recover_pdb_types(&mut pdb)?;
     let symbols: Vec<PdbSymbolInfo> = recover_pdb_symbols(&mut pdb, address_map.as_ref())?;
+    let provenance: PdbBuildProvenance = pdb_provenance::recover_pdb_build_provenance(
+        &mut pdb,
+        session_summary.guid_hex,
+        session_summary.summary.age,
+    )?;
     Ok(PdbRecovery {
-        summary,
+        summary: session_summary.summary,
         symbols,
         types,
+        provenance,
     })
 }
 
@@ -473,6 +504,17 @@ mod tests {
                 byte_size: 16,
                 field_count: 3,
             }],
+            provenance: PdbBuildProvenance {
+                guid_hex: String::new(),
+                age: pdb_age,
+                dbi_version: PdbVersion {
+                    major: 0,
+                    minor: 0,
+                    build: 0,
+                    qfe: None,
+                },
+                modules: Vec::new(),
+            },
         }
     }
 

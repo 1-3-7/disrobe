@@ -743,6 +743,11 @@ fn apply_immediate(state: &mut TrackState, insn: &Arm64Instruction, raw: u32) {
 }
 
 fn apply_register(state: &mut TrackState, raw: u32) {
+    if let Some(register) = compressed_pointer_decompression(raw) {
+        let value: Option<DartValue> = state.integers.get(&register).cloned();
+        state.define(register, value);
+        return;
+    }
     if let Some((rd, source)) = mov_register(raw) {
         let value: Option<DartValue> = if source == DART_NULL_REGISTER {
             Some(DartValue::Null)
@@ -757,6 +762,15 @@ fn apply_register(state: &mut TrackState, raw: u32) {
         return;
     }
     state.define((raw & 0x1F) as u8, None);
+}
+
+fn compressed_pointer_decompression(raw: u32) -> Option<u8> {
+    if raw & 0xFFFF_FC00 != 0x8B1C_8000 {
+        return None;
+    }
+    let destination: u8 = (raw & 0x1F) as u8;
+    let source: u8 = ((raw >> 5) & 0x1F) as u8;
+    (destination == source).then_some(destination)
 }
 
 fn record_stack(state: &mut TrackState, offset: u64, value: Option<DartValue>) {
@@ -1014,6 +1028,17 @@ mod tests {
         assert_eq!(mov_register(0xaa0f03fd), Some((29, 15)));
         assert_eq!(mov_register(0xaa1603e1), Some((1, 22)));
         assert_eq!(mov_register(0xd503201f), None);
+    }
+
+    #[test]
+    fn decodes_only_exact_dart_compressed_pointer_decompression() {
+        assert_eq!(compressed_pointer_decompression(0x8b1c_8000), Some(0));
+        assert_eq!(compressed_pointer_decompression(0x8b1c_8021), Some(1));
+        assert_eq!(compressed_pointer_decompression(0x8b1b_8000), None);
+        assert_eq!(compressed_pointer_decompression(0x8b1c_7c00), None);
+        assert_eq!(compressed_pointer_decompression(0x8b1c_8001), None);
+        assert_eq!(compressed_pointer_decompression(0xab1c_8000), None);
+        assert_eq!(compressed_pointer_decompression(0x0b1c_8000), None);
     }
 
     #[test]

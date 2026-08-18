@@ -14,6 +14,7 @@ use disrobe_pass_mobile::{
     DartPoolLiteralKind, DartPoolTable, DartPoolTableStats, dart_isolate_data_bytes,
     dart_vm_data_bytes, lift_libapp_aot, parse_dart_kernel,
 };
+use sha2::{Digest as _, Sha256};
 
 const RECORDED_OPAQUE_BASELINE: usize = 25_833;
 
@@ -43,6 +44,45 @@ fn read_sample(relative: &str) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("sample {} must be committed: {e}", path.display()))
 }
 
+#[test]
+fn disrobe_sample_checksum_manifest_matches_every_tracked_fixture() {
+    let root: PathBuf = corpus().join("disrobe_sample");
+    let manifest: String = std::fs::read_to_string(root.join("SHA256SUMS"))
+        .expect("Flutter checksum manifest must be committed");
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut checked: usize = 0;
+    for line in manifest.lines() {
+        let (expected, name): (&str, &str) = line
+            .split_once(" *")
+            .expect("each checksum line must use sha256sum binary syntax");
+        assert_eq!(expected.len(), 64, "{name} must have one SHA-256 digest");
+        assert!(
+            names.insert(name.to_owned()),
+            "{name} must appear exactly once"
+        );
+        let bytes: Vec<u8> = std::fs::read(root.join(name))
+            .unwrap_or_else(|error| panic!("{name} must be committed: {error}"));
+        assert_eq!(format!("{:x}", Sha256::digest(bytes)), expected, "{name}");
+        checked += 1;
+    }
+    assert_eq!(checked, 4, "the checksum manifest must cover every fixture");
+    let files: BTreeSet<String> = std::fs::read_dir(&root)
+        .expect("Flutter fixture directory must be committed")
+        .map(|entry: std::io::Result<std::fs::DirEntry>| {
+            entry
+                .expect("Flutter fixture directory entry must be readable")
+                .file_name()
+                .into_string()
+                .expect("Flutter fixture names must be Unicode")
+        })
+        .filter(|name: &String| name != "SHA256SUMS")
+        .collect();
+    assert_eq!(
+        names, files,
+        "the checksum manifest must cover every fixture"
+    );
+}
+
 fn primary_report() -> AotLiftReport {
     lift_libapp_aot(&read_sample("disrobe_sample/libapp_arm64.so")).expect("lift ARM64 AOT")
 }
@@ -67,6 +107,29 @@ fn body(report: &AotLiftReport, name: &str) -> String {
         .find(|f: &&DartLiftedFunction| f.name.as_deref() == Some(name) && f.is_structured())
         .unwrap_or_else(|| panic!("{name} must lift to structured pseudocode"))
         .best_pseudo_dart()
+}
+
+#[cfg(feature = "chain")]
+fn mobile_pass_body(bytes: Vec<u8>, name: &str) -> String {
+    use disrobe_core::chain::Pass as _;
+    use disrobe_core::{Artifact, Rung};
+    use disrobe_pass_mobile::chain_detector::MOBILE_PASS;
+
+    let input: Artifact = Artifact::new(Rung::Raw, bytes, [0_u8; 32]);
+    let output: Artifact = MOBILE_PASS.run(&input).expect("mobile pass runs");
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.envelope).expect("mobile pass emits JSON");
+    json.pointer("/flutter_aot_lift/functions")
+        .and_then(serde_json::Value::as_array)
+        .expect("envelope carries Flutter AOT functions")
+        .iter()
+        .find(|function: &&serde_json::Value| {
+            function.get("name").and_then(serde_json::Value::as_str) == Some(name)
+        })
+        .and_then(|function: &serde_json::Value| function.get("structured_body"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("envelope carries the structured {name} body"))
+        .to_owned()
 }
 
 fn dill_source() -> String {
@@ -290,8 +353,8 @@ fn pool_name_and_null_register_inline_at_a_real_call_site() {
         "the closure allocation reads its function from the object pool and null from the null register, got:\n{dart}"
     );
     assert!(
-        dart.contains("Iterable.where(?, v0)"),
-        "the where() call must thread the previous call result and keep the unrecoverable receiver as the placeholder, got:\n{dart}"
+        dart.contains("Iterable.where(arg0.field@0x7, v0)"),
+        "the where() call must retain the field receiver across compressed-pointer decompression and thread the previous call result, got:\n{dart}"
     );
     assert!(
         dart.contains("Iterable.length(v1)"),
@@ -500,33 +563,54 @@ fn pool_statistics_are_reported_with_the_lift() {
 #[cfg(feature = "chain")]
 #[test]
 fn mobile_pass_renders_the_same_pseudocode_as_the_library() {
-    use disrobe_core::chain::Pass as _;
-    use disrobe_core::{Artifact, Rung};
-    use disrobe_pass_mobile::chain_detector::MOBILE_PASS;
-
     let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
     let report: AotLiftReport = lift_libapp_aot(&bytes).expect("library lift");
     let expected: String = body(&report, "fibonacciStep");
-
-    let input: Artifact = Artifact::new(Rung::Raw, bytes, [0_u8; 32]);
-    let output: Artifact = MOBILE_PASS.run(&input).expect("mobile pass runs");
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.envelope).expect("mobile pass emits JSON");
-    let functions = json
-        .pointer("/flutter_aot_lift/functions")
-        .and_then(serde_json::Value::as_array)
-        .expect("envelope carries Flutter AOT functions");
-    let structured: &str = functions
-        .iter()
-        .find(|function: &&serde_json::Value| {
-            function.get("name").and_then(serde_json::Value::as_str) == Some("fibonacciStep")
-        })
-        .and_then(|function: &serde_json::Value| function.get("structured_body"))
-        .and_then(serde_json::Value::as_str)
-        .expect("envelope carries the structured body");
+    let structured: String = mobile_pass_body(bytes, "fibonacciStep");
     assert_eq!(
         structured, expected,
         "the registered mobile pass must expose byte-identical pseudocode to the library API"
     );
     assert!(structured.contains("fibonacciStep(arg0 - 1);"));
+}
+
+#[cfg(feature = "chain")]
+#[test]
+fn compressed_pointer_receiver_survives_the_registered_mobile_pass() {
+    let bytes: Vec<u8> = read_sample("disrobe_sample/libapp_arm64.so");
+    let source: String = dill_source();
+    assert!(source.contains("trackedItems.where("));
+
+    let structured: String = mobile_pass_body(bytes.clone(), "WarehouseLedger.countBackordered");
+    assert!(
+        structured.contains("Iterable.where(arg0.field@0x7, v0)"),
+        "the compiler's X28 heap-base decompression must preserve the tracked receiver, got:\n{structured}"
+    );
+
+    let encoded: Vec<u8> = [
+        0xb840_7020_u32,
+        0x8b1c_8000,
+        0xf81f_83a0,
+        0xf96c_3f61,
+        0xaa16_03e2,
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect::<Vec<u8>>();
+    let positions: Vec<usize> = bytes
+        .windows(encoded.len())
+        .enumerate()
+        .filter_map(|(offset, window): (usize, &[u8])| {
+            (window == encoded.as_slice()).then_some(offset)
+        })
+        .collect::<Vec<usize>>();
+    assert_eq!(positions.len(), 1);
+    let mut mutated: Vec<u8> = bytes;
+    let replacement: [u8; 4] = 0x8b1b_8000_u32.to_le_bytes();
+    let add_offset: usize = positions[0] + 4;
+    mutated[add_offset..add_offset + replacement.len()].copy_from_slice(&replacement);
+
+    let rejected: String = mobile_pass_body(mutated, "WarehouseLedger.countBackordered");
+    assert!(rejected.contains("Iterable.where(?, v0)"));
+    assert!(!rejected.contains("Iterable.where(arg0.field@0x7, v0)"));
 }

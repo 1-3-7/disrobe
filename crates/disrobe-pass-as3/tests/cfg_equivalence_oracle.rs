@@ -1069,6 +1069,132 @@ fn exception_handler_discards_the_linear_operand_stack() {
     );
 }
 
+fn exception_value_merge_body(handler_value: u8) -> MethodBody {
+    let mut code: Vec<u8> = vec![0x24, 0x07, 0x10];
+    let merge_operand: usize = code.len();
+    push_s24(&mut code, 0);
+    let handler: usize = code.len();
+    code.extend_from_slice(&[0xD5, 0x24, handler_value]);
+    let merge: usize = code.len();
+    code.extend_from_slice(&[0xD6, 0xD2, 0x48]);
+    patch_branch_target(&mut code, merge_operand, merge);
+
+    let mut body: MethodBody = switch_body(code, 3);
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 2,
+        target: handler as u32,
+        exc_type: 0,
+        var_name: 0,
+    });
+    body
+}
+
+#[test]
+fn exception_handler_values_reconcile_at_a_forward_merge() {
+    let abc: AbcFile = bare_abc();
+    let distinct_body: MethodBody = exception_value_merge_body(9);
+    let distinct_raw: Vec<Stmt> =
+        lift_body_raw(&abc, &distinct_body, None).expect("raw distinct handler merge lift");
+    let distinct: LiftedBody =
+        lift_body(&abc, &distinct_body, None).expect("distinct handler merge lift");
+    assert!(
+        distinct.statements.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::Phi { .. },
+            }
+        )),
+        "distinct normal and handler values must not select one predecessor: {distinct:#?}"
+    );
+    assert!(
+        distinct
+            .statements
+            .iter()
+            .all(|statement: &Stmt| !contains_comment(statement, "unreconciled stack merge"))
+    );
+    let mut distinct_raw_flat: Flat = Flat::default();
+    lower_raw(&distinct_raw, &mut distinct_raw_flat);
+    let mut distinct_flat: Flat = Flat::default();
+    lower_structured(&distinct.statements, &mut distinct_flat, None);
+    assert_eq!(
+        successor_map(&distinct_raw_flat),
+        successor_map(&distinct_flat)
+    );
+
+    let identical_body: MethodBody = exception_value_merge_body(7);
+    let identical: LiftedBody =
+        lift_body(&abc, &identical_body, None).expect("identical handler merge lift");
+    assert!(
+        identical.statements.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::IntLit(7),
+            }
+        )),
+        "identical normal and handler values must remain exact: {identical:#?}"
+    );
+    assert!(
+        !identical.statements.iter().any(|statement: &Stmt| matches!(
+            statement,
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::Phi { .. },
+            }
+        )),
+        "identical values must not be widened to a phi: {identical:#?}"
+    );
+}
+
+#[test]
+fn overlapping_exception_handler_value_merge_is_refused() {
+    let abc: AbcFile = bare_abc();
+    let mut body: MethodBody = exception_value_merge_body(9);
+    body.exceptions.push(body.exceptions[0].clone());
+    let raw: Vec<Stmt> =
+        lift_body_raw(&abc, &body, None).expect("overlapping handler merge raw lift");
+    assert!(
+        raw.iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled stack merge")),
+        "an excluded overlapping handler shape must not select one predecessor: {raw:#?}"
+    );
+}
+
+#[test]
+fn backward_exception_handler_value_merge_is_refused() {
+    let code: Vec<u8> = vec![
+        0x24, 0x07, 0x10, 0x00, 0x00, 0x00, 0xD6, 0xD2, 0x48, 0xD5, 0x24, 0x09, 0x10, 0xF6, 0xFF,
+        0xFF, 0x47,
+    ];
+    let mut body: MethodBody = switch_body(code, 3);
+    body.exceptions.push(ExceptionInfo {
+        from: 0,
+        to: 2,
+        target: 9,
+        exc_type: 0,
+        var_name: 0,
+    });
+    let abc: AbcFile = bare_abc();
+    let raw: Vec<Stmt> = lift_body_raw(&abc, &body, None).expect("backward handler merge raw lift");
+    assert!(
+        raw.iter()
+            .any(|statement: &Stmt| contains_comment(statement, "unreconciled stack merge")),
+        "an excluded backward handler merge must be refused: {raw:#?}"
+    );
+    assert!(
+        raw.iter().all(|statement: &Stmt| !matches!(
+            statement,
+            Stmt::Assign {
+                target: Expr::Local(2),
+                value: Expr::IntLit(7 | 9),
+            }
+        )),
+        "the refusal must not select either predecessor value: {raw:#?}"
+    );
+}
+
 fn assert_loose_dispatch_tree(statement: &Stmt, expected_comparisons: &[(i64, bool)]) {
     let mut current: &Stmt = statement;
     for (expected_value, selector_on_left) in expected_comparisons {

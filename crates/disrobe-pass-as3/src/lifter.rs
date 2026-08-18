@@ -1132,6 +1132,14 @@ impl Lifter<'_> {
         }
         if let Some(&height) = stack_analysis.entry_heights.get(&offset) {
             let untracked_entry: bool = self.untracked_stack_entries.remove(&offset);
+            if stack_analysis.unreconciled.contains(&offset) {
+                self.stack.clear();
+                self.opaque_operands = self.opaque_operands.saturating_add(1);
+                self.statements
+                    .push(Stmt::Comment(STACK_CONFLICT_MARKER.to_owned()));
+                self.reconcile_entry_height(offset, height, is_exc_target, true);
+                return;
+            }
             if stack_analysis.value_joins.contains(&offset)
                 && (self.stack_tracking_exhausted || untracked_entry)
             {
@@ -1608,6 +1616,32 @@ struct StackAnalysis {
     switch_budget_refusals: BTreeSet<usize>,
 }
 
+fn reachable_from_seeds(
+    successors: &BTreeMap<usize, Vec<usize>>,
+    valid_offsets: &BTreeSet<usize>,
+    seeds: impl IntoIterator<Item = usize>,
+) -> BTreeSet<usize> {
+    let mut reachable: BTreeSet<usize> = BTreeSet::new();
+    let mut pending: Vec<usize> = seeds
+        .into_iter()
+        .filter(|offset: &usize| valid_offsets.contains(offset))
+        .collect();
+    while let Some(offset) = pending.pop() {
+        if !reachable.insert(offset) {
+            continue;
+        }
+        if let Some(targets) = successors.get(&offset) {
+            pending.extend(
+                targets
+                    .iter()
+                    .copied()
+                    .filter(|target: &usize| valid_offsets.contains(target)),
+            );
+        }
+    }
+    reachable
+}
+
 struct SwitchAnalysisFuel {
     remaining: usize,
     exhausted: bool,
@@ -1746,6 +1780,10 @@ fn block_entry_heights(
     }
     let mut deltas: BTreeMap<usize, i64> = BTreeMap::new();
     let valid_offsets: BTreeSet<usize> = lines.iter().map(|l: &DisasmLine| l.offset).collect();
+    let exc_targets: BTreeSet<usize> = exceptions
+        .iter()
+        .map(|exception: &ExceptionInfo| exception.target as usize)
+        .collect();
     let mut predecessors: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for (source, targets) in &succs {
         for target in targets {
@@ -1755,7 +1793,53 @@ fn block_entry_heights(
         }
     }
     let mut value_joins: BTreeSet<usize> = BTreeSet::new();
-    let mut unverifiable_joins: BTreeSet<usize> = BTreeSet::new();
+    let normal_reachable: BTreeSet<usize> = reachable_from_seeds(
+        &succs,
+        &valid_offsets,
+        lines.first().map(|line: &DisasmLine| line.offset),
+    );
+    let handler_reachable: BTreeSet<usize> =
+        reachable_from_seeds(&succs, &valid_offsets, exc_targets.iter().copied());
+    let exception_origin_joins: BTreeSet<usize> = predecessors
+        .iter()
+        .filter_map(|(target, sources): (&usize, &BTreeSet<usize>)| {
+            let has_normal_only: bool = sources.iter().any(|source: &usize| {
+                normal_reachable.contains(source) && !handler_reachable.contains(source)
+            });
+            let has_handler_only: bool = sources.iter().any(|source: &usize| {
+                handler_reachable.contains(source) && !normal_reachable.contains(source)
+            });
+            (sources.len() > 1 && has_normal_only && has_handler_only).then_some(*target)
+        })
+        .collect();
+    let forward_exception_value_joins: BTreeSet<usize> = exception_origin_joins
+        .iter()
+        .copied()
+        .filter(|target: &usize| {
+            predecessors
+                .get(target)
+                .is_some_and(|sources: &BTreeSet<usize>| {
+                    sources.iter().all(|source: &usize| source < target)
+                })
+        })
+        .collect();
+    let supported_exception_merge: bool = matches!(exceptions, [exception]
+        if exception.from < exception.to
+            && exception.to < exception.target
+            && valid_offsets.contains(&(exception.from as usize))
+            && (valid_offsets.contains(&(exception.to as usize))
+                || exception.to as usize == end_off)
+            && valid_offsets.contains(&(exception.target as usize))
+            && !normal_reachable.contains(&(exception.target as usize)));
+    let mut unverifiable_joins: BTreeSet<usize> = if supported_exception_merge {
+        value_joins.extend(forward_exception_value_joins.iter().copied());
+        exception_origin_joins
+            .difference(&forward_exception_value_joins)
+            .copied()
+            .collect()
+    } else {
+        exception_origin_joins
+    };
     let switch_entries: BTreeSet<usize> = lines
         .iter()
         .filter(|line: &&DisasmLine| line.opcode == 0x1B)
@@ -1881,10 +1965,6 @@ fn block_entry_heights(
                 .is_some_and(|targets: &Vec<usize>| targets.contains(&current.offset));
             (!flows_from_previous).then_some(current.offset)
         })
-        .collect();
-    let exc_targets: BTreeSet<usize> = exceptions
-        .iter()
-        .map(|e: &ExceptionInfo| e.target as usize)
         .collect();
     let mut entry: BTreeMap<usize, HeightCell> = lines
         .iter()
