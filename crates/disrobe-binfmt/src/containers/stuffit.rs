@@ -1,5 +1,3 @@
-use compcol::Decoder as _;
-
 use crate::error::{Error, Result};
 
 const SIT_SIGNATURE: &[u8; 4] = b"SIT!";
@@ -12,6 +10,7 @@ const MAX_FOLDER_DEPTH: usize = 256;
 const MAX_PATH_BYTES: usize = 4096;
 const METHOD_STORED: u8 = 0;
 const METHOD_COMPRESS_14: u8 = 2;
+const METHOD_LZAH: u8 = 5;
 const METHOD_13: u8 = 13;
 const FLAG_ENCRYPTED: u8 = 0x80;
 const FLAG_FOLDER_CONTAINS_ENCRYPTED: u8 = 0x10;
@@ -23,6 +22,7 @@ const STREAM_BUFFER_LEN: usize = 64 * 1024;
 pub enum SitCompression {
     Stored,
     Compress14,
+    Lzah,
     Method13,
 }
 
@@ -73,7 +73,7 @@ fn checked_end(offset: usize, len: u32, limit: usize) -> Result<usize> {
     Ok(end)
 }
 
-fn crc16_ibm(bytes: &[u8]) -> u16 {
+pub(crate) fn crc16_ibm(bytes: &[u8]) -> u16 {
     bytes.iter().fold(0u16, |mut crc: u16, byte: &u8| {
         crc ^= u16::from(*byte);
         for _ in 0..8 {
@@ -114,6 +114,7 @@ fn compression(method: u8) -> Result<SitCompression> {
     match method {
         METHOD_STORED => Ok(SitCompression::Stored),
         METHOD_COMPRESS_14 => Ok(SitCompression::Compress14),
+        METHOD_LZAH => Ok(SitCompression::Lzah),
         METHOD_13 => Ok(SitCompression::Method13),
         other => Err(stuffit_error(format!(
             "stuffit: unsupported compression method {other}"
@@ -249,31 +250,40 @@ pub fn parse_classic(bytes: &[u8]) -> Result<SitArchive> {
     Ok(SitArchive { entries })
 }
 
-fn decode_method13(raw: &[u8], expected_len: usize, max_output: usize) -> Result<Vec<u8>> {
+pub(crate) fn decode_bounded<D: compcol::Decoder>(
+    decoder: &mut D,
+    raw: &[u8],
+    expected_len: usize,
+    max_output: usize,
+    label: &str,
+) -> Result<(Vec<u8>, usize)> {
     if expected_len > max_output {
         return Err(stuffit_error(format!(
             "stuffit: decoded fork length {expected_len} exceeds cap {max_output}"
         )));
     }
-    let mut decoder: compcol::sit13::Decoder = compcol::sit13::Decoder::with_len(expected_len);
-    let mut output: Vec<u8> = Vec::with_capacity(expected_len.min(STREAM_BUFFER_LEN));
+    let declared: u64 = u64::try_from(expected_len)
+        .map_err(|_| stuffit_error("stuffit: declared fork length exceeds u64"))?;
+    let mut output: Vec<u8> = Vec::with_capacity(crate::quota::bounded_prealloc(declared));
     let mut scratch: Vec<u8> = vec![0u8; STREAM_BUFFER_LEN.min(max_output.max(1))];
     let mut consumed: usize = 0;
     loop {
         let (progress, status): (compcol::Progress, compcol::Status) = decoder
             .decode(&raw[consumed..], &mut scratch)
             .map_err(|error: compcol::Error| {
-                stuffit_error(format!("stuffit: method 13 decode failed: {error}"))
+                stuffit_error(format!("stuffit: {label} decode failed: {error}"))
             })?;
         consumed = consumed
             .checked_add(progress.consumed)
-            .ok_or_else(|| stuffit_error("stuffit: method 13 input count overflow"))?;
+            .ok_or_else(|| stuffit_error(format!("stuffit: {label} input count overflow")))?;
         let next_len: usize = output
             .len()
             .checked_add(progress.written)
-            .ok_or_else(|| stuffit_error("stuffit: method 13 output count overflow"))?;
+            .ok_or_else(|| stuffit_error(format!("stuffit: {label} output count overflow")))?;
         if next_len > max_output || next_len > expected_len {
-            return Err(stuffit_error("stuffit: method 13 output limit exceeded"));
+            return Err(stuffit_error(format!(
+                "stuffit: {label} output limit exceeded"
+            )));
         }
         output.extend_from_slice(&scratch[..progress.written]);
         match status {
@@ -283,41 +293,65 @@ fn decode_method13(raw: &[u8], expected_len: usize, max_output: usize) -> Result
                     decoder
                         .finish(&mut scratch)
                         .map_err(|error: compcol::Error| {
-                            stuffit_error(format!(
-                                "stuffit: method 13 stream is incomplete: {error}"
-                            ))
+                            stuffit_error(format!("stuffit: {label} stream is incomplete: {error}"))
                         })?;
                 if finish_progress.written > 0 {
                     let finish_len: usize = output
                         .len()
                         .checked_add(finish_progress.written)
-                        .ok_or_else(|| stuffit_error("stuffit: method 13 output count overflow"))?;
+                        .ok_or_else(|| {
+                            stuffit_error(format!("stuffit: {label} output count overflow"))
+                        })?;
                     if finish_len > max_output || finish_len > expected_len {
-                        return Err(stuffit_error("stuffit: method 13 output limit exceeded"));
+                        return Err(stuffit_error(format!(
+                            "stuffit: {label} output limit exceeded"
+                        )));
                     }
                     output.extend_from_slice(&scratch[..finish_progress.written]);
                 }
                 if finish_status != compcol::Status::StreamEnd {
-                    return Err(stuffit_error("stuffit: method 13 stream is truncated"));
+                    return Err(stuffit_error(format!(
+                        "stuffit: {label} stream is truncated"
+                    )));
                 }
                 break;
             }
             _ if progress.consumed == 0 && progress.written == 0 => {
-                return Err(stuffit_error("stuffit: method 13 decoder stalled"));
+                return Err(stuffit_error(format!("stuffit: {label} decoder stalled")));
             }
             _ => {}
         }
     }
+    if output.len() != expected_len {
+        return Err(stuffit_error(format!(
+            "stuffit: {label} produced {} bytes, expected {expected_len}",
+            output.len()
+        )));
+    }
+    Ok((output, consumed))
+}
+
+fn decode_method13(raw: &[u8], expected_len: usize, max_output: usize) -> Result<Vec<u8>> {
+    let mut decoder: compcol::sit13::Decoder = compcol::sit13::Decoder::with_len(expected_len);
+    let (output, consumed): (Vec<u8>, usize) =
+        decode_bounded(&mut decoder, raw, expected_len, max_output, "method 13")?;
     if consumed != raw.len() {
         return Err(stuffit_error(
             "stuffit: method 13 stream has trailing bytes",
         ));
     }
-    if output.len() != expected_len {
-        return Err(stuffit_error(format!(
-            "stuffit: method 13 produced {} bytes, expected {expected_len}",
-            output.len()
-        )));
+    Ok(output)
+}
+
+fn decode_lzah(raw: &[u8], expected_len: usize, max_output: usize) -> Result<Vec<u8>> {
+    let mut decoder: compcol::lzah::Decoder =
+        <compcol::lzah::Lzah as compcol::Algorithm>::decoder_with(
+            compcol::lzah::DecoderConfig::with_len(expected_len),
+        );
+    let (output, consumed): (Vec<u8>, usize) =
+        decode_bounded(&mut decoder, raw, expected_len, max_output, "method 5")?;
+    if consumed != raw.len() {
+        return Err(stuffit_error("stuffit: method 5 stream has trailing bytes"));
     }
     Ok(output)
 }
@@ -357,6 +391,7 @@ pub fn fork_bytes_bounded(bytes: &[u8], fork: &SitFork, max_output: usize) -> Re
             }
             decoded
         }
+        SitCompression::Lzah => decode_lzah(raw, expected_len, max_output)?,
         SitCompression::Method13 => decode_method13(raw, expected_len, max_output)?,
     };
     let actual_crc: u16 = crc16_ibm(&output);
@@ -718,6 +753,113 @@ mod tests {
             data_offset: 0,
         };
         assert!(fork_bytes_bounded(&[0x41, 0x00, 0x02], &trailing_clear, 1).is_err());
+    }
+
+    #[test]
+    fn method5_truncation_trailing_bytes_quota_and_crc_fail_closed() {
+        let fixture: &[u8] = include_bytes!("../../tests/fixtures/stuffit/stuffit-method5.sit");
+        let parsed: SitArchive = parse_classic(fixture).expect("parse method 5 fixture");
+        let data: &SitFork = &parsed.entries[1].data;
+        assert_eq!(data.compression, SitCompression::Lzah);
+        let expected_len: usize =
+            usize::try_from(data.uncompressed_len).expect("method 5 output length");
+        assert_eq!(expected_len, 1405);
+
+        let baseline: Vec<u8> =
+            fork_bytes_bounded(fixture, data, expected_len).expect("method 5 baseline decode");
+        assert_eq!(baseline.len(), expected_len);
+
+        assert!(fork_bytes_bounded(fixture, data, expected_len - 1).is_err());
+
+        let raw_end: usize = data.data_offset + data.compressed_len as usize;
+        let raw: &[u8] = &fixture[data.data_offset..raw_end];
+
+        let mut truncated: SitFork = data.clone();
+        truncated.data_offset = 0;
+        truncated.compressed_len -= 1;
+        assert!(fork_bytes_bounded(&raw[..raw.len() - 1], &truncated, expected_len).is_err());
+
+        let mut wrong_crc: SitFork = data.clone();
+        wrong_crc.expected_crc ^= 1;
+        assert!(fork_bytes_bounded(fixture, &wrong_crc, expected_len).is_err());
+
+        let mut wrong_length: SitFork = data.clone();
+        wrong_length.uncompressed_len -= 1;
+        assert!(fork_bytes_bounded(fixture, &wrong_length, expected_len).is_err());
+
+        let mut refused: usize = 0;
+        let mut crc_refused: usize = 0;
+        let mut inert: Vec<usize> = Vec::new();
+        for index in 0..raw.len() {
+            let mut corrupted: Vec<u8> = raw.to_vec();
+            corrupted[index] ^= 0x01;
+            let mut fork_at_zero: SitFork = data.clone();
+            fork_at_zero.data_offset = 0;
+            match fork_bytes_bounded(&corrupted, &fork_at_zero, expected_len) {
+                Ok(decoded) => {
+                    assert_eq!(
+                        decoded, baseline,
+                        "byte {index}: an accepted corruption must reproduce the reference bytes"
+                    );
+                    inert.push(index);
+                }
+                Err(error) => {
+                    refused += 1;
+                    if error.to_string().contains("fork CRC mismatch") {
+                        crc_refused += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            refused + inert.len(),
+            raw.len(),
+            "every corruption is either refused or provably inert"
+        );
+        assert!(
+            crc_refused > 0,
+            "the CRC StuffIt stored must catch corruption the codec itself accepts"
+        );
+        assert!(
+            inert.len() <= 8,
+            "at most a handful of bits may be inert, saw {} at {inert:?}",
+            inert.len()
+        );
+    }
+
+    #[test]
+    fn method5_bounds_refuse_crafted_streams_without_unbounded_work() {
+        let oversized: SitFork = SitFork {
+            compression: SitCompression::Lzah,
+            uncompressed_len: u32::MAX,
+            compressed_len: 4,
+            expected_crc: 0,
+            data_offset: 0,
+        };
+        let error: Error = fork_bytes_bounded(&[0u8; 4], &oversized, 1024)
+            .expect_err("declared length above the cap must be refused before decoding");
+        assert!(
+            error.to_string().contains("exceeds cap"),
+            "expected an output cap refusal, got {error}"
+        );
+
+        let stalled: SitFork = SitFork {
+            compression: SitCompression::Lzah,
+            uncompressed_len: 4096,
+            compressed_len: 1,
+            expected_crc: 0,
+            data_offset: 0,
+        };
+        assert!(fork_bytes_bounded(&[0x00], &stalled, 4096).is_err());
+
+        let empty_input: SitFork = SitFork {
+            compression: SitCompression::Lzah,
+            uncompressed_len: 16,
+            compressed_len: 0,
+            expected_crc: 0,
+            data_offset: 0,
+        };
+        assert!(fork_bytes_bounded(&[], &empty_input, 16).is_err());
     }
 
     #[test]

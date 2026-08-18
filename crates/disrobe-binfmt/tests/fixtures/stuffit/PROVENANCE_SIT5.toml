@@ -1,0 +1,109 @@
+schema = "disrobe.fixture-provenance/v1"
+format = "Aladdin StuffIt 5 container, compression methods 0 (stored) and 15 (Arsenic)"
+
+fixture = "stuffit5-651.sit"
+fixture_sha256 = "238f1e460cd7aa71fa21e31d06e741265df2cafb8151614488baee9af2e4990a"
+fixture_size = 2776
+producer = "StuffIt Deluxe 6.5.1 on Mac OS 9"
+retrieved = "2026-08-18"
+
+source_repository = "https://github.com/ssokolow/stuffit-test-files"
+source_commit = "b523c64337867aee5cc07ad3a6bbfc8e06e4b3c0"
+source_path = "build/testfile.stuffit651_dlx.mac9.sit"
+source_license = "CC0-1.0"
+source_note = "Same corpus and licence as the pinned method-13 classic fixture. Its author created every archive on a clean Mac OS 9 install per StuffIt version, so the container version is what the filename says."
+
+reference_tool = "unar 1.8.1 for Windows"
+reference_url = "https://cdn.theunarchiver.com/downloads/unarWindows.zip"
+reference_archive_sha256 = "61a6b299606282f72f51c278801eac11d3dccfac83e2d68bccce33539912e0dd"
+reference_result = "lsar -json reported format StuffIt 5 with nine forks, five StuffItCompressionMethod 15 named Arsenic and four method 0; unar extracted all nine. Every recovered fork matches unar's bytes and unar's own recorded per-fork offset and length."
+reference_manifest = "MANIFEST_SIT5.tsv"
+
+format_source = "https://github.com/MacPaw/XADMaster/blob/master/XADStuffIt5Parser.m"
+format_source_note = "Field walk only: archive header at offset 82 for version and flags, entry records marked a5a5a5a5, and the per-entry field order. No implementation was taken from it."
+codec_source = "https://docs.rs/compcol/0.6.10/compcol/arsenic/index.html"
+
+[integrity]
+note = "StuffIt 5 leaves the per-fork CRC-16 field zero for Arsenic; the format's own field comment reads 'old crc16 (not with algo 15)'. This was confirmed against the fixture rather than assumed: all five Arsenic forks carry crc16 0 and all four stored forks carry a real CRC-16 that the recovered bytes satisfy. Arsenic instead self-terminates with a CRC-32 trailer the decoder verifies, so stored forks are graded on CRC-16 and Arsenic forks on that trailer plus the exact declared output length."
+header_crc = "Each entry header carries a CRC-16 over the whole header with the CRC field itself zeroed. It is verified before any field in that header is trusted."
+
+[[artifacts]]
+path = "Test Image"
+fork = "rsrc"
+method = 15
+logical_size = 9134
+compressed_size = 248
+sha256 = "4b8175653903645616d9e07627957ae0dba4c7ac3b3e9aa6afc8e07144dcfbb0"
+
+[[artifacts]]
+path = "Test Text"
+fork = "rsrc"
+method = 15
+logical_size = 332
+compressed_size = 62
+sha256 = "5f0c7e77ac2430be40532730665ea27f0cf1088ac049e0c06851d62085b87315"
+
+[[artifacts]]
+path = "Test Text"
+fork = "data"
+method = 0
+logical_size = 11
+compressed_size = 11
+crc16 = 16571
+sha256 = "9734aef6d3788ba985e78f7b3785dc4817e770be92a4e5e57e64a92cc9c2fc25"
+
+[[artifacts]]
+path = "testfile.jpg"
+fork = "data"
+method = 0
+logical_size = 220
+compressed_size = 220
+crc16 = 1474
+sha256 = "e514232511df1a4f4221a75c27523518c3c62a2fe6470fa56e430364428eecd1"
+
+[[artifacts]]
+path = "testfile.PICT"
+fork = "rsrc"
+method = 15
+logical_size = 44549
+compressed_size = 929
+sha256 = "011604ad448ef4451081d04bd395c2a974cab637877fb64b45e62ebe39bc452e"
+
+[[artifacts]]
+path = "testfile.PICT"
+fork = "data"
+method = 15
+logical_size = 2694
+compressed_size = 401
+sha256 = "318d71cd4d027c6bec6917af3ddc3b7df0ec8b07031045a9cdd9052b94c7782e"
+
+[[artifacts]]
+path = "testfile.png"
+fork = "data"
+method = 0
+logical_size = 87
+compressed_size = 87
+crc16 = 9682
+sha256 = "fdda20984cc1591419ec4583e24e72e4dba39d0b96608253f853a2dfb238ad1a"
+
+[[artifacts]]
+path = "testfile.txt"
+fork = "rsrc"
+method = 15
+logical_size = 332
+compressed_size = 64
+sha256 = "f788dcd5313a531a27fc62a9b4c951a6653ef11b49f2262ee0796f72c5564b0a"
+
+[[artifacts]]
+path = "testfile.txt"
+fork = "data"
+method = 0
+logical_size = 12
+compressed_size = 12
+crc16 = 46785
+sha256 = "b645efee0ed710034959eae942277a750d08687c30bcf0e9ec6ea7641527462f"
+
+[coverage_gaps]
+directories = "Every archive in the pinned corpus is flat. The directory entry path, including the 0xffffffff sentinel record that follows a directory, is implemented from the format description but no pinned fixture exercises it."
+method_14 = "No archive in any corpus swept for this work contains method 14. The Unarchiver flags method 14 with its reportInterestingFileWithReason hook, which its authors use to ask users to send samples of methods they rarely see, so this is a scarce format rather than a gap in the sweep."
+encryption = "Encrypted StuffIt 5 entries use RC4 with a 5-byte per-entry key and an MD5 archive password hash. They are refused with a typed password prerequisite; the corpus password archives were not used."

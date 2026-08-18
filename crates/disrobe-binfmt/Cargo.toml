@@ -19,7 +19,7 @@ default = []
 chain = ["disrobe-core/chain"]
 
 [dependencies]
-compcol = { version = "=0.6.10", default-features = false, features = ["sit13"] }
+compcol = { version = "=0.6.10", default-features = false, features = ["arsenic", "lzah", "sit13"] }
 disrobe-bytes = { workspace = true }
 disrobe-core = { workspace = true }
 aes = { workspace = true }

@@ -59,6 +59,7 @@ pub mod sparse;
 pub mod squashfs;
 pub mod squirrel;
 pub mod stuffit;
+pub mod stuffit5;
 pub mod ubifs;
 pub mod ucl;
 pub mod uefi_fv;
@@ -244,6 +245,10 @@ pub use squirrel::{SquirrelLayout, detect_squirrel, locate_embedded_nupkg};
 pub use stuffit::{
     SitArchive, SitCompression, SitEntry, SitFork, fork_bytes_bounded as sit_fork_bytes_bounded,
     fork_is_stored as sit_fork_is_stored, parse_classic as parse_sit_classic,
+};
+pub use stuffit5::{
+    Sit5Archive, Sit5Compression, Sit5Entry, Sit5Fork,
+    fork_bytes_bounded as sit5_fork_bytes_bounded, parse_sit5,
 };
 pub use ubifs::{UbiVolume, UbifsFile, UbifsWalk, detect_ubi, detect_ubifs, walk_ubifs};
 pub use ucl::{NrvVariant, decompress as ucl_decompress};
