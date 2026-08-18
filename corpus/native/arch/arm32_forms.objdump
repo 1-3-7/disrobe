@@ -1,0 +1,46 @@
+
+corpus/native/arch/arm32_forms.elf:	file format elf32-littlearm
+
+Disassembly of section .text:
+
+000101bc <acc>:
+   101bc:      	cmp	r0, #1
+   101c0:      	movlt	r0, #0
+   101c4:      	bxlt	lr
+   101c8:      	sub	r1, r0, #2
+   101cc:      	sub	r2, r0, #1
+   101d0:      	umull	r1, r2, r2, r1
+   101d4:      	and	r2, r2, #1
+   101d8:      	lsrs	r2, r2, #1
+   101dc:      	rrx	r1, r1
+   101e0:      	add	r0, r1, r0
+   101e4:      	add	r0, r0, r0, lsl #1
+   101e8:      	sub	r0, r0, #3
+   101ec:      	bx	lr
+
+000101f0 <pick>:
+   101f0:      	subs	r0, r0, r1
+   101f4:      	rsbmi	r0, r0, #0
+   101f8:      	bx	lr
+
+000101fc <chain>:
+   101fc:      	cmp	r0, #1
+   10200:      	blt	0x1022c <chain+0x30>    @ imm = #0x24
+   10204:      	sub	r1, r0, #2
+   10208:      	sub	r2, r0, #1
+   1020c:      	umull	r1, r2, r2, r1
+   10210:      	and	r2, r2, #1
+   10214:      	lsrs	r2, r2, #1
+   10218:      	rrx	r1, r1
+   1021c:      	add	r1, r1, r0
+   10220:      	add	r1, r1, r1, lsl #1
+   10224:      	sub	r1, r1, #3
+   10228:      	b	0x10230 <chain+0x34>    @ imm = #0x0
+   1022c:      	mov	r1, #0
+   10230:      	subs	r0, r0, #7
+   10234:      	rsbmi	r0, r0, #0
+   10238:      	add	r0, r1, r0
+   1023c:      	bx	lr
+
+00010240 <_start>:
+   10240:      	bx	lr

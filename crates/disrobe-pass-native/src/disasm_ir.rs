@@ -18,7 +18,10 @@ use object::{
     SymbolScope as ObjSymbolScope,
 };
 
-use crate::arch::{Arch as DisasmArch, DisasmInsn, decode_one_x86, disassemble};
+use crate::arch::{
+    Arch as DisasmArch, ArmMappingSymbols, ArmRegionKind, ArmRun, DisasmInsn, decode_one_x86,
+    disassemble,
+};
 use crate::cxx_recovery::parse_windows_seh_scope_table;
 use crate::desync::{
     Bitness, CodeWindow, DiscoveredFunctions, DiscoveryInput, NoreturnInferenceOutcome,
@@ -75,7 +78,19 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
         )));
     }
 
+    let arm_mapping: ArmMappingSymbols = if matches!(native.arch, BinArch::Arm) {
+        object::File::parse(bytes).map_or_else(
+            |_| ArmMappingSymbols::default(),
+            |file: object::File<'_>| ArmMappingSymbols::of(&file),
+        )
+    } else {
+        ArmMappingSymbols::default()
+    };
     let flow_model: FlowModel = FlowModel::for_arch(arch)?;
+    let thumb_model: Option<FlowModel> = arm_mapping
+        .holds(ArmRegionKind::Thumb)
+        .then(|| FlowModel::for_arch(DisasmArch::Thumb))
+        .transpose()?;
     let mut instructions: Vec<DisasmInstruction> = Vec::new();
     let mut decoded_code: Vec<CodeWindow<'_>> = Vec::new();
     let mut text_budget: usize = MAX_DECODE_TEXT_BYTES;
@@ -92,44 +107,59 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
             .min(text_budget)
             .min(instruction_byte_limit);
         text_budget -= window;
-        let decoded: Vec<DisasmInsn> =
-            disassemble(arch, section.address, &section.bytes[..window])?;
         let mut decoded_byte_len: usize = 0;
         let mut factory: InstructionInfoFactory = InstructionInfoFactory::new();
-        for insn in decoded {
+        for run in decode_runs(arch, &arm_mapping, section.address, window) {
             if instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
                 break;
             }
-            let insn_end: usize = decoded_instruction_end(section.address, &insn, window)
-                .ok_or_else(|| Error::Disasm {
-                    engine: "disasm-ir",
-                    message: format!(
-                        "instruction {:#x} lies outside decoded section {:#x}",
-                        insn.address, section.address
-                    ),
-                })?;
-            decoded_byte_len = decoded_byte_len.max(insn_end);
-            let facts: InstructionFacts = instruction_facts(
-                &flow_model,
-                &insn.bytes,
-                insn.address,
-                &insn.mnemonic,
-                &mut factory,
-            );
-            instructions.push(DisasmInstruction {
-                offset: insn.address,
-                bytes: insn.bytes,
-                mnemonic: insn.mnemonic,
-                operands: split_operands(&insn.operands),
-                flow: facts.flow,
-                branch_target: facts.branch_target,
-                reg_uses: facts.reg_uses,
-                mem_uses: facts.mem_uses,
-                rflags: facts.rflags,
-                isa: facts.isa,
-                stack_effect: facts.stack_effect,
-                segments: facts.segments,
-            });
+            let Some(run_arch): Option<DisasmArch> = run.arch else {
+                continue;
+            };
+            let Some(run_bytes): Option<&[u8]> = run_slice(section.address, &section.bytes, &run)
+            else {
+                continue;
+            };
+            let decoded: Vec<DisasmInsn> = disassemble(run_arch, run.start, run_bytes)?;
+            let run_model: &FlowModel = match (run_arch, thumb_model.as_ref()) {
+                (DisasmArch::Thumb, Some(model)) => model,
+                _ => &flow_model,
+            };
+            for insn in decoded {
+                if instructions.len() >= MAX_PAYLOAD_INSTRUCTIONS {
+                    break;
+                }
+                let insn_end: usize = decoded_instruction_end(section.address, &insn, window)
+                    .ok_or_else(|| Error::Disasm {
+                        engine: "disasm-ir",
+                        message: format!(
+                            "instruction {:#x} lies outside decoded section {:#x}",
+                            insn.address, section.address
+                        ),
+                    })?;
+                decoded_byte_len = decoded_byte_len.max(insn_end);
+                let facts: InstructionFacts = instruction_facts(
+                    run_model,
+                    &insn.bytes,
+                    insn.address,
+                    &insn.mnemonic,
+                    &mut factory,
+                );
+                instructions.push(DisasmInstruction {
+                    offset: insn.address,
+                    bytes: insn.bytes,
+                    mnemonic: insn.mnemonic,
+                    operands: split_operands(&insn.operands),
+                    flow: facts.flow,
+                    branch_target: facts.branch_target,
+                    reg_uses: facts.reg_uses,
+                    mem_uses: facts.mem_uses,
+                    rflags: facts.rflags,
+                    isa: facts.isa,
+                    stack_effect: facts.stack_effect,
+                    segments: facts.segments,
+                });
+            }
         }
         if decoded_byte_len != 0 {
             let Some(bytes): Option<&[u8]> = section.bytes.get(..decoded_byte_len) else {
@@ -190,6 +220,53 @@ pub(crate) fn build_disasm_payload_with_discovery(bytes: &[u8]) -> Result<Disasm
         },
         function_universe,
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DecodeRun {
+    arch: Option<DisasmArch>,
+    start: u64,
+    end: u64,
+}
+
+fn decode_runs(
+    arch: DisasmArch,
+    mapping: &ArmMappingSymbols,
+    section_address: u64,
+    window: usize,
+) -> Vec<DecodeRun> {
+    let end: u64 = section_address.saturating_add(window as u64);
+    let whole: DecodeRun = DecodeRun {
+        arch: Some(arch),
+        start: section_address,
+        end,
+    };
+    if !matches!(arch, DisasmArch::Arm32 | DisasmArch::Thumb) || mapping.is_empty() {
+        return vec![whole];
+    }
+    let opening: ArmRegionKind = match arch {
+        DisasmArch::Thumb => ArmRegionKind::Thumb,
+        _ => ArmRegionKind::A32,
+    };
+    mapping
+        .runs(section_address, end, opening)
+        .into_iter()
+        .map(|run: ArmRun| DecodeRun {
+            arch: run.kind.decode_arch(),
+            start: run.start,
+            end: run.end,
+        })
+        .collect()
+}
+
+fn run_slice<'data>(
+    section_address: u64,
+    section_bytes: &'data [u8],
+    run: &DecodeRun,
+) -> Option<&'data [u8]> {
+    let start: usize = usize::try_from(run.start.checked_sub(section_address)?).ok()?;
+    let end: usize = usize::try_from(run.end.checked_sub(section_address)?).ok()?;
+    section_bytes.get(start..end.min(section_bytes.len()))
 }
 
 const fn decode_byte_limit(arch: DisasmArch, remaining_instructions: usize) -> usize {
@@ -1174,6 +1251,14 @@ const fn narrow_rflags(bits: u32) -> u16 {
 }
 
 fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
+    let interworking: bool = matches!(native.arch, BinArch::Arm);
+    let entry_address = |address: u64| -> u64 {
+        if interworking {
+            address & !1_u64
+        } else {
+            address
+        }
+    };
     let dyn_export_names: BTreeSet<String> = native
         .exports
         .iter()
@@ -1201,7 +1286,8 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
                 continue;
             }
             let owned: String = name.to_owned();
-            if !seen.insert((sym.address(), owned.clone())) {
+            let address: u64 = entry_address(sym.address());
+            if !seen.insert((address, owned.clone())) {
                 continue;
             }
             let exported: bool = is_text && matches!(sym.scope(), ObjSymbolScope::Dynamic);
@@ -1213,7 +1299,7 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
                 DisasmSymbolKind::Function
             };
             out.push(DisasmSymbol {
-                address: sym.address(),
+                address,
                 name: owned,
                 kind,
             });
@@ -1224,11 +1310,12 @@ fn build_symbol_table(bytes: &[u8], native: &NativeFile) -> Vec<DisasmSymbol> {
         if export.name.is_empty() {
             continue;
         }
-        if !seen.insert((export.address, export.name.clone())) {
+        let address: u64 = entry_address(export.address);
+        if !seen.insert((address, export.name.clone())) {
             continue;
         }
         out.push(DisasmSymbol {
-            address: export.address,
+            address,
             name: export.name.clone(),
             kind: DisasmSymbolKind::Export,
         });
@@ -1285,6 +1372,96 @@ pub fn is_disassemblable_format(format: NativeFormat) -> bool {
             | NativeFormat::MachO64
             | NativeFormat::Coff
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod arm_boundaries {
+    use std::collections::BTreeSet;
+
+    use disrobe_ir::payload::DisasmInstruction;
+
+    use super::{DisasmBuild, build_disasm_payload_with_discovery};
+
+    const THUMB_FORMS_ELF: &[u8] = include_bytes!("../../../corpus/native/arch/thumb_forms.elf");
+    const THUMB_FORMS_OBJDUMP: &str =
+        include_str!("../../../corpus/native/arch/thumb_forms.objdump");
+    const MIXED_MODES_ELF: &[u8] =
+        include_bytes!("../../../corpus/native/arch/arm32_mixed_modes.elf");
+    const MIXED_MODES_OBJDUMP: &str =
+        include_str!("../../../corpus/native/arch/arm32_mixed_modes.objdump");
+    const A32_FORMS_ELF: &[u8] = include_bytes!("../../../corpus/native/arch/arm32_forms.elf");
+    const A32_FORMS_OBJDUMP: &str = include_str!("../../../corpus/native/arch/arm32_forms.objdump");
+
+    fn reference_addresses(listing: &str) -> BTreeSet<u64> {
+        listing
+            .lines()
+            .filter_map(|line: &str| {
+                let (address, rest): (&str, &str) = line.trim_start().split_once(':')?;
+                (!rest.trim().is_empty()).then_some(())?;
+                u64::from_str_radix(address, 16).ok()
+            })
+            .collect()
+    }
+
+    fn decoded_addresses(image: &[u8]) -> BTreeSet<u64> {
+        let build: DisasmBuild =
+            build_disasm_payload_with_discovery(image).expect("the committed arm fixture decodes");
+        build
+            .payload
+            .instructions
+            .iter()
+            .map(|instruction: &DisasmInstruction| instruction.offset)
+            .collect()
+    }
+
+    #[test]
+    fn every_arm_fixture_decodes_at_the_boundaries_llvm_objdump_reports() {
+        let cases: [(&str, &[u8], &str, usize); 3] = [
+            ("thumb_forms", THUMB_FORMS_ELF, THUMB_FORMS_OBJDUMP, 28),
+            (
+                "arm32_mixed_modes",
+                MIXED_MODES_ELF,
+                MIXED_MODES_OBJDUMP,
+                29,
+            ),
+            ("arm32_forms", A32_FORMS_ELF, A32_FORMS_OBJDUMP, 34),
+        ];
+        for (label, image, listing, pinned) in cases {
+            let expected: BTreeSet<u64> = reference_addresses(listing);
+            assert_eq!(
+                expected.len(),
+                pinned,
+                "{label} must grade against {pinned} reference instructions"
+            );
+            let decoded: BTreeSet<u64> = decoded_addresses(image);
+            assert_eq!(
+                decoded, expected,
+                "{label} decoded at boundaries llvm-objdump does not report; a decode mode chosen \
+                 wrongly lands mid-instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn a_thumb_image_decodes_nothing_when_every_region_is_read_as_a32() {
+        let expected: BTreeSet<u64> = reference_addresses(THUMB_FORMS_OBJDUMP);
+        let decoded: BTreeSet<u64> = decoded_addresses(THUMB_FORMS_ELF);
+        let as_a32: BTreeSet<u64> = expected
+            .iter()
+            .copied()
+            .filter(|address: &u64| address % 4 == 0)
+            .collect();
+        assert_ne!(
+            decoded, as_a32,
+            "reading every region as a32 would keep only four-byte-aligned boundaries, so this \
+             image cannot prove the mode was selected"
+        );
+        assert!(
+            decoded.iter().any(|address: &u64| address % 4 != 0),
+            "a thumb image must decode instructions that are not four-byte aligned: {decoded:?}"
+        );
+    }
 }
 
 #[cfg(test)]

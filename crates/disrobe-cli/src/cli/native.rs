@@ -460,6 +460,9 @@ fn decompile_native(
 }
 
 #[cfg(feature = "nir-lift")]
+use disrobe_pass_native::arch::{ArmMappingSymbols, ArmMode, ArmSelection};
+
+#[cfg(feature = "nir-lift")]
 #[derive(Debug, Serialize)]
 pub(crate) struct DecodeStatusShare {
     pub(crate) status: &'static str,
@@ -776,118 +779,6 @@ impl DecompileArch {
 }
 
 #[cfg(feature = "nir-lift")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ArmRegionKind {
-    A32,
-    Thumb,
-    Data,
-}
-
-#[cfg(feature = "nir-lift")]
-impl ArmRegionKind {
-    const fn of_mapping_symbol(name: &str) -> Option<Self> {
-        match name.as_bytes() {
-            [b'$', b'a', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::A32),
-            [b'$', b't', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::Thumb),
-            [b'$', b'd', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::Data),
-            _ => None,
-        }
-    }
-
-    const fn is_mapping_suffix(rest: &[u8]) -> bool {
-        matches!(rest, [] | [b'.', ..])
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::A32 => "A32",
-            Self::Thumb => "Thumb",
-            Self::Data => "data",
-        }
-    }
-}
-
-#[cfg(feature = "nir-lift")]
-#[derive(Clone, Debug)]
-pub(crate) enum ArmSelection {
-    Decodable(disrobe_nir_lift::PcodeArch),
-    Undecodable(String),
-}
-
-#[cfg(feature = "nir-lift")]
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ArmMappingSymbols {
-    regions: Vec<(u64, ArmRegionKind)>,
-}
-
-#[cfg(feature = "nir-lift")]
-impl ArmMappingSymbols {
-    pub(crate) fn of(obj: &object::File<'_>) -> Self {
-        use object::{Object as _, ObjectSymbol as _};
-
-        Self::from_regions(
-            obj.symbols()
-                .filter_map(|symbol: object::Symbol<'_, '_>| {
-                    let name: &str = symbol.name().ok()?;
-                    let kind: ArmRegionKind = ArmRegionKind::of_mapping_symbol(name)?;
-                    Some((symbol.address() & !1_u64, kind))
-                })
-                .collect(),
-        )
-    }
-
-    pub(crate) fn from_regions(mut regions: Vec<(u64, ArmRegionKind)>) -> Self {
-        regions.sort_unstable_by_key(|(address, _): &(u64, ArmRegionKind)| *address);
-        regions.dedup_by_key(|(address, _): &mut (u64, ArmRegionKind)| *address);
-        Self { regions }
-    }
-
-    fn kind_at(&self, address: u64) -> Option<ArmRegionKind> {
-        let index: usize = self
-            .regions
-            .partition_point(|(start, _): &(u64, ArmRegionKind)| *start <= address);
-        index
-            .checked_sub(1)
-            .and_then(|last: usize| self.regions.get(last))
-            .map(|(_, kind): &(u64, ArmRegionKind)| *kind)
-    }
-
-    pub(crate) fn select(&self, start: u64, end: u64, thumb_bit: bool) -> ArmSelection {
-        use disrobe_nir_lift::PcodeArch;
-
-        let Some(opening): Option<ArmRegionKind> = self.kind_at(start) else {
-            return ArmSelection::Decodable(if thumb_bit {
-                PcodeArch::Arm32Thumb
-            } else {
-                PcodeArch::Arm32A32
-            });
-        };
-        if matches!(opening, ArmRegionKind::Data) {
-            return ArmSelection::Undecodable(format!(
-                "the function at {start:#x} opens inside a $d data region, so no instruction stream starts there"
-            ));
-        }
-        for (boundary, kind) in &self.regions {
-            if *boundary <= start || *boundary >= end {
-                continue;
-            }
-            if *kind != opening {
-                return ArmSelection::Undecodable(format!(
-                    "the function range changes from {} to {} at {boundary:#x}; one decode mode would misread the rest",
-                    opening.label(),
-                    kind.label()
-                ));
-            }
-        }
-        ArmSelection::Decodable(if matches!(opening, ArmRegionKind::Thumb) {
-            PcodeArch::Arm32Thumb
-        } else {
-            PcodeArch::Arm32A32
-        })
-    }
-}
-
-#[cfg(feature = "nir-lift")]
 pub(crate) fn pcode_recover_source(
     arch: disrobe_nir_lift::PcodeArch,
     code: &[u8],
@@ -1116,15 +1007,15 @@ fn decompile_native_pcode<'data>(
     };
     let mut coverage_totals: DecodeCoverageTotals = DecodeCoverageTotals::default();
     for f in module.functions() {
-        let thumb_bit: bool = matches!(arch, DecompileArch::Arm32) && f.address & 1 == 1;
-        let entry: u64 = if matches!(arch, DecompileArch::Arm32) {
-            f.address & !1_u64
+        let (entry, limit): (u64, u64) = if matches!(arch, DecompileArch::Arm32) {
+            (f.address & !1_u64, f.end & !1_u64)
         } else {
-            f.address
+            (f.address, f.end)
         };
         let function_arch: disrobe_nir_lift::PcodeArch = match arch {
-            DecompileArch::Arm32 => match arm_mapping.select(entry, f.end, thumb_bit) {
-                ArmSelection::Decodable(selected) => selected,
+            DecompileArch::Arm32 => match arm_mapping.select(entry, limit) {
+                ArmSelection::Decodable(ArmMode::Thumb) => disrobe_nir_lift::PcodeArch::Arm32Thumb,
+                ArmSelection::Decodable(ArmMode::A32) => disrobe_nir_lift::PcodeArch::Arm32A32,
                 ArmSelection::Undecodable(reason) => {
                     unrecovered.push(serde_json::json!({
                         "name": f.name, "address": f.address, "reason": reason
@@ -1136,7 +1027,7 @@ fn decompile_native_pcode<'data>(
                 arch.pcode_arch()
             }
         };
-        let Some(code): Option<Vec<u8>> = bytes_for_va_range(obj, entry, f.end) else {
+        let Some(code): Option<Vec<u8>> = bytes_for_va_range(obj, entry, limit) else {
             unrecovered.push(serde_json::json!({
                 "name": f.name, "address": f.address, "reason": "no mapped code bytes for the function range"
             }));
@@ -4739,90 +4630,31 @@ mod tests {
 
     #[cfg(feature = "nir-lift")]
     #[test]
-    fn a_mapping_symbol_name_decides_the_region_and_nothing_else_does() {
-        let cases: [(&str, Option<ArmRegionKind>); 10] = [
-            ("$a", Some(ArmRegionKind::A32)),
-            ("$t", Some(ArmRegionKind::Thumb)),
-            ("$d", Some(ArmRegionKind::Data)),
-            ("$a.0", Some(ArmRegionKind::A32)),
-            ("$t.1234", Some(ArmRegionKind::Thumb)),
-            ("$d.realdata", Some(ArmRegionKind::Data)),
-            ("$x", None),
-            ("$", None),
-            ("$td", None),
-            ("atomic_store", None),
+    fn the_selected_region_decides_which_pcode_architecture_lifts_the_function() {
+        use disrobe_nir_lift::PcodeArch;
+        use disrobe_pass_native::arch::ArmRegionKind;
+
+        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
+            (0x2_00f4, ArmRegionKind::A32),
+            (0x2_014c, ArmRegionKind::Thumb),
+        ]);
+        let cases: [(u64, u64, PcodeArch); 2] = [
+            (0x2_00f4, 0x2_0100, PcodeArch::Arm32A32),
+            (0x2_014c, 0x2_0160, PcodeArch::Arm32Thumb),
         ];
-        for (name, expected) in cases {
+        for (start, end, expected) in cases {
+            let chosen: PcodeArch = match mapping.select(start, end) {
+                ArmSelection::Decodable(ArmMode::Thumb) => PcodeArch::Arm32Thumb,
+                ArmSelection::Decodable(ArmMode::A32) => PcodeArch::Arm32A32,
+                ArmSelection::Undecodable(reason) => {
+                    panic!("{start:#x} is a whole-mode range: {reason}")
+                }
+            };
             assert_eq!(
-                ArmRegionKind::of_mapping_symbol(name),
-                expected,
-                "{name} must resolve to {expected:?}"
+                chosen, expected,
+                "the function at {start:#x} must lift through {expected:?}"
             );
         }
-    }
-
-    #[cfg(feature = "nir-lift")]
-    #[test]
-    fn a_function_takes_the_decode_mode_of_the_mapping_symbol_that_opens_it() {
-        use disrobe_nir_lift::PcodeArch;
-
-        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
-            (0x2_00f4, ArmRegionKind::A32),
-            (0x2_014c, ArmRegionKind::Thumb),
-        ]);
-        let arm: ArmSelection = mapping.select(0x2_00f4, 0x2_0100, false);
-        assert!(
-            matches!(arm, ArmSelection::Decodable(PcodeArch::Arm32A32)),
-            "a function opened by $a decodes as A32, got {arm:?}"
-        );
-        let thumb: ArmSelection = mapping.select(0x2_014c, 0x2_0160, true);
-        assert!(
-            matches!(thumb, ArmSelection::Decodable(PcodeArch::Arm32Thumb)),
-            "a function opened by $t decodes as Thumb, got {thumb:?}"
-        );
-    }
-
-    #[cfg(feature = "nir-lift")]
-    #[test]
-    fn a_range_that_changes_mode_is_reported_instead_of_read_in_one_mode() {
-        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
-            (0x2_00f4, ArmRegionKind::A32),
-            (0x2_014c, ArmRegionKind::Thumb),
-        ]);
-        let spanning: ArmSelection = mapping.select(0x2_010c, 0x2_0160, false);
-        let ArmSelection::Undecodable(reason) = spanning else {
-            panic!(
-                "a range spanning an A32 to Thumb boundary must not pick one mode: {spanning:?}"
-            );
-        };
-        assert!(
-            reason.contains("0x2014c") && reason.contains("A32") && reason.contains("Thumb"),
-            "the refusal must name the boundary and both modes: {reason}"
-        );
-
-        let data: ArmMappingSymbols =
-            ArmMappingSymbols::from_regions(vec![(0x2_0200, ArmRegionKind::Data)]);
-        let inside: ArmSelection = data.select(0x2_0208, 0x2_0210, false);
-        assert!(
-            matches!(inside, ArmSelection::Undecodable(_)),
-            "a range opening inside $d holds no instruction stream, got {inside:?}"
-        );
-    }
-
-    #[cfg(feature = "nir-lift")]
-    #[test]
-    fn an_image_without_mapping_symbols_falls_back_to_the_thumb_bit() {
-        use disrobe_nir_lift::PcodeArch;
-
-        let empty: ArmMappingSymbols = ArmMappingSymbols::default();
-        assert!(matches!(
-            empty.select(0x1000, 0x1010, true),
-            ArmSelection::Decodable(PcodeArch::Arm32Thumb)
-        ));
-        assert!(matches!(
-            empty.select(0x1000, 0x1010, false),
-            ArmSelection::Decodable(PcodeArch::Arm32A32)
-        ));
     }
 
     #[cfg(feature = "nir-lift")]

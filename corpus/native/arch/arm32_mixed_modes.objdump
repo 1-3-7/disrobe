@@ -1,0 +1,41 @@
+
+arm32_mixed_modes.elf:	file format elf32-littlearm
+
+Disassembly of section .text:
+
+000200fc <thumb_scale>:
+   200fc:      	muls	r0, r1, r0
+   200fe:      	subs.w	r1, r0, #0x64
+   20102:      	it	le
+   20104:      	movle	r1, r0
+   20106:      	adds	r0, r1, #0x7
+   20108:      	bx	lr
+   2010a:      	movs	r0, r0
+
+0002010c <arm_add>:
+   2010c:      	add	r1, r1, r1, lsl #2
+   20110:      	add	r0, r1, r0
+   20114:      	bx	lr
+
+00020118 <arm_pick>:
+   20118:      	subs	r0, r0, r1
+   2011c:      	rsbmi	r0, r0, #0
+   20120:      	bx	lr
+
+00020124 <_start>:
+   20124:      	push	{r11, lr}
+   20128:      	mov	r11, sp
+   2012c:      	sub	sp, sp, #8
+   20130:      	mov	r0, #23
+   20134:      	mov	r1, #3
+   20138:      	str	r0, [sp, #0x4]
+   2013c:      	ldr	r0, [sp, #0x4]
+   20140:      	subs	r0, r0, #9
+   20144:      	rsbmi	r0, r0, #0
+   20148:      	str	r0, [sp, #0x4]
+   2014c:      	ldr	r0, [sp, #0x4]
+   20150:      	blx	0x200fc <thumb_scale>   @ imm = #-0x5c
+   20154:      	str	r0, [sp, #0x4]
+   20158:      	ldr	r0, [sp, #0x4]
+   2015c:      	mov	sp, r11
+   20160:      	pop	{r11, pc}

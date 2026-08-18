@@ -101,6 +101,8 @@ pub struct DisasmInsn {
     pub operands: String,
 }
 
+pub const UNDECODABLE_ARM_MNEMONIC: &str = ".inst";
+
 pub fn disassemble(arch: Arch, base: u64, bytes: &[u8]) -> Result<Vec<DisasmInsn>> {
     match arch {
         Arch::X86 => disasm_iced(bytes, base, 32, Syntax::Nasm),
@@ -239,60 +241,244 @@ fn disasm_yaxpeax_arm(bytes: &[u8], base: u64, thumb: bool) -> Result<Vec<Disasm
     } else {
         yaxpeax_arm::armv7::InstDecoder::default()
     };
-    let mut reader: yaxpeax_arch::U8Reader<'_> = yaxpeax_arch::U8Reader::new(bytes);
     let min_step: usize = if thumb { 2 } else { 4 };
     let mut out: Vec<DisasmInsn> = Vec::new();
-    let mut addr: u64 = base;
-    loop {
-        let before: u64 = u64::from(yaxpeax_arch::Reader::<u32, u8>::total_offset(&mut reader));
-        let start: usize = usize::try_from(before).unwrap_or(usize::MAX);
-        if start.saturating_add(min_step) > bytes.len() {
+    let mut start: usize = 0;
+    while start.saturating_add(min_step) <= bytes.len() {
+        let Some(window): Option<&[u8]> = bytes.get(start..) else {
+            break;
+        };
+        let mut reader: yaxpeax_arch::U8Reader<'_> = yaxpeax_arch::U8Reader::new(window);
+        let address: u64 = base.wrapping_add(start as u64);
+        let Ok(inst) = decoder.decode(&mut reader) else {
+            out.push(undecodable_arm_word(bytes, start, min_step, address));
+            start = start.saturating_add(min_step);
+            continue;
+        };
+        let consumed: usize =
+            usize::try_from(yaxpeax_arch::Reader::<u32, u8>::total_offset(&mut reader))
+                .unwrap_or(0);
+        if consumed == 0 || start.saturating_add(consumed) > bytes.len() {
             break;
         }
-        match decoder.decode(&mut reader) {
-            Ok(inst) => {
-                let after: u64 =
-                    u64::from(yaxpeax_arch::Reader::<u32, u8>::total_offset(&mut reader));
-                let consumed: usize = usize::try_from(after.saturating_sub(before)).unwrap_or(0);
-                if consumed == 0 {
-                    break;
-                }
-                let raw: Vec<u8> = bytes
-                    .get(start..start.saturating_add(consumed))
-                    .map_or_else(Vec::new, <[u8]>::to_vec);
-                let recovered: Option<(String, String)> =
-                    if !thumb && inst.opcode == yaxpeax_arm::armv7::Opcode::Invalid {
-                        <[u8; 4]>::try_from(raw.as_slice())
-                            .ok()
-                            .and_then(|word: [u8; 4]| arm_a32_hint(u32::from_le_bytes(word)))
-                    } else {
-                        None
-                    };
-                let (m, ops): (String, String) = recovered.unwrap_or_else(|| {
-                    let text: String = inst.to_string();
-                    split_text(&text)
-                });
-                out.push(DisasmInsn {
-                    address: addr,
-                    bytes: raw,
-                    mnemonic: m,
-                    operands: ops,
-                });
-                addr = addr.wrapping_add(after.saturating_sub(before));
+        let raw: Vec<u8> = bytes
+            .get(start..start.saturating_add(consumed))
+            .map_or_else(Vec::new, <[u8]>::to_vec);
+        let recovered: Option<(String, String)> =
+            if !thumb && inst.opcode == yaxpeax_arm::armv7::Opcode::Invalid {
+                <[u8; 4]>::try_from(raw.as_slice())
+                    .ok()
+                    .and_then(|word: [u8; 4]| arm_a32_hint(u32::from_le_bytes(word)))
+            } else {
+                None
+            };
+        let (m, ops): (String, String) = recovered.unwrap_or_else(|| {
+            let text: String = inst.to_string();
+            split_text(&text)
+        });
+        out.push(DisasmInsn {
+            address,
+            bytes: raw,
+            mnemonic: m,
+            operands: ops,
+        });
+        start = start.saturating_add(consumed);
+    }
+    Ok(out)
+}
+
+fn undecodable_arm_word(bytes: &[u8], start: usize, width: usize, address: u64) -> DisasmInsn {
+    let raw: Vec<u8> = bytes
+        .get(start..start.saturating_add(width))
+        .map_or_else(Vec::new, <[u8]>::to_vec);
+    let operands: String = match *raw.as_slice() {
+        [low, high, upper, top] => {
+            format!("{:#010x}", u32::from_le_bytes([low, high, upper, top]))
+        }
+        [low, high] => format!("{:#06x}", u16::from_le_bytes([low, high])),
+        _ => String::new(),
+    };
+    DisasmInsn {
+        address,
+        bytes: raw,
+        mnemonic: UNDECODABLE_ARM_MNEMONIC.to_owned(),
+        operands,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmMode {
+    A32,
+    Thumb,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmRegionKind {
+    A32,
+    Thumb,
+    Data,
+}
+
+impl ArmRegionKind {
+    #[must_use]
+    pub const fn of_mapping_symbol(name: &str) -> Option<Self> {
+        match name.as_bytes() {
+            [b'$', b'a', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::A32),
+            [b'$', b't', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::Thumb),
+            [b'$', b'd', rest @ ..] if Self::is_mapping_suffix(rest) => Some(Self::Data),
+            _ => None,
+        }
+    }
+
+    const fn is_mapping_suffix(rest: &[u8]) -> bool {
+        matches!(rest, [] | [b'.', ..])
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::A32 => "A32",
+            Self::Thumb => "Thumb",
+            Self::Data => "data",
+        }
+    }
+
+    #[must_use]
+    pub const fn decode_arch(self) -> Option<Arch> {
+        match self {
+            Self::A32 => Some(Arch::Arm32),
+            Self::Thumb => Some(Arch::Thumb),
+            Self::Data => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ArmSelection {
+    Decodable(ArmMode),
+    Undecodable(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ArmMappingSymbols {
+    regions: Vec<(u64, ArmRegionKind)>,
+}
+
+impl ArmMappingSymbols {
+    #[must_use]
+    pub fn of(obj: &object::File<'_>) -> Self {
+        use object::{Object as _, ObjectSymbol as _, SymbolKind};
+
+        let mut regions: Vec<(u64, ArmRegionKind)> = obj
+            .symbols()
+            .filter_map(|symbol: object::Symbol<'_, '_>| {
+                let name: &str = symbol.name().ok()?;
+                let kind: ArmRegionKind = ArmRegionKind::of_mapping_symbol(name)?;
+                Some((symbol.address() & !1_u64, kind))
+            })
+            .collect();
+        regions.extend(obj.symbols().filter_map(|symbol: object::Symbol<'_, '_>| {
+            (matches!(symbol.kind(), SymbolKind::Text) && symbol.address() & 1 == 1)
+                .then(|| (symbol.address() & !1_u64, ArmRegionKind::Thumb))
+        }));
+        Self::from_regions(regions)
+    }
+
+    #[must_use]
+    pub fn from_regions(mut regions: Vec<(u64, ArmRegionKind)>) -> Self {
+        regions.sort_by_key(|(address, _): &(u64, ArmRegionKind)| *address);
+        regions.dedup_by_key(|(address, _): &mut (u64, ArmRegionKind)| *address);
+        Self { regions }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+
+    #[must_use]
+    pub fn kind_at(&self, address: u64) -> Option<ArmRegionKind> {
+        let index: usize = self
+            .regions
+            .partition_point(|(start, _): &(u64, ArmRegionKind)| *start <= address);
+        index
+            .checked_sub(1)
+            .and_then(|last: usize| self.regions.get(last))
+            .map(|(_, kind): &(u64, ArmRegionKind)| *kind)
+    }
+
+    #[must_use]
+    pub fn select(&self, start: u64, end: u64) -> ArmSelection {
+        let Some(opening): Option<ArmRegionKind> = self.kind_at(start) else {
+            return ArmSelection::Decodable(ArmMode::A32);
+        };
+        if matches!(opening, ArmRegionKind::Data) {
+            return ArmSelection::Undecodable(format!(
+                "the function at {start:#x} opens inside a $d data region, so no instruction stream starts there"
+            ));
+        }
+        for (boundary, kind) in &self.regions {
+            if *boundary <= start || *boundary >= end {
+                continue;
             }
-            Err(e) => {
-                return Err(Error::Disasm {
-                    engine: if thumb {
-                        "yaxpeax-thumb"
-                    } else {
-                        "yaxpeax-arm"
-                    },
-                    message: e.to_string(),
+            if *kind != opening {
+                return ArmSelection::Undecodable(format!(
+                    "the function range changes from {} to {} at {boundary:#x}; one decode mode would misread the rest",
+                    opening.label(),
+                    kind.label()
+                ));
+            }
+        }
+        ArmSelection::Decodable(if matches!(opening, ArmRegionKind::Thumb) {
+            ArmMode::Thumb
+        } else {
+            ArmMode::A32
+        })
+    }
+
+    #[must_use]
+    pub fn holds(&self, kind: ArmRegionKind) -> bool {
+        self.regions
+            .iter()
+            .any(|(_, found): &(u64, ArmRegionKind)| *found == kind)
+    }
+
+    #[must_use]
+    pub fn runs(&self, start: u64, end: u64, fallback: ArmRegionKind) -> Vec<ArmRun> {
+        if end <= start {
+            return Vec::new();
+        }
+        let mut boundaries: Vec<(u64, ArmRegionKind)> =
+            vec![(start, self.kind_at(start).unwrap_or(fallback))];
+        boundaries.extend(
+            self.regions
+                .iter()
+                .filter(|(address, _): &&(u64, ArmRegionKind)| *address > start && *address < end)
+                .copied(),
+        );
+        let mut runs: Vec<ArmRun> = Vec::with_capacity(boundaries.len());
+        for index in 0..boundaries.len() {
+            let (address, kind): (u64, ArmRegionKind) = boundaries[index];
+            let next: u64 = boundaries
+                .get(index.saturating_add(1))
+                .map_or(end, |(address, _): &(u64, ArmRegionKind)| *address);
+            if next > address {
+                runs.push(ArmRun {
+                    kind,
+                    start: address,
+                    end: next,
                 });
             }
         }
+        runs
     }
-    Ok(out)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArmRun {
+    pub kind: ArmRegionKind,
+    pub start: u64,
+    pub end: u64,
 }
 
 fn arm_a32_hint(word: u32) -> Option<(String, String)> {
@@ -514,6 +700,160 @@ fn disasm_yaxpeax_avr(bytes: &[u8], base: u64) -> Result<Vec<DisasmInsn>> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mapping_symbol_name_decides_the_region_and_nothing_else_does() {
+        let cases: [(&str, Option<ArmRegionKind>); 10] = [
+            ("$a", Some(ArmRegionKind::A32)),
+            ("$t", Some(ArmRegionKind::Thumb)),
+            ("$d", Some(ArmRegionKind::Data)),
+            ("$a.0", Some(ArmRegionKind::A32)),
+            ("$t.1234", Some(ArmRegionKind::Thumb)),
+            ("$d.realdata", Some(ArmRegionKind::Data)),
+            ("$x", None),
+            ("$", None),
+            ("$td", None),
+            ("atomic_store", None),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(
+                ArmRegionKind::of_mapping_symbol(name),
+                expected,
+                "{name} must resolve to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_takes_the_decode_mode_of_the_mapping_symbol_that_opens_it() {
+        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
+            (0x2_00f4, ArmRegionKind::A32),
+            (0x2_014c, ArmRegionKind::Thumb),
+        ]);
+        let arm: ArmSelection = mapping.select(0x2_00f4, 0x2_0100);
+        assert!(
+            matches!(arm, ArmSelection::Decodable(ArmMode::A32)),
+            "a function opened by $a decodes as A32, got {arm:?}"
+        );
+        let thumb: ArmSelection = mapping.select(0x2_014c, 0x2_0160);
+        assert!(
+            matches!(thumb, ArmSelection::Decodable(ArmMode::Thumb)),
+            "a function opened by $t decodes as Thumb, got {thumb:?}"
+        );
+    }
+
+    #[test]
+    fn a_range_that_changes_mode_is_reported_instead_of_read_in_one_mode() {
+        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
+            (0x2_00f4, ArmRegionKind::A32),
+            (0x2_014c, ArmRegionKind::Thumb),
+        ]);
+        let spanning: ArmSelection = mapping.select(0x2_010c, 0x2_0160);
+        let ArmSelection::Undecodable(reason) = spanning else {
+            panic!(
+                "a range spanning an A32 to Thumb boundary must not pick one mode: {spanning:?}"
+            );
+        };
+        assert!(
+            reason.contains("0x2014c") && reason.contains("A32") && reason.contains("Thumb"),
+            "the refusal must name the boundary and both modes: {reason}"
+        );
+
+        let data: ArmMappingSymbols =
+            ArmMappingSymbols::from_regions(vec![(0x2_0200, ArmRegionKind::Data)]);
+        let inside: ArmSelection = data.select(0x2_0208, 0x2_0210);
+        assert!(
+            matches!(inside, ArmSelection::Undecodable(_)),
+            "a range opening inside $d holds no instruction stream, got {inside:?}"
+        );
+    }
+
+    #[test]
+    fn a_range_no_mapping_symbol_covers_decodes_as_a32() {
+        let empty: ArmMappingSymbols = ArmMappingSymbols::default();
+        assert!(matches!(
+            empty.select(0x1000, 0x1010),
+            ArmSelection::Decodable(ArmMode::A32)
+        ));
+        let later: ArmMappingSymbols =
+            ArmMappingSymbols::from_regions(vec![(0x2000, ArmRegionKind::Thumb)]);
+        assert!(
+            matches!(
+                later.select(0x1000, 0x1010),
+                ArmSelection::Decodable(ArmMode::A32)
+            ),
+            "a region that opens after the range says nothing about it"
+        );
+    }
+
+    #[test]
+    fn a_thumb_bit_function_symbol_opens_a_thumb_region_when_the_image_has_no_mapping_symbols() {
+        let mapping: ArmMappingSymbols =
+            ArmMappingSymbols::from_regions(vec![(0x1000, ArmRegionKind::Thumb)]);
+        assert!(matches!(
+            mapping.select(0x1000, 0x1010),
+            ArmSelection::Decodable(ArmMode::Thumb)
+        ));
+    }
+
+    #[test]
+    fn a_section_splits_into_one_run_per_mapping_region_and_data_carries_no_arch() {
+        let mapping: ArmMappingSymbols = ArmMappingSymbols::from_regions(vec![
+            (0x1000, ArmRegionKind::A32),
+            (0x1010, ArmRegionKind::Data),
+            (0x1018, ArmRegionKind::Thumb),
+        ]);
+        let runs: Vec<ArmRun> = mapping.runs(0x1000, 0x1020, ArmRegionKind::A32);
+        assert_eq!(
+            runs,
+            vec![
+                ArmRun {
+                    kind: ArmRegionKind::A32,
+                    start: 0x1000,
+                    end: 0x1010
+                },
+                ArmRun {
+                    kind: ArmRegionKind::Data,
+                    start: 0x1010,
+                    end: 0x1018
+                },
+                ArmRun {
+                    kind: ArmRegionKind::Thumb,
+                    start: 0x1018,
+                    end: 0x1020
+                },
+            ],
+            "each mapping symbol opens a run that ends where the next one starts"
+        );
+        assert_eq!(
+            runs[1].kind.decode_arch(),
+            None,
+            "a $d run is never decoded"
+        );
+        assert_eq!(runs[2].kind.decode_arch(), Some(Arch::Thumb));
+    }
+
+    #[test]
+    fn an_undecodable_arm_word_becomes_a_gap_and_decoding_continues_after_it() {
+        let bytes: [u8; 12] = [
+            0x00, 0x00, 0xa0, 0xe1, 0xff, 0xff, 0xff, 0xf7, 0x1e, 0xff, 0x2f, 0xe1,
+        ];
+        let out: Vec<DisasmInsn> = disassemble(Arch::Arm32, 0x1000, &bytes).expect("disasm");
+        assert_eq!(
+            out.len(),
+            3,
+            "an undecodable word must not end the section: {out:?}"
+        );
+        assert_eq!(out[1].address, 0x1004);
+        assert_eq!(out[1].mnemonic, UNDECODABLE_ARM_MNEMONIC);
+        assert_eq!(out[1].bytes.len(), 4);
+        assert_eq!(out[2].address, 0x1008);
+        assert!(
+            out[2].mnemonic.starts_with("bx"),
+            "the instruction after the gap must still decode: {:?}",
+            out[2]
+        );
+    }
 
     #[test]
     fn x86_nop_ret_decodes() {
