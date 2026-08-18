@@ -179,9 +179,9 @@ fn parse_newc_with_name_cap(
             |_e: std::num::TryFromIntError| Error::Tar("cpio name size overflow".to_owned()),
         )?;
         if name_size == 0 {
-            return Err(Error::Tar(
-                "cpio newc name is not nul terminated".to_owned(),
-            ));
+            return Err(Error::Tar(format!(
+                "cpio newc header at offset {pos} declares a zero-length name"
+            )));
         }
         let name_start: usize = header_end;
         let name_end: usize = name_start
