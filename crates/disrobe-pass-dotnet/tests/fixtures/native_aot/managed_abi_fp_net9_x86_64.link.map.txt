@@ -1,0 +1,13 @@
+ Preferred load address is 0000000140000000
+ 0001:0006a4e0       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe___ctor 000000014006b4e0     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a4f0       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__AddDouble 000000014006b4f0     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a500       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__ScaleFloat 000000014006b500     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a510       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Promote 000000014006b510     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a520       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Weight 000000014006b520     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a530       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Offset 000000014006b530     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a540       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Mix 000000014006b540     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a560       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__SetSlot 000000014006b560     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a570       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__SetRatio 000000014006b570     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a580       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Clear 000000014006b580     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a590       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Store 000000014006b590     managed_abi_fp_net9_x86_64.obj
+ 0001:0006a5a0       managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Split 000000014006b5a0     managed_abi_fp_net9_x86_64.obj

@@ -331,6 +331,11 @@ fn lift_supported(
     {
         return Some(value);
     }
+    if matches!(mnemonic, "ldr" | "str")
+        && let Some(value) = lift_scalar_fp_load_store(spec, mnemonic, word, allocator)
+    {
+        return Some(value);
+    }
     if matches!(mnemonic, "ldp" | "stp")
         && let Some(value) = lift_pair(spec, mnemonic, word, allocator)
     {
@@ -659,6 +664,180 @@ fn lift_load_store(
         operands: String::new(),
         ops,
     })
+}
+
+const fn scalar_fp_transfer(size_code: u32, opcode: u32) -> Option<(u32, bool)> {
+    match (size_code, opcode) {
+        (0, 0) => Some((1, false)),
+        (0, 1) => Some((1, true)),
+        (1, 0) => Some((2, false)),
+        (1, 1) => Some((2, true)),
+        (2, 0) => Some((4, false)),
+        (2, 1) => Some((4, true)),
+        (3, 0) => Some((8, false)),
+        (3, 1) => Some((8, true)),
+        (0, 2) => Some((16, false)),
+        (0, 3) => Some((16, true)),
+        _ => None,
+    }
+}
+
+fn scalar_fp_register(spec: &SleighSpec, index: u32, width: u32) -> Option<Varnode> {
+    let prefix: char = match width {
+        1 => 'b',
+        2 => 'h',
+        4 => 's',
+        8 => 'd',
+        _ => return None,
+    };
+    named_register(spec, &format!("{prefix}{index}"))
+}
+
+fn vector_half(spec: &SleighSpec, index: u32, half: u64) -> Option<Varnode> {
+    let vector: Varnode = named_register(spec, &format!("q{index}"))?;
+    Some(Varnode {
+        offset: vector.offset.checked_add(half.checked_mul(8)?)?,
+        size_bytes: 8,
+        space: Space::Register,
+    })
+}
+
+fn lift_scalar_fp_load_store(
+    spec: &SleighSpec,
+    mnemonic: &str,
+    word: u32,
+    allocator: &mut UniqueAllocator,
+) -> Option<Lifted> {
+    let class: u32 = bits(word, 24, 6);
+    let unsigned_offset: bool = match class {
+        0b111_100 => false,
+        0b111_101 => true,
+        _ => return None,
+    };
+    let (width, is_load): (u32, bool) = scalar_fp_transfer(bits(word, 30, 2), bits(word, 22, 2))?;
+    if mnemonic != if is_load { "ldr" } else { "str" } {
+        return None;
+    }
+    let rn: u32 = bits(word, 5, 5);
+    let rt: u32 = bits(word, 0, 5);
+    let base: Varnode = gpr_input(spec, rn, 8, true)?;
+    let mut ops: Vec<PcodeOp> = Vec::new();
+    let mut post_index_offset: Option<i64> = None;
+    let pointer: Varnode = if unsigned_offset {
+        let scaled: i64 = i64::from(bits(word, 10, 12)).checked_mul(i64::from(width))?;
+        add_signed_offset(base, scaled, allocator, &mut ops)?
+    } else {
+        if bit(word, 21) || !bit(word, 10) {
+            return None;
+        }
+        let displacement: i64 = signed_bits(word, 12, 9);
+        if bit(word, 11) {
+            let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+            let writeback: Varnode = register_output(spec, rn, 8, true)?;
+            ops.push(PcodeOp::Copy {
+                output: writeback,
+                input: updated,
+            });
+            updated
+        } else {
+            post_index_offset = Some(displacement);
+            base
+        }
+    };
+    if is_load {
+        lift_scalar_fp_load(spec, rt, width, pointer, allocator, &mut ops)?;
+    } else {
+        lift_scalar_fp_store(spec, rt, width, pointer, allocator, &mut ops)?;
+    }
+    if let Some(displacement) = post_index_offset {
+        let updated: Varnode = add_signed_offset(base, displacement, allocator, &mut ops)?;
+        let writeback: Varnode = register_output(spec, rn, 8, true)?;
+        ops.push(PcodeOp::Copy {
+            output: writeback,
+            input: updated,
+        });
+    }
+    Some(Lifted {
+        operands: String::new(),
+        ops,
+    })
+}
+
+fn lift_scalar_fp_load(
+    spec: &SleighSpec,
+    index: u32,
+    width: u32,
+    pointer: Varnode,
+    allocator: &mut UniqueAllocator,
+    ops: &mut Vec<PcodeOp>,
+) -> Option<()> {
+    if width == 16 {
+        let high_pointer: Varnode = add_signed_offset(pointer, 8, allocator, ops)?;
+        ops.push(PcodeOp::Load {
+            output: vector_half(spec, index, 0)?,
+            space: Space::Ram,
+            pointer,
+        });
+        ops.push(PcodeOp::Load {
+            output: vector_half(spec, index, 1)?,
+            space: Space::Ram,
+            pointer: high_pointer,
+        });
+        return Some(());
+    }
+    let value: Varnode = allocator.allocate(width)?;
+    ops.push(PcodeOp::Load {
+        output: value,
+        space: Space::Ram,
+        pointer,
+    });
+    let scalar: Varnode = scalar_fp_register(spec, index, 8)?;
+    ops.push(if width == 8 {
+        PcodeOp::Copy {
+            output: scalar,
+            input: value,
+        }
+    } else {
+        PcodeOp::IntZext {
+            output: scalar,
+            input: value,
+        }
+    });
+    ops.push(PcodeOp::Copy {
+        output: vector_half(spec, index, 1)?,
+        input: constant(0, 8),
+    });
+    Some(())
+}
+
+fn lift_scalar_fp_store(
+    spec: &SleighSpec,
+    index: u32,
+    width: u32,
+    pointer: Varnode,
+    allocator: &mut UniqueAllocator,
+    ops: &mut Vec<PcodeOp>,
+) -> Option<()> {
+    if width == 16 {
+        let high_pointer: Varnode = add_signed_offset(pointer, 8, allocator, ops)?;
+        ops.push(PcodeOp::Store {
+            space: Space::Ram,
+            pointer,
+            value: vector_half(spec, index, 0)?,
+        });
+        ops.push(PcodeOp::Store {
+            space: Space::Ram,
+            pointer: high_pointer,
+            value: vector_half(spec, index, 1)?,
+        });
+        return Some(());
+    }
+    ops.push(PcodeOp::Store {
+        space: Space::Ram,
+        pointer,
+        value: scalar_fp_register(spec, index, width)?,
+    });
+    Some(())
 }
 
 fn lift_pair(

@@ -1,0 +1,279 @@
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400400/mask=x3f600c00
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400c00/mask=x3f600c00
+# CONSTRUCT x3c400400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x3c400400/mask=xffe00400 --status nomem
+# Post- and Pre-index 8-bit variant when size==00 && opc==01 F=FPR8
+
+:ldr Rt_FPR8, addrIndexed
+is b_3031=0b00 & b_2429=0b111100 & b_2223=0b01 & b_21=0 & b_10=1 & Rt_FPR8 & addrIndexed & Zt
+{
+	Rt_FPR8 = * addrIndexed;
+	zext_zb(Zt); # zero upper 31 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400400/mask=x3f600c00
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400c00/mask=x3f600c00
+# CONSTRUCT x7c400400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x7c400400/mask=xffe00400 --status nomem
+# Post- and Pre-index 16-bit variant when size==01 && opc==01 F=FPR16
+
+:ldr Rt_FPR16, addrIndexed
+is b_3031=0b01 & b_2429=0b111100 & b_2223=0b01 & b_21=0 & b_10=1 & Rt_FPR16 & addrIndexed & Zt
+{
+	Rt_FPR16 = * addrIndexed;
+	zext_zh(Zt); # zero upper 30 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400400/mask=x3f600c00
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400c00/mask=x3f600c00
+# CONSTRUCT xbc400400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst xbc400400/mask=xffe00400 --status nomem
+# Post- and Pre-index 32-bit variant when size==10 && opc==01 F=FPR32
+
+:ldr Rt_FPR32, addrIndexed
+is b_3031=0b10 & b_2429=0b111100 & b_2223=0b01 & b_21=0 & b_10=1 & Rt_FPR32 & addrIndexed & Zt
+{
+	Rt_FPR32 = * addrIndexed;
+	zext_zs(Zt); # zero upper 28 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400400/mask=x3f600c00
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400c00/mask=x3f600c00
+# CONSTRUCT xfc400400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst xfc400400/mask=xffe00400 --status nomem
+# Post- and Pre-index 64-bit variant when size==11 && opc==01 F=FPR64
+
+:ldr Rt_FPR64, addrIndexed
+is b_3031=0b11 & b_2429=0b111100 & b_2223=0b01 & b_21=0 & b_10=1 & Rt_FPR64 & addrIndexed & Zt
+{
+	Rt_FPR64 = * addrIndexed;
+	zext_zd(Zt); # zero upper 24 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400400/mask=x3f600c00
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3c400c00/mask=x3f600c00
+# CONSTRUCT x3cc00400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x3cc00400/mask=xffe00400 --status nomem
+# Post- and Pre-index 128-bit variant when size==00 && opc==11 F=FPR128
+
+:ldr Rt_FPR128, addrIndexed
+is b_3031=0b00 & b_2429=0b111100 & b_2223=0b11 & b_21=0 & b_10=1 & Rt_FPR128 & addrIndexed & Zt
+{
+	Rt_FPR128 = * addrIndexed;
+	zext_zq(Zt); # zero upper 16 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3d400000/mask=x3f400000
+# CONSTRUCT x3d400000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x3d400000/mask=xffc00000 --status nomem
+# Unsigned offset 8-bit variant when size == 00 && opc == 01 F=FPR8
+
+:ldr Rt_FPR8, addrUIMM
+is b_3031=0b00 & b_2429=0b111101 & b_2223=0b01 & Rt_FPR8 & addrUIMM & Zt
+{
+	Rt_FPR8 = * addrUIMM;
+	zext_zb(Zt); # zero upper 31 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3d400000/mask=x3f400000
+# CONSTRUCT x7d400000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x7d400000/mask=xffc00000 --status nomem
+# Unsigned offset 16-bit variant when size == 01 && opc == 01 F=FPR16
+
+:ldr Rt_FPR16, addrUIMM
+is b_3031=0b01 & b_2429=0b111101 & b_2223=0b01 & Rt_FPR16 & addrUIMM & Zt
+{
+	Rt_FPR16 = * addrUIMM;
+	zext_zh(Zt); # zero upper 30 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3d400000/mask=x3f400000
+# CONSTRUCT xbd400000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst xbd400000/mask=xffc00000 --status nomem
+# Unsigned offset 32-bit variant when size == 10 && opc == 01 F=FPR32
+
+:ldr Rt_FPR32, addrUIMM
+is b_3031=0b10 & b_2429=0b111101 & b_2223=0b01 & Rt_FPR32 & addrUIMM & Zt
+{
+	Rt_FPR32 = * addrUIMM;
+	zext_zs(Zt); # zero upper 28 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3d400000/mask=x3f400000
+# CONSTRUCT xfd400000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst xfd400000/mask=xffc00000 --status nomem
+# Unsigned offset 64-bit variant when size == 11 && opc == 01 F=FPR64
+
+:ldr Rt_FPR64, addrUIMM
+is b_3031=0b11 & b_2429=0b111101 & b_2223=0b01 & Rt_FPR64 & addrUIMM & Zt
+{
+	Rt_FPR64 = * addrUIMM;
+	zext_zd(Zt); # zero upper 24 bytes of Zt
+}
+
+# C7.2.191 LDR (immediate, SIMD&FP) page C7-2462 line 144163 MATCH x3d400000/mask=x3f400000
+# CONSTRUCT x3dc00000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =load
+# SMACRO(pseudo) ARG1 ARG2 =NEON_ldr/1
+# AUNIT --inst x3dc00000/mask=xffc00000 --status nomem
+# Unsigned offset 128-bit variant when size == 00 && opc == 11 F=FPR128
+
+:ldr Rt_FPR128, addrUIMM
+is b_3031=0b00 & b_2429=0b111101 & b_2223=0b11 & Rt_FPR128 & addrUIMM & Zt
+{
+	Rt_FPR128 = * addrUIMM;
+	zext_zq(Zt); # zero upper 16 bytes of Zt
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000400/mask=x3f600c00
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000c00/mask=x3f600c00
+# CONSTRUCT x3c000400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x3c000400/mask=xffe00400 --status nomem
+# Post- and Pre-offset 8-bit variant when size == 00 && opc == 00 F=FPR8
+
+:str Rt_FPR8, addrIndexed
+is b_3031=0b00 & b_2429=0b111100 & b_2223=0b00 & b_21=0 & b_10=1 & Rt_FPR8 & addrIndexed & Zt
+{
+	* addrIndexed = Rt_FPR8;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000400/mask=x3f600c00
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000c00/mask=x3f600c00
+# CONSTRUCT x7c000400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x7c000400/mask=xffe00400 --status nomem
+# Post- and Pre-offset 16-bit variant when size == 01 && opc == 00 F=FPR16
+
+:str Rt_FPR16, addrIndexed
+is b_3031=0b01 & b_2429=0b111100 & b_2223=0b00 & b_21=0 & b_10=1 & Rt_FPR16 & addrIndexed & Zt
+{
+	* addrIndexed = Rt_FPR16;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000400/mask=x3f600c00
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000c00/mask=x3f600c00
+# CONSTRUCT xbc000400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst xbc000400/mask=xffe00400 --status nomem
+# Post- and Pre-offset 32-bit variant when size == 10 && opc == 00 F=FPR32
+
+:str Rt_FPR32, addrIndexed
+is b_3031=0b10 & b_2429=0b111100 & b_2223=0b00 & b_21=0 & b_10=1 & Rt_FPR32 & addrIndexed & Zt
+{
+	* addrIndexed = Rt_FPR32;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000400/mask=x3f600c00
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000c00/mask=x3f600c00
+# CONSTRUCT xfc000400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst xfc000400/mask=xffe00400 --status nomem
+# Post- and Pre-offset 64-bit variant when size == 11 && opc == 00 F=FPR64
+
+:str Rt_FPR64, addrIndexed
+is b_3031=0b11 & b_2429=0b111100 & b_2223=0b00 & b_21=0 & b_10=1 & Rt_FPR64 & addrIndexed & Zt
+{
+	* addrIndexed = Rt_FPR64;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000400/mask=x3f600c00
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3c000c00/mask=x3f600c00
+# CONSTRUCT x3c800400/mask=xffe00400 MATCHED 2 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x3c800400/mask=xffe00400 --status nomem
+# Post- and Pre-offset 128-bit variant when size == 00 && opc == 10 F=FPR128
+
+:str Rt_FPR128, addrIndexed
+is b_3031=0b00 & b_2429=0b111100 & b_2223=0b10 & b_21=0 & b_10=1 & Rt_FPR128 & addrIndexed & Zt
+{
+	* addrIndexed = Rt_FPR128;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3d000000/mask=x3f400000
+# CONSTRUCT x3d000000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x3d000000/mask=xffc00000 --status nomem
+# Unsigned offset 8-bit variant when size == 00 && opc == 00 F=FPR8
+
+:str Rt_FPR8, addrUIMM
+is b_3031=0b00 & b_2429=0b111101 & b_2223=0b00 & Rt_FPR8 & addrUIMM & Zt
+{
+	* addrUIMM = Rt_FPR8;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3d000000/mask=x3f400000
+# CONSTRUCT x7d000000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x7d000000/mask=xffc00000 --status nomem
+# Unsigned offset 16-bit variant when size == 01 && opc == 00 F=FPR16
+
+:str Rt_FPR16, addrUIMM
+is b_3031=0b01 & b_2429=0b111101 & b_2223=0b00 & Rt_FPR16 & addrUIMM & Zt
+{
+	* addrUIMM = Rt_FPR16;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3d000000/mask=x3f400000
+# CONSTRUCT xbd000000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst xbd000000/mask=xffc00000 --status nomem
+# Unsigned offset 32-bit variant when size == 10 && opc == 00 F=FPR32
+
+:str Rt_FPR32, addrUIMM
+is b_3031=0b10 & b_2429=0b111101 & b_2223=0b00 & Rt_FPR32 & addrUIMM & Zt
+{
+	* addrUIMM = Rt_FPR32;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3d000000/mask=x3f400000
+# CONSTRUCT xfd000000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst xfd000000/mask=xffc00000 --status nomem
+# Unsigned offset 64-bit variant when size == 11 && opc == 00 F=FPR64
+
+:str Rt_FPR64, addrUIMM
+is b_3031=0b11 & b_2429=0b111101 & b_2223=0b00 & Rt_FPR64 & addrUIMM & Zt
+{
+	* addrUIMM = Rt_FPR64;
+}
+
+# C7.2.331 STR (immediate, SIMD&FP) page C7-2782 line 162501 MATCH x3d000000/mask=x3f400000
+# CONSTRUCT x3d800000/mask=xffc00000 MATCHED 1 DOCUMENTED OPCODES
+# SMACRO ARG1 ARG2 =store pop
+# SMACRO(pseudo) null ARG1 ARG2 =NEON_str/2
+# AUNIT --inst x3d800000/mask=xffc00000 --status nomem
+# Unsigned offset 128-bit variant when size == 00 && opc == 10 F=FPR128
+
+:str Rt_FPR128, addrUIMM
+is b_3031=0b00 & b_2429=0b111101 & b_2223=0b10 & Rt_FPR128 & addrUIMM & Zt
+{
+	* addrUIMM = Rt_FPR128;
+}

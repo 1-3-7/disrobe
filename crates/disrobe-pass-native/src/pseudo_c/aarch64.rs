@@ -3013,6 +3013,29 @@ fn block_contains_switch(body: &[Node]) -> bool {
     })
 }
 
+fn is_incoming_stack_slot(reg: Reg) -> bool {
+    matches!(
+        reg,
+        Reg::A64Stack0
+            | Reg::A64Stack1
+            | Reg::A64Stack2
+            | Reg::A64Stack3
+            | Reg::A64Stack4
+            | Reg::A64Stack5
+            | Reg::A64Stack6
+            | Reg::A64Stack7
+    )
+}
+
+fn reads_incoming_stack_floating_argument(items: &[Item]) -> bool {
+    items.iter().any(|item: &Item| {
+        matches!(
+            &item.kind,
+            ItemKind::Stmt(Stmt::GprToXmm { src, .. }) if is_incoming_stack_slot(src.reg)
+        )
+    })
+}
+
 fn aarch64_fp_params(body: &Block) -> Result<Vec<(Xmm, FpWidth)>> {
     let inferred: Vec<(Xmm, FpWidth)> = infer_fp_params(body, Abi::Aapcs64)?;
     let Some(highest): Option<usize> = inferred
@@ -3046,6 +3069,7 @@ fn finish(
     let has_scalar_fp: bool = items
         .iter()
         .any(|item: &Item| matches!(&item.kind, ItemKind::Stmt(stmt) if return_channel::stmt_is_scalar_fp(stmt)));
+    let reads_stack_floating_argument: bool = reads_incoming_stack_floating_argument(items);
     let mut structured: Structured =
         match aarch64_cfg::structure(items, insns, base, flag_definitions, next_sel) {
             aarch64_cfg::Attempt::Structured(structured) => structured,
@@ -3069,6 +3093,11 @@ fn finish(
     } else {
         Vec::new()
     };
+    if reads_stack_floating_argument && fp_args.len() < FP_ARG_ORDER.len() {
+        return Err(reject(
+            "aapcs64 stack floating parameters require a complete v0-v7 argument prefix",
+        ));
+    }
     let ret: FnReturn = if has_scalar_fp {
         return_channel::infer_scalar_return(&structured.body)?
     } else {

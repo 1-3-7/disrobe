@@ -1,0 +1,12 @@
+  00007DAC 0006B4E0 0006B4E4 00162A9C  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe___ctor
+  00007DB8 0006B4F0 0006B4F5 00160900  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__AddDouble
+  00007DC4 0006B500 0006B505 00160900  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__ScaleFloat
+  00007DD0 0006B510 0006B515 00160900  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Promote
+  00007DDC 0006B520 0006B530 0016D140  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Weight
+  00007DE8 0006B530 0006B53C 00162E68  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Offset
+  00007DF4 0006B540 0006B559 001604F8  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Mix
+  00007E00 0006B560 0006B564 00162A9C  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__SetSlot
+  00007E0C 0006B570 0006B576 001609C0  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__SetRatio
+  00007E18 0006B580 0006B586 001609C0  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Clear
+  00007E24 0006B590 0006B593 00160508  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Store
+  00007E30 0006B5A0 0006B5B2 001608F8  managed_abi_fp_net9_x86_64_ManagedFpAbiProbe__Split

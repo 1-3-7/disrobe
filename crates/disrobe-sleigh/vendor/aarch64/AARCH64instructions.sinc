@@ -3978,6 +3978,7 @@ with : ImmS_ImmR_TestSet=1 {
 @include "AARCH64_base_PACoptions.sinc"
 
 @include "AARCH64base.sinc"
+@include "AARCH64neon.sinc"
 @include "AARCH64ldst.sinc"
 
 # TODO These are placeholders until the correction instruction implementations can be found

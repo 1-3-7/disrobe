@@ -24,8 +24,8 @@ const TOOL_CAPTURE_LIMIT: usize = 32 * 1024 * 1024;
 const REFERENCE_FILE: &str = "aarch64_word_sweep.llvm";
 const UNKNOWN: &str = "<unknown>";
 const SWEEP_WORDS: usize = 2830;
-const ACCEPTED_WORDS: usize = 1315;
-const AGREEING_WORDS: usize = 1272;
+const ACCEPTED_WORDS: usize = 1331;
+const AGREEING_WORDS: usize = 1288;
 const TARGET_COMPARISONS: usize = 206;
 const CORPUS_MNEMONIC_COMPARISONS: usize = 203;
 const CORPUS_NAMES: [&str; 3] = ["aarch64_forms", "aarch64_oracle_o0", "aarch64_oracle_o2"];
@@ -199,11 +199,11 @@ const GROUP_EXPECTATION: [(&str, GroupCounts); 9] = [
         "load_store",
         GroupCounts {
             seen: 467,
-            accepted: 321,
-            agreeing: 314,
+            accepted: 337,
+            agreeing: 330,
             disagreeing: 4,
             accepted_reference_rejects: 3,
-            declined_reference_accepts: 49,
+            declined_reference_accepts: 33,
             both_reject: 97,
         },
     ),

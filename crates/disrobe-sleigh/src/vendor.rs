@@ -22,6 +22,10 @@ pub fn aarch64_sources() -> BTreeMap<String, String> {
             include_str!("../vendor/aarch64/AARCH64base.sinc").to_owned(),
         ),
         (
+            "AARCH64neon.sinc".to_owned(),
+            include_str!("../vendor/aarch64/AARCH64neon.sinc").to_owned(),
+        ),
+        (
             "AARCH64ldst.sinc".to_owned(),
             include_str!("../vendor/aarch64/AARCH64ldst.sinc").to_owned(),
         ),

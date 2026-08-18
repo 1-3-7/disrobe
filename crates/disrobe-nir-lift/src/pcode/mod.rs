@@ -165,6 +165,11 @@ impl PcodeLiftConfig {
             let name: String = format!("x{index}");
             registers.push(RegisterCell::new(offset, 8, name, Some(4)));
         }
+        for index in 0_u64..32_u64 {
+            let offset: u64 = 0x5000_u64 + index * 0x20_u64;
+            let name: String = format!("q{index}");
+            registers.push(RegisterCell::new(offset, 16, name, Some(8)));
+        }
         registers.extend([
             RegisterCell::new(0x100, 1, "ng", None),
             RegisterCell::new(0x101, 1, "zr", None),

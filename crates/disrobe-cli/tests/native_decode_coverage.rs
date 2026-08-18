@@ -313,7 +313,7 @@ fn unlifted_mnemonics_are_a_counted_map_rather_than_a_repeated_list() {
 }
 
 #[test]
-fn the_two_callother_figures_stay_apart_when_the_status_count_is_zero() {
+fn the_scalar_post_index_fixture_reports_every_instruction_matched_and_lifted() {
     let (run, manifest): (common::Run, Value) = decompile(SCALAR);
     let block: &Value = coverage(&manifest);
     assert_eq!(
@@ -323,13 +323,20 @@ fn the_two_callother_figures_stay_apart_when_the_status_count_is_zero() {
     );
     assert_eq!(
         status_count(block, "supported"),
-        6,
-        "the six general-register loads, stores and returns are semantically lifted"
+        8,
+        "the two scalar post-index floating-point transfers this fixture is named for are \
+         semantically lifted alongside the six general-register loads, stores and returns"
     );
     assert_eq!(
         status_count(block, "no_match"),
-        2,
-        "the two scalar post-index transfers are not matched by the decoder"
+        0,
+        "the decoder must match a constructor for every instruction in the fixture named after \
+         the shape it exercises"
+    );
+    assert_eq!(
+        status_count(block, "unsupported"),
+        0,
+        "a matched constructor without semantics would still leave the recovered body incomplete"
     );
     assert_eq!(
         status_count(block, "callother"),
@@ -338,15 +345,8 @@ fn the_two_callother_figures_stay_apart_when_the_status_count_is_zero() {
     );
     assert_eq!(
         number(block, "instructions_emitting_callother"),
-        2,
-        "the two unmatched transfers still lift to a body containing a callother operation"
-    );
-    assert_ne!(
-        status_count(block, "callother"),
-        number(block, "instructions_emitting_callother"),
-        "this input is the sharpest case for keeping the two figures apart: the callother status \
-         count is zero while two instructions emit a callother operation, so one shared name \
-         would report both nought and two"
+        0,
+        "a fully lifted body carries no callother operation"
     );
     let unlifted: Vec<(&str, u64)> = block["unlifted_mnemonics"]
         .as_object()
@@ -361,9 +361,8 @@ fn the_two_callother_figures_stay_apart_when_the_status_count_is_zero() {
         .collect();
     assert_eq!(
         unlifted,
-        [(".inst", 2)],
-        "the two unmatched transfers must be named as the raw directive the emitter printed for \
-         them, counted once each rather than listed twice"
+        Vec::<(&str, u64)>::new(),
+        "no mnemonic may remain unlifted, so the raw .inst directive can never come back"
     );
     assert!(
         run.stdout.contains("emitting callother"),

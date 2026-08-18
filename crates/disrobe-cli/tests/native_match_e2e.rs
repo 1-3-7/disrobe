@@ -26,19 +26,27 @@ fn workspace_root() -> PathBuf {
 }
 
 fn cli_binary() -> PathBuf {
-    let mut binary: PathBuf = workspace_root();
-    binary.push("target");
-    binary.push(if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    });
-    binary.push(if cfg!(windows) {
+    let exe: PathBuf = std::env::current_exe().expect("current exe");
+    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
+    while dir
+        .file_name()
+        .and_then(|part: &std::ffi::OsStr| part.to_str())
+        != Some("debug")
+        && dir
+            .file_name()
+            .and_then(|part: &std::ffi::OsStr| part.to_str())
+            != Some("release")
+    {
+        if !dir.pop() {
+            break;
+        }
+    }
+    dir.push(if cfg!(windows) {
         "disrobe.exe"
     } else {
         "disrobe"
     });
-    binary
+    dir
 }
 
 struct Run {

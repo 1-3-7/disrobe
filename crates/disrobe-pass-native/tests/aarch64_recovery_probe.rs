@@ -501,22 +501,58 @@ fn scalar_fp_half_precision_to_integer_uses_bounded_conversion() {
     }
 }
 
+const FJCVTZS_LIVE_EXACTNESS_FLAGS: [u8; 12] = [
+    0x00, 0x00, 0x7e, 0x1e, 0xe1, 0x17, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6,
+];
+const FJCVTZS_DEAD_EXACTNESS_FLAGS: [u8; 8] = [0x00, 0x00, 0x7e, 0x1e, 0xc0, 0x03, 0x5f, 0xd6];
+
+fn decoded_mnemonics(bytes: &[u8]) -> Vec<(String, String)> {
+    disassemble(Arch::Aarch64, 0, bytes)
+        .expect("aarch64 decode")
+        .iter()
+        .map(|insn: &DisasmInsn| (insn.mnemonic.clone(), insn.operands.trim().to_owned()))
+        .collect()
+}
+
 #[test]
 fn fp_forms_requiring_unmodeled_architectural_state_reject_distinctly() {
-    let cases: [(u32, &str); 1] = [(
-        0x1e7e_0000,
-        "javascript float-to-integer conversion needs a modular wrap policy and an exact-result flag definition",
+    let cases: [(&[u8], &str); 1] = [(
+        &FJCVTZS_LIVE_EXACTNESS_FLAGS,
+        "javascript float-to-integer exactness flags remain live",
     )];
-    for (word, reason) in cases {
-        let mut code: Vec<u8> = word.to_le_bytes().to_vec();
-        code.extend_from_slice(&[0xc0, 0x03, 0x5f, 0xd6]);
+    assert_eq!(
+        decoded_mnemonics(&FJCVTZS_LIVE_EXACTNESS_FLAGS),
+        vec![
+            ("fjcvtzs".to_owned(), "w0, d0".to_owned()),
+            ("cset".to_owned(), "w1, eq".to_owned()),
+            ("ret".to_owned(), String::new()),
+        ],
+        "the conditional-set tail is what keeps the exactness flags live"
+    );
+    for (code, reason) in cases {
         let error: disrobe_pass_native::Error =
-            recover_aarch64_function(&code, 0).expect_err("unsupported stateful FP form");
+            recover_aarch64_function(code, 0).expect_err("unsupported stateful FP form");
         assert!(
             format!("{error:?}").contains(reason),
-            "{word:#010x}: {error:?}"
+            "{code:02x?}: {error:?}"
         );
     }
+
+    assert_eq!(
+        decoded_mnemonics(&FJCVTZS_DEAD_EXACTNESS_FLAGS),
+        vec![
+            ("fjcvtzs".to_owned(), "w0, d0".to_owned()),
+            ("ret".to_owned(), String::new()),
+        ],
+        "the bare return is what lets the exactness flags die"
+    );
+    let recovery: LeafRecovery = recover_aarch64_function(&FJCVTZS_DEAD_EXACTNESS_FLAGS, 0)
+        .expect("a javascript conversion whose exactness flags die at the return is modelled");
+    assert!(
+        recovery.source.contains("fpx_js_i32_f64"),
+        "{}",
+        recovery.source
+    );
 }
 
 #[test]

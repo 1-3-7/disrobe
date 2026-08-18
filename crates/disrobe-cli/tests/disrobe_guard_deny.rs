@@ -9,28 +9,28 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn workspace_root() -> PathBuf {
-    let mut p: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p
-}
-
 fn cargo_bin() -> PathBuf {
-    let exe_name: &str = if cfg!(windows) {
+    let exe: PathBuf = std::env::current_exe().expect("current exe");
+    let mut dir: PathBuf = exe.parent().expect("exe dir").to_path_buf();
+    while dir
+        .file_name()
+        .and_then(|part: &std::ffi::OsStr| part.to_str())
+        != Some("debug")
+        && dir
+            .file_name()
+            .and_then(|part: &std::ffi::OsStr| part.to_str())
+            != Some("release")
+    {
+        if !dir.pop() {
+            break;
+        }
+    }
+    dir.push(if cfg!(windows) {
         "disrobe.exe"
     } else {
         "disrobe"
-    };
-    let mut p: PathBuf = workspace_root();
-    p.push("target");
-    p.push(if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
     });
-    p.push(exe_name);
-    p
+    dir
 }
 
 #[allow(clippy::disallowed_methods)]
