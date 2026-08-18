@@ -1,6 +1,7 @@
 use std::io::{Cursor, Read};
 
 use crate::containers::lha_dyn::{self, DynMethod};
+use crate::containers::pmarc::{self, PmMethod};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +73,14 @@ const fn dyn_method(method: [u8; 5]) -> Option<DynMethod> {
     match &method {
         b"-lh2-" => Some(DynMethod::Lh2),
         b"-lh3-" => Some(DynMethod::Lh3),
+        _ => None,
+    }
+}
+
+const fn pm_method(method: [u8; 5]) -> Option<PmMethod> {
+    match &method {
+        b"-pm1-" => Some(PmMethod::Pm1),
+        b"-pm2-" => Some(PmMethod::Pm2),
         _ => None,
     }
 }
@@ -661,6 +670,28 @@ pub(crate) fn parse_lzh_with_quota(
                 .min(quota.max_total_uncompressed);
             match lha_dyn::decode_bounded(dm, member.body, member.original_size, max_output) {
                 Ok(d) => (d, true),
+                Err(error) => {
+                    return Err(Error::Lzh(format!(
+                        "lzh `{path}`: {method} decode failed: {error}"
+                    )));
+                }
+            }
+        } else if let Some(pm) = pm_method(member.method) {
+            let max_output: u64 = quota
+                .max_per_entry_uncompressed
+                .min(quota.max_total_uncompressed);
+            match pmarc::decode_bounded(pm, member.body, member.original_size, max_output) {
+                Ok(decoded) => {
+                    let unread_bytes: u64 = decoded.unread_bits / 8;
+                    if unread_bytes != 0 {
+                        notes.push(format!(
+                            "lzh `{path}`: {method} member declares {} compressed byte(s) but the decoder consumed {}",
+                            member.compressed_size,
+                            member.compressed_size.saturating_sub(unread_bytes)
+                        ));
+                    }
+                    (decoded.data, true)
+                }
                 Err(error) => {
                     return Err(Error::Lzh(format!(
                         "lzh `{path}`: {method} decode failed: {error}"

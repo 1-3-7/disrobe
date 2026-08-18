@@ -1129,7 +1129,7 @@ fn corpus_grade_report() {
          int main(void) {{\n\
          {HOST_FP_PRECHECK}\
          {blocks}\
-         \x20   printf(\"GRADEDONE passed=%lld fails=%lld\\n\", passed, fails);\n\
+         \x20   printf(\"GRADEDONE passed=%lld fails=%lld nan_canonicalized=%lld\\n\", passed, fails, fp_nan_canonicalized);\n\
          \x20   return 0;\n\
          }}\n"
     );
@@ -1163,8 +1163,12 @@ fn corpus_grade_report() {
 
     let mut wrong: Vec<(String, String, String)> = Vec::new();
     let mut graded_done: Option<(i64, i64)> = None;
+    let mut nan_canonicalized: i64 = 0;
+    let mut nan_canonicalized_samples: Vec<String> = Vec::new();
     for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("FAIL ") {
+        if let Some(rest) = line.strip_prefix("NANEQ ") {
+            nan_canonicalized_samples.push(rest.to_owned());
+        } else if let Some(rest) = line.strip_prefix("FAIL ") {
             let mut parts = rest.splitn(3, ' ');
             let opt: &str = parts.next().unwrap_or("?");
             let name: &str = parts.next().unwrap_or("?");
@@ -1178,6 +1182,8 @@ fn corpus_grade_report() {
                     p = v.parse().unwrap_or(0);
                 } else if let Some(v) = token.strip_prefix("fails=") {
                     f = v.parse().unwrap_or(0);
+                } else if let Some(v) = token.strip_prefix("nan_canonicalized=") {
+                    nan_canonicalized = v.parse().unwrap_or(0);
                 }
             }
             graded_done = Some((p, f));
@@ -1331,6 +1337,18 @@ fn corpus_grade_report() {
     eprintln!(
         "graded-equivalent    {graded_equivalent}   (recompiled + behaviorally matched on directed and random inputs)"
     );
+    eprintln!(
+        "nan-canonicalized    {nan_canonicalized}   (comparisons equal only because both sides were NaN)"
+    );
+    if !nan_canonicalized_samples.is_empty() {
+        eprintln!(
+            "---- nan-canonicalized comparisons (first {} sampled) ----",
+            nan_canonicalized_samples.len()
+        );
+        for sample in &nan_canonicalized_samples {
+            eprintln!("  NANEQ {sample}");
+        }
+    }
     eprintln!(
         "recovered-but-wrong  {driver_fails}   (recovered, driven, diverged from ground truth)"
     );

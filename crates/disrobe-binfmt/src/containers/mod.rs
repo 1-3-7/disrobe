@@ -46,6 +46,7 @@ pub mod ostree;
 pub mod par2;
 pub mod partclone;
 pub mod partition;
+pub mod pmarc;
 pub mod qnx;
 pub mod rar;
 pub mod rar_ppmd;

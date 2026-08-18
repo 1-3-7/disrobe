@@ -3,15 +3,15 @@
   "generator": "xtask regen, parse-surface inventory",
   "note": "Derived from the tree. An entry point is a public function taking a byte slice, outside test modules. Declared coverage means fuzz/coverage.toml names the entry point and the target route names its function. Replay-proven semantic reach is narrower: a committed content-addressed seed must produce a complete parser-owned accepted trace for the entry point. The resilience columns count dedicated resilience-shaped test files only; malformed-input assertions in other tests are real coverage this inventory does not see.",
   "totals": {
-    "entry_points": 1408,
-    "parse_shaped": 579,
+    "entry_points": 1409,
+    "parse_shaped": 580,
     "coverage_guided_targets_in_tree": 12,
     "targets_declaring_entry_points": 9,
     "with_declared_coverage_guided_target": 120,
     "with_replay_proven_semantic_reach": 18,
-    "named_by_a_resilience_suite": 631,
+    "named_by_a_resilience_suite": 633,
     "named_by_a_suite_recording_seed_reach": 127,
-    "named_by_neither": 744
+    "named_by_neither": 743
   },
   "seed_reach": {
     "satisfied_obligations": 23,
@@ -22,11 +22,11 @@
   "crates": [
     {
       "crate": "disrobe-binfmt",
-      "entry_points": 241,
-      "parse_shaped": 163,
+      "entry_points": 242,
+      "parse_shaped": 164,
       "with_declared_coverage_guided_target": 65,
       "with_replay_proven_semantic_reach": 0,
-      "named_by_a_resilience_suite": 154,
+      "named_by_a_resilience_suite": 156,
       "named_by_a_suite_recording_seed_reach": 2,
       "named_by_neither": [
         "disrobe-binfmt/src/containers/apfs.rs::apfs_file_bytes",
@@ -61,7 +61,6 @@
         "disrobe-binfmt/src/containers/innosetup.rs::recover_inno_named_files_with_limits",
         "disrobe-binfmt/src/containers/innosetup.rs::unfilter_instructions",
         "disrobe-binfmt/src/containers/iso.rs::read_file_data",
-        "disrobe-binfmt/src/containers/lha_dyn.rs::decode_bounded",
         "disrobe-binfmt/src/containers/lzms.rs::lzms_compress",
         "disrobe-binfmt/src/containers/minidump/carve.rs::carve_module",
         "disrobe-binfmt/src/containers/nsis.rs::decode_solid_region",

@@ -569,6 +569,14 @@ layout = "level-0 header (size+checksum+-lh0-+sizes+name+crc16); decoded through
 note = "real LHA decoding path: -lh0- passthrough validated byte-exact with CRC check; -lh1-/-lh4-/-lh5-/-lh6-/-lh7- decode through delharc, unsupported methods surfaced as honest notes"
 
 [[wave6_legacy]]
+format = "pmarc (.pma, -pm1- and -pm2- in LHA level-0 headers)"
+path = "lzh/pmarc/"
+status = "byte-exact against the maintained Lhasa extraction for every -pm1- and -pm2- member"
+oracle = "archives written by PMarc v1.24 for CP/M and PMARC2 for MSX-DOS, carried by the ISC-licensed Lhasa corpus; each member is checked against the CRC-16/ARC the original archiver stored"
+layout = "PMarc members use the LHA level-0 header layout, so the existing member walker reaches them; only the codecs are new"
+note = "corpus/binfmt/lzh/pmarc/provenance.toml records per-artifact digests, archiver, and the independent evidence. evil_pm2.lzh is the GHSA-j2m3-h278-rrg9 regression input and must be refused."
+
+[[wave6_legacy]]
 format = "lzop (.lzo)"
 path = "lzop/hello.lzo"
 status = "byte-exact"

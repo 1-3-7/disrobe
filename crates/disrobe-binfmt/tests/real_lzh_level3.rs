@@ -427,8 +427,15 @@ fn symlink_shaped_lhd_member_refuses_before_output_creation() {
 }
 
 #[test]
-fn pm1_and_pm2_are_omitted_with_an_exact_deferred_method_violation() {
-    for method in [b"-pm1-", b"-pm2-"] {
+fn a_mislabelled_pm1_or_pm2_member_is_refused_without_partial_output() {
+    let expected: [(&[u8; 5], &str); 2] = [
+        (
+            b"-pm1-",
+            "-pm1- copy distance 14 exceeds the 10 byte(s) produced",
+        ),
+        (b"-pm2-", "decoded CRC 34c1 differs from declared CRC b6d5"),
+    ];
+    for (method, message) in expected {
         let mut archive: Vec<u8> = METHOD_FIXTURES[5].0.to_vec();
         archive[2..7].copy_from_slice(method);
         let header_end: usize = usize::from(archive[0]) + 2;
@@ -436,20 +443,11 @@ fn pm1_and_pm2_are_omitted_with_an_exact_deferred_method_violation() {
             .iter()
             .fold(0u8, |sum: u8, byte: &u8| sum.wrapping_add(*byte));
         let scratch: disrobe_core::scratch::ScratchDir =
-            disrobe_core::scratch::ScratchDir::create("disrobe-lzh-pm-deferred")
+            disrobe_core::scratch::ScratchDir::create("disrobe-lzh-pm-mislabelled")
                 .expect("create PM output");
-        let result: ExtractionResult = extract_to(ContainerKind::Lzh, &archive, scratch.path())
-            .expect("report deferred PM method without partial output");
-        let rendered: &str = std::str::from_utf8(method).expect("ASCII PM method");
-        assert!(result.entries.is_empty());
-        assert_eq!(result.integrity_violations.len(), 1);
-        assert!(
-            result.integrity_violations[0].contains(&format!(
-                "compression method `{rendered}` is deferred and the member was omitted"
-            )),
-            "{}",
-            result.integrity_violations[0]
-        );
+        let error: disrobe_binfmt::Error = extract_to(ContainerKind::Lzh, &archive, scratch.path())
+            .expect_err("refuse a member whose body is not a PMarc stream");
+        assert!(error.to_string().contains(message), "{error}");
         assert_eq!(
             std::fs::read_dir(scratch.path())
                 .expect("read PM output")

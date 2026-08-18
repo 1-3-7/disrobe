@@ -1348,15 +1348,36 @@ static inline double fp_d_from_bits(uint64_t b) { double v; __builtin_memcpy(&v,
 static inline uint64_t fp_d_to_bits(double v) { uint64_t b; __builtin_memcpy(&b, &v, 8); return b; }
 static inline float fp_f_from_bits(uint32_t b) { float v; __builtin_memcpy(&v, &b, 4); return v; }
 static inline uint32_t fp_f_to_bits(float v) { uint32_t b; __builtin_memcpy(&b, &v, 4); return b; }
+static long long fp_nan_canonicalized = 0;
+static void fp_note_nan_canonicalization(unsigned long long wide, unsigned long long got) {
+    if (fp_nan_canonicalized < 32) {
+        printf("NANEQ w=%llx g=%llx\n", wide, got);
+    }
+    fp_nan_canonicalized++;
+}
 static inline int fp_d_bits_equal(uint64_t a, uint64_t b) {
     uint64_t a_abs = a & 0x7fffffffffffffffULL;
     uint64_t b_abs = b & 0x7fffffffffffffffULL;
-    return a == b || (a_abs > 0x7ff0000000000000ULL && b_abs > 0x7ff0000000000000ULL);
+    if (a == b) {
+        return 1;
+    }
+    if (a_abs > 0x7ff0000000000000ULL && b_abs > 0x7ff0000000000000ULL) {
+        fp_note_nan_canonicalization((unsigned long long)a, (unsigned long long)b);
+        return 1;
+    }
+    return 0;
 }
 static inline int fp_f_bits_equal(uint32_t a, uint32_t b) {
     uint32_t a_abs = a & 0x7fffffffU;
     uint32_t b_abs = b & 0x7fffffffU;
-    return a == b || (a_abs > 0x7f800000U && b_abs > 0x7f800000U);
+    if (a == b) {
+        return 1;
+    }
+    if (a_abs > 0x7f800000U && b_abs > 0x7f800000U) {
+        fp_note_nan_canonicalization((unsigned long long)a, (unsigned long long)b);
+        return 1;
+    }
+    return 0;
 }
 static inline _Float16 fp_h_from_bits(uint16_t b) { _Float16 v; __builtin_memcpy(&v, &b, 2); return v; }
 static inline uint16_t fp_h_to_bits(_Float16 v) { uint16_t b; __builtin_memcpy(&b, &v, 2); return b; }

@@ -2,7 +2,7 @@
 use disrobe_binfmt::containers::lha_dyn::{self, DynMethod};
 use disrobe_binfmt::containers::wim::WimCompression;
 use disrobe_binfmt::containers::{
-    arc, arc_codec, arj, bare_stream, firmware, lha_huff, lz4_block, lzh, lzms, lzop, par2,
+    arc, arc_codec, arj, bare_stream, firmware, lha_huff, lz4_block, lzh, lzms, lzop, par2, pmarc,
     rar_ppmd, rar_unpack3, rar_unpack5, stuffit, ucl, uzip, wim_codec, xalz,
 };
 use disrobe_binfmt::quota::ExtractionQuota;
@@ -191,6 +191,27 @@ fn lha_dynamic_huffman_does_not_panic() {
             DynMethod::Lh3
         };
         let _ = lha_dyn::decode(method, &body, size);
+    }
+}
+
+#[test]
+fn pmarc_decoders_do_not_panic() {
+    let mut rng: Xorshift64 = Xorshift64::new(0x504d_4131_504d_4132);
+    let sizes: [u64; 6] = [0, 1, 16, 256, 4096, 65_536];
+    for _ in 0..120_000 {
+        let len: usize = rng.next_usize(320);
+        let body: Vec<u8> = (0..len).map(|_| rng.next_byte()).collect();
+        let size: u64 = sizes[rng.next_usize(sizes.len())];
+        let method: pmarc::PmMethod = if rng.next_u64() & 1 == 0 {
+            pmarc::PmMethod::Pm1
+        } else {
+            pmarc::PmMethod::Pm2
+        };
+        let decoded: Option<pmarc::PmDecoded> =
+            pmarc::decode_bounded(method, &body, size, CAP).ok();
+        if let Some(decoded) = decoded {
+            assert_eq!(decoded.data.len() as u64, size);
+        }
     }
 }
 
