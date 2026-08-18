@@ -29,6 +29,10 @@ fn formats_expectations() -> BTreeMap<&'static str, Expectation> {
             "avr_firmware.elf",
             Expectation::RoundTrips(NativeFormat::Elf32),
         ),
+        (
+            "bigobj.msvc.obj",
+            Expectation::RoundTrips(NativeFormat::Coff),
+        ),
         ("dwarf_v2.o", Expectation::RoundTrips(NativeFormat::Coff)),
         ("dwarf_v3.o", Expectation::RoundTrips(NativeFormat::Coff)),
         ("dwarf_v4.o", Expectation::RoundTrips(NativeFormat::Coff)),
@@ -313,8 +317,8 @@ fn every_committed_format_fixture_round_trips_or_is_refused_by_name() {
         "every file under corpus/{FORMATS_DIR} must be graded"
     );
     assert_eq!(
-        round_tripped, 13,
-        "corpus/{FORMATS_DIR} carries 13 images with a typed model and {round_tripped} \
+        round_tripped, 14,
+        "corpus/{FORMATS_DIR} carries 14 images with a typed model and {round_tripped} \
          round-tripped"
     );
 }
@@ -1151,23 +1155,190 @@ const BIGOBJ_CLASS_ID: [u8; 16] = [
     0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
 ];
 
-#[test]
-fn an_extended_coff_object_header_is_refused_by_name() {
-    let mut bytes: Vec<u8> = required_corpus("native/formats/hello.coff.x64.o");
-    bytes[0..2].copy_from_slice(&0x0000u16.to_le_bytes());
+fn minimal_bigobj() -> Vec<u8> {
+    let mut bytes: Vec<u8> = vec![0; 121];
     bytes[2..4].copy_from_slice(&0xFFFFu16.to_le_bytes());
     bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+    bytes[6..8].copy_from_slice(&0x8664u16.to_le_bytes());
+    bytes[8..12].copy_from_slice(&0x1122_3344u32.to_le_bytes());
     bytes[12..28].copy_from_slice(&BIGOBJ_CLASS_ID);
+    bytes[44..48].copy_from_slice(&1u32.to_le_bytes());
+    bytes[48..52].copy_from_slice(&97u32.to_le_bytes());
+    bytes[52..56].copy_from_slice(&1u32.to_le_bytes());
+    bytes[56..64].copy_from_slice(b".text\0\0\0");
+    bytes[72..76].copy_from_slice(&1u32.to_le_bytes());
+    bytes[76..80].copy_from_slice(&96u32.to_le_bytes());
+    bytes[92..96].copy_from_slice(&object::pe::IMAGE_SCN_CNT_CODE.to_le_bytes());
+    bytes[96] = 0xC3;
+    bytes[97..105].copy_from_slice(b"probe\0\0\0");
+    bytes[109..113].copy_from_slice(&1u32.to_le_bytes());
+    bytes[115] = object::pe::IMAGE_SYM_CLASS_EXTERNAL;
+    bytes[117..121].copy_from_slice(&4u32.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn a_bigobj_round_trips_and_timestamp_mutation_is_local() {
+    let bytes: Vec<u8> = minimal_bigobj();
+    let mut plan: ImagePlan = assert_round_trip(&bytes, "minimal bigobj");
+    let mut changed: bool = false;
+    for structure in plan.structures_mut() {
+        if let Structure::CoffBigObjHeader(header) = structure.body_mut() {
+            header.time_date_stamp ^= u32::MAX;
+            changed = true;
+        }
+    }
+    assert!(changed, "the plan must expose the typed bigobj header");
+    let emitted: Vec<u8> = plan.emit(&bytes).expect("emit the timestamp mutation");
+    let differing: Vec<usize> = bytes
+        .iter()
+        .zip(&emitted)
+        .enumerate()
+        .filter_map(|(index, (before, after)): (usize, (&u8, &u8))| {
+            (before != after).then_some(index)
+        })
+        .collect();
+    assert_eq!(differing, vec![8, 9, 10, 11]);
+}
+
+const WIDE_BIGOBJ: &str = "tests/fixtures/bigobj/wide_65303.obj";
+const WIDE_BIGOBJ_SECTIONS: u32 = 65_303;
+const BIGOBJ_SECTION_CEILING: u32 = 262_144;
+
+fn wide_bigobj_bytes() -> Vec<u8> {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(WIDE_BIGOBJ);
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{WIDE_BIGOBJ} is tracked in git and this case grades nothing without it: {error} ({})",
+            path.display()
+        )
+    })
+}
+
+fn refusal_text(bytes: &[u8], subject: &str) -> String {
+    let error: Error = plan_native_image(bytes)
+        .err()
+        .unwrap_or_else(|| panic!("{subject}: a malformed anonymous object must be refused"));
+    let rendered: String = error.to_string();
+    assert!(
+        matches!(error, Error::RewriteUnsupported { .. } | Error::Rewrite(_)),
+        "{subject}: the refusal must be typed, not `{rendered}`"
+    );
+    rendered
+}
+
+#[test]
+fn a_wide_bigobj_round_trips_byte_for_byte() {
+    let bytes: Vec<u8> = wide_bigobj_bytes();
+    let plan: ImagePlan = assert_round_trip(&bytes, WIDE_BIGOBJ);
+    let sections: u32 = plan
+        .structures()
+        .iter()
+        .filter_map(|structure: &disrobe_binfmt::rewrite::PlannedStructure| {
+            match structure.body() {
+                Structure::CoffSectionTable(table) => Some(table.sections.len()),
+                _ => None,
+            }
+        })
+        .sum::<usize>()
+        .try_into()
+        .expect("the section count fits in a u32");
+    assert_eq!(
+        sections, WIDE_BIGOBJ_SECTIONS,
+        "the plan must model every section a legacy 16-bit count could not address"
+    );
+}
+
+#[test]
+fn planning_a_bigobj_twice_produces_identical_bytes() {
+    let bytes: Vec<u8> = minimal_bigobj();
+    let first: Vec<u8> = plan_native_image(&bytes)
+        .expect("plan once")
+        .emit(&bytes)
+        .expect("emit once");
+    let second: Vec<u8> = plan_native_image(&bytes)
+        .expect("plan twice")
+        .emit(&bytes)
+        .expect("emit twice");
+    assert_eq!(first, bytes, "an unmodified plan must re-emit the input");
+    assert_eq!(first, second, "repeated planning must be deterministic");
+}
+
+#[test]
+fn a_bigobj_section_count_above_the_ceiling_is_refused_by_name() {
+    let mut bytes: Vec<u8> = minimal_bigobj();
+    let over: u32 = BIGOBJ_SECTION_CEILING + 1;
+    bytes[44..48].copy_from_slice(&over.to_le_bytes());
+    let rendered: String = refusal_text(&bytes, "a section count above the ceiling");
+    assert!(
+        rendered.contains(&over.to_string())
+            && rendered.contains(&BIGOBJ_SECTION_CEILING.to_string()),
+        "the refusal must name the declared count and the ceiling, got `{rendered}`"
+    );
+}
+
+#[test]
+fn a_bigobj_carrying_a_foreign_class_id_is_refused_by_name() {
+    let mut bytes: Vec<u8> = minimal_bigobj();
+    bytes[12] ^= 0xFF;
+    let rendered: String = refusal_text(&bytes, "a foreign class id");
+    assert!(
+        rendered.contains("class ID"),
+        "the refusal must name the class ID it rejected, got `{rendered}`"
+    );
+}
+
+#[test]
+fn an_import_library_header_is_refused_rather_than_read_as_bigobj() {
+    let mut bytes: Vec<u8> = vec![0; 128];
+    bytes[2..4].copy_from_slice(&0xFFFFu16.to_le_bytes());
+    bytes[4..6].copy_from_slice(&0u16.to_le_bytes());
+    bytes[6..8].copy_from_slice(&0x8664u16.to_le_bytes());
+    let rendered: String = refusal_text(&bytes, "an import library lookalike");
+    assert!(
+        rendered.contains("version 0") && rendered.contains("version 2 or later"),
+        "an import header shares the anonymous signature and must be refused by version, got \
+         `{rendered}`"
+    );
+}
+
+#[test]
+fn a_truncated_anonymous_header_is_refused_rather_than_read_short() {
+    let full: Vec<u8> = minimal_bigobj();
+    for length in [4_usize, 16, 32, 55] {
+        let rendered: String = refusal_text(&full[..length], &format!("a {length} byte header"));
+        assert!(
+            !rendered.is_empty(),
+            "a {length} byte anonymous header must carry a typed refusal"
+        );
+    }
+}
+
+#[test]
+fn a_bigobj_section_table_past_the_end_of_file_is_refused() {
+    let mut bytes: Vec<u8> = minimal_bigobj();
+    bytes[44..48].copy_from_slice(&4_096u32.to_le_bytes());
+    let rendered: String = refusal_text(&bytes, "a section table past the end of file");
+    assert!(
+        !rendered.is_empty(),
+        "a declared table the file cannot hold must be refused"
+    );
+}
+
+#[test]
+fn a_version_one_anonymous_coff_header_is_refused_by_name() {
+    let mut bytes: Vec<u8> = minimal_bigobj();
+    bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
 
     let error: Error =
-        plan_native_image(&bytes).expect_err("the extended COFF header must be refused");
+        plan_native_image(&bytes).expect_err("anonymous COFF version one must be refused");
     let rendered: String = error.to_string();
     assert!(
         matches!(error, Error::RewriteUnsupported { .. }),
         "an unmodellable construct must be an unsupported refusal, not `{rendered}`"
     );
     assert!(
-        rendered.contains("bigobj"),
+        rendered.contains("version 1") && rendered.contains("version 2 or later"),
         "the refusal must name the construct it could not model, got `{rendered}`"
     );
 }
@@ -1324,5 +1495,35 @@ fn a_mutated_image_never_panics_and_never_re_emits_different_bytes() {
         planned >= 100,
         "only {planned} of {total} mutated cases were admitted, so the round-trip half of this \
          case graded almost nothing"
+    );
+}
+
+#[test]
+fn an_opaque_bigobj_section_patch_survives_replanning() {
+    let bytes: Vec<u8> = minimal_bigobj();
+    let section_data: u64 = 96;
+    let edit: FileEdit = FileEdit::new(section_data, vec![0x90]);
+    let patched: PatchedImage = patch_native_image(&bytes, std::slice::from_ref(&edit))
+        .expect("an opaque section byte must be patchable");
+    let differing: Vec<usize> = bytes
+        .iter()
+        .zip(&patched.bytes)
+        .enumerate()
+        .filter_map(|(index, (before, after)): (usize, (&u8, &u8))| {
+            (before != after).then_some(index)
+        })
+        .collect();
+    assert_eq!(
+        differing,
+        vec![usize::try_from(section_data).expect("the offset fits in a usize")],
+        "patching opaque section data must not move an unrelated byte"
+    );
+    let replanned: Vec<u8> = plan_native_image(&patched.bytes)
+        .expect("the patched image must replan")
+        .emit(&patched.bytes)
+        .expect("the replanned image must re-emit");
+    assert_eq!(
+        replanned, patched.bytes,
+        "replanning a patched bigobj must reproduce it byte for byte"
     );
 }

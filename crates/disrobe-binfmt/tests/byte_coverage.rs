@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use common::requirement::{
-    READELF, corpus_path, describe_run, locate, required_corpus, unmeasured,
+    LLVM_READOBJ, READELF, corpus_path, describe_run, locate, required_corpus, unmeasured,
 };
 use disrobe_binfmt::coverage::{
     BYTE_COVERAGE_SCHEMA, ByteCoverage, CoverageOverlap, CoverageRegion, RegionClass,
@@ -14,9 +14,55 @@ use disrobe_binfmt::coverage::{
 };
 use disrobe_binfmt::error::Error;
 use disrobe_binfmt::native::NativeFormat;
+use disrobe_binfmt::rewrite::{ImagePlan, PlannedStructure, Structure, plan_native_image};
 use object::read::{Object as _, ObjectSection as _};
 
 const FORMATS_DIR: &str = "native/formats";
+
+const BIGOBJ_PRODUCERS: [&str; 1] = ["native/formats/bigobj.msvc.obj"];
+const WIDE_BIGOBJ: &str = "tests/fixtures/bigobj/wide_65303.obj";
+const WIDE_BIGOBJ_SECTIONS: usize = 65_303;
+
+fn wide_bigobj_bytes() -> Vec<u8> {
+    let path: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join(WIDE_BIGOBJ);
+    std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+        panic!(
+            "{WIDE_BIGOBJ} is tracked in git and this case grades nothing without it, so its \
+             absence is a damaged checkout: {error} ({})",
+            path.display()
+        )
+    })
+}
+
+#[test]
+fn every_producer_bigobj_has_exact_byte_coverage() {
+    for relative in BIGOBJ_PRODUCERS {
+        let bytes: Vec<u8> = required_corpus(relative);
+        let coverage: ByteCoverage = file_byte_coverage(&bytes).unwrap_or_else(|error: Error| {
+            panic!("{relative}: map the producer artifact: {error}")
+        });
+        assert_partition(&coverage, bytes.len() as u64, relative);
+    }
+}
+
+#[test]
+fn a_bigobj_above_the_legacy_section_ceiling_has_exact_byte_coverage() {
+    let bytes: Vec<u8> = wide_bigobj_bytes();
+    let sections: usize = object::read::File::parse(bytes.as_slice())
+        .expect("an independent reader must parse the wide bigobj")
+        .sections()
+        .count();
+    assert_eq!(
+        sections, WIDE_BIGOBJ_SECTIONS,
+        "the fixture must keep more sections than a legacy 16-bit count can address"
+    );
+    assert!(
+        sections > usize::from(u16::MAX) - 256,
+        "a fixture at or below the legacy ceiling would not prove the widened count"
+    );
+    let coverage: ByteCoverage = file_byte_coverage(&bytes).expect("map the wide bigobj");
+    assert_partition(&coverage, bytes.len() as u64, WIDE_BIGOBJ);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Expectation {
@@ -35,6 +81,7 @@ fn corpus_expectations() -> BTreeMap<&'static str, Expectation> {
             "hello.auditable.exe",
             Expectation::Mapped(NativeFormat::Pe64),
         ),
+        ("bigobj.msvc.obj", Expectation::Mapped(NativeFormat::Coff)),
         ("hello.coff.x64.o", Expectation::Mapped(NativeFormat::Coff)),
         ("hello.efi", Expectation::Mapped(NativeFormat::Pe64)),
         ("hello.elf64", Expectation::Mapped(NativeFormat::Elf64)),
@@ -1741,4 +1788,142 @@ fn a_coff_debug_section_is_classed_as_debug() {
         RegionClass::Table,
         "the COFF symbol table is a table region"
     );
+}
+
+const BIGOBJ_COVERAGE_CLASS_ID: [u8; 16] = [
+    0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
+];
+
+fn bigobj_shell(symbol_table: u32, symbols: u32, trailing: usize) -> Vec<u8> {
+    let mut bytes: Vec<u8> = vec![0; 96 + trailing];
+    bytes[2..4].copy_from_slice(&0xFFFF_u16.to_le_bytes());
+    bytes[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    bytes[6..8].copy_from_slice(&0x8664_u16.to_le_bytes());
+    bytes[12..28].copy_from_slice(&BIGOBJ_COVERAGE_CLASS_ID);
+    bytes[44..48].copy_from_slice(&1_u32.to_le_bytes());
+    bytes[48..52].copy_from_slice(&symbol_table.to_le_bytes());
+    bytes[52..56].copy_from_slice(&symbols.to_le_bytes());
+    bytes[56..64].copy_from_slice(b".text\0\0\0");
+    bytes
+}
+
+#[test]
+fn a_bigobj_string_table_longer_than_the_file_is_reported_as_truncated() {
+    let mut bytes: Vec<u8> = bigobj_shell(96, 1, 32);
+    let string_start: u64 = 96 + 20;
+    let declared: u32 = 0x7FFF_FFFF;
+    let index: usize = usize::try_from(string_start).expect("the offset fits in a usize");
+    bytes[index..index + 4].copy_from_slice(&declared.to_le_bytes());
+    let coverage: ByteCoverage =
+        file_byte_coverage(&bytes).expect("an over-long string table must still map");
+    let claim: &TruncatedClaim = coverage
+        .truncated
+        .iter()
+        .find(|claim: &&TruncatedClaim| claim.claimant == "string-table")
+        .unwrap_or_else(|| {
+            panic!(
+                "a string table declaring {declared} bytes in a {} byte file must be recorded as \
+                 truncated, not accepted; truncated={:?}",
+                bytes.len(),
+                coverage.truncated
+            )
+        });
+    assert_eq!(claim.start, string_start);
+    assert_eq!(claim.declared_end, string_start + u64::from(declared));
+    assert!(
+        claim.missing_bytes > 0,
+        "the record must state how many declared bytes the file does not hold"
+    );
+    assert!(
+        coverage.truncated_bytes >= claim.missing_bytes,
+        "the summary must count the bytes the string table declares and the file does not hold"
+    );
+}
+
+#[test]
+fn a_bigobj_relocation_overflow_count_the_file_cannot_hold_is_refused() {
+    let mut bytes: Vec<u8> = bigobj_shell(0, 0, 64);
+    bytes[80..84].copy_from_slice(&120_u32.to_le_bytes());
+    bytes[88..90].copy_from_slice(&0xFFFF_u16.to_le_bytes());
+    bytes[92..96].copy_from_slice(&object::pe::IMAGE_SCN_LNK_NRELOC_OVFL.to_le_bytes());
+    bytes[120..124].copy_from_slice(&0x00FF_FFFF_u32.to_le_bytes());
+    let error: Error = file_byte_coverage(&bytes)
+        .expect_err("an overflow count the file cannot hold must be refused");
+    let rendered: String = error.to_string();
+    assert!(
+        !rendered.is_empty(),
+        "the refusal must name the construct, got `{rendered}`"
+    );
+}
+
+#[test]
+fn an_independent_reader_agrees_with_every_bigobj_section_count() {
+    let graded: &str = "the bigobj section count disrobe maps";
+    let Ok(program): Result<PathBuf, String> = locate(&LLVM_READOBJ) else {
+        unmeasured(&LLVM_READOBJ, graded, "no llvm-readobj was found on PATH");
+        return;
+    };
+    let subjects: [(String, PathBuf); 2] = [
+        (
+            "corpus/native/formats/bigobj.msvc.obj".to_owned(),
+            corpus_path("native/formats/bigobj.msvc.obj"),
+        ),
+        (
+            WIDE_BIGOBJ.to_owned(),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(WIDE_BIGOBJ),
+        ),
+    ];
+    for (subject, path) in subjects {
+        let arguments: [&str; 2] = [
+            "--file-headers",
+            path.to_str().expect("a fixture path is Unicode"),
+        ];
+        let output: Output = std::process::Command::new(&program)
+            .args(arguments)
+            .output()
+            .unwrap_or_else(|error: std::io::Error| panic!("{subject}: run llvm-readobj: {error}"));
+        assert!(
+            output.status.success(),
+            "{subject}: llvm-readobj must read the object: {}",
+            describe_run(&program, &arguments, &output)
+        );
+        let text: String = String::from_utf8_lossy(&output.stdout).into_owned();
+        let reported: usize = text
+            .lines()
+            .find_map(|line: &str| line.trim().strip_prefix("SectionCount:").map(str::trim))
+            .and_then(|value: &str| value.parse::<usize>().ok())
+            .unwrap_or_else(|| panic!("{subject}: llvm-readobj must report a section count"));
+        let bytes: Vec<u8> = std::fs::read(&path)
+            .unwrap_or_else(|error: std::io::Error| panic!("{subject}: read fixture: {error}"));
+        let plan: ImagePlan = plan_native_image(&bytes)
+            .unwrap_or_else(|error: Error| panic!("{subject}: plan the object: {error}"));
+        let modelled: usize = plan
+            .structures()
+            .iter()
+            .filter_map(|structure: &PlannedStructure| match structure.body() {
+                Structure::CoffSectionTable(table) => Some(table.sections.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(
+            modelled, reported,
+            "{subject}: disrobe modelled {modelled} sections where llvm-readobj reports {reported}"
+        );
+        let coverage: ByteCoverage = file_byte_coverage(&bytes)
+            .unwrap_or_else(|error: Error| panic!("{subject}: map the object: {error}"));
+        let backed: usize = coverage
+            .regions
+            .iter()
+            .filter(|region: &&CoverageRegion| {
+                region
+                    .claimant
+                    .as_deref()
+                    .is_some_and(|claimant: &str| claimant.starts_with("section:"))
+            })
+            .count();
+        assert!(
+            backed <= modelled,
+            "{subject}: coverage claimed {backed} section regions for {modelled} sections"
+        );
+    }
 }

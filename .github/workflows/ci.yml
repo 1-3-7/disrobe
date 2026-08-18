@@ -471,17 +471,19 @@ jobs:
             sudo apt-get install -y nsis
             demand makensis DISROBE_REQUIRE_MAKENSIS
           fi
-      - name: provision LLVM 18 for the aarch64 dense-switch CLI differential
+      - name: provision LLVM 18 for the aarch64 dense-switch CLI differential and the bigobj reader differential
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes clang-18 lld-18
+          sudo apt-get install --yes clang-18 lld-18 llvm-18
           echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
           export PATH="/usr/lib/llvm-18/bin:$PATH"
           clang --version
           ld.lld --version
+          llvm-readobj --version
+          echo "DISROBE_REQUIRE_LLVM_READOBJ=1" >> "$GITHUB_ENV"
           clang --target=aarch64-unknown-linux-gnu -x c -c -o /dev/null - <<< 'int dense_switch_probe(void) { return 0; }'
       - name: elixir recompile differential, printing the graded export count
         run: cargo test -p disrobe-pass-beam --test elixir_source_recover -- --nocapture

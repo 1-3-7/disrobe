@@ -5,7 +5,7 @@ use crate::debug::{dbg_kv, dbg_section};
 use crate::error::{Error, Result};
 use crate::native::{NativeFormat, detect_native_format};
 
-mod coff;
+pub(crate) mod coff;
 mod elf;
 mod encode;
 mod macho;
@@ -21,7 +21,7 @@ pub(crate) const MAX_LOAD_COMMANDS: u64 = 65_536;
 pub(crate) const MAX_FAT_SLICES: u64 = 4_096;
 const MAX_EDITS: usize = 4_096;
 
-pub use coff::{CoffHeader, CoffSectionHeader, CoffSectionTable};
+pub use coff::{CoffBigObjHeader, CoffHeader, CoffSectionHeader, CoffSectionTable};
 pub use elf::{
     ElfHeader, ElfIdent, ElfProgramHeader, ElfProgramHeaders, ElfSectionHeader, ElfSectionHeaders,
 };
@@ -37,6 +37,7 @@ pub enum StructureKind {
     PeDosHeader,
     PeSignature,
     CoffHeader,
+    CoffBigObjHeader,
     PeOptionalHeader,
     PeDataDirectories,
     CoffSectionTable,
@@ -56,6 +57,7 @@ impl StructureKind {
             Self::PeDosHeader => "pe-dos-header",
             Self::PeSignature => "pe-signature",
             Self::CoffHeader => "coff-header",
+            Self::CoffBigObjHeader => "coff-bigobj-header",
             Self::PeOptionalHeader => "pe-optional-header",
             Self::PeDataDirectories => "pe-data-directories",
             Self::CoffSectionTable => "coff-section-table",
@@ -75,6 +77,7 @@ pub enum Structure {
     PeDosHeader(PeDosHeader),
     PeSignature(PeSignature),
     CoffHeader(CoffHeader),
+    CoffBigObjHeader(CoffBigObjHeader),
     PeOptionalHeader(PeOptionalHeader),
     PeDataDirectories(PeDataDirectories),
     CoffSectionTable(CoffSectionTable),
@@ -94,6 +97,7 @@ impl Structure {
             Self::PeDosHeader(_) => StructureKind::PeDosHeader,
             Self::PeSignature(_) => StructureKind::PeSignature,
             Self::CoffHeader(_) => StructureKind::CoffHeader,
+            Self::CoffBigObjHeader(_) => StructureKind::CoffBigObjHeader,
             Self::PeOptionalHeader(_) => StructureKind::PeOptionalHeader,
             Self::PeDataDirectories(_) => StructureKind::PeDataDirectories,
             Self::CoffSectionTable(_) => StructureKind::CoffSectionTable,
@@ -113,6 +117,7 @@ impl Structure {
             Self::PeDosHeader(_) => PeDosHeader::ENCODED_LEN,
             Self::PeSignature(_) => PeSignature::ENCODED_LEN,
             Self::CoffHeader(_) => CoffHeader::ENCODED_LEN,
+            Self::CoffBigObjHeader(_) => CoffBigObjHeader::ENCODED_LEN,
             Self::PeOptionalHeader(value) => value.encoded_len(),
             Self::PeDataDirectories(value) => value.encoded_len(),
             Self::CoffSectionTable(value) => value.encoded_len(),
@@ -131,6 +136,7 @@ impl Structure {
             Self::PeDosHeader(_)
             | Self::PeSignature(_)
             | Self::CoffHeader(_)
+            | Self::CoffBigObjHeader(_)
             | Self::PeOptionalHeader(_)
             | Self::PeDataDirectories(_)
             | Self::CoffSectionTable(_) => Endian::Little,
@@ -150,6 +156,7 @@ impl Structure {
             Self::PeDosHeader(value) => value.encode(&mut writer),
             Self::PeSignature(value) => value.encode(&mut writer),
             Self::CoffHeader(value) => value.encode(&mut writer),
+            Self::CoffBigObjHeader(value) => value.encode(&mut writer),
             Self::PeOptionalHeader(value) => value.encode(&mut writer),
             Self::PeDataDirectories(value) => value.encode(&mut writer),
             Self::CoffSectionTable(value) => value.encode(&mut writer),

@@ -22,6 +22,8 @@ hello_ne.exe         real Win16 NE executable (OpenWatcom wcl -bcl=windows).
 hello_os2_ne.exe     real OS/2 1.x NE executable (OpenWatcom wcl -bcl=os2).
 hello_lx.exe         real OS/2 LX executable (OpenWatcom wcl386 -bcl=os2v2).
 avr_firmware.elf     real AVR ELF firmware (avr-gcc, atmega328p, e_machine=EM_AVR).
+bigobj.msvc.obj      real Microsoft anonymous bigobj (cl /bigobj): Sig1=0x0000, Sig2=0xFFFF,
+                     Version=2, ClassID C7A1BAD1-EEBA-A94B-AF20-FAF66AA4DCB8, 7 sections.
 
 Build (on this machine, no MSVC / WSL / macOS host needed)
 ----------------------------------------------------------
@@ -37,6 +39,11 @@ Auditable PE:     cargo auditable build --release   (cargo-auditable 0.7.4; one 
 DWARF objects:    gcc -gdwarf-N -O0 -c dwsrc.c -o dwarf_vN.o   for N in 2 3 4 5
 EFI application:  rustc --target x86_64-unknown-uefi -C panic=abort efiprog.rs -o hello.efi
 STABS object:     as -o hello_stabs.o stabsrc.s   (GNU as 2.42, .stabs directives)
+MSVC bigobj:      cl /c /O2 /Gy /bigobj /Fobigobj.msvc.obj bigobj_small.c
+                    (MSVC 14.44.35207, x64 host; run from
+                     a neutral build directory outside any user profile, because cl records
+                     the build path in the object; source at
+                     crates/disrobe-binfmt/tests/fixtures/bigobj/bigobj_small.c)
 Win16 NE:         wcl -bcl=windows necode.c -fe=hello_ne.exe    (OpenWatcom v2)
                   wdump -f hello_ne.exe                         (OpenWatcom 2.0beta1)
                   2 segments, entry 0001:006C, 0 exported entry-table members,

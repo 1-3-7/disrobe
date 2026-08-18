@@ -107,6 +107,7 @@ corpus/**/*.a
 corpus/**/*.lib
 corpus/**/*.o
 corpus/**/*.obj
+!corpus/native/formats/bigobj.msvc.obj
 corpus/**/*.pyc
 corpus/**/*.pyo
 corpus/**/*.pye

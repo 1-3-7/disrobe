@@ -1,4 +1,5 @@
 use disrobe_bytes::{ByteReadError, ByteReader};
+use std::fmt::Write as _;
 
 use crate::error::Result;
 use crate::native::NativeFormat;
@@ -10,9 +11,72 @@ use super::{
 };
 
 pub(crate) const COFF_HEADER_SIZE: u64 = 20;
+pub(crate) const BIGOBJ_HEADER_SIZE: u64 = 56;
 pub(crate) const SECTION_RECORD_SIZE: u64 = 40;
+pub(crate) const COFF_SYMBOL_RECORD_SIZE: u64 = 18;
+pub(crate) const BIGOBJ_SYMBOL_RECORD_SIZE: u64 = 20;
 const BIGOBJ_SIG1: u16 = 0x0000;
 const BIGOBJ_SIG2: u16 = 0xFFFF;
+const BIGOBJ_CLASS_ID: [u8; 16] = [
+    0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
+];
+
+#[derive(Debug)]
+pub(crate) enum CoffLayoutError {
+    Read(&'static str, ByteReadError),
+    BigObjVersion(u16),
+    BigObjClassId([u8; 16]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoffLayout {
+    Standard(CoffHeader),
+    BigObj(CoffBigObjHeader),
+}
+
+impl CoffLayout {
+    pub(crate) const fn header_size(self) -> u64 {
+        match self {
+            Self::Standard(_) => COFF_HEADER_SIZE,
+            Self::BigObj(_) => BIGOBJ_HEADER_SIZE,
+        }
+    }
+
+    pub(crate) const fn optional_size(self) -> u64 {
+        match self {
+            Self::Standard(header) => header.size_of_optional_header as u64,
+            Self::BigObj(_) => 0,
+        }
+    }
+
+    pub(crate) const fn section_count(self) -> u64 {
+        match self {
+            Self::Standard(header) => header.number_of_sections as u64,
+            Self::BigObj(header) => header.number_of_sections as u64,
+        }
+    }
+
+    pub(crate) const fn symbol_table_offset(self) -> u64 {
+        match self {
+            Self::Standard(header) => header.pointer_to_symbol_table as u64,
+            Self::BigObj(header) => header.pointer_to_symbol_table as u64,
+        }
+    }
+
+    pub(crate) const fn symbol_count(self) -> u64 {
+        match self {
+            Self::Standard(header) => header.number_of_symbols as u64,
+            Self::BigObj(header) => header.number_of_symbols as u64,
+        }
+    }
+
+    pub(crate) const fn symbol_record_size(self) -> u64 {
+        match self {
+            Self::Standard(_) => COFF_SYMBOL_RECORD_SIZE,
+            Self::BigObj(_) => BIGOBJ_SYMBOL_RECORD_SIZE,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoffHeader {
@@ -39,28 +103,18 @@ impl CoffHeader {
     }
 
     pub(super) fn read(reader: &mut ByteReader<'_>) -> Result<Self> {
-        let machine: u16 = reader
-            .read_u16_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let number_of_sections: u16 = reader
-            .read_u16_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let time_date_stamp: u32 = reader
-            .read_u32_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let pointer_to_symbol_table: u32 = reader
-            .read_u32_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let number_of_symbols: u32 = reader
-            .read_u32_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let size_of_optional_header: u16 = reader
-            .read_u16_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-        let characteristics: u16 = reader
-            .read_u16_le()
-            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
+        Self::read_raw(reader)
+            .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))
+    }
 
+    fn read_raw(reader: &mut ByteReader<'_>) -> std::result::Result<Self, ByteReadError> {
+        let machine: u16 = reader.read_u16_le()?;
+        let number_of_sections: u16 = reader.read_u16_le()?;
+        let time_date_stamp: u32 = reader.read_u32_le()?;
+        let pointer_to_symbol_table: u32 = reader.read_u32_le()?;
+        let number_of_symbols: u32 = reader.read_u32_le()?;
+        let size_of_optional_header: u16 = reader.read_u16_le()?;
+        let characteristics: u16 = reader.read_u16_le()?;
         Ok(Self {
             machine,
             number_of_sections,
@@ -71,6 +125,114 @@ impl CoffHeader {
             characteristics,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoffBigObjHeader {
+    pub sig1: u16,
+    pub sig2: u16,
+    pub version: u16,
+    pub machine: u16,
+    pub time_date_stamp: u32,
+    pub class_id: [u8; 16],
+    pub size_of_data: u32,
+    pub flags: u32,
+    pub meta_data_size: u32,
+    pub meta_data_offset: u32,
+    pub number_of_sections: u32,
+    pub pointer_to_symbol_table: u32,
+    pub number_of_symbols: u32,
+}
+
+impl CoffBigObjHeader {
+    pub(super) const ENCODED_LEN: u64 = BIGOBJ_HEADER_SIZE;
+
+    pub(super) fn encode(&self, writer: &mut FieldWriter<'_>) {
+        writer.u16(self.sig1);
+        writer.u16(self.sig2);
+        writer.u16(self.version);
+        writer.u16(self.machine);
+        writer.u32(self.time_date_stamp);
+        writer.bytes(&self.class_id);
+        writer.u32(self.size_of_data);
+        writer.u32(self.flags);
+        writer.u32(self.meta_data_size);
+        writer.u32(self.meta_data_offset);
+        writer.u32(self.number_of_sections);
+        writer.u32(self.pointer_to_symbol_table);
+        writer.u32(self.number_of_symbols);
+    }
+
+    fn read_raw(reader: &mut ByteReader<'_>) -> std::result::Result<Self, ByteReadError> {
+        let sig1: u16 = reader.read_u16_le()?;
+        let sig2: u16 = reader.read_u16_le()?;
+        let version: u16 = reader.read_u16_le()?;
+        let machine: u16 = reader.read_u16_le()?;
+        let time_date_stamp: u32 = reader.read_u32_le()?;
+        let class_id_bytes: &[u8] = reader.read_bytes(16)?;
+        let class_id: [u8; 16] = <[u8; 16]>::try_from(class_id_bytes).map_err(
+            |_error: std::array::TryFromSliceError| ByteReadError {
+                offset: 12,
+                needed: 16,
+                available: class_id_bytes.len(),
+            },
+        )?;
+        let size_of_data: u32 = reader.read_u32_le()?;
+        let flags: u32 = reader.read_u32_le()?;
+        let meta_data_size: u32 = reader.read_u32_le()?;
+        let meta_data_offset: u32 = reader.read_u32_le()?;
+        let number_of_sections: u32 = reader.read_u32_le()?;
+        let pointer_to_symbol_table: u32 = reader.read_u32_le()?;
+        let number_of_symbols: u32 = reader.read_u32_le()?;
+        Ok(Self {
+            sig1,
+            sig2,
+            version,
+            machine,
+            time_date_stamp,
+            class_id,
+            size_of_data,
+            flags,
+            meta_data_size,
+            meta_data_offset,
+            number_of_sections,
+            pointer_to_symbol_table,
+            number_of_symbols,
+        })
+    }
+}
+
+pub(crate) fn format_class_id(class_id: &[u8; 16]) -> String {
+    let mut rendered: String = String::with_capacity(class_id.len() * 2);
+    for byte in class_id {
+        let _ = write!(rendered, "{byte:02x}");
+    }
+    rendered
+}
+
+pub(crate) fn decode_layout(bytes: &[u8]) -> std::result::Result<CoffLayout, CoffLayoutError> {
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
+    let sig1: u16 = reader
+        .read_u16_le()
+        .map_err(|error: ByteReadError| CoffLayoutError::Read("the COFF header", error))?;
+    let sig2: u16 = reader
+        .read_u16_le()
+        .map_err(|error: ByteReadError| CoffLayoutError::Read("the COFF header", error))?;
+    let mut full_reader: ByteReader<'_> = ByteReader::new(bytes);
+    if sig1 != BIGOBJ_SIG1 || sig2 != BIGOBJ_SIG2 {
+        let header: CoffHeader = CoffHeader::read_raw(&mut full_reader)
+            .map_err(|error: ByteReadError| CoffLayoutError::Read("the COFF header", error))?;
+        return Ok(CoffLayout::Standard(header));
+    }
+    let header: CoffBigObjHeader = CoffBigObjHeader::read_raw(&mut full_reader)
+        .map_err(|error: ByteReadError| CoffLayoutError::Read("the COFF bigobj header", error))?;
+    if header.version < 2 {
+        return Err(CoffLayoutError::BigObjVersion(header.version));
+    }
+    if header.class_id != BIGOBJ_CLASS_ID {
+        return Err(CoffLayoutError::BigObjClassId(header.class_id));
+    }
+    Ok(CoffLayout::BigObj(header))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,31 +403,45 @@ pub(super) fn plan_section_table(
 pub(super) fn plan(bytes: &[u8]) -> Result<ImagePlan> {
     let file_len: u64 = u64::try_from(bytes.len())
         .map_err(|_error: std::num::TryFromIntError| rewrite_error("file length overflows"))?;
-    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
-    let sig1: u16 = reader
-        .read_u16_le()
-        .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-    let sig2: u16 = reader
-        .read_u16_le()
-        .map_err(|error: ByteReadError| rewrite_read_error("the COFF header", error))?;
-    if sig1 == BIGOBJ_SIG1 && sig2 == BIGOBJ_SIG2 {
-        return Err(unsupported(
-            NativeFormat::Coff,
-            "the extended `bigobj` COFF header has no typed model in this writer",
-        ));
-    }
-
+    let layout: CoffLayout = decode_layout(bytes).map_err(layout_rewrite_error)?;
     let mut builder: PlanBuilder = PlanBuilder::new(NativeFormat::Coff, file_len);
-    let header: CoffHeader = plan_header_and_sections(&mut builder, bytes, 0)?;
-    if header.size_of_optional_header != 0 {
-        return Err(unsupported(
+    let table_start: u64 = match layout {
+        CoffLayout::Standard(header) => {
+            if header.size_of_optional_header != 0 {
+                return Err(unsupported(
+                    NativeFormat::Coff,
+                    format!(
+                        "a bare COFF object declares a {} byte optional header, which has no \
+                         typed model in this writer",
+                        header.size_of_optional_header
+                    ),
+                ));
+            }
+            builder.push(0, Structure::CoffHeader(header))?;
+            COFF_HEADER_SIZE
+        }
+        CoffLayout::BigObj(header) => {
+            builder.push(0, Structure::CoffBigObjHeader(header))?;
+            BIGOBJ_HEADER_SIZE
+        }
+    };
+    plan_section_table(&mut builder, bytes, table_start, layout.section_count())?;
+    builder.finish()
+}
+
+fn layout_rewrite_error(error: CoffLayoutError) -> crate::error::Error {
+    match error {
+        CoffLayoutError::Read(context, source) => rewrite_read_error(context, source),
+        CoffLayoutError::BigObjVersion(version) => unsupported(
+            NativeFormat::Coff,
+            format!("anonymous COFF version {version} is not bigobj version 2 or later"),
+        ),
+        CoffLayoutError::BigObjClassId(class_id) => unsupported(
             NativeFormat::Coff,
             format!(
-                "a bare COFF object declares a {} byte optional header, which has no typed model \
-                 in this writer",
-                header.size_of_optional_header
+                "anonymous COFF class ID {} is not the Microsoft bigobj class ID",
+                format_class_id(&class_id)
             ),
-        ));
+        ),
     }
-    builder.finish()
 }

@@ -2,14 +2,12 @@ use disrobe_bytes::{ByteReadError, ByteReader, bounded_element_capacity};
 
 use crate::error::Result;
 use crate::native::NativeFormat;
+use crate::rewrite::coff::{CoffLayout, CoffLayoutError, decode_layout, format_class_id};
 
 use super::{ByteCoverage, ClaimSet, RegionClass, UnbackedReason, coverage_error, read_error};
 
-const HEADER_SIZE: u64 = 20;
 const SECTION_RECORD_SIZE: u64 = 40;
 const SECTION_RECORD_BYTES: usize = 40;
-const SYMBOL_RECORD_SIZE: u64 = 18;
-const SYMBOL_RECORD_BYTES: usize = 18;
 const RELOCATION_RECORD_SIZE: u64 = 10;
 const RELOCATION_RECORD_BYTES: usize = 10;
 const LINE_NUMBER_RECORD_SIZE: u64 = 6;
@@ -29,40 +27,34 @@ struct SectionRecord {
     characteristics: u32,
 }
 
+fn layout_coverage_error(error: CoffLayoutError) -> crate::error::Error {
+    match error {
+        CoffLayoutError::Read(context, source) => read_error(context, source),
+        CoffLayoutError::BigObjVersion(version) => coverage_error(format!(
+            "anonymous COFF version {version} is not bigobj version 2 or later"
+        )),
+        CoffLayoutError::BigObjClassId(class_id) => coverage_error(format!(
+            "anonymous COFF class ID {} is not the Microsoft bigobj class ID",
+            format_class_id(&class_id)
+        )),
+    }
+}
+
 pub(super) fn map_coff(bytes: &[u8]) -> Result<ByteCoverage> {
     let mut claims: ClaimSet<'_> = ClaimSet::new(bytes)?;
-    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
-
-    let _machine: u16 = reader
-        .read_u16_le()
-        .map_err(|error: ByteReadError| read_error("the COFF header", error))?;
-    let section_count: u16 = reader
-        .read_u16_le()
-        .map_err(|error: ByteReadError| read_error("the COFF header", error))?;
-    let _timestamp: u32 = reader
-        .read_u32_le()
-        .map_err(|error: ByteReadError| read_error("the COFF header", error))?;
-    let symbol_table_offset: u32 = reader
-        .read_u32_le()
-        .map_err(|error: ByteReadError| read_error("the COFF header", error))?;
-    let symbol_count: u32 = reader
-        .read_u32_le()
-        .map_err(|error: ByteReadError| read_error("the COFF header", error))?;
-    let optional_size: u64 = u64::from(
-        reader
-            .read_u16_le()
-            .map_err(|error: ByteReadError| read_error("the COFF header", error))?,
-    );
-
-    claims.claim(0, HEADER_SIZE, RegionClass::Header, "coff-header")?;
+    let layout: CoffLayout = decode_layout(bytes).map_err(layout_coverage_error)?;
+    let header_size: u64 = layout.header_size();
+    let optional_size: u64 = layout.optional_size();
+    let section_count: u64 = layout.section_count();
+    claims.claim(0, header_size, RegionClass::Header, "coff-header")?;
     claims.claim(
-        HEADER_SIZE,
+        header_size,
         optional_size,
         RegionClass::Header,
         "optional-header",
     )?;
 
-    let table_start: u64 = HEADER_SIZE
+    let table_start: u64 = header_size
         .checked_add(optional_size)
         .ok_or_else(|| coverage_error("the section table offset overflows"))?;
     let table_index: usize =
@@ -70,18 +62,22 @@ pub(super) fn map_coff(bytes: &[u8]) -> Result<ByteCoverage> {
             coverage_error("the section table offset overflows")
         })?;
     let admitted: usize = bounded_element_capacity(
-        u64::from(section_count),
+        section_count,
         SECTION_RECORD_BYTES,
         bytes.len().saturating_sub(table_index),
     );
-    if admitted < usize::from(section_count) {
+    let requested_sections: usize =
+        usize::try_from(section_count).map_err(|_error: std::num::TryFromIntError| {
+            coverage_error("NumberOfSections overflows usize")
+        })?;
+    if admitted < requested_sections {
         return Err(coverage_error(format!(
             "NumberOfSections {section_count} needs more than the {} bytes that follow the \
              section table",
             bytes.len().saturating_sub(table_index)
         )));
     }
-    let table_bytes: u64 = u64::from(section_count)
+    let table_bytes: u64 = section_count
         .checked_mul(SECTION_RECORD_SIZE)
         .ok_or_else(|| coverage_error("the section table range overflows"))?;
     claims.claim(
@@ -94,15 +90,17 @@ pub(super) fn map_coff(bytes: &[u8]) -> Result<ByteCoverage> {
     let string_table_start: u64 = claim_symbol_tables(
         &mut claims,
         bytes,
-        u64::from(symbol_table_offset),
-        u64::from(symbol_count),
+        layout.symbol_table_offset(),
+        layout.symbol_count(),
+        layout.symbol_record_size(),
     )?;
     let long_names: Option<(usize, usize)> = string_table_span(bytes, string_table_start);
 
+    let mut reader: ByteReader<'_> = ByteReader::new(bytes);
     reader
         .seek(table_index)
         .map_err(|error: ByteReadError| read_error("the section table", error))?;
-    for index in 0..usize::from(section_count) {
+    for index in 0..requested_sections {
         let record: SectionRecord = read_section_record(&mut reader)?;
         let name: String = section_name(bytes, table_index, index, long_names)?;
         let claimant: String = format!("section:{name}");
@@ -162,6 +160,7 @@ fn claim_symbol_tables(
     bytes: &[u8],
     symbol_table_offset: u64,
     symbol_count: u64,
+    symbol_record_size: u64,
 ) -> Result<u64> {
     if symbol_table_offset == 0 || symbol_count == 0 {
         return Ok(0);
@@ -170,14 +169,21 @@ fn claim_symbol_tables(
         usize::try_from(symbol_table_offset).map_err(|_error: std::num::TryFromIntError| {
             coverage_error("the symbol table offset overflows")
         })?;
+    let symbol_record_bytes: usize =
+        usize::try_from(symbol_record_size).map_err(|_error: std::num::TryFromIntError| {
+            coverage_error("the symbol record size overflows")
+        })?;
     let admitted: usize = bounded_element_capacity(
         symbol_count,
-        SYMBOL_RECORD_BYTES,
+        symbol_record_bytes,
         bytes.len().saturating_sub(start_index),
     );
-    let requested: usize = usize::try_from(symbol_count).unwrap_or(usize::MAX);
+    let requested: usize =
+        usize::try_from(symbol_count).map_err(|_error: std::num::TryFromIntError| {
+            coverage_error("SymbolCount overflows usize")
+        })?;
     let table_bytes: u64 = symbol_count
-        .checked_mul(SYMBOL_RECORD_SIZE)
+        .checked_mul(symbol_record_size)
         .ok_or_else(|| coverage_error("the symbol table range overflows"))?;
     claims.claim_payload(
         symbol_table_offset,

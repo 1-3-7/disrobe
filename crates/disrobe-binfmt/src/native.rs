@@ -168,6 +168,9 @@ const PE32_MIN: usize = 64;
 const ELF_MIN: usize = 52;
 const MACHO_MIN: usize = 28;
 const MACHO_FAT_MIN: usize = 8;
+const ANONYMOUS_OBJECT_SIGNATURE_LEN: usize = 4;
+const ANONYMOUS_OBJECT_SIG1: u16 = 0x0000;
+const ANONYMOUS_OBJECT_SIG2: u16 = 0xFFFF;
 
 #[allow(clippy::too_many_lines)]
 pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
@@ -286,7 +289,19 @@ pub fn parse_native(bytes: &[u8]) -> Result<NativeFile> {
     })
 }
 
+fn is_anonymous_object_header(bytes: &[u8]) -> bool {
+    let Some(signature): Option<&[u8]> = bytes.get(..ANONYMOUS_OBJECT_SIGNATURE_LEN) else {
+        return false;
+    };
+    let sig1: u16 = u16::from_le_bytes([signature[0], signature[1]]);
+    let sig2: u16 = u16::from_le_bytes([signature[2], signature[3]]);
+    sig1 == ANONYMOUS_OBJECT_SIG1 && sig2 == ANONYMOUS_OBJECT_SIG2
+}
+
 pub(crate) fn detect_native_format(bytes: &[u8]) -> Result<NativeFormat> {
+    if is_anonymous_object_header(bytes) {
+        return Ok(NativeFormat::Coff);
+    }
     if bytes.len() < MACHO_FAT_MIN {
         return Err(Error::NativeParse(
             "input too small for any native format".to_owned(),

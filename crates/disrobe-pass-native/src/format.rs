@@ -71,6 +71,13 @@ const LE_SIG: &[u8; 2] = b"LE";
 const LX_SIG: &[u8; 2] = b"LX";
 const WASM_MAGIC: &[u8; 4] = b"\0asm";
 const COFF_MACHINE_OFFSETS_MIN: usize = 20;
+const ANONYMOUS_OBJECT_HEADER_MIN: usize = 56;
+const ANONYMOUS_OBJECT_SIG2: u16 = 0xFFFF;
+const ANONYMOUS_OBJECT_MIN_VERSION: u16 = 2;
+const BIGOBJ_CLASS_ID: [u8; 16] = [
+    0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
+];
+const COFF_MACHINES_64: [u16; 2] = [0x8664, 0xAA64];
 
 #[allow(clippy::too_many_lines)]
 pub fn detect(bytes: &[u8]) -> Result<DetectedFormat> {
@@ -230,6 +237,18 @@ pub fn detect(bytes: &[u8]) -> Result<DetectedFormat> {
             notes: vec!["unknown-extended-header".to_owned()],
         });
     }
+    if let Some(machine) = anonymous_object_machine(bytes) {
+        return Ok(DetectedFormat {
+            kind: NativeFormat::Coff,
+            bits: if COFF_MACHINES_64.contains(&machine) {
+                64
+            } else {
+                32
+            },
+            subsystem: None,
+            notes: vec!["anonymous-bigobj".to_owned()],
+        });
+    }
     if let Some(kind) = classify_coff_header(bytes) {
         return Ok(DetectedFormat {
             kind,
@@ -300,6 +319,20 @@ const fn subsystem_label(s: u16) -> &'static str {
     }
 }
 
+fn anonymous_object_machine(bytes: &[u8]) -> Option<u16> {
+    let header: &[u8] = bytes.get(..ANONYMOUS_OBJECT_HEADER_MIN)?;
+    let sig1: u16 = u16::from_le_bytes([header[0], header[1]]);
+    let sig2: u16 = u16::from_le_bytes([header[2], header[3]]);
+    let version: u16 = u16::from_le_bytes([header[4], header[5]]);
+    if sig1 != 0 || sig2 != ANONYMOUS_OBJECT_SIG2 || version < ANONYMOUS_OBJECT_MIN_VERSION {
+        return None;
+    }
+    if header[12..28] != BIGOBJ_CLASS_ID {
+        return None;
+    }
+    Some(u16::from_le_bytes([header[6], header[7]]))
+}
+
 fn classify_coff_header(bytes: &[u8]) -> Option<NativeFormat> {
     if bytes.len() < COFF_MACHINE_OFFSETS_MIN {
         return None;
@@ -328,6 +361,74 @@ pub fn summarize(formats: &BTreeMap<NativeFormat, u32>) -> String {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn anonymous_bigobj(machine: u16) -> Vec<u8> {
+        let mut buf: Vec<u8> = vec![0; ANONYMOUS_OBJECT_HEADER_MIN];
+        buf[2..4].copy_from_slice(&ANONYMOUS_OBJECT_SIG2.to_le_bytes());
+        buf[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        buf[6..8].copy_from_slice(&machine.to_le_bytes());
+        buf[12..28].copy_from_slice(&BIGOBJ_CLASS_ID);
+        buf
+    }
+
+    #[test]
+    fn an_import_library_header_is_not_reported_as_a_bigobj() {
+        let mut buf: Vec<u8> = anonymous_bigobj(0x8664);
+        buf[4..6].copy_from_slice(&0_u16.to_le_bytes());
+        let detected: Result<DetectedFormat> = detect(&buf);
+        assert!(
+            detected.is_err()
+                || detected.is_ok_and(|value: DetectedFormat| {
+                    value.notes != vec!["anonymous-bigobj".to_owned()]
+                }),
+            "an import header shares the signature but is version 0 and is not a bigobj"
+        );
+    }
+
+    #[test]
+    fn a_foreign_class_id_is_not_reported_as_a_bigobj() {
+        let mut buf: Vec<u8> = anonymous_bigobj(0x8664);
+        buf[12] ^= 0xFF;
+        let detected: Result<DetectedFormat> = detect(&buf);
+        assert!(
+            detected.is_err()
+                || detected.is_ok_and(|value: DetectedFormat| {
+                    value.notes != vec!["anonymous-bigobj".to_owned()]
+                }),
+            "only the Microsoft bigobj class ID may select the anonymous layout"
+        );
+    }
+
+    #[test]
+    fn anonymous_bigobj_is_named_rather_than_left_unknown() {
+        let detected: DetectedFormat =
+            detect(&anonymous_bigobj(0x8664)).expect("an anonymous bigobj must be classified");
+        assert_eq!(detected.kind, NativeFormat::Coff);
+        assert_eq!(detected.bits, 64);
+        assert_eq!(detected.notes, vec!["anonymous-bigobj".to_owned()]);
+    }
+
+    #[test]
+    fn anonymous_bigobj_reports_the_width_its_machine_states() {
+        let detected: DetectedFormat =
+            detect(&anonymous_bigobj(0x014C)).expect("an i386 bigobj must be classified");
+        assert_eq!(detected.kind, NativeFormat::Coff);
+        assert_eq!(detected.bits, 32);
+    }
+
+    #[test]
+    fn a_header_that_only_shares_the_first_signature_word_is_not_a_bigobj() {
+        let mut buf: Vec<u8> = anonymous_bigobj(0x8664);
+        buf[2..4].copy_from_slice(&0x1234_u16.to_le_bytes());
+        let detected: Result<DetectedFormat> = detect(&buf);
+        assert!(
+            detected.is_err()
+                || detected.is_ok_and(|value: DetectedFormat| {
+                    value.notes != vec!["anonymous-bigobj".to_owned()]
+                }),
+            "only the exact 0x0000 0xFFFF pair may select the anonymous layout"
+        );
+    }
 
     #[test]
     fn empty_input_rejected() {

@@ -66,6 +66,15 @@ pub const MAKENSIS: Toolchain = Toolchain {
     install_hint: "install NSIS and put makensis on PATH",
 };
 
+pub const LLVM_READOBJ: Toolchain = Toolchain {
+    program: "llvm-readobj",
+    programs: &["llvm-readobj"],
+    install_paths: &[],
+    identity: None,
+    require_var: "DISROBE_REQUIRE_LLVM_READOBJ",
+    install_hint: "install llvm (llvm-readobj) and put it on PATH",
+};
+
 pub const READELF: Toolchain = Toolchain {
     program: "readelf",
     programs: &["readelf", "llvm-readelf", "eu-readelf"],
