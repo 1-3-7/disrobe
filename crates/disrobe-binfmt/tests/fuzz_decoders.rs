@@ -111,6 +111,7 @@ fn exercise(bytes: &[u8]) {
     let _ = lzh::parse_lzh(bytes, CAP);
     let _ = arc::parse_arc(bytes);
     let _ = arj::parse_arj(bytes);
+    let _ = arj::decode_method4(bytes, bytes.len().saturating_mul(64).min(1 << 20));
     let _ = par2::parse_par2(bytes);
     let _ = stuffit::parse_classic(bytes);
     if let Some(kind) = firmware::detect_firmware(bytes) {

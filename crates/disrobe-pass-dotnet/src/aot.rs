@@ -15,6 +15,7 @@ use object::{RelocationFlags, RelocationTarget};
 use serde::{Deserialize, Serialize};
 
 mod invoke_map;
+mod managed_abi;
 mod metadata_records;
 mod method_bodies;
 mod method_boundaries;
@@ -1150,11 +1151,24 @@ pub fn detect(image: &[u8]) -> AotReport {
     }
 }
 
-fn classify_runtime(image: &[u8], ready_to_run: Option<&ReadyToRunHeader>) -> AotRuntime {
-    if ready_to_run.is_some_and(|header: &ReadyToRunHeader| {
-        header.major_version == 16 && header.minor_version == 0
-    }) || byte_search::contains(image, b"net10.0")
-    {
+const AOT_METADATA_VERSION_RUNTIMES: [(u16, u16, AotRuntime); 4] = [
+    (8, 0, AotRuntime::Net7),
+    (9, 1, AotRuntime::Net8),
+    (10, 1, AotRuntime::Net9),
+    (16, 0, AotRuntime::Net10),
+];
+
+fn runtime_for_metadata_version(header: &ReadyToRunHeader) -> Option<AotRuntime> {
+    AOT_METADATA_VERSION_RUNTIMES
+        .iter()
+        .find(|(major, minor, _runtime): &&(u16, u16, AotRuntime)| {
+            *major == header.major_version && *minor == header.minor_version
+        })
+        .map(|(_major, _minor, runtime): &(u16, u16, AotRuntime)| *runtime)
+}
+
+fn runtime_for_framework_marker(image: &[u8]) -> AotRuntime {
+    if byte_search::contains(image, b"net10.0") {
         AotRuntime::Net10
     } else if byte_search::contains(image, b"net9.0") {
         AotRuntime::Net9
@@ -1165,6 +1179,12 @@ fn classify_runtime(image: &[u8], ready_to_run: Option<&ReadyToRunHeader>) -> Ao
     } else {
         AotRuntime::Unknown
     }
+}
+
+fn classify_runtime(image: &[u8], ready_to_run: Option<&ReadyToRunHeader>) -> AotRuntime {
+    ready_to_run
+        .and_then(runtime_for_metadata_version)
+        .unwrap_or_else(|| runtime_for_framework_marker(image))
 }
 
 #[cfg(test)]

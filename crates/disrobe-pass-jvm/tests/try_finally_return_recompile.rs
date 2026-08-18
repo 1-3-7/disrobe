@@ -701,7 +701,67 @@ const FINALLY_NESTED_MULTI_CATCH_SRC: &str = "public class FinallyNestedMultiCat
     }\n\
 }\n";
 
+const FINALLY_NESTED_CATCH_READ_SRC: &str = "public class FinallyNestedCatchRead {\n\
+    static int CTR = 0;\n\
+    static int run(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException ex) {\n\
+                CTR = ex.hashCode();\n\
+            }\n\
+        }\n\
+    }\n\
+    static int multi(int a, int b) {\n\
+        try {\n\
+            return a / b;\n\
+        } finally {\n\
+            try {\n\
+                CTR += a / b;\n\
+            } catch (ArithmeticException | NullPointerException ex) {\n\
+                CTR = ex.hashCode();\n\
+            }\n\
+        }\n\
+    }\n\
+}\n";
+
+const FINALLY_THROW_ALWAYS_SRC: &str = "public class FinallyThrowAlways {\n\
+    static int CTR = 0;\n\
+    static int value(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            throw new IllegalStateException(\"always\");\n\
+        }\n\
+    }\n\
+    static void unit(int a) {\n\
+        try {\n\
+            CTR = a;\n\
+        } finally {\n\
+            throw new IllegalStateException(\"always\");\n\
+        }\n\
+    }\n\
+    static String text(String s) {\n\
+        try {\n\
+            return s.trim();\n\
+        } finally {\n\
+            throw new IllegalStateException(\"always\");\n\
+        }\n\
+    }\n\
+    static long counted(long a) {\n\
+        try {\n\
+            return a * 2L;\n\
+        } finally {\n\
+            CTR++;\n\
+            throw new IllegalStateException(\"always\");\n\
+        }\n\
+    }\n\
+}\n";
+
 struct MethodTableSite {
+    code_offset: usize,
     entries_offset: usize,
     entries: Vec<ExceptionEntry>,
 }
@@ -731,6 +791,7 @@ fn method_exception_table(bytes: &[u8], class_file: &ClassFile, name: &str) -> M
         .try_into()
         .expect("Code payload appears exactly once");
     MethodTableSite {
+        code_offset: info_offset + 2 + 2 + 4,
         entries_offset: info_offset + 2 + 2 + 4 + code.code.len() + 2,
         entries: code.exception_table,
     }
@@ -807,6 +868,27 @@ fn recompile_recovered_class(class: &str, source: &str) -> RecompiledClass {
     }
 }
 
+fn nested_catch_parameter(body: &str, catch_type: &str) -> String {
+    let marker: String = format!("catch ({catch_type} ");
+    let found: usize = body
+        .find(&marker)
+        .unwrap_or_else(|| panic!("no {catch_type} catch clause in the recovered body:\n{body}"));
+    let start: usize = found + marker.len();
+    let rest: &str = body
+        .get(start..)
+        .unwrap_or_else(|| panic!("truncated catch clause in the recovered body:\n{body}"));
+    let end: usize = rest
+        .find(')')
+        .unwrap_or_else(|| panic!("unterminated catch clause in the recovered body:\n{body}"));
+    let clause: &str = rest
+        .get(..end)
+        .unwrap_or_else(|| panic!("unterminated catch clause in the recovered body:\n{body}"));
+    let parameter: &str = clause.split_whitespace().next_back().unwrap_or_else(|| {
+        panic!("the recovered {catch_type} catch clause has no parameter name:\n{body}")
+    });
+    parameter.to_owned()
+}
+
 fn assert_finally_recovered(source: &str, signature_fragment: &str) -> String {
     let body: String =
         method_body(source, signature_fragment).expect("recovered method not present");
@@ -858,6 +940,52 @@ fn finally_that_throws_from_a_void_method_recompiles_to_equivalent_bytecode() {
     assert_eq!(
         recompiled.original, recompiled.recovered,
         "recompiled void finally-throw bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_with_a_nested_catch_that_reads_its_exception_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyNestedCatchRead", FINALLY_NESTED_CATCH_READ_SRC);
+    for fragment in [" run(", " multi("] {
+        let body: String = assert_finally_recovered(&recompiled.source, fragment);
+        let parameter: String = nested_catch_parameter(&body, "ArithmeticException");
+        assert!(
+            body.contains(&format!("{parameter}.hashCode()")),
+            "the nested catch parameter is not read in the recovered finally {fragment}:\n{body}"
+        );
+    }
+    let multi_body: String = assert_finally_recovered(&recompiled.source, " multi(");
+    assert!(
+        multi_body.contains("NullPointerException"),
+        "the nested multi-catch lost an alternative in the recovered finally:\n{multi_body}"
+    );
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled nested-catch-read finally bytecode differs from the original:\n{}",
+        recompiled.source
+    );
+}
+
+#[test]
+fn finally_that_always_throws_recompiles_to_equivalent_bytecode() {
+    let recompiled: RecompiledClass =
+        recompile_recovered_class("FinallyThrowAlways", FINALLY_THROW_ALWAYS_SRC);
+    for fragment in [" value(", " unit(", " text(", " counted("] {
+        let body: String = assert_finally_recovered(&recompiled.source, fragment);
+        assert!(
+            body.contains("throw new IllegalStateException"),
+            "the unconditional finally throw was not recovered in {fragment}:\n{body}"
+        );
+        assert!(
+            !body.contains("if ("),
+            "an unconditional finally throw grew a condition in {fragment}:\n{body}"
+        );
+    }
+    assert_eq!(
+        recompiled.original, recompiled.recovered,
+        "recompiled always-throwing finally bytecode differs from the original:\n{}",
         recompiled.source
     );
 }
@@ -1077,6 +1205,70 @@ fn a_mismatched_nested_multi_catch_copy_is_refused_by_name() {
 }
 
 #[test]
+fn a_nested_catch_parameter_that_escapes_its_finally_copy_is_refused() {
+    let (javac, _javap): (PathBuf, PathBuf) = require_jdk_tools();
+    let scratch: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("disrobe_finally_catch_escape").expect("scratch");
+    let directory: PathBuf = scratch.path().join("orig");
+    std::fs::create_dir_all(&directory).expect("fixture directory");
+    let source_path: PathBuf = directory.join("FinallyNestedCatchRead.java");
+    std::fs::write(&source_path, FINALLY_NESTED_CATCH_READ_SRC).expect("fixture source");
+    let compile: std::process::Output = Command::new(&javac)
+        .arg("-proc:none")
+        .arg("-d")
+        .arg(&directory)
+        .arg(&source_path)
+        .output()
+        .expect("compile fixture");
+    assert!(
+        compile.status.success(),
+        "fixture failed to compile: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let mut class_bytes: Vec<u8> =
+        std::fs::read(directory.join("FinallyNestedCatchRead.class")).expect("fixture class");
+    let class_file: ClassFile = parse_classfile(&class_bytes).expect("parse fixture");
+    let intact: DecompiledClass = decompile_class(&class_file);
+    let intact_body: String = method_body(&intact.source, " run(").expect("intact run method");
+    assert!(
+        !intact_body.contains("not recovered:"),
+        "the unmutated fixture must recover, otherwise this gate cannot fail:\n{intact_body}"
+    );
+    let table: MethodTableSite = method_exception_table(&class_bytes, &class_file, "run");
+    let handler_pcs: Vec<u16> = table
+        .entries
+        .iter()
+        .filter(|entry: &&ExceptionEntry| {
+            class_file.class_name(entry.catch_type).ok() == Some("java/lang/ArithmeticException")
+        })
+        .map(|entry: &ExceptionEntry| entry.handler_pc)
+        .collect();
+    let [normal_copy, _]: [u16; 2] = handler_pcs
+        .as_slice()
+        .try_into()
+        .expect("one arithmetic row per finally copy");
+    let store_offset: usize = table.code_offset + usize::from(normal_copy);
+    assert_eq!(
+        (class_bytes[store_offset], class_bytes[store_offset + 1]),
+        (0x4E, 0x2D),
+        "the javac layout this mutation targets changed: expected astore_3 then aload_3"
+    );
+    class_bytes[store_offset] = 0x4D;
+    class_bytes[store_offset + 1] = 0x2C;
+    let mutated: ClassFile = parse_classfile(&class_bytes).expect("parse mutated fixture");
+    let decompiled: DecompiledClass = decompile_class(&mutated);
+    let body: String = method_body(&decompiled.source, " run(").expect("mutated run method");
+    assert!(
+        body.contains("not recovered:"),
+        "a nested catch parameter sharing a slot that lives outside its copy was folded anyway:\n{body}"
+    );
+    assert!(
+        !body.contains("catch (Throwable"),
+        "an escaping nested catch parameter became a Throwable catch:\n{body}"
+    );
+}
+
+#[test]
 fn d8_nested_finally_with_discarded_catches_matches_the_compiled_runtime() {
     let digest: sha2::digest::Output<sha2::Sha256> =
         <sha2::Sha256 as sha2::Digest>::digest(D8_FINALLY_NESTED_DEX);
@@ -1227,9 +1419,33 @@ const UNMODELLED_FINALLY_SRC: &str = "public class UnmodelledFinally {\n\
             throw new IllegalStateException(\"always\");\n\
         }\n\
     }\n\
+    static int finallyLoops(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            for (int i = 0; i < a; i++) { CTR++; }\n\
+        }\n\
+    }\n\
+    static int finallySpins(int a) {\n\
+        try {\n\
+            return a;\n\
+        } finally {\n\
+            while (true) { CTR++; }\n\
+        }\n\
+    }\n\
 }\n";
 
-const UNMODELLED_FINALLY_METHODS: &[&str] = &["finallyNestedTryUsesCatch", "finallyThrowsAlways"];
+const UNMODELLED_FINALLY_METHODS: &[(&str, &str)] = &[
+    (
+        "finallyLoops",
+        "a compiler-inserted finally handler with internal control flow has no source form this \
+         structurer can build",
+    ),
+    (
+        "finallySpins",
+        "a compiler-inserted finally handler forms no foldable chain",
+    ),
+];
 
 #[test]
 fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_into_a_catch() {
@@ -1270,11 +1486,17 @@ fn a_finally_shape_the_structurer_cannot_model_is_refused_rather_than_turned_int
          method does with a pending exception:\n{}",
         decompiled.source
     );
-    for method in UNMODELLED_FINALLY_METHODS {
+    for &(method, reason) in UNMODELLED_FINALLY_METHODS {
+        let body: String =
+            method_body(&decompiled.source, &format!(" {method}(")).unwrap_or_else(|| {
+                panic!(
+                    "method {method} vanished from the recovered class:\n{}",
+                    decompiled.source
+                )
+            });
         assert!(
-            decompiled.source.contains(method),
-            "method {method} vanished from the recovered class:\n{}",
-            decompiled.source
+            body.contains(reason),
+            "method {method} no longer refuses with its recorded reason {reason:?}:\n{body}"
         );
     }
     assert_eq!(

@@ -4025,15 +4025,14 @@ fn extract_ar(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<Ex
 }
 
 fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
-    let archive: crate::containers::ArjArchive = crate::containers::parse_arj(bytes)?;
+    let archive: crate::containers::ArjArchive =
+        crate::containers::arj::parse_arj_with_entry_limit(bytes, quota.max_entries)?;
     let mut guard: QuotaGuard = QuotaGuard::new(quota);
     let mut entries_out: Vec<ExtractedEntry> = Vec::new();
     let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
     let mut violations: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     for entry in &archive.entries {
-        if entry.is_directory {
-            continue;
-        }
         let safe_name: String = match sanitize_entry_path(&entry.name) {
             Ok(s) => s,
             Err(e) => {
@@ -4041,6 +4040,18 @@ fn extract_arj(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<E
                 continue;
             }
         };
+        if let Err(e) = crate::containers::arj::admit_output_path(&mut seen, &safe_name) {
+            violations.push(format!("arj-path `{safe_name}`: {e}"));
+            continue;
+        }
+        if entry.is_directory {
+            prepare_entry_dir(out_dir, &safe_name)?;
+            continue;
+        }
+        if let Err(e) = crate::containers::arj::preflight_entry_quota(entry, quota) {
+            violations.push(format!("arj-quota `{safe_name}`: {e}"));
+            continue;
+        }
         let data: Vec<u8> = match crate::containers::arj_entry_bytes(
             bytes,
             entry,

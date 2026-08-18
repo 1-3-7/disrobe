@@ -952,7 +952,7 @@ impl<'a> Structurer<'a> {
                         trim: 2,
                     });
                 }
-                if matches!(last.opcode, 0xAC..=0xB1)
+                if matches!(last.opcode, 0xAC..=0xB1 | 0xBF)
                     && !self.chain_reloads_slot(&chain, slot)
                     && self.slot_total_uses(slot) == 1
                 {
@@ -1074,21 +1074,42 @@ impl<'a> Structurer<'a> {
         )?;
         let mut exit_pc: Option<u32> = None;
         let mut catch_parameter_slots: BTreeSet<u16> = BTreeSet::new();
+        let mut paired_catch_slots: BTreeMap<u16, u16> = BTreeMap::new();
+        let mut paired_copy_slots: BTreeMap<u16, u16> = BTreeMap::new();
         for (a, b) in body.iter().zip(copy.iter()) {
             match identity.catch_store_match(a, b) {
                 FinallyCatchStoreMatch::Absent => {}
                 FinallyCatchStoreMatch::Matched(body_slot, copy_slot) => {
-                    if self.slot_total_uses(body_slot) != 1 {
+                    let uses: usize = identity.body_slot_uses(body_slot);
+                    let copy_contained: bool =
+                        self.slot_total_uses(copy_slot) == identity.copy_slot_uses(copy_slot);
+                    if self.slot_total_uses(body_slot) != uses
+                        || (uses > 1 && !copy_contained)
+                        || paired_catch_slots
+                            .get(&body_slot)
+                            .is_some_and(|mapped: &u16| *mapped != copy_slot)
+                        || paired_copy_slots
+                            .get(&copy_slot)
+                            .is_some_and(|mapped: &u16| *mapped != body_slot)
+                    {
                         return None;
                     }
+                    paired_catch_slots.insert(body_slot, copy_slot);
+                    paired_copy_slots.insert(copy_slot, body_slot);
                     catch_parameter_slots.insert(body_slot);
-                    if self.slot_total_uses(copy_slot) == 1 {
+                    if copy_contained {
                         catch_parameter_slots.insert(copy_slot);
                     }
                     continue;
                 }
                 FinallyCatchStoreMatch::MatchedDiscard => continue,
                 FinallyCatchStoreMatch::Invalid => return None,
+            }
+            let reference_loads: (Option<u16>, Option<u16>) = (aload_slot(a), aload_slot(b));
+            if let (Some(body_slot), Some(copy_slot)) = reference_loads
+                && paired_catch_slots.get(&body_slot) == Some(&copy_slot)
+            {
+                continue;
             }
             if a.opcode != b.opcode {
                 return None;
@@ -2908,6 +2929,14 @@ impl FinallyCopyIndex {
         self.copy_positions.get(&pc).copied()
     }
 
+    fn body_slot_uses(&self, slot: u16) -> usize {
+        self.body_slot_uses.get(&slot).copied().unwrap_or(0)
+    }
+
+    fn copy_slot_uses(&self, slot: u16) -> usize {
+        self.copy_slot_uses.get(&slot).copied().unwrap_or(0)
+    }
+
     fn catch_store_match(&self, body: &Instruction, copy: &Instruction) -> FinallyCatchStoreMatch {
         match (
             self.body_handlers.get(&body.pc),
@@ -2925,9 +2954,8 @@ impl FinallyCopyIndex {
                 else {
                     return FinallyCatchStoreMatch::Invalid;
                 };
-                if self.body_slot_uses.get(&body_slot) == Some(&1)
-                    && self.copy_slot_uses.get(&copy_slot) == Some(&1)
-                {
+                let body_uses: usize = self.body_slot_uses(body_slot);
+                if body_uses >= 1 && body_uses == self.copy_slot_uses(copy_slot) {
                     FinallyCatchStoreMatch::Matched(body_slot, copy_slot)
                 } else {
                     FinallyCatchStoreMatch::Invalid

@@ -1,0 +1,31 @@
+# ManagedAbiProbe.Add [0x140069EC0, 0x140069EC4)
+140069ec0: 8d 04 11                    	leal	(%rcx,%rdx), %eax
+140069ec3: c3                          	retq
+# ManagedAbiProbe.Negate [0x140069ED0, 0x140069ED5)
+140069ed0: 8b c1                       	movl	%ecx, %eax
+140069ed2: f7 d8                       	negl	%eax
+140069ed4: c3                          	retq
+# ManagedAbiProbe.Widen [0x140069EE0, 0x140069EE4)
+140069ee0: 48 63 c1                    	movslq	%ecx, %rax
+140069ee3: c3                          	retq
+# ManagedAbiProbe.IsPositive [0x140069EF0, 0x140069EF9)
+140069ef0: 85 c9                       	testl	%ecx, %ecx
+140069ef2: 0f 9f c0                    	setg	%al
+140069ef5: 0f b6 c0                    	movzbl	%al, %eax
+140069ef8: c3                          	retq
+# ManagedAbiProbe.Mask [0x140069F00, 0x140069F08)
+140069f00: 8b c1                       	movl	%ecx, %eax
+140069f02: 0f b6 ca                    	movzbl	%dl, %ecx
+140069f05: d3 e8                       	shrl	%cl, %eax
+140069f07: c3                          	retq
+# ManagedAbiProbe.Blend [0x140069F10, 0x140069F1F)
+140069f10: 03 d2                       	addl	%edx, %edx
+140069f12: 03 ca                       	addl	%edx, %ecx
+140069f14: 43 8d 04 40                 	leal	(%r8,%r8,2), %eax
+140069f18: 03 c1                       	addl	%ecx, %eax
+140069f1a: 42 8d 04 88                 	leal	(%rax,%r9,4), %eax
+140069f1e: c3                          	retq
+# ManagedAbiProbe.Scale [0x140069F20, 0x140069F27)
+140069f20: 8b c2                       	movl	%edx, %eax
+140069f22: 0f af 41 08                 	imull	0x8(%rcx), %eax
+140069f26: c3                          	retq

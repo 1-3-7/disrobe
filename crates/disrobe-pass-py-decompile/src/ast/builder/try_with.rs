@@ -2962,26 +2962,31 @@ pub(super) fn try_enclosed_by_leading_guard(
         return false;
     }
     let _ = hi;
-    let Some(guard): Option<usize> = (lo..region.try_start).find(|&k: &usize| {
-        is_forward_cond_jump(&stream.ops[k]) && !is_chain_cond_jump(&stream.ops, k)
-    }) else {
-        return false;
+    let encloses = |target: usize| -> bool {
+        if region.is_with {
+            target > region.try_end && target <= region.handler_start
+        } else {
+            target >= region.region_end && target > region.handler_start
+        }
     };
-    if (lo..guard).any(|k: usize| {
-        is_forward_cond_jump(&stream.ops[k])
-            && !is_chain_cond_jump(&stream.ops, k)
-            && !is_value_form_shortcircuit(&stream.ops, k)
-            && resolve_jump_target(stream, k, &stream.ops[k]).is_some_and(|t: usize| t > k)
-    }) {
-        return false;
+    for k in lo..region.try_start {
+        if !is_forward_cond_jump(&stream.ops[k]) || is_chain_cond_jump(&stream.ops, k) {
+            continue;
+        }
+        let Some(target): Option<usize> = resolve_jump_target(stream, k, &stream.ops[k]) else {
+            return false;
+        };
+        if encloses(target) {
+            return true;
+        }
+        if is_value_form_shortcircuit(&stream.ops, k) || target <= k {
+            continue;
+        }
+        if target > region.try_start {
+            return false;
+        }
     }
-    let Some(target): Option<usize> = resolve_jump_target(stream, guard, &stream.ops[guard]) else {
-        return false;
-    };
-    if region.is_with {
-        return target > region.try_end && target <= region.handler_start;
-    }
-    target >= region.region_end && target > region.handler_start
+    false
 }
 
 pub(super) fn loop_inside_unpeeled_pre311_try(

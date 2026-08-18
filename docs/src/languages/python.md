@@ -90,10 +90,10 @@ Each band compiles the same pinned module list on its own interpreter, then reco
 
 | Band | Interpreter | Recovered | Rate | Modules | Enforced on |
 |---|---|---|---|---|---|
-| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5175 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->94.81%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
-| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5403 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->95.83%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
-| 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5400 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.42%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | tag, schedule |
-| 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5709 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->95.69%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | tag, schedule |
+| 3.10 | CPython <!-- m:py_band_310_interpreter -->3.10.20<!-- /m --> | <!-- m:py_band_310_frac -->5202 / 5458<!-- /m --> code objects | <!-- m:py_band_310_rate -->95.31%<!-- /m --> | <!-- m:py_band_310_modules -->161<!-- /m --> | push, tag, schedule |
+| 3.11 | CPython <!-- m:py_band_311_interpreter -->3.11.15<!-- /m --> | <!-- m:py_band_311_frac -->5427 / 5638<!-- /m --> code objects | <!-- m:py_band_311_rate -->96.26%<!-- /m --> | <!-- m:py_band_311_modules -->172<!-- /m --> | tag, schedule |
+| 3.12 | CPython <!-- m:py_band_312_interpreter -->3.12.13<!-- /m --> | <!-- m:py_band_312_frac -->5402 / 5659<!-- /m --> code objects | <!-- m:py_band_312_rate -->95.46%<!-- /m --> | <!-- m:py_band_312_modules -->177<!-- /m --> | tag, schedule |
+| 3.13 | CPython <!-- m:py_band_313_interpreter -->3.13.14<!-- /m --> | <!-- m:py_band_313_frac -->5715 / 5966<!-- /m --> code objects | <!-- m:py_band_313_rate -->95.79%<!-- /m --> | <!-- m:py_band_313_modules -->190<!-- /m --> | tag, schedule |
 | 3.14 | CPython <!-- m:py_band_314_interpreter -->3.14.5<!-- /m --> | <!-- m:py_band_314_frac -->6072 / 6286<!-- /m --> code objects | <!-- m:py_band_314_rate -->96.60%<!-- /m --> | <!-- m:py_band_314_modules -->200<!-- /m --> | no band gate, mirrored |
 | 3.15 | CPython <!-- m:py_band_315_interpreter -->3.15.0b4<!-- /m --> | <!-- m:py_band_315_frac -->6219 / 6480<!-- /m --> code objects | <!-- m:py_band_315_rate -->95.97%<!-- /m --> | <!-- m:py_band_315_modules -->199<!-- /m --> | tag, schedule |
 | 1.0 to 3.7 | period interpreter zoo | <!-- m:py_legacy_frac -->150 / 191<!-- /m --> fixtures | floor, not a measured rate | not applicable | tag, schedule |

@@ -1,6 +1,9 @@
 use disrobe_lift_x86::decode_block_x86;
 use disrobe_nir::{NirArtifact, NirFunction};
 use disrobe_sleigh::lifter::{ArmMode, DecodedBlock, Language, decode_block_for_language};
+use std::collections::BTreeMap;
+
+use disrobe_sleigh::coverage::{DecodeCoverage, measure_coverage, unlifted_mnemonics};
 use disrobe_sleigh::pcode::{DecodeStatus, PcodeInstr};
 use disrobe_sleigh::syntax::Endian;
 
@@ -136,6 +139,8 @@ pub struct LiftGap {
 pub struct LiftGaps {
     reported: Vec<LiftGap>,
     total: usize,
+    coverage: DecodeCoverage,
+    unlifted: BTreeMap<String, usize>,
 }
 
 impl LiftGaps {
@@ -165,6 +170,16 @@ impl LiftGaps {
             .iter()
             .map(|gap: &LiftGap| gap.mnemonic.as_str())
             .collect()
+    }
+
+    #[must_use]
+    pub const fn coverage(&self) -> DecodeCoverage {
+        self.coverage
+    }
+
+    #[must_use]
+    pub const fn unlifted(&self) -> &BTreeMap<String, usize> {
+        &self.unlifted
     }
 }
 
@@ -212,6 +227,8 @@ pub fn block_gaps(block: &DecodedBlock) -> LiftGaps {
             })
             .collect(),
         total: undecoded().count(),
+        coverage: measure_coverage(&block.instructions),
+        unlifted: unlifted_mnemonics(&block.instructions),
     }
 }
 

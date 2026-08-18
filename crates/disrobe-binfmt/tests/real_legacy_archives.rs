@@ -48,7 +48,7 @@ fn run(format_dir: &str, fixture: &str, kind: ContainerKind, member: &str) {
 
 #[test]
 fn arj_stored_member_byte_exact() {
-    run("arj", "hello.arj", ContainerKind::Arj, "HELLO.TXT");
+    run("arj", "method0.arj", ContainerKind::Arj, "hello.txt");
 }
 
 #[test]

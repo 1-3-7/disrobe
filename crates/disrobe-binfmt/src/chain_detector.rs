@@ -121,6 +121,7 @@ const TAG_CAB: &str = "cab";
 const TAG_RAR: &str = "rar";
 const TAG_RPM: &str = "rpm";
 const TAG_ARC: &str = "arc";
+const TAG_ARJ: &str = "arj";
 const TAG_LZH: &str = "lzh";
 const TAG_STUFFIT: &str = "stuffit";
 const TAG_INNOSETUP: &str = "inno-setup";
@@ -320,8 +321,24 @@ fn inventory_entries(tag: &str, bytes: &[u8]) -> Inventory {
         TAG_ZIP => zip_inventory(bytes),
         TAG_TAR => tar_inventory(bytes),
         TAG_ARC => arc_inventory(bytes),
+        TAG_ARJ => arj_inventory(bytes),
         _ => Inventory::ExtractionRequired,
     }
+}
+
+fn arj_inventory(bytes: &[u8]) -> Inventory {
+    let archive: crate::containers::ArjArchive =
+        match crate::containers::arj::parse_arj_with_entry_limit(bytes, MAX_MEMBER_COUNT) {
+            Ok(archive) => archive,
+            Err(error) => return Inventory::Unreadable(error.to_string()),
+        };
+    Inventory::Listed(
+        archive
+            .entries
+            .into_iter()
+            .map(|entry: crate::containers::ArjEntry| (entry.name, u64::from(entry.original_size)))
+            .collect(),
+    )
 }
 
 fn arc_inventory(bytes: &[u8]) -> Inventory {
@@ -412,6 +429,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_BZIP2 => extract_single_stream(bytes, "bz2", decode_bzip2),
         TAG_RPM => extract_rpm_members(bytes),
         TAG_ARC => extract_arc_members(bytes),
+        TAG_ARJ => extract_arj_members(bytes),
         TAG_LZH => extract_lzh_members(bytes),
         TAG_STUFFIT => extract_stuffit_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
@@ -711,6 +729,47 @@ fn extract_arc_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
     }
     if members.is_empty() && !archive.entries.is_empty() {
         return Err(fail("arc payload contains no verified members".to_owned()));
+    }
+    Ok(members)
+}
+
+fn extract_arj_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let quota: crate::quota::ExtractionQuota = crate::quota::ExtractionQuota {
+        max_entries: MAX_MEMBER_COUNT,
+        max_total_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_uncompressed: MAX_MEMBER_BYTES,
+        max_per_entry_ratio: 1_000,
+        max_aggregate_ratio: 1_000,
+    };
+    let archive: crate::containers::ArjArchive =
+        crate::containers::arj::parse_arj_with_entry_limit(bytes, quota.max_entries)
+            .map_err(|error: crate::error::Error| fail(format!("arj payload: {error}")))?;
+    let mut guard: crate::quota::QuotaGuard = crate::quota::QuotaGuard::new(quota);
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut prepared: Vec<(&crate::containers::ArjEntry, String)> = Vec::new();
+    for entry in &archive.entries {
+        let name: String = crate::quota::sanitize_entry_path(&entry.name)
+            .map_err(|error: crate::error::Error| fail(format!("arj member path: {error}")))?;
+        crate::containers::arj::admit_output_path(&mut names, &name)
+            .map_err(|error: crate::error::Error| fail(format!("arj member path: {error}")))?;
+        if entry.is_directory {
+            continue;
+        }
+        crate::containers::arj::preflight_entry_quota(entry, quota)
+            .map_err(|error: crate::error::Error| fail(format!("arj quota: {error}")))?;
+        prepared.push((entry, name));
+    }
+    let mut members: Vec<(String, Vec<u8>)> = Vec::with_capacity(prepared.len());
+    for (entry, name) in prepared {
+        let data: Vec<u8> =
+            crate::containers::arj_entry_bytes(bytes, entry, quota.max_per_entry_uncompressed)
+                .map_err(|error: crate::error::Error| {
+                    fail(format!("arj member `{name}`: {error}"))
+                })?;
+        guard
+            .admit_entry(&name, data.len() as u64, u64::from(entry.compressed_size))
+            .map_err(|error: crate::error::Error| fail(format!("arj quota: {error}")))?;
+        members.push((name, data));
     }
     Ok(members)
 }
@@ -1097,6 +1156,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     }
     if bytes.starts_with(&[0xed, 0xab, 0xee, 0xdb]) {
         return Some(TAG_RPM);
+    }
+    if crate::containers::detect_arj(bytes) {
+        return Some(TAG_ARJ);
     }
     if crate::containers::arc::parse_arc_with_entry_limit(bytes, MAX_MEMBER_COUNT).is_ok() {
         return Some(TAG_ARC);

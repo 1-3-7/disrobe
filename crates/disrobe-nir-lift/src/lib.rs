@@ -20,6 +20,8 @@ pub use avm2::{function_address as avm2_function_address, lift_abc, lift_swf_abc
 pub use beam::{function_address as beam_function_address, lift_beam_module};
 pub use cil::{function_address as cil_function_address, lift_pe as lift_dotnet_pe};
 pub use dalvik::{function_address as dalvik_function_address, lift_dex};
+pub use disrobe_sleigh::coverage::{DECODE_STATUSES, DecodeCoverage, StatusCounts, status_name};
+pub use disrobe_sleigh::pcode::DecodeStatus;
 pub use error::{LiftError, ProvenanceLiftError, ProvenanceResult, Result};
 pub use jvm::{function_address as jvm_function_address, lift_classfile};
 pub use lua::{function_address as lua_function_address, lift_lua_chunk};

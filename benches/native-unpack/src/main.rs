@@ -1596,13 +1596,109 @@ mod tests {
                 .join("results.md"),
         )
         .unwrap();
-        assert_eq!(
-            unpack_disk, unpack_md,
-            "benches/native-unpack/results.md is stale; run `cargo run -p disrobe-bench-native-unpack`",
+        assert_regenerated("benches/native-unpack/results.md", &unpack_disk, &unpack_md);
+        assert_regenerated(
+            "benches/decompile-quality/results.md",
+            &quality_disk,
+            &quality_md,
+        );
+    }
+
+    #[test]
+    fn a_stale_document_is_reported_by_line_rather_than_dumped_whole() {
+        let disk: String = format!("header\nsame\n{}\ntail\n", "x".repeat(50_000));
+        let fresh: String = format!("header\nsame\n{}\ntail\n", "y".repeat(50_000));
+        let failure: Box<dyn std::any::Any + Send> =
+            std::panic::catch_unwind(|| assert_regenerated("results.md", &disk, &fresh))
+                .unwrap_err();
+        let message: &str = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap();
+        assert!(
+            message.contains("first difference at line 3"),
+            "the message must name the first differing line: {message}"
+        );
+        assert!(
+            message.contains("committed lines 4, regenerated lines 4"),
+            "the message must give both line counts: {message}"
+        );
+        assert!(
+            message.len() < 3_000,
+            "two 50,000-byte lines must not reach the log; a whole-document dump is what stalled \
+             the ubuntu leg for over two hours. message length {}",
+            message.len()
+        );
+        assert!(
+            message.contains("(50000 bytes)"),
+            "a truncated line must say how long the real line was: {message}"
+        );
+    }
+
+    #[test]
+    fn a_document_that_ends_early_is_named_rather_than_indexed_out_of_bounds() {
+        let disk: String = "header\nsame\n".to_owned();
+        let fresh: String = "header\nsame\nextra\n".to_owned();
+        let failure: Box<dyn std::any::Any + Send> =
+            std::panic::catch_unwind(|| assert_regenerated("results.md", &disk, &fresh))
+                .unwrap_err();
+        let message: &str = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap();
+        assert!(
+            message.contains("the committed file ends here"),
+            "a document that runs out of lines must say so: {message}"
+        );
+        assert!(
+            message.contains("first difference at line 3"),
+            "the difference is the line past the end of the committed file: {message}"
+        );
+    }
+
+    #[test]
+    fn an_identical_document_does_not_panic() {
+        assert_regenerated("results.md", "header\nsame\n", "header\nsame\n");
+    }
+
+    const DIFF_EXCERPT: usize = 200;
+
+    fn excerpt(line: &str) -> String {
+        let trimmed: String = line.chars().take(DIFF_EXCERPT).collect();
+        if trimmed.len() < line.len() {
+            format!("{trimmed}... ({} bytes)", line.len())
+        } else {
+            trimmed
+        }
+    }
+
+    fn assert_regenerated(path: &str, disk: &str, regenerated: &str) {
+        if disk == regenerated {
+            return;
+        }
+        let on_disk: Vec<&str> = disk.lines().collect();
+        let fresh: Vec<&str> = regenerated.lines().collect();
+        let first: usize = on_disk
+            .iter()
+            .zip(fresh.iter())
+            .position(|(left, right): (&&str, &&str)| left != right)
+            .unwrap_or_else(|| on_disk.len().min(fresh.len()));
+        let disk_line: String = on_disk.get(first).map_or_else(
+            || "(the committed file ends here)".to_owned(),
+            |line: &&str| excerpt(line),
+        );
+        let fresh_line: String = fresh.get(first).map_or_else(
+            || "(the regenerated document ends here)".to_owned(),
+            |line: &&str| excerpt(line),
         );
         assert_eq!(
-            quality_disk, quality_md,
-            "benches/decompile-quality/results.md is stale; run `cargo run -p disrobe-bench-native-unpack`",
+            (&disk_line, on_disk.len(), disk.len()),
+            (&fresh_line, fresh.len(), regenerated.len()),
+            "{path} is stale; run `cargo run -p disrobe-bench-native-unpack`; \
+             first difference at line {}; committed lines {}, regenerated lines {}",
+            first + 1,
+            on_disk.len(),
+            fresh.len()
         );
     }
 }

@@ -10391,18 +10391,17 @@ fn detect_loop_forest(
         return Some(Vec::new());
     }
 
-    let mut by_header: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-    for &(_, header) in &back_edges {
-        *by_header.entry(header).or_insert(0) += 1;
-    }
-    if by_header.values().any(|count: &usize| *count != 1) {
-        return None;
-    }
-    let headers: BTreeSet<usize> = by_header.keys().copied().collect();
-
-    let mut loops: Vec<LoopInfo> = Vec::with_capacity(back_edges.len());
+    let mut latches_by_header: std::collections::BTreeMap<usize, BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
     for &(latch, header) in &back_edges {
-        let natural: BTreeSet<usize> = flow.natural_loop_body(header, &[latch]);
+        latches_by_header.entry(header).or_default().insert(latch);
+    }
+    let headers: BTreeSet<usize> = latches_by_header.keys().copied().collect();
+
+    let mut loops: Vec<LoopInfo> = Vec::with_capacity(latches_by_header.len());
+    for (&header, latch_set) in &latches_by_header {
+        let latches: Vec<usize> = latch_set.iter().copied().collect();
+        let natural: BTreeSet<usize> = flow.natural_loop_body(header, &latches);
 
         if !body_entered_only_at_header(preds, &natural, header) {
             return None;
@@ -25870,6 +25869,184 @@ mod tests {
         );
     }
 
+    fn multi_latch_loop_items(latch_count: u64) -> Vec<Item> {
+        let probe: Flags = Flags::Test {
+            operand: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W64,
+            },
+        };
+        let arm_base: u64 = 2;
+        let tail: u64 = arm_base + (latch_count - 1) * 3 + 2;
+        let mut items: Vec<Item> = Vec::new();
+        items.push(Item {
+            address: 0,
+            kind: ItemKind::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                src: Source::Imm(0),
+            }),
+        });
+        items.push(Item {
+            address: 1,
+            kind: ItemKind::Branch {
+                kind: CondKind::E,
+                flags: probe.clone(),
+                target: tail,
+            },
+        });
+        for arm in 0..latch_count {
+            let base: u64 = arm_base + arm * 3;
+            let last: bool = arm + 1 == latch_count;
+            if !last {
+                items.push(Item {
+                    address: base,
+                    kind: ItemKind::Branch {
+                        kind: CondKind::E,
+                        flags: probe.clone(),
+                        target: base + 3,
+                    },
+                });
+            }
+            let body: u64 = if last { base } else { base + 1 };
+            items.push(Item {
+                address: body,
+                kind: ItemKind::Stmt(Stmt::BinAssign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    op: BinOp::Add,
+                    src: Source::Imm(i64::try_from(arm + 1).expect("arm index fits")),
+                }),
+            });
+            items.push(Item {
+                address: body + 1,
+                kind: ItemKind::Jmp { target: 1 },
+            });
+        }
+        items.push(Item {
+            address: tail,
+            kind: ItemKind::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rdx,
+                    width: Width::W64,
+                },
+                src: Source::Imm(9),
+            }),
+        });
+        items.push(Item {
+            address: tail + 1,
+            kind: ItemKind::Ret,
+        });
+        items
+    }
+
+    fn count_node(body: &Block, want: &dyn Fn(&Node) -> bool) -> usize {
+        body.iter()
+            .map(|node: &Node| {
+                let here: usize = usize::from(want(node));
+                let nested: usize = match node {
+                    Node::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        count_node(then_body, want)
+                            + else_body
+                                .as_ref()
+                                .map_or(0, |arm: &Block| count_node(arm, want))
+                    }
+                    Node::While { body, .. } | Node::DoWhile { body, .. } => count_node(body, want),
+                    _ => 0,
+                };
+                here + nested
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_loop_whose_header_has_two_latches_structures_with_one_continue_per_latch() {
+        let items: Vec<Item> = multi_latch_loop_items(2);
+        let mut refusal: Option<&'static str> = None;
+        let body: Block =
+            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
+                .expect("no hard error")
+                .expect("a header reached by two latches must structure as one loop");
+        assert_eq!(
+            loop_count(&body),
+            1,
+            "two latches into one header are one loop, not two: {body:#?}"
+        );
+        assert_eq!(
+            count_node(&body, &|node: &Node| matches!(node, Node::Continue)),
+            2,
+            "each latch edge must render as its own continue: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn a_loop_header_reached_by_three_latches_structures_as_one_loop() {
+        let items: Vec<Item> = multi_latch_loop_items(3);
+        let mut refusal: Option<&'static str> = None;
+        let body: Block =
+            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
+                .expect("no hard error")
+                .expect("a header reached by three latches must structure as one loop");
+        assert_eq!(
+            loop_count(&body),
+            1,
+            "three latches into one header are one loop: {body:#?}"
+        );
+        assert_eq!(
+            count_node(&body, &|node: &Node| matches!(node, Node::Continue)),
+            3,
+            "each latch edge must render as its own continue: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn latches_targeting_two_different_headers_stay_two_loops() {
+        let mut items: Vec<Item> = multi_latch_loop_items(2);
+        let outer_header: u64 = 0;
+        let tail: u64 = items
+            .last()
+            .map(|item: &Item| item.address)
+            .expect("the multi-latch stream is not empty");
+        items.pop();
+        items.push(Item {
+            address: tail,
+            kind: ItemKind::Branch {
+                kind: CondKind::E,
+                flags: Flags::Test {
+                    operand: RegRef {
+                        reg: Reg::Rdx,
+                        width: Width::W64,
+                    },
+                },
+                target: outer_header,
+            },
+        });
+        items.push(Item {
+            address: tail + 1,
+            kind: ItemKind::Ret,
+        });
+        let mut refusal: Option<&'static str> = None;
+        let structured: Option<Block> =
+            structure_reducible_cfg(&items, ExitPolicy::ForwardSkipOnly, &mut refusal)
+                .expect("no hard error");
+        let body: Block = structured.unwrap_or_else(|| {
+            panic!("a two-header nest must structure, refusal {refusal:?}");
+        });
+        assert_eq!(
+            loop_count(&body),
+            2,
+            "latches into two distinct headers are two loops, never one merged loop: {body:#?}"
+        );
+    }
+
     #[test]
     fn an_impure_conflicting_join_tail_is_refused_rather_than_cloned() {
         let items: Vec<Item> = conflicting_join_tail_items(store_tail());
@@ -25885,6 +26062,131 @@ mod tests {
             refusal,
             Some("a join block is reached from two arms without a common follow"),
             "the refusal must name the precondition that failed"
+        );
+    }
+
+    fn chained_join_tail_items(links: usize) -> Vec<Item> {
+        let probe: Flags = Flags::Test {
+            operand: RegRef {
+                reg: Reg::Rcx,
+                width: Width::W64,
+            },
+        };
+        let chain_start: u64 = 5;
+        let final_block: u64 = chain_start + 2 * u64::try_from(links).expect("link count fits");
+        let mut items: Vec<Item> = vec![
+            Item {
+                address: 0,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe.clone(),
+                    target: final_block,
+                },
+            },
+            Item {
+                address: 1,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe.clone(),
+                    target: 4,
+                },
+            },
+            Item {
+                address: 2,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rdx,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(7),
+                }),
+            },
+            Item {
+                address: 3,
+                kind: ItemKind::Jmp {
+                    target: chain_start,
+                },
+            },
+            Item {
+                address: 4,
+                kind: ItemKind::Branch {
+                    kind: CondKind::E,
+                    flags: probe,
+                    target: final_block,
+                },
+            },
+        ];
+        for link in 0..links {
+            let base: u64 = chain_start + 2 * u64::try_from(link).expect("link index fits");
+            items.push(Item {
+                address: base,
+                kind: ItemKind::Stmt(Stmt::Assign {
+                    dest: RegRef {
+                        reg: Reg::Rax,
+                        width: Width::W64,
+                    },
+                    src: Source::Imm(i64::try_from(link).expect("link index fits")),
+                }),
+            });
+            items.push(Item {
+                address: base + 1,
+                kind: ItemKind::Jmp { target: base + 2 },
+            });
+        }
+        items.push(Item {
+            address: final_block,
+            kind: ItemKind::Stmt(Stmt::Assign {
+                dest: RegRef {
+                    reg: Reg::Rax,
+                    width: Width::W64,
+                },
+                src: Source::Imm(11),
+            }),
+        });
+        items.push(Item {
+            address: final_block + 1,
+            kind: ItemKind::Ret,
+        });
+        items
+    }
+
+    #[test]
+    fn a_shared_tail_within_the_clone_budget_is_cloned_onto_every_reaching_arm() {
+        let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET - 1);
+        let mut refusal: Option<&'static str> = None;
+        let body: Block =
+            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error")
+                .expect("a pure tail shorter than the clone budget must structure");
+        let first_link: Stmt = Stmt::Assign {
+            dest: RegRef {
+                reg: Reg::Rax,
+                width: Width::W64,
+            },
+            src: Source::Imm(0),
+        };
+        assert_eq!(
+            count_stmt(&body, &first_link),
+            2,
+            "the cloned tail must appear once on each reaching arm: {body:#?}"
+        );
+    }
+
+    #[test]
+    fn a_shared_tail_longer_than_the_clone_budget_is_refused_rather_than_cloned() {
+        let items: Vec<Item> = chained_join_tail_items(PURE_TAIL_CLONE_BUDGET + 1);
+        let mut refusal: Option<&'static str> = None;
+        let structured: Option<Block> =
+            structure_reducible_cfg(&items, ExitPolicy::EarlyAndMultipleExits, &mut refusal)
+                .expect("no hard error");
+        assert!(
+            structured.is_none(),
+            "a shared tail longer than the clone budget must not be cloned: {structured:#?}"
+        );
+        assert_eq!(
+            refusal,
+            Some("a join block is reached from two arms without a common follow"),
+            "exceeding the clone budget must name the precondition that failed"
         );
     }
 

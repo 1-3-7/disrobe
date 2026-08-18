@@ -1,0 +1,15 @@
+ Preferred load address is 0000000140000000
+ 0001:00068ec0       managed_abi_net9_x86_64_ManagedAbiProbe__Add 0000000140069ec0     managed_abi_net9_x86_64.obj
+ 0001:00068ed0       managed_abi_net9_x86_64_ManagedAbiProbe__Negate 0000000140069ed0     managed_abi_net9_x86_64.obj
+ 0001:00068ee0       managed_abi_net9_x86_64_ManagedAbiProbe__Widen 0000000140069ee0     managed_abi_net9_x86_64.obj
+ 0001:00068ef0       managed_abi_net9_x86_64_ManagedAbiProbe__IsPositive 0000000140069ef0     managed_abi_net9_x86_64.obj
+ 0001:00068f00       managed_abi_net9_x86_64_ManagedAbiProbe__Mask 0000000140069f00     managed_abi_net9_x86_64.obj
+ 0001:00068f10       managed_abi_net9_x86_64_ManagedAbiProbe__Blend 0000000140069f10     managed_abi_net9_x86_64.obj
+ 0001:00068f20       managed_abi_net9_x86_64_ManagedAbiProbe__Scale 0000000140069f20     managed_abi_net9_x86_64.obj
+ 0002:00059800       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Negate 000000014015e800     managed_abi_net9_x86_64.obj
+ 0002:0005ac74       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Mask 000000014015fc74     managed_abi_net9_x86_64.obj
+ 0002:0005b180       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Blend 0000000140160180     managed_abi_net9_x86_64.obj
+ 0002:0005b988       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Add 0000000140160988     managed_abi_net9_x86_64.obj
+ 0002:0005b988       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Widen 0000000140160988     managed_abi_net9_x86_64.obj
+ 0002:00062a10       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__IsPositive 0000000140167a10     managed_abi_net9_x86_64.obj
+ 0002:00069ad0       _unwind0managed_abi_net9_x86_64_ManagedAbiProbe__Scale 000000014016ead0     managed_abi_net9_x86_64.obj

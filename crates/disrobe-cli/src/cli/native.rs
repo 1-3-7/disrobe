@@ -460,22 +460,260 @@ fn decompile_native(
 }
 
 #[cfg(feature = "nir-lift")]
+#[derive(Debug, Serialize)]
+pub(crate) struct DecodeStatusShare {
+    pub(crate) status: &'static str,
+    pub(crate) instructions: usize,
+    pub(crate) percent_of_decoded: String,
+}
+
+#[cfg(feature = "nir-lift")]
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct FunctionCoverageShare {
+    pub(crate) function: String,
+    pub(crate) decoded_instructions: usize,
+    pub(crate) semantically_lifted_instructions: usize,
+    pub(crate) semantic_percent: String,
+}
+
+#[cfg(feature = "nir-lift")]
+const LOWEST_COVERED_CAP: usize = 10;
+
+#[cfg(feature = "nir-lift")]
+#[derive(Debug, Serialize)]
+pub(crate) struct DecodeCoverageReport {
+    pub(crate) schema: &'static str,
+    pub(crate) decoded_instructions: usize,
+    pub(crate) modelled_instructions: usize,
+    pub(crate) unmodelled_instructions: usize,
+    pub(crate) matched_instructions: usize,
+    pub(crate) matched_percent: String,
+    pub(crate) semantic_percent: String,
+    pub(crate) instructions_emitting_callother: usize,
+    pub(crate) instructions_emitting_callother_percent: String,
+    pub(crate) by_status: Vec<DecodeStatusShare>,
+    pub(crate) unlifted_mnemonics: BTreeMap<String, usize>,
+    pub(crate) lowest_covered_functions: Vec<FunctionCoverageShare>,
+    pub(crate) lowest_covered_functions_omitted: usize,
+    pub(crate) counts_note: &'static str,
+}
+
+#[cfg(feature = "nir-lift")]
+const COUNTS_NOTE: &str = "matched counts supported, callother and unsupported; semantic counts \
+                           supported alone, so the two do not sum to one hundred; the callother \
+                           row counts instructions the decoder classified as callother, while \
+                           instructions_emitting_callother counts every instruction whose lifted \
+                           body contains a callother operation, so the two figures differ";
+
+#[cfg(feature = "nir-lift")]
+fn percent_text(part: usize, whole: usize) -> String {
+    if whole == 0 {
+        return "0.00".to_owned();
+    }
+    let share: f64 = (part as f64) * 100.0 / (whole as f64);
+    format!("{share:.2}")
+}
+
+#[cfg(feature = "nir-lift")]
 pub(crate) struct PcodeRecovery {
     pub(crate) source: String,
     pub(crate) structured: bool,
     pub(crate) devirt_report: serde_json::Value,
     pub(crate) decoded: usize,
     pub(crate) modelled: usize,
+    pub(crate) coverage: disrobe_nir_lift::DecodeCoverage,
+    pub(crate) unlifted: BTreeMap<String, usize>,
 }
 
 #[cfg(feature = "nir-lift")]
 impl PcodeRecovery {
+    pub(crate) fn coverage_report(&self) -> DecodeCoverageReport {
+        let total: usize = self.coverage.total;
+        let by_status: Vec<DecodeStatusShare> = disrobe_nir_lift::DECODE_STATUSES
+            .iter()
+            .map(
+                |status: &disrobe_nir_lift::DecodeStatus| DecodeStatusShare {
+                    status: disrobe_nir_lift::status_name(*status),
+                    instructions: self.coverage.status.count_of(*status),
+                    percent_of_decoded: percent_text(self.coverage.status.count_of(*status), total),
+                },
+            )
+            .collect();
+        DecodeCoverageReport {
+            schema: "disrobe.native.decode-coverage/v1",
+            decoded_instructions: self.decoded,
+            modelled_instructions: self.modelled,
+            unmodelled_instructions: self.decoded.saturating_sub(self.modelled),
+            matched_instructions: self.coverage.matched,
+            matched_percent: percent_text(self.coverage.matched, total),
+            semantic_percent: percent_text(self.coverage.status.supported, total),
+            instructions_emitting_callother: self.coverage.callother_ops,
+            instructions_emitting_callother_percent: percent_text(
+                self.coverage.callother_ops,
+                total,
+            ),
+            by_status,
+            unlifted_mnemonics: self.unlifted.clone(),
+            lowest_covered_functions: Vec::new(),
+            lowest_covered_functions_omitted: 0,
+            counts_note: COUNTS_NOTE,
+        }
+    }
+
     pub(crate) fn coverage_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "decoded_instructions": self.decoded,
-            "modelled_instructions": self.modelled,
-            "unmodelled_instructions": self.decoded.saturating_sub(self.modelled),
-        })
+        serde_json::to_value(self.coverage_report()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+#[cfg(feature = "nir-lift")]
+#[derive(Debug, Default)]
+pub(crate) struct DecodeCoverageTotals {
+    decoded: usize,
+    modelled: usize,
+    matched: usize,
+    callother_ops: usize,
+    status: disrobe_nir_lift::StatusCounts,
+    unlifted: BTreeMap<String, usize>,
+    functions: Vec<FunctionCoverageShare>,
+}
+
+#[cfg(feature = "nir-lift")]
+impl DecodeCoverageTotals {
+    pub(crate) fn absorb(&mut self, function: &str, recovery: &PcodeRecovery) {
+        self.functions.push(FunctionCoverageShare {
+            function: function.to_owned(),
+            decoded_instructions: recovery.coverage.total,
+            semantically_lifted_instructions: recovery.coverage.status.supported,
+            semantic_percent: percent_text(
+                recovery.coverage.status.supported,
+                recovery.coverage.total,
+            ),
+        });
+        self.decoded = self.decoded.saturating_add(recovery.decoded);
+        self.modelled = self.modelled.saturating_add(recovery.modelled);
+        self.matched = self.matched.saturating_add(recovery.coverage.matched);
+        self.callother_ops = self
+            .callother_ops
+            .saturating_add(recovery.coverage.callother_ops);
+        let counts: disrobe_nir_lift::StatusCounts = recovery.coverage.status;
+        self.status.ambiguous = self.status.ambiguous.saturating_add(counts.ambiguous);
+        self.status.callother = self.status.callother.saturating_add(counts.callother);
+        self.status.no_match = self.status.no_match.saturating_add(counts.no_match);
+        self.status.spec_error = self.status.spec_error.saturating_add(counts.spec_error);
+        self.status.supported = self.status.supported.saturating_add(counts.supported);
+        self.status.truncated = self.status.truncated.saturating_add(counts.truncated);
+        self.status.unsupported = self.status.unsupported.saturating_add(counts.unsupported);
+        for (mnemonic, count) in &recovery.unlifted {
+            let slot: &mut usize = self.unlifted.entry(mnemonic.clone()).or_default();
+            *slot = slot.saturating_add(*count);
+        }
+    }
+
+    pub(crate) fn report(&self) -> DecodeCoverageReport {
+        let total: usize = self.status.total();
+        let (lowest, omitted): (Vec<FunctionCoverageShare>, usize) = self.lowest_covered();
+        DecodeCoverageReport {
+            schema: "disrobe.native.decode-coverage/v1",
+            decoded_instructions: self.decoded,
+            modelled_instructions: self.modelled,
+            unmodelled_instructions: self.decoded.saturating_sub(self.modelled),
+            matched_instructions: self.matched,
+            matched_percent: percent_text(self.matched, total),
+            semantic_percent: percent_text(self.status.supported, total),
+            instructions_emitting_callother: self.callother_ops,
+            instructions_emitting_callother_percent: percent_text(self.callother_ops, total),
+            by_status: disrobe_nir_lift::DECODE_STATUSES
+                .iter()
+                .map(
+                    |status: &disrobe_nir_lift::DecodeStatus| DecodeStatusShare {
+                        status: disrobe_nir_lift::status_name(*status),
+                        instructions: self.status.count_of(*status),
+                        percent_of_decoded: percent_text(self.status.count_of(*status), total),
+                    },
+                )
+                .collect(),
+            unlifted_mnemonics: self.unlifted.clone(),
+            lowest_covered_functions: lowest,
+            lowest_covered_functions_omitted: omitted,
+            counts_note: COUNTS_NOTE,
+        }
+    }
+
+    fn lowest_covered(&self) -> (Vec<FunctionCoverageShare>, usize) {
+        let whole_lifted: usize = self.status.supported;
+        let whole_decoded: usize = self.status.total();
+        let mut below: Vec<FunctionCoverageShare> = self
+            .functions
+            .iter()
+            .filter(|share: &&FunctionCoverageShare| {
+                share.semantically_lifted_instructions * whole_decoded
+                    < whole_lifted * share.decoded_instructions
+            })
+            .cloned()
+            .collect();
+        below.sort_by(
+            |left: &FunctionCoverageShare, right: &FunctionCoverageShare| {
+                (left.semantically_lifted_instructions * right.decoded_instructions)
+                    .cmp(&(right.semantically_lifted_instructions * left.decoded_instructions))
+                    .then_with(|| left.function.cmp(&right.function))
+            },
+        );
+        let omitted: usize = below.len().saturating_sub(LOWEST_COVERED_CAP);
+        below.truncate(LOWEST_COVERED_CAP);
+        (below, omitted)
+    }
+
+    pub(crate) fn render(&self) {
+        let report: DecodeCoverageReport = self.report();
+        if report.decoded_instructions == 0 {
+            println!("  decode coverage: no instruction was decoded");
+            return;
+        }
+        println!(
+            "  decode coverage: {} decoded, {} matched ({}%), {} semantically lifted ({}%), {} emitting callother ({}%)",
+            report.decoded_instructions,
+            report.matched_instructions,
+            report.matched_percent,
+            self.status.supported,
+            report.semantic_percent,
+            report.instructions_emitting_callother,
+            report.instructions_emitting_callother_percent
+        );
+        for share in &report.by_status {
+            println!(
+                "    {:<12} {:>7} ({}%)",
+                share.status, share.instructions, share.percent_of_decoded
+            );
+        }
+        if report.unlifted_mnemonics.is_empty() {
+            println!("    unlifted mnemonics: none");
+        } else {
+            println!("    unlifted mnemonics:");
+            for (mnemonic, count) in &report.unlifted_mnemonics {
+                println!("      {mnemonic} x{count}");
+            }
+        }
+        if report.lowest_covered_functions.is_empty() {
+            println!("    lowest covered functions: none below the whole-binary figure");
+        } else {
+            println!("    lowest covered functions:");
+            for share in &report.lowest_covered_functions {
+                println!(
+                    "      {:<24} {}/{} ({}%)",
+                    share.function,
+                    share.semantically_lifted_instructions,
+                    share.decoded_instructions,
+                    share.semantic_percent
+                );
+            }
+            if report.lowest_covered_functions_omitted > 0 {
+                println!(
+                    "      {} further function(s) below the whole-binary figure are not listed",
+                    report.lowest_covered_functions_omitted
+                );
+            }
+        }
+        println!("    {}", report.counts_note);
     }
 }
 
@@ -548,6 +786,8 @@ pub(crate) fn pcode_recover_source(
     })?;
     let decoded: usize = lift.decoded;
     let modelled: usize = lift.modelled();
+    let coverage: disrobe_nir_lift::DecodeCoverage = lift.gaps.coverage();
+    let unlifted: BTreeMap<String, usize> = lift.gaps.unlifted().clone();
     let nir: NirFunction = lift.function;
 
     #[cfg(feature = "devirt")]
@@ -572,6 +812,8 @@ pub(crate) fn pcode_recover_source(
         devirt_report,
         decoded,
         modelled,
+        coverage,
+        unlifted,
     })
 }
 
@@ -743,6 +985,7 @@ fn decompile_native_pcode<'data>(
     #[cfg(feature = "devirt")]
     let mut devirt_self_disabled: bool = false;
 
+    let mut coverage_totals: DecodeCoverageTotals = DecodeCoverageTotals::default();
     for f in module.functions() {
         let Some(code): Option<Vec<u8>> = bytes_for_va_range(obj, f.address, f.end) else {
             unrecovered.push(serde_json::json!({
@@ -776,6 +1019,9 @@ fn decompile_native_pcode<'data>(
             &emitted_name,
             effective_devirt,
         );
+        if let Ok(recovery) = lifted.as_ref() {
+            coverage_totals.absorb(&f.name, recovery);
+        }
         let decode_coverage: Option<serde_json::Value> = lifted
             .as_ref()
             .ok()
@@ -917,6 +1163,8 @@ fn decompile_native_pcode<'data>(
         "functions_unrecovered": unrecovered.len(),
         "source": src_path.display().to_string(),
         "devirt": devirt_summary,
+        "decode_coverage": serde_json::to_value(coverage_totals.report())
+            .unwrap_or(serde_json::Value::Null),
         "recovered": recovered,
         "unrecovered": unrecovered,
     });
@@ -936,6 +1184,7 @@ fn decompile_native_pcode<'data>(
         image_leaf_count,
         src_path.display()
     );
+    coverage_totals.render();
     if devirt_active {
         println!(
             "  devirt:       {devirt_full} full, {devirt_partial} partial, {devirt_none} none; {devirt_edges} dead arm(s) folded"
