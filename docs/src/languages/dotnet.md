@@ -72,6 +72,18 @@ A universal (fat) Mach-O host is not supported. Its header-offset field is relat
 rather than to the file, so the reader sees an implausible version and refuses the file instead of
 reading the wrong offset.
 
+### Native AOT images
+
+The AOT report recovers metadata names, type and method attribution, method boundaries and
+pseudo-C bodies. Every Native AOT image it is graded against, in both the crate fixtures and the
+corpus, is x86_64. No aarch64, arm or x86 Native AOT image is committed in any container, so no
+grade covers those architectures and none is claimed for them. The PE, ELF and Mach-O host
+containers are each graded, but only at x86_64.
+
+The parser reads the layout from the image rather than from the architecture, so it is expected to
+carry to other architectures. Expected is not graded, and until an image exists to grade against,
+that expectation is the only basis for it.
+
 ### Obfuscator reversal
 
 `disrobe` registers detection rules for <!-- m:dotnet_protectors -->23<!-- /m --> protector families. Recovery depth varies by protector and by what is statically present in the artifact. The per-family evidence below states what artifact is graded, what data is recovered, and where static recovery stops.
