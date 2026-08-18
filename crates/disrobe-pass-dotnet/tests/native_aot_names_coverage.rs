@@ -1,11 +1,12 @@
 #![allow(clippy::expect_used, clippy::panic)]
-use std::path::PathBuf;
 
 use disrobe_pass_dotnet::aot::{AotReport, detect};
 
-fn real_sample() -> Option<Vec<u8>> {
-    let path: PathBuf = PathBuf::from(std::env::var_os("DISROBE_AOT_SAMPLE")?);
-    std::fs::read(path).ok()
+fn probe_app_image() -> Vec<u8> {
+    panic!(
+        "no committed fixture declares the names this grade compares against; see the ignore \
+         reason on the calling test for the artifact it needs"
+    );
 }
 
 fn length_prefixed(image: &[u8], name: &str) -> bool {
@@ -20,11 +21,9 @@ fn length_prefixed(image: &[u8], name: &str) -> bool {
 }
 
 #[test]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe; no such image is committed, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its source is not committed, so nothing states which names it should yield"]
 fn every_name_the_image_still_carries_is_recovered() {
-    let Some(image): Option<Vec<u8>> = real_sample() else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a native aot executable to run this");
-        return;
-    };
+    let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
     let names: &[String] = &report.recovered_names;
 

@@ -1,6 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 use disrobe_pass_dotnet::Error;
 use disrobe_pass_dotnet::aot::{
@@ -13,12 +12,15 @@ use object::ObjectSection as _;
 const TRACKED_NATIVE_AOT_IMAGE: &[u8] =
     include_bytes!("../../../corpus/dotnet/megafile/EdgeCases.nativeaot.exe");
 
-fn real_sample() -> std::io::Result<Option<Vec<u8>>> {
-    let Some(path): Option<PathBuf> = std::env::var_os("DISROBE_AOT_SAMPLE").map(PathBuf::from)
-    else {
-        return Ok(None);
-    };
-    std::fs::read(path).map(Some)
+fn probe_app_image() -> Vec<u8> {
+    panic!(
+        "no committed fixture declares the names this grade compares against; see the ignore \
+         reason on the calling test for the artifact it needs"
+    );
+}
+
+fn tracked_image() -> Vec<u8> {
+    TRACKED_NATIVE_AOT_IMAGE.to_vec()
 }
 
 fn section_file_offset(image: &[u8], section: &AotSection) -> Result<usize, &'static str> {
@@ -56,12 +58,7 @@ fn section_file_offset(image: &[u8], section: &AotSection) -> Result<usize, &'st
 
 #[test]
 fn a_real_native_aot_image_is_recognized_by_its_ready_to_run_header() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = tracked_image();
     let report: AotReport = detect(&image);
     let header: &ReadyToRunHeader = report
         .ready_to_run
@@ -120,12 +117,7 @@ fn a_real_native_aot_image_is_recognized_by_its_ready_to_run_header() {
 
 #[test]
 fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = tracked_image();
     match disrobe_pass_dotnet::pass::analyze(&image) {
         Ok(summary) => println!("pass reached a verdict: native_aot={}", summary.native_aot),
         Err(error) => panic!(
@@ -136,13 +128,9 @@ fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
 }
 
 #[test]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe; no such image is committed, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its source is not committed, so nothing states which names it should yield"]
 fn a_real_native_aot_image_yields_type_names_the_source_declared() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
     let names: &[String] = &report.recovered_names;
     assert!(
@@ -169,13 +157,9 @@ fn a_real_native_aot_image_yields_type_names_the_source_declared() {
 }
 
 #[test]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe; no such image is committed, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its source is not committed, so nothing states which names it should yield"]
 fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
     assert_eq!(
         report.metadata_attribution.status,
@@ -334,12 +318,7 @@ fn tracked_native_aot_image_decodes_a_complete_attribution_graph() {
 
 #[test]
 fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = tracked_image();
     let report: AotReport = detect(&image);
     let mut header: ReadyToRunHeader = report
         .ready_to_run
@@ -362,12 +341,7 @@ fn metadata_attribution_refuses_an_unsupported_ready_to_run_version() {
 
 #[test]
 fn metadata_attribution_rejects_bad_magic_and_hostile_counts_transactionally() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = tracked_image();
     let report: AotReport = detect(&image);
     let header: ReadyToRunHeader = report
         .ready_to_run
@@ -402,7 +376,11 @@ fn metadata_attribution_rejects_bad_magic_and_hostile_counts_transactionally() {
         .expect("metadata signature byte must be present");
     *signature_byte = 0;
     let bad_report: AotReport = detect(&bad_magic);
-    assert_eq!(bad_report.recovered_names.len(), 1789);
+    assert_eq!(
+        bad_report.recovered_names, report.recovered_names,
+        "a transactional refusal leaves the names the image still carries exactly as they were, \
+         so a corrupted metadata signature must not add, drop or reorder one"
+    );
     assert!(bad_report.metadata_attribution.types.is_empty());
     assert!(bad_report.metadata_attribution.methods.is_empty());
     assert!(matches!(
@@ -439,12 +417,7 @@ fn the_metadata_length_prefix_decodes_the_documented_widths() {
 
 #[test]
 fn the_name_needles_alone_do_not_recognize_a_real_image() {
-    let Some(image): Option<Vec<u8>> =
-        real_sample().expect("the configured NativeAOT sample must be readable")
-    else {
-        println!("SKIP: set DISROBE_AOT_SAMPLE to a NativeAOT executable to run this");
-        return;
-    };
+    let image: Vec<u8> = tracked_image();
     let report: AotReport = detect(&image);
     assert!(
         report.recovered_symbols.is_empty(),
