@@ -115,28 +115,26 @@ fn plan_function(
         )> = synthetic_parameter(&param.pattern.kind) else {
             continue;
         };
-        if !is_synthetic_destructure_name(binding.name.as_str()) {
-            continue;
-        }
         let Some(symbol_id) = binding.symbol_id.get() else {
             continue;
         };
         if !following_parameters_are_plain(func, param_index) {
             continue;
         }
-        let Some(plan) = plan_param(
-            func,
-            ParamCandidate {
-                param_span: param.span,
-                symbol_id,
-                default_expression,
-                declaration_index: 0,
-            },
-            body,
-            source,
-            symbols,
-            nodes,
-        ) else {
+        let candidate: ParamCandidate<'_> = ParamCandidate {
+            param_span: param.span,
+            symbol_id,
+            default_expression,
+            declaration_index: 0,
+        };
+        let plan: Option<ParamPlan> = if binding.name == "_a" && default_expression.is_none() {
+            plan_direct_index_array_param(func, candidate, body, source, symbols, nodes)
+        } else if is_synthetic_destructure_name(binding.name.as_str()) {
+            plan_param(func, candidate, body, source, symbols, nodes)
+        } else {
+            None
+        };
+        let Some(plan): Option<ParamPlan> = plan else {
             continue;
         };
         if found.is_some() {
@@ -145,6 +143,83 @@ fn plan_function(
         found = Some(plan);
     }
     found
+}
+
+fn plan_direct_index_array_param<'a>(
+    func: &Function<'_>,
+    candidate: ParamCandidate<'a>,
+    body: &oxc_ast::ast::FunctionBody<'_>,
+    source: &str,
+    symbols: &SymbolTable,
+    nodes: &AstNodes<'_>,
+) -> Option<ParamPlan> {
+    if !matches!(
+        func.r#type,
+        FunctionType::FunctionDeclaration | FunctionType::FunctionExpression
+    ) || func.r#async
+        || func.generator
+        || func.declare
+        || func.this_param.is_some()
+        || func.type_parameters.is_some()
+        || func.return_type.is_some()
+        || !body.directives.is_empty()
+        || body_has_dynamic_scope_hazard(body)
+        || parameters_have_dynamic_scope_hazard(func)
+        || !func.params.items.iter().all(plain_parameter)
+        || !plain_parameter_names_are_unique(func)
+    {
+        return None;
+    }
+    let ParamCandidate {
+        param_span,
+        symbol_id,
+        default_expression: None,
+        declaration_index,
+    }: ParamCandidate<'a> = candidate
+    else {
+        return None;
+    };
+    let (declaration_span, declaration): (Span, &oxc_ast::ast::VariableDeclaration<'_>) =
+        candidate_declaration(body, symbol_id, declaration_index, symbols, nodes)?;
+    if declaration.kind != VariableDeclarationKind::Var {
+        return None;
+    }
+    let fields: Vec<Field> = collect_array_fields(declaration, symbol_id, symbols)?;
+    let mut seen: IndexSet<&str> = IndexSet::new();
+    for field in &fields {
+        let FieldBinding::Local { name, .. } = &field.binding else {
+            return None;
+        };
+        if !is_valid_identifier(name)
+            || is_reserved_binding_name(name)
+            || !seen.insert(name.as_str())
+        {
+            return None;
+        }
+    }
+    if fields_collide_with_parameters(&fields, func, param_span, symbols)
+        || parameter_initializers_capture_fields(&fields, func, param_span, symbols)
+    {
+        return None;
+    }
+    let mut field_symbol_ids: Vec<SymbolId> = Vec::with_capacity(fields.len());
+    collect_field_symbol_ids(&fields, &mut field_symbol_ids);
+    if duplicate_body_bindings(body, declaration.span, &field_symbol_ids) {
+        return None;
+    }
+    let names: Vec<&str> = fields
+        .iter()
+        .map(|field: &Field| match &field.binding {
+            FieldBinding::Local { name, .. } => Some(name.as_str()),
+            FieldBinding::Nested(_) => None,
+        })
+        .collect::<Option<Vec<&str>>>()?;
+    Some(ParamPlan {
+        param_span,
+        pattern_text: format!("[{}]", names.join(", ")),
+        declaration_span: declaration_removal_span(declaration_span, source),
+        field_symbol_ids,
+    })
 }
 
 fn following_parameters_are_plain(func: &Function<'_>, candidate_index: usize) -> bool {
@@ -509,27 +584,8 @@ fn plan_param<'a>(
         default_expression,
         declaration_index,
     }: ParamCandidate<'a> = candidate;
-    let refs: &Vec<oxc_semantic::ReferenceId> = symbols.get_resolved_reference_ids(symbol_id);
-    if refs.is_empty() {
-        return None;
-    }
-    let mut declaration_span: Option<Span> = None;
-    for &reference_id in refs {
-        let reference: &Reference = symbols.get_reference(reference_id);
-        if !reference.is_read() || reference.is_write() {
-            return None;
-        }
-        let span: Span = enclosing_declaration_span(reference.node_id(), nodes)?;
-        match declaration_span {
-            None => declaration_span = Some(span),
-            Some(existing) if existing == span => {}
-            Some(_) => return None,
-        }
-    }
-    let declaration_span: Span = declaration_span?;
-
-    let declaration: &oxc_ast::ast::VariableDeclaration<'_> =
-        declaration_at(body, declaration_span, declaration_index)?;
+    let (declaration_span, declaration): (Span, &oxc_ast::ast::VariableDeclaration<'_>) =
+        candidate_declaration(body, symbol_id, declaration_index, symbols, nodes)?;
     let fields: Vec<Field> = collect_fields(declaration, symbol_id, symbols)?;
 
     let mut seen: IndexSet<&str> = IndexSet::new();
@@ -575,6 +631,34 @@ fn plan_param<'a>(
         declaration_span: removal,
         field_symbol_ids,
     })
+}
+
+fn candidate_declaration<'a>(
+    body: &'a oxc_ast::ast::FunctionBody<'a>,
+    symbol_id: SymbolId,
+    declaration_index: usize,
+    symbols: &SymbolTable,
+    nodes: &AstNodes<'_>,
+) -> Option<(Span, &'a oxc_ast::ast::VariableDeclaration<'a>)> {
+    let references: &Vec<oxc_semantic::ReferenceId> = symbols.get_resolved_reference_ids(symbol_id);
+    if references.is_empty() {
+        return None;
+    }
+    let mut declaration_span: Option<Span> = None;
+    for &reference_id in references {
+        let reference: &Reference = symbols.get_reference(reference_id);
+        if !reference.is_read() || reference.is_write() {
+            return None;
+        }
+        let span: Span = enclosing_declaration_span(reference.node_id(), nodes)?;
+        match declaration_span {
+            None => declaration_span = Some(span),
+            Some(existing) if existing == span => {}
+            Some(_) => return None,
+        }
+    }
+    let span: Span = declaration_span?;
+    Some((span, declaration_at(body, span, declaration_index)?))
 }
 
 fn synthetic_parameter<'a>(
@@ -809,6 +893,53 @@ fn collect_fields(
         fields.push(field);
     }
     Some(fields)
+}
+
+fn collect_array_fields(
+    declaration: &oxc_ast::ast::VariableDeclaration<'_>,
+    symbol_id: SymbolId,
+    symbols: &SymbolTable,
+) -> Option<Vec<Field>> {
+    if declaration.declarations.is_empty() {
+        return None;
+    }
+    declaration
+        .declarations
+        .iter()
+        .enumerate()
+        .map(
+            |(expected_index, declarator): (usize, &VariableDeclarator<'_>)| {
+                if declarator.id.type_annotation.is_some() {
+                    return None;
+                }
+                let BindingPatternKind::BindingIdentifier(local) = &declarator.id.kind else {
+                    return None;
+                };
+                let Expression::ComputedMemberExpression(member) = declarator.init.as_ref()? else {
+                    return None;
+                };
+                let Expression::NumericLiteral(index) = &member.expression else {
+                    return None;
+                };
+                if index.value.total_cmp(&(expected_index as f64)).is_ne() {
+                    return None;
+                }
+                let Expression::Identifier(object) = &member.object else {
+                    return None;
+                };
+                if !resolves_to(object, symbol_id, symbols) {
+                    return None;
+                }
+                Some(Field {
+                    key: expected_index.to_string(),
+                    binding: FieldBinding::Local {
+                        name: local.name.as_str().to_owned(),
+                        symbol_id: local.symbol_id.get()?,
+                    },
+                })
+            },
+        )
+        .collect()
 }
 
 fn collect_nested_fields(

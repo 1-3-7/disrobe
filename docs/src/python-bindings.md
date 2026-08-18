@@ -1357,7 +1357,7 @@ transformation_count: int = ps_deob.transformation_count
 ## Containers
 
 <!-- m:containers_formats -->101<!-- /m --> container families are detected and carry an in-tree extractor.
-<!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them are driven to member
+<!-- roster-breadth:containers-exercised -->39<!-- /roster-breadth --> of them are driven to member
 bytes by an input this repository commits. See [container docs](./languages/containers.md) for the
 full family list.
 

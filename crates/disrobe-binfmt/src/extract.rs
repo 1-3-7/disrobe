@@ -4496,69 +4496,113 @@ fn extract_stuffit(
         );
     }
     let archive: crate::containers::SitArchive = crate::containers::parse_sit_classic(bytes)?;
-    std::fs::create_dir_all(out_dir)?;
     let mut guard: QuotaGuard = QuotaGuard::new(ExtractionQuota {
         max_aggregate_ratio: quota.max_aggregate_ratio.max(1000),
         max_per_entry_ratio: quota.max_per_entry_ratio.max(1000),
         ..quota
     });
-    let mut entries_out: Vec<ExtractedEntry> = Vec::new();
-    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
-    let mut violations: Vec<String> = Vec::new();
-
+    let mut paths: BTreeSet<String> = BTreeSet::new();
+    let mut forks: Vec<(String, &crate::containers::SitFork)> = Vec::new();
     for entry in &archive.entries {
-        if entry.is_folder {
-            continue;
-        }
-        for (suffix, fork) in [("", &entry.data), (".rsrc", &entry.resource)] {
-            if fork.compressed_len == 0 {
+        for (suffix, fork, required) in [
+            (
+                "",
+                &entry.data,
+                entry.data.uncompressed_len > 0
+                    || entry.data.compressed_len > 0
+                    || (entry.resource.uncompressed_len == 0 && entry.resource.compressed_len == 0),
+            ),
+            (
+                ".rsrc",
+                &entry.resource,
+                entry.resource.uncompressed_len > 0 || entry.resource.compressed_len > 0,
+            ),
+        ] {
+            if !required {
                 continue;
             }
             let raw_name: String = format!("{}{suffix}", entry.name);
-            let safe_name: String = match sanitize_entry_path(&raw_name) {
-                Ok(s) => s,
-                Err(e) => {
-                    violations.push(format!("stuffit-slip: {e}"));
-                    continue;
-                }
-            };
-            let data: Vec<u8> = match crate::containers::sit_fork_bytes(bytes, fork) {
-                Ok(d) => d,
-                Err(e) => {
-                    violations.push(format!("stuffit `{safe_name}`: {e}"));
-                    continue;
-                }
-            };
-            let size: u64 = data.len() as u64;
-            if let Err(e) = guard.admit_entry(&safe_name, size, u64::from(fork.compressed_len)) {
-                violations.push(format!("stuffit-quota `{safe_name}`: {e}"));
-                continue;
-            }
-            let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
-            std::fs::write(&disk_path, &data)?;
-            let compression: EntryCompression = if crate::containers::sit_fork_is_stored(fork) {
-                EntryCompression::Stored
-            } else {
-                EntryCompression::Other
-            };
-            encoding.insert(safe_name.clone(), compression);
-            entries_out.push(ExtractedEntry {
-                name: safe_name,
-                disk_path: Some(disk_path),
-                uncompressed_size: size,
-                compressed_size: u64::from(fork.compressed_len),
-                compression,
-                is_executable: false,
-            });
+            let safe_name: String = sanitize_entry_path(&raw_name).map_err(|error: Error| {
+                Error::StuffIt(format!("stuffit: unsafe entry path `{raw_name}`: {error}"))
+            })?;
+            preflight_stuffit_path(&paths, &safe_name)?;
+            paths.insert(safe_name.to_ascii_lowercase());
+            guard.admit_entry(
+                &safe_name,
+                u64::from(fork.uncompressed_len),
+                u64::from(fork.compressed_len),
+            )?;
+            forks.push((safe_name, fork));
         }
+    }
+
+    let max_output: usize = usize::try_from(guard.max_per_entry_uncompressed())
+        .map_or(usize::MAX, |value: usize| value);
+    let staging: disrobe_core::scratch::ScratchDir =
+        disrobe_core::scratch::ScratchDir::create("binfmt-stuffit-extract")?;
+    for (safe_name, fork) in &forks {
+        let data: Vec<u8> = crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output)?;
+        let staged_path: PathBuf = prepare_entry_path(staging.path(), safe_name)?;
+        std::fs::write(staged_path, data)?;
+    }
+
+    std::fs::create_dir_all(out_dir)?;
+    let mut entries_out: Vec<ExtractedEntry> = Vec::with_capacity(forks.len());
+    let mut encoding: BTreeMap<String, EntryCompression> = BTreeMap::new();
+    for (safe_name, fork) in forks {
+        let disk_path: PathBuf = prepare_entry_path(out_dir, &safe_name)?;
+        std::fs::copy(staging.path().join(&safe_name), &disk_path)?;
+        let compression: EntryCompression = if crate::containers::sit_fork_is_stored(fork) {
+            EntryCompression::Stored
+        } else {
+            EntryCompression::Other
+        };
+        encoding.insert(safe_name.clone(), compression);
+        entries_out.push(ExtractedEntry {
+            name: safe_name,
+            disk_path: Some(disk_path),
+            uncompressed_size: u64::from(fork.uncompressed_len),
+            compressed_size: u64::from(fork.compressed_len),
+            compression,
+            is_executable: false,
+        });
     }
     Ok(ExtractionResult {
         kind: ContainerKind::StuffIt,
         entries: entries_out,
         encoding,
-        integrity_violations: violations,
+        integrity_violations: Vec::new(),
         quota: QuotaSummary::from(guard.report()),
     })
+}
+
+fn preflight_stuffit_path(paths: &BTreeSet<String>, safe_name: &str) -> Result<()> {
+    let key: String = safe_name.to_ascii_lowercase();
+    if paths.contains(&key) {
+        return Err(Error::StuffIt(format!(
+            "stuffit: case-insensitive path collision at `{safe_name}`"
+        )));
+    }
+    let mut ancestor: &str = key.as_str();
+    while let Some((prefix, _)) = ancestor.rsplit_once('/') {
+        if paths.contains(prefix) {
+            return Err(Error::StuffIt(format!(
+                "stuffit: path prefix collision at `{safe_name}`"
+            )));
+        }
+        ancestor = prefix;
+    }
+    let prefix: String = format!("{key}/");
+    if paths
+        .range(prefix.clone()..)
+        .next()
+        .is_some_and(|candidate: &String| candidate.starts_with(&prefix))
+    {
+        return Err(Error::StuffIt(format!(
+            "stuffit: path prefix collision at `{safe_name}`"
+        )));
+    }
+    Ok(())
 }
 
 fn extract_qnx(bytes: &[u8], out_dir: &Path, quota: ExtractionQuota) -> Result<ExtractionResult> {
@@ -7392,7 +7436,7 @@ mod tests {
                         "{name:?} must stay extractable by {function}: {e}"
                     );
                     assert_no_escape_around(&out);
-                    if matches!(function, "extract_rpm" | "extract_iso") {
+                    if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
                         match (function, &e) {
                             ("extract_rpm", Error::UnsafeEntryPath(rejected_name)) => {
                                 assert_eq!(rejected_name, name, "RPM rejected the wrong path");
@@ -7401,6 +7445,12 @@ mod tests {
                                 assert!(
                                     message.contains("iso entry path"),
                                     "{name:?} reached an unrelated ISO refusal before writing: {e:?}"
+                                );
+                            }
+                            ("extract_stuffit", Error::StuffIt(message)) => {
+                                assert!(
+                                    message.contains("unsafe entry path"),
+                                    "{name:?} reached an unrelated StuffIt refusal before writing: {e:?}"
                                 );
                             }
                             _ => panic!(
@@ -7435,7 +7485,7 @@ mod tests {
                         result.entries
                     );
                     refused_through_the_tag += usize::from(tagged);
-                    if matches!(function, "extract_rpm" | "extract_iso") {
+                    if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
                         refused_before_write += usize::from(tagged);
                     }
                 }
@@ -7454,7 +7504,7 @@ mod tests {
             "{function} exercised only {exercised} hostile names, expected at least {}",
             path.minimum_exercised
         );
-        if matches!(function, "extract_rpm" | "extract_iso") {
+        if matches!(function, "extract_rpm" | "extract_iso" | "extract_stuffit") {
             assert!(
                 refused_before_write >= path.minimum_refused_as_a_slip,
                 "{function} refused only {refused_before_write} hostile names before writing, expected at least {}",

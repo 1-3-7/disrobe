@@ -16,6 +16,7 @@ use indexmap::{IndexMap, IndexSet};
 
 use crate::arch::{Arch, DisasmInsn, disassemble};
 use crate::error::{Error, Result};
+use crate::flow_facts::{DirectTrap, x86_direct_trap};
 use crate::structuring;
 
 #[allow(clippy::redundant_pub_crate)]
@@ -1073,6 +1074,12 @@ enum VecStmt {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallTarget {
+    Address(u64),
+    DirectTrap(DirectTrap),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Stmt {
     Assign {
@@ -1228,7 +1235,7 @@ enum Stmt {
         elem: Width,
     },
     Call {
-        target: u64,
+        target: CallTarget,
         args: Vec<Reg>,
         name: Option<String>,
     },
@@ -2702,13 +2709,30 @@ fn build_leaf_items(
             return_width = Width::W64;
             flags = None;
             let call: Stmt = Stmt::Call {
-                target,
+                target: CallTarget::Address(target),
                 args: abi.arg_order().to_vec(),
                 name: None,
             };
             items.push(Item {
                 address: insn.address,
                 kind: ItemKind::Stmt(call),
+            });
+            continue;
+        }
+        if let Some(trap) = x86_direct_trap(&insn.bytes, insn.address) {
+            flags = None;
+            dividend_high = None;
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Stmt(Stmt::Call {
+                    target: CallTarget::DirectTrap(trap),
+                    args: Vec::new(),
+                    name: None,
+                }),
+            });
+            items.push(Item {
+                address: insn.address,
+                kind: ItemKind::Ret,
             });
             continue;
         }
@@ -2742,7 +2766,7 @@ fn build_leaf_items(
                     items.push(Item {
                         address: insn.address,
                         kind: ItemKind::Stmt(Stmt::Call {
-                            target,
+                            target: CallTarget::Address(target),
                             args: abi.arg_order().to_vec(),
                             name: None,
                         }),
@@ -6037,7 +6061,9 @@ fn annotate_calls_block_with_abi(
     for node in body.iter_mut() {
         match node {
             Node::Stmt(Stmt::Call { target, args, name }) => {
-                if let Some(resolved) = map.get(target) {
+                if let CallTarget::Address(address) = target
+                    && let Some(resolved) = map.get(address)
+                {
                     if resolved.signature.abi() != abi {
                         return Err(Error::LlvmIr(
                             "resolved call signature uses a different ABI".to_owned(),
@@ -6085,7 +6111,13 @@ fn annotate_calls_block_with_abi(
 fn collect_call_targets(body: &Block, acc: &mut Vec<u64>) {
     for node in body {
         match node {
-            Node::Stmt(Stmt::Call { target, .. }) => acc.push(*target),
+            Node::Stmt(Stmt::Call {
+                target: CallTarget::Address(address),
+                ..
+            }) => {
+                acc.push(*address);
+            }
+            Node::Stmt(Stmt::Call { .. }) => {}
             Node::Stmt(_) => {}
             Node::If {
                 then_body,
@@ -10085,11 +10117,10 @@ impl CfgBlock {
 }
 
 fn build_blocks(items: &[Item]) -> Option<Vec<CfgBlock>> {
-    let addr_to_idx: BTreeMap<u64, usize> = items
-        .iter()
-        .enumerate()
-        .map(|(i, it): (usize, &Item)| (it.address, i))
-        .collect();
+    let mut addr_to_idx: BTreeMap<u64, usize> = BTreeMap::new();
+    for (index, item) in items.iter().enumerate() {
+        addr_to_idx.entry(item.address).or_insert(index);
+    }
     let resolve = |target: u64| -> Option<usize> {
         addr_to_idx
             .range(target..)
@@ -14764,8 +14795,16 @@ fn call_display_name(target: u64, name: Option<&str>) -> String {
 fn collect_call_decls(body: &Block, acc: &mut IndexMap<String, usize>) {
     for node in body {
         match node {
-            Node::Stmt(Stmt::Call { target, args, name }) => {
-                let display_name: String = call_display_name(*target, name.as_deref());
+            Node::Stmt(Stmt::Call {
+                target: CallTarget::DirectTrap(_),
+                ..
+            }) => {}
+            Node::Stmt(Stmt::Call {
+                target: CallTarget::Address(address),
+                args,
+                name,
+            }) => {
+                let display_name: String = call_display_name(*address, name.as_deref());
                 acc.entry(display_name).or_insert(args.len());
             }
             Node::Stmt(_) => {}
@@ -19309,10 +19348,28 @@ fn block_to_cstmts(
     aggregates: &AggregatePlan,
 ) -> Option<Vec<CStmt>> {
     let mut stmts: Vec<CStmt> = Vec::with_capacity(body.len());
-    for node in body {
+    for (index, node) in body.iter().enumerate() {
+        if matches!(node, Node::Return)
+            && index
+                .checked_sub(1)
+                .and_then(|previous: usize| body.get(previous))
+                .is_some_and(node_is_direct_trap)
+        {
+            continue;
+        }
         stmts.push(node_to_cstmt(cx, node, ret_expr, aggregates)?);
     }
     Some(stmts)
+}
+
+fn node_is_direct_trap(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::Stmt(Stmt::Call {
+            target: CallTarget::DirectTrap(_),
+            ..
+        })
+    )
 }
 
 fn braced_block(
@@ -19685,7 +19742,7 @@ fn stmt_to_cstmt(cx: &mut Cx<'_>, stmt: &Stmt, aggregates: &AggregatePlan) -> CS
         }
         Stmt::BlockMove { elem } => block_move_cstmt(cx, *elem),
         Stmt::BlockFill { elem } => block_fill_cstmt(cx, *elem),
-        Stmt::Call { target, args, name } => call_cstmt(cx, *target, args, name.as_deref()),
+        Stmt::Call { target, args, name } => call_cstmt(cx, target, args, name.as_deref()),
         Stmt::FpBin {
             dest,
             lhs,
@@ -20595,8 +20652,11 @@ fn block_fill_cstmt(cx: &mut Cx<'_>, elem: Width) -> CStmt {
     CStmt::Block(vec![fill_stmt, assign_dest, assign_count])
 }
 
-fn call_cstmt(cx: &mut Cx<'_>, target: u64, args: &[Reg], name: Option<&str>) -> CStmt {
-    let display: String = call_display_name(target, name);
+fn call_cstmt(cx: &mut Cx<'_>, target: &CallTarget, args: &[Reg], name: Option<&str>) -> CStmt {
+    let CallTarget::Address(address) = target else {
+        return CStmt::Expr(cx.call("__builtin_trap", Vec::new()));
+    };
+    let display: String = call_display_name(*address, name);
     let mut arg_exprs: Vec<CExpr> = Vec::with_capacity(args.len());
     for r in args {
         let arg: CExpr = cx.var(reg_var(*r));
@@ -22032,7 +22092,15 @@ fn rs_emit_block(
     aggregates: &AggregatePlan,
 ) -> Option<()> {
     let indent: String = "    ".repeat(depth);
-    for node in body {
+    for (index, node) in body.iter().enumerate() {
+        if matches!(node, Node::Return)
+            && index
+                .checked_sub(1)
+                .and_then(|previous: usize| body.get(previous))
+                .is_some_and(node_is_direct_trap)
+        {
+            continue;
+        }
         match node {
             Node::Stmt(stmt) => rs_emit_stmt(out, stmt, &indent, aggregates)?,
             Node::If {
@@ -22228,7 +22296,17 @@ fn rs_double_shift_stmt(
     let _ = writeln!(out, "{indent}{dst} = {body};");
 }
 
-fn rs_call_stmt(out: &mut String, target: u64, args: &[Reg], name: Option<&str>, indent: &str) {
+fn rs_call_stmt(
+    out: &mut String,
+    target: &CallTarget,
+    args: &[Reg],
+    name: Option<&str>,
+    indent: &str,
+) {
+    let CallTarget::Address(address) = target else {
+        let _ = writeln!(out, "{indent}std::process::abort();");
+        return;
+    };
     let arg_list: String = args
         .iter()
         .map(|r: &Reg| reg_var(*r))
@@ -22238,7 +22316,7 @@ fn rs_call_stmt(out: &mut String, target: u64, args: &[Reg], name: Option<&str>,
         out,
         "{indent}{} = unsafe {{ {}({arg_list}) }};",
         reg_var(Reg::Rax),
-        call_display_name(target, name)
+        call_display_name(*address, name)
     );
 }
 
@@ -22593,7 +22671,7 @@ fn rs_emit_stmt(
             left,
         } => rs_double_shift_stmt(out, *dest, *src, *amount, *left, indent),
         Stmt::Call { target, args, name } => {
-            rs_call_stmt(out, *target, args, name.as_deref(), indent);
+            rs_call_stmt(out, target, args, name.as_deref(), indent);
         }
         Stmt::FpBin {
             dest,
@@ -30775,7 +30853,7 @@ mod structuring_corpus {
         );
         let unsupported_statements: Vec<super::Stmt> = vec![
             super::Stmt::Call {
-                target: 0x1234,
+                target: super::CallTarget::Address(0x1234),
                 args: vec![super::Reg::Rcx],
                 name: Some("retained_call".to_owned()),
             },

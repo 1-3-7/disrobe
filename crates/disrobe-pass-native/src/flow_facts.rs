@@ -9,7 +9,7 @@ use capstone::arch::DetailsArchInsn as _;
 use capstone::arch::arm::{ArmCC, ArmOperandType};
 use capstone::{Capstone, InsnDetail, InsnGroupId, InsnGroupType, Instructions};
 use disrobe_ir::payload::InsnFlow;
-use iced_x86::{FlowControl, Instruction, OpKind};
+use iced_x86::{Code, FlowControl, Instruction, OpKind};
 
 use crate::arch::{Arch as DisasmArch, capstone_for, decode_one_x86};
 use crate::error::{Error, Result};
@@ -23,6 +23,13 @@ use crate::pseudo_c::aarch64::{
 pub(crate) enum FlowEvidence {
     Decoded,
     Undecodable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectTrap {
+    InvalidOpcode,
+    Breakpoint,
+    FastFail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +152,26 @@ impl FlowModel {
             Self::RiscV { .. } => matches!(raw.len(), 2 | 4),
             Self::Ebpf => matches!(raw.len(), 8 | 16),
         }
+    }
+}
+
+pub(crate) fn x86_direct_trap(raw: &[u8], address: u64) -> Option<DirectTrap> {
+    let instruction: Instruction = decode_one_x86(64, address, raw)?;
+    if instruction.len() != raw.len() {
+        return None;
+    }
+    match instruction.code() {
+        Code::Ud0
+        | Code::Ud0_r16_rm16
+        | Code::Ud0_r32_rm32
+        | Code::Ud0_r64_rm64
+        | Code::Ud1_r16_rm16
+        | Code::Ud1_r32_rm32
+        | Code::Ud1_r64_rm64
+        | Code::Ud2 => Some(DirectTrap::InvalidOpcode),
+        Code::Int3 => Some(DirectTrap::Breakpoint),
+        Code::Int_imm8 if instruction.immediate8() == 0x29 => Some(DirectTrap::FastFail),
+        _ => None,
     }
 }
 
@@ -673,6 +700,23 @@ mod tests {
             assert!(actual.is_decoded(), "{} nop must decode", arch.label());
             assert_eq!(actual.flow, InsnFlow::Sequential);
             assert_eq!(actual.branch_target, None);
+        }
+    }
+
+    #[test]
+    fn x86_direct_traps_require_exact_decoded_encodings() {
+        let traps: [(&[u8], DirectTrap); 5] = [
+            (&[0x0f, 0x0b], DirectTrap::InvalidOpcode),
+            (&[0x0f, 0xff, 0xc0], DirectTrap::InvalidOpcode),
+            (&[0x0f, 0xb9, 0xc0], DirectTrap::InvalidOpcode),
+            (&[0xcc], DirectTrap::Breakpoint),
+            (&[0xcd, 0x29], DirectTrap::FastFail),
+        ];
+        for (raw, expected) in traps {
+            assert_eq!(x86_direct_trap(raw, 0x1000), Some(expected), "{raw:02x?}");
+        }
+        for raw in [&[0xcd, 0x80][..], &[0x0f][..], &[0xcc, 0x90][..]] {
+            assert_eq!(x86_direct_trap(raw, 0x1000), None, "{raw:02x?}");
         }
     }
 }

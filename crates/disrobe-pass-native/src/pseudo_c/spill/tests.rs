@@ -38,7 +38,7 @@ fn store(addr: MemRef, src: Source) -> Node {
 
 fn call(args: Vec<Reg>) -> Node {
     Node::Stmt(Stmt::Call {
-        target: 0x1000,
+        target: super::super::CallTarget::Address(0x1000),
         args,
         name: Some("callee".to_owned()),
     })

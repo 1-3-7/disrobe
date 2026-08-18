@@ -1041,7 +1041,7 @@ fn recover_with_calls_and_image<'image>(
                 items.push(Item {
                     address,
                     kind: ItemKind::Stmt(Stmt::Call {
-                        target,
+                        target: super::CallTarget::Address(target),
                         args: register_args.to_vec(),
                         name: None,
                     }),

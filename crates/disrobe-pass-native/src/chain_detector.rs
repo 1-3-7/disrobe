@@ -155,7 +155,7 @@ fn image_verdict_for(image: StructuralFormat) -> DetectVerdict {
 fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec<ChildArtifact>> {
     let mut children: Vec<ChildArtifact> = Vec::new();
     let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(bytes);
-    let pseudo_report: Option<serde_json::Value> = aarch64_pseudo_report(bytes)?;
+    let pseudo_report: Option<serde_json::Value> = native_pseudo_report(image, bytes)?;
     let manifest: Vec<u8> = serialize_image_report(
         IMAGE_MANIFEST_PATH,
         &image_manifest(image, bytes.len(), &identity, pseudo_report.as_ref()),
@@ -204,15 +204,44 @@ fn build_image_children(image: StructuralFormat, bytes: &[u8]) -> CoreResult<Vec
     Ok(children)
 }
 
-fn aarch64_pseudo_report(bytes: &[u8]) -> CoreResult<Option<serde_json::Value>> {
-    if crate::disasm_ir::image_arch(bytes) != Some(crate::arch::Arch::Aarch64) {
+fn native_pseudo_report(
+    image: StructuralFormat,
+    bytes: &[u8],
+) -> CoreResult<Option<serde_json::Value>> {
+    let Some(arch): Option<crate::arch::Arch> = crate::disasm_ir::image_arch(bytes) else {
         return Ok(None);
-    }
+    };
+    let abi: Option<crate::pseudo_c::Abi> = match arch {
+        crate::arch::Arch::Aarch64 => None,
+        crate::arch::Arch::X86_64 => Some(match image {
+            StructuralFormat::Pe => crate::pseudo_c::Abi::MsX64,
+            StructuralFormat::Elf | StructuralFormat::MachO => crate::pseudo_c::Abi::SysV,
+            StructuralFormat::MachOFat => return Ok(None),
+            StructuralFormat::Wasm
+            | StructuralFormat::Zip
+            | StructuralFormat::Dex
+            | StructuralFormat::JavaClass => return Ok(None),
+        }),
+        crate::arch::Arch::X86
+        | crate::arch::Arch::Arm32
+        | crate::arch::Arch::Thumb
+        | crate::arch::Arch::RiscV32
+        | crate::arch::Arch::RiscV64
+        | crate::arch::Arch::MipsBe32
+        | crate::arch::Arch::MipsLe32
+        | crate::arch::Arch::Mips64
+        | crate::arch::Arch::PowerPc32
+        | crate::arch::Arch::PowerPc64
+        | crate::arch::Arch::Sparc
+        | crate::arch::Arch::Sparc64
+        | crate::arch::Arch::Ebpf
+        | crate::arch::Arch::Avr => return Ok(None),
+    };
     if bytes.len() > MAX_AUTO_PSEUDO_IMAGE_BYTES {
         return Ok(Some(serde_json::json!({
             "schema": "disrobe.native.pseudo-source/v1",
             "run": false,
-            "reason": "aarch64 image exceeds the bounded auto pseudo-source input",
+            "reason": format!("{} image exceeds the bounded auto pseudo-source input", arch.label()),
             "image_bytes": bytes.len(),
             "image_byte_limit": MAX_AUTO_PSEUDO_IMAGE_BYTES,
         })));
@@ -220,16 +249,17 @@ fn aarch64_pseudo_report(bytes: &[u8]) -> CoreResult<Option<serde_json::Value>> 
     let payload: disrobe_ir::payload::DisasmPayload = crate::disasm_ir::build_disasm_payload(bytes)
         .map_err(|error: crate::Error| {
             CoreError::PassFailure(format!(
-                "DR-NAT-0944: native.image-classify: build aarch64 function inventory: {error}"
+                "DR-NAT-0944: native.image-classify: build {} function inventory: {error}",
+                arch.label()
             ))
         })?;
     let spans: Vec<crate::disasm_ir::FunctionSpan> =
-        crate::disasm_ir::function_spans(&payload, crate::arch::Arch::Aarch64);
+        crate::disasm_ir::function_spans(&payload, arch);
     if spans.len() > MAX_AUTO_PSEUDO_FUNCTIONS {
         return Ok(Some(serde_json::json!({
             "schema": "disrobe.native.pseudo-source/v1",
             "run": false,
-            "reason": "aarch64 function inventory exceeds the bounded auto pseudo-source sweep",
+            "reason": format!("{} function inventory exceeds the bounded auto pseudo-source sweep", arch.label()),
             "functions": spans.len(),
             "function_limit": MAX_AUTO_PSEUDO_FUNCTIONS,
         })));
@@ -247,7 +277,17 @@ fn aarch64_pseudo_report(bytes: &[u8]) -> CoreResult<Option<serde_json::Value>> 
                 instruction.bytes.iter().copied()
             })
             .collect();
-        match crate::pseudo_c::recover_aarch64_function(&code, span.address) {
+        let recovery: crate::Result<crate::pseudo_c::LeafRecovery> = match abi {
+            None => crate::pseudo_c::recover_aarch64_function(&code, span.address),
+            Some(x86_abi) => crate::pseudo_c::recover_leaf_function_in_object(
+                bytes,
+                &code,
+                span.address,
+                x86_abi,
+                &[],
+            ),
+        };
+        match recovery {
             Ok(function) => recovered.push(serde_json::json!({
                 "name": span.name,
                 "address": span.address,
@@ -292,7 +332,9 @@ fn image_manifest(
     let pseudo_reason: &str = pseudo_report
         .and_then(|report: &serde_json::Value| report.get("reason"))
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("the bounded auto pseudo-source sweep is available only for aarch64 images");
+        .unwrap_or(
+            "the bounded auto pseudo-source sweep is available only for aarch64 images and x86-64 PE, ELF, and thin Mach-O images; fat Mach-O requires an exposed architecture slice",
+        );
     serde_json::json!({
         "schema": "disrobe.native.image-classify/v1",
         "structural_format": image.label(),
@@ -1154,6 +1196,22 @@ mod tests {
             .expect("plain elf must be claimed");
         assert_eq!(v.format_tag, "elf");
         assert_eq!(v.family, FAMILY_NATIVE_FORMAT);
+    }
+
+    #[test]
+    fn fat_macho_does_not_advertise_unreachable_pseudo_source() {
+        let bytes: [u8; 8] = [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 0];
+        let report: Option<serde_json::Value> =
+            native_pseudo_report(StructuralFormat::MachOFat, &bytes)
+                .expect("fat Mach-O pseudo-source decision");
+        assert_eq!(report, None);
+        let identity: crate::sig_engine::SigReport = crate::sig_engine::analyze(&bytes);
+        let manifest: serde_json::Value =
+            image_manifest(StructuralFormat::MachOFat, bytes.len(), &identity, None);
+        assert_eq!(
+            manifest["control_flow_recovery_sweep"]["reason"],
+            "the bounded auto pseudo-source sweep is available only for aarch64 images and x86-64 PE, ELF, and thin Mach-O images; fat Mach-O requires an exposed architecture slice"
+        );
     }
 
     #[test]

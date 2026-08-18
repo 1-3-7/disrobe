@@ -16,8 +16,8 @@ use disrobe_core::scratch::ScratchDir;
 use disrobe_pass_native::{
     Arch, DisasmInsn, LeafRecovery, ProgramFunction, PseudoAbi,
     RecoveredFunction as LibRecoveredFunction, RecoveredProgram as LibRecoveredProgram,
-    disassemble, recover_leaf_function_abi, recover_leaf_function_in_object,
-    recover_program as lib_recover_program,
+    ResolvedCall, disassemble, recover_leaf_function_abi, recover_leaf_function_in_object,
+    recover_leaf_function_with_calls, recover_program as lib_recover_program,
 };
 use object::{Object as _, ObjectSection as _};
 
@@ -808,6 +808,119 @@ fn object_backed_relocated_leaf_lea_never_uses_the_raw_displacement() {
     assert!(
         truncated_result.is_err(),
         "object recovery must bind the complete instruction span to its text section: {truncated_result:?}"
+    );
+}
+
+#[test]
+fn direct_instruction_trap_arm_recovers_as_a_guard() {
+    if !cfg!(target_arch = "x86_64") {
+        return;
+    }
+    let compiler: String = clang().expect("clang");
+    let scratch: ScratchDir = scratch_dir("disrobe-pseudo-direct-trap-guard");
+    let object_path: PathBuf = scratch.path().join("direct_trap_guard.o");
+    let source: &str = "__attribute__((noinline)) long long direct_trap_guard(long long x){ if (x < 0) __builtin_trap(); return x + 1; }";
+    let flags: [&str; 2] = ["-fno-stack-protector", "-c"];
+    let object: Vec<u8> = compile_object_opt(&compiler, "-O1", &flags, source, &object_path)
+        .expect("authored direct-trap object");
+    let (code, base): (Vec<u8>, u64) =
+        function_code(&object, "direct_trap_guard").expect("direct-trap symbol");
+    let instructions: Vec<DisasmInsn> =
+        disassemble(Arch::X86_64, base, &code).expect("direct-trap disassembly");
+    assert!(
+        instructions
+            .iter()
+            .any(|instruction: &DisasmInsn| instruction.mnemonic == "ud2"),
+        "clang must emit direct UD2 evidence: {instructions:?}"
+    );
+    let recovered: LeafRecovery =
+        recover_leaf_function_in_object(&object, &code, base, HOST_ABI, &[])
+            .expect("recover direct-trap guard");
+    assert!(recovered.call_targets.is_empty());
+    assert!(recovered.source.contains("if ("), "{}", recovered.source);
+    assert!(
+        recovered.source.contains("__builtin_trap();"),
+        "{}",
+        recovered.source
+    );
+    assert!(!recovered.source.contains("goto "), "{}", recovered.source);
+    assert!(
+        !recovered.source.contains("sub_ffffffff"),
+        "{}",
+        recovered.source
+    );
+    let rust_source: &str = recovered.rust_source.as_deref().expect("Rust recovery");
+    assert!(rust_source.contains("if "), "{rust_source}");
+    assert!(
+        rust_source.contains("std::process::abort();"),
+        "{rust_source}"
+    );
+    let driver: String = format!(
+        "{}\n#include <stdio.h>\nextern long long direct_trap_guard(long long);\nint main(void){{ long long values[]={{0,1,7,1024,9223372036854775806LL}}; for(unsigned long long i=0;i<sizeof(values)/sizeof(values[0]);i++){{ long long want=direct_trap_guard(values[i]); unsigned long long got=recovered((unsigned long long)values[i]); if((unsigned long long)want!=got){{ printf(\"MISMATCH %llu\\n\",i); return 1; }} }} puts(\"OK\"); return 0; }}",
+        recovered.source
+    );
+    let stdout: String = link_and_run(
+        &compiler,
+        &driver,
+        &object,
+        "direct_instruction_trap_guard",
+        10,
+    );
+    assert!(
+        stdout.contains("OK") && !stdout.contains("MISMATCH"),
+        "non-trapping differential failed: {stdout}"
+    );
+}
+
+#[test]
+fn every_declared_direct_trap_encoding_structures_as_a_guard() {
+    let traps: [&[u8]; 5] = [
+        &[0x0f, 0x0b],
+        &[0x0f, 0xff, 0xc0],
+        &[0x0f, 0xb9, 0xc0],
+        &[0xcc],
+        &[0xcd, 0x29],
+    ];
+    for trap in traps {
+        let displacement: u8 = u8::try_from(trap.len()).expect("bounded trap length");
+        let mut code: Vec<u8> = vec![0x48, 0x85, 0xc9, 0x79, displacement];
+        code.extend_from_slice(trap);
+        code.extend_from_slice(&[0x48, 0x8d, 0x41, 0x01, 0xc3]);
+        let recovered: LeafRecovery = recover_leaf_function_abi(&code, 0x1000, HOST_ABI)
+            .unwrap_or_else(|error| panic!("{trap:02x?}: {error}"));
+        assert!(
+            recovered.source.contains("__builtin_trap();") && !recovered.source.contains("goto "),
+            "{trap:02x?}: {}",
+            recovered.source
+        );
+        let rust_source: &str = recovered.rust_source.as_deref().expect("Rust recovery");
+        assert!(
+            rust_source.contains("std::process::abort();"),
+            "{trap:02x?}: {rust_source}"
+        );
+    }
+}
+
+#[test]
+fn maximum_address_zero_arity_resolved_call_remains_a_call() {
+    const CODE: [u8; 6] = [0xe8, 0xfa, 0xff, 0xff, 0xff, 0xc3];
+    let call: ResolvedCall = ResolvedCall::from_integer_arity(u64::MAX, None, PseudoAbi::SysV, 0)
+        .expect("zero-arity resolved call");
+    let recovered: LeafRecovery =
+        recover_leaf_function_with_calls(&CODE, 0, PseudoAbi::SysV, &[call])
+            .expect("maximum-address call recovery");
+    assert_eq!(recovered.call_targets, vec![u64::MAX]);
+    assert!(
+        recovered.source.contains("sub_ffffffffffffffff()")
+            && !recovered.source.contains("__builtin_trap"),
+        "{}",
+        recovered.source
+    );
+    let rust_source: &str = recovered.rust_source.as_deref().expect("Rust recovery");
+    assert!(
+        rust_source.contains("sub_ffffffffffffffff()")
+            && !rust_source.contains("std::process::abort"),
+        "{rust_source}"
     );
 }
 

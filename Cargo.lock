@@ -1111,6 +1111,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "compcol"
+version = "0.6.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c11ff3545f0554bd738d69ab7d4556713f7b986706563b0554a89339cee83396"
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1822,6 +1828,7 @@ dependencies = [
  "cab",
  "cbc",
  "cipher 0.4.4",
+ "compcol",
  "crc32fast",
  "delharc",
  "disrobe-bytes",

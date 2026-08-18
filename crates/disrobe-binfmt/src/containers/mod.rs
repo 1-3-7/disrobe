@@ -241,7 +241,7 @@ pub use squashfs::{
 };
 pub use squirrel::{SquirrelLayout, detect_squirrel, locate_embedded_nupkg};
 pub use stuffit::{
-    SitArchive, SitEntry, SitFork, fork_bytes as sit_fork_bytes,
+    SitArchive, SitCompression, SitEntry, SitFork, fork_bytes_bounded as sit_fork_bytes_bounded,
     fork_is_stored as sit_fork_is_stored, parse_classic as parse_sit_classic,
 };
 pub use ubifs::{UbiVolume, UbifsFile, UbifsWalk, detect_ubi, detect_ubifs, walk_ubifs};

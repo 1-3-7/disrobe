@@ -26,7 +26,7 @@ The workspace splits into shared cores and dedicated ecosystem or recovery-surfa
 | `disrobe-prowl` | Async URL and IOC harvester over public archives and threat-intel feeds, with bounded paging, per-host rate limits, key resolution, and typed reports. |
 | `disrobe-ir` | The five-rung IR ladder, the `.dr` envelope (rkyv hot + postcard cold + BLAKE3 root), transcoders, capability descriptors. |
 | `disrobe-nir`, `disrobe-nir-lift` | Normalized MIR plus bytecode front ends for AVM2, BEAM, CIL, Dalvik, JVM, Lua, Python, WebAssembly, and YARV. |
-| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->101<!-- /m --> formats detected, each with an in-tree extractor and <!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them reached by a committed input, plus recursive carving) with shared path-safety and decompression-quota machinery. |
+| `disrobe-binfmt` | Container, archive, filesystem, and firmware layer (<!-- m:containers_formats -->101<!-- /m --> formats detected, each with an in-tree extractor and <!-- roster-breadth:containers-exercised -->39<!-- /roster-breadth --> of them reached by a committed input, plus recursive carving) with shared path-safety and decompression-quota machinery. |
 | `disrobe-passes` | Single assembly point for the feature-selected auto-chain registry. The standard CLI enables a specific subset; `disrobe passes` prints the resulting IDs. |
 | `disrobe-llm-metadata` | The `--llm` sidecar: 18 categories, 4 packs, `AGENTS.md` / `SKILL.md` brief generation. |
 | `disrobe-mcp` | The rmcp Model Context Protocol companion wired to `disrobe serve --mcp`. |

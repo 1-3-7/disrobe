@@ -122,6 +122,7 @@ const TAG_RAR: &str = "rar";
 const TAG_RPM: &str = "rpm";
 const TAG_ARC: &str = "arc";
 const TAG_LZH: &str = "lzh";
+const TAG_STUFFIT: &str = "stuffit";
 const TAG_INNOSETUP: &str = "inno-setup";
 const TAG_APPIMAGE: &str = "appimage";
 const TAG_ISO: &str = "iso";
@@ -412,6 +413,7 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_RPM => extract_rpm_members(bytes),
         TAG_ARC => extract_arc_members(bytes),
         TAG_LZH => extract_lzh_members(bytes),
+        TAG_STUFFIT => extract_stuffit_members(bytes),
         TAG_INNOSETUP => extract_innosetup_members(bytes),
         TAG_APPIMAGE => extract_appimage_members(bytes),
         TAG_DOTNET_SINGLE_FILE => extract_dotnet_single_file_members(bytes),
@@ -419,6 +421,62 @@ fn extract_members(tag: &str, bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>
         TAG_EROFS => extract_erofs_members(bytes),
         _ => Ok(Vec::new()),
     }
+}
+
+fn extract_stuffit_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
+    let archive: crate::containers::SitArchive = crate::containers::parse_sit_classic(bytes)
+        .map_err(|error: crate::error::Error| fail(format!("stuffit payload: {error}")))?;
+    let mut keys: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut forks: Vec<(String, &crate::containers::SitFork)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in &archive.entries {
+        for (suffix, fork, required) in [
+            (
+                "",
+                &entry.data,
+                entry.data.uncompressed_len > 0
+                    || entry.data.compressed_len > 0
+                    || (entry.resource.uncompressed_len == 0 && entry.resource.compressed_len == 0),
+            ),
+            (
+                ".rsrc",
+                &entry.resource,
+                entry.resource.uncompressed_len > 0 || entry.resource.compressed_len > 0,
+            ),
+        ] {
+            if !required {
+                continue;
+            }
+            if forks.len() >= MAX_MEMBER_COUNT {
+                return Err(fail(format!(
+                    "stuffit member count exceeds {MAX_MEMBER_COUNT}"
+                )));
+            }
+            total = total
+                .checked_add(u64::from(fork.uncompressed_len))
+                .ok_or_else(|| fail("stuffit aggregate member size overflows".to_owned()))?;
+            if total > MAX_MEMBER_BYTES {
+                return Err(fail(
+                    "stuffit aggregate member size exceeds limit".to_owned(),
+                ));
+            }
+            let raw_name: String = format!("{}{suffix}", entry.name);
+            let name: String = preflight_chain_path(&mut keys, &raw_name, "stuffit")?;
+            forks.push((name, fork));
+        }
+    }
+    let max_output: usize =
+        usize::try_from(MAX_MEMBER_BYTES).map_or(usize::MAX, |value: usize| value);
+    forks
+        .into_iter()
+        .map(|(name, fork): (String, &crate::containers::SitFork)| {
+            let data: Vec<u8> = crate::containers::sit_fork_bytes_bounded(bytes, fork, max_output)
+                .map_err(|error: crate::error::Error| {
+                    fail(format!("stuffit member `{name}`: {error}"))
+                })?;
+            Ok((name, data))
+        })
+        .collect()
 }
 
 fn extract_appimage_members(bytes: &[u8]) -> CoreResult<Vec<(String, Vec<u8>)>> {
@@ -1046,6 +1104,9 @@ fn sniff_container_tag(bytes: &[u8]) -> Option<&'static str> {
     if crate::containers::detect_lzh(bytes) {
         return Some(TAG_LZH);
     }
+    if crate::containers::detect_stuffit(bytes).is_some() {
+        return Some(TAG_STUFFIT);
+    }
     if crate::containers::detect_innosetup(bytes).is_some() {
         return Some(TAG_INNOSETUP);
     }
@@ -1078,6 +1139,7 @@ mod tests {
     const REAL_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_ne.exe");
     const REAL_OS2_NE: &[u8] = include_bytes!("../../../corpus/native/formats/hello_os2_ne.exe");
     const REAL_LZH_LEVEL3: &[u8] = include_bytes!("../tests/fixtures/lzh/level3/h3_subdir.lzh");
+    const REAL_STUFFIT: &[u8] = include_bytes!("../tests/fixtures/stuffit/stuffit45-method13.sit");
     const REAL_INNOSETUP: &[u8] = include_bytes!("../tests/fixtures/innosetup/innosetup-6.3.3.exe");
     const REAL_EROFS: &[u8] = include_bytes!("../tests/fixtures/erofs/lzma-compact-mixed.erofs");
 
@@ -1098,6 +1160,17 @@ mod tests {
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].0, "subdir/subdir2/HELLO.TXT");
         assert_eq!(members[0].1, b"hello world!\r\n");
+    }
+
+    #[test]
+    fn method13_stuffit_reaches_the_container_chain() {
+        assert_eq!(sniff_container_tag(REAL_STUFFIT), Some(TAG_STUFFIT));
+        let members: Vec<(String, Vec<u8>)> =
+            extract_members(TAG_STUFFIT, REAL_STUFFIT).expect("extract StuffIt members");
+        assert_eq!(members.len(), 9);
+        assert!(members.iter().any(|(name, bytes): &(String, Vec<u8>)| {
+            name == "testfile.txt" && bytes.len() == 12
+        }));
     }
 
     #[test]

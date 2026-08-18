@@ -7,6 +7,7 @@ use crate::dex::{
 };
 
 const ACC_INTERFACE: u32 = 0x0200;
+const ACC_PUBLIC: u32 = 0x0001;
 const ACC_FINAL: u32 = 0x0010;
 const ACC_SYNTHETIC: u32 = 0x1000;
 const OBJECT_DESCRIPTOR: &str = "Ljava/lang/Object;";
@@ -18,11 +19,19 @@ pub(crate) struct DefaultInterfaceMethod {
     pub(crate) descriptor: String,
     pub(crate) bridge_item: usize,
     pub(crate) bridge_method: u32,
+    pub(crate) kind: InterfaceMethodKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterfaceMethodKind {
+    Default,
+    Static,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct DefaultInterfaceRecovery {
     methods: BTreeMap<(String, String, String), DefaultInterfaceMethod>,
+    injected_methods: BTreeMap<String, Vec<DefaultInterfaceMethod>>,
     suppressed_classes: BTreeSet<String>,
     suppressed_methods: BTreeSet<(String, String, String)>,
     implemented_interfaces: BTreeMap<String, BTreeSet<String>>,
@@ -59,14 +68,14 @@ impl DefaultInterfaceRecovery {
                 continue;
             };
             let interface: String = format!("{interface};");
-            let Some(name): Option<&str> = method.method_name.strip_prefix("$default$") else {
-                rejected_companions.insert(method.class.clone());
-                continue;
-            };
             let DexCodeState::Decoded(bridge_item) = method.state else {
                 rejected_companions.insert(method.class.clone());
                 continue;
             };
+            if report.decoded().get(bridge_item).is_none() {
+                rejected_companions.insert(method.class.clone());
+                continue;
+            }
             if method.access_flags & ACC_STATIC != ACC_STATIC {
                 rejected_companions.insert(method.class.clone());
                 continue;
@@ -77,30 +86,59 @@ impl DefaultInterfaceRecovery {
             };
             let owner_matches: bool = bridge_id.class == method.class;
             let name_matches: bool = bridge_id.name == method.method_name;
-            let receiver_matches: bool = bridge_id.proto.parameters.first() == Some(&interface);
-            if !owner_matches || !name_matches || !receiver_matches {
+            if !owner_matches || !name_matches {
                 rejected_companions.insert(method.class.clone());
                 continue;
             }
-            let Some(target) = report.methods().iter().find(|target| {
-                target.class == interface
-                    && target.method_name == name
-                    && target.access_flags & ACC_ABSTRACT != 0
-                    && target.method_descriptor == descriptor_without_receiver(bridge_id)
-            }) else {
-                rejected_companions.insert(method.class.clone());
-                continue;
-            };
+            let (name, descriptor, kind): (String, String, InterfaceMethodKind) =
+                if let Some(name) = method.method_name.strip_prefix("$default$") {
+                    if bridge_id.proto.parameters.first() != Some(&interface) {
+                        rejected_companions.insert(method.class.clone());
+                        continue;
+                    }
+                    let Some(target) = report.methods().iter().find(|target| {
+                        target.class == interface
+                            && target.method_name == name
+                            && target.access_flags & ACC_ABSTRACT != 0
+                            && target.method_descriptor == descriptor_without_receiver(bridge_id)
+                    }) else {
+                        rejected_companions.insert(method.class.clone());
+                        continue;
+                    };
+                    (
+                        name.to_string(),
+                        target.method_descriptor.clone(),
+                        InterfaceMethodKind::Default,
+                    )
+                } else {
+                    if method.method_name.starts_with('<')
+                        || method.access_flags != (ACC_PUBLIC | ACC_STATIC)
+                        || report.methods().iter().any(|target: &DexMethodCode| {
+                            target.class == interface
+                                && target.method_name == method.method_name
+                                && target.method_descriptor == method.method_descriptor
+                        })
+                    {
+                        rejected_companions.insert(method.class.clone());
+                        continue;
+                    }
+                    (
+                        method.method_name.clone(),
+                        method.method_descriptor.clone(),
+                        InterfaceMethodKind::Static,
+                    )
+                };
             let bridge_method: u32 = method.method_index;
             candidates
                 .entry(method.class.clone())
                 .or_default()
                 .push(DefaultInterfaceMethod {
                     interface,
-                    name: name.to_string(),
-                    descriptor: target.method_descriptor.clone(),
+                    name,
+                    descriptor,
                     bridge_item,
                     bridge_method,
+                    kind,
                 });
         }
         for rejected in rejected_companions {
@@ -133,34 +171,37 @@ impl DefaultInterfaceRecovery {
                     .call_sites
                     .get(&method.bridge_method)
                     .map_or(&[], Vec::as_slice);
-                if sites.is_empty()
-                    || sites.iter().any(|site: &ForwarderSite<'_>| {
-                        !class_declares_interface(
-                            &class_declarations,
-                            &site.item.class,
-                            &method.interface,
-                        ) || !is_forwarder(
-                            site.item,
-                            site.method,
-                            method.bridge_method,
-                            &method.name,
-                            &method.descriptor,
-                        )
-                    })
+                if method.kind == InterfaceMethodKind::Default
+                    && (sites.is_empty()
+                        || sites.iter().any(|site: &ForwarderSite<'_>| {
+                            !class_declares_interface(
+                                &class_declarations,
+                                &site.item.class,
+                                &method.interface,
+                            ) || !is_forwarder(
+                                site.item,
+                                site.method,
+                                method.bridge_method,
+                                &method.name,
+                                &method.descriptor,
+                            )
+                        }))
                 {
                     valid = false;
                     break;
                 }
-                for site in sites {
-                    forwarders.push((
-                        site.item.class.clone(),
-                        site.item.method_name.clone(),
-                        site.item.method_descriptor.clone(),
-                    ));
-                    interfaces
-                        .entry(site.item.class.clone())
-                        .or_default()
-                        .insert(method.interface.clone());
+                if method.kind == InterfaceMethodKind::Default {
+                    for site in sites {
+                        forwarders.push((
+                            site.item.class.clone(),
+                            site.item.method_name.clone(),
+                            site.item.method_descriptor.clone(),
+                        ));
+                        interfaces
+                            .entry(site.item.class.clone())
+                            .or_default()
+                            .insert(method.interface.clone());
+                    }
                 }
             }
             if !valid {
@@ -177,14 +218,23 @@ impl DefaultInterfaceRecovery {
             }
             for method in methods {
                 recovery.calls.insert(method.bridge_method, method.clone());
-                recovery.methods.insert(
-                    (
-                        method.interface.clone(),
-                        method.name.clone(),
-                        method.descriptor.clone(),
-                    ),
-                    method,
-                );
+                match method.kind {
+                    InterfaceMethodKind::Default => {
+                        recovery.methods.insert(
+                            (
+                                method.interface.clone(),
+                                method.name.clone(),
+                                method.descriptor.clone(),
+                            ),
+                            method,
+                        );
+                    }
+                    InterfaceMethodKind::Static => recovery
+                        .injected_methods
+                        .entry(method.interface.clone())
+                        .or_default()
+                        .push(method),
+                }
             }
         }
         recovery
@@ -216,10 +266,15 @@ impl DefaultInterfaceRecovery {
         self.implemented_interfaces.get(class)
     }
 
+    pub(crate) fn injected_methods(&self, class: &str) -> &[DefaultInterfaceMethod] {
+        self.injected_methods.get(class).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn recovers_interface(&self, class: &str) -> bool {
         self.methods
             .values()
             .any(|method: &DefaultInterfaceMethod| method.interface == class)
+            || self.injected_methods.contains_key(class)
     }
 
     pub(crate) fn rewrites_call(&self, method: u32) -> Option<&DefaultInterfaceMethod> {
@@ -328,7 +383,14 @@ fn scan_references<'a>(
         for insn in instructions {
             if matches!(insn.op, 0x6e..=0x72 | 0x74..=0x78 | 0xfa | 0xfb) {
                 if let Some(index) = insn.index {
-                    if bridge_owners.contains_key(&index) && matches!(insn.op, 0x71 | 0x77) {
+                    if let Some(companion) = bridge_owners.get(&index)
+                        && matches!(insn.op, 0x71 | 0x77)
+                    {
+                        let target: &crate::dex::MethodId = dex.method_ids.get(index as usize)?;
+                        if invoke_word_count(target) != Some(insn.regs.len()) {
+                            escaped.insert(companion.clone());
+                            continue;
+                        }
                         let method: &DexMethodCode = *methods.get(&(
                             item.class.as_str(),
                             item.method_name.as_str(),
@@ -378,6 +440,16 @@ fn scan_references<'a>(
         call_sites,
         escaped_companions: escaped,
     })
+}
+
+fn invoke_word_count(method: &crate::dex::MethodId) -> Option<usize> {
+    method
+        .proto
+        .parameters
+        .iter()
+        .try_fold(0usize, |words: usize, parameter: &String| {
+            words.checked_add(usize::from(matches!(parameter.as_str(), "J" | "D")) + 1)
+        })
 }
 
 fn mark_proto_escapes(

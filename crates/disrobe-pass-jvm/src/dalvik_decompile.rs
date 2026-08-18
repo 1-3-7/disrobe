@@ -364,6 +364,43 @@ fn render_class(
         }
     }
 
+    for recovered in desugar.interfaces.injected_methods(class_descriptor) {
+        let rendered: RenderedMethod = decoded.get(recovered.bridge_item).map_or_else(
+            || {
+                let metadata: Option<&DexMethodCode> = methods
+                    .iter()
+                    .copied()
+                    .find(|method: &&DexMethodCode| method.method_index == recovered.bridge_method);
+                metadata.map_or_else(
+                    || RenderedMethod {
+                        text: String::new(),
+                        fully_lifted: false,
+                        has_body: false,
+                        refused: true,
+                    },
+                    |method: &DexMethodCode| {
+                        render_unavailable_method(
+                            simple,
+                            method,
+                            Some("static interface companion body is absent"),
+                            desugar,
+                        )
+                    },
+                )
+            },
+            |item: &CodeItem| {
+                render_method(dex, simple, item, None, None, desugar, Some(recovered))
+            },
+        );
+        let _ = writeln!(text, "{}", rendered.text);
+        method_count += 1;
+        if rendered.fully_lifted {
+            fully_lifted += 1;
+        } else if rendered.has_body || rendered.refused {
+            fallback += 1;
+        }
+    }
+
     let _ = writeln!(text, "}}");
     RenderedClass {
         text,
@@ -559,10 +596,18 @@ fn render_method(
     let is_constructor: bool = method_name == "<init>";
     let is_clinit: bool = method_name == "<clinit>";
     let is_static: bool =
-        recovered_default.is_none() && !is_constructor && item.ins_size <= footprint;
+        recovered_default.is_some_and(
+            |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+                recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Static
+            },
+        ) || recovered_default.is_none() && !is_constructor && item.ins_size <= footprint;
 
     let mut signature: String = String::new();
-    let modifier: &str = if recovered_default.is_some() {
+    let modifier: &str = if recovered_default.is_some_and(
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+            recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
+        },
+    ) {
         "public default "
     } else if is_static {
         "public static "
@@ -576,9 +621,14 @@ fn render_method(
             .iter()
             .enumerate()
             .map(|(i, p)| {
+                let parameter_index: usize = i + usize::from(recovered_default.is_some_and(
+                    |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+                        recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
+                    },
+                ));
                 let name: String = item
                     .param_names
-                    .get(i)
+                    .get(parameter_index)
                     .and_then(|n: &Option<String>| n.clone())
                     .filter(|n: &String| crate::name_disambig::is_java_source_identifier(n))
                     .unwrap_or_else(|| format!("arg{i}"));
@@ -609,7 +659,11 @@ fn render_method(
         item,
         is_static,
         method_descriptor,
-        recovered_default.is_some(),
+        recovered_default.is_some_and(
+            |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+                recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
+            },
+        ),
         desugar,
     );
     let cff_note: String = cff.map_or_else(String::new, cff_annotation);

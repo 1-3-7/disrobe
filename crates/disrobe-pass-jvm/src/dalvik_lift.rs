@@ -565,6 +565,11 @@ fn invoke(
     let recovered_default: Option<&crate::dalvik_desugar::DefaultInterfaceMethod> = insn
         .index
         .and_then(|index: u32| ctx.desugar.interfaces.rewrites_call(index));
+    let recovered_receiver_first: bool = recovered_default.is_some_and(
+        |recovered: &crate::dalvik_desugar::DefaultInterfaceMethod| {
+            recovered.kind == crate::dalvik_desugar::InterfaceMethodKind::Default
+        },
+    );
     let core_projection: Option<crate::dalvik_core_library::CoreMethodProjection> =
         ctx.desugar.core_library.project_method(method).filter(
             |projection: &crate::dalvik_core_library::CoreMethodProjection| {
@@ -601,19 +606,19 @@ fn invoke(
 
     let mut reg_iter: std::slice::Iter<'_, u16> = insn.regs.iter();
     let receiver_register: Option<u16> =
-        if !is_static || recovered_default.is_some() || core_receiver_first {
+        if !is_static || recovered_receiver_first || core_receiver_first {
             insn.regs.first().copied()
         } else {
             None
         };
     let receiver: Option<Expr> = if !is_static {
         reg_iter.next().map(|&r| file.read(ctx, r))
-    } else if recovered_default.is_some() || core_receiver_first {
+    } else if recovered_receiver_first || core_receiver_first {
         reg_iter.next().map(|&r| file.read(ctx, r))
     } else {
         None
     };
-    let parameters: &[String] = if recovered_default.is_some() {
+    let parameters: &[String] = if recovered_receiver_first {
         let Some(parameters): Option<&[String]> = method.proto.parameters.get(1..) else {
             return LiftOutcome::None;
         };

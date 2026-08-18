@@ -823,6 +823,105 @@ print(read({ user: { name: "Ada" } }));
     assert_node_equivalent(source, &recovered);
 }
 
+const TYPESCRIPT_5_9_3_ARRAY_PARAM_ES5: &str = r#""use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.sumPair = sumPair;
+function sumPair(_a) {
+    var left = _a[0], right = _a[1];
+    return left + right;
+}
+print(sumPair([17, 25]));
+"#;
+
+#[test]
+fn typescript_5_9_3_direct_index_array_parameter_recovers() {
+    let expected: String = eval_capture_node(TYPESCRIPT_5_9_3_ARRAY_PARAM_ES5)
+        .expect("the pinned TypeScript 5.9.3 ES5 output must execute in Node");
+    assert_eq!(expected, "42");
+    let (recovered, stats): (String, AstUnminifyStats) =
+        unminify_ast(TYPESCRIPT_5_9_3_ARRAY_PARAM_ES5);
+    assert_eq!(
+        stats.object_params_restructured, 1,
+        "the pinned TypeScript direct-index scaffold must recover exactly once:\n{recovered}"
+    );
+    assert!(
+        recovered.contains("function sumPair([left, right])"),
+        "consecutive direct indices must become the array binding parameter:\n{recovered}"
+    );
+    assert!(
+        !recovered.contains("_a["),
+        "the recovered body must not retain the synthetic direct-index accesses:\n{recovered}"
+    );
+    assert_node_equivalent(TYPESCRIPT_5_9_3_ARRAY_PARAM_ES5, &recovered);
+}
+
+#[test]
+fn direct_index_array_parameter_recovery_is_byte_deterministic() {
+    let source: &str = "function pair(_a) { var first = _a[0], renamed = _a[1]; return first + renamed; } print(pair([19, 23]));";
+    let (first, first_stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    let (second, second_stats): (String, AstUnminifyStats) = unminify_object_param(source);
+    assert_eq!(first, second);
+    assert_eq!(first_stats.object_params_restructured, 1);
+    assert_eq!(
+        first_stats.object_params_restructured,
+        second_stats.object_params_restructured
+    );
+    assert!(
+        first.contains("function pair([first, renamed])"),
+        "source:\n{first}"
+    );
+    assert_node_equivalent(source, &first);
+}
+
+#[test]
+fn direct_index_array_parameter_refuses_preceding_types_and_optional_parameters() {
+    let cases: [&str; 2] = [
+        "function f(prefix: number, _a) { var first = _a[0], second = _a[1]; return prefix + first + second; }",
+        "function f(prefix?: number, _a) { var first = _a[0], second = _a[1]; return (prefix ?? 0) + first + second; }",
+    ];
+    for source in cases {
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+        assert_eq!(
+            stats.object_params_restructured, 0,
+            "a preceding non-plain parameter must block recovery:\n{recovered}"
+        );
+        assert!(
+            recovered.contains("_a[0]") && recovered.contains("_a[1]"),
+            "a refused direct-index scaffold must remain intact:\n{recovered}"
+        );
+    }
+}
+
+#[test]
+fn direct_index_array_parameter_near_misses_abstain() {
+    let cases: [&str; 8] = [
+        "function f(_a) { var first = _a[0], third = _a[2]; return first + third; } print(f([1, 2, 3]));",
+        "function f(_a) { var second = _a[1], first = _a[0]; return first + second; } print(f([1, 2]));",
+        "function f(_a = [1, 2]) { var first = _a[0], second = _a[1]; return first + second; } print(f());",
+        "function f(_a) { var first = _a[0], second = _a[1]; return first + second + _a.length; } print(f([1, 2]));",
+        "function f(_a) { let first = _a[0], second = _a[1]; return first + second; } print(f([1, 2]));",
+        "function f(_a) { \"use strict\"; var first = _a[0], second = _a[1]; return first + second; } print(f([1, 2]));",
+        "function f(_a) { var first = _a[0], second = _a[1]; return eval('first + second'); } print(f([1, 2]));",
+        "function f(_b) { var first = _b[0], second = _b[1]; return first + second; } print(f([1, 2]));",
+    ];
+    for source in cases {
+        let expected: String = eval_capture_node(source).expect("near-miss input must execute");
+        let (recovered, stats): (String, AstUnminifyStats) = unminify_object_param(source);
+        assert_eq!(
+            stats.object_params_restructured, 0,
+            "an unproven direct-index parameter must abstain:\n{recovered}"
+        );
+        assert!(
+            recovered.contains("function f(_"),
+            "an unproven synthetic parameter must remain bound:\n{recovered}"
+        );
+        assert_eq!(
+            eval_capture_node(&recovered).expect("refused output must execute"),
+            expected
+        );
+    }
+}
+
 #[test]
 fn parameter_eval_nested_extraction_is_left_intact() {
     let source: &str = r#"

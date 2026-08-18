@@ -111,7 +111,7 @@ Stacked eval-chain obfuscation (FOPO, Better PHP Obfuscator, and the base64/gzin
 | **Swift / Obj-C** | Mach-O class-dump plus SwiftShield mapping parser and explicit-key single-byte XOR blob decoding; `objc_msgSend` call sites in recovered native bodies resolved to selector and receiver class. |
 | **ActionScript 3** | SWF parse and AVM2 disasm; commercial obfuscators (secureSWF, DoSWF, Kindi, Irrfuscator, swfLock) detect-only. |
 | **Hermes / Flutter** | Hermes bytecode v60-v96 header parse, v76/v84/v96 lift against a real hermesc sample; Flutter Dart kernel byte-exact body recovery and ARM64 AOT disasm, graded against a self-authored Dart 3.12.2 android-arm64 product-mode corpus and, measured locally, a real RustDesk 1.4.9 `libapp.so` fetched by pinned hash. |
-| **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->101<!-- /m --> formats detected, all <!-- m:containers_formats -->101<!-- /m --> carrying an in-tree extractor. <!-- roster-breadth:containers-exercised -->35<!-- /roster-breadth --> of them are driven to member bytes by an input this repository commits; the remainder are declared rather than measured. |
+| **Containers / archives / filesystems / firmware** | <!-- m:containers_formats -->101<!-- /m --> formats detected, all <!-- m:containers_formats -->101<!-- /m --> carrying an in-tree extractor. <!-- roster-breadth:containers-exercised -->39<!-- /roster-breadth --> of them are driven to member bytes by an input this repository commits; the remainder are declared rather than measured. |
 
 ## The `disrobe auto` chain
 

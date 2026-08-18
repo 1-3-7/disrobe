@@ -78,7 +78,7 @@
         "disrobe-binfmt/src/containers/rar.rs::parse_rar5",
         "disrobe-binfmt/src/containers/rpm.rs::member_bytes",
         "disrobe-binfmt/src/containers/rpm.rs::recover_rpm",
-        "disrobe-binfmt/src/containers/stuffit.rs::fork_bytes",
+        "disrobe-binfmt/src/containers/stuffit.rs::fork_bytes_bounded",
         "disrobe-binfmt/src/containers/unityfs.rs::assemble_data",
         "disrobe-binfmt/src/containers/unityfs.rs::build_bundle_uncompressed",
         "disrobe-binfmt/src/containers/unityfs.rs::build_serialized_textasset",
