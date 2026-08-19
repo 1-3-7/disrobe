@@ -626,12 +626,23 @@ pub(crate) struct RecoveredMethodRef {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct HelperBody {
+    pub(crate) insns: Vec<u16>,
+    pub(crate) registers_size: u16,
+    pub(crate) ins_size: u16,
+    pub(crate) descriptor: String,
+    pub(crate) is_static: bool,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct RecoveredCapturedLambda {
     pub(crate) helper_owner: String,
     pub(crate) helper_name: String,
     pub(crate) receiver_capture: bool,
     pub(crate) capture_count: usize,
     pub(crate) parameter_count: usize,
+    pub(crate) helper_index: u32,
+    pub(crate) helper_body: Option<HelperBody>,
 }
 
 #[derive(Debug, Clone)]
@@ -988,6 +999,7 @@ impl FunctionalRecovery {
         for method in report.methods() {
             owned.entry(method.class.as_str()).or_default().push(method);
         }
+        let invoke_counts: BTreeMap<u32, usize> = invoke_target_counts(report).unwrap_or_default();
         let mut candidates: BTreeMap<String, RecoveredFunctional> = BTreeMap::new();
         for (class, declaration) in &classes {
             if !is_lambda_shaped(declaration) {
@@ -1005,6 +1017,14 @@ impl FunctionalRecovery {
                 methods.as_slice(),
             ) else {
                 continue;
+            };
+            let recovered: RecoveredFunctional = match recovered {
+                RecoveredFunctional::CapturedLambda(mut lambda) => {
+                    lambda.helper_body =
+                        inlinable_helper_body(report, &invoke_counts, lambda.helper_index);
+                    RecoveredFunctional::CapturedLambda(lambda)
+                }
+                other @ RecoveredFunctional::MethodReference(_) => other,
             };
             candidates.insert(class.clone(), recovered);
         }
@@ -1528,6 +1548,85 @@ fn classify_captured_lambda(
         receiver_capture,
         capture_count: captures.len(),
         parameter_count: interface_arity,
+        helper_index: target.method_index,
+        helper_body: None,
+    })
+}
+
+const MAX_INLINE_BODY_INSNS: usize = 64;
+
+const fn inlinable_opcode(op: u8) -> bool {
+    matches!(
+        op,
+        0x00 | 0x01..=0x0C
+            | 0x0E..=0x1B
+            | 0x1F..=0x22
+            | 0x2D..=0x31
+            | 0x44..=0x4A
+            | 0x52..=0x58
+            | 0x60..=0x66
+            | 0x6E..=0x72
+            | 0x74..=0x78
+            | 0x7B..=0xE2
+    )
+}
+
+fn invoke_target_counts(report: &CodeItemsReport) -> Option<BTreeMap<u32, usize>> {
+    let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut work: usize = 0;
+    for item in report.decoded() {
+        let instructions: Vec<DalvikInsn> = decode_method(&item.insns);
+        work = work.checked_add(instructions.len())?;
+        if work > MAX_DESUGAR_SCAN_INSNS {
+            return None;
+        }
+        for insn in instructions {
+            if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78)
+                && let Some(index) = insn.index
+            {
+                let seen: &mut usize = counts.entry(index).or_insert(0);
+                *seen = seen.checked_add(1)?;
+            }
+        }
+    }
+    Some(counts)
+}
+
+fn inlinable_helper_body(
+    report: &CodeItemsReport,
+    invoke_counts: &BTreeMap<u32, usize>,
+    helper_index: u32,
+) -> Option<HelperBody> {
+    if invoke_counts.get(&helper_index).copied() != Some(1) {
+        return None;
+    }
+    let method: &DexMethodCode = report
+        .methods()
+        .iter()
+        .find(|candidate: &&DexMethodCode| candidate.method_index == helper_index)?;
+    let DexCodeState::Decoded(index) = method.state else {
+        return None;
+    };
+    let item: &CodeItem = report.decoded().get(index)?;
+    if !item.tries.is_empty() {
+        return None;
+    }
+    let instructions: Vec<DalvikInsn> = decode_method(&item.insns);
+    if instructions.is_empty() || instructions.len() > MAX_INLINE_BODY_INSNS {
+        return None;
+    }
+    if !instructions
+        .iter()
+        .all(|insn: &DalvikInsn| inlinable_opcode(insn.op))
+    {
+        return None;
+    }
+    Some(HelperBody {
+        insns: item.insns.clone(),
+        registers_size: item.registers_size,
+        ins_size: item.ins_size,
+        descriptor: item.method_descriptor.clone(),
+        is_static: method.access_flags & ACC_STATIC != 0,
     })
 }
 

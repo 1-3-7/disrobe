@@ -14,6 +14,7 @@ pub(crate) struct MethodContext<'a> {
     pub(crate) inline_temporaries: bool,
     pub(crate) param_regs: BTreeMap<u16, String>,
     pub(crate) this_reg: Option<u16>,
+    pub(crate) inline_depth: u16,
 }
 
 impl<'a> MethodContext<'a> {
@@ -51,6 +52,7 @@ impl<'a> MethodContext<'a> {
             inline_temporaries,
             param_regs,
             this_reg,
+            inline_depth: 0,
         }
     }
 
@@ -649,7 +651,7 @@ fn invoke(
             let reference: Option<String> =
                 ctx.desugar.functionals.recovered(&method.class).and_then(
                     |recovered: &crate::dalvik_desugar::RecoveredFunctional| {
-                        render_functional(ctx.desugar.core_library, recovered, &args)
+                        render_functional(ctx, recovered, &args)
                     },
                 );
             let constructed: Expr =
@@ -692,16 +694,16 @@ fn invoke(
 }
 
 fn render_functional(
-    core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
+    ctx: &MethodContext<'_>,
     recovered: &crate::dalvik_desugar::RecoveredFunctional,
     args: &[Expr],
 ) -> Option<String> {
     match recovered {
         crate::dalvik_desugar::RecoveredFunctional::MethodReference(reference) => {
-            render_method_reference(core_library, reference, args)
+            render_method_reference(ctx.desugar.core_library, reference, args)
         }
         crate::dalvik_desugar::RecoveredFunctional::CapturedLambda(lambda) => {
-            render_captured_lambda(core_library, lambda, args)
+            render_captured_lambda(ctx, lambda, args)
         }
     }
 }
@@ -752,8 +754,157 @@ fn lambda_parameter_names(captures: &[String], arity: usize) -> Option<Vec<Strin
     None
 }
 
+const MAX_INLINE_DEPTH: u16 = 2;
+
+fn operation_node_counts(expr: &Expr) -> (usize, usize, usize) {
+    fn walk(expr: &Expr, invokes: &mut usize, opaques: &mut usize, news: &mut usize) {
+        match expr {
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Cmp { lhs, rhs }
+            | Expr::ArrayLoad {
+                array: lhs,
+                index: rhs,
+            } => {
+                walk(lhs, invokes, opaques, news);
+                walk(rhs, invokes, opaques, news);
+            }
+            Expr::Unary { value, .. }
+            | Expr::Cast { value, .. }
+            | Expr::InstanceOf { value, .. }
+            | Expr::ArrayLength(value)
+            | Expr::NewArray { size: value, .. } => walk(value, invokes, opaques, news),
+            Expr::Field { receiver, .. } => walk(receiver, invokes, opaques, news),
+            Expr::ArrayInit { elements, .. } => {
+                for element in elements {
+                    walk(element, invokes, opaques, news);
+                }
+            }
+            Expr::Invoke { receiver, args, .. } => {
+                *invokes = invokes.saturating_add(1);
+                if let Some(value) = receiver {
+                    walk(value, invokes, opaques, news);
+                }
+                for arg in args {
+                    walk(arg, invokes, opaques, news);
+                }
+            }
+            Expr::Opaque(_) => *opaques = opaques.saturating_add(1),
+            Expr::New(_) => *news = news.saturating_add(1),
+            Expr::Const(_) | Expr::Local(_) | Expr::This | Expr::StaticField { .. } => {}
+        }
+    }
+    let (mut invokes, mut opaques, mut news): (usize, usize, usize) = (0, 0, 0);
+    walk(expr, &mut invokes, &mut opaques, &mut news);
+    (invokes, opaques, news)
+}
+
+fn inline_helper_body(
+    ctx: &MethodContext<'_>,
+    body: &crate::dalvik_desugar::HelperBody,
+    receiver: Option<&Expr>,
+    captures: &[Expr],
+    parameters: &[String],
+) -> Option<String> {
+    if ctx.inline_depth >= MAX_INLINE_DEPTH {
+        return None;
+    }
+    let mut nested: MethodContext<'_> = MethodContext::new(
+        ctx.dex,
+        body.registers_size,
+        body.ins_size,
+        &body.descriptor,
+        body.is_static,
+        true,
+        ctx.desugar,
+    );
+    nested.inline_depth = ctx.inline_depth.checked_add(1)?;
+
+    let parsed: MethodDescriptor = descriptor::parse_method(&body.descriptor)?;
+    let mut file: RegisterFile = RegisterFile::new();
+    seed_block_registers(&nested, &mut file);
+    let mut cursor: u16 = body.registers_size.checked_sub(body.ins_size)?;
+    if body.is_static {
+        if receiver.is_some() {
+            return None;
+        }
+    } else {
+        file.write_materialized(cursor, receiver?.clone());
+        cursor = cursor.checked_add(1)?;
+    }
+    let supplied: Vec<Expr> = captures
+        .iter()
+        .cloned()
+        .chain(
+            parameters
+                .iter()
+                .map(|name: &String| Expr::Local(name.clone())),
+        )
+        .collect();
+    if supplied.len() != parsed.params.len() {
+        return None;
+    }
+    for (position, parameter) in parsed.params.iter().enumerate() {
+        file.write_materialized(cursor, supplied.get(position)?.clone());
+        cursor = cursor.checked_add(if parameter.category_two() { 2 } else { 1 })?;
+    }
+    if cursor != body.registers_size {
+        return None;
+    }
+
+    let instructions: Vec<DalvikInsn> = crate::dalvik::decode_method(&body.insns);
+    let mut pending: Option<PendingResult> = None;
+    let mut produced: Option<Expr> = None;
+    let (mut calls, mut constructions, mut allocations): (usize, usize, usize) = (0, 0, 0);
+    for insn in &instructions {
+        match insn.op {
+            0x0F..=0x11 => {
+                if pending.as_ref().is_some_and(|result: &PendingResult| {
+                    result.materialized_in.is_none()
+                        && result.expr.discarded_side_effect().is_some()
+                }) {
+                    return None;
+                }
+                let &register: &u16 = insn.regs.first()?;
+                produced = Some(file.current(&nested, register));
+                break;
+            }
+            0x0E => {
+                produced = pending.take().map(|result: PendingResult| result.expr);
+                break;
+            }
+            _ => {}
+        }
+        if let Some(result) = pending.as_ref() {
+            let taken_by_move: bool = matches!(insn.op, 0x0A..=0x0C);
+            let still_readable: bool = result.materialized_in.is_some();
+            if !taken_by_move && !still_readable && result.expr.discarded_side_effect().is_some() {
+                return None;
+            }
+        }
+        if insn.op == 0x22 {
+            allocations = allocations.checked_add(1)?;
+        }
+        if matches!(insn.op, 0x6E..=0x72 | 0x74..=0x78) {
+            let target: &MethodId = ctx.dex.method_ids.get(insn.index? as usize)?;
+            if target.name == "<init>" {
+                constructions = constructions.checked_add(1)?;
+            } else {
+                calls = calls.checked_add(1)?;
+            }
+        }
+        let _: LiftOutcome = lift_insn(&nested, &mut file, insn, &mut pending);
+    }
+
+    let expression: Expr = produced?;
+    let (invokes, opaques, news): (usize, usize, usize) = operation_node_counts(&expression);
+    if invokes != calls || opaques != constructions || news != 0 || allocations != constructions {
+        return None;
+    }
+    Some(expression.render())
+}
+
 fn render_captured_lambda(
-    core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
+    ctx: &MethodContext<'_>,
     recovered: &crate::dalvik_desugar::RecoveredCapturedLambda,
     args: &[Expr],
 ) -> Option<String> {
@@ -761,6 +912,23 @@ fn render_captured_lambda(
         return None;
     }
     let rendered: Vec<String> = args.iter().map(Expr::render).collect();
+    let parameters: Vec<String> = lambda_parameter_names(&rendered, recovered.parameter_count)?;
+    let head: String = if parameters.len() == 1 {
+        parameters.first()?.clone()
+    } else {
+        format!("({})", parameters.join(", "))
+    };
+    let (receiver_arg, forwarded_args): (Option<&Expr>, &[Expr]) = if recovered.receiver_capture {
+        (args.first(), args.get(1..)?)
+    } else {
+        (None, args)
+    };
+    if let Some(body) = recovered.helper_body.as_ref()
+        && let Some(inlined) =
+            inline_helper_body(ctx, body, receiver_arg, forwarded_args, &parameters)
+    {
+        return Some(format!("{head} -> {inlined}"));
+    }
     let (target, forwarded): (String, &[String]) = if recovered.receiver_capture {
         let receiver_text: &String = rendered.first()?;
         let receiver: String = if is_expression_name(receiver_text) {
@@ -771,15 +939,13 @@ fn render_captured_lambda(
         (receiver, rendered.get(1..)?)
     } else {
         (
-            descriptor::binary_to_source(&core_library.project_type(&recovered.helper_owner)),
+            descriptor::binary_to_source(
+                &ctx.desugar
+                    .core_library
+                    .project_type(&recovered.helper_owner),
+            ),
             rendered.as_slice(),
         )
-    };
-    let parameters: Vec<String> = lambda_parameter_names(&rendered, recovered.parameter_count)?;
-    let head: String = if parameters.len() == 1 {
-        parameters.first()?.clone()
-    } else {
-        format!("({})", parameters.join(", "))
     };
     let mut passed: Vec<String> = forwarded.to_vec();
     passed.extend(parameters);

@@ -46,7 +46,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 1,
         captures: 0,
         receiver_capture: false,
-        expected: "p0 -> DesugarShapeProbe.lambda$stateless$0(p0)",
+        expected: "p0 -> ((p0 * 3) + 1)",
     },
     LambdaSite {
         method: "oneCapture",
@@ -54,7 +54,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 1,
         captures: 1,
         receiver_capture: false,
-        expected: "p0 -> DesugarShapeProbe.lambda$oneCapture$0(arg0, p0)",
+        expected: "p0 -> (DesugarShapeProbe.mix(arg0, p0) + 2)",
     },
     LambdaSite {
         method: "receiverCapture",
@@ -62,7 +62,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 1,
         captures: 1,
         receiver_capture: true,
-        expected: "p0 -> (this).lambda$receiverCapture$0$DesugarShapeProbe(p0)",
+        expected: "p0 -> (this.scale(p0) + 3)",
     },
     LambdaSite {
         method: "twoCaptures",
@@ -70,7 +70,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 2,
         captures: 2,
         receiver_capture: true,
-        expected: "(p0, p1) -> (this).lambda$twoCaptures$0$DesugarShapeProbe(arg0, p0, p1)",
+        expected: "(p0, p1) -> (this.scale(p0) + DesugarShapeProbe.mix(arg0, p1))",
     },
     LambdaSite {
         method: "wideCapture",
@@ -78,7 +78,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 0,
         captures: 1,
         receiver_capture: false,
-        expected: "() -> DesugarShapeProbe.lambda$wideCapture$0(arg0)",
+        expected: "() -> ((arg0 * 7L) + 4L)",
     },
     LambdaSite {
         method: "custom",
@@ -86,7 +86,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 3,
         captures: 1,
         receiver_capture: false,
-        expected: "(p0, p1, p2) -> DesugarShapeProbe.lambda$custom$0(arg0, p0, p1, p2)",
+        expected: "(p0, p1, p2) -> (((p0 + p1) + p2) + arg0)",
     },
     LambdaSite {
         method: "nested",
@@ -94,7 +94,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 1,
         captures: 1,
         receiver_capture: false,
-        expected: "p0 -> DesugarShapeProbe.lambda$nested$0(arg0, p0)",
+        expected: "p0 -> q0 -> (((p0 * 100) + q0) + arg0)",
     },
     LambdaSite {
         method: "lambda$nested$0",
@@ -102,7 +102,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 1,
         captures: 2,
         receiver_capture: false,
-        expected: "p0 -> DesugarShapeProbe.lambda$nested$1(arg1, arg0, p0)",
+        expected: "p0 -> (((arg1 * 100) + p0) + arg0)",
     },
     LambdaSite {
         method: "textCapture",
@@ -110,7 +110,7 @@ const SITES: [LambdaSite; 9] = [
         arity: 0,
         captures: 1,
         receiver_capture: false,
-        expected: "() -> DesugarShapeProbe.lambda$textCapture$0(arg0)",
+        expected: "() -> new StringBuilder().append(arg0).append(\"!\").toString()",
     },
 ];
 
@@ -343,16 +343,23 @@ fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
         );
         assert_eq!(
             expression, site.expected,
-            "{} must forward its {} capture(s) before its {} parameter(s); receiver capture: {}",
+            "{} must bind its {} capture(s) and {} parameter(s) into the authored body; receiver \
+             capture: {}",
             site.method, site.captures, site.arity, site.receiver_capture
+        );
+        assert!(
+            !expression.contains("lambda$"),
+            "{} must recover the authored body, not a call to the D8 helper: {expression}",
+            site.method
         );
         matched = matched.saturating_add(1);
     }
     assert_eq!(matched, SITES.len());
     assert_eq!(
         unit.matches(" -> ").count(),
-        SITES.len(),
-        "the recovered unit must carry exactly the authored lambda expressions"
+        SITES.len().saturating_add(1),
+        "the recovered unit must carry one arrow per authored lambda plus the second arrow of the \
+         nested lambda that recovers inside its own outer lambda"
     );
 
     let retained: BTreeSet<String> = retained_synthetics(&recovered);
@@ -402,18 +409,22 @@ fn recovered_lambdas_recompile_and_preserve_authored_behavior() {
         "the recovered lambda expressions must reproduce the authored behavior"
     );
 
-    let swapped_captures: String = filled.replacen("(arg1, arg0, p0)", "(arg0, arg1, p0)", 1);
+    let swapped_captures: String = filled.replacen("((p0 * 100) + q0)", "((q0 * 100) + p0)", 1);
     assert_ne!(
         swapped_captures, filled,
-        "the nested capture-order mutation must apply"
+        "the nested lambda mutation must apply"
     );
     assert_ne!(
         compile_and_run("d8-lambda-shapes-nested-swap", &swapped_captures),
         reference,
-        "swapping the nested lambda captures must change behavior, so the comparison is real"
+        "swapping the nested lambda operands must change behavior, so the comparison is real"
     );
 
-    let swapped_parameter: String = filled.replacen("(arg0, p0, p1)", "(arg0, p1, p0)", 1);
+    let swapped_parameter: String = filled.replacen(
+        "(this.scale(p0) + DesugarShapeProbe.mix(arg0, p1))",
+        "(this.scale(p1) + DesugarShapeProbe.mix(arg0, p0))",
+        1,
+    );
     assert_ne!(
         swapped_parameter, filled,
         "the parameter-order mutation must apply"
@@ -549,6 +560,65 @@ fn a_program_interface_without_the_matching_abstract_method_keeps_the_desugaring
         body.contains("new DesugarShapeProbe$"),
         "a program interface whose abstract method does not match the implementation must \
          abstain, saw {body}"
+    );
+}
+
+const DUPLICATION_DEX: &[u8] =
+    include_bytes!("fixtures/d8_lambda_duplication/DuplicatingLambdaProbe-min21.dex");
+const DUPLICATION_SOURCE: &str =
+    include_str!("fixtures/d8_lambda_duplication/DuplicatingLambdaProbe.java");
+const DUPLICATION_PROVENANCE: &str = include_str!("fixtures/d8_lambda_duplication/provenance.toml");
+const DUPLICATION_DEX_SHA256: &str =
+    "e74193df95d47030754c51f95fb86501067c038394d7a5ed397281095c765684";
+const DUPLICATION_SOURCE_SHA256: &str =
+    "592fa64a885e6085c74e4fc80e2cac87d85a6828704ec497b8085bf4fb604702";
+
+#[test]
+fn a_helper_whose_result_is_read_twice_is_not_inlined() {
+    assert_eq!(sha256_hex(DUPLICATION_DEX), DUPLICATION_DEX_SHA256);
+    assert_eq!(
+        sha256_hex(DUPLICATION_SOURCE.as_bytes()),
+        DUPLICATION_SOURCE_SHA256
+    );
+    assert!(DUPLICATION_PROVENANCE.contains(DUPLICATION_DEX_SHA256));
+    assert!(
+        DUPLICATION_SOURCE.contains("int once = step(seed, value);")
+            && DUPLICATION_SOURCE.contains("return once + once;"),
+        "the authored program must bind the call once and read it twice"
+    );
+    assert!(
+        DUPLICATION_SOURCE.contains("counter += 1;"),
+        "the helper must carry an observable effect, or duplicating it would be harmless"
+    );
+
+    let dex: DexFile = parse_dex(DUPLICATION_DEX).expect("parse the real D8 artifact");
+    let recovered: DecompiledDex = decompile_dex(&dex, DUPLICATION_DEX);
+    let unit: &String = recovered
+        .sources
+        .get("DuplicatingLambdaProbe.java")
+        .expect("recover the authored compilation unit");
+
+    let single: String = recovered_lambda(unit, "single");
+    assert_eq!(
+        single, "p0 -> (DuplicatingLambdaProbe.step(arg0, p0) + 1)",
+        "a helper that reads its call once must inline"
+    );
+    assert_eq!(
+        single.matches("step(").count(),
+        1,
+        "the inlined body must evaluate the call exactly once: {single}"
+    );
+
+    let duplicating: String = recovered_lambda(unit, "duplicating");
+    assert_eq!(
+        duplicating.matches("step(").count(),
+        0,
+        "inlining a helper whose result is read twice would evaluate its call twice, so the \
+         recovery must keep the call to the helper: {duplicating}"
+    );
+    assert_eq!(
+        duplicating, "p0 -> DuplicatingLambdaProbe.lambda$duplicating$0(arg0, p0)",
+        "the abstaining form must still be a lambda over the D8 helper"
     );
 }
 

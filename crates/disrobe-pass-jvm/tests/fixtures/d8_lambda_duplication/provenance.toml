@@ -1,0 +1,36 @@
+schema = "disrobe.jvm.d8-lambda-duplication-fixture/v1"
+source = "DuplicatingLambdaProbe.java"
+source_sha256 = "592fa64a885e6085c74e4fc80e2cac87d85a6828704ec497b8085bf4fb604702"
+
+[javac]
+vendor = "Eclipse Temurin"
+version = "25.0.4+7-LTS"
+command = "javac -Xlint:-options --release 8 -d classes DuplicatingLambdaProbe.java"
+
+[d8]
+version = "9.1.31"
+build = "60751e845e0a27ed4dd4f3d50e53c9f196fa30bb"
+url = "https://dl.google.com/dl/android/maven2/com/android/tools/r8/9.1.31/r8-9.1.31.jar"
+sha256 = "3b4de3053885da105e39c15212261d22653d6d1b5eb92323dd04ae913cc8286f"
+
+[platform]
+api = 34
+url = "https://dl.google.com/android/repository/platform-34-ext7_r03.zip"
+android_jar_sha256 = "6cea1df3efb77103ac3e2beb9bf4718964b0e0869ab16d39d29d5cbae1c147ad"
+
+[shapes]
+notes = "Two lambdas over the same helper shape. The single lambda reads its call once, so its body inlines. The duplicating lambda binds the call to a local and reads it twice, so inlining would evaluate the call twice; step increments a counter, which makes the duplication observable in the program output rather than only in the source text."
+
+[[artifact]]
+path = "DuplicatingLambdaProbe-min21.dex"
+format = "DEX 035"
+min_api = 21
+mode = "release"
+command = "java -cp r8-9.1.31.jar com.android.tools.r8.D8 --release --min-api 21 --lib android.jar --output dex classes/DuplicatingLambdaProbe.class classes/DuplicatingLambdaProbe$1.class"
+sha256 = "e74193df95d47030754c51f95fb86501067c038394d7a5ed397281095c765684"
+bytes = 2112
+
+[behavior]
+harness = "DuplicatingLambdaProbe.main"
+expected_stdout = "198:100\n-108:-53\n"
+duplicated_call_stdout = "199:100"

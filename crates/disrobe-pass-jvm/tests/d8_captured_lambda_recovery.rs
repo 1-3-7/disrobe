@@ -129,7 +129,15 @@ fn real_d8_captured_lambda_recompiles_and_preserves_runtime_behavior() {
     let recovered: DecompiledDex = decompile_dex(&dex, DEX);
     let source: &String = program_source(&recovered);
     assert!(source.contains("return p0 ->"), "{source}");
-    assert!(source.contains("(arg0, p0)"), "{source}");
+    assert!(
+        source.contains("return p0 -> CapturedLambdaProbe.combine(this.base(p0), arg0, p0);"),
+        "the recovered lambda must carry the authored body rather than a call to the D8 helper:\n\
+         {source}"
+    );
+    assert!(
+        SOURCE.contains("value -> combine(this.base(value), delta, value)"),
+        "the authored program must contain the lambda body this grades against"
+    );
     assert!(!source.contains("new CapturedLambdaProbe$_"), "{source}");
     assert!(
         !retains_synthetic(&recovered),
@@ -143,7 +151,11 @@ fn real_d8_captured_lambda_recompiles_and_preserves_runtime_behavior() {
     assert_eq!(original_lines, ["11", "-5"]);
     assert_eq!(recovered_stdout, original_stdout);
 
-    let mutated: String = source.replacen("(arg0, p0)", "(p0, arg0)", 1);
+    let mutated: String = source.replacen(
+        "CapturedLambdaProbe.combine(this.base(p0), arg0, p0)",
+        "CapturedLambdaProbe.combine(this.base(p0), p0, arg0)",
+        1,
+    );
     assert_ne!(mutated, *source, "the argument-order mutation must apply");
     let mutated_stdout: Vec<u8> = execute_java("d8-captured-lambda-mutated", &mutated);
     assert_ne!(mutated_stdout, original_stdout);
