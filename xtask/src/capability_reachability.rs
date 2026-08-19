@@ -200,11 +200,15 @@ const UNREACHABLE_CEILING: &[(&str, usize, &str)] = &[
     ),
     (
         "disrobe-pass-shell",
-        10,
+        12,
         "PowerShell AST and obfuscation-bible parsers, a batch CFG resolver and reverser, and a \
          bash tokenizer, each proven by their own test but not yet called from the crate's \
          dispatch entry point, plus four per-dialect provenance-header renderers never spliced \
-         into the `--emit` output path",
+         into the `--emit` output path. Raised 10 to 12 for opcode_table and opcode_table_slots, \
+         which are roster diagnostics rather than recovery capabilities: they enumerate the VBA \
+         p-code opcode table so a test can prove every opcode is either reached by a committed \
+         fixture or listed as unreached, which is what stops the published p-code ceiling drifting \
+         away from the table it is measured over",
     ),
     (
         "disrobe-pass-sourcedefender",
