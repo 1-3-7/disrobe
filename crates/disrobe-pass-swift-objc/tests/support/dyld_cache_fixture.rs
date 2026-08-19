@@ -26,6 +26,8 @@ const MAPPING_INFO_SIZE: usize = 32;
 const MAPPING_AND_SLIDE_INFO_SIZE: usize = 56;
 const IMAGE_INFO_SIZE: usize = 32;
 const SUBCACHE_ENTRY_SIZE: usize = 56;
+const SUBCACHE_ENTRY_V1_SIZE: usize = 24;
+const FORMAT_FLAGS_FIELD: usize = 0xDC;
 
 const SEG64_FILEOFF: usize = 40;
 const SEG64_NSECTS: usize = 64;
@@ -49,7 +51,9 @@ const LC_DYLD_INFO_ONLY: u32 = 0x8000_0022;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HeaderShape {
     Legacy,
+    LocalSymbols,
     SlideMappings,
+    SubCachesNoSuffix,
     SubCaches,
 }
 
@@ -57,8 +61,40 @@ impl HeaderShape {
     pub(crate) const fn header_size(self) -> u64 {
         match self {
             Self::Legacy => 0x30,
+            Self::LocalSymbols => 0x80,
             Self::SlideMappings => 0x140,
+            Self::SubCachesNoSuffix => 0x1A0,
             Self::SubCaches => 0x1D0,
+        }
+    }
+
+    pub(crate) const fn has_slide_mappings(self) -> bool {
+        matches!(
+            self,
+            Self::SlideMappings | Self::SubCachesNoSuffix | Self::SubCaches
+        )
+    }
+
+    pub(crate) const fn has_sub_caches(self) -> bool {
+        matches!(self, Self::SubCachesNoSuffix | Self::SubCaches)
+    }
+
+    pub(crate) const fn uses_relocated_images(self) -> bool {
+        matches!(self, Self::SubCaches)
+    }
+
+    pub(crate) const fn carries_format_flags(self) -> bool {
+        matches!(
+            self,
+            Self::SlideMappings | Self::SubCachesNoSuffix | Self::SubCaches
+        )
+    }
+
+    pub(crate) const fn sub_cache_entry_size(self) -> usize {
+        if matches!(self, Self::SubCaches) {
+            SUBCACHE_ENTRY_SIZE
+        } else {
+            SUBCACHE_ENTRY_V1_SIZE
         }
     }
 }
@@ -74,7 +110,25 @@ pub(crate) struct AuthSpec {
 pub(crate) struct SlidePlan {
     pub(crate) version: u32,
     pub(crate) value_add: u64,
+    pub(crate) delta_mask: u64,
     pub(crate) targets: Vec<(u64, Option<AuthSpec>)>,
+}
+
+impl SlidePlan {
+    pub(crate) const fn pointer_width(&self) -> u64 {
+        match self.version {
+            1 | 4 => 4,
+            _ => 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SlideExpectation {
+    pub(crate) vm_address: u64,
+    pub(crate) unslid: u64,
+    pub(crate) raw: u64,
+    pub(crate) width: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +142,12 @@ pub(crate) struct CacheSpec {
     pub(crate) slide: Option<SlidePlan>,
     pub(crate) local_symbols: Vec<String>,
     pub(crate) emit_symbols_file: bool,
+    pub(crate) format_flags: u32,
+    pub(crate) extra_sub_caches: u32,
 }
+
+pub(crate) const EXTRA_SUB_CACHE_VM_STEP: u64 = 0x1000_0000;
+pub(crate) const SLIDE_TAIL_SENTINEL: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 
 impl CacheSpec {
     pub(crate) fn modern(install_name: &str) -> Self {
@@ -102,7 +161,24 @@ impl CacheSpec {
             slide: None,
             local_symbols: Vec::new(),
             emit_symbols_file: false,
+            format_flags: 0,
+            extra_sub_caches: 0,
         }
+    }
+
+    pub(crate) const fn with_extra_sub_cache_entries(mut self, extra: u32) -> Self {
+        self.extra_sub_caches = extra;
+        self
+    }
+
+    pub(crate) fn with_arch(mut self, arch: &str) -> Self {
+        arch.clone_into(&mut self.arch);
+        self
+    }
+
+    pub(crate) const fn with_format_flags(mut self, flags: u32) -> Self {
+        self.format_flags = flags;
+        self
     }
 
     pub(crate) fn with_local_symbols(mut self, names: &[&str]) -> Self {
@@ -171,7 +247,7 @@ pub(crate) struct BuiltCache {
     pub(crate) symbols: Option<Vec<u8>>,
     pub(crate) image_address: u64,
     pub(crate) segments: Vec<PlacedSegment>,
-    pub(crate) slide_expectations: Vec<(u64, u64)>,
+    pub(crate) slide_expectations: Vec<SlideExpectation>,
     pub(crate) slide_blob_offset: Option<u64>,
 }
 
@@ -287,12 +363,15 @@ pub(crate) fn build(image: &[u8], spec: &CacheSpec) -> BuiltCache {
         linkedit_delta,
     );
 
-    let slide_expectations: Vec<(u64, u64)> = spec.slide.as_ref().map_or_else(Vec::new, |plan| {
-        encode_slide_pointers(&mut primary, &placed, plan)
-    });
+    let slide_expectations: Vec<SlideExpectation> = spec
+        .slide
+        .as_ref()
+        .map_or_else(Vec::new, |plan: &SlidePlan| {
+            encode_slide_pointers(&mut primary, &placed, plan)
+        });
 
     let in_primary_locals: Option<(u64, usize)> =
-        (!spec.local_symbols.is_empty() && spec.shape != HeaderShape::SubCaches).then(|| {
+        (!spec.local_symbols.is_empty() && !spec.shape.has_sub_caches()).then(|| {
             let blob: Vec<u8> = local_symbols_blob(spec, text.vmaddr, text.cache_offset);
             let at: u64 = primary.len() as u64;
             primary.extend_from_slice(&blob);
@@ -415,14 +494,16 @@ fn write_primary_header(
         .collect();
     let mapping_count: u64 = primary_segments.len() as u64;
     let slide_mapping_offset: u64 = mapping_offset + mapping_count * MAPPING_INFO_SIZE as u64;
-    let uses_slide_mappings: bool = spec.shape != HeaderShape::Legacy;
+    let uses_slide_mappings: bool = spec.shape.has_slide_mappings();
     let images_offset: u64 = if uses_slide_mappings {
         slide_mapping_offset + mapping_count * MAPPING_AND_SLIDE_INFO_SIZE as u64
     } else {
         slide_mapping_offset
     };
     let subcache_offset: u64 = images_offset + IMAGE_INFO_SIZE as u64;
-    let name_offset: u64 = subcache_offset + SUBCACHE_ENTRY_SIZE as u64;
+    let sub_cache_entries: u64 = u64::from(spec.extra_sub_caches) + 1;
+    let name_offset: u64 =
+        subcache_offset + sub_cache_entries * spec.shape.sub_cache_entry_size() as u64;
     let slide_blob_offset: u64 = align_up(name_offset + spec.install_name.len() as u64 + 1, 16);
     assert!(
         slide_blob_offset < TABLE_AREA,
@@ -432,7 +513,7 @@ fn write_primary_header(
     cache[..MAGIC_LEN].copy_from_slice(&magic_bytes(&spec.arch));
     write_u32(cache, MAPPING_OFFSET_FIELD, mapping_offset as u32);
     write_u32(cache, MAPPING_COUNT_FIELD, mapping_count as u32);
-    if spec.shape == HeaderShape::SubCaches {
+    if spec.shape.uses_relocated_images() {
         write_u32(cache, IMAGES_OFFSET_OLD_FIELD, 0);
         write_u32(cache, IMAGES_COUNT_OLD_FIELD, 0);
         write_u32(cache, IMAGES_OFFSET_NEW_FIELD, images_offset as u32);
@@ -440,6 +521,9 @@ fn write_primary_header(
     } else {
         write_u32(cache, IMAGES_OFFSET_OLD_FIELD, images_offset as u32);
         write_u32(cache, IMAGES_COUNT_OLD_FIELD, 1);
+    }
+    if spec.shape.carries_format_flags() {
+        write_u32(cache, FORMAT_FLAGS_FIELD, spec.format_flags);
     }
     if header_size as usize > UUID_FIELD {
         cache[UUID_FIELD..UUID_FIELD + 16].copy_from_slice(&[0xAB; 16]);
@@ -518,20 +602,29 @@ fn write_primary_header(
     let name_at: usize = name_offset as usize;
     cache[name_at..name_at + name.len()].copy_from_slice(name);
 
-    if spec.shape == HeaderShape::SubCaches
-        && (spec.split_linkedit || spec.declared_suffix.is_some())
-    {
+    if spec.shape.has_sub_caches() && (spec.split_linkedit || spec.declared_suffix.is_some()) {
+        let entry_size: usize = spec.shape.sub_cache_entry_size();
         write_u32(cache, SUBCACHE_ARRAY_OFFSET_FIELD, subcache_offset as u32);
-        write_u32(cache, SUBCACHE_ARRAY_COUNT_FIELD, 1);
-        let entry_at: usize = subcache_offset as usize;
-        cache[entry_at..entry_at + 16].copy_from_slice(&[0xCD; 16]);
-        write_u64(cache, entry_at + 16, 0);
-        if let Some(suffix) = spec.declared_suffix.as_deref() {
-            let raw: &[u8] = suffix.as_bytes();
-            cache[entry_at + 24..entry_at + 24 + raw.len()].copy_from_slice(raw);
+        write_u32(cache, SUBCACHE_ARRAY_COUNT_FIELD, sub_cache_entries as u32);
+        for index in 0..sub_cache_entries {
+            let entry_at: usize = subcache_offset as usize + index as usize * entry_size;
+            let tag: u8 = 0xCD_u8.wrapping_add(index as u8);
+            cache[entry_at..entry_at + 16].copy_from_slice(&[tag; 16]);
+            write_u64(cache, entry_at + 16, index * EXTRA_SUB_CACHE_VM_STEP);
+            if index != 0 {
+                continue;
+            }
+            if let Some(suffix) = spec.declared_suffix.as_deref() {
+                assert!(
+                    entry_size == SUBCACHE_ENTRY_SIZE,
+                    "only the widest sub-cache entry carries a file suffix"
+                );
+                let raw: &[u8] = suffix.as_bytes();
+                cache[entry_at + 24..entry_at + 24 + raw.len()].copy_from_slice(raw);
+            }
         }
     }
-    if spec.shape == HeaderShape::SubCaches && !spec.local_symbols.is_empty() {
+    if spec.shape.has_sub_caches() && !spec.local_symbols.is_empty() {
         cache[SYMBOL_FILE_UUID_FIELD..SYMBOL_FILE_UUID_FIELD + 16].copy_from_slice(&[0xEF; 16]);
     }
     written_slide_blob
@@ -551,8 +644,10 @@ fn write_sibling_header(cache: &mut [u8], spec: &CacheSpec, placed: &[PlacedSegm
     write_u32(cache, MAPPING_COUNT_FIELD, mapping_count as u32);
     write_u32(cache, IMAGES_OFFSET_OLD_FIELD, images_offset);
     write_u32(cache, IMAGES_COUNT_OLD_FIELD, 0);
-    write_u32(cache, IMAGES_OFFSET_NEW_FIELD, images_offset);
-    write_u32(cache, IMAGES_COUNT_NEW_FIELD, 0);
+    if spec.shape.uses_relocated_images() {
+        write_u32(cache, IMAGES_OFFSET_NEW_FIELD, images_offset);
+        write_u32(cache, IMAGES_COUNT_NEW_FIELD, 0);
+    }
     for (index, entry) in sibling_segments.iter().enumerate() {
         let at: usize = mapping_offset as usize + index * MAPPING_INFO_SIZE;
         write_u64(cache, at, entry.vmaddr);
@@ -567,7 +662,7 @@ const LOCAL_SYMBOLS_AT: u64 = 0x4000;
 const NLIST_64_SIZE: usize = 16;
 
 fn local_symbols_blob(spec: &CacheSpec, image_address: u64, dylib_offset: u64) -> Vec<u8> {
-    let wide: bool = spec.shape == HeaderShape::SubCaches;
+    let wide: bool = spec.shape.has_sub_caches();
     let mut strings: Vec<u8> = vec![0u8];
     let mut nlist: Vec<u8> = Vec::with_capacity(spec.local_symbols.len() * NLIST_64_SIZE);
     for (index, name) in spec.local_symbols.iter().enumerate() {
@@ -632,33 +727,106 @@ fn encode_slide_pointers(
     cache: &mut [u8],
     placed: &[PlacedSegment],
     plan: &SlidePlan,
-) -> Vec<(u64, u64)> {
+) -> Vec<SlideExpectation> {
     let data: &PlacedSegment =
         slide_carrier(placed).expect("the fixture image carries a writable data segment");
+    let width: u64 = plan.pointer_width();
     assert!(
-        data.filesize >= (plan.targets.len() as u64 + 1) * 8,
+        data.filesize >= (plan.targets.len() as u64 + 1) * width,
         "the data segment must hold the encoded pointer chain"
     );
-    let mut out: Vec<(u64, u64)> = Vec::with_capacity(plan.targets.len());
+    let mut out: Vec<SlideExpectation> = Vec::with_capacity(plan.targets.len());
     for (index, (target, auth)) in plan.targets.iter().enumerate() {
-        let slot: usize = data.cache_offset as usize + index * 8;
+        let slot: usize = data.cache_offset as usize + index * width as usize;
         let last: bool = index + 1 == plan.targets.len();
-        let next: u64 = u64::from(!last);
-        let raw: u64 = encode_pointer(plan.version, plan.value_add, *target, *auth, next);
-        write_u64(cache, slot, raw);
-        out.push((data.vmaddr + index as u64 * 8, *target));
+        let step: u64 = if last { 0 } else { width };
+        let raw: u64 = encode_pointer(plan, *target, *auth, step);
+        if width == 4 {
+            write_u32(
+                cache,
+                slot,
+                u32::try_from(raw).expect("a 32-bit slide word"),
+            );
+        } else {
+            write_u64(cache, slot, raw);
+        }
+        out.push(SlideExpectation {
+            vm_address: data.vmaddr + index as u64 * width,
+            unslid: unslid_of(plan, *target),
+            raw,
+            width: width as u8,
+        });
+    }
+    let tail: usize = data.cache_offset as usize + plan.targets.len() * width as usize;
+    if width == 4 {
+        write_u32(cache, tail, SLIDE_TAIL_SENTINEL as u32);
+    } else {
+        write_u64(cache, tail, SLIDE_TAIL_SENTINEL);
     }
     out
 }
 
+const fn unslid_of(plan: &SlidePlan, target: u64) -> u64 {
+    match plan.version {
+        4 => {
+            if target & 0xFFFF_8000 == 0 {
+                target
+            } else if target & 0x3FFF_8000 == 0x3FFF_8000 {
+                target | 0xC000_0000
+            } else {
+                target.wrapping_add(plan.value_add)
+            }
+        }
+        _ => target,
+    }
+}
+
+fn delta_shift_of(delta_mask: u64) -> u32 {
+    assert!(
+        delta_mask != 0 && delta_mask.trailing_zeros() >= 2,
+        "a version 2 or 4 delta mask must leave room for the two-bit scale"
+    );
+    delta_mask.trailing_zeros() - 2
+}
+
 pub(crate) fn encode_pointer(
-    version: u32,
-    value_add: u64,
+    plan: &SlidePlan,
     target: u64,
     auth: Option<AuthSpec>,
-    next: u64,
+    step: u64,
 ) -> u64 {
-    match version {
+    let value_add: u64 = plan.value_add;
+    let next: u64 = step / 8;
+    match plan.version {
+        1 => {
+            assert!(auth.is_none(), "version 1 slide info carries no auth bits");
+            assert!(
+                u32::try_from(target).is_ok(),
+                "a version 1 slot holds a 32-bit word"
+            );
+            target
+        }
+        2 => {
+            assert!(auth.is_none(), "version 2 slide info carries no auth bits");
+            let stored: u64 = target
+                .checked_sub(value_add)
+                .expect("a version 2 target sits at or above the cache base");
+            let encoded: u64 = step << delta_shift_of(plan.delta_mask);
+            assert!(
+                encoded & plan.delta_mask == encoded && stored & plan.delta_mask == 0,
+                "a version 2 word must keep its value and delta fields apart"
+            );
+            stored | encoded
+        }
+        4 => {
+            assert!(auth.is_none(), "version 4 slide info carries no auth bits");
+            let encoded: u64 = step << delta_shift_of(plan.delta_mask);
+            assert!(
+                encoded & plan.delta_mask == encoded && target & plan.delta_mask == 0,
+                "a version 4 word must keep its value and delta fields apart"
+            );
+            target | encoded
+        }
         3 => auth.map_or_else(
             || {
                 let low: u64 = target & 0x0000_07FF_FFFF_FFFF;
@@ -703,21 +871,99 @@ pub(crate) fn encode_pointer(
                     | (1u64 << 63)
             },
         ),
-        other => panic!("the fixture builder encodes slide-info versions 3 and 5, not {other}"),
+        other => panic!("the fixture builder encodes slide-info versions 1 to 5, not {other}"),
     }
 }
 
+const V1_PAGE_SIZE: u64 = 4096;
+const V1_ENTRY_BYTES: usize = 128;
+const V1_EMPTY_ENTRY: u16 = 0;
+const V1_MARKED_ENTRY: u16 = 1;
+const V2_NO_REBASE: u16 = 0x4000;
+const V4_NO_REBASE: u16 = 0xFFFF;
+const V3_V5_NO_REBASE: u16 = 0xFFFF;
+
 fn slide_blob(plan: &SlidePlan, region_size: u64) -> Vec<u8> {
-    let value_add: u64 = plan.value_add;
+    match plan.version {
+        1 => v1_slide_blob(plan, region_size),
+        2 | 4 => delta_slide_blob(plan, region_size),
+        _ => chain_slide_blob(plan, region_size),
+    }
+}
+
+fn v1_slide_blob(plan: &SlidePlan, region_size: u64) -> Vec<u8> {
+    let toc_count: u32 = (region_size / V1_PAGE_SIZE) as u32;
+    let toc_offset: u32 = 24;
+    let entries_offset: u32 = toc_offset + toc_count * 2;
+    let entries_count: u32 = 2;
+    let mut blob: Vec<u8> =
+        Vec::with_capacity(entries_offset as usize + entries_count as usize * V1_ENTRY_BYTES);
+    blob.extend_from_slice(&plan.version.to_le_bytes());
+    blob.extend_from_slice(&toc_offset.to_le_bytes());
+    blob.extend_from_slice(&toc_count.to_le_bytes());
+    blob.extend_from_slice(&entries_offset.to_le_bytes());
+    blob.extend_from_slice(&entries_count.to_le_bytes());
+    blob.extend_from_slice(&(V1_ENTRY_BYTES as u32).to_le_bytes());
+    for page in 0..toc_count {
+        let entry: u16 = if page == 0 {
+            V1_MARKED_ENTRY
+        } else {
+            V1_EMPTY_ENTRY
+        };
+        blob.extend_from_slice(&entry.to_le_bytes());
+    }
+    blob.resize(blob.len() + V1_ENTRY_BYTES, 0);
+    let mut marked: Vec<u8> = vec![0u8; V1_ENTRY_BYTES];
+    for slot in 0..plan.targets.len() {
+        let byte: usize = slot / 8;
+        assert!(
+            byte < V1_ENTRY_BYTES,
+            "a version 1 bitmap entry covers one 4096-byte page"
+        );
+        marked[byte] |= 1u8 << (slot % 8);
+    }
+    marked[V1_ENTRY_BYTES - 1] |= 0x80;
+    blob.extend_from_slice(&marked);
+    blob
+}
+
+pub(crate) const V1_LAST_MARKED_SLOT_OFFSET: u64 = ((V1_ENTRY_BYTES as u64) * 8 - 1) * 4;
+
+fn delta_slide_blob(plan: &SlidePlan, region_size: u64) -> Vec<u8> {
+    let page_count: u32 = (region_size / CACHE_PAGE) as u32;
+    let page_starts_offset: u32 = 40;
+    let page_extras_offset: u32 = page_starts_offset + page_count * 2;
+    let no_rebase: u16 = if plan.version == 2 {
+        V2_NO_REBASE
+    } else {
+        V4_NO_REBASE
+    };
+    let mut blob: Vec<u8> = Vec::with_capacity(page_extras_offset as usize);
+    blob.extend_from_slice(&plan.version.to_le_bytes());
+    blob.extend_from_slice(&(CACHE_PAGE as u32).to_le_bytes());
+    blob.extend_from_slice(&page_starts_offset.to_le_bytes());
+    blob.extend_from_slice(&page_count.to_le_bytes());
+    blob.extend_from_slice(&page_extras_offset.to_le_bytes());
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    blob.extend_from_slice(&plan.delta_mask.to_le_bytes());
+    blob.extend_from_slice(&plan.value_add.to_le_bytes());
+    for page in 0..page_count {
+        let entry: u16 = if page == 0 { 0 } else { no_rebase };
+        blob.extend_from_slice(&entry.to_le_bytes());
+    }
+    blob
+}
+
+fn chain_slide_blob(plan: &SlidePlan, region_size: u64) -> Vec<u8> {
     let page_count: u32 = (region_size / CACHE_PAGE) as u32;
     let mut blob: Vec<u8> = Vec::with_capacity(24 + page_count as usize * 2);
     blob.extend_from_slice(&plan.version.to_le_bytes());
     blob.extend_from_slice(&(CACHE_PAGE as u32).to_le_bytes());
     blob.extend_from_slice(&page_count.to_le_bytes());
     blob.extend_from_slice(&0u32.to_le_bytes());
-    blob.extend_from_slice(&value_add.to_le_bytes());
+    blob.extend_from_slice(&plan.value_add.to_le_bytes());
     for page in 0..page_count {
-        let entry: u16 = if page == 0 { 0 } else { 0xFFFF };
+        let entry: u16 = if page == 0 { 0 } else { V3_V5_NO_REBASE };
         blob.extend_from_slice(&entry.to_le_bytes());
     }
     blob

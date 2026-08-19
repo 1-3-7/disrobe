@@ -910,6 +910,21 @@ mod tests {
     }
 
     #[test]
+    fn a_version_2_value_add_that_carries_past_the_top_of_the_word_wraps_rather_than_panics() {
+        let mut harness: Harness = Harness::new();
+        let blob: Vec<u8> = delta_blob(2, 0x00FF_FF00_0000_0000, u64::MAX, &[0, 0x4000]);
+        let blob_len: u64 = blob.len() as u64;
+        harness.put_blob(&blob);
+        harness.put_u64(0, 2);
+        let walked: Vec<SlidPointer> = harness.walk(blob_len).expect("v2 chain walks");
+        assert_eq!(walked.len(), 1);
+        assert_eq!(
+            walked[0].unslid_value, 1,
+            "dyld adds the value add to a pointer-sized word, so the sum wraps"
+        );
+    }
+
+    #[test]
     fn version_2_page_extras_start_a_second_chain_on_the_same_page() {
         let mut harness: Harness = Harness::new();
         let mut blob: Vec<u8> = Vec::new();

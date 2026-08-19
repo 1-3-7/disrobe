@@ -349,13 +349,15 @@ pub fn parse(cache: &[u8]) -> Result<DyldSharedCache> {
             u32_le(cache, IMAGES_OFFSET_NEW_FIELD)?,
             u32_le(cache, IMAGES_COUNT_NEW_FIELD)?,
         )
+    } else if images_count_old == 0 {
+        (images_offset_old, 0)
     } else {
         return Err(Error::UnsupportedDyldLayout {
-                layout: layout.label().to_owned(),
-                reason:
-                    "the legacy image fields are zero and the header is too small for the relocated image list"
-                        .to_owned(),
-            });
+            layout: layout.label().to_owned(),
+            reason: format!(
+                "the header declares {images_count_old} images but no image table, and it is too small for the relocated image list"
+            ),
+        });
     };
 
     let mapping_count_usize: usize = mapping_count as usize;
