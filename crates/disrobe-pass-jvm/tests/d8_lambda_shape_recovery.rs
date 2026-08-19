@@ -1,0 +1,538 @@
+#![allow(clippy::expect_used, clippy::panic)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+use disrobe_core::scratch::ScratchDir;
+use disrobe_pass_jvm::dex::{FieldId, MethodId};
+use disrobe_pass_jvm::{DecompiledDex, DexFile, decompile_dex, parse_dex};
+use sha2::{Digest, Sha256};
+
+pub mod common;
+
+const RELEASE_DEX: &[u8] = include_bytes!("fixtures/d8_lambda_shapes/DesugarShapeProbe-min21.dex");
+const DEBUG_DEX: &[u8] =
+    include_bytes!("fixtures/d8_lambda_shapes/DesugarShapeProbe-min21-debug.dex");
+const AUTHORED: &str = include_str!("fixtures/d8_lambda_shapes/DesugarShapeProbe.java");
+const HARNESS: &str = include_str!("fixtures/d8_lambda_shapes/DesugarShapeHarness.java.in");
+const PROVENANCE: &str = include_str!("fixtures/d8_lambda_shapes/provenance.toml");
+
+const RELEASE_SHA256: &str = "0d0355dceb5de7938eebd0647661ca5ead3436cdc5408b2167730abe97d03b23";
+const DEBUG_SHA256: &str = "fc189f089d04b21e35e11074e24b94e0d98fd5dd7244269d770530cd96d1a341";
+const AUTHORED_SHA256: &str = "bf5e31121a1b69606486a5d277a467d86bd1f3c5c0d0b322bc3ced0c6519a74a";
+const PROGRAM_UNIT: &str = "DesugarShapeProbe.java";
+const SYNTHETIC_PREFIX: &str = "DesugarShapeProbe$";
+const EXPECTED_STDOUT: &str = "16:160:18:169:81:16:506:a!\n22:217:-11:228:-87:10:696:b!\n";
+
+#[derive(Debug, Clone, Copy)]
+struct LambdaSite {
+    method: &'static str,
+    authored: &'static str,
+    arity: usize,
+    captures: usize,
+    receiver_capture: bool,
+    expected: &'static str,
+}
+
+const SITES: [LambdaSite; 9] = [
+    LambdaSite {
+        method: "stateless",
+        authored: "value -> value * 3 + 1",
+        arity: 1,
+        captures: 0,
+        receiver_capture: false,
+        expected: "p0 -> DesugarShapeProbe.lambda$stateless$0(p0)",
+    },
+    LambdaSite {
+        method: "oneCapture",
+        authored: "value -> mix(offset, value) + 2",
+        arity: 1,
+        captures: 1,
+        receiver_capture: false,
+        expected: "p0 -> DesugarShapeProbe.lambda$oneCapture$0(arg0, p0)",
+    },
+    LambdaSite {
+        method: "receiverCapture",
+        authored: "value -> scale(value) + 3",
+        arity: 1,
+        captures: 1,
+        receiver_capture: true,
+        expected: "p0 -> (this).lambda$receiverCapture$0$DesugarShapeProbe(p0)",
+    },
+    LambdaSite {
+        method: "twoCaptures",
+        authored: "(a, b) -> scale(a) + mix(offset, b)",
+        arity: 2,
+        captures: 2,
+        receiver_capture: true,
+        expected: "(p0, p1) -> (this).lambda$twoCaptures$0$DesugarShapeProbe(arg0, p0, p1)",
+    },
+    LambdaSite {
+        method: "wideCapture",
+        authored: "() -> base * 7L + 4L",
+        arity: 0,
+        captures: 1,
+        receiver_capture: false,
+        expected: "() -> DesugarShapeProbe.lambda$wideCapture$0(arg0)",
+    },
+    LambdaSite {
+        method: "custom",
+        authored: "(a, b, c) -> a + b + c + k",
+        arity: 3,
+        captures: 1,
+        receiver_capture: false,
+        expected: "(p0, p1, p2) -> DesugarShapeProbe.lambda$custom$0(arg0, p0, p1, p2)",
+    },
+    LambdaSite {
+        method: "nested",
+        authored: "outer -> inner -> outer * 100 + inner + k",
+        arity: 1,
+        captures: 1,
+        receiver_capture: false,
+        expected: "p0 -> DesugarShapeProbe.lambda$nested$0(arg0, p0)",
+    },
+    LambdaSite {
+        method: "lambda$nested$0",
+        authored: "inner -> outer * 100 + inner + k",
+        arity: 1,
+        captures: 2,
+        receiver_capture: false,
+        expected: "p0 -> DesugarShapeProbe.lambda$nested$1(arg1, arg0, p0)",
+    },
+    LambdaSite {
+        method: "textCapture",
+        authored: "() -> prefix + \"!\"",
+        arity: 0,
+        captures: 1,
+        receiver_capture: false,
+        expected: "() -> DesugarShapeProbe.lambda$textCapture$0(arg0)",
+    },
+];
+
+const LAMBDA_HELPERS: [&str; 9] = [
+    "lambda$custom$0",
+    "lambda$nested$0",
+    "lambda$nested$1",
+    "lambda$oneCapture$0",
+    "lambda$receiverCapture$0$DesugarShapeProbe",
+    "lambda$stateless$0",
+    "lambda$textCapture$0",
+    "lambda$twoCaptures$0$DesugarShapeProbe",
+    "lambda$wideCapture$0",
+];
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn declares_method(line: &str, method: &str) -> bool {
+    if !line.starts_with("    ") || line.starts_with("     ") || !line.ends_with('{') {
+        return false;
+    }
+    let trimmed: &str = line.trim();
+    let Some(open): Option<usize> = trimmed.find('(') else {
+        return false;
+    };
+    let Some(head): Option<&str> = trimmed.get(..open) else {
+        return false;
+    };
+    head.rsplit([' ', '\t']).next() == Some(method)
+}
+
+fn method_body(source: &str, method: &str) -> String {
+    let mut collecting: bool = false;
+    let mut body: Vec<&str> = Vec::new();
+    for line in source.lines() {
+        if collecting {
+            if line == "    }" {
+                break;
+            }
+            body.push(line.trim());
+            continue;
+        }
+        collecting = declares_method(line, method);
+    }
+    assert!(
+        !body.is_empty(),
+        "the recovered unit must declare {method}:\n{source}"
+    );
+    body.join(" ")
+}
+
+fn recovered_lambda(source: &str, method: &str) -> String {
+    let body: String = method_body(source, method);
+    let expression: &str = body
+        .strip_prefix("return ")
+        .and_then(|text: &str| text.strip_suffix(';'))
+        .unwrap_or_else(|| panic!("{method} must recover as a single return statement: {body}"));
+    expression.to_owned()
+}
+
+fn program_unit(recovered: &DecompiledDex) -> &String {
+    recovered
+        .sources
+        .get(PROGRAM_UNIT)
+        .expect("recover the authored compilation unit")
+}
+
+fn retained_synthetics(recovered: &DecompiledDex) -> BTreeSet<String> {
+    recovered
+        .sources
+        .keys()
+        .filter(|name: &&String| name.starts_with(SYNTHETIC_PREFIX))
+        .cloned()
+        .collect()
+}
+
+fn synthetic_descriptors(dex: &DexFile) -> Vec<&String> {
+    dex.class_descriptors
+        .iter()
+        .filter(|name: &&String| {
+            name.starts_with("LDesugarShapeProbe$") && !name.ends_with("$TriInt;")
+        })
+        .collect()
+}
+
+fn expected_head(arity: usize) -> String {
+    if arity == 1 {
+        return "p0".to_owned();
+    }
+    let names: Vec<String> = (0..arity)
+        .map(|position: usize| format!("p{position}"))
+        .collect();
+    format!("({})", names.join(", "))
+}
+
+fn recovered_sites(bytes: &'static [u8]) -> BTreeMap<&'static str, String> {
+    let dex: DexFile = parse_dex(bytes).expect("parse the real D8 artifact");
+    let recovered: DecompiledDex = decompile_dex(&dex, bytes);
+    let unit: &String = program_unit(&recovered);
+    SITES
+        .iter()
+        .map(|site: &LambdaSite| (site.method, recovered_lambda(unit, site.method)))
+        .collect()
+}
+
+fn compile_and_run(label: &str, source: &str) -> Vec<u8> {
+    let javac: PathBuf =
+        common::find_on_path("javac").expect("the D8 lambda-shape gate requires javac on PATH");
+    let java: PathBuf =
+        common::find_on_path("java").expect("the D8 lambda-shape gate requires java on PATH");
+    let scratch: ScratchDir = ScratchDir::create(label).expect("create Java scratch directory");
+    let source_path: PathBuf = scratch.path().join("DesugarShapeProbe.java");
+    std::fs::write(&source_path, source).expect("write Java program");
+    let compiled: Output = Command::new(javac)
+        .arg("-d")
+        .arg(scratch.path())
+        .arg(&source_path)
+        .output()
+        .expect("run javac");
+    assert!(
+        compiled.status.success(),
+        "javac rejected {label}:\n{}\n----\n{source}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let executed: Output = Command::new(java)
+        .arg("-cp")
+        .arg(scratch.path())
+        .arg("DesugarShapeProbe")
+        .output()
+        .expect("run the Java program");
+    assert!(
+        executed.status.success(),
+        "java rejected {label}:\n{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    executed.stdout
+}
+
+fn fill_harness(sites: &BTreeMap<&'static str, String>) -> String {
+    let mut text: String = HARNESS.to_owned();
+    for site in SITES {
+        let token: String = format!("@@{}@@", site.method);
+        assert!(
+            text.contains(token.as_str()),
+            "the harness template must carry the {token} placeholder"
+        );
+        let expression: &String = sites
+            .get(site.method)
+            .unwrap_or_else(|| panic!("a recovered lambda for {}", site.method));
+        text = text.replace(token.as_str(), expression);
+    }
+    assert!(
+        !text.contains("@@"),
+        "every harness placeholder must be filled:\n{text}"
+    );
+    text
+}
+
+#[test]
+fn fixture_carries_the_declared_d8_lambda_shapes() {
+    assert_eq!(sha256_hex(RELEASE_DEX), RELEASE_SHA256);
+    assert_eq!(sha256_hex(DEBUG_DEX), DEBUG_SHA256);
+    assert_eq!(sha256_hex(AUTHORED.as_bytes()), AUTHORED_SHA256);
+    assert!(PROVENANCE.contains("version = \"9.1.31\""));
+    assert!(PROVENANCE.contains(RELEASE_SHA256));
+    assert!(PROVENANCE.contains(DEBUG_SHA256));
+    assert!(PROVENANCE.contains(AUTHORED_SHA256));
+    assert_eq!(RELEASE_DEX.get(..8), Some(b"dex\n035\0".as_slice()));
+    assert_eq!(DEBUG_DEX.get(..8), Some(b"dex\n035\0".as_slice()));
+
+    for site in SITES {
+        assert!(
+            AUTHORED.contains(site.authored),
+            "the authored program must contain the lambda {} so it can grade {}",
+            site.authored,
+            site.method
+        );
+    }
+
+    for bytes in [RELEASE_DEX, DEBUG_DEX] {
+        let dex: DexFile = parse_dex(bytes).expect("parse the real D8 artifact");
+        assert!(
+            dex.strings
+                .iter()
+                .any(|value: &String| value.contains("~~D8{") && value.contains("\"min-api\":21")),
+            "the artifact must carry its own D8 marker"
+        );
+        assert_eq!(
+            dex.call_site_ids_size, 0,
+            "D8 must have desugared every invokedynamic away"
+        );
+        assert_eq!(
+            synthetic_descriptors(&dex).len(),
+            SITES.len(),
+            "the artifact must carry one D8 desugaring class per authored lambda"
+        );
+        let helpers: BTreeSet<&str> = dex
+            .method_ids
+            .iter()
+            .filter(|method: &&MethodId| method.class == "LDesugarShapeProbe;")
+            .map(|method: &MethodId| method.name.as_str())
+            .filter(|name: &&str| name.starts_with("lambda$"))
+            .collect();
+        assert_eq!(
+            helpers,
+            LAMBDA_HELPERS.into_iter().collect::<BTreeSet<&str>>(),
+            "the artifact must carry the declared D8 lambda helper set"
+        );
+    }
+}
+
+#[test]
+fn real_d8_lambda_shapes_recover_as_lambda_expressions() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let synthetics: usize = synthetic_descriptors(&dex).len();
+    let recovered: DecompiledDex = decompile_dex(&dex, RELEASE_DEX);
+    let unit: &String = program_unit(&recovered);
+
+    let mut matched: usize = 0;
+    for site in SITES {
+        let expression: String = recovered_lambda(unit, site.method);
+        let head: String = expected_head(site.arity);
+        assert!(
+            expression.starts_with(&format!("{head} -> ")),
+            "{} must recover as a lambda of arity {}, saw {expression}",
+            site.method,
+            site.arity
+        );
+        assert_eq!(
+            expression, site.expected,
+            "{} must forward its {} capture(s) before its {} parameter(s); receiver capture: {}",
+            site.method, site.captures, site.arity, site.receiver_capture
+        );
+        matched = matched.saturating_add(1);
+    }
+    assert_eq!(matched, SITES.len());
+    assert_eq!(
+        unit.matches(" -> ").count(),
+        SITES.len(),
+        "the recovered unit must carry exactly the authored lambda expressions"
+    );
+
+    let retained: BTreeSet<String> = retained_synthetics(&recovered);
+    assert!(
+        retained.is_empty(),
+        "every D8 desugaring class must be elided, still emitted: {retained:?}"
+    );
+    assert!(
+        !unit.contains(SYNTHETIC_PREFIX),
+        "no recovered source may still name a D8 desugaring class:\n{unit}"
+    );
+
+    eprintln!(
+        "d8 lambda-shape recovery: {matched}/{} authored lambda sites recovered as lambda \
+         expressions and {}/{synthetics} D8 desugaring classes elided, graded against \
+         tests/fixtures/d8_lambda_shapes/DesugarShapeProbe.java built by D8 9.1.31 at min-api 21",
+        SITES.len(),
+        synthetics.saturating_sub(retained.len())
+    );
+}
+
+#[test]
+fn debug_and_release_artifacts_recover_the_same_lambdas() {
+    let release: BTreeMap<&str, String> = recovered_sites(RELEASE_DEX);
+    let debug: BTreeMap<&str, String> = recovered_sites(DEBUG_DEX);
+    assert_eq!(
+        release, debug,
+        "the debug and release D8 artifacts must recover the same lambda expressions"
+    );
+}
+
+#[test]
+fn recovered_lambdas_recompile_and_preserve_authored_behavior() {
+    let reference: Vec<u8> = compile_and_run("d8-lambda-shapes-authored", AUTHORED);
+    assert_eq!(
+        String::from_utf8_lossy(&reference).replace("\r\n", "\n"),
+        EXPECTED_STDOUT,
+        "the authored program must produce the behavior the provenance records"
+    );
+    assert!(PROVENANCE.contains("16:160:18:169:81:16:506:a!"));
+
+    let sites: BTreeMap<&str, String> = recovered_sites(RELEASE_DEX);
+    let filled: String = fill_harness(&sites);
+    let recovered_stdout: Vec<u8> = compile_and_run("d8-lambda-shapes-recovered", &filled);
+    assert_eq!(
+        recovered_stdout, reference,
+        "the recovered lambda expressions must reproduce the authored behavior"
+    );
+
+    let swapped_captures: String = filled.replacen("(arg1, arg0, p0)", "(arg0, arg1, p0)", 1);
+    assert_ne!(
+        swapped_captures, filled,
+        "the nested capture-order mutation must apply"
+    );
+    assert_ne!(
+        compile_and_run("d8-lambda-shapes-nested-swap", &swapped_captures),
+        reference,
+        "swapping the nested lambda captures must change behavior, so the comparison is real"
+    );
+
+    let swapped_parameter: String = filled.replacen("(arg0, p0, p1)", "(arg0, p1, p0)", 1);
+    assert_ne!(
+        swapped_parameter, filled,
+        "the parameter-order mutation must apply"
+    );
+    assert_ne!(
+        compile_and_run("d8-lambda-shapes-parameter-swap", &swapped_parameter),
+        reference,
+        "swapping the lambda parameters must change behavior, so the comparison is real"
+    );
+}
+
+#[test]
+fn an_unrecognised_functional_interface_keeps_the_desugaring_class() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let mut mutated: DexFile = dex;
+    let interface: &mut String = mutated
+        .type_names
+        .iter_mut()
+        .find(|name: &&mut String| name.as_str() == "Ljava/util/function/IntUnaryOperator;")
+        .expect("the artifact declares IntUnaryOperator");
+    *interface = "Ljava/io/Serializable;".to_owned();
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let unit: &String = program_unit(&recovered);
+    assert!(
+        !retained_synthetics(&recovered).is_empty(),
+        "a marker interface has no single abstract method, so its class must stay visible"
+    );
+    for method in [
+        "stateless",
+        "oneCapture",
+        "receiverCapture",
+        "lambda$nested$0",
+    ] {
+        let body: String = method_body(unit, method);
+        assert!(
+            body.contains("new DesugarShapeProbe$"),
+            "{method} must keep its construction of the D8 class, saw {body}"
+        );
+    }
+}
+
+#[test]
+fn a_renamed_helper_keeps_the_desugaring_class() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let mut mutated: DexFile = dex;
+    let helper: &mut MethodId = mutated
+        .method_ids
+        .iter_mut()
+        .find(|method: &&mut MethodId| method.name == "lambda$custom$0")
+        .expect("the artifact declares the custom lambda helper");
+    helper.name = "helper$custom$0".to_owned();
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let body: String = method_body(program_unit(&recovered), "custom");
+    assert!(
+        body.contains("new DesugarShapeProbe$"),
+        "a target that is not a D8 lambda helper must not become a lambda, saw {body}"
+    );
+}
+
+#[test]
+fn a_capture_type_that_disagrees_with_the_helper_keeps_the_desugaring_class() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let mut mutated: DexFile = dex;
+    let captured: &mut FieldId = mutated
+        .field_ids
+        .iter_mut()
+        .find(|field: &&mut FieldId| {
+            field.class.starts_with("LDesugarShapeProbe$") && field.type_name == "J"
+        })
+        .expect("the artifact captures one long");
+    captured.type_name = "I".to_owned();
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let body: String = method_body(program_unit(&recovered), "wideCapture");
+    assert!(
+        body.contains("new DesugarShapeProbe$"),
+        "a capture whose type disagrees with the helper must abstain, saw {body}"
+    );
+}
+
+#[test]
+fn a_program_interface_without_the_matching_abstract_method_keeps_the_desugaring_class() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let mut mutated: DexFile = dex;
+    let declared: &mut MethodId = mutated
+        .method_ids
+        .iter_mut()
+        .find(|method: &&mut MethodId| {
+            method.class == "LDesugarShapeProbe$TriInt;" && method.name == "apply"
+        })
+        .expect("the artifact declares the TriInt abstract method");
+    declared.name = "applyTriple".to_owned();
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let body: String = method_body(program_unit(&recovered), "custom");
+    assert!(
+        body.contains("new DesugarShapeProbe$"),
+        "a program interface whose abstract method does not match the implementation must \
+         abstain, saw {body}"
+    );
+}
+
+#[test]
+fn a_reflected_desugaring_class_is_kept() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let descriptor: String = (*synthetic_descriptors(&dex)
+        .first()
+        .expect("the artifact carries D8 desugaring classes"))
+    .clone();
+    let binary: String = descriptor
+        .trim_start_matches('L')
+        .trim_end_matches(';')
+        .replace('/', ".");
+    let mut mutated: DexFile = dex;
+    mutated.strings.push(binary);
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let retained: BTreeSet<String> = retained_synthetics(&recovered);
+    assert!(
+        !retained.is_empty(),
+        "a desugaring class named by a string constant may be reached by reflection and must \
+         stay emitted"
+    );
+}

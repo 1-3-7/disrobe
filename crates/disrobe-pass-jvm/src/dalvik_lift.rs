@@ -701,7 +701,7 @@ fn render_functional(
             render_method_reference(core_library, reference, args)
         }
         crate::dalvik_desugar::RecoveredFunctional::CapturedLambda(lambda) => {
-            render_captured_lambda(lambda, args)
+            render_captured_lambda(core_library, lambda, args)
         }
     }
 }
@@ -733,23 +733,60 @@ fn render_method_reference(
     ))
 }
 
+const LAMBDA_PARAMETER_PREFIXES: [&str; 4] = ["p", "q", "r", "s"];
+
+fn lambda_parameter_names(captures: &[String], arity: usize) -> Option<Vec<String>> {
+    for prefix in LAMBDA_PARAMETER_PREFIXES {
+        let names: Vec<String> = (0..arity)
+            .map(|position: usize| format!("{prefix}{position}"))
+            .collect();
+        let collides: bool = names.iter().any(|name: &String| {
+            captures
+                .iter()
+                .any(|capture: &String| capture.contains(name.as_str()))
+        });
+        if !collides {
+            return Some(names);
+        }
+    }
+    None
+}
+
 fn render_captured_lambda(
+    core_library: &crate::dalvik_core_library::CoreLibraryRecovery,
     recovered: &crate::dalvik_desugar::RecoveredCapturedLambda,
     args: &[Expr],
 ) -> Option<String> {
-    if args.len() != 2 {
+    if args.len() != recovered.capture_count {
         return None;
     }
-    let receiver_text: String = args.first()?.render();
-    let receiver: String = if is_expression_name(&receiver_text) {
-        receiver_text
+    let rendered: Vec<String> = args.iter().map(Expr::render).collect();
+    let (target, forwarded): (String, &[String]) = if recovered.receiver_capture {
+        let receiver_text: &String = rendered.first()?;
+        let receiver: String = if is_expression_name(receiver_text) {
+            receiver_text.clone()
+        } else {
+            format!("({receiver_text})")
+        };
+        (receiver, rendered.get(1..)?)
     } else {
-        format!("({receiver_text})")
+        (
+            descriptor::binary_to_source(&core_library.project_type(&recovered.helper_owner)),
+            rendered.as_slice(),
+        )
     };
-    let captured: String = args.get(1)?.render();
+    let parameters: Vec<String> = lambda_parameter_names(&rendered, recovered.parameter_count)?;
+    let head: String = if parameters.len() == 1 {
+        parameters.first()?.clone()
+    } else {
+        format!("({})", parameters.join(", "))
+    };
+    let mut passed: Vec<String> = forwarded.to_vec();
+    passed.extend(parameters);
     Some(format!(
-        "p0 -> {receiver}.{}({captured}, p0)",
-        recovered.helper_name
+        "{head} -> {target}.{}({})",
+        recovered.helper_name,
+        passed.join(", ")
     ))
 }
 
@@ -1062,7 +1099,10 @@ const fn comparez_op(op: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{core_projection_matches_invoke, render_method_reference, returns_receiver};
+    use super::{
+        core_projection_matches_invoke, lambda_parameter_names, render_method_reference,
+        returns_receiver,
+    };
     use crate::dalvik_core_library::{CoreInvokeShape, CoreLibraryRecovery, CoreMethodProjection};
     use crate::dalvik_desugar::{MethodRefKind, RecoveredMethodRef};
     use crate::dex::{MethodId, ProtoId};
@@ -1077,6 +1117,23 @@ mod tests {
             },
             name: name.to_string(),
         }
+    }
+
+    #[test]
+    fn lambda_parameters_step_away_from_a_captured_lambda() {
+        let free: Vec<String> = vec!["arg0".to_owned(), "this".to_owned()];
+        assert_eq!(
+            lambda_parameter_names(&free, 2),
+            Some(vec!["p0".to_owned(), "p1".to_owned()])
+        );
+        let nested: Vec<String> = vec!["p0 -> Owner.lambda$inner$0(p0)".to_owned()];
+        assert_eq!(
+            lambda_parameter_names(&nested, 1),
+            Some(vec!["q0".to_owned()])
+        );
+        let exhausted: Vec<String> = vec!["p0 q0 r0 s0".to_owned()];
+        assert_eq!(lambda_parameter_names(&exhausted, 1), None);
+        assert_eq!(lambda_parameter_names(&nested, 0), Some(Vec::new()));
     }
 
     #[test]

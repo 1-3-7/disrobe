@@ -630,7 +630,11 @@ pub(crate) struct RecoveredMethodRef {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecoveredCapturedLambda {
+    pub(crate) helper_owner: String,
     pub(crate) helper_name: String,
+    pub(crate) receiver_capture: bool,
+    pub(crate) capture_count: usize,
+    pub(crate) parameter_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -671,6 +675,291 @@ struct TargetCall {
 }
 
 const MAX_REFERENCE_BODY_INSNS: usize = 64;
+const LAMBDA_HELPER_PREFIX: &str = "lambda$";
+const FUNCTIONAL_INTERFACES: [(&str, &str, &str); 66] = [
+    (
+        "Landroid/animation/ValueAnimator$AnimatorUpdateListener;",
+        "onAnimationUpdate",
+        "(Landroid/animation/ValueAnimator;)V",
+    ),
+    (
+        "Landroid/content/DialogInterface$OnCancelListener;",
+        "onCancel",
+        "(Landroid/content/DialogInterface;)V",
+    ),
+    (
+        "Landroid/content/DialogInterface$OnClickListener;",
+        "onClick",
+        "(Landroid/content/DialogInterface;I)V",
+    ),
+    (
+        "Landroid/content/DialogInterface$OnDismissListener;",
+        "onDismiss",
+        "(Landroid/content/DialogInterface;)V",
+    ),
+    (
+        "Landroid/os/Handler$Callback;",
+        "handleMessage",
+        "(Landroid/os/Message;)Z",
+    ),
+    (
+        "Landroid/view/MenuItem$OnMenuItemClickListener;",
+        "onMenuItemClick",
+        "(Landroid/view/MenuItem;)Z",
+    ),
+    (
+        "Landroid/view/View$OnClickListener;",
+        "onClick",
+        "(Landroid/view/View;)V",
+    ),
+    (
+        "Landroid/view/View$OnFocusChangeListener;",
+        "onFocusChange",
+        "(Landroid/view/View;Z)V",
+    ),
+    (
+        "Landroid/view/View$OnLongClickListener;",
+        "onLongClick",
+        "(Landroid/view/View;)Z",
+    ),
+    (
+        "Landroid/view/View$OnTouchListener;",
+        "onTouch",
+        "(Landroid/view/View;Landroid/view/MotionEvent;)Z",
+    ),
+    (
+        "Landroid/widget/AdapterView$OnItemClickListener;",
+        "onItemClick",
+        "(Landroid/widget/AdapterView;Landroid/view/View;IJ)V",
+    ),
+    (
+        "Landroid/widget/CompoundButton$OnCheckedChangeListener;",
+        "onCheckedChanged",
+        "(Landroid/widget/CompoundButton;Z)V",
+    ),
+    ("Ljava/io/FileFilter;", "accept", "(Ljava/io/File;)Z"),
+    (
+        "Ljava/io/FilenameFilter;",
+        "accept",
+        "(Ljava/io/File;Ljava/lang/String;)Z",
+    ),
+    ("Ljava/lang/Iterable;", "iterator", "()Ljava/util/Iterator;"),
+    ("Ljava/lang/Runnable;", "run", "()V"),
+    (
+        "Ljava/lang/Thread$UncaughtExceptionHandler;",
+        "uncaughtException",
+        "(Ljava/lang/Thread;Ljava/lang/Throwable;)V",
+    ),
+    (
+        "Ljava/nio/file/PathMatcher;",
+        "matches",
+        "(Ljava/nio/file/Path;)Z",
+    ),
+    (
+        "Ljava/security/PrivilegedAction;",
+        "run",
+        "()Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/Comparator;",
+        "compare",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ),
+    (
+        "Ljava/util/concurrent/Callable;",
+        "call",
+        "()Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/concurrent/Executor;",
+        "execute",
+        "(Ljava/lang/Runnable;)V",
+    ),
+    (
+        "Ljava/util/concurrent/ThreadFactory;",
+        "newThread",
+        "(Ljava/lang/Runnable;)Ljava/lang/Thread;",
+    ),
+    (
+        "Ljava/util/function/BiConsumer;",
+        "accept",
+        "(Ljava/lang/Object;Ljava/lang/Object;)V",
+    ),
+    (
+        "Ljava/util/function/BiFunction;",
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/function/BiPredicate;",
+        "test",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Z",
+    ),
+    (
+        "Ljava/util/function/BinaryOperator;",
+        "apply",
+        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/function/BooleanSupplier;",
+        "getAsBoolean",
+        "()Z",
+    ),
+    (
+        "Ljava/util/function/Consumer;",
+        "accept",
+        "(Ljava/lang/Object;)V",
+    ),
+    (
+        "Ljava/util/function/DoubleBinaryOperator;",
+        "applyAsDouble",
+        "(DD)D",
+    ),
+    ("Ljava/util/function/DoubleConsumer;", "accept", "(D)V"),
+    (
+        "Ljava/util/function/DoubleFunction;",
+        "apply",
+        "(D)Ljava/lang/Object;",
+    ),
+    ("Ljava/util/function/DoublePredicate;", "test", "(D)Z"),
+    ("Ljava/util/function/DoubleSupplier;", "getAsDouble", "()D"),
+    (
+        "Ljava/util/function/DoubleToIntFunction;",
+        "applyAsInt",
+        "(D)I",
+    ),
+    (
+        "Ljava/util/function/DoubleToLongFunction;",
+        "applyAsLong",
+        "(D)J",
+    ),
+    (
+        "Ljava/util/function/DoubleUnaryOperator;",
+        "applyAsDouble",
+        "(D)D",
+    ),
+    (
+        "Ljava/util/function/Function;",
+        "apply",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/function/IntBinaryOperator;",
+        "applyAsInt",
+        "(II)I",
+    ),
+    ("Ljava/util/function/IntConsumer;", "accept", "(I)V"),
+    (
+        "Ljava/util/function/IntFunction;",
+        "apply",
+        "(I)Ljava/lang/Object;",
+    ),
+    ("Ljava/util/function/IntPredicate;", "test", "(I)Z"),
+    ("Ljava/util/function/IntSupplier;", "getAsInt", "()I"),
+    (
+        "Ljava/util/function/IntToDoubleFunction;",
+        "applyAsDouble",
+        "(I)D",
+    ),
+    (
+        "Ljava/util/function/IntToLongFunction;",
+        "applyAsLong",
+        "(I)J",
+    ),
+    (
+        "Ljava/util/function/IntUnaryOperator;",
+        "applyAsInt",
+        "(I)I",
+    ),
+    (
+        "Ljava/util/function/LongBinaryOperator;",
+        "applyAsLong",
+        "(JJ)J",
+    ),
+    ("Ljava/util/function/LongConsumer;", "accept", "(J)V"),
+    (
+        "Ljava/util/function/LongFunction;",
+        "apply",
+        "(J)Ljava/lang/Object;",
+    ),
+    ("Ljava/util/function/LongPredicate;", "test", "(J)Z"),
+    ("Ljava/util/function/LongSupplier;", "getAsLong", "()J"),
+    (
+        "Ljava/util/function/LongToDoubleFunction;",
+        "applyAsDouble",
+        "(J)D",
+    ),
+    (
+        "Ljava/util/function/LongToIntFunction;",
+        "applyAsInt",
+        "(J)I",
+    ),
+    (
+        "Ljava/util/function/LongUnaryOperator;",
+        "applyAsLong",
+        "(J)J",
+    ),
+    (
+        "Ljava/util/function/ObjDoubleConsumer;",
+        "accept",
+        "(Ljava/lang/Object;D)V",
+    ),
+    (
+        "Ljava/util/function/ObjIntConsumer;",
+        "accept",
+        "(Ljava/lang/Object;I)V",
+    ),
+    (
+        "Ljava/util/function/ObjLongConsumer;",
+        "accept",
+        "(Ljava/lang/Object;J)V",
+    ),
+    (
+        "Ljava/util/function/Predicate;",
+        "test",
+        "(Ljava/lang/Object;)Z",
+    ),
+    (
+        "Ljava/util/function/Supplier;",
+        "get",
+        "()Ljava/lang/Object;",
+    ),
+    (
+        "Ljava/util/function/ToDoubleBiFunction;",
+        "applyAsDouble",
+        "(Ljava/lang/Object;Ljava/lang/Object;)D",
+    ),
+    (
+        "Ljava/util/function/ToDoubleFunction;",
+        "applyAsDouble",
+        "(Ljava/lang/Object;)D",
+    ),
+    (
+        "Ljava/util/function/ToIntBiFunction;",
+        "applyAsInt",
+        "(Ljava/lang/Object;Ljava/lang/Object;)I",
+    ),
+    (
+        "Ljava/util/function/ToIntFunction;",
+        "applyAsInt",
+        "(Ljava/lang/Object;)I",
+    ),
+    (
+        "Ljava/util/function/ToLongBiFunction;",
+        "applyAsLong",
+        "(Ljava/lang/Object;Ljava/lang/Object;)J",
+    ),
+    (
+        "Ljava/util/function/ToLongFunction;",
+        "applyAsLong",
+        "(Ljava/lang/Object;)J",
+    ),
+    (
+        "Ljava/util/function/UnaryOperator;",
+        "apply",
+        "(Ljava/lang/Object;)Ljava/lang/Object;",
+    ),
+];
 const BOX_TYPES: [(&str, &str, &str); 8] = [
     ("Ljava/lang/Boolean;", "booleanValue", "Z"),
     ("Ljava/lang/Byte;", "byteValue", "B"),
@@ -789,6 +1078,13 @@ fn match_functional_class(
     let implementation_item: &CodeItem = report.decoded().get(implementation_index)?;
     let captures: Vec<u32> = constructor_captures(dex, class, constructor_item)?;
     let functional_interface: &str = classes.get(class)?.interfaces.first()?;
+    let single_abstract_method: bool = declares_single_abstract_method(
+        report,
+        classes,
+        functional_interface,
+        &implementation.method_name,
+        &implementation.method_descriptor,
+    );
     match_reference_body(
         dex,
         classes,
@@ -796,7 +1092,53 @@ fn match_functional_class(
         implementation_item,
         implementation.method_index,
         &captures,
-        functional_interface,
+        single_abstract_method,
+    )
+}
+
+fn roster_abstract_method(descriptor: &str) -> Option<(&'static str, &'static str)> {
+    let index: usize = FUNCTIONAL_INTERFACES
+        .binary_search_by(|entry: &(&str, &str, &str)| entry.0.cmp(descriptor))
+        .ok()?;
+    let entry: &(&'static str, &'static str, &'static str) = FUNCTIONAL_INTERFACES.get(index)?;
+    Some((entry.1, entry.2))
+}
+
+fn declares_single_abstract_method(
+    report: &CodeItemsReport,
+    classes: &BTreeMap<String, ClassDeclaration>,
+    interface: &str,
+    name: &str,
+    descriptor: &str,
+) -> bool {
+    if let Some(declaration) = classes.get(interface) {
+        if declaration.access_flags & ACC_INTERFACE == 0 {
+            return false;
+        }
+        let mut declared: Vec<&DexMethodCode> = report
+            .methods()
+            .iter()
+            .filter(|candidate: &&DexMethodCode| {
+                candidate.class == interface
+                    && candidate.access_flags & ACC_ABSTRACT != 0
+                    && candidate.access_flags & ACC_STATIC == 0
+            })
+            .collect();
+        let Some(single): Option<&DexMethodCode> = declared.pop() else {
+            return false;
+        };
+        return declared.is_empty()
+            && single.method_name == name
+            && single.method_descriptor == descriptor;
+    }
+    let relocated: String = match interface.strip_prefix("Lj$/") {
+        Some(rest) => format!("Ljava/{rest}"),
+        None => interface.to_owned(),
+    };
+    roster_abstract_method(&relocated).is_some_and(
+        |(roster_name, roster_descriptor): (&str, &str)| {
+            roster_name == name && roster_descriptor == descriptor
+        },
     )
 }
 
@@ -888,7 +1230,7 @@ fn match_reference_body(
     item: &CodeItem,
     implementation_method: u32,
     captures: &[u32],
-    functional_interface: &str,
+    single_abstract_method: bool,
 ) -> Option<RecoveredFunctional> {
     if !item.tries.is_empty() {
         return None;
@@ -1038,7 +1380,7 @@ fn match_reference_body(
             implementation_method,
             captures,
             param_regs.len(),
-            functional_interface,
+            single_abstract_method,
         )
         .map(RecoveredFunctional::CapturedLambda);
     }
@@ -1103,6 +1445,14 @@ fn args_are_parameters(args: &[RefValue], offset: usize) -> bool {
         })
 }
 
+const fn is_reference_descriptor(descriptor: &str) -> bool {
+    matches!(descriptor.as_bytes().first(), Some(b'L' | b'['))
+}
+
+fn erasure_compatible(declared: &str, erased: &str) -> bool {
+    declared == erased || (is_reference_descriptor(declared) && is_reference_descriptor(erased))
+}
+
 fn classify_captured_lambda(
     dex: &DexFile,
     method: &crate::dex::MethodId,
@@ -1110,38 +1460,77 @@ fn classify_captured_lambda(
     implementation_method: u32,
     captures: &[u32],
     interface_arity: usize,
-    functional_interface: &str,
+    single_abstract_method: bool,
 ) -> Option<RecoveredCapturedLambda> {
-    if target.is_static
+    if !single_abstract_method
         || target.is_constructor
-        || captures.len() != 2
-        || interface_arity != 1
-        || target.receiver != Some(RefValue::Capture(0))
-        || target.args.as_slice() != [RefValue::Capture(1), RefValue::Parameter(0)]
-        || functional_interface != "Ljava/util/function/IntUnaryOperator;"
-        || !method.name.starts_with("lambda$")
+        || !method.name.starts_with(LAMBDA_HELPER_PREFIX)
         || !crate::name_disambig::is_java_source_identifier(&method.name)
     {
         return None;
     }
-    let receiver_field: &crate::dex::FieldId = dex.field_ids.get(*captures.first()? as usize)?;
-    let captured_field: &crate::dex::FieldId = dex.field_ids.get(*captures.get(1)? as usize)?;
     let implementation: &crate::dex::MethodId =
         dex.method_ids.get(implementation_method as usize)?;
-    if receiver_field.type_name != method.class
-        || captured_field.type_name != "I"
-        || implementation.name != "applyAsInt"
-        || implementation.proto.parameters.as_slice() != ["I"]
-        || implementation.proto.return_type != "I"
-        || method.proto.parameters.len() != 2
-        || method.proto.parameters.first()? != &captured_field.type_name
-        || method.proto.parameters.get(1)? != implementation.proto.parameters.first()?
-        || method.proto.return_type != implementation.proto.return_type
+    if implementation.proto.parameters.len() != interface_arity
+        || !erasure_compatible(&method.proto.return_type, &implementation.proto.return_type)
     {
         return None;
     }
+    let mut capture_types: Vec<&str> = Vec::with_capacity(captures.len());
+    for &field_index in captures {
+        let field: &crate::dex::FieldId = dex.field_ids.get(field_index as usize)?;
+        capture_types.push(field.type_name.as_str());
+    }
+    let receiver_capture: bool = !target.is_static;
+    let forwarded: &[&str] = if receiver_capture {
+        if target.receiver != Some(RefValue::Capture(0))
+            || capture_types.first().copied() != Some(method.class.as_str())
+        {
+            return None;
+        }
+        capture_types.get(1..)?
+    } else {
+        if target.receiver.is_some() {
+            return None;
+        }
+        capture_types.as_slice()
+    };
+    let first_forwarded: usize = usize::from(receiver_capture);
+    let mut expected_arguments: Vec<RefValue> =
+        Vec::with_capacity(forwarded.len().checked_add(interface_arity)?);
+    for slot in 0..forwarded.len() {
+        expected_arguments.push(RefValue::Capture(slot.checked_add(first_forwarded)?));
+    }
+    for position in 0..interface_arity {
+        expected_arguments.push(RefValue::Parameter(position));
+    }
+    if target.args != expected_arguments {
+        return None;
+    }
+    if method.proto.parameters.len() != forwarded.len().checked_add(interface_arity)? {
+        return None;
+    }
+    for (position, declared) in method.proto.parameters.iter().enumerate() {
+        let matches: bool = match forwarded.get(position) {
+            Some(capture) => declared.as_str() == *capture,
+            None => erasure_compatible(
+                declared,
+                implementation
+                    .proto
+                    .parameters
+                    .get(position.checked_sub(forwarded.len())?)?,
+            ),
+        };
+        if !matches {
+            return None;
+        }
+    }
     Some(RecoveredCapturedLambda {
+        helper_owner: method.class.clone(),
         helper_name: method.name.clone(),
+        receiver_capture,
+        capture_count: captures.len(),
+        parameter_count: interface_arity,
     })
 }
 
@@ -1464,6 +1853,61 @@ mod tests {
             "run",
             wide_descriptor
         ));
+    }
+
+    #[test]
+    fn functional_interface_roster_is_sorted_unique_and_parseable() {
+        for pair in FUNCTIONAL_INTERFACES.windows(2) {
+            let (left, right): (&(&str, &str, &str), &(&str, &str, &str)) = (&pair[0], &pair[1]);
+            assert!(
+                left.0 < right.0,
+                "the roster must be sorted for binary search: {} then {}",
+                left.0,
+                right.0
+            );
+        }
+        for entry in FUNCTIONAL_INTERFACES {
+            assert!(
+                entry.0.starts_with('L') && entry.0.ends_with(';'),
+                "{} must be a type descriptor",
+                entry.0
+            );
+            assert!(
+                crate::name_disambig::is_java_source_identifier(entry.1),
+                "{} must be a method name",
+                entry.1
+            );
+            assert!(
+                crate::descriptor::parse_method(entry.2).is_some(),
+                "{} must be a method descriptor",
+                entry.2
+            );
+            assert_eq!(
+                roster_abstract_method(entry.0),
+                Some((entry.1, entry.2)),
+                "{} must be reachable by binary search",
+                entry.0
+            );
+        }
+        assert_eq!(roster_abstract_method("Ljava/io/Serializable;"), None);
+        assert_eq!(
+            roster_abstract_method("Ljava/util/function/Zzz;"),
+            None,
+            "an absent descriptor must not resolve to a neighbour"
+        );
+    }
+
+    #[test]
+    fn erasure_compatibility_admits_references_and_pins_primitives() {
+        assert!(erasure_compatible(
+            "Ljava/lang/String;",
+            "Ljava/lang/Object;"
+        ));
+        assert!(erasure_compatible("[I", "Ljava/lang/Object;"));
+        assert!(erasure_compatible("I", "I"));
+        assert!(!erasure_compatible("I", "J"));
+        assert!(!erasure_compatible("I", "Ljava/lang/Object;"));
+        assert!(!erasure_compatible("Ljava/lang/Object;", "I"));
     }
 
     #[test]

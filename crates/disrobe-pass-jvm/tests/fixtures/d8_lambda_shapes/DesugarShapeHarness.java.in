@@ -1,0 +1,119 @@
+import java.util.function.IntBinaryOperator;
+import java.util.function.IntFunction;
+import java.util.function.IntUnaryOperator;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+
+public final class DesugarShapeProbe {
+    interface TriInt {
+        int apply(int a, int b, int c);
+    }
+
+    private final int seed;
+
+    DesugarShapeProbe(int seed) {
+        this.seed = seed;
+    }
+
+    int scale(int value) {
+        return value * this.seed;
+    }
+
+    static int mix(int a, int b) {
+        return a * 31 + b;
+    }
+
+    static int lambda$stateless$0(int value) {
+        return value * 3 + 1;
+    }
+
+    static int lambda$oneCapture$0(int offset, int value) {
+        return mix(offset, value) + 2;
+    }
+
+    int lambda$receiverCapture$0$DesugarShapeProbe(int value) {
+        return scale(value) + 3;
+    }
+
+    int lambda$twoCaptures$0$DesugarShapeProbe(int offset, int a, int b) {
+        return scale(a) + mix(offset, b);
+    }
+
+    static long lambda$wideCapture$0(long base) {
+        return base * 7L + 4L;
+    }
+
+    static int lambda$custom$0(int k, int a, int b, int c) {
+        return a + b + c + k;
+    }
+
+    static IntUnaryOperator lambda$nested$0(int arg0, int arg1) {
+        return @@lambda$nested$0@@;
+    }
+
+    static int lambda$nested$1(int outer, int k, int inner) {
+        return outer * 100 + inner + k;
+    }
+
+    static String lambda$textCapture$0(String prefix) {
+        return prefix + "!";
+    }
+
+    static IntUnaryOperator siteStateless() {
+        return @@stateless@@;
+    }
+
+    static IntUnaryOperator siteOneCapture(int arg0) {
+        return @@oneCapture@@;
+    }
+
+    IntUnaryOperator siteReceiverCapture() {
+        return @@receiverCapture@@;
+    }
+
+    IntBinaryOperator siteTwoCaptures(int arg0) {
+        return @@twoCaptures@@;
+    }
+
+    static LongSupplier siteWideCapture(long arg0) {
+        return @@wideCapture@@;
+    }
+
+    static TriInt siteCustom(int arg0) {
+        return @@custom@@;
+    }
+
+    static IntFunction<IntUnaryOperator> siteNested(int arg0) {
+        return @@nested@@;
+    }
+
+    static Supplier<String> siteTextCapture(String arg0) {
+        return @@textCapture@@;
+    }
+
+    static String run(int seed, int offset, long base, String prefix) {
+        DesugarShapeProbe probe = new DesugarShapeProbe(seed);
+        StringBuilder out = new StringBuilder();
+        out.append(siteStateless().applyAsInt(offset));
+        out.append(':');
+        out.append(siteOneCapture(offset).applyAsInt(seed));
+        out.append(':');
+        out.append(probe.siteReceiverCapture().applyAsInt(offset));
+        out.append(':');
+        out.append(probe.siteTwoCaptures(offset).applyAsInt(seed, offset));
+        out.append(':');
+        out.append(siteWideCapture(base).getAsLong());
+        out.append(':');
+        out.append(siteCustom(seed).apply(offset, seed, offset));
+        out.append(':');
+        out.append(siteNested(seed).apply(offset).applyAsInt(seed));
+        out.append(':');
+        out.append(siteTextCapture(prefix).get());
+        return out.toString();
+    }
+
+    public static void main(String[] args) {
+        System.out.println(run(3, 5, 11L, "a"));
+        System.out.println(run(-2, 7, -13L, "b"));
+    }
+}
