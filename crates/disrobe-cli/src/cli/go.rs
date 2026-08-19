@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use clap::Subcommand;
 
 use disrobe_pass_go::{
-    EmbedFile, GoAnalysis, GoBuildInfo, GoFunc, GoModule, analyze as analyze_go,
+    EmbedDigestFamily, EmbedFile, EmbedMap, GoAnalysis, GoBuildInfo, GoFunc, GoModule,
+    analyze as analyze_go,
 };
 
 const RECOVERED_NAME_PREVIEW: usize = 40;
@@ -89,9 +90,11 @@ fn recover(input: PathBuf, out: Option<PathBuf>, emit: Vec<String>) -> miette::R
     println!("  packages:     {}", analysis.symbols.package_set.len());
     println!("  garble:       {:?}", analysis.garble.quality);
     println!(
-        "  embed.FS:     used={} directives={}",
+        "  embed.FS:     used={} directives={} map(s)={}{}",
         analysis.embed.uses_embed_fs,
-        analysis.embed.directives.len()
+        analysis.embed.directives.len(),
+        analysis.embed.maps.len(),
+        embed_digest_summary(&analysis.embed)
     );
     render_build_info(analysis.moduledata.build_info.as_ref());
     render_recovered(&analysis);
@@ -227,6 +230,37 @@ fn render_surviving_stdlib(names: &std::collections::BTreeSet<String>) {
     for n in names {
         println!("    {n}");
     }
+}
+
+fn embed_digest_summary(report: &disrobe_pass_go::EmbedReport) -> String {
+    if report.maps.is_empty() {
+        return String::new();
+    }
+    let files: usize = report
+        .maps
+        .iter()
+        .map(|map: &EmbedMap| map.file_count)
+        .sum();
+    let verified: usize = report
+        .maps
+        .iter()
+        .map(|map: &EmbedMap| map.verified_files)
+        .sum();
+    let family: &str = report
+        .maps
+        .iter()
+        .find_map(|map: &EmbedMap| map.digest_family)
+        .map_or("unresolved", EmbedDigestFamily::label);
+    let ambiguous: bool = report
+        .maps
+        .iter()
+        .any(|map: &EmbedMap| map.digest_family.is_some() && !map.digest_family_distinguishable);
+    let caveat: &str = if ambiguous {
+        " (every member is above the one-shot threshold, so two toolchain generations cannot be told apart)"
+    } else {
+        ""
+    };
+    format!(" digest={family} verified={verified}/{files}{caveat}")
 }
 
 fn render_embed_files(files: &[EmbedFile]) {
