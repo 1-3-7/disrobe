@@ -395,7 +395,7 @@ fn execute_process(label: &str, lang: Lang, src: &str, tool: &PathBuf) -> Output
             let mut build: Command = Command::new(tool);
             build.arg("-O2").arg("-std=c11").arg("-o").arg(&exe).arg(&c);
             if !cfg!(windows) {
-                build.arg("-lm");
+                build.arg("-pthread").arg("-lm");
             }
             let built: Output = build.output().expect("spawn c compiler");
             assert!(

@@ -922,30 +922,7 @@ impl Translator<'_> {
         else {
             return Ok(false);
         };
-        if self.typescript_module {
-            let unsupported: Option<&'static str> = match op {
-                Operator::MemoryAtomicWait32 { .. } => Some("memory.atomic.wait32"),
-                Operator::MemoryAtomicWait64 { .. } => Some("memory.atomic.wait64"),
-                Operator::MemoryAtomicNotify { .. } => Some("memory.atomic.notify"),
-                Operator::AtomicFence => Some("atomic.fence"),
-                _ => None,
-            };
-            if let Some(operation) = unsupported {
-                return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
-                    target: "typescript-module",
-                    operation,
-                }
-                .into());
-            }
-        }
         if matches!(desc.shape, crate::op_lift::AtomicShape::Fence) {
-            if matches!(self.lang, HighLang::TypeScript) {
-                return Err(crate::error::AtomicMemoryRefusal::UnsupportedTarget {
-                    target: "typescript",
-                    operation: "atomic.fence",
-                }
-                .into());
-            }
             let f: String = self.helper(desc.helper);
             self.emit_stmt(&format!("{f}();"));
             self.coverage.record_translated();

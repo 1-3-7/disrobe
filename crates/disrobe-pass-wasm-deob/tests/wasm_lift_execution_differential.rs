@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 mod exec_diff;
 
 use exec_diff::{
-    ALL_LANGS, BATTERY, Lang, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade,
-    grade_against_reference, grade_traps,
+    ALL_LANGS, BATTERY, NON_TRAPPING_BATTERY, ReferenceSpec, Spec, grade, grade_against_reference,
+    grade_traps,
 };
 use wasmtime::{Config, Trap};
 
@@ -24,6 +24,8 @@ const ATOMICS_MEMORY64_ALIGNED_OFFSET_2POW53_DIFF: &str =
 const ATOMICS_MEMORY64_UINT64_MAX_OFFSET_DIFF: &str =
     include_str!("fixtures/atomics_memory64_uint64_max_offset_diff.wat");
 const ATOMICS_NARROW_CMPXCHG_DIFF: &str = include_str!("fixtures/atomics_narrow_cmpxchg_diff.wat");
+const ATOMICS_WAIT_NOTIFY_DIFF: &str = include_str!("fixtures/atomics_wait_notify_diff.wat");
+const ATOMICS_EVERY_OPCODE_DIFF: &str = include_str!("fixtures/atomics_every_opcode_diff.wat");
 const WIDE_DIFF: &str = include_str!("fixtures/wide_diff.wat");
 const REFTABLE_DIFF: &str = include_str!("fixtures/reftable_diff.wat");
 const SHARED_DIFF: &str = include_str!("fixtures/shared_everything_diff.wat");
@@ -62,7 +64,114 @@ fn lifted_targets_execute_atomics_equivalently_to_wasmtime() {
         langs: &ALL_LANGS,
         min_exports: 28,
         ungraded: &[],
-        refused: &[(Lang::TypeScript, "at_fence_then_load")],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+const EVERY_LINEAR_MEMORY_ATOMIC: [&str; 63] = [
+    "i32.atomic.load",
+    "i32.atomic.load8_u",
+    "i32.atomic.load16_u",
+    "i64.atomic.load",
+    "i64.atomic.load8_u",
+    "i64.atomic.load16_u",
+    "i64.atomic.load32_u",
+    "i32.atomic.store",
+    "i32.atomic.store8",
+    "i32.atomic.store16",
+    "i64.atomic.store",
+    "i64.atomic.store8",
+    "i64.atomic.store16",
+    "i64.atomic.store32",
+    "i32.atomic.rmw.add",
+    "i32.atomic.rmw8.add_u",
+    "i32.atomic.rmw16.add_u",
+    "i64.atomic.rmw.add",
+    "i64.atomic.rmw8.add_u",
+    "i64.atomic.rmw16.add_u",
+    "i64.atomic.rmw32.add_u",
+    "i32.atomic.rmw.sub",
+    "i32.atomic.rmw8.sub_u",
+    "i32.atomic.rmw16.sub_u",
+    "i64.atomic.rmw.sub",
+    "i64.atomic.rmw8.sub_u",
+    "i64.atomic.rmw16.sub_u",
+    "i64.atomic.rmw32.sub_u",
+    "i32.atomic.rmw.and",
+    "i32.atomic.rmw8.and_u",
+    "i32.atomic.rmw16.and_u",
+    "i64.atomic.rmw.and",
+    "i64.atomic.rmw8.and_u",
+    "i64.atomic.rmw16.and_u",
+    "i64.atomic.rmw32.and_u",
+    "i32.atomic.rmw.or",
+    "i32.atomic.rmw8.or_u",
+    "i32.atomic.rmw16.or_u",
+    "i64.atomic.rmw.or",
+    "i64.atomic.rmw8.or_u",
+    "i64.atomic.rmw16.or_u",
+    "i64.atomic.rmw32.or_u",
+    "i32.atomic.rmw.xor",
+    "i32.atomic.rmw8.xor_u",
+    "i32.atomic.rmw16.xor_u",
+    "i64.atomic.rmw.xor",
+    "i64.atomic.rmw8.xor_u",
+    "i64.atomic.rmw16.xor_u",
+    "i64.atomic.rmw32.xor_u",
+    "i32.atomic.rmw.xchg",
+    "i32.atomic.rmw8.xchg_u",
+    "i32.atomic.rmw16.xchg_u",
+    "i64.atomic.rmw.xchg",
+    "i64.atomic.rmw8.xchg_u",
+    "i64.atomic.rmw16.xchg_u",
+    "i64.atomic.rmw32.xchg_u",
+    "i32.atomic.rmw.cmpxchg",
+    "i32.atomic.rmw8.cmpxchg_u",
+    "i32.atomic.rmw16.cmpxchg_u",
+    "i64.atomic.rmw.cmpxchg",
+    "i64.atomic.rmw8.cmpxchg_u",
+    "i64.atomic.rmw16.cmpxchg_u",
+    "i64.atomic.rmw32.cmpxchg_u",
+];
+
+#[test]
+fn every_linear_memory_atomic_opcode_executes_like_wasmtime() {
+    let mut absent: Vec<&str> = Vec::new();
+    for mnemonic in EVERY_LINEAR_MEMORY_ATOMIC {
+        if !ATOMICS_EVERY_OPCODE_DIFF.contains(mnemonic) {
+            absent.push(mnemonic);
+        }
+    }
+    assert!(
+        absent.is_empty(),
+        "{}/{} threads-proposal linear-memory atomics are graded; the fixture is missing \
+         {absent:?}",
+        EVERY_LINEAR_MEMORY_ATOMIC.len() - absent.len(),
+        EVERY_LINEAR_MEMORY_ATOMIC.len()
+    );
+    grade(&Spec {
+        label: "atomics_every_opcode",
+        wat: ATOMICS_EVERY_OPCODE_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 70,
+        ungraded: &[],
+        refused: &[],
+        battery: &BATTERY,
+    });
+}
+
+#[test]
+fn lifted_targets_block_and_report_wait_and_notify_like_wasmtime() {
+    grade(&Spec {
+        label: "atomics_wait_notify",
+        wat: ATOMICS_WAIT_NOTIFY_DIFF,
+        configure: atomics_config,
+        langs: &ALL_LANGS,
+        min_exports: 13,
+        ungraded: &[],
+        refused: &[],
         battery: &BATTERY,
     });
 }
@@ -263,7 +372,7 @@ fn lifted_targets_execute_shared_everything_like_its_non_atomic_equivalent() {
         configure: reftable_config,
         langs: &ALL_LANGS,
         min_exports: 16,
-        refused: &[(Lang::TypeScript, "s_fence")],
+        refused: &[],
     });
 }
 

@@ -1,7 +1,20 @@
 /* disrobe wasm lift target=c (wasm2c-parity, self-contained) */
-/* Single-threaded runtime: memory.atomic.wait reports 1 (not-equal) or 2 (timed-out)
-   and never blocks, memory.atomic.notify wakes nobody, and atomic accesses share the
-   same storage as their plain counterparts. */
+/* Shared-memory runtime: every WebAssembly atomic lowers to a sequentially consistent
+   __atomic_* builtin over the process-wide linear memory, memory.atomic.wait blocks on a
+   condition variable until memory.atomic.notify wakes it or the nanosecond timeout expires,
+   and a negative timeout waits forever. Plain accesses share that storage, so an ordinary
+   access racing an atomic one tears exactly as WebAssembly permits. */
+#if !defined(_WIN32) && !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <time.h>
+#endif
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -532,138 +545,225 @@ static inline int64_t wasm_global_get(uint32_t i) { return i < 64 ? wasm_globals
 static inline void wasm_global_set(uint32_t i, int64_t v) { if (i < 64) wasm_globals[i] = v; }
 static inline int32_t wasm_memory_size(void) { return (int32_t)(sizeof(wasm_memory) / (64 * 1024)); }
 static inline int32_t wasm_memory_grow(int32_t delta) { (void)delta; return (int32_t)(sizeof(wasm_memory) / (64 * 1024)); }
-static inline int32_t wasm_memory_atomic_notify(int32_t addr, uint64_t offset, int32_t count) { (void)addr; (void)offset; (void)count; return 0; }
-static inline int32_t wasm_memory_atomic_notify_a64(int64_t addr, uint64_t offset, int32_t count) { (void)addr; (void)offset; (void)count; return 0; }
-static inline int32_t wasm_memory_atomic_wait32(int32_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)timeout; return wasm_load_i32(addr, offset) == expected ? 2 : 1; }
-static inline int32_t wasm_memory_atomic_wait32_a64(int64_t addr, uint64_t offset, int32_t expected, int64_t timeout) { (void)timeout; return wasm_load_i32_a64(addr, offset) == expected ? 2 : 1; }
-static inline int32_t wasm_memory_atomic_wait64(int32_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)timeout; return wasm_load_i64(addr, offset) == expected ? 2 : 1; }
-static inline int32_t wasm_memory_atomic_wait64_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t timeout) { (void)timeout; return wasm_load_i64_a64(addr, offset) == expected ? 2 : 1; }
-static inline int32_t wasm_i32_atomic_load(int32_t addr, uint64_t offset) { return wasm_load_i32(addr, offset); }
-static inline int32_t wasm_i32_atomic_load_a64(int64_t addr, uint64_t offset) { return wasm_load_i32_a64(addr, offset); }
-static inline int64_t wasm_i64_atomic_load(int32_t addr, uint64_t offset) { return wasm_load_i64(addr, offset); }
-static inline int64_t wasm_i64_atomic_load_a64(int64_t addr, uint64_t offset) { return wasm_load_i64_a64(addr, offset); }
-static inline int32_t wasm_i32_atomic_load8_u(int32_t addr, uint64_t offset) { return wasm_load_i32_8u(addr, offset); }
-static inline int32_t wasm_i32_atomic_load8_u_a64(int64_t addr, uint64_t offset) { return wasm_load_i32_8u_a64(addr, offset); }
-static inline int32_t wasm_i32_atomic_load16_u(int32_t addr, uint64_t offset) { return wasm_load_i32_16u(addr, offset); }
-static inline int32_t wasm_i32_atomic_load16_u_a64(int64_t addr, uint64_t offset) { return wasm_load_i32_16u_a64(addr, offset); }
-static inline int64_t wasm_i64_atomic_load8_u(int32_t addr, uint64_t offset) { return wasm_load_i64_8u(addr, offset); }
-static inline int64_t wasm_i64_atomic_load8_u_a64(int64_t addr, uint64_t offset) { return wasm_load_i64_8u_a64(addr, offset); }
-static inline int64_t wasm_i64_atomic_load16_u(int32_t addr, uint64_t offset) { return wasm_load_i64_16u(addr, offset); }
-static inline int64_t wasm_i64_atomic_load16_u_a64(int64_t addr, uint64_t offset) { return wasm_load_i64_16u_a64(addr, offset); }
-static inline int64_t wasm_i64_atomic_load32_u(int32_t addr, uint64_t offset) { return wasm_load_i64_32u(addr, offset); }
-static inline int64_t wasm_i64_atomic_load32_u_a64(int64_t addr, uint64_t offset) { return wasm_load_i64_32u_a64(addr, offset); }
-static inline void wasm_i32_atomic_store(int32_t addr, uint64_t offset, int32_t val) { wasm_store_i32(addr, offset, val); }
-static inline void wasm_i32_atomic_store_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_store_i32_a64(addr, offset, val); }
-static inline void wasm_i64_atomic_store(int32_t addr, uint64_t offset, int64_t val) { wasm_store_i64(addr, offset, val); }
-static inline void wasm_i64_atomic_store_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_store_i64_a64(addr, offset, val); }
-static inline void wasm_i32_atomic_store8(int32_t addr, uint64_t offset, int32_t val) { wasm_store_i32_8(addr, offset, val); }
-static inline void wasm_i32_atomic_store8_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_store_i32_8_a64(addr, offset, val); }
-static inline void wasm_i32_atomic_store16(int32_t addr, uint64_t offset, int32_t val) { wasm_store_i32_16(addr, offset, val); }
-static inline void wasm_i32_atomic_store16_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_store_i32_16_a64(addr, offset, val); }
-static inline void wasm_i64_atomic_store8(int32_t addr, uint64_t offset, int64_t val) { wasm_store_i64_8(addr, offset, val); }
-static inline void wasm_i64_atomic_store8_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_store_i64_8_a64(addr, offset, val); }
-static inline void wasm_i64_atomic_store16(int32_t addr, uint64_t offset, int64_t val) { wasm_store_i64_16(addr, offset, val); }
-static inline void wasm_i64_atomic_store16_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_store_i64_16_a64(addr, offset, val); }
-static inline void wasm_i64_atomic_store32(int32_t addr, uint64_t offset, int64_t val) { wasm_store_i64_32(addr, offset, val); }
-static inline void wasm_i64_atomic_store32_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_store_i64_32_a64(addr, offset, val); }
-static inline int32_t wasm_i32_atomic_rmw_add(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_add_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_add(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_add_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_add_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_add_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_add_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_add_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, wasm_i32_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_add_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_add_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_add_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, wasm_i64_add(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_sub(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_sub_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_sub(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_sub_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_sub_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_sub_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_sub_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_sub_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, wasm_i32_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_sub_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_sub_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_sub_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, wasm_i64_sub(cur, val)); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_and(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_and_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_and(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_and_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_and_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_and_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_and_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_and_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_and_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_and_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_and_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur & val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur & val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_or(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_or_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_or(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_or_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_or_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_or_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_or_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_or_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_or_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_or_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_or_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur | val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur | val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_xor(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_xor_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_xor(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_xor_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_xor_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_xor_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_xor_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_xor_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_xor_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_xor_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_xor_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur ^ val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur ^ val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_xchg(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_xchg_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_xchg(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_xchg_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_xchg_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_xchg_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_xchg_u(int32_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_xchg_u_a64(int64_t addr, uint64_t offset, int32_t val) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_xchg_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_xchg_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_xchg_u(int32_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, val); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, val); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_cmpxchg(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32(addr, offset); if (cur == expected) wasm_store_i32(addr, offset, replacement); return cur; }
-static inline int32_t wasm_i32_atomic_rmw_cmpxchg_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32_a64(addr, offset); if (cur == expected) wasm_store_i32_a64(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_cmpxchg(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64(addr, offset); if (cur == expected) wasm_store_i64(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw_cmpxchg_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_a64(addr, offset); if (cur == expected) wasm_store_i64_a64(addr, offset, replacement); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_cmpxchg_u(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32_8u(addr, offset); if (cur == (int32_t)((uint32_t)expected & UINT32_C(0xff))) wasm_store_i32_8(addr, offset, replacement); return cur; }
-static inline int32_t wasm_i32_atomic_rmw8_cmpxchg_u_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32_8u_a64(addr, offset); if (cur == (int32_t)((uint32_t)expected & UINT32_C(0xff))) wasm_store_i32_8_a64(addr, offset, replacement); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_cmpxchg_u(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32_16u(addr, offset); if (cur == (int32_t)((uint32_t)expected & UINT32_C(0xffff))) wasm_store_i32_16(addr, offset, replacement); return cur; }
-static inline int32_t wasm_i32_atomic_rmw16_cmpxchg_u_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { int32_t cur = wasm_load_i32_16u_a64(addr, offset); if (cur == (int32_t)((uint32_t)expected & UINT32_C(0xffff))) wasm_store_i32_16_a64(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_8u(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xff))) wasm_store_i64_8(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw8_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_8u_a64(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xff))) wasm_store_i64_8_a64(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_16u(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffff))) wasm_store_i64_16(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_16u_a64(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffff))) wasm_store_i64_16_a64(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_32u(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffffffff))) wasm_store_i64_32(addr, offset, replacement); return cur; }
-static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { int64_t cur = wasm_load_i64_32u_a64(addr, offset); if (cur == (int64_t)((uint64_t)expected & UINT64_C(0xffffffff))) wasm_store_i64_32_a64(addr, offset, replacement); return cur; }
+static inline uint8_t wasm_atomic_u8_load(size_t p) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_load_n((const uint8_t *)(const void *)(wasm_memory + p), __ATOMIC_SEQ_CST); }
+static inline void wasm_atomic_u8_store(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return; __atomic_store_n((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_add(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_fetch_add((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_sub(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_fetch_sub((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_and(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_fetch_and((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_or(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_fetch_or((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_xor(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_fetch_xor((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_xchg(size_t p, uint8_t v) { if (p > sizeof(wasm_memory) - 1) return 0; return __atomic_exchange_n((uint8_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint8_t wasm_atomic_u8_cmpxchg(size_t p, uint8_t expected, uint8_t replacement) { if (p > sizeof(wasm_memory) - 1) return 0; uint8_t observed = expected; __atomic_compare_exchange_n((uint8_t *)(void *)(wasm_memory + p), &observed, replacement, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); return observed; }
+static inline uint16_t wasm_atomic_u16_load(size_t p) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_load_n((const uint16_t *)(const void *)(wasm_memory + p), __ATOMIC_SEQ_CST); }
+static inline void wasm_atomic_u16_store(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return; __atomic_store_n((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_add(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_fetch_add((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_sub(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_fetch_sub((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_and(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_fetch_and((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_or(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_fetch_or((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_xor(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_fetch_xor((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_xchg(size_t p, uint16_t v) { if (p > sizeof(wasm_memory) - 2) return 0; return __atomic_exchange_n((uint16_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint16_t wasm_atomic_u16_cmpxchg(size_t p, uint16_t expected, uint16_t replacement) { if (p > sizeof(wasm_memory) - 2) return 0; uint16_t observed = expected; __atomic_compare_exchange_n((uint16_t *)(void *)(wasm_memory + p), &observed, replacement, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); return observed; }
+static inline uint32_t wasm_atomic_u32_load(size_t p) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_load_n((const uint32_t *)(const void *)(wasm_memory + p), __ATOMIC_SEQ_CST); }
+static inline void wasm_atomic_u32_store(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return; __atomic_store_n((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_add(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_fetch_add((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_sub(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_fetch_sub((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_and(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_fetch_and((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_or(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_fetch_or((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_xor(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_fetch_xor((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_xchg(size_t p, uint32_t v) { if (p > sizeof(wasm_memory) - 4) return 0; return __atomic_exchange_n((uint32_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint32_t wasm_atomic_u32_cmpxchg(size_t p, uint32_t expected, uint32_t replacement) { if (p > sizeof(wasm_memory) - 4) return 0; uint32_t observed = expected; __atomic_compare_exchange_n((uint32_t *)(void *)(wasm_memory + p), &observed, replacement, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); return observed; }
+static inline uint64_t wasm_atomic_u64_load(size_t p) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_load_n((const uint64_t *)(const void *)(wasm_memory + p), __ATOMIC_SEQ_CST); }
+static inline void wasm_atomic_u64_store(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return; __atomic_store_n((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_add(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_fetch_add((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_sub(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_fetch_sub((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_and(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_fetch_and((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_or(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_fetch_or((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_xor(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_fetch_xor((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_xchg(size_t p, uint64_t v) { if (p > sizeof(wasm_memory) - 8) return 0; return __atomic_exchange_n((uint64_t *)(void *)(wasm_memory + p), v, __ATOMIC_SEQ_CST); }
+static inline uint64_t wasm_atomic_u64_cmpxchg(size_t p, uint64_t expected, uint64_t replacement) { if (p > sizeof(wasm_memory) - 8) return 0; uint64_t observed = expected; __atomic_compare_exchange_n((uint64_t *)(void *)(wasm_memory + p), &observed, replacement, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); return observed; }
+#define WASM_ATOMIC_WAITER_CAP 256
+typedef struct { uint64_t address; int live; int notified; } wasm_atomic_waiter;
+static wasm_atomic_waiter wasm_atomic_waiters[WASM_ATOMIC_WAITER_CAP];
+#if defined(_WIN32)
+static SRWLOCK wasm_atomic_waiter_mutex = SRWLOCK_INIT;
+static CONDITION_VARIABLE wasm_atomic_waiter_cond = CONDITION_VARIABLE_INIT;
+static inline void wasm_atomic_waiter_lock(void) { AcquireSRWLockExclusive(&wasm_atomic_waiter_mutex); }
+static inline void wasm_atomic_waiter_unlock(void) { ReleaseSRWLockExclusive(&wasm_atomic_waiter_mutex); }
+static inline void wasm_atomic_waiter_wake(void) { WakeAllConditionVariable(&wasm_atomic_waiter_cond); }
+static inline void wasm_atomic_waiter_park(int64_t remaining_ns) { DWORD ms = INFINITE; if (remaining_ns >= 0) { uint64_t rounded = ((uint64_t)remaining_ns + UINT64_C(999999)) / UINT64_C(1000000); if (rounded == 0) rounded = 1; if (rounded > UINT64_C(0xfffffffe)) rounded = UINT64_C(0xfffffffe); ms = (DWORD)rounded; } SleepConditionVariableSRW(&wasm_atomic_waiter_cond, &wasm_atomic_waiter_mutex, ms, 0); }
+static inline uint64_t wasm_atomic_now_ns(void) { LARGE_INTEGER frequency, counter; if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&counter)) return 0; uint64_t hz = (uint64_t)frequency.QuadPart; if (hz == 0) return 0; uint64_t ticks = (uint64_t)counter.QuadPart; return (ticks / hz) * UINT64_C(1000000000) + ((ticks % hz) * UINT64_C(1000000000)) / hz; }
+#else
+static pthread_mutex_t wasm_atomic_waiter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t wasm_atomic_waiter_cond = PTHREAD_COND_INITIALIZER;
+static inline void wasm_atomic_waiter_lock(void) { pthread_mutex_lock(&wasm_atomic_waiter_mutex); }
+static inline void wasm_atomic_waiter_unlock(void) { pthread_mutex_unlock(&wasm_atomic_waiter_mutex); }
+static inline void wasm_atomic_waiter_wake(void) { pthread_cond_broadcast(&wasm_atomic_waiter_cond); }
+static inline void wasm_atomic_waiter_park(int64_t remaining_ns) { if (remaining_ns < 0) { pthread_cond_wait(&wasm_atomic_waiter_cond, &wasm_atomic_waiter_mutex); return; } struct timespec deadline; if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) return; uint64_t nanos = (uint64_t)deadline.tv_nsec + (uint64_t)remaining_ns; deadline.tv_sec += (time_t)(nanos / UINT64_C(1000000000)); deadline.tv_nsec = (long)(nanos % UINT64_C(1000000000)); pthread_cond_timedwait(&wasm_atomic_waiter_cond, &wasm_atomic_waiter_mutex, &deadline); }
+static inline uint64_t wasm_atomic_now_ns(void) { struct timespec now; if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0; return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec; }
+#endif
+static inline int32_t wasm_atomic_wait_at(size_t p, int wide_value, int64_t expected, int64_t timeout_ns) {
+  wasm_atomic_waiter_lock();
+  int64_t current = wide_value ? (int64_t)wasm_atomic_u64_load(p) : (int64_t)(int32_t)wasm_atomic_u32_load(p);
+  if (current != expected) { wasm_atomic_waiter_unlock(); return 1; }
+  if (timeout_ns == 0) { wasm_atomic_waiter_unlock(); return 2; }
+  int slot = -1;
+  for (int index = 0; index < WASM_ATOMIC_WAITER_CAP; index++) { if (!wasm_atomic_waiters[index].live) { slot = index; break; } }
+  if (slot < 0) { wasm_atomic_waiter_unlock(); wasm_atomic_trap("atomic-waiter-capacity"); }
+  wasm_atomic_waiters[slot].address = (uint64_t)p;
+  wasm_atomic_waiters[slot].live = 1;
+  wasm_atomic_waiters[slot].notified = 0;
+  uint64_t started = wasm_atomic_now_ns();
+  for (;;) {
+    if (wasm_atomic_waiters[slot].notified) { wasm_atomic_waiters[slot].live = 0; wasm_atomic_waiter_unlock(); return 0; }
+    if (timeout_ns < 0) { wasm_atomic_waiter_park(-1); continue; }
+    uint64_t elapsed = wasm_atomic_now_ns() - started;
+    if (elapsed >= (uint64_t)timeout_ns) { wasm_atomic_waiters[slot].live = 0; wasm_atomic_waiter_unlock(); return 2; }
+    wasm_atomic_waiter_park((int64_t)((uint64_t)timeout_ns - elapsed));
+  }
+}
+static inline int32_t wasm_atomic_notify_at(size_t p, int32_t count) {
+  uint32_t limit = (uint32_t)count;
+  uint32_t woken = 0;
+  wasm_atomic_waiter_lock();
+  for (int index = 0; index < WASM_ATOMIC_WAITER_CAP && woken < limit; index++) {
+    if (wasm_atomic_waiters[index].live && !wasm_atomic_waiters[index].notified && wasm_atomic_waiters[index].address == (uint64_t)p) { wasm_atomic_waiters[index].notified = 1; woken++; }
+  }
+  wasm_atomic_waiter_unlock();
+  if (woken > 0) wasm_atomic_waiter_wake();
+  return (int32_t)woken;
+}
+static inline int32_t wasm_memory_atomic_notify(int32_t addr, uint64_t offset, int32_t count) { return wasm_atomic_notify_at(wasm_mem_addr(addr, offset), count); }
+static inline int32_t wasm_memory_atomic_wait32(int32_t addr, uint64_t offset, int32_t expected, int64_t timeout) { return wasm_atomic_wait_at(wasm_mem_addr(addr, offset), 0, (int64_t)expected, timeout); }
+static inline int32_t wasm_memory_atomic_wait64(int32_t addr, uint64_t offset, int64_t expected, int64_t timeout) { return wasm_atomic_wait_at(wasm_mem_addr(addr, offset), 1, expected, timeout); }
+static inline int32_t wasm_memory_atomic_notify_a64(int64_t addr, uint64_t offset, int32_t count) { return wasm_atomic_notify_at(wasm_mem_addr64(addr, offset), count); }
+static inline int32_t wasm_memory_atomic_wait32_a64(int64_t addr, uint64_t offset, int32_t expected, int64_t timeout) { return wasm_atomic_wait_at(wasm_mem_addr64(addr, offset), 0, (int64_t)expected, timeout); }
+static inline int32_t wasm_memory_atomic_wait64_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t timeout) { return wasm_atomic_wait_at(wasm_mem_addr64(addr, offset), 1, expected, timeout); }
+static inline int32_t wasm_i32_atomic_load(int32_t addr, uint64_t offset) { return wasm_i32_from_u32(wasm_atomic_u32_load(wasm_mem_addr(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load(int32_t addr, uint64_t offset) { return wasm_i64_from_u64(wasm_atomic_u64_load(wasm_mem_addr(addr, offset))); }
+static inline int32_t wasm_i32_atomic_load8_u(int32_t addr, uint64_t offset) { return (int32_t)(wasm_atomic_u8_load(wasm_mem_addr(addr, offset))); }
+static inline int32_t wasm_i32_atomic_load16_u(int32_t addr, uint64_t offset) { return (int32_t)(wasm_atomic_u16_load(wasm_mem_addr(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load8_u(int32_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u8_load(wasm_mem_addr(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load16_u(int32_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u16_load(wasm_mem_addr(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load32_u(int32_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u32_load(wasm_mem_addr(addr, offset))); }
+static inline void wasm_i32_atomic_store(int32_t addr, uint64_t offset, int32_t val) { wasm_atomic_u32_store(wasm_mem_addr(addr, offset), (uint32_t)val); }
+static inline void wasm_i64_atomic_store(int32_t addr, uint64_t offset, int64_t val) { wasm_atomic_u64_store(wasm_mem_addr(addr, offset), (uint64_t)val); }
+static inline void wasm_i32_atomic_store8(int32_t addr, uint64_t offset, int32_t val) { wasm_atomic_u8_store(wasm_mem_addr(addr, offset), (uint8_t)val); }
+static inline void wasm_i32_atomic_store16(int32_t addr, uint64_t offset, int32_t val) { wasm_atomic_u16_store(wasm_mem_addr(addr, offset), (uint16_t)val); }
+static inline void wasm_i64_atomic_store8(int32_t addr, uint64_t offset, int64_t val) { wasm_atomic_u8_store(wasm_mem_addr(addr, offset), (uint8_t)val); }
+static inline void wasm_i64_atomic_store16(int32_t addr, uint64_t offset, int64_t val) { wasm_atomic_u16_store(wasm_mem_addr(addr, offset), (uint16_t)val); }
+static inline void wasm_i64_atomic_store32(int32_t addr, uint64_t offset, int64_t val) { wasm_atomic_u32_store(wasm_mem_addr(addr, offset), (uint32_t)val); }
+static inline int32_t wasm_i32_atomic_rmw_add(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_add(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_add(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_add(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_add_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_add(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_add_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_add(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_add_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_add(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_add_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_add(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_add_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_add(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_sub(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_sub(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_sub(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_sub(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_sub_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_sub(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_sub_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_sub(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_sub_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_sub(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_sub_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_sub(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_sub_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_sub(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_and(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_and(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_and(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_and(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_and_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_and(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_and_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_and(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_and_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_and(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_and_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_and(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_and_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_and(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_or(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_or(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_or(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_or(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_or_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_or(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_or_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_or(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_or_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_or(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_or_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_or(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_or_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_or(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_xor(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_xor(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_xor(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_xor(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_xor_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_xor(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_xor_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_xor(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_xor_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_xor(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_xor_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_xor(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_xor_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_xor(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_xchg(int32_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_xchg(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_xchg(int32_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_xchg(wasm_mem_addr(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_xchg_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_xchg(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_xchg_u(int32_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_xchg(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_xchg_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_xchg(wasm_mem_addr(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_xchg_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_xchg(wasm_mem_addr(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_xchg_u(int32_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_xchg(wasm_mem_addr(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_cmpxchg(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return wasm_i32_from_u32(wasm_atomic_u32_cmpxchg(wasm_mem_addr(addr, offset), (uint32_t)expected, (uint32_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw_cmpxchg(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return wasm_i64_from_u64(wasm_atomic_u64_cmpxchg(wasm_mem_addr(addr, offset), (uint64_t)expected, (uint64_t)replacement)); }
+static inline int32_t wasm_i32_atomic_rmw8_cmpxchg_u(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return (int32_t)(wasm_atomic_u8_cmpxchg(wasm_mem_addr(addr, offset), (uint8_t)expected, (uint8_t)replacement)); }
+static inline int32_t wasm_i32_atomic_rmw16_cmpxchg_u(int32_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return (int32_t)(wasm_atomic_u16_cmpxchg(wasm_mem_addr(addr, offset), (uint16_t)expected, (uint16_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw8_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u8_cmpxchg(wasm_mem_addr(addr, offset), (uint8_t)expected, (uint8_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u16_cmpxchg(wasm_mem_addr(addr, offset), (uint16_t)expected, (uint16_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u(int32_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u32_cmpxchg(wasm_mem_addr(addr, offset), (uint32_t)expected, (uint32_t)replacement)); }
+static inline int32_t wasm_i32_atomic_load_a64(int64_t addr, uint64_t offset) { return wasm_i32_from_u32(wasm_atomic_u32_load(wasm_mem_addr64(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load_a64(int64_t addr, uint64_t offset) { return wasm_i64_from_u64(wasm_atomic_u64_load(wasm_mem_addr64(addr, offset))); }
+static inline int32_t wasm_i32_atomic_load8_u_a64(int64_t addr, uint64_t offset) { return (int32_t)(wasm_atomic_u8_load(wasm_mem_addr64(addr, offset))); }
+static inline int32_t wasm_i32_atomic_load16_u_a64(int64_t addr, uint64_t offset) { return (int32_t)(wasm_atomic_u16_load(wasm_mem_addr64(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load8_u_a64(int64_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u8_load(wasm_mem_addr64(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load16_u_a64(int64_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u16_load(wasm_mem_addr64(addr, offset))); }
+static inline int64_t wasm_i64_atomic_load32_u_a64(int64_t addr, uint64_t offset) { return (int64_t)(wasm_atomic_u32_load(wasm_mem_addr64(addr, offset))); }
+static inline void wasm_i32_atomic_store_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_atomic_u32_store(wasm_mem_addr64(addr, offset), (uint32_t)val); }
+static inline void wasm_i64_atomic_store_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_atomic_u64_store(wasm_mem_addr64(addr, offset), (uint64_t)val); }
+static inline void wasm_i32_atomic_store8_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_atomic_u8_store(wasm_mem_addr64(addr, offset), (uint8_t)val); }
+static inline void wasm_i32_atomic_store16_a64(int64_t addr, uint64_t offset, int32_t val) { wasm_atomic_u16_store(wasm_mem_addr64(addr, offset), (uint16_t)val); }
+static inline void wasm_i64_atomic_store8_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_atomic_u8_store(wasm_mem_addr64(addr, offset), (uint8_t)val); }
+static inline void wasm_i64_atomic_store16_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_atomic_u16_store(wasm_mem_addr64(addr, offset), (uint16_t)val); }
+static inline void wasm_i64_atomic_store32_a64(int64_t addr, uint64_t offset, int64_t val) { wasm_atomic_u32_store(wasm_mem_addr64(addr, offset), (uint32_t)val); }
+static inline int32_t wasm_i32_atomic_rmw_add_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_add(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_add_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_add(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_add_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_add(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_add_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_add(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_add(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_add(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_add_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_add(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_sub_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_sub(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_sub_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_sub(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_sub_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_sub(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_sub_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_sub(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_sub(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_sub(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_sub_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_sub(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_and_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_and(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_and_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_and(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_and_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_and(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_and_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_and(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_and(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_and(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_and_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_and(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_or_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_or(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_or_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_or(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_or_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_or(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_or_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_or(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_or(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_or(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_or_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_or(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_xor_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_xor(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_xor_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_xor(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_xor_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_xor(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_xor_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_xor(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_xor(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_xor(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_xor_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_xor(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_xchg_a64(int64_t addr, uint64_t offset, int32_t val) { return wasm_i32_from_u32(wasm_atomic_u32_xchg(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw_xchg_a64(int64_t addr, uint64_t offset, int64_t val) { return wasm_i64_from_u64(wasm_atomic_u64_xchg(wasm_mem_addr64(addr, offset), (uint64_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw8_xchg_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u8_xchg(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw16_xchg_u_a64(int64_t addr, uint64_t offset, int32_t val) { return (int32_t)(wasm_atomic_u16_xchg(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw8_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u8_xchg(wasm_mem_addr64(addr, offset), (uint8_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw16_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u16_xchg(wasm_mem_addr64(addr, offset), (uint16_t)val)); }
+static inline int64_t wasm_i64_atomic_rmw32_xchg_u_a64(int64_t addr, uint64_t offset, int64_t val) { return (int64_t)(wasm_atomic_u32_xchg(wasm_mem_addr64(addr, offset), (uint32_t)val)); }
+static inline int32_t wasm_i32_atomic_rmw_cmpxchg_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return wasm_i32_from_u32(wasm_atomic_u32_cmpxchg(wasm_mem_addr64(addr, offset), (uint32_t)expected, (uint32_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw_cmpxchg_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return wasm_i64_from_u64(wasm_atomic_u64_cmpxchg(wasm_mem_addr64(addr, offset), (uint64_t)expected, (uint64_t)replacement)); }
+static inline int32_t wasm_i32_atomic_rmw8_cmpxchg_u_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return (int32_t)(wasm_atomic_u8_cmpxchg(wasm_mem_addr64(addr, offset), (uint8_t)expected, (uint8_t)replacement)); }
+static inline int32_t wasm_i32_atomic_rmw16_cmpxchg_u_a64(int64_t addr, uint64_t offset, int32_t expected, int32_t replacement) { return (int32_t)(wasm_atomic_u16_cmpxchg(wasm_mem_addr64(addr, offset), (uint16_t)expected, (uint16_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw8_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u8_cmpxchg(wasm_mem_addr64(addr, offset), (uint8_t)expected, (uint8_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw16_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u16_cmpxchg(wasm_mem_addr64(addr, offset), (uint16_t)expected, (uint16_t)replacement)); }
+static inline int64_t wasm_i64_atomic_rmw32_cmpxchg_u_a64(int64_t addr, uint64_t offset, int64_t expected, int64_t replacement) { return (int64_t)(wasm_atomic_u32_cmpxchg(wasm_mem_addr64(addr, offset), (uint32_t)expected, (uint32_t)replacement)); }
 static inline void wasm_atomic_fence(void) { atomic_thread_fence(memory_order_seq_cst); }
 
 typedef struct { int64_t lo; int64_t hi; } wasm_i128_pair;

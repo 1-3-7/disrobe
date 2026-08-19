@@ -193,6 +193,19 @@ const wasmAtomicIndex = (addr: number, offset: number, width: number): number =>
 const wasmAtomicIndexA64 = (addr: bigint, offset: number, width: number): number => Number(BigInt.asUintN(64, addr) + BigInt(offset)) / width;
 const wasmAtomicWaitResult = (result: "ok" | "not-equal" | "timed-out"): number => result === "ok" ? 0 : result === "not-equal" ? 1 : 2;
 const wasmAtomicTimeout = (timeout: bigint): number => timeout < 0n ? Number.POSITIVE_INFINITY : Number(timeout) / 1_000_000;
+const WASM_ATOMIC_FENCE_MODULE_BYTES: readonly number[] = [0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 9, 1, 5, 102, 101, 110, 99, 101, 0, 0, 10, 7, 1, 5, 0, 254, 3, 0, 11];
+let wasmAtomicFenceShim: (() => void) | undefined = undefined;
+const wasmAtomicFence = (): void => {
+  let shim: (() => void) | undefined = wasmAtomicFenceShim;
+  if (shim === undefined) {
+    const compiled: WebAssembly.Module = new WebAssembly.Module(Uint8Array.from(WASM_ATOMIC_FENCE_MODULE_BYTES));
+    const exported: unknown = new WebAssembly.Instance(compiled, {}).exports["fence"];
+    if (typeof exported !== "function") { throw new TypeError("lifted WebAssembly atomic fence is unavailable"); }
+    shim = exported as () => void;
+    wasmAtomicFenceShim = shim;
+  }
+  shim();
+};
 const wasmMemAddr = (addr: number, offset: number): number => u32(addr) + offset;
 const wasmLoadI32 = (addr: number, offset: number): number => WASM_MEM_VIEW.getInt32(wasmMemAddr(addr, offset), true);
 const wasmLoadI64 = (addr: number, offset: number): bigint => WASM_MEM_VIEW.getBigInt64(wasmMemAddr(addr, offset), true);

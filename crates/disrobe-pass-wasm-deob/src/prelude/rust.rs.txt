@@ -3,15 +3,65 @@
 //! Self-contained WebAssembly numeric + memory runtime for the lifted functions below.
 //! Divide/remainder by zero and signed-overflow are made total (return 0) to keep the
 //! artifact panic-free; float->int truncation saturates (Rust `as`), matching trunc_sat.
-//! Single-threaded runtime: memory.atomic.wait reports 1 (not-equal) or 2 (timed-out)
-//! and never blocks, memory.atomic.notify wakes nobody, and atomic accesses share the
-//! same storage as their plain counterparts.
+//! Shared-memory runtime: every WebAssembly atomic lowers to a sequentially consistent
+//! core::sync::atomic operation over one process-wide linear memory, memory.atomic.wait
+//! blocks until memory.atomic.notify wakes it or the nanosecond timeout expires, and a
+//! negative timeout waits forever. Plain accesses share that storage as relaxed byte
+//! operations, so an ordinary access racing an atomic one tears exactly as WebAssembly
+//! permits. Growth extends a logical length inside a fixed reservation, so a live atomic
+//! address never moves.
 
 use std::cell::RefCell;
 
+const WASM_PAGE_BYTES: usize = 64 * 1024;
+const WASM_MEMORY_CAPACITY_BYTES: usize = 16 * WASM_PAGE_BYTES;
+
+#[repr(C, align(16))]
+struct WasmLinearMemory(std::cell::UnsafeCell<[u8; WASM_MEMORY_CAPACITY_BYTES]>);
+unsafe impl Sync for WasmLinearMemory {}
+
+static WASM_MEMORY: WasmLinearMemory =
+    WasmLinearMemory(std::cell::UnsafeCell::new([0u8; WASM_MEMORY_CAPACITY_BYTES]));
+static WASM_MEMORY_LEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(WASM_PAGE_BYTES);
+
 thread_local! {
-    static WASM_MEMORY: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 64 * 1024]);
     static WASM_GLOBALS: RefCell<Vec<i64>> = RefCell::new(vec![0i64; 64]);
+}
+
+#[inline]
+fn wasm_memory_len() -> usize {
+    WASM_MEMORY_LEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[inline]
+fn wasm_memory_cells(a: usize, len: usize) -> Option<&'static [std::sync::atomic::AtomicU8]> {
+    let end: usize = a.checked_add(len)?;
+    if end > wasm_memory_len() {
+        return None;
+    }
+    let base: *mut u8 = WASM_MEMORY.0.get().cast::<u8>();
+    Some(unsafe { std::slice::from_raw_parts(base.add(a).cast::<std::sync::atomic::AtomicU8>(), len) })
+}
+
+#[inline]
+fn wasm_memory_read<const N: usize>(a: usize) -> [u8; N] {
+    let mut out: [u8; N] = [0u8; N];
+    if let Some(cells) = wasm_memory_cells(a, N) {
+        for (slot, cell) in out.iter_mut().zip(cells) {
+            *slot = cell.load(std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    out
+}
+
+#[inline]
+fn wasm_memory_write(a: usize, bytes: &[u8]) {
+    if let Some(cells) = wasm_memory_cells(a, bytes.len()) {
+        for (cell, byte) in cells.iter().zip(bytes) {
+            cell.store(*byte, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 #[inline] fn wasm_i32_add(a: i32, b: i32) -> i32 { a.wrapping_add(b) }
@@ -183,8 +233,7 @@ fn wasm_atomic_range(addr: u64, offset: u64, width: u64) {
         Some(value) => value,
         None => wasm_atomic_trap("atomic-oob"),
     };
-    let memory_len: u64 = WASM_MEMORY.with(|memory| memory.borrow().len() as u64);
-    if end > memory_len {
+    if end > wasm_memory_len() as u64 {
         wasm_atomic_trap("atomic-oob");
     }
 }
@@ -199,33 +248,13 @@ fn wasm_atomic_addr_a64(addr: i64, offset: u64, width: u64) -> i64 {
     addr
 }
 
-fn wasm_load_i32(addr: i32, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| {
-        let m = m.borrow();
-        let a = wasm_mem_addr(addr, offset);
-        let mut b = [0u8; 4];
-        if a + 4 <= m.len() { b.copy_from_slice(&m[a..a + 4]); }
-        i32::from_le_bytes(b)
-    })
-}
-fn wasm_load_i64(addr: i32, offset: u64) -> i64 {
-    WASM_MEMORY.with(|m| {
-        let m = m.borrow();
-        let a = wasm_mem_addr(addr, offset);
-        let mut b = [0u8; 8];
-        if a + 8 <= m.len() { b.copy_from_slice(&m[a..a + 8]); }
-        i64::from_le_bytes(b)
-    })
-}
+fn wasm_load_i32(addr: i32, offset: u64) -> i32 { i32::from_le_bytes(wasm_memory_read::<4>(wasm_mem_addr(addr, offset))) }
+fn wasm_load_i64(addr: i32, offset: u64) -> i64 { i64::from_le_bytes(wasm_memory_read::<8>(wasm_mem_addr(addr, offset))) }
 fn wasm_load_f32(addr: i32, offset: u64) -> f32 { f32::from_bits(wasm_load_i32(addr, offset) as u32) }
 fn wasm_load_f64(addr: i32, offset: u64) -> f64 { f64::from_bits(wasm_load_i64(addr, offset) as u64) }
-fn wasm_load_i32_8u(addr: i32, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr(addr, offset); *m.get(a).unwrap_or(&0) as i32 })
-}
+fn wasm_load_i32_8u(addr: i32, offset: u64) -> i32 { i32::from(wasm_memory_read::<1>(wasm_mem_addr(addr, offset))[0]) }
 fn wasm_load_i32_8s(addr: i32, offset: u64) -> i32 { (wasm_load_i32_8u(addr, offset) as i8) as i32 }
-fn wasm_load_i32_16u(addr: i32, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr(addr, offset); let mut b = [0u8; 2]; if a + 2 <= m.len() { b.copy_from_slice(&m[a..a + 2]); } u16::from_le_bytes(b) as i32 })
-}
+fn wasm_load_i32_16u(addr: i32, offset: u64) -> i32 { i32::from(u16::from_le_bytes(wasm_memory_read::<2>(wasm_mem_addr(addr, offset)))) }
 fn wasm_load_i32_16s(addr: i32, offset: u64) -> i32 { (wasm_load_i32_16u(addr, offset) as i16) as i32 }
 fn wasm_load_i64_8u(addr: i32, offset: u64) -> i64 { wasm_load_i32_8u(addr, offset) as u32 as i64 }
 fn wasm_load_i64_8s(addr: i32, offset: u64) -> i64 { (wasm_load_i32_8u(addr, offset) as i8) as i64 }
@@ -234,20 +263,12 @@ fn wasm_load_i64_16s(addr: i32, offset: u64) -> i64 { (wasm_load_i32_16u(addr, o
 fn wasm_load_i64_32u(addr: i32, offset: u64) -> i64 { wasm_load_i32(addr, offset) as u32 as i64 }
 fn wasm_load_i64_32s(addr: i32, offset: u64) -> i64 { wasm_load_i32(addr, offset) as i64 }
 
-fn wasm_store_i32(addr: i32, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 4 <= m.len() { m[a..a + 4].copy_from_slice(&val.to_le_bytes()); } });
-}
-fn wasm_store_i64(addr: i32, offset: u64, val: i64) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 8 <= m.len() { m[a..a + 8].copy_from_slice(&val.to_le_bytes()); } });
-}
+fn wasm_store_i32(addr: i32, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr(addr, offset), &val.to_le_bytes()); }
+fn wasm_store_i64(addr: i32, offset: u64, val: i64) { wasm_memory_write(wasm_mem_addr(addr, offset), &val.to_le_bytes()); }
 fn wasm_store_f32(addr: i32, offset: u64, val: f32) { wasm_store_i32(addr, offset, val.to_bits() as i32); }
 fn wasm_store_f64(addr: i32, offset: u64, val: f64) { wasm_store_i64(addr, offset, val.to_bits() as i64); }
-fn wasm_store_i32_8(addr: i32, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a < m.len() { m[a] = val as u8; } });
-}
-fn wasm_store_i32_16(addr: i32, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 2 <= m.len() { m[a..a + 2].copy_from_slice(&(val as u16).to_le_bytes()); } });
-}
+fn wasm_store_i32_8(addr: i32, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr(addr, offset), &[val as u8]); }
+fn wasm_store_i32_16(addr: i32, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr(addr, offset), &(val as u16).to_le_bytes()); }
 fn wasm_store_i64_8(addr: i32, offset: u64, val: i64) { wasm_store_i32_8(addr, offset, val as i32); }
 fn wasm_store_i64_16(addr: i32, offset: u64, val: i64) { wasm_store_i32_16(addr, offset, val as i32); }
 fn wasm_store_i64_32(addr: i32, offset: u64, val: i64) { wasm_store_i32(addr, offset, val as i32); }
@@ -257,21 +278,13 @@ fn wasm_mem_addr64(addr: i64, offset: u64) -> usize {
     (addr as u64).wrapping_add(offset) as usize
 }
 
-fn wasm_load_i32_a64(addr: i64, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr64(addr, offset); let mut b = [0u8; 4]; if a + 4 <= m.len() { b.copy_from_slice(&m[a..a + 4]); } i32::from_le_bytes(b) })
-}
-fn wasm_load_i64_a64(addr: i64, offset: u64) -> i64 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr64(addr, offset); let mut b = [0u8; 8]; if a + 8 <= m.len() { b.copy_from_slice(&m[a..a + 8]); } i64::from_le_bytes(b) })
-}
+fn wasm_load_i32_a64(addr: i64, offset: u64) -> i32 { i32::from_le_bytes(wasm_memory_read::<4>(wasm_mem_addr64(addr, offset))) }
+fn wasm_load_i64_a64(addr: i64, offset: u64) -> i64 { i64::from_le_bytes(wasm_memory_read::<8>(wasm_mem_addr64(addr, offset))) }
 fn wasm_load_f32_a64(addr: i64, offset: u64) -> f32 { f32::from_bits(wasm_load_i32_a64(addr, offset) as u32) }
 fn wasm_load_f64_a64(addr: i64, offset: u64) -> f64 { f64::from_bits(wasm_load_i64_a64(addr, offset) as u64) }
-fn wasm_load_i32_8u_a64(addr: i64, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr64(addr, offset); *m.get(a).unwrap_or(&0) as i32 })
-}
+fn wasm_load_i32_8u_a64(addr: i64, offset: u64) -> i32 { i32::from(wasm_memory_read::<1>(wasm_mem_addr64(addr, offset))[0]) }
 fn wasm_load_i32_8s_a64(addr: i64, offset: u64) -> i32 { (wasm_load_i32_8u_a64(addr, offset) as i8) as i32 }
-fn wasm_load_i32_16u_a64(addr: i64, offset: u64) -> i32 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr64(addr, offset); let mut b = [0u8; 2]; if a + 2 <= m.len() { b.copy_from_slice(&m[a..a + 2]); } u16::from_le_bytes(b) as i32 })
-}
+fn wasm_load_i32_16u_a64(addr: i64, offset: u64) -> i32 { i32::from(u16::from_le_bytes(wasm_memory_read::<2>(wasm_mem_addr64(addr, offset)))) }
 fn wasm_load_i32_16s_a64(addr: i64, offset: u64) -> i32 { (wasm_load_i32_16u_a64(addr, offset) as i16) as i32 }
 fn wasm_load_i64_8u_a64(addr: i64, offset: u64) -> i64 { wasm_load_i32_8u_a64(addr, offset) as u32 as i64 }
 fn wasm_load_i64_8s_a64(addr: i64, offset: u64) -> i64 { (wasm_load_i32_8u_a64(addr, offset) as i8) as i64 }
@@ -280,33 +293,32 @@ fn wasm_load_i64_16s_a64(addr: i64, offset: u64) -> i64 { (wasm_load_i32_16u_a64
 fn wasm_load_i64_32u_a64(addr: i64, offset: u64) -> i64 { wasm_load_i32_a64(addr, offset) as u32 as i64 }
 fn wasm_load_i64_32s_a64(addr: i64, offset: u64) -> i64 { wasm_load_i32_a64(addr, offset) as i64 }
 
-fn wasm_store_i32_a64(addr: i64, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr64(addr, offset); if a + 4 <= m.len() { m[a..a + 4].copy_from_slice(&val.to_le_bytes()); } });
-}
-fn wasm_store_i64_a64(addr: i64, offset: u64, val: i64) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr64(addr, offset); if a + 8 <= m.len() { m[a..a + 8].copy_from_slice(&val.to_le_bytes()); } });
-}
+fn wasm_store_i32_a64(addr: i64, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr64(addr, offset), &val.to_le_bytes()); }
+fn wasm_store_i64_a64(addr: i64, offset: u64, val: i64) { wasm_memory_write(wasm_mem_addr64(addr, offset), &val.to_le_bytes()); }
 fn wasm_store_f32_a64(addr: i64, offset: u64, val: f32) { wasm_store_i32_a64(addr, offset, val.to_bits() as i32); }
 fn wasm_store_f64_a64(addr: i64, offset: u64, val: f64) { wasm_store_i64_a64(addr, offset, val.to_bits() as i64); }
-fn wasm_store_i32_8_a64(addr: i64, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr64(addr, offset); if a < m.len() { m[a] = val as u8; } });
-}
-fn wasm_store_i32_16_a64(addr: i64, offset: u64, val: i32) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr64(addr, offset); if a + 2 <= m.len() { m[a..a + 2].copy_from_slice(&(val as u16).to_le_bytes()); } });
-}
+fn wasm_store_i32_8_a64(addr: i64, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr64(addr, offset), &[val as u8]); }
+fn wasm_store_i32_16_a64(addr: i64, offset: u64, val: i32) { wasm_memory_write(wasm_mem_addr64(addr, offset), &(val as u16).to_le_bytes()); }
 fn wasm_store_i64_8_a64(addr: i64, offset: u64, val: i64) { wasm_store_i32_8_a64(addr, offset, val as i32); }
 fn wasm_store_i64_16_a64(addr: i64, offset: u64, val: i64) { wasm_store_i32_16_a64(addr, offset, val as i32); }
 fn wasm_store_i64_32_a64(addr: i64, offset: u64, val: i64) { wasm_store_i32_a64(addr, offset, val as i32); }
 
 #[inline] fn wasm_memory_copy(dst: usize, src: usize, n: usize) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); if dst.max(src).saturating_add(n) <= m.len() { m.copy_within(src..src + n, dst); } });
+    if n == 0 || dst.max(src).saturating_add(n) > wasm_memory_len() { return; }
+    if dst < src {
+        for index in 0..n { wasm_memory_write(dst + index, &wasm_memory_read::<1>(src + index)); }
+    } else if dst > src {
+        for index in (0..n).rev() { wasm_memory_write(dst + index, &wasm_memory_read::<1>(src + index)); }
+    }
 }
 #[inline] fn wasm_memory_fill(dst: usize, val: i32, n: usize) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); if dst.saturating_add(n) <= m.len() { for byte in &mut m[dst..dst + n] { *byte = val as u8; } } });
+    if dst.saturating_add(n) > wasm_memory_len() { return; }
+    for index in 0..n { wasm_memory_write(dst + index, &[val as u8]); }
 }
 #[inline] fn wasm_memory_init(seg: u32, dst: usize, src: usize, n: usize) {
     let _ = (seg, src);
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); if dst.saturating_add(n) <= m.len() { for byte in &mut m[dst..dst + n] { *byte = 0u8; } } });
+    if dst.saturating_add(n) > wasm_memory_len() { return; }
+    for index in 0..n { wasm_memory_write(dst + index, &[0u8]); }
 }
 #[inline] fn wasm_data_drop(seg: u32) { let _ = seg; }
 
@@ -324,18 +336,10 @@ fn wasm_exception_pending(tag: Option<i64>) -> bool {
     })
 }
 
-#[inline] fn wasm_load_v128(addr: i32, offset: u64) -> u128 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr(addr, offset); let mut b = [0u8; 16]; if a + 16 <= m.len() { b.copy_from_slice(&m[a..a + 16]); } u128::from_le_bytes(b) })
-}
-#[inline] fn wasm_load_v128_a64(addr: i64, offset: u64) -> u128 {
-    WASM_MEMORY.with(|m| { let m = m.borrow(); let a = wasm_mem_addr64(addr, offset); let mut b = [0u8; 16]; if a + 16 <= m.len() { b.copy_from_slice(&m[a..a + 16]); } u128::from_le_bytes(b) })
-}
-#[inline] fn wasm_store_v128(addr: i32, offset: u64, val: u128) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr(addr, offset); if a + 16 <= m.len() { m[a..a + 16].copy_from_slice(&val.to_le_bytes()); } });
-}
-#[inline] fn wasm_store_v128_a64(addr: i64, offset: u64, val: u128) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); let a = wasm_mem_addr64(addr, offset); if a + 16 <= m.len() { m[a..a + 16].copy_from_slice(&val.to_le_bytes()); } });
-}
+#[inline] fn wasm_load_v128(addr: i32, offset: u64) -> u128 { u128::from_le_bytes(wasm_memory_read::<16>(wasm_mem_addr(addr, offset))) }
+#[inline] fn wasm_load_v128_a64(addr: i64, offset: u64) -> u128 { u128::from_le_bytes(wasm_memory_read::<16>(wasm_mem_addr64(addr, offset))) }
+#[inline] fn wasm_store_v128(addr: i32, offset: u64, val: u128) { wasm_memory_write(wasm_mem_addr(addr, offset), &val.to_le_bytes()); }
+#[inline] fn wasm_store_v128_a64(addr: i64, offset: u64, val: u128) { wasm_memory_write(wasm_mem_addr64(addr, offset), &val.to_le_bytes()); }
 
 #[inline] fn wasm_v128_and(a: u128, b: u128) -> u128 { a & b }
 #[inline] fn wasm_v128_or(a: u128, b: u128) -> u128 { a | b }
@@ -397,18 +401,28 @@ fn wasm_global_set(index: u32, val: i64) {
     WASM_GLOBALS.with(|g| { let mut g = g.borrow_mut(); if let Some(slot) = g.get_mut(index as usize) { *slot = val; } });
 }
 fn wasm_memory_size() -> i32 {
-    WASM_MEMORY.with(|m| (m.borrow().len() / (64 * 1024)) as i32)
+    (wasm_memory_len() / WASM_PAGE_BYTES) as i32
 }
 fn wasm_memory_grow(delta: i32) -> i32 {
-    WASM_MEMORY.with(|m| {
-        let mut m = m.borrow_mut();
-        let prev = (m.len() / (64 * 1024)) as i32;
-        if delta > 0 {
-            let new_len = m.len() + (delta as usize) * 64 * 1024;
-            m.resize(new_len, 0u8);
-        }
-        prev
-    })
+    let previous_bytes: usize = wasm_memory_len();
+    let previous_pages: i32 = (previous_bytes / WASM_PAGE_BYTES) as i32;
+    if delta < 0 {
+        return -1;
+    }
+    if delta == 0 {
+        return previous_pages;
+    }
+    let Some(added): Option<usize> = (delta as usize).checked_mul(WASM_PAGE_BYTES) else {
+        return -1;
+    };
+    let Some(grown): Option<usize> = previous_bytes.checked_add(added) else {
+        return -1;
+    };
+    if grown > WASM_MEMORY_CAPACITY_BYTES {
+        return -1;
+    }
+    WASM_MEMORY_LEN.store(grown, std::sync::atomic::Ordering::SeqCst);
+    previous_pages
 }
 
 #[inline] fn wasm_i8x16_shuffle(a: u128, b: u128, lanes: [u8; 16]) -> u128 { let ab = [v128_lanes_i8(a), v128_lanes_i8(b)]; v128_from_i8(std::array::from_fn(|i| { let idx = lanes[i] as usize; if idx < 16 { ab[0][idx] } else if idx < 32 { ab[1][idx - 16] } else { 0 } })) }
@@ -649,138 +663,264 @@ fn wasm_memory_grow(delta: i32) -> i32 {
 #[inline] fn wasm_store_v128_32_lane_a64(addr: i64, offset: u64, vec: u128, lane: usize) { let l = v128_lanes_i32(vec); wasm_store_i32_a64(addr, offset, l[lane]); }
 #[inline] fn wasm_store_v128_64_lane_a64(addr: i64, offset: u64, vec: u128, lane: usize) { let l = v128_lanes_i64(vec); wasm_store_i64_a64(addr, offset, l[lane]); }
 
-#[inline] fn wasm_memory_atomic_notify(addr: i32, offset: u64, count: i32) -> i32 { let _ = (addr, offset, count); 0 }
-#[inline] fn wasm_memory_atomic_notify_a64(addr: i64, offset: u64, count: i32) -> i32 { let _ = (addr, offset, count); 0 }
-#[inline] fn wasm_memory_atomic_wait32(addr: i32, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i32(addr, offset) == expected { 2 } else { 1 } }
-#[inline] fn wasm_memory_atomic_wait32_a64(addr: i64, offset: u64, expected: i32, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i32_a64(addr, offset) == expected { 2 } else { 1 } }
-#[inline] fn wasm_memory_atomic_wait64(addr: i32, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i64(addr, offset) == expected { 2 } else { 1 } }
-#[inline] fn wasm_memory_atomic_wait64_a64(addr: i64, offset: u64, expected: i64, timeout: i64) -> i32 { let _ = timeout; if wasm_load_i64_a64(addr, offset) == expected { 2 } else { 1 } }
-#[inline] fn wasm_i32_atomic_load(addr: i32, offset: u64) -> i32 { wasm_load_i32(addr, offset) }
-#[inline] fn wasm_i32_atomic_load_a64(addr: i64, offset: u64) -> i32 { wasm_load_i32_a64(addr, offset) }
-#[inline] fn wasm_i64_atomic_load(addr: i32, offset: u64) -> i64 { wasm_load_i64(addr, offset) }
-#[inline] fn wasm_i64_atomic_load_a64(addr: i64, offset: u64) -> i64 { wasm_load_i64_a64(addr, offset) }
-#[inline] fn wasm_i32_atomic_load8_u(addr: i32, offset: u64) -> i32 { wasm_load_i32_8u(addr, offset) }
-#[inline] fn wasm_i32_atomic_load8_u_a64(addr: i64, offset: u64) -> i32 { wasm_load_i32_8u_a64(addr, offset) }
-#[inline] fn wasm_i32_atomic_load16_u(addr: i32, offset: u64) -> i32 { wasm_load_i32_16u(addr, offset) }
-#[inline] fn wasm_i32_atomic_load16_u_a64(addr: i64, offset: u64) -> i32 { wasm_load_i32_16u_a64(addr, offset) }
-#[inline] fn wasm_i64_atomic_load8_u(addr: i32, offset: u64) -> i64 { wasm_load_i64_8u(addr, offset) }
-#[inline] fn wasm_i64_atomic_load8_u_a64(addr: i64, offset: u64) -> i64 { wasm_load_i64_8u_a64(addr, offset) }
-#[inline] fn wasm_i64_atomic_load16_u(addr: i32, offset: u64) -> i64 { wasm_load_i64_16u(addr, offset) }
-#[inline] fn wasm_i64_atomic_load16_u_a64(addr: i64, offset: u64) -> i64 { wasm_load_i64_16u_a64(addr, offset) }
-#[inline] fn wasm_i64_atomic_load32_u(addr: i32, offset: u64) -> i64 { wasm_load_i64_32u(addr, offset) }
-#[inline] fn wasm_i64_atomic_load32_u_a64(addr: i64, offset: u64) -> i64 { wasm_load_i64_32u_a64(addr, offset) }
-#[inline] fn wasm_i32_atomic_store(addr: i32, offset: u64, val: i32) { wasm_store_i32(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_store_a64(addr: i64, offset: u64, val: i32) { wasm_store_i32_a64(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store(addr: i32, offset: u64, val: i64) { wasm_store_i64(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store_a64(addr: i64, offset: u64, val: i64) { wasm_store_i64_a64(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_store8(addr: i32, offset: u64, val: i32) { wasm_store_i32_8(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_store8_a64(addr: i64, offset: u64, val: i32) { wasm_store_i32_8_a64(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_store16(addr: i32, offset: u64, val: i32) { wasm_store_i32_16(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_store16_a64(addr: i64, offset: u64, val: i32) { wasm_store_i32_16_a64(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store8(addr: i32, offset: u64, val: i64) { wasm_store_i64_8(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store8_a64(addr: i64, offset: u64, val: i64) { wasm_store_i64_8_a64(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store16(addr: i32, offset: u64, val: i64) { wasm_store_i64_16(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store16_a64(addr: i64, offset: u64, val: i64) { wasm_store_i64_16_a64(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store32(addr: i32, offset: u64, val: i64) { wasm_store_i64_32(addr, offset, val); }
-#[inline] fn wasm_i64_atomic_store32_a64(addr: i64, offset: u64, val: i64) { wasm_store_i64_32_a64(addr, offset, val); }
-#[inline] fn wasm_i32_atomic_rmw_add(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw_add_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw_add(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw_add_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw8_add_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw8_add_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw16_add_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw16_add_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw8_add_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw8_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw16_add_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw16_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw32_add_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw32_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur.wrapping_add(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw_sub(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw_sub_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw_sub(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw_sub_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw8_sub_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw8_sub_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw16_sub_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw16_sub_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw8_sub_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw8_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw16_sub_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw16_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw32_sub_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i64_atomic_rmw32_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur.wrapping_sub(val)); cur }
-#[inline] fn wasm_i32_atomic_rmw_and(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw_and_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw_and(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw_and_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_and_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_and_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_and_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_and_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_and_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_and_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_and_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur & val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur & val); cur }
-#[inline] fn wasm_i32_atomic_rmw_or(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw_or_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw_or(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw_or_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_or_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_or_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_or_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_or_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_or_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_or_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_or_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur | val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur | val); cur }
-#[inline] fn wasm_i32_atomic_rmw_xor(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw_xor_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw_xor(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw_xor_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_xor_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_xor_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_xor_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_xor_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_xor_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_xor_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_xor_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, cur ^ val); cur }
-#[inline] fn wasm_i32_atomic_rmw_xchg(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32(addr, offset); wasm_store_i32(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw_xchg_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); wasm_store_i32_a64(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw_xchg(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64(addr, offset); wasm_store_i64(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw_xchg_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); wasm_store_i64_a64(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_xchg_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); wasm_store_i32_8(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw8_xchg_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); wasm_store_i32_8_a64(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_xchg_u(addr: i32, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); wasm_store_i32_16(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw16_xchg_u_a64(addr: i64, offset: u64, val: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); wasm_store_i32_16_a64(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); wasm_store_i64_8(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw8_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); wasm_store_i64_8_a64(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); wasm_store_i64_16(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw16_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); wasm_store_i64_16_a64(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); wasm_store_i64_32(addr, offset, val); cur }
-#[inline] fn wasm_i64_atomic_rmw32_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); wasm_store_i64_32_a64(addr, offset, val); cur }
-#[inline] fn wasm_i32_atomic_rmw_cmpxchg(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32(addr, offset); if cur == expected { wasm_store_i32(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_a64(addr, offset); if cur == expected { wasm_store_i32_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw_cmpxchg(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64(addr, offset); if cur == expected { wasm_store_i64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_a64(addr, offset); if cur == expected { wasm_store_i64_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u(addr, offset); if cur == (expected & 0xff) { wasm_store_i32_8(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_8u_a64(addr, offset); if cur == (expected & 0xff) { wasm_store_i32_8_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u(addr, offset); if cur == (expected & 0xffff) { wasm_store_i32_16(addr, offset, replacement); } cur }
-#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { let cur = wasm_load_i32_16u_a64(addr, offset); if cur == (expected & 0xffff) { wasm_store_i32_16_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u(addr, offset); if cur == (expected & 0xff) { wasm_store_i64_8(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_8u_a64(addr, offset); if cur == (expected & 0xff) { wasm_store_i64_8_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u(addr, offset); if cur == (expected & 0xffff) { wasm_store_i64_16(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_16u_a64(addr, offset); if cur == (expected & 0xffff) { wasm_store_i64_16_a64(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u(addr, offset); if cur == (expected & 0xffff_ffff) { wasm_store_i64_32(addr, offset, replacement); } cur }
-#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { let cur = wasm_load_i64_32u_a64(addr, offset); if cur == (expected & 0xffff_ffff) { wasm_store_i64_32_a64(addr, offset, replacement); } cur }
+#[inline]
+fn wasm_atomic_cell_u8(a: usize) -> Option<&'static std::sync::atomic::AtomicU8> {
+    let end: usize = a.checked_add(1)?;
+    if end > wasm_memory_len() { return None; }
+    let base: *mut u8 = WASM_MEMORY.0.get().cast::<u8>();
+    Some(unsafe { std::sync::atomic::AtomicU8::from_ptr(base.add(a)) })
+}
+#[inline]
+fn wasm_atomic_cell_u16(a: usize) -> Option<&'static std::sync::atomic::AtomicU16> {
+    let end: usize = a.checked_add(2)?;
+    if a % 2 != 0 || end > wasm_memory_len() { return None; }
+    let base: *mut u8 = WASM_MEMORY.0.get().cast::<u8>();
+    Some(unsafe { std::sync::atomic::AtomicU16::from_ptr(base.add(a).cast::<u16>()) })
+}
+#[inline]
+fn wasm_atomic_cell_u32(a: usize) -> Option<&'static std::sync::atomic::AtomicU32> {
+    let end: usize = a.checked_add(4)?;
+    if a % 4 != 0 || end > wasm_memory_len() { return None; }
+    let base: *mut u8 = WASM_MEMORY.0.get().cast::<u8>();
+    Some(unsafe { std::sync::atomic::AtomicU32::from_ptr(base.add(a).cast::<u32>()) })
+}
+#[inline]
+fn wasm_atomic_cell_u64(a: usize) -> Option<&'static std::sync::atomic::AtomicU64> {
+    let end: usize = a.checked_add(8)?;
+    if a % 8 != 0 || end > wasm_memory_len() { return None; }
+    let base: *mut u8 = WASM_MEMORY.0.get().cast::<u8>();
+    Some(unsafe { std::sync::atomic::AtomicU64::from_ptr(base.add(a).cast::<u64>()) })
+}
+const WASM_ATOMIC_WAITER_CAP: usize = 256;
+
+struct WasmAtomicWaiter {
+    address: usize,
+    live: bool,
+    notified: bool,
+}
+
+static WASM_ATOMIC_WAITERS: std::sync::Mutex<Vec<WasmAtomicWaiter>> =
+    std::sync::Mutex::new(Vec::new());
+static WASM_ATOMIC_WAITER_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+
+fn wasm_atomic_waiters() -> std::sync::MutexGuard<'static, Vec<WasmAtomicWaiter>> {
+    match WASM_ATOMIC_WAITERS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn wasm_atomic_wait_at(a: usize, wide_value: bool, expected: i64, timeout_ns: i64) -> i32 {
+    let mut waiters: std::sync::MutexGuard<'static, Vec<WasmAtomicWaiter>> = wasm_atomic_waiters();
+    let current: i64 = if wide_value {
+        wasm_atomic_cell_u64(a).map_or(0i64, |cell: &std::sync::atomic::AtomicU64| cell.load(std::sync::atomic::Ordering::SeqCst) as i64)
+    } else {
+        wasm_atomic_cell_u32(a).map_or(0i64, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst) as i32))
+    };
+    if current != expected {
+        return 1;
+    }
+    if timeout_ns == 0 {
+        return 2;
+    }
+    let slot: usize = match waiters.iter().position(|waiter: &WasmAtomicWaiter| !waiter.live) {
+        Some(index) => {
+            waiters[index] = WasmAtomicWaiter { address: a, live: true, notified: false };
+            index
+        }
+        None => {
+            if waiters.len() >= WASM_ATOMIC_WAITER_CAP {
+                drop(waiters);
+                wasm_atomic_trap("atomic-waiter-capacity");
+            }
+            waiters.push(WasmAtomicWaiter { address: a, live: true, notified: false });
+            waiters.len() - 1
+        }
+    };
+    let deadline: Option<std::time::Instant> = if timeout_ns < 0 {
+        None
+    } else {
+        std::time::Instant::now().checked_add(std::time::Duration::from_nanos(timeout_ns as u64))
+    };
+    loop {
+        if waiters[slot].notified {
+            waiters[slot].live = false;
+            return 0;
+        }
+        match deadline {
+            None => {
+                waiters = match WASM_ATOMIC_WAITER_WAKE.wait(waiters) {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+            }
+            Some(limit) => {
+                let now: std::time::Instant = std::time::Instant::now();
+                if now >= limit {
+                    waiters[slot].live = false;
+                    return 2;
+                }
+                waiters = match WASM_ATOMIC_WAITER_WAKE.wait_timeout(waiters, limit - now) {
+                    Ok((guard, _elapsed)) => guard,
+                    Err(poisoned) => poisoned.into_inner().0,
+                };
+            }
+        }
+    }
+}
+
+fn wasm_atomic_notify_at(a: usize, count: i32) -> i32 {
+    let limit: u32 = count as u32;
+    let mut woken: u32 = 0;
+    {
+        let mut waiters: std::sync::MutexGuard<'static, Vec<WasmAtomicWaiter>> = wasm_atomic_waiters();
+        for waiter in waiters.iter_mut() {
+            if woken >= limit {
+                break;
+            }
+            if waiter.live && !waiter.notified && waiter.address == a {
+                waiter.notified = true;
+                woken = woken.wrapping_add(1);
+            }
+        }
+    }
+    if woken > 0 {
+        WASM_ATOMIC_WAITER_WAKE.notify_all();
+    }
+    woken as i32
+}
+#[inline] fn wasm_memory_atomic_notify(addr: i32, offset: u64, count: i32) -> i32 { wasm_atomic_notify_at(wasm_mem_addr(addr, offset), count) }
+#[inline] fn wasm_memory_atomic_wait32(addr: i32, offset: u64, expected: i32, timeout: i64) -> i32 { wasm_atomic_wait_at(wasm_mem_addr(addr, offset), false, i64::from(expected), timeout) }
+#[inline] fn wasm_memory_atomic_wait64(addr: i32, offset: u64, expected: i64, timeout: i64) -> i32 { wasm_atomic_wait_at(wasm_mem_addr(addr, offset), true, expected, timeout) }
+#[inline] fn wasm_memory_atomic_notify_a64(addr: i64, offset: u64, count: i32) -> i32 { wasm_atomic_notify_at(wasm_mem_addr64(addr, offset), count) }
+#[inline] fn wasm_memory_atomic_wait32_a64(addr: i64, offset: u64, expected: i32, timeout: i64) -> i32 { wasm_atomic_wait_at(wasm_mem_addr64(addr, offset), false, i64::from(expected), timeout) }
+#[inline] fn wasm_memory_atomic_wait64_a64(addr: i64, offset: u64, expected: i64, timeout: i64) -> i32 { wasm_atomic_wait_at(wasm_mem_addr64(addr, offset), true, expected, timeout) }
+#[inline] fn wasm_i32_atomic_load(addr: i32, offset: u64) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.load(std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_load(addr: i32, offset: u64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.load(std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_load8_u(addr: i32, offset: u64) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_load16_u(addr: i32, offset: u64) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load8_u(addr: i32, offset: u64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load16_u(addr: i32, offset: u64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load32_u(addr: i32, offset: u64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_store(addr: i32, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)) { cell.store(val as u32, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store(addr: i32, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)) { cell.store(val as u64, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_store8(addr: i32, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)) { cell.store(val as u8, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_store16(addr: i32, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)) { cell.store(val as u16, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store8(addr: i32, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)) { cell.store(val as u8, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store16(addr: i32, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)) { cell.store(val as u16, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store32(addr: i32, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)) { cell.store(val as u32, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_rmw_add(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_add(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_add(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_add(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_add_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_add(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_add_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_add(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_add_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_add(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_add_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_add(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_add_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_add(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_sub(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_sub(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_sub(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_sub(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_sub_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_sub(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_sub_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_sub(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_sub_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_sub(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_sub_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_sub(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_sub_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_sub(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_and(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_and(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_and(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_and(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_and_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_and(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_and_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_and(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_and_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_and(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_and_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_and(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_and_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_and(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_or(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_or(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_or(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_or(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_or_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_or(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_or_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_or(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_or_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_or(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_or_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_or(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_or_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_or(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_xor(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_xor(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_xor(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_xor(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_xor_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_xor(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_xor_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_xor(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_xor_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_xor(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_xor_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_xor(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_xor_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_xor(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_xchg(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.swap(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_xchg(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.swap(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_xchg_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.swap(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_xchg_u(addr: i32, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.swap(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.swap(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.swap(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_xchg_u(addr: i32, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.swap(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_cmpxchg(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| match cell.compare_exchange(expected as u32, replacement as u32, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed } as i32) }
+#[inline] fn wasm_i64_atomic_rmw_cmpxchg(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| match cell.compare_exchange(expected as u64, replacement as u64, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed } as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(match cell.compare_exchange(expected as u8, replacement as u8, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(match cell.compare_exchange(expected as u16, replacement as u16, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(match cell.compare_exchange(expected as u8, replacement as u8, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(match cell.compare_exchange(expected as u16, replacement as u16, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u(addr: i32, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(match cell.compare_exchange(expected as u32, replacement as u32, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i32_atomic_load_a64(addr: i64, offset: u64) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.load(std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_load_a64(addr: i64, offset: u64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.load(std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_load8_u_a64(addr: i64, offset: u64) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_load16_u_a64(addr: i64, offset: u64) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load8_u_a64(addr: i64, offset: u64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load16_u_a64(addr: i64, offset: u64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_load32_u_a64(addr: i64, offset: u64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.load(std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_store_a64(addr: i64, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)) { cell.store(val as u32, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store_a64(addr: i64, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)) { cell.store(val as u64, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_store8_a64(addr: i64, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)) { cell.store(val as u8, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_store16_a64(addr: i64, offset: u64, val: i32) { if let Some(cell) = wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)) { cell.store(val as u16, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store8_a64(addr: i64, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)) { cell.store(val as u8, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store16_a64(addr: i64, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)) { cell.store(val as u16, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i64_atomic_store32_a64(addr: i64, offset: u64, val: i64) { if let Some(cell) = wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)) { cell.store(val as u32, std::sync::atomic::Ordering::SeqCst); } }
+#[inline] fn wasm_i32_atomic_rmw_add_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_add(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_add_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_add(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_add_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_add(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_add_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_add(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_add(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_add(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_add_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_add(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_sub_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_sub(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_sub_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_sub(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_sub_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_sub(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_sub_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_sub(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_sub(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_sub(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_sub_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_sub(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_and_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_and(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_and_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_and(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_and_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_and(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_and_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_and(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_and(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_and(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_and_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_and(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_or_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_or(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_or_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_or(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_or_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_or(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_or_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_or(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_or(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_or(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_or_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_or(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_xor_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.fetch_xor(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_xor_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.fetch_xor(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_xor_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.fetch_xor(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_xor_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.fetch_xor(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.fetch_xor(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.fetch_xor(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_xor_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.fetch_xor(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_xchg_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| cell.swap(val as u32, std::sync::atomic::Ordering::SeqCst) as i32) }
+#[inline] fn wasm_i64_atomic_rmw_xchg_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| cell.swap(val as u64, std::sync::atomic::Ordering::SeqCst) as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_xchg_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(cell.swap(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw16_xchg_u_a64(addr: i64, offset: u64, val: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(cell.swap(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw8_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(cell.swap(val as u8, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw16_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(cell.swap(val as u16, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i64_atomic_rmw32_xchg_u_a64(addr: i64, offset: u64, val: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(cell.swap(val as u32, std::sync::atomic::Ordering::SeqCst))) }
+#[inline] fn wasm_i32_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| match cell.compare_exchange(expected as u32, replacement as u32, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed } as i32) }
+#[inline] fn wasm_i64_atomic_rmw_cmpxchg_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u64(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU64| match cell.compare_exchange(expected as u64, replacement as u64, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed } as i64) }
+#[inline] fn wasm_i32_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i32::from(match cell.compare_exchange(expected as u8, replacement as u8, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i32_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i32, replacement: i32) -> i32 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i32::from(match cell.compare_exchange(expected as u16, replacement as u16, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw8_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u8(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU8| i64::from(match cell.compare_exchange(expected as u8, replacement as u8, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw16_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u16(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU16| i64::from(match cell.compare_exchange(expected as u16, replacement as u16, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
+#[inline] fn wasm_i64_atomic_rmw32_cmpxchg_u_a64(addr: i64, offset: u64, expected: i64, replacement: i64) -> i64 { wasm_atomic_cell_u32(wasm_mem_addr64(addr, offset)).map_or(0, |cell: &std::sync::atomic::AtomicU32| i64::from(match cell.compare_exchange(expected as u32, replacement as u32, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst) { Ok(observed) | Err(observed) => observed })) }
 #[inline] fn wasm_atomic_fence() { std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst); }
 
 
@@ -828,7 +968,9 @@ fn wasm_array_init_seg(arr: &mut Vec<i32>, index: i32, _src: i32, n: i32) {
 }
 
 fn wasm_memory_discard(dst: usize, n: usize) {
-    WASM_MEMORY.with(|m| { let mut m = m.borrow_mut(); if dst.saturating_add(n) <= m.len() { for byte in &mut m[dst..dst + n] { *byte = 0u8; } } });
+    if dst.saturating_add(n) <= wasm_memory_len() {
+        for index in 0..n { wasm_memory_write(dst + index, &[0u8]); }
+    }
 }
 
 fn wasm_global_atomic_rmw(index: u32, val: i64, op: &str) -> i64 {

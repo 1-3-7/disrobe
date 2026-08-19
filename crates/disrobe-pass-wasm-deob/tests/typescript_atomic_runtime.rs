@@ -250,38 +250,168 @@ fn standalone_typescript_function_refuses_instance_owned_atomics() {
     ));
 }
 
+const SYNCHRONIZATION_WAT: &str = r#"(module
+  (memory 1 1 shared)
+  (func (export "at_store") (param i32 i32)
+    local.get 0
+    local.get 1
+    i32.atomic.store)
+  (func (export "at_store64") (param i32 i64)
+    local.get 0
+    local.get 1
+    i64.atomic.store)
+  (func (export "at_wait32") (param i32 i32 i64) (result i32)
+    local.get 0
+    local.get 1
+    local.get 2
+    memory.atomic.wait32)
+  (func (export "at_wait64") (param i32 i64 i64) (result i32)
+    local.get 0
+    local.get 1
+    local.get 2
+    memory.atomic.wait64)
+  (func (export "at_notify") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    memory.atomic.notify)
+  (func (export "at_fence")
+    atomic.fence))
+"#;
+
+fn synchronization_module_source() -> String {
+    let bytes: Vec<u8> =
+        wat::parse_str(SYNCHRONIZATION_WAT).expect("assemble the synchronization module");
+    try_lift_typescript_module(&bytes)
+        .expect("the TypeScript module lift must express wait, notify and fence")
+        .source
+}
+
 #[test]
-fn typescript_module_refuses_wait_notify_and_fence() {
-    let cases: [(&str, &str); 4] = [
-        (
-            r"(module (memory 1 1 shared) (func (param i32 i32 i64) (result i32) local.get 0 local.get 1 local.get 2 memory.atomic.wait32))",
-            "memory.atomic.wait32",
-        ),
-        (
-            r"(module (memory 1 1 shared) (func (param i32 i64 i64) (result i32) local.get 0 local.get 1 local.get 2 memory.atomic.wait64))",
-            "memory.atomic.wait64",
-        ),
-        (
-            r"(module (memory 1 1 shared) (func (param i32 i32) (result i32) local.get 0 local.get 1 memory.atomic.notify))",
-            "memory.atomic.notify",
-        ),
-        (
-            r"(module (memory 1 1 shared) (func atomic.fence))",
-            "atomic.fence",
-        ),
-    ];
-    for (wat, operation) in cases {
-        let bytes: Vec<u8> = wat::parse_str(wat).expect("assemble atomic refusal module");
-        let error: Error = try_lift_typescript_module(&bytes)
-            .expect_err("TypeScript module lifting must reject the synchronization operation");
-        assert!(matches!(
-            error,
-            Error::AtomicMemoryModel(AtomicMemoryRefusal::UnsupportedTarget {
-                target: "typescript-module",
-                operation: actual,
-            }) if actual == operation
-        ));
+fn typescript_module_emits_engine_atomics_for_every_synchronization_operation() {
+    let source: String = synchronization_module_source();
+    for expected in [
+        "wasmMemoryAtomicWait32(",
+        "wasmMemoryAtomicWait64(",
+        "wasmMemoryAtomicNotify(",
+        "wasmAtomicFence();",
+        "Atomics.wait(",
+        "Atomics.notify(",
+        "new WebAssembly.Instance(compiled, {}).exports[\"fence\"]",
+    ] {
+        assert!(
+            source.contains(expected),
+            "the lifted TypeScript module must reach {expected}"
+        );
     }
+}
+
+#[test]
+fn typescript_module_reports_the_specified_wait_and_notify_outcomes() {
+    let source: String = format!(
+        "{}\n{}",
+        synchronization_module_source(),
+        r"
+const instance: LiftedInstance = instantiate();
+instance.at_fence();
+instance.at_store(64, 7);
+instance.at_store64(128, 0n);
+const started: number = Date.now();
+const timedOut: number = instance.at_wait32(64, 7, 20000000n);
+const blocked: number = Date.now() - started >= 15 ? 1 : 0;
+console.log(JSON.stringify([
+  instance.at_wait32(64, 8, -1n),
+  instance.at_wait32(64, 7, 0n),
+  timedOut,
+  blocked,
+  instance.at_notify(64, 100),
+  instance.at_notify(64, 0),
+  instance.at_wait64(128, 9n, -1n),
+  instance.at_wait64(128, 0n, 0n),
+]));
+"
+    );
+    let output: CapturedOutput = run_typescript(&source);
+    assert!(
+        output.exit_code == Some(0),
+        "Node rejected the lifted synchronization module: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "[1,2,2,1,0,0,1,2]"
+    );
+}
+
+#[test]
+fn typescript_module_wait_blocks_until_notify_wakes_exactly_one_worker() {
+    let source: String = format!(
+        "{}\n{}",
+        synchronization_module_source(),
+        r#"
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise<void>((resolve: () => void): void => { setTimeout(resolve, milliseconds); });
+
+const ARRIVAL_INDEX: number = 64;
+
+if (isMainThread) {
+  const instance: LiftedInstance = instantiate();
+  instance.at_store(64, 0);
+  const arrivals: Int32Array = new Int32Array(instance.memory.buffer);
+  const outcomes: number[] = [];
+  const exits: Promise<void>[] = [];
+  for (let index: number = 0; index < 2; index += 1) {
+    const worker: Worker = new Worker(import.meta.filename, {
+      execArgv: ["--experimental-strip-types", "--no-warnings"],
+      workerData: { wasmMemory: instance.memory },
+    });
+    worker.on("message", (value: number): void => { outcomes.push(value); });
+    exits.push(new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+      worker.once("exit", (): void => resolve());
+      worker.once("error", (error: Error): void => reject(error));
+    }));
+  }
+  while (Atomics.load(arrivals, ARRIVAL_INDEX) < 2) { await sleep(5); }
+  await sleep(400);
+  let first: number = 0;
+  let largest: number = 0;
+  let total: number = 0;
+  for (let attempt: number = 0; attempt < 400 && first === 0; attempt += 1) {
+    first = instance.at_notify(64, 1);
+    largest = Math.max(largest, first);
+    total += first;
+    if (first === 0) await sleep(5);
+  }
+  await sleep(400);
+  const wokeAfterFirst: number = outcomes.length;
+  let second: number = 0;
+  for (let attempt: number = 0; attempt < 400 && second === 0; attempt += 1) {
+    second = instance.at_notify(64, 1);
+    largest = Math.max(largest, second);
+    total += second;
+    if (second === 0) await sleep(5);
+  }
+  if (second !== 0) { await Promise.all(exits); }
+  outcomes.sort((left: number, right: number): number => left - right);
+  console.log(JSON.stringify([first, second, largest, total, wokeAfterFirst, outcomes[0], outcomes[1]]));
+} else {
+  const instance: LiftedInstance = instantiate({ memories: [workerData.wasmMemory] });
+  Atomics.add(new Int32Array(workerData.wasmMemory.buffer), ARRIVAL_INDEX, 1);
+  parentPort?.postMessage(instance.at_wait32(64, 0, -1n));
+}
+"#
+    );
+    let output: CapturedOutput = run_typescript(&source);
+    assert!(
+        output.exit_code == Some(0),
+        "Node rejected the lifted blocking-wait module: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "[1,1,1,2,1,0,0]"
+    );
 }
 
 #[test]
