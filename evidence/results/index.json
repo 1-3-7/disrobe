@@ -153,7 +153,7 @@
     },
     {
       "ci_attested": true,
-      "claim": "disrobe declares 101 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 39 of the 101 are driven to member bytes on disk by an input this repository commits. The other 62 have no committed input, so they are unverified rather than shown to fail.",
+      "claim": "disrobe declares 101 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 41 of the 101 are driven to member bytes on disk by an input this repository commits. The other 60 have no committed input, so they are unverified rather than shown to fail.",
       "comparison_basis": null,
       "competitors": [],
       "disrobe_leads": null,
@@ -162,7 +162,7 @@
       "floor": null,
       "floor_holds": null,
       "id": "binfmt-extract",
-      "measured": "39 extracted from a committed input / 101 detected",
+      "measured": "41 extracted from a committed input / 101 detected",
       "oracle_strength": "coverage-self-reported",
       "pairs": [],
       "reproduce": "cargo test -p disrobe-binfmt published_container_counts_match_this_enum"

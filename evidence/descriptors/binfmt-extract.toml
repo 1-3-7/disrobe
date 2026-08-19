@@ -1,7 +1,7 @@
 id = "binfmt-extract"
 ecosystem = "binfmt"
 title = "Container, archive, and firmware in-tree extraction"
-claim = "disrobe declares 101 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 39 of the 101 are driven to member bytes on disk by an input this repository commits. The other 62 have no committed input, so they are unverified rather than shown to fail."
+claim = "disrobe declares 101 container, archive, and firmware formats and carries an in-tree payload extractor for each, with no metadata-only or external-tool-gated formats. 41 of the 101 are driven to member bytes on disk by an input this repository commits. The other 60 have no committed input, so they are unverified rather than shown to fail."
 oracle_strength = "coverage-self-reported"
 ci = true
 
