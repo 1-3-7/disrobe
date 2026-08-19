@@ -15,9 +15,10 @@ use crate::functions::{
 };
 use crate::image::{CodeArch, ImageKind, NativeImage};
 
-const MAX_BODY_FUNCTIONS: usize = MAX_LISTED_FUNCTIONS;
-const MAX_BODY_CODE_BYTES: u64 = 64 * 1024;
-const MAX_RETAINED_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_BODY_FUNCTIONS: usize = MAX_LISTED_FUNCTIONS;
+pub const MAX_BODY_CODE_BYTES: u64 = 64 * 1024;
+pub const MAX_BODY_CARVE_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_RETAINED_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EMITTED_NAME_CHARS: usize = 120;
 const MAX_GATE_TOKENS: usize = 1 << 20;
 
@@ -56,6 +57,7 @@ pub enum BodySkip {
     OversizedBody,
     UncarvableRange,
     FunctionBudgetExhausted,
+    CodeBudgetExhausted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +179,7 @@ pub(crate) fn recover_bodies_within(
     });
 
     let mut used_names: BTreeSet<String> = BTreeSet::new();
+    let mut carved_bytes: u64 = 0;
     let mut pending: Vec<PendingBody> = Vec::new();
     let mut skipped: Vec<FunctionBody> = Vec::new();
     let mut program: Vec<ProgramFunction> = Vec::new();
@@ -248,6 +251,23 @@ pub(crate) fn recover_bodies_within(
             });
             continue;
         };
+        if carved_bytes.saturating_add(code.len() as u64) > MAX_BODY_CARVE_BYTES {
+            skipped.push(FunctionBody {
+                name: func.name.clone(),
+                emitted_name,
+                start: func.start,
+                end,
+                byte_len,
+                origin: func.origin,
+                boundary_confidence: confidence,
+                role,
+                status: BodyStatus::NotAttempted {
+                    reason: BodySkip::CodeBudgetExhausted,
+                },
+            });
+            continue;
+        }
+        carved_bytes = carved_bytes.saturating_add(code.len() as u64);
         program.push(ProgramFunction {
             name: emitted_name.clone(),
             address: func.start,
@@ -265,7 +285,9 @@ pub(crate) fn recover_bodies_within(
         });
     }
 
-    debug::dbg_kv("body-attempts", || program.len().to_string());
+    debug::dbg_kv("body-attempts", || {
+        format!("{} functions carving {carved_bytes} bytes", program.len())
+    });
     let program_result: RecoveredProgram = recover_program(image.raw, &program, abi.to_native());
     let recovered_by_address: BTreeMap<u64, &NativeRecoveredFunction> = program_result
         .recovered

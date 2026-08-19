@@ -23,8 +23,9 @@ use disrobe_nir::NirModule;
 use serde::{Deserialize, Serialize};
 
 pub use bodies::{
-    BodyAbi, BodyRecovery, BodyRejection, BodySkip, BodyStatus, FunctionBody, RuntimeRole,
-    RustBody, recover_bodies,
+    BodyAbi, BodyRecovery, BodyRejection, BodySkip, BodyStatus, FunctionBody, MAX_BODY_CARVE_BYTES,
+    MAX_BODY_CODE_BYTES, MAX_BODY_FUNCTIONS, MAX_RETAINED_SOURCE_BYTES, RuntimeRole, RustBody,
+    recover_bodies,
 };
 #[cfg(feature = "chain")]
 pub use chain_detector::{NATIVELANG_PASS, NativeLangDetector, NativeLangPassAdapter};
