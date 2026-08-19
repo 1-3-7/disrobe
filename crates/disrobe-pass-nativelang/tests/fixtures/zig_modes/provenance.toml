@@ -39,7 +39,7 @@ build_command = "zig build-exe arith.zig -OReleaseFast -target x86_64-windows-gn
 safety_checks = false
 present_markers = [".buildid", "RtlExitUserProcess"]
 role = "the structural-only detection case: no symbol table and no panic text, so the two markers below are the whole of the evidence"
-measured_false_positives = "0 of 241 committed PE binaries outside corpus/native/zig carry either marker"
+measured_false_positives = "neither marker appears in any of the 223 tracked PE binaries outside the zig fixtures, counted over git ls-files"
 
 [[artifacts]]
 path = "arith_releasefast_x86_64_macos.macho"
@@ -64,14 +64,27 @@ safety_checks = true
 present_markers = ["panicOutOfBounds", "panicUnwrap"]
 role = "the second zig build mode the body grade measures"
 
+[measurement]
+matrix = "32 builds of zig 0.16.0 over Debug, ReleaseSafe, ReleaseFast and ReleaseSmall for x86_64-linux-gnu, x86_64-windows-gnu, aarch64-linux-gnu and x86_64-macos"
+controls = "447 tracked binaries and 223 tracked PE binaries, counted over git ls-files, excluding the zig fixtures"
+reached_chain_floor_before = "16 of 32"
+reached_chain_floor_after = "26 of 32"
+false_positives = "each of the 15 markers appears in 0 of the 447 tracked control binaries"
+
 [excluded]
 reason = "a zig build with safety checks off, no symbol table and no panic text carries no zig-attributable bytes"
-measured_on = "a 32-build matrix of zig 0.16.0 over Debug, ReleaseSafe, ReleaseFast and ReleaseSmall for x86_64-linux-gnu, x86_64-windows-gnu, aarch64-linux-gnu and x86_64-macos"
 undetectable_builds = 6
 undetectable_shape = "ReleaseSmall on ELF and Mach-O"
-evidence = "the 4840-byte x86_64-linux-gnu ReleaseSmall build reports no symbols, and its only toolchain string is `Linker: LLD`, which nine committed non-zig binaries also carry"
+evidence = "the 4840-byte x86_64-linux-gnu ReleaseSmall build reports no symbols, and its only toolchain string is `Linker: LLD`, which 36 tracked non-zig binaries also carry"
 rejected_markers = [
-  "index out of bounds is carried by 11 of 86 committed non-zig binaries",
-  "integer overflow is carried by a committed Go binary",
-  ".relro_padding is an LLD section name carried by nine committed non-zig binaries",
+  "index out of bounds is carried by 43 of the 447 tracked control binaries",
+  "integer overflow is carried by 19 of the 447 tracked control binaries",
+  ".relro_padding is an LLD section name carried by 36 of the 447 tracked control binaries",
 ]
+withheld_markers = [
+  "ZIG_PROGRESS matches 16 of 32 matrix builds and 0 of 447 controls",
+  "aborting due to recursive panic matches 16 of 32 matrix builds and 0 of 447 controls",
+  "debug.Dwarf matches 12 of 32 matrix builds and 0 of 447 controls",
+  "panic.zig matches 12 of 32 matrix builds and 0 of 447 controls",
+]
+withheld_reason = "no committed fixture carries these four, so nothing in the repository proves they match a real build; adding them also grows the marker list, and the confidence divides by that length"

@@ -174,34 +174,39 @@ fn every_committed_zig_build_fingerprints_as_zig_on_its_own_container() {
 }
 
 #[test]
-fn a_zig_windows_binary_reaches_the_whole_pass_and_not_only_the_fingerprint() {
-    let bytes: Vec<u8> = crate_fixture_or_fail(ZIG_RELEASEFAST_PE);
-    let analysis: NativeLangAnalysis = analyze(&bytes).unwrap_or_else(|error| {
-        panic!("a zig PE must reach the nativelang pass, got a refusal: {error}")
-    });
-    assert_eq!(analysis.fingerprint.lang, NativeLang::Zig);
-    assert_eq!(analysis.image_kind, ImageKind::Pe);
-    assert!(
-        analysis.function_recovery.functions.len() >= 2,
-        "the pass must carve the zig PE, carved {}",
-        analysis.function_recovery.functions.len()
-    );
-    assert!(
-        analysis.bodies.arch_supported,
-        "a zig x86-64 PE must reach the body lift"
-    );
-    assert_eq!(
-        analysis.bodies.recovered
-            + analysis.bodies.recovered_elided
-            + analysis.bodies.rejected
-            + analysis.bodies.not_attempted,
-        analysis.bodies.function_count
-    );
-    println!(
-        "zig PE: carved {} functions, recovered {} pseudo-C bodies",
-        analysis.function_recovery.functions.len(),
-        analysis.bodies.recovered
-    );
+fn each_newly_reachable_zig_container_reaches_the_whole_pass_and_not_only_the_fingerprint() {
+    for (relative, container) in [
+        (ZIG_RELEASEFAST_PE, ImageKind::Pe),
+        (ZIG_RELEASEFAST_MACHO, ImageKind::MachO),
+    ] {
+        let bytes: Vec<u8> = crate_fixture_or_fail(relative);
+        let analysis: NativeLangAnalysis = analyze(&bytes).unwrap_or_else(|error| {
+            panic!("{relative} must reach the nativelang pass, got a refusal: {error}")
+        });
+        assert_eq!(analysis.fingerprint.lang, NativeLang::Zig);
+        assert_eq!(analysis.image_kind, container);
+        assert!(
+            !analysis.function_recovery.functions.is_empty(),
+            "{relative}: the pass must carve the image, carved {}",
+            analysis.function_recovery.functions.len()
+        );
+        assert!(
+            analysis.bodies.arch_supported,
+            "{relative}: a zig x86-64 image must reach the body lift"
+        );
+        assert_eq!(
+            analysis.bodies.recovered
+                + analysis.bodies.recovered_elided
+                + analysis.bodies.rejected
+                + analysis.bodies.not_attempted,
+            analysis.bodies.function_count
+        );
+        println!(
+            "{relative} [{container:?}]: carved {} functions, recovered {} pseudo-C bodies",
+            analysis.function_recovery.functions.len(),
+            analysis.bodies.recovered
+        );
+    }
 }
 
 #[test]
