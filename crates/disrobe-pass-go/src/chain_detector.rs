@@ -101,7 +101,7 @@ impl Pass for GoPass {
         let files: Vec<EmbedFile> = std::mem::take(&mut analysis.embed.files);
         for file in files {
             let file: EmbedFile = file;
-            if file.is_dir || file.data.is_empty() {
+            if file.is_dir || file.data.len() as u64 != file.size {
                 continue;
             }
             let Some(relpath): Option<String> = safe_embed_relpath(&file.name) else {

@@ -114,14 +114,14 @@ fn carve_embed_files(
         .embed
         .files
         .iter()
-        .any(|f: &EmbedFile| !f.is_dir && !f.data.is_empty());
+        .any(|f: &EmbedFile| !f.is_dir && f.data.len() as u64 == f.size);
     if !carvable {
         return Ok(Vec::new());
     }
     let root: PathBuf = out_dir.join(format!("{stem}-embed"));
     let mut written: Vec<PathBuf> = Vec::new();
     for file in &analysis.embed.files {
-        if file.is_dir || file.data.is_empty() {
+        if file.is_dir || file.data.len() as u64 != file.size {
             continue;
         }
         let Some(dest): Option<PathBuf> = safe_join_relpath(&root, &file.name) else {
@@ -237,7 +237,14 @@ fn render_embed_files(files: &[EmbedFile]) {
     println!("  embed.FS files: {}", files.len());
     for f in &files[..shown] {
         let kind: &str = if f.is_dir { "dir " } else { "file" };
-        println!("    [{kind}] {} ({} bytes)", f.name, f.size);
+        let integrity: &str = if f.is_dir {
+            ""
+        } else if f.digest_verified {
+            " digest verified"
+        } else {
+            " digest unverified"
+        };
+        println!("    [{kind}] {} ({} bytes){integrity}", f.name, f.size);
     }
     if files.len() > shown {
         println!(
