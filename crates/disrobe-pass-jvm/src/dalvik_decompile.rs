@@ -134,11 +134,15 @@ fn decompile_dex_scoped(dex: &DexFile, bytes: &[u8]) -> DecompiledDex {
         }
         let recovery: Option<&crate::dalvik_strdec::DexStringRecovery> =
             string_recovery.get(class_descriptor);
+        let members: ClassMembers<'_> = ClassMembers {
+            methods,
+            fields: code_report.fields(),
+            decoded: &items,
+        };
         let mut rendered: RenderedClass = render_class(
             dex,
             class_descriptor,
-            methods,
-            &items,
+            &members,
             recovery,
             &cff_by_method,
             &generic_by_method,
@@ -228,11 +232,38 @@ fn java_source_path(package: Option<&str>, simple: &str) -> String {
     }
 }
 
+fn field_declarations(fields: &[crate::dex::DexFieldDecl], class_descriptor: &str) -> String {
+    let mut out: String = String::new();
+    for field in fields {
+        if field.class != class_descriptor {
+            continue;
+        }
+        let Some(rendered): Option<String> =
+            descriptor::parse_field(&field.type_name).map(|ty: descriptor::JavaType| ty.render())
+        else {
+            continue;
+        };
+        let name: String = descriptor::java_writable_identifier(&field.name);
+        let modifier: &str = if field.is_static {
+            "public static "
+        } else {
+            "public "
+        };
+        let _: std::fmt::Result = writeln!(out, "    {modifier}{rendered} {name};");
+    }
+    out
+}
+
+struct ClassMembers<'a> {
+    methods: &'a [&'a DexMethodCode],
+    fields: &'a [crate::dex::DexFieldDecl],
+    decoded: &'a [CodeItem],
+}
+
 fn render_class(
     dex: &DexFile,
     class_descriptor: &str,
-    methods: &[&DexMethodCode],
-    decoded: &[CodeItem],
+    members: &ClassMembers<'_>,
     recovery: Option<&crate::dalvik_strdec::DexStringRecovery>,
     cff_by_method: &BTreeMap<(String, String, String), crate::dalvik_dexguard::DalvikMethodCff>,
     generic_by_method: &BTreeMap<
@@ -253,7 +284,8 @@ fn render_class(
         let _ = writeln!(text, "package {pkg};");
         let _ = writeln!(text);
     }
-    let class_is_abstract: bool = methods
+    let class_is_abstract: bool = members
+        .methods
         .iter()
         .any(|method: &&DexMethodCode| method.access_flags & ACC_ABSTRACT != 0);
     let class_declaration: &str = if desugar.interfaces.recovers_interface(class_descriptor) {
@@ -281,11 +313,12 @@ fn render_class(
     if let Some(rec) = recovery {
         text.push_str(&recovered_strings_annotation(rec));
     }
+    text.push_str(&field_declarations(members.fields, class_descriptor));
 
     let mut method_count: usize = 0;
     let mut fully_lifted: usize = 0;
     let mut fallback: usize = 0;
-    for method in methods {
+    for method in members.methods {
         if desugar.interfaces.suppresses_method(
             &method.class,
             &method.method_name,
@@ -300,7 +333,7 @@ fn render_class(
                 &method.method_descriptor,
             );
         let item: Option<&CodeItem> = match &method.state {
-            DexCodeState::Decoded(index) => decoded.get(*index),
+            DexCodeState::Decoded(index) => members.decoded.get(*index),
             DexCodeState::Absent | DexCodeState::Refused(_) => None,
         };
         let cff: Option<&crate::dalvik_dexguard::DalvikMethodCff> = cff_by_method.get(&(
@@ -311,7 +344,7 @@ fn render_class(
         let generic_sites: Option<&Vec<&crate::dalvik_strdec_generic::CallSiteRecovery>> =
             generic_by_method.get(&(method.class.clone(), method.method_name.clone()));
         let rendered: RenderedMethod = match (&method.state, item, recovered_default) {
-            (_, _, Some(recovered)) => decoded.get(recovered.bridge_item).map_or_else(
+            (_, _, Some(recovered)) => members.decoded.get(recovered.bridge_item).map_or_else(
                 || {
                     render_unavailable_method(
                         simple,
@@ -363,9 +396,10 @@ fn render_class(
     }
 
     for recovered in desugar.interfaces.injected_methods(class_descriptor) {
-        let rendered: RenderedMethod = decoded.get(recovered.bridge_item).map_or_else(
+        let rendered: RenderedMethod = members.decoded.get(recovered.bridge_item).map_or_else(
             || {
-                let metadata: Option<&DexMethodCode> = methods
+                let metadata: Option<&DexMethodCode> = members
+                    .methods
                     .iter()
                     .copied()
                     .find(|method: &&DexMethodCode| method.method_index == recovered.bridge_method);

@@ -930,7 +930,17 @@ pub struct DexCodeTail {
 pub struct CodeItemsReport {
     decoded: Vec<CodeItem>,
     methods: Vec<DexMethodCode>,
+    fields: Vec<DexFieldDecl>,
     unrecovered_tail: Option<DexCodeTail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DexFieldDecl {
+    pub class: String,
+    pub name: String,
+    pub type_name: String,
+    pub access_flags: u32,
+    pub is_static: bool,
 }
 
 impl CodeItemsReport {
@@ -942,6 +952,11 @@ impl CodeItemsReport {
     #[must_use]
     pub fn methods(&self) -> &[DexMethodCode] {
         &self.methods
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &[DexFieldDecl] {
+        &self.fields
     }
 
     #[must_use]
@@ -983,6 +998,7 @@ impl CodeItemsReport {
         let Self {
             decoded,
             methods,
+            fields: _,
             unrecovered_tail,
         }: Self = self;
         let first_method_error: Option<Error> =
@@ -1636,6 +1652,7 @@ fn parse_code_items_inner(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
     let class_defs_off: usize = header.class_defs_off as usize;
     let mut decoded: Vec<CodeItem> = Vec::new();
     let mut methods: Vec<DexMethodCode> = Vec::new();
+    let mut fields: Vec<DexFieldDecl> = Vec::new();
     let mut unrecovered_tail: Option<DexCodeTail> = None;
     let data_start: usize = header.data_off as usize;
     let data_size: usize = header.data_size as usize;
@@ -1645,6 +1662,7 @@ fn parse_code_items_inner(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
             return CodeItemsReport {
                 decoded,
                 methods,
+                fields,
                 unrecovered_tail: Some(DexCodeTail {
                     class: String::new(),
                     error: Error::BadBytecode {
@@ -1751,6 +1769,7 @@ fn parse_code_items_inner(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
                 bytes: &bytes[..data_end],
                 decoded: &mut decoded,
                 methods: &mut methods,
+                fields: &mut fields,
                 budget: &mut budget,
                 data_start,
                 data_end,
@@ -1782,6 +1801,7 @@ fn parse_code_items_inner(dex: &DexFile, bytes: &[u8]) -> CodeItemsReport {
     CodeItemsReport {
         decoded,
         methods,
+        fields,
         unrecovered_tail,
     }
 }
@@ -1791,6 +1811,7 @@ struct CodeWalk<'a> {
     bytes: &'a [u8],
     decoded: &'a mut Vec<CodeItem>,
     methods: &'a mut Vec<DexMethodCode>,
+    fields: &'a mut Vec<DexFieldDecl>,
     budget: &'a mut WalkBudget,
     data_start: usize,
     data_end: usize,
@@ -1810,38 +1831,44 @@ fn walk_class_data(
         read_uleb128(context.bytes, after_instance_count)?;
     let (virtual_methods, members_start): (u32, usize) =
         read_uleb128(context.bytes, after_direct_count)?;
-    let after_static: usize = skip_encoded_fields(
+    let (after_static, static_declared): (usize, Vec<DexFieldDecl>) = read_encoded_fields(
         context.bytes,
         members_start,
         static_fields,
         &context.dex.field_ids,
         class_name,
         context.budget,
+        true,
     )?;
-    let after_instance: usize = skip_encoded_fields(
+    let (after_instance, instance_declared): (usize, Vec<DexFieldDecl>) = read_encoded_fields(
         context.bytes,
         after_static,
         instance_fields,
         &context.dex.field_ids,
         class_name,
         context.budget,
+        false,
     )?;
+    context.fields.extend(static_declared);
+    context.fields.extend(instance_declared);
     let after_direct: usize =
         walk_encoded_methods(context, after_instance, direct_methods, class_name, true)?;
     let _: usize = walk_encoded_methods(context, after_direct, virtual_methods, class_name, false)?;
     Ok(())
 }
 
-fn skip_encoded_fields(
+fn read_encoded_fields(
     bytes: &[u8],
     mut offset: usize,
     count: u32,
     fields: &[FieldId],
     class_name: &str,
     budget: &mut WalkBudget,
-) -> Result<usize> {
+    is_static: bool,
+) -> Result<(usize, Vec<DexFieldDecl>)> {
     let requested: usize = count as usize;
     let bounded: usize = requested.min(budget.members);
+    let mut declared: Vec<DexFieldDecl> = Vec::with_capacity(bounded);
     let mut field_idx: u32 = 0;
     for ordinal in 0..bounded {
         let (idx_diff, after_index): (u32, usize) = read_uleb128(bytes, offset)?;
@@ -1867,7 +1894,14 @@ fn skip_encoded_fields(
                 reason: "DEX field owner does not match class data",
             });
         }
-        let (_, after_access): (u32, usize) = read_uleb128(bytes, after_index)?;
+        let (access_flags, after_access): (u32, usize) = read_uleb128(bytes, after_index)?;
+        declared.push(DexFieldDecl {
+            class: field.class.clone(),
+            name: field.name.clone(),
+            type_name: field.type_name.clone(),
+            access_flags,
+            is_static,
+        });
         offset = after_access;
         budget.members -= 1;
     }
@@ -1877,7 +1911,7 @@ fn skip_encoded_fields(
             reason: "DEX field budget exceeded",
         });
     }
-    Ok(offset)
+    Ok((offset, declared))
 }
 
 fn walk_encoded_methods(
@@ -2089,15 +2123,23 @@ fn collect_native_methods(
     let (instance_fields, n2): (u32, usize) = read_uleb128(bytes, n1)?;
     let (direct_methods, n3): (u32, usize) = read_uleb128(bytes, n2)?;
     let (virtual_methods, n4): (u32, usize) = read_uleb128(bytes, n3)?;
-    let after_static: usize =
-        skip_encoded_fields(bytes, n4, static_fields, &dex.field_ids, class_name, budget)?;
-    let after_instance: usize = skip_encoded_fields(
+    let (after_static, _): (usize, Vec<DexFieldDecl>) = read_encoded_fields(
+        bytes,
+        n4,
+        static_fields,
+        &dex.field_ids,
+        class_name,
+        budget,
+        true,
+    )?;
+    let (after_instance, _): (usize, Vec<DexFieldDecl>) = read_encoded_fields(
         bytes,
         after_static,
         instance_fields,
         &dex.field_ids,
         class_name,
         budget,
+        false,
     )?;
     let after_direct: usize = scan_native_methods(
         dex,

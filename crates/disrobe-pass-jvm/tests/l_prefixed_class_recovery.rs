@@ -124,25 +124,27 @@ fn recovered_class_names_equal_the_authored_class_names() {
     );
 }
 
-#[test]
-fn the_authored_program_behaves_as_the_provenance_records() {
+fn compile_and_run(label: &str, units: &[(&str, &str)]) -> Vec<u8> {
     let javac: PathBuf =
         common::find_on_path("javac").expect("the L-prefixed class gate requires javac on PATH");
     let java: PathBuf =
         common::find_on_path("java").expect("the L-prefixed class gate requires java on PATH");
-    let scratch: ScratchDir =
-        ScratchDir::create("l-prefixed-authored").expect("create Java scratch directory");
-    let source_path: PathBuf = scratch.path().join("L.java");
-    std::fs::write(&source_path, AUTHORED).expect("write Java program");
+    let scratch: ScratchDir = ScratchDir::create(label).expect("create Java scratch directory");
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(units.len());
+    for (name, source) in units {
+        let path: PathBuf = scratch.path().join(name);
+        std::fs::write(&path, source).expect("write a unit");
+        paths.push(path);
+    }
     let compiled: Output = Command::new(javac)
         .arg("-d")
         .arg(scratch.path())
-        .arg(&source_path)
+        .args(&paths)
         .output()
         .expect("run javac");
     assert!(
         compiled.status.success(),
-        "javac rejected the authored program:\n{}",
+        "javac rejected {label}:\n{}\n----\n{units:?}",
         String::from_utf8_lossy(&compiled.stderr)
     );
     let executed: Output = Command::new(java)
@@ -151,11 +153,45 @@ fn the_authored_program_behaves_as_the_provenance_records() {
         .arg("L")
         .output()
         .expect("run the Java program");
-    assert!(executed.status.success());
+    assert!(
+        executed.status.success(),
+        "java rejected {label}:\n{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    executed.stdout
+}
+
+#[test]
+fn the_authored_program_behaves_as_the_provenance_records() {
+    let stdout: Vec<u8> = compile_and_run("l-prefixed-authored", &[("L.java", AUTHORED)]);
     assert_eq!(
-        String::from_utf8_lossy(&executed.stdout).replace("\r\n", "\n"),
+        String::from_utf8_lossy(&stdout).replace("\r\n", "\n"),
         EXPECTED_STDOUT,
         "the fixture drifted from the behavior its provenance records"
     );
     assert!(PROVENANCE.contains("14\\n-6\\n"));
+}
+
+#[test]
+fn the_recovered_classes_recompile_and_preserve_authored_behavior() {
+    let reference: Vec<u8> = compile_and_run("l-prefixed-reference", &[("L.java", AUTHORED)]);
+    let dex: DexFile = parse_dex(DEX).expect("parse the real D8 artifact");
+    let recovered: DecompiledDex = decompile_dex(&dex, DEX);
+    let outer: String = recovered_unit(&recovered, "L.java").clone();
+    let inner: String = recovered_unit(&recovered, "LL.java").clone();
+    assert!(
+        outer.contains("public int value;") && inner.contains("public L inner;"),
+        "each class must declare the field its constructor assigns, or the recovered unit cannot \
+         compile:\n{outer}\n{inner}"
+    );
+    let produced: Vec<u8> = compile_and_run(
+        "l-prefixed-recovered",
+        &[("L.java", outer.as_str()), ("LL.java", inner.as_str())],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&produced).replace("\r\n", "\n"),
+        String::from_utf8_lossy(&reference).replace("\r\n", "\n"),
+        "the recovered classes must reproduce the authored behavior; the units were:\n{outer}\n\
+         {inner}"
+    );
 }
