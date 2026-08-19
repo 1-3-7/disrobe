@@ -43,14 +43,38 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
     let cursor: std::io::Cursor<&[u8]> = std::io::Cursor::new(ole_bytes);
     let mut comp: CompoundFile<std::io::Cursor<&[u8]>> =
         CompoundFile::open(cursor).map_err(|e: std::io::Error| Error::OleCfb(e.to_string()))?;
-    let vba_project: Vec<u8> = read_stream(&mut comp, "/VBA/_VBA_PROJECT")?;
+    let storages: Vec<String> = locate_vba_storages(&comp);
+    let Some(storage) = storages.first().cloned() else {
+        return Err(Error::VbaPcode {
+            reason: "container holds no VBA storage: no _VBA_PROJECT stream in any storage, \
+                     searched the OOXML VBA path, the Word Macros path and the Excel \
+                     _VBA_PROJECT_CUR path"
+                .to_owned(),
+        });
+    };
+    let mut walls: Vec<PCodeWallDetail> = Vec::new();
+    if let Some(unread) = storages
+        .get(1..)
+        .filter(|rest: &&[String]| !rest.is_empty())
+    {
+        walls.push(PCodeWallDetail {
+            kind: PCodeWall::MultipleVbaProjects,
+            reason: format!(
+                "container holds {} VBA projects; disassembled {storage} and left {} unread: {}",
+                storages.len(),
+                unread.len(),
+                unread.join(", ")
+            ),
+        });
+    }
+    let vba_project: Vec<u8> = read_stream(&mut comp, &format!("{storage}/_VBA_PROJECT"))?;
     let header: PCodeStreamHeader = parse_vba_project_header(&vba_project)?;
     let endian: Endian = if header.is_big_endian {
         Endian::Big
     } else {
         Endian::Little
     };
-    let dir_compressed: Vec<u8> = read_stream(&mut comp, "/VBA/dir")?;
+    let dir_compressed: Vec<u8> = read_stream(&mut comp, &format!("{storage}/dir"))?;
     let dir_data: Vec<u8> = decompress_ovba(&dir_compressed)?;
     let dir_parse: DirParse = parse_dir(&dir_data, endian);
     let identifiers: Vec<String> = extract_identifiers(&vba_project, header.version, endian)?;
@@ -61,9 +85,8 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
     };
     let is_64bit: bool = dir_parse.is_64bit;
     let mut modules_out: Vec<RealModuleDisasm> = Vec::with_capacity(dir_parse.modules.len());
-    let mut walls: Vec<PCodeWallDetail> = Vec::new();
     for module_name in &dir_parse.modules {
-        let stream_path: String = format!("/VBA/{module_name}");
+        let stream_path: String = format!("{storage}/{module_name}");
         let module_bytes: Vec<u8> = match read_stream(&mut comp, &stream_path) {
             Ok(b) => b,
             Err(_) => continue,
@@ -85,12 +108,75 @@ pub fn disassemble_pcode_real(ole_bytes: &[u8]) -> Result<RealPCodeReport> {
             }),
         }
     }
+    walls.extend(unknown_opcode_walls(&modules_out));
     Ok(RealPCodeReport {
         header,
         identifiers,
         modules: modules_out,
         walls,
     })
+}
+
+pub const UNKNOWN_OPCODE_MNEMONIC_PREFIX: &str = "Unknown_";
+
+fn unknown_opcode_walls(modules: &[RealModuleDisasm]) -> Vec<PCodeWallDetail> {
+    let mut walls: Vec<PCodeWallDetail> = Vec::new();
+    for module in modules {
+        for line in &module.lines {
+            for instruction in &line.instructions {
+                if !instruction
+                    .mnemonic
+                    .starts_with(UNKNOWN_OPCODE_MNEMONIC_PREFIX)
+                {
+                    continue;
+                }
+                walls.push(PCodeWallDetail {
+                    kind: PCodeWall::UnknownOpcode,
+                    reason: format!(
+                        "module {} line {} offset {}: opcode {:#06x} is outside the \
+                         {}-entry table, so decoding stopped at {} rather than skipping it",
+                        module.name,
+                        line.line_index,
+                        instruction.offset,
+                        instruction.opcode_raw,
+                        OPCODES.len(),
+                        instruction.mnemonic
+                    ),
+                });
+            }
+        }
+    }
+    walls
+}
+
+const MAX_CFB_ENTRIES: usize = 8192;
+const VBA_PROJECT_STREAM_LEAF: &str = "_vba_project";
+
+fn locate_vba_storages(comp: &CompoundFile<std::io::Cursor<&[u8]>>) -> Vec<String> {
+    let mut storages: Vec<String> = comp
+        .walk()
+        .take(MAX_CFB_ENTRIES)
+        .filter(|entry: &cfb::Entry| entry.is_stream())
+        .filter_map(|entry: cfb::Entry| {
+            let path: String = normalize_cfb_path(&entry.path().display().to_string());
+            let (parent, leaf): (&str, &str) = path.rsplit_once('/')?;
+            leaf.eq_ignore_ascii_case(VBA_PROJECT_STREAM_LEAF)
+                .then(|| parent.to_owned())
+        })
+        .filter(|parent: &String| !parent.is_empty())
+        .collect();
+    storages.sort_unstable();
+    storages.dedup();
+    storages
+}
+
+fn normalize_cfb_path(path: &str) -> String {
+    let unified: String = path.replace('\\', "/");
+    if unified.starts_with('/') {
+        unified
+    } else {
+        format!("/{unified}")
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1617,6 +1703,21 @@ fn translate_v6or7_32(o: u16) -> u16 {
         176..=178 => o + 2,
         _ => o + 3,
     }
+}
+
+#[must_use]
+pub fn opcode_table() -> Vec<(u16, &'static str)> {
+    OPCODES
+        .iter()
+        .enumerate()
+        .filter(|(_, entry): &(usize, &OpcodeInfo)| !entry.mnem.is_empty())
+        .map(|(index, entry): (usize, &OpcodeInfo)| (index as u16, entry.mnem))
+        .collect()
+}
+
+#[must_use]
+pub const fn opcode_table_slots() -> usize {
+    OPCODES.len()
 }
 
 fn lookup_opcode(translated: u16) -> Option<&'static OpcodeInfo> {

@@ -162,9 +162,11 @@ pub(crate) struct Mismatch {
 }
 
 pub(crate) fn grade(recovered: &str, authored: &str) -> Grade {
-    let auth_lines: Vec<String> = code_lines(authored);
-    let rec_lines: Vec<String> = code_lines(recovered);
-    let mapping: Vec<Option<usize>> = align_in_order(&auth_lines, &rec_lines);
+    grade_lines(&code_lines(authored), &code_lines(recovered))
+}
+
+pub(crate) fn grade_lines(auth_lines: &[String], rec_lines: &[String]) -> Grade {
+    let mapping: Vec<Option<usize>> = align_in_order(auth_lines, rec_lines);
 
     let matched: usize = mapping
         .iter()

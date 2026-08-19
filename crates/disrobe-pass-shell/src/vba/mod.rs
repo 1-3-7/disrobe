@@ -12,6 +12,9 @@ pub use pcode::{
     PCodeDisasm, PCodeInstruction, PCodeStreamHeader, PCodeWall, PCodeWallDetail, disassemble_pcode,
 };
 pub use pcode_lift::{SemanticLift, semantic_lift};
-pub use pcode_real::{RealModuleDisasm, RealPCodeLine, RealPCodeReport, disassemble_pcode_real};
+pub use pcode_real::{
+    RealModuleDisasm, RealPCodeLine, RealPCodeReport, UNKNOWN_OPCODE_MNEMONIC_PREFIX,
+    disassemble_pcode_real, opcode_table, opcode_table_slots,
+};
 pub use stomp::{ModuleStompReport, StompReport, StompVerdict, analyze_stomp, analyze_stomp_parts};
 pub use vbs::{VbsReport, deobfuscate_vbs, deobfuscate_vbs_with_policy};

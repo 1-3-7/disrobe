@@ -30,8 +30,16 @@ pub(crate) fn ovba_compress(plain: &[u8]) -> Vec<u8> {
     out
 }
 
-pub(crate) fn module_stream_path(module: &str) -> String {
-    format!("/VBA/{module}")
+pub(crate) fn module_stream_path(ole: &[u8], module: &str) -> String {
+    let target: String = module.to_ascii_lowercase();
+    stream_paths(ole)
+        .into_iter()
+        .find(|path: &String| {
+            path.rsplit('/')
+                .next()
+                .is_some_and(|leaf: &str| leaf.eq_ignore_ascii_case(&target))
+        })
+        .unwrap_or_else(|| panic!("module stream for {module} is absent from the container"))
 }
 
 pub(crate) fn module_text_offset(container: &[u8], module: &str) -> usize {
@@ -73,7 +81,7 @@ fn write_ole_stream(ole: &[u8], path: &str, contents: &[u8]) -> Vec<u8> {
 }
 
 fn replace_source_payload(ole: &[u8], module: &str, text_offset: usize, payload: &[u8]) -> Vec<u8> {
-    let path: String = module_stream_path(module);
+    let path: String = module_stream_path(ole, module);
     let original: Vec<u8> = read_ole_stream(ole, &path);
     assert!(
         text_offset <= original.len(),
@@ -97,6 +105,20 @@ pub(crate) fn stomp_with_decoy_source(
 
 pub(crate) fn stomp_to_empty_source(ole: &[u8], module: &str, text_offset: usize) -> Vec<u8> {
     replace_source_payload(ole, module, text_offset, &[OVBA_SIGNATURE_BYTE])
+}
+
+pub(crate) fn patch_module_stream(ole: &[u8], module: &str, at: usize, bytes: &[u8]) -> Vec<u8> {
+    let path: String = module_stream_path(ole, module);
+    let mut stream: Vec<u8> = read_ole_stream(ole, &path);
+    let end: usize = at + bytes.len();
+    assert!(
+        end <= stream.len(),
+        "patch of {} bytes at {at} runs past the {} byte module stream",
+        bytes.len(),
+        stream.len()
+    );
+    stream[at..end].copy_from_slice(bytes);
+    write_ole_stream(ole, &path, &stream)
 }
 
 pub(crate) fn stomp_with_junk_source(ole: &[u8], module: &str, text_offset: usize) -> Vec<u8> {
@@ -137,7 +159,8 @@ pub(crate) fn dir_stream_declaring(module_count: usize) -> Vec<u8> {
 }
 
 pub(crate) fn replace_dir_stream(ole: &[u8], dir: &[u8]) -> Vec<u8> {
-    write_ole_stream(ole, "/VBA/dir", &ovba_compress(dir))
+    let path: String = module_stream_path(ole, "dir");
+    write_ole_stream(ole, &path, &ovba_compress(dir))
 }
 
 pub(crate) fn repack_ooxml_with_vba_project(container: &[u8], vba_project: &[u8]) -> Vec<u8> {
@@ -176,4 +199,114 @@ pub(crate) fn repack_ooxml_with_vba_project(container: &[u8], vba_project: &[u8]
 
 pub(crate) fn vba_project_of(container: &[u8]) -> Vec<u8> {
     disrobe_pass_shell::vba_project_bin_from_bytes(container).expect("locate vbaProject.bin")
+}
+
+fn stream_paths(ole: &[u8]) -> Vec<String> {
+    let cursor: Cursor<Vec<u8>> = Cursor::new(ole.to_vec());
+    let comp: cfb::CompoundFile<Cursor<Vec<u8>>> =
+        cfb::CompoundFile::open(cursor).expect("open compound file");
+    comp.walk()
+        .filter(|e: &cfb::Entry| e.is_stream())
+        .map(|e: cfb::Entry| e.path().display().to_string().replace('\\', "/"))
+        .collect()
+}
+
+fn rehost_under(ole: &[u8], project_storage: &str, extra_root: &[(&str, &[u8])]) -> Vec<u8> {
+    let out_cursor: Cursor<Vec<u8>> = Cursor::new(Vec::<u8>::new());
+    let mut out: cfb::CompoundFile<Cursor<Vec<u8>>> =
+        cfb::CompoundFile::create(out_cursor).expect("create compound file");
+    for (name, body) in extra_root {
+        let mut handle: cfb::Stream<Cursor<Vec<u8>>> = out
+            .create_new_stream(format!("/{name}"))
+            .expect("create root stream");
+        handle.write_all(body).expect("write root stream");
+        handle.flush().expect("flush root stream");
+    }
+    out.create_storage_all(format!("/{project_storage}"))
+        .expect("create project storage");
+    for path in stream_paths(ole) {
+        let body: Vec<u8> = read_ole_stream(ole, &path);
+        let target: String = format!("/{project_storage}{path}");
+        let parent: &str = target.rsplit_once('/').map_or("/", |(head, _)| head);
+        if !parent.is_empty() {
+            out.create_storage_all(parent)
+                .expect("create parent storage");
+        }
+        let mut handle: cfb::Stream<Cursor<Vec<u8>>> =
+            out.create_new_stream(&target).expect("create stream");
+        handle.write_all(&body).expect("write stream");
+        handle.flush().expect("flush stream");
+    }
+    out.flush().expect("flush compound file");
+    out.into_inner().into_inner()
+}
+
+pub(crate) fn legacy_doc_container(vba_project: &[u8]) -> Vec<u8> {
+    rehost_under(
+        vba_project,
+        "Macros",
+        &[("WordDocument", &[0xEC, 0xA5, 0xC1, 0x00])],
+    )
+}
+
+pub(crate) fn legacy_xls_container(vba_project: &[u8]) -> Vec<u8> {
+    rehost_under(
+        vba_project,
+        "_VBA_PROJECT_CUR",
+        &[("Workbook", &[0x09, 0x08, 0x10, 0x00])],
+    )
+}
+
+const PPTM_CONTENT_TYPES: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
+    r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
+    r#"<Default Extension="xml" ContentType="application/xml"/>"#,
+    r#"<Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>"#,
+    r#"<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml"/>"#,
+    r#"</Types>"#
+);
+
+const PPTM_ROOT_RELS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>"#,
+    r#"</Relationships>"#
+);
+
+const PPTM_PRESENTATION_RELS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    r#"<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/>"#,
+    r#"</Relationships>"#
+);
+
+const PPTM_PRESENTATION: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" "#,
+    r#"xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">"#,
+    r#"<p:sldMasterIdLst/><p:sldIdLst/><p:sldSz cx="9144000" cy="6858000"/>"#,
+    r#"<p:notesSz cx="6858000" cy="9144000"/></p:presentation>"#
+);
+
+pub(crate) fn pptm_container(vba_project: &[u8]) -> Vec<u8> {
+    let write_cursor: Cursor<Vec<u8>> = Cursor::new(Vec::<u8>::new());
+    let mut writer: zip::ZipWriter<Cursor<Vec<u8>>> = zip::ZipWriter::new(write_cursor);
+    let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in [
+        ("[Content_Types].xml", PPTM_CONTENT_TYPES.as_bytes()),
+        ("_rels/.rels", PPTM_ROOT_RELS.as_bytes()),
+        ("ppt/presentation.xml", PPTM_PRESENTATION.as_bytes()),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            PPTM_PRESENTATION_RELS.as_bytes(),
+        ),
+        ("ppt/vbaProject.bin", vba_project),
+    ] {
+        writer.start_file(name, options).expect("start zip entry");
+        writer.write_all(body).expect("write zip entry");
+    }
+    writer.finish().expect("finish pptm container").into_inner()
 }

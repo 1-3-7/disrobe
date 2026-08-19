@@ -13,6 +13,8 @@ pub enum PCodeWall {
     UnsupportedVersion,
     UnknownEndianMarker,
     InsufficientStreamBytes,
+    UnknownOpcode,
+    MultipleVbaProjects,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

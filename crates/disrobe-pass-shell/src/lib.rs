@@ -80,9 +80,9 @@ pub use vba::extract::ContainerKind;
 pub use vba::{
     ExtractedModule, ExtractedProject, ModuleStompReport, PCodeDisasm, PCodeInstruction,
     RealModuleDisasm, RealPCodeLine, RealPCodeReport, SemanticLift, StompReport, StompVerdict,
-    VbsReport, analyze_stomp, analyze_stomp_parts, deobfuscate_vbs, deobfuscate_vbs_with_policy,
-    disassemble_pcode, disassemble_pcode_real, extract_from_bytes, semantic_lift,
-    vba_project_bin_from_bytes,
+    UNKNOWN_OPCODE_MNEMONIC_PREFIX, VbsReport, analyze_stomp, analyze_stomp_parts, deobfuscate_vbs,
+    deobfuscate_vbs_with_policy, disassemble_pcode, disassemble_pcode_real, extract_from_bytes,
+    opcode_table, opcode_table_slots, semantic_lift, vba_project_bin_from_bytes,
 };
 pub use vba::{PCodeStreamHeader, PCodeWall, PCodeWallDetail};
 pub use xlm::{

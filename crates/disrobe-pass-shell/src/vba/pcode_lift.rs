@@ -361,6 +361,18 @@ fn lift_line(l: &mut Lifter, line: &RealPCodeLine) {
     if l.printing {
         l.flush_print();
     }
+    let trailing_comment: Option<String> = match l.stack.as_slice() {
+        [only] if l.out.len() > produced_before && only.starts_with('\'') => Some(only.clone()),
+        _ => None,
+    };
+    if let Some(comment) = trailing_comment
+        && let Some(last) = l.out.last_mut()
+        && !last.trim().is_empty()
+    {
+        last.push_str("  ");
+        last.push_str(&comment);
+        l.stack.clear();
+    }
     if l.stack.len() == 1 && l.out.len() == produced_before {
         let expr: String = l.pop();
         if !expr.is_empty() && expr != "<?>" {
