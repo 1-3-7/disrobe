@@ -24,7 +24,7 @@ fn length_prefixed(image: &[u8], name: &str) -> bool {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source lives at the untracked .developer/dotnet-samples/EdgeCasesAot/Program.cs, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn every_name_the_image_still_carries_is_recovered() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);

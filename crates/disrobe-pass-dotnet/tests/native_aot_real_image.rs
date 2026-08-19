@@ -135,7 +135,7 @@ fn the_pass_entry_point_reaches_a_verdict_on_a_real_native_aot_image() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source lives at the untracked .developer/dotnet-samples/EdgeCasesAot/Program.cs, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_yields_type_names_the_source_declared() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
@@ -164,7 +164,7 @@ fn a_real_native_aot_image_yields_type_names_the_source_declared() {
 }
 
 #[test]
-#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source lives at the untracked .developer/dotnet-samples/EdgeCasesAot/Program.cs, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
+#[ignore = "fixture: needs a NativeAOT probe app whose source declares Widget, IGauge, Thermometer and DisrobeAotProbe. No committed artifact declares those names, and corpus/dotnet/megafile/EdgeCases.nativeaot.exe cannot substitute because its own source is not tracked in this repository, so no statement of the names it should yield exists anywhere in the tree. Point DISROBE_AOT_SAMPLE at such an image and run with --ignored to grade it"]
 fn a_real_native_aot_image_attributes_every_reachable_type_and_method_record() {
     let image: Vec<u8> = probe_app_image();
     let report: AotReport = detect(&image);
