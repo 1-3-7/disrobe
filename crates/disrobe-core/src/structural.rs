@@ -44,7 +44,8 @@ const KNOWN_COFF_MACHINES: &[u16] = &[
     0x5032, 0x5064, 0x5128, 0x6232, 0x6264, 0x8664, 0x9041, 0xAA64, 0xA641, 0xA64E, 0xC0EE,
 ];
 
-const ELF_HEADER_MIN: usize = 0x40;
+const ELF_HEADER_MIN_32: usize = 0x34;
+const ELF_HEADER_MIN_64: usize = 0x40;
 const ELF_PROGRAM_ENTRY_32: u64 = 32;
 const ELF_PROGRAM_ENTRY_64: u64 = 56;
 const ELF_SECTION_ENTRY_32: u64 = 40;
@@ -226,7 +227,7 @@ fn pe_header_is_valid(bytes: &[u8], pe_off: usize) -> bool {
 
 #[must_use]
 pub fn validate_elf(bytes: &[u8]) -> bool {
-    if bytes.len() < ELF_HEADER_MIN {
+    if bytes.len() < ELF_HEADER_MIN_32 {
         return false;
     }
     let Some(&ei_class): Option<&u8> = bytes.get(4) else {
@@ -270,6 +271,14 @@ pub fn validate_elf(bytes: &[u8]) -> bool {
     } else {
         ELF_SECTION_ENTRY_32
     };
+    let header_min: u64 = if is_64 {
+        ELF_HEADER_MIN_64 as u64
+    } else {
+        ELF_HEADER_MIN_32 as u64
+    };
+    if (bytes.len() as u64) < header_min {
+        return false;
+    }
     let len: u64 = bytes.len() as u64;
     let mut tables_seen: u32 = 0;
     if t.phnum != 0 {
@@ -282,7 +291,7 @@ pub fn validate_elf(bytes: &[u8]) -> bool {
         let Some(end): Option<u64> = t.phoff.checked_add(span) else {
             return false;
         };
-        if t.phoff < ELF_HEADER_MIN as u64 || end > len {
+        if t.phoff < header_min || end > len {
             return false;
         }
         tables_seen += 1;
@@ -297,7 +306,7 @@ pub fn validate_elf(bytes: &[u8]) -> bool {
         let Some(end): Option<u64> = t.shoff.checked_add(span) else {
             return false;
         };
-        if t.shoff < ELF_HEADER_MIN as u64 || end > len {
+        if t.shoff < header_min || end > len {
             return false;
         }
         tables_seen += 1;
