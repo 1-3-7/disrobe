@@ -1,0 +1,91 @@
+schema = "disrobe.corpus.v1"
+crate = "disrobe-pass-dotnet"
+generated = "2026-08-19"
+toolchain = "ilasm 4.8.9221.0 (Microsoft.NET/Framework64/v4.0.30319), -dll, no /PE64 and no processor switch"
+license = "Elastic-2.0"
+note = "self-authored ECMA-335 fixture for MethodImpl body and declaration encodings a C# compiler never emits; no vendor or third-party binary bytes"
+
+[target]
+image_format = "PE32"
+processor = "AnyCPU, ILONLY, 32-bit not required"
+runtime = "metadata references mscorlib 4.0.0.0; the fixture is never loaded or executed"
+heap_index_width = "small, two bytes for #Strings, #Blob, #GUID and #US"
+heap_bytes = { strings = 397, blob = 36, guid = 16, user_strings = 8 }
+table_index_width = "small, two bytes for every simple and coded index in this image"
+
+[reference]
+reader = "System.Reflection.Metadata from the Microsoft.NETCore.App shared framework"
+sdk = "dotnet SDK 9.0.316"
+program = "metadata_reference/Program.cs"
+dump = "MethodImplShapes.metadata.txt"
+note = "the reader is Microsoft's own ECMA-335 implementation and never loads disrobe; the test parses this dump and compares it with disrobe's table parse"
+
+[build]
+command = "powershell -File build.ps1"
+reproducible = false
+reproducibility_note = "ilasm 4.8 has no deterministic switch, so a rebuild changes the module MVID and the PE timestamp; the assembly is pinned by hash and re-derived from MethodImplShapes.il, not by byte equality"
+
+[[fixture]]
+name = "MethodImplShapes.il"
+kind = "ecma-335-il-source"
+size = 4735
+sha256 = "553bf0e756d19d73c639ed98b024dbe4b77672c2429c6375293b49539aa45f9a"
+source = "self-authored"
+
+[[fixture]]
+name = "MethodImplShapes.dll"
+kind = "methodimpl-encoding-managed-pe"
+size = 3072
+sha256 = "b00a7bfc71e51d13e5030476e82ca205be72758dd26a8dfa40dac279d7a38150"
+source = "MethodImplShapes.il"
+
+[[fixture]]
+name = "MethodImplShapes.metadata.txt"
+kind = "fixed-ground-truth-metadata-dump"
+size = 3107
+sha256 = "6791dece12684552cdc7036633cf595b179f8177ffe9c2a829f21a71fa55a137"
+source = "metadata_reference/Program.cs"
+
+[[fixture]]
+name = "build.ps1"
+kind = "build-script"
+size = 1322
+sha256 = "16430e85ab5dca06f231b692e079a6ae42199675fec6afcb14bd6503402441d4"
+source = "self-authored"
+
+[[fixture]]
+name = "metadata_reference/Program.cs"
+kind = "reference-reader-source"
+size = 3546
+sha256 = "41172f4cd3da4198541251fb00144b2472cf2eb32df5039740254ef4f0e30658"
+source = "self-authored"
+
+[[fixture]]
+name = "metadata_reference/metadata_reference.csproj"
+kind = "reference-reader-project"
+size = 342
+sha256 = "eaf7f4f8312c8b11312c860a0a1cf3e89bb309b8d29f07254fc10535a9bd49e4"
+source = "self-authored"
+
+[encodings]
+methodimpl_body_methoddef = "MethodImplShapes.MethodDefImplBody and MethodImplShapes.UnrelatedImplBody"
+methodimpl_body_memberref_typeref_assemblyref_scope = "MethodImplShapes.AssemblyRefTypeRefImplBody"
+methodimpl_body_memberref_typeref_moduleref_scope = "MethodImplShapes.ModuleRefTypeRefImplBody"
+methodimpl_body_memberref_typespec = "MethodImplShapes.TypeSpecImplBody"
+methodimpl_declaration_memberref = "rows 1 through 5, all declaring [mscorlib]System.Object members"
+methodimpl_declaration_methoddef = "row 6, MethodImplShapes.Meter implementing MethodImplShapes.IGauge.Read"
+method_flags_final_reuse_slot = "MethodImplShapes.FinalReuseSlotOverride.Equals, 0x00E6"
+method_flags_public_virtual_hidebysig = "MethodImplShapes.ReuseSlotOverride.Equals, 0x00C6"
+method_flags_newslot_virtual = "MethodImplShapes.NewSlotVirtual.Equals, 0x01C6"
+method_flags_final_without_virtual = "MethodImplShapes.FinalWithoutVirtual.Equals, 0x00A6"
+
+[exclusions]
+methodimpl_body_memberref_same_module_typeref = "ilasm 4.8.9221.0 cannot author it. A body naming a type this module defines is normalised to a MethodDef row whatever resolution scope is written, including [.module <this module>], and a body naming an undefined type without a scope is refused with 'Reference to undefined class'. The nearest encodings ilasm will produce are the TypeSpec parent and the ModuleRef-scoped TypeRef parent, both committed here."
+methodimpl_null_body = "MethodImpl.MethodBody may not be null in assemblable IL. The test reaches this shape by patching the committed bytes in memory."
+methodimpl_out_of_range_body_row = "not assemblable. The test reaches this shape by patching the committed bytes in memory."
+interface_default_implementation = "ilasm 4.8.9221.0 refuses a non-static instance method with a body in an abstract interface: 'Method cannot have body if it is non-static declared in interface abstract'. A default interface implementation needs the .NET Core ilasm, which is not installed on this host."
+
+[grade]
+test = "methodimpl_shapes"
+reference = "MethodImplShapes.il, the source the fixture was assembled from, plus MethodImplShapes.metadata.txt for the table encodings"
+comparison = "recovered C# method headers from decompile_assembly against the override semantics the IL source declares; parsed MethodImpl, MemberRef and TypeRef rows against the System.Reflection.Metadata dump"
