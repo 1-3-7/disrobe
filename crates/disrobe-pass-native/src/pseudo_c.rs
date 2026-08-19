@@ -6281,6 +6281,7 @@ fn rax_write_width(stmt: &Stmt) -> Option<Width> {
         | Stmt::Extend { dest, .. }
         | Stmt::FpToInt { dest, .. }
         | Stmt::XmmToGpr { dest, .. }
+        | Stmt::Cond { dest, .. }
         | Stmt::SetCc { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
         Stmt::PackedToGpr { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
         Stmt::WideMul { .. } | Stmt::Call { .. } => Some(Width::W64),
@@ -6469,9 +6470,9 @@ fn explicit_integer_return_width(stmt: &Stmt) -> Option<Width> {
         Stmt::FpToInt { dest, .. }
         | Stmt::XmmToGpr { dest, .. }
         | Stmt::PackedToGpr { dest, .. }
+        | Stmt::Cond { dest, .. }
         | Stmt::SetCc { dest, .. } => (dest.reg == Reg::Rax).then_some(dest.width),
-        Stmt::Cond { .. }
-        | Stmt::Call { .. }
+        Stmt::Call { .. }
         | Stmt::Store { .. }
         | Stmt::MemRmw { .. }
         | Stmt::FpBin { .. }
@@ -25931,6 +25932,43 @@ mod tests {
         assert!(
             rec.source.contains("r_rdx = sel_cc_0 != 0 ? r_rcx : r_rdx"),
             "the cmovge must consume the snapshot: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn wide_conditional_move_into_rax_keeps_the_return_64_bits() {
+        let code: [u8; 46] = [
+            0xb8, 0x28, 0x00, 0x00, 0x00, 0x48, 0x83, 0xf9, 0x13, 0x74, 0x22, 0xb8, 0x84, 0x03,
+            0x00, 0x00, 0x48, 0x81, 0xf9, 0xfa, 0x00, 0x00, 0x00, 0x74, 0x14, 0x48, 0x83, 0xf9,
+            0x02, 0xb8, 0x05, 0x00, 0x00, 0x00, 0x48, 0xc7, 0xc2, 0xf9, 0xff, 0xff, 0xff, 0x48,
+            0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let rec: LeafRecovery = recover_leaf_function(&code, 0x9900)
+            .expect("gcc 16.2 -O2 sparse switch compare chain must recover");
+        assert_eq!(
+            rec.return_width_bits, 64,
+            "a 64-bit cmov is the last write to rax, so the return must stay 64 bits wide: {}",
+            rec.source
+        );
+        assert!(
+            rec.source.contains("return r_rax;"),
+            "the negative default arm must reach the caller unmasked, or -7 becomes 0xfffffff9: {}",
+            rec.source
+        );
+    }
+
+    #[test]
+    fn narrow_conditional_move_into_eax_keeps_the_return_32_bits() {
+        let code: [u8; 18] = [
+            0x48, 0x83, 0xf9, 0x02, 0xb8, 0x05, 0x00, 0x00, 0x00, 0xba, 0xf9, 0xff, 0xff, 0xff,
+            0x0f, 0x45, 0xc2, 0xc3,
+        ];
+        let rec: LeafRecovery =
+            recover_leaf_function(&code, 0x9a00).expect("a 32-bit cmov select must recover");
+        assert_eq!(
+            rec.return_width_bits, 32,
+            "a 32-bit cmov zero-extends into rax, so widening the return past 32 bits is wrong: {}",
             rec.source
         );
     }
