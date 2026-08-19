@@ -49,7 +49,7 @@ fn run_harness(debug: Option<&str>, json: bool) -> Output {
 }
 
 #[test]
-#[ignore = "the subprocess body of the contract tests below, which spawn it on every run"]
+#[ignore = "cost: the subprocess body of the contract tests below, which spawn it on every run"]
 fn harness_entrypoint() {
     assert!(
         std::env::var_os(HARNESS_ENV).is_some(),

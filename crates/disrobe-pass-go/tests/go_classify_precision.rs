@@ -234,8 +234,12 @@ fn a_header_whose_name_table_starts_after_its_funcdata_table_is_refused() {
     let baseline: Vec<u8> = tracked_go_image();
     let offset: usize = located_header_file_offset(&baseline);
     let funcdata_off: u64 = read_header_word(&baseline, offset, WORD_FUNCDATA_OFF);
+    assert!(
+        locates(&baseline),
+        "the unmutated tracked image must locate, otherwise the mutation below proves nothing"
+    );
 
-    let mut mutated: Vec<u8> = baseline.clone();
+    let mut mutated: Vec<u8> = baseline;
     write_header_word(&mut mutated, offset, WORD_FUNCNAME_OFF, funcdata_off);
     assert!(
         !locates(&mutated),
