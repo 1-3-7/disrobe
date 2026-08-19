@@ -457,6 +457,40 @@ fn an_unrecognised_functional_interface_keeps_the_desugaring_class() {
 }
 
 #[test]
+fn a_backported_core_library_functional_interface_still_recovers() {
+    let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
+    let mut mutated: DexFile = dex;
+    let interface: &mut String = mutated
+        .type_names
+        .iter_mut()
+        .find(|name: &&mut String| name.as_str() == "Ljava/util/function/IntUnaryOperator;")
+        .expect("the artifact declares IntUnaryOperator");
+    *interface = "Lj$/util/function/IntUnaryOperator;".to_owned();
+
+    let recovered: DecompiledDex = decompile_dex(&mutated, RELEASE_DEX);
+    let unit: &String = program_unit(&recovered);
+    for site in SITES {
+        if !matches!(
+            site.method,
+            "stateless" | "oneCapture" | "receiverCapture" | "lambda$nested$0"
+        ) {
+            continue;
+        }
+        assert_eq!(
+            recovered_lambda(unit, site.method),
+            site.expected,
+            "a core-library relocated functional interface must still recover {}",
+            site.method
+        );
+    }
+    let retained: BTreeSet<String> = retained_synthetics(&recovered);
+    assert!(
+        retained.is_empty(),
+        "the relocated interface must not strand a desugaring class: {retained:?}"
+    );
+}
+
+#[test]
 fn a_renamed_helper_keeps_the_desugaring_class() {
     let dex: DexFile = parse_dex(RELEASE_DEX).expect("parse the real D8 artifact");
     let mut mutated: DexFile = dex;
