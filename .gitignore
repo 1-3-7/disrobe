@@ -143,6 +143,8 @@ corpus/**/*.pt
 corpus/**/*.msix
 corpus/**/*.appx
 corpus/**/*.cab
+!corpus/binfmt/installshield/wireplay-user1.cab
+!corpus/binfmt/installshield/wireplay-sys1.cab
 corpus/**/*.iso
 corpus/**/*.dmg
 corpus/**/*.pkg

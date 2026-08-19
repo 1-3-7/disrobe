@@ -12,11 +12,12 @@ apk	extract	corpus/apk/fixture-res.apk
 pyz	extract	corpus/python/freezers/shiv/hello.pyz
 appimage	extract	corpus/binfmt/appimage-type1/AppImageAssistant.AppImage
 innosetup	extract	crates/disrobe-binfmt/tests/fixtures/innosetup/codec-matrix/codec-bzip.exe
+installshield	extract	corpus/binfmt/installshield/wireplay-sys1.cab
 squashfs	extract	corpus/binfmt/squashfs-lzo/hello-lzo.squashfs
 romfs	extract	corpus/negative/binfmt/romfs-node-next-points-at-itself.bin
 erofs	extract	crates/disrobe-binfmt/tests/fixtures/erofs/lzma-compact-big-xattr.erofs
-cpio	detect-only	corpus/binfmt/elf-overlay/cpio.bin
-arj	extract	corpus/binfmt/arj/hello.arj
+cpio	extract	corpus/binfmt/elf-overlay/cpio.bin
+arj	extract	corpus/binfmt/arj/directories.arj
 arc	extract	corpus/binfmt/arc/dosamatc.arc
 lzh	extract	corpus/binfmt/lzh/hello.lzh
 lzo	extract	corpus/binfmt/lzop/hello.lzo
@@ -24,7 +25,7 @@ uzip	extract	corpus/binfmt/uzip/hello-lzma.uzip
 xalz	extract	corpus/binfmt/xalz/hello.dll.xalz
 ar	extract	corpus/binfmt/ar/hello.a
 par2	extract	corpus/binfmt/par2/recovery.par2
-stuffit	extract	crates/disrobe-binfmt/tests/fixtures/stuffit/stuffit45-method13.sit
+stuffit	extract	crates/disrobe-binfmt/tests/fixtures/stuffit/stuffit-method2.sit
 vhd	extract	corpus/binfmt/disk/fat-dynamic.vhd
 vhdx	extract	corpus/binfmt/disk/fat.vhdx
 wim	extract	corpus/binfmt/wim/files_lzx.wim
