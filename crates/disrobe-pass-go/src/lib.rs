@@ -8,6 +8,7 @@ pub mod chain_detector;
 pub(crate) mod debug;
 pub mod defers;
 pub mod dwarf;
+pub mod embed_digest;
 pub mod embed_fs;
 pub mod error;
 pub mod format_wire;
@@ -33,7 +34,11 @@ pub use defers::{
     DeferSupport, RuntimeDeferHook, recover_defers,
 };
 pub use dwarf::{DwarfFunction, DwarfReport, recover_dwarf};
-pub use embed_fs::{EmbedFile, EmbedReport, extract_embed};
+pub use embed_digest::{
+    EmbedDigestConstruction, EmbedDigestFamily, FamilyResolution, ONE_SHOT_MAX_LEN,
+    STORED_DIGEST_LEN, StoredDigest,
+};
+pub use embed_fs::{EmbedFile, EmbedMap, EmbedReport, EmbedScanStats, extract_embed};
 pub use error::{Error, Result};
 pub use format_wire::format_go;
 pub use garble::{

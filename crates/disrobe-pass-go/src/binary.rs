@@ -9,13 +9,13 @@ use object::read::{File as ObjFile, FileKind};
 use crate::debug::{dbg_kv, dbg_line};
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Endian {
     Little,
     Big,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ImageKind {
     Pe,
     Elf,
