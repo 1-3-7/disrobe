@@ -1,6 +1,7 @@
 schema = "disrobe.nativelang.zig-build-modes/v1"
 producer = "zig 0.16.0"
-producer_url = "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
+producer_reported_version = "0.16.0"
+producer_package = "WinGet package zig.zig, distribution zig-x86_64-windows-0.16.0"
 source = "arith.zig"
 source_sha256 = "f4213e2e1169e469990088c378ee33c299704756d2af6ae1a4163b451e5017a2"
 declared_input = "zig 0.16.0 ELF64 x86-64 System V, optimize mode ReleaseFast, safety checks off"
