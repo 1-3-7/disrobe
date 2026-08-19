@@ -232,6 +232,32 @@ fn every_stomping_variant_is_recovered_in_every_container_form() {
     );
 }
 
+#[cfg(feature = "chain")]
+#[test]
+fn the_registered_shell_pass_recovers_a_stomped_legacy_container() {
+    use disrobe_core::chain::Pass as _;
+    use disrobe_core::{Artifact, Rung};
+    use disrobe_pass_shell::chain_detector::SHELL_PASS;
+
+    let project: Vec<u8> = hello_project();
+    let offset: usize = module_text_offset(&project, HELLO_MODULE);
+    let stomped_project: Vec<u8> = stomp_with_junk_source(&project, HELLO_MODULE, offset);
+    for form in [Form::LegacyDoc, Form::LegacyXls, Form::Pptm] {
+        let container: Vec<u8> = wrap(form, &stomped_project);
+        let input: Artifact = Artifact::new(Rung::Raw, container, [0_u8; 32]);
+        let output: Artifact = SHELL_PASS
+            .run(&input)
+            .unwrap_or_else(|e| panic!("{}: the registered pass refused: {e}", form.label()));
+        let text: String = String::from_utf8_lossy(output.envelope.as_slice()).into_owned();
+        assert!(
+            text.contains(RECOVERED_BEHAVIOR),
+            "{}: the pass that disrobe auto runs must surface the p-code-only recovery, not only \
+             the library entry point; got:\n{text}",
+            form.label()
+        );
+    }
+}
+
 #[test]
 fn a_legacy_container_without_a_vba_storage_names_what_it_could_not_find() {
     let project: Vec<u8> = hello_project();
