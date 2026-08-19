@@ -19,6 +19,7 @@ pub const PASS_ID: PassId = "nativelang.classify";
 const NATIVELANG_REPORT_TAG: &str = "nativelang.report";
 
 const MIN_FINGERPRINT_HITS: u32 = 2;
+const MIN_FINGERPRINT_CONFIDENCE: f32 = 0.60;
 
 const SPECIFICITY: u16 = 30;
 
@@ -96,7 +97,7 @@ pub static NATIVELANG_PASS: NativeLangPassAdapter = NativeLangPassAdapter;
 
 fn verdict_for(fp: &LangFingerprint) -> Option<DetectVerdict> {
     let hits: u32 = u32::try_from(fp.markers.len()).unwrap_or(u32::MAX);
-    if hits < MIN_FINGERPRINT_HITS {
+    if hits < MIN_FINGERPRINT_HITS || fp.confidence < MIN_FINGERPRINT_CONFIDENCE {
         return None;
     }
     Some(DetectVerdict::new(
@@ -191,7 +192,7 @@ impl ObfuscatorCatalog for NativeLangDetector {
         let image: NativeImage<'_> = NativeImage::parse(ctx.bytes).ok()?;
         let fp: LangFingerprint = fingerprint(&image)?;
         let hits: u32 = u32::try_from(fp.markers.len()).unwrap_or(u32::MAX);
-        if hits < MIN_FINGERPRINT_HITS {
+        if hits < MIN_FINGERPRINT_HITS || fp.confidence < MIN_FINGERPRINT_CONFIDENCE {
             return None;
         }
         Some(DetectorOutput::new(
@@ -312,6 +313,62 @@ mod tests {
             .expect("a stripped zig Mach-O must reach a chain verdict, not be refused");
         assert_eq!(v.format_tag, "zig");
         assert_fingerprint_matches(&bytes, 2, 0.6033);
+    }
+
+    #[test]
+    fn every_committed_zig_build_clears_both_chain_floors_with_its_margin_recorded() {
+        let builds: [(&str, Vec<u8>, u32, f32); 4] = [
+            (
+                "zig 0.13.0 elf",
+                read_fixture("zig/hello.zig.elf"),
+                12,
+                0.8700,
+            ),
+            (
+                "zig 0.16.0 elf",
+                crate_fixture("zig_modes/arith_releasefast_x86_64_linux.elf"),
+                3,
+                0.6300,
+            ),
+            (
+                "zig 0.16.0 pe",
+                crate_fixture("zig_modes/arith_releasefast_x86_64_windows.exe"),
+                2,
+                0.6033,
+            ),
+            (
+                "zig 0.16.0 macho",
+                crate_fixture("zig_modes/arith_releasefast_x86_64_macos.macho"),
+                2,
+                0.6033,
+            ),
+        ];
+        for (label, bytes, hits, confidence) in builds {
+            let image: NativeImage<'_> = NativeImage::parse(&bytes).expect("image must parse");
+            let fp: LangFingerprint = fingerprint(&image).expect("fingerprint must resolve");
+            assert_eq!(u32::try_from(fp.markers.len()).unwrap(), hits, "{label}");
+            assert!(
+                (fp.confidence - confidence).abs() < 0.0001,
+                "{label}: confidence moved to {}",
+                fp.confidence
+            );
+            assert!(
+                verdict_for(&fp).is_some(),
+                "{label} scores {hits} markers at confidence {confidence} and must reach a \
+                 verdict; the confidence floor is {MIN_FINGERPRINT_CONFIDENCE} and the hit floor \
+                 is {MIN_FINGERPRINT_HITS}"
+            );
+        }
+        let smallest: f32 = 0.4_f32.mul_add(
+            2.0 / crate::detect::runtime_markers(NativeLang::Zig).len() as f32,
+            0.55,
+        );
+        assert!(
+            smallest >= MIN_FINGERPRINT_CONFIDENCE,
+            "a two-marker zig build scores {smallest}, below the {MIN_FINGERPRINT_CONFIDENCE} \
+             floor; the confidence divides by the marker-list length, so growing that list pushes \
+             the stripped windows and mach-o builds back out of the chain"
+        );
     }
 
     #[test]
