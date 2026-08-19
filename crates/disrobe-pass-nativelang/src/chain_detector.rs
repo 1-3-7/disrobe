@@ -228,8 +228,15 @@ mod tests {
             .join(relative)
     }
 
-    fn read_fixture(relative: &str) -> Option<Vec<u8>> {
-        std::fs::read(corpus_path(relative)).ok()
+    fn read_fixture(relative: &str) -> Vec<u8> {
+        let path: std::path::PathBuf = corpus_path(relative);
+        std::fs::read(&path).unwrap_or_else(|error: std::io::Error| {
+            panic!(
+                "committed fixture {} is the graded reference for this test and could not be \
+                 read ({error}); restore it from git rather than skipping the measurement",
+                path.display()
+            )
+        })
     }
 
     #[test]
@@ -255,10 +262,7 @@ mod tests {
 
     #[test]
     fn detect_real_nim_elf_matches_nim_above_floor() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("nim/hello.nim.elf") else {
-            eprintln!("SKIP: nim corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("nim/hello.nim.elf");
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("nim must be detected");
         assert_eq!(v.format_tag, "nim");
@@ -267,10 +271,7 @@ mod tests {
 
     #[test]
     fn detect_real_zig_elf_matches_zig_above_floor() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("zig/hello.zig.elf") else {
-            eprintln!("SKIP: zig corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("zig/hello.zig.elf");
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("zig must be detected");
         assert_eq!(v.format_tag, "zig");
@@ -279,10 +280,7 @@ mod tests {
 
     #[test]
     fn detect_real_crystal_exe_matches_crystal_above_floor() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("crystal/hello.cr.exe") else {
-            eprintln!("SKIP: crystal corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("crystal/hello.cr.exe");
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("crystal must be detected");
         assert_eq!(v.format_tag, "crystal");
@@ -291,10 +289,7 @@ mod tests {
 
     #[test]
     fn detect_real_d_exe_matches_d_above_floor() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("d/hello.d.exe") else {
-            eprintln!("SKIP: d corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("d/hello.d.exe");
         let v: DetectVerdict =
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).expect("d must be detected");
         assert_eq!(v.format_tag, "d");
@@ -303,11 +298,7 @@ mod tests {
 
     #[test]
     fn detect_abstains_on_real_unrelated_native_binary() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("packers/aspack/AccessEnum.original.exe")
-        else {
-            eprintln!("SKIP: aspack corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("packers/aspack/AccessEnum.original.exe");
         assert!(
             Detector::detect(&NativeLangDetector, &ctx(&bytes)).is_none(),
             "an unrelated real compiled binary must not be claimed by the nativelang floor"
@@ -367,10 +358,7 @@ mod tests {
 
     #[test]
     fn pass_run_produces_a_real_nonempty_report_for_nim() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("nim/hello.nim.elf") else {
-            eprintln!("SKIP: nim corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("nim/hello.nim.elf");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = NATIVELANG_PASS.run(&a).expect("nim run must succeed");
         assert_eq!(out.rung, Rung::Surface);
@@ -383,10 +371,7 @@ mod tests {
 
     #[test]
     fn pass_run_with_path_records_the_hint() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("zig/hello.zig.elf") else {
-            eprintln!("SKIP: zig corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("zig/hello.zig.elf");
         let a: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let out: Artifact = NATIVELANG_PASS
             .run_with_path(&a, Some("hello.zig.elf"))
@@ -398,10 +383,7 @@ mod tests {
 
     #[test]
     fn pass_run_surfaces_structural_d_rtti_names() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("d/hello.d.exe") else {
-            eprintln!("SKIP: d corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("d/hello.d.exe");
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let output: Artifact = NATIVELANG_PASS.run(&artifact).expect("d run must succeed");
         let report: serde_json::Value =
@@ -417,10 +399,7 @@ mod tests {
 
     #[test]
     fn pass_run_surfaces_recovered_pseudo_c_and_pseudo_rust_bodies() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("zig/hello.zig.elf") else {
-            eprintln!("SKIP: zig corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("zig/hello.zig.elf");
         let artifact: Artifact = Artifact::new(Rung::Raw, bytes, [0u8; 32]);
         let output: Artifact = NATIVELANG_PASS
             .run(&artifact)
@@ -434,8 +413,8 @@ mod tests {
         let rust: u64 = report["rust_body_count"]
             .as_u64()
             .expect("the report must count emitted pseudo-Rust bodies");
-        assert!(recovered >= 311, "recovered {recovered} bodies");
-        assert!(rust >= 244, "emitted {rust} pseudo-Rust bodies");
+        assert!(recovered >= 312, "recovered {recovered} bodies");
+        assert!(rust >= 309, "emitted {rust} pseudo-Rust bodies");
         let bodies: &[serde_json::Value] = report["bodies"]["bodies"]
             .as_array()
             .map(Vec::as_slice)
@@ -481,10 +460,7 @@ mod tests {
 
     #[test]
     fn catalog_detect_maps_real_d_fixture() {
-        let Some(bytes): Option<Vec<u8>> = read_fixture("d/hello.d.exe") else {
-            eprintln!("SKIP: d corpus fixture missing");
-            return;
-        };
+        let bytes: Vec<u8> = read_fixture("d/hello.d.exe");
         let out: DetectorOutput =
             ObfuscatorCatalog::detect(&NativeLangDetector, &ctx(&bytes)).expect("d catalog detect");
         assert_eq!(out.entry_id, "d");
