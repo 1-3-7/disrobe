@@ -4878,6 +4878,11 @@ fn plan_switch(
         .entry(default_label)
         .or_default()
         .push(CaseLabel::Default);
+    if target_keys.len() > 1
+        && let Some(default_labels) = target_keys.get_mut(&default_label)
+    {
+        default_labels.retain(|label: &CaseLabel| matches!(label, CaseLabel::Default));
+    }
     let mut label_pos: BTreeMap<usize, usize> = BTreeMap::new();
     for target in target_keys.keys() {
         let Some(pos): Option<usize> = cfg.label_positions.get(target).copied() else {
